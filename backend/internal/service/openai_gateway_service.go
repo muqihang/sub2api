@@ -154,6 +154,9 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, reqBody map[s
 		}
 	}
 	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("x-opencode-session"))
+	}
+	if sessionID == "" {
 		return ""
 	}
 

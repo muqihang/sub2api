@@ -138,6 +138,13 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	if h4 != "" {
 		t.Fatalf("expected empty hash when no signals")
 	}
+
+	// 5) x-opencode-session used when no session_id/conversation_id/prompt_cache_key
+	c.Request.Header.Set("x-opencode-session", "opencode-sess-999")
+	h5 := svc.GenerateSessionHash(c, map[string]any{})
+	if h5 == "" {
+		t.Fatalf("expected non-empty hash from x-opencode-session")
+	}
 }
 
 func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
