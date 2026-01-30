@@ -146,7 +146,10 @@ export default {
     balance: 'Balance',
     available: 'Available',
     copiedToClipboard: 'Copied to clipboard',
+    copied: 'Copied',
     copyFailed: 'Failed to copy',
+    verifying: 'Verifying...',
+    processing: 'Processing...',
     contactSupport: 'Contact Support',
     add: 'Add',
     invalidEmail: 'Please enter a valid email address',
@@ -169,7 +172,13 @@ export default {
       justNow: 'Just now',
       minutesAgo: '{n}m ago',
       hoursAgo: '{n}h ago',
-      daysAgo: '{n}d ago'
+      daysAgo: '{n}d ago',
+      countdown: {
+        daysHours: '{d}d {h}h',
+        hoursMinutes: '{h}h {m}m',
+        minutes: '{m}m',
+        withSuffix: '{time} to lift'
+      }
     }
   },
 
@@ -197,6 +206,7 @@ export default {
     logout: 'Logout',
     github: 'GitHub',
     mySubscriptions: 'My Subscriptions',
+    buySubscription: 'Purchase Subscription',
     docs: 'Docs'
   },
 
@@ -265,7 +275,36 @@ export default {
       code: 'Code',
       state: 'State',
       fullUrl: 'Full URL'
-    }
+    },
+    // Forgot password
+    forgotPassword: 'Forgot password?',
+    forgotPasswordTitle: 'Reset Your Password',
+    forgotPasswordHint: 'Enter your email address and we will send you a link to reset your password.',
+    sendResetLink: 'Send Reset Link',
+    sendingResetLink: 'Sending...',
+    sendResetLinkFailed: 'Failed to send reset link. Please try again.',
+    resetEmailSent: 'Reset Link Sent',
+    resetEmailSentHint: 'If an account exists with this email, you will receive a password reset link shortly. Please check your inbox and spam folder.',
+    backToLogin: 'Back to Login',
+    rememberedPassword: 'Remembered your password?',
+    // Reset password
+    resetPasswordTitle: 'Set New Password',
+    resetPasswordHint: 'Enter your new password below.',
+    newPassword: 'New Password',
+    newPasswordPlaceholder: 'Enter your new password',
+    confirmPassword: 'Confirm Password',
+    confirmPasswordPlaceholder: 'Confirm your new password',
+    confirmPasswordRequired: 'Please confirm your password',
+    passwordsDoNotMatch: 'Passwords do not match',
+    resetPassword: 'Reset Password',
+    resettingPassword: 'Resetting...',
+    resetPasswordFailed: 'Failed to reset password. Please try again.',
+    passwordResetSuccess: 'Password Reset Successful',
+    passwordResetSuccessHint: 'Your password has been reset. You can now sign in with your new password.',
+    invalidResetLink: 'Invalid Reset Link',
+    invalidResetLinkHint: 'This password reset link is invalid or has expired. Please request a new one.',
+    requestNewResetLink: 'Request New Reset Link',
+    invalidOrExpiredToken: 'The password reset link is invalid or has expired. Please request a new one.'
   },
 
   // Dashboard
@@ -548,7 +587,46 @@ export default {
     passwordsNotMatch: 'New passwords do not match',
     passwordTooShort: 'Password must be at least 8 characters long',
     passwordChangeSuccess: 'Password changed successfully',
-    passwordChangeFailed: 'Failed to change password'
+    passwordChangeFailed: 'Failed to change password',
+    // TOTP 2FA
+    totp: {
+      title: 'Two-Factor Authentication (2FA)',
+      description: 'Enhance account security with Google Authenticator or similar apps',
+      enabled: 'Enabled',
+      enabledAt: 'Enabled at',
+      notEnabled: 'Not Enabled',
+      notEnabledHint: 'Enable two-factor authentication to enhance account security',
+      enable: 'Enable',
+      disable: 'Disable',
+      featureDisabled: 'Feature Unavailable',
+      featureDisabledHint: 'Two-factor authentication has not been enabled by the administrator',
+      setupTitle: 'Set Up Two-Factor Authentication',
+      setupStep1: 'Scan the QR code below with your authenticator app',
+      setupStep2: 'Enter the 6-digit code from your app',
+      manualEntry: "Can't scan? Enter the key manually:",
+      enterCode: 'Enter 6-digit code',
+      verify: 'Verify',
+      setupFailed: 'Failed to get setup information',
+      verifyFailed: 'Invalid code, please try again',
+      enableSuccess: 'Two-factor authentication enabled',
+      disableTitle: 'Disable Two-Factor Authentication',
+      disableWarning: 'After disabling, you will no longer need a verification code to log in. This may reduce your account security.',
+      enterPassword: 'Enter your current password to confirm',
+      confirmDisable: 'Confirm Disable',
+      disableSuccess: 'Two-factor authentication disabled',
+      disableFailed: 'Failed to disable, please check your password',
+      loginTitle: 'Two-Factor Authentication',
+      loginHint: 'Enter the 6-digit code from your authenticator app',
+      loginFailed: 'Verification failed, please try again',
+      // New translations for email verification
+      verifyEmailFirst: 'Please verify your email first',
+      verifyPasswordFirst: 'Please verify your identity first',
+      emailCode: 'Email Verification Code',
+      enterEmailCode: 'Enter 6-digit code',
+      sendCode: 'Send Code',
+      codeSent: 'Verification code sent to your email',
+      sendCodeFailed: 'Failed to send verification code'
+    }
   },
 
   // Empty States
@@ -1022,6 +1100,13 @@ export default {
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
       createAccount: 'Create Account',
+      autoRefresh: 'Auto Refresh',
+      enableAutoRefresh: 'Enable auto refresh',
+      refreshInterval5s: '5 seconds',
+      refreshInterval10s: '10 seconds',
+      refreshInterval15s: '15 seconds',
+      refreshInterval30s: '30 seconds',
+      autoRefreshCountdown: 'Auto refresh: {seconds}s',
       syncFromCrs: 'Sync from CRS',
       syncFromCrsTitle: 'Sync Accounts from CRS',
       syncFromCrsDesc:
@@ -1083,6 +1168,8 @@ export default {
         cooldown: 'Cooldown',
         paused: 'Paused',
         limited: 'Limited',
+        rateLimited: 'Rate Limited',
+        overloaded: 'Overloaded',
         tempUnschedulable: 'Temp Unschedulable',
         rateLimitedUntil: 'Rate limited until {time}',
         overloadedUntil: 'Overloaded until {time}',
@@ -2728,7 +2815,13 @@ export default {
         emailVerification: 'Email Verification',
         emailVerificationHint: 'Require email verification for new registrations',
         promoCode: 'Promo Code',
-        promoCodeHint: 'Allow users to use promo codes during registration'
+        promoCodeHint: 'Allow users to use promo codes during registration',
+        passwordReset: 'Password Reset',
+        passwordResetHint: 'Allow users to reset their password via email',
+        totp: 'Two-Factor Authentication (2FA)',
+        totpHint: 'Allow users to use authenticator apps like Google Authenticator',
+        totpKeyNotConfigured:
+          'Please configure TOTP_ENCRYPTION_KEY in environment variables first. Generate a key with: openssl rand -hex 32'
       },
       turnstile: {
         title: 'Cloudflare Turnstile',
@@ -2801,6 +2894,17 @@ export default {
         homeContentIframeWarning: '⚠️ iframe mode note: Some websites have X-Frame-Options or CSP security policies that prevent embedding in iframes. If the page appears blank or shows an error, please verify the target website allows embedding, or consider using HTML mode to build your own content.',
         hideCcsImportButton: 'Hide CCS Import Button',
         hideCcsImportButtonHint: 'When enabled, the "Import to CCS" button will be hidden on the API Keys page'
+      },
+      purchase: {
+        title: 'Purchase Page',
+        description: 'Show a "Purchase Subscription" entry in the sidebar and open the configured URL in an iframe',
+        enabled: 'Show Purchase Entry',
+        enabledHint: 'Only shown in standard mode (not simple mode)',
+        url: 'Purchase URL',
+        urlPlaceholder: 'https://example.com/purchase',
+        urlHint: 'Must be an absolute http(s) URL',
+        iframeWarning:
+          '⚠️ iframe note: Some websites block embedding via X-Frame-Options or CSP (frame-ancestors). If the page is blank, provide an "Open in new tab" alternative.'
       },
       smtp: {
         title: 'SMTP Settings',
@@ -2945,6 +3049,18 @@ export default {
     restartNow: 'Restart Now',
     restarting: 'Restarting...',
     retry: 'Retry'
+  },
+
+  // Purchase Subscription Page
+  purchase: {
+    title: 'Purchase Subscription',
+    description: 'Purchase a subscription via the embedded page',
+    openInNewTab: 'Open in new tab',
+    notEnabledTitle: 'Feature not enabled',
+    notEnabledDesc: 'The administrator has not enabled the purchase page. Please contact admin.',
+    notConfiguredTitle: 'Purchase URL not configured',
+    notConfiguredDesc:
+      'The administrator enabled the entry but has not configured a purchase URL. Please contact admin.'
   },
 
   // User Subscriptions Page
