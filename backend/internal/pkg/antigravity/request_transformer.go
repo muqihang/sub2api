@@ -141,15 +141,15 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		innerRequest.SessionID = claudeReq.Metadata.UserID
 	}
 
-	// 6. 包装为 v1internal 请求
-	v1Req := V1InternalRequest{
-		Project:     projectID,
-		RequestID:   "agent-" + uuid.New().String(),
-		UserAgent:   "antigravity", // 固定值，与官方客户端一致
-		RequestType: requestType,
-		Model:       targetModel,
-		Request:     innerRequest,
-	}
+		// 6. 包装为 v1internal 请求
+		v1Req := V1InternalRequest{
+			Project:     projectID,
+			RequestID:   "agent-" + uuid.New().String(),
+			UserAgent:   EffectiveV1InternalUserAgent(),
+			RequestType: requestType,
+			Model:       targetModel,
+			Request:     innerRequest,
+		}
 
 	return json.Marshal(v1Req)
 }
@@ -735,6 +735,9 @@ var excludedSchemaKeys = map[string]bool{
 	"$schema": true,
 	"$id":     true,
 	"$ref":    true,
+	// Vertex/Google Schema proto uses "ref"; some clients may send non-standard "ref" too.
+	// Keep it excluded to avoid upstream "Schema.ref was set alongside unsupported fields" errors.
+	"ref": true,
 
 	// 字符串验证（Gemini 不支持）
 	"minLength": true,
