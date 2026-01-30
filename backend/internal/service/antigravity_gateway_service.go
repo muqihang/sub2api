@@ -2058,15 +2058,19 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 	var statusCode int
 	var errType, errMsg string
 
-	switch upstreamStatus {
-	case 400:
-		statusCode = http.StatusBadRequest
-		errType = "invalid_request_error"
-		errMsg = "Invalid request"
-	case 401:
-		statusCode = http.StatusBadGateway
-		errType = "authentication_error"
-		errMsg = "Upstream authentication failed"
+		switch upstreamStatus {
+		case 400:
+			statusCode = http.StatusBadRequest
+			errType = "invalid_request_error"
+			if upstreamMsg != "" {
+				errMsg = upstreamMsg
+			} else {
+				errMsg = "Invalid request"
+			}
+		case 401:
+			statusCode = http.StatusBadGateway
+			errType = "authentication_error"
+			errMsg = "Upstream authentication failed"
 	case 403:
 		statusCode = http.StatusBadGateway
 		errType = "permission_error"

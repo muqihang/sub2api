@@ -1,0 +1,18 @@
+services:
+  postgres:
+    volumes:
+      - deploy_postgres_data:/var/lib/postgresql/data
+  redis:
+    volumes:
+      - deploy_redis_data:/data
+  sub2api:
+    volumes:
+      - deploy_sub2api_data:/app/data
+
+volumes:
+  deploy_postgres_data:
+    external: true
+  deploy_redis_data:
+    external: true
+  deploy_sub2api_data:
+    external: true

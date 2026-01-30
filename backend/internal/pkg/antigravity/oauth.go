@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +34,21 @@ const (
 		"https://www.googleapis.com/auth/experimentsandconfigs"
 
 	// User-Agent（与 Antigravity-Manager 保持一致）
-	UserAgent = "antigravity/1.11.9 windows/amd64"
+	//
+	// 为了避免每次升级都需要修改源码并重新构建镜像，支持环境变量覆盖：
+	// - ANTIGRAVITY_USER_AGENT: 直接指定完整 User-Agent（优先级最高）
+	// - ANTIGRAVITY_VERSION: 仅指定版本号，将拼接为 "antigravity/<version> windows/amd64"
+	//
+	// 注意：环境变量变更需要重启进程/容器才能生效（Docker 容器内 env 在启动时固定）。
+	DefaultUserAgentOSArch  = "windows/amd64"
+	DefaultUserAgentVersion = "1.15.8"
+	DefaultUserAgent        = "antigravity/" + DefaultUserAgentVersion + " " + DefaultUserAgentOSArch
+
+	AntigravityUserAgentEnv = "ANTIGRAVITY_USER_AGENT"
+	AntigravityVersionEnv   = "ANTIGRAVITY_VERSION"
+	// V1Internal userAgent field override (request body field `userAgent`).
+	// Some upstream behaviors appear to depend on this value; we keep it versioned by default.
+	AntigravityV1InternalUserAgentEnv = "ANTIGRAVITY_V1INTERNAL_USER_AGENT"
 
 	// Session 过期时间
 	SessionTTL = 30 * time.Minute
@@ -41,6 +56,45 @@ const (
 	// URL 可用性 TTL（不可用 URL 的恢复时间）
 	URLAvailabilityTTL = 5 * time.Minute
 )
+
+// EffectiveUserAgent returns the User-Agent used for Antigravity upstream requests.
+//
+// Priority:
+//  1) ANTIGRAVITY_USER_AGENT (full override)
+//  2) ANTIGRAVITY_VERSION (compose "antigravity/<ver> windows/amd64")
+//  3) DefaultUserAgent (built-in default)
+func EffectiveUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv(AntigravityUserAgentEnv)); ua != "" {
+		return ua
+	}
+	if ver := strings.TrimSpace(os.Getenv(AntigravityVersionEnv)); ver != "" {
+		return fmt.Sprintf("antigravity/%s %s", ver, DefaultUserAgentOSArch)
+	}
+	return DefaultUserAgent
+}
+
+// EffectiveV1InternalUserAgent returns the `userAgent` field used inside v1internal request bodies.
+//
+// Priority:
+//  1) ANTIGRAVITY_V1INTERNAL_USER_AGENT (full override)
+//  2) ANTIGRAVITY_VERSION (compose "antigravity/<ver>")
+//  3) ANTIGRAVITY_USER_AGENT (use first token before space, e.g. "antigravity/<ver>")
+//  4) Default ("antigravity/<DefaultUserAgentVersion>")
+func EffectiveV1InternalUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv(AntigravityV1InternalUserAgentEnv)); ua != "" {
+		return ua
+	}
+	if ver := strings.TrimSpace(os.Getenv(AntigravityVersionEnv)); ver != "" {
+		return fmt.Sprintf("antigravity/%s", ver)
+	}
+	if full := strings.TrimSpace(os.Getenv(AntigravityUserAgentEnv)); full != "" {
+		if i := strings.IndexByte(full, ' '); i > 0 {
+			return strings.TrimSpace(full[:i])
+		}
+		return full
+	}
+	return fmt.Sprintf("antigravity/%s", DefaultUserAgentVersion)
+}
 
 // BaseURLs 定义 Antigravity API 端点（与 Antigravity-Manager 保持一致）
 var BaseURLs = []string{

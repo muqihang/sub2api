@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,24 @@ type GatewayHandler struct {
 	concurrencyHelper         *ConcurrencyHelper
 	maxAccountSwitches        int
 	maxAccountSwitchesGemini  int
+}
+
+func computeStickySessionHashFromHeaders(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("x-opencode-session"))
+	}
+	if sessionID == "" {
+		return ""
+	}
+	hash := sha256.Sum256([]byte(sessionID))
+	return hex.EncodeToString(hash[:])
 }
 
 // NewGatewayHandler creates a new GatewayHandler
@@ -175,8 +195,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	// 计算粘性会话hash
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
+	// 计算粘性会话hash（优先使用 header）
+	headerHash := computeStickySessionHashFromHeaders(c)
+	sessionHash := headerHash
+	if sessionHash == "" {
+		sessionHash = h.gatewayService.GenerateSessionHash(parsedReq)
+	}
 
 	// 获取平台：优先使用强制平台（/antigravity 路由，中间件已设置 request.Context），否则使用分组平台
 	platform := ""
