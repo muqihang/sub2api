@@ -2,7 +2,7 @@
   <BaseDialog
     :show="show"
     :title="t('admin.accounts.createAccount')"
-    width="normal"
+    width="wide"
     @close="handleClose"
   >
     <!-- Step Indicator for OAuth accounts -->
@@ -614,20 +614,177 @@
         </div>
       </div>
 
-      <!-- Account Type Selection (Antigravity - OAuth only) -->
+      <!-- Account Type Selection (Antigravity - OAuth or Upstream) -->
       <div v-if="form.platform === 'antigravity'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2">
-          <div
-            class="flex items-center gap-3 rounded-lg border-2 border-purple-500 bg-purple-50 p-3 dark:bg-purple-900/20"
+        <div class="mt-2 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            @click="antigravityAccountType = 'oauth'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              antigravityAccountType === 'oauth'
+                ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
+                : 'border-gray-200 hover:border-purple-300 dark:border-dark-600 dark:hover:border-purple-700'
+            ]"
           >
-            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-500 text-white">
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                antigravityAccountType === 'oauth'
+                  ? 'bg-purple-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
               <Icon name="key" size="sm" />
             </div>
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">OAuth</span>
               <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.antigravityOauth') }}</span>
             </div>
+          </button>
+
+          <button
+            type="button"
+            @click="antigravityAccountType = 'upstream'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              antigravityAccountType === 'upstream'
+                ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20'
+                : 'border-gray-200 hover:border-purple-300 dark:border-dark-600 dark:hover:border-purple-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                antigravityAccountType === 'upstream'
+                  ? 'bg-purple-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="cloud" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.types.upstream') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.upstreamDesc') }}</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Upstream config (only for Antigravity upstream type) -->
+      <div v-if="form.platform === 'antigravity' && antigravityAccountType === 'upstream'" class="space-y-4">
+        <div>
+          <label class="input-label">{{ t('admin.accounts.upstream.baseUrl') }}</label>
+          <input
+            v-model="upstreamBaseUrl"
+            type="text"
+            required
+            class="input"
+            placeholder="https://s.konstants.xyz"
+          />
+          <p class="input-hint">{{ t('admin.accounts.upstream.baseUrlHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.upstream.apiKey') }}</label>
+          <input
+            v-model="upstreamApiKey"
+            type="password"
+            required
+            class="input font-mono"
+            placeholder="sk-..."
+          />
+          <p class="input-hint">{{ t('admin.accounts.upstream.apiKeyHint') }}</p>
+        </div>
+      </div>
+
+      <!-- Antigravity model restriction (applies to OAuth + Upstream) -->
+      <!-- Antigravity 只支持模型映射模式，不支持白名单模式 -->
+      <div v-if="form.platform === 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+        <!-- Mapping Mode Only (no toggle for Antigravity) -->
+        <div>
+          <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
+            <p class="text-xs text-purple-700 dark:text-purple-400">
+              {{ t('admin.accounts.mapRequestModels') }}
+            </p>
+          </div>
+
+          <div v-if="antigravityModelMappings.length > 0" class="mb-3 space-y-2">
+            <div
+              v-for="(mapping, index) in antigravityModelMappings"
+              :key="index"
+              class="space-y-1"
+            >
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="mapping.from"
+                  type="text"
+                  :class="[
+                    'input flex-1',
+                    !isValidWildcardPattern(mapping.from) ? 'border-red-500 dark:border-red-500' : ''
+                  ]"
+                  :placeholder="t('admin.accounts.requestModel')"
+                />
+                <svg class="h-4 w-4 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
+                <input
+                  v-model="mapping.to"
+                  type="text"
+                  :class="[
+                    'input flex-1',
+                    mapping.to.includes('*') ? 'border-red-500 dark:border-red-500' : ''
+                  ]"
+                  :placeholder="t('admin.accounts.actualModel')"
+                />
+                <button
+                  type="button"
+                  @click="removeAntigravityModelMapping(index)"
+                  class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                >
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <!-- 校验错误提示 -->
+              <p v-if="!isValidWildcardPattern(mapping.from)" class="text-xs text-red-500">
+                {{ t('admin.accounts.wildcardOnlyAtEnd') }}
+              </p>
+              <p v-if="mapping.to.includes('*')" class="text-xs text-red-500">
+                {{ t('admin.accounts.targetNoWildcard') }}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            @click="addAntigravityModelMapping"
+            class="mb-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
+          >
+            <svg class="mr-1 inline h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            {{ t('admin.accounts.addMapping') }}
+          </button>
+
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="preset in antigravityPresetMappings"
+              :key="preset.label"
+              type="button"
+              @click="addAntigravityPresetMapping(preset.from, preset.to)"
+              :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+            >
+              + {{ preset.label }}
+            </button>
           </div>
         </div>
       </div>
@@ -1799,13 +1956,33 @@
       </div>
     </template>
   </BaseDialog>
+
+  <!-- Mixed Channel Warning Dialog -->
+  <ConfirmDialog
+    :show="showMixedChannelWarning"
+    :title="t('admin.accounts.mixedChannelWarningTitle')"
+    :message="mixedChannelWarningDetails ? t('admin.accounts.mixedChannelWarning', mixedChannelWarningDetails) : ''"
+    :confirm-text="t('common.confirm')"
+    :cancel-text="t('common.cancel')"
+    :danger="true"
+    @confirm="handleMixedChannelConfirm"
+    @cancel="handleMixedChannelCancel"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
-import { claudeModels, getPresetMappingsByPlatform, getModelsByPlatform, commonErrorCodes, buildModelMappingObject } from '@/composables/useModelWhitelist'
+import {
+  claudeModels,
+  getPresetMappingsByPlatform,
+  getModelsByPlatform,
+  commonErrorCodes,
+  buildModelMappingObject,
+  fetchAntigravityDefaultMappings,
+  isValidWildcardPattern
+} from '@/composables/useModelWhitelist'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import {
@@ -1818,6 +1995,7 @@ import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import type { Proxy, AdminGroup, AccountPlatform, AccountType } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
@@ -1940,10 +2118,22 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
+const antigravityAccountType = ref<'oauth' | 'upstream'>('oauth') // For antigravity: oauth or upstream
+const upstreamBaseUrl = ref('') // For upstream type: base URL
+const upstreamApiKey = ref('') // For upstream type: API key
+const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
+const antigravityWhitelistModels = ref<string[]>([])
+const antigravityModelMappings = ref<ModelMapping[]>([])
+const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
 const geminiAIStudioOAuthEnabled = ref(false)
+
+// Mixed channel warning dialog state
+const showMixedChannelWarning = ref(false)
+const mixedChannelWarningDetails = ref<{ groupName: string; currentPlatform: string; otherPlatform: string } | null>(null)
+const pendingCreatePayload = ref<any>(null)
 const showAdvancedOAuth = ref(false)
 const showGeminiHelpDialog = ref(false)
 
@@ -2037,7 +2227,13 @@ const form = reactive({
 })
 
 // Helper to check if current type needs OAuth flow
-const isOAuthFlow = computed(() => accountCategory.value === 'oauth-based')
+const isOAuthFlow = computed(() => {
+  // Antigravity upstream 类型不需要 OAuth 流程
+  if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
+    return false
+  }
+  return accountCategory.value === 'oauth-based'
+})
 
 const isManualInputMethod = computed(() => {
   return oauthFlowRef.value?.inputMethod === 'manual'
@@ -2071,16 +2267,33 @@ watch(
     if (newVal) {
       // Modal opened - fill related models
       allowedModels.value = [...getModelsByPlatform(form.platform)]
+      // Antigravity: 默认使用映射模式并填充默认映射
+      if (form.platform === 'antigravity') {
+        antigravityModelRestrictionMode.value = 'mapping'
+        fetchAntigravityDefaultMappings().then(mappings => {
+          antigravityModelMappings.value = [...mappings]
+        })
+        antigravityWhitelistModels.value = []
+      } else {
+        antigravityWhitelistModels.value = []
+        antigravityModelMappings.value = []
+        antigravityModelRestrictionMode.value = 'mapping'
+      }
     } else {
       resetForm()
     }
   }
 )
 
-// Sync form.type based on accountCategory and addMethod
+// Sync form.type based on accountCategory, addMethod, and antigravityAccountType
 watch(
-  [accountCategory, addMethod],
-  ([category, method]) => {
+  [accountCategory, addMethod, antigravityAccountType],
+  ([category, method, agType]) => {
+    // Antigravity upstream 类型
+    if (form.platform === 'antigravity' && agType === 'upstream') {
+      form.type = 'upstream'
+      return
+    }
     if (category === 'oauth-based') {
       form.type = method as AccountType // 'oauth' or 'setup-token'
     } else {
@@ -2104,13 +2317,23 @@ watch(
     // Clear model-related settings
     allowedModels.value = []
     modelMappings.value = []
+    // Antigravity: 默认使用映射模式并填充默认映射
+    if (newPlatform === 'antigravity') {
+      antigravityModelRestrictionMode.value = 'mapping'
+      fetchAntigravityDefaultMappings().then(mappings => {
+        antigravityModelMappings.value = [...mappings]
+      })
+      antigravityWhitelistModels.value = []
+      accountCategory.value = 'oauth-based'
+      antigravityAccountType.value = 'oauth'
+    } else {
+      antigravityWhitelistModels.value = []
+      antigravityModelMappings.value = []
+      antigravityModelRestrictionMode.value = 'mapping'
+    }
     // Reset Anthropic-specific settings when switching to other platforms
     if (newPlatform !== 'anthropic') {
       interceptWarmupRequests.value = false
-    }
-    // Antigravity only supports OAuth
-    if (newPlatform === 'antigravity') {
-      accountCategory.value = 'oauth-based'
     }
     // Reset OAuth states
     oauth.resetState()
@@ -2155,6 +2378,15 @@ watch(
   }
 )
 
+watch(
+  [antigravityModelRestrictionMode, () => form.platform],
+  ([, platform]) => {
+    if (platform !== 'antigravity') return
+    // Antigravity 默认不做限制：白名单留空表示允许所有（包含未来新增模型）。
+    // 如果需要快速填充常用模型，可在组件内点“填充相关模型”。
+  }
+)
+
 // Model mapping helpers
 const addModelMapping = () => {
   modelMappings.value.push({ from: '', to: '' })
@@ -2170,6 +2402,22 @@ const addPresetMapping = (from: string, to: string) => {
     return
   }
   modelMappings.value.push({ from, to })
+}
+
+const addAntigravityModelMapping = () => {
+  antigravityModelMappings.value.push({ from: '', to: '' })
+}
+
+const removeAntigravityModelMapping = (index: number) => {
+  antigravityModelMappings.value.splice(index, 1)
+}
+
+const addAntigravityPresetMapping = (from: string, to: string) => {
+  if (antigravityModelMappings.value.some((m) => m.from === from)) {
+    appStore.showInfo(t('admin.accounts.mappingExists', { model: from }))
+    return
+  }
+  antigravityModelMappings.value.push({ from, to })
 }
 
 // Error code toggle helper
@@ -2329,6 +2577,12 @@ const resetForm = () => {
   modelMappings.value = []
   modelRestrictionMode.value = 'whitelist'
   allowedModels.value = [...claudeModels] // Default fill related models
+
+  antigravityModelRestrictionMode.value = 'mapping'
+  antigravityWhitelistModels.value = []
+  fetchAntigravityDefaultMappings().then(mappings => {
+    antigravityModelMappings.value = [...mappings]
+  })
   customErrorCodesEnabled.value = false
   selectedErrorCodes.value = []
   customErrorCodeInput.value = null
@@ -2343,6 +2597,9 @@ const resetForm = () => {
   sessionIdleTimeout.value = null
   tlsFingerprintEnabled.value = false
   sessionIdMaskingEnabled.value = false
+  antigravityAccountType.value = 'oauth'
+  upstreamBaseUrl.value = ''
+  upstreamApiKey.value = ''
   tempUnschedEnabled.value = false
   tempUnschedRules.value = []
   geminiOAuthType.value = 'code_assist'
@@ -2360,6 +2617,59 @@ const handleClose = () => {
   emit('close')
 }
 
+// Helper function to create account with mixed channel warning handling
+const doCreateAccount = async (payload: any) => {
+  submitting.value = true
+  try {
+    await adminAPI.accounts.create(payload)
+    appStore.showSuccess(t('admin.accounts.accountCreated'))
+    emit('created')
+    handleClose()
+  } catch (error: any) {
+    // Handle 409 mixed_channel_warning - show confirmation dialog
+    if (error.response?.status === 409 && error.response?.data?.error === 'mixed_channel_warning') {
+      const details = error.response.data.details || {}
+      mixedChannelWarningDetails.value = {
+        groupName: details.group_name || 'Unknown',
+        currentPlatform: details.current_platform || 'Unknown',
+        otherPlatform: details.other_platform || 'Unknown'
+      }
+      pendingCreatePayload.value = payload
+      showMixedChannelWarning.value = true
+    } else {
+      appStore.showError(error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    }
+  } finally {
+    submitting.value = false
+  }
+}
+
+// Handle mixed channel warning confirmation
+const handleMixedChannelConfirm = async () => {
+  showMixedChannelWarning.value = false
+  if (pendingCreatePayload.value) {
+    pendingCreatePayload.value.confirm_mixed_channel_risk = true
+    submitting.value = true
+    try {
+      await adminAPI.accounts.create(pendingCreatePayload.value)
+      appStore.showSuccess(t('admin.accounts.accountCreated'))
+      emit('created')
+      handleClose()
+    } catch (error: any) {
+      appStore.showError(error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    } finally {
+      submitting.value = false
+      pendingCreatePayload.value = null
+    }
+  }
+}
+
+const handleMixedChannelCancel = () => {
+  showMixedChannelWarning.value = false
+  pendingCreatePayload.value = null
+  mixedChannelWarningDetails.value = null
+}
+
 const handleSubmit = async () => {
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
@@ -2368,6 +2678,48 @@ const handleSubmit = async () => {
       return
     }
     step.value = 2
+    return
+  }
+
+  // For Antigravity upstream type, create directly
+  if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!upstreamBaseUrl.value.trim()) {
+      appStore.showError(t('admin.accounts.upstream.pleaseEnterBaseUrl'))
+      return
+    }
+    if (!upstreamApiKey.value.trim()) {
+      appStore.showError(t('admin.accounts.upstream.pleaseEnterApiKey'))
+      return
+    }
+
+    // Build upstream credentials (and optional model restriction)
+    const credentials: Record<string, unknown> = {
+      base_url: upstreamBaseUrl.value.trim(),
+      api_key: upstreamApiKey.value.trim()
+    }
+
+    // Antigravity 只使用映射模式
+    const antigravityModelMapping = buildModelMappingObject(
+      'mapping',
+      [],
+      antigravityModelMappings.value
+    )
+    if (antigravityModelMapping) {
+      credentials.model_mapping = antigravityModelMapping
+    }
+
+    submitting.value = true
+    try {
+      await createAccountAndFinish(form.platform, 'upstream', credentials)
+    } catch (error: any) {
+      appStore.showError(error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    } finally {
+      submitting.value = false
+    }
     return
   }
 
@@ -2416,21 +2768,11 @@ const handleSubmit = async () => {
 
   form.credentials = credentials
 
-  submitting.value = true
-  try {
-    await adminAPI.accounts.create({
-      ...form,
-      group_ids: form.group_ids,
-      auto_pause_on_expired: autoPauseOnExpired.value
-    })
-    appStore.showSuccess(t('admin.accounts.accountCreated'))
-    emit('created')
-    handleClose()
-  } catch (error: any) {
-    appStore.showError(error.response?.data?.detail || t('admin.accounts.failedToCreate'))
-  } finally {
-    submitting.value = false
-  }
+  await doCreateAccount({
+    ...form,
+    group_ids: form.group_ids,
+    auto_pause_on_expired: autoPauseOnExpired.value
+  })
 }
 
 const goBackToBasicInfo = () => {
@@ -2577,11 +2919,20 @@ const handleAntigravityExchange = async (authCode: string) => {
       state: stateToUse,
       proxyId: form.proxy_id
     })
-    if (!tokenInfo) return
+		if (!tokenInfo) return
 
-    const credentials = antigravityOAuth.buildCredentials(tokenInfo)
-    const extra = mixedScheduling.value ? { mixed_scheduling: true } : undefined
-    await createAccountAndFinish('antigravity', 'oauth', credentials, extra)
+		const credentials = antigravityOAuth.buildCredentials(tokenInfo)
+		// Antigravity 只使用映射模式
+		const antigravityModelMapping = buildModelMappingObject(
+			'mapping',
+			[],
+			antigravityModelMappings.value
+		)
+		if (antigravityModelMapping) {
+			credentials.model_mapping = antigravityModelMapping
+		}
+		const extra = mixedScheduling.value ? { mixed_scheduling: true } : undefined
+		await createAccountAndFinish('antigravity', 'oauth', credentials, extra)
   } catch (error: any) {
     antigravityOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
     appStore.showError(antigravityOAuth.error.value)

@@ -17,7 +17,7 @@
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
         </div>
       </div>
-      <UsageFilters v-model="filters" v-model:startDate="startDate" v-model:endDate="endDate" :exporting="exporting" @change="applyFilters" @reset="resetFilters" @cleanup="openCleanupDialog" @export="exportToExcel" />
+      <UsageFilters v-model="filters" v-model:startDate="startDate" v-model:endDate="endDate" :exporting="exporting" @change="applyFilters" @refresh="refreshData" @reset="resetFilters" @cleanup="openCleanupDialog" @export="exportToExcel" />
       <UsageTable :data="usageLogs" :loading="loading" />
       <Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" />
     </div>
@@ -37,6 +37,7 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { saveAs } from 'file-saver'
 import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admin'; import { adminUsageAPI } from '@/api/admin/usage'
+import { formatReasoningEffort } from '@/utils/format'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
@@ -82,6 +83,7 @@ const loadChartData = async () => {
   } catch (error) { console.error('Failed to load chart data:', error) } finally { chartsLoading.value = false }
 }
 const applyFilters = () => { pagination.page = 1; loadLogs(); loadStats(); loadChartData() }
+const refreshData = () => { loadLogs(); loadStats(); loadChartData() }
 const resetFilters = () => { startDate.value = formatLD(weekAgo); endDate.value = formatLD(now); filters.value = { start_date: startDate.value, end_date: endDate.value, billing_type: null }; granularity.value = 'day'; applyFilters() }
 const handlePageChange = (p: number) => { pagination.page = p; loadLogs() }
 const handlePageSizeChange = (s: number) => { pagination.page_size = s; pagination.page = 1; loadLogs() }
@@ -104,7 +106,7 @@ const exportToExcel = async () => {
       const XLSX = await import('xlsx')
       const headers = [
         t('usage.time'), t('admin.usage.user'), t('usage.apiKeyFilter'),
-        t('admin.usage.account'), t('usage.model'), t('admin.usage.group'),
+        t('admin.usage.account'), t('usage.model'), t('usage.reasoningEffort'), t('admin.usage.group'),
         t('usage.type'),
         t('admin.usage.inputTokens'), t('admin.usage.outputTokens'),
         t('admin.usage.cacheReadTokens'), t('admin.usage.cacheCreationTokens'),
@@ -120,6 +122,7 @@ const exportToExcel = async () => {
         log.api_key?.name || '',
         log.account?.name || '',
         log.model,
+        formatReasoningEffort(log.reasoning_effort),
         log.group?.name || '',
         log.stream ? t('usage.stream') : t('usage.sync'),
         log.input_tokens,
