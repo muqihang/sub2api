@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -87,6 +88,55 @@ func (w *failingGinWriter) Write(p []byte) (int, error) {
 	}
 	w.writes++
 	return w.ResponseWriter.Write(p)
+}
+
+type captureHTTPUpstream struct {
+	lastBody  []byte
+	allBodies [][]byte
+	resp      *http.Response
+	responses []*http.Response
+	err       error
+	calls     int
+}
+
+func (s *captureHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	s.calls++
+	if req != nil && req.Body != nil {
+		body, readErr := io.ReadAll(req.Body)
+		if readErr != nil {
+			return nil, readErr
+		}
+		s.lastBody = body
+		s.allBodies = append(s.allBodies, body)
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	if len(s.responses) > 0 {
+		next := s.responses[0]
+		s.responses = s.responses[1:]
+		return next, nil
+	}
+	if s.resp != nil {
+		return s.resp, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_test","usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`)),
+	}, nil
+}
+
+func (s *captureHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ bool) (*http.Response, error) {
+	return s.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func jsonHTTPResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
 }
 
 func (c stubConcurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -173,7 +223,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 
 	// 5) x-opencode-session used when no session_id/conversation_id/prompt_cache_key
 	c.Request.Header.Set("x-opencode-session", "opencode-sess-999")
-	h5 := svc.GenerateSessionHash(c, map[string]any{})
+	h5 := svc.GenerateSessionHash(c, []byte(`{}`))
 	if h5 == "" {
 		t.Fatalf("expected non-empty hash from x-opencode-session")
 	}
@@ -227,6 +277,174 @@ func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
 	require.Equal(t, "", empty)
 }
 
+func TestOpenAIGatewayService_BuildUpstreamRequest_ForwardsCodexTurnStateHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	c.Request.Header.Set("x-codex-turn-state", "turn-state-123")
+	c.Request.Header.Set("content-type", "application/json")
+
+	svc := &OpenAIGatewayService{}
+	svc.cfg = &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{
+				Enabled: false,
+			},
+		},
+	}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"input":[]}`), "token", false, "", false)
+	if err != nil {
+		t.Fatalf("buildUpstreamRequest error: %v", err)
+	}
+	if req.Header.Get("x-codex-turn-state") != "turn-state-123" {
+		t.Fatalf("expected x-codex-turn-state passthrough, got %q", req.Header.Get("x-codex-turn-state"))
+	}
+}
+
+func TestOpenAIGatewayService_Forward_StripsPreviousResponseIDForNonWSV2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+	}
+
+	body := []byte(`{
+		"model":"gpt-5.1-codex-mini",
+		"input":[],
+		"previous_response_id":"resp_prev_123",
+		"prompt_cache_retention":"24h",
+		"safety_identifier":"abc"
+	}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	if err != nil {
+		t.Fatalf("Forward error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	var forwarded map[string]any
+	if err := json.Unmarshal(upstream.lastBody, &forwarded); err != nil {
+		t.Fatalf("unmarshal forwarded body: %v", err)
+	}
+
+	if _, exists := forwarded["previous_response_id"]; exists {
+		t.Fatalf("expected previous_response_id to be removed outside WSv2, got %#v", forwarded["previous_response_id"])
+	}
+	if _, exists := forwarded["prompt_cache_retention"]; exists {
+		t.Fatal("expected prompt_cache_retention to be removed")
+	}
+	if _, exists := forwarded["safety_identifier"]; exists {
+		t.Fatal("expected safety_identifier to be removed")
+	}
+}
+
+func TestOpenAIGatewayService_PreviousResponseIDCapabilityCacheLifecycle(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	accountID := int64(4242421)
+	model := "gpt-5.3-codex"
+
+	svc.clearPreviousResponseIDUnsupported(accountID, model)
+	require.True(t, svc.isPreviousResponseIDSupported(accountID, model))
+
+	svc.markPreviousResponseIDUnsupported(accountID, model)
+	require.False(t, svc.isPreviousResponseIDSupported(accountID, model))
+
+	svc.clearPreviousResponseIDUnsupported(accountID, model)
+	require.True(t, svc.isPreviousResponseIDSupported(accountID, model))
+}
+
+func TestIsPreviousResponseIDUnsupportedResponse(t *testing.T) {
+	require.True(t, isPreviousResponseIDUnsupportedResponse(
+		http.StatusBadRequest,
+		[]byte(`{"detail":"Unsupported parameter: previous_response_id"}`),
+	))
+	require.True(t, isPreviousResponseIDUnsupportedResponse(
+		http.StatusUnprocessableEntity,
+		[]byte(`{"error":"previous_response_id is not supported"}`),
+	))
+	require.False(t, isPreviousResponseIDUnsupportedResponse(
+		http.StatusBadRequest,
+		[]byte(`{"detail":"Unsupported parameter: temperature"}`),
+	))
+	require.False(t, isPreviousResponseIDUnsupportedResponse(
+		http.StatusInternalServerError,
+		[]byte(`{"detail":"Unsupported parameter: previous_response_id"}`),
+	))
+}
+
+func TestOpenAIGatewayService_Forward_PreviousResponseIDUnsupportedPassthrough400(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+
+	upstream := &captureHTTPUpstream{
+		responses: []*http.Response{
+			jsonHTTPResponse(http.StatusBadRequest, `{"detail":"Unsupported parameter: previous_response_id"}`),
+			jsonHTTPResponse(http.StatusBadRequest, `{"detail":"Unsupported parameter: previous_response_id"}`),
+		},
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          88,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+	}
+
+	body := []byte(`{
+		"model":"gpt-5.3-codex",
+		"input":[],
+		"previous_response_id":"resp_prev_fail"
+	}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	if err == nil {
+		t.Fatal("expected Forward to return error")
+	}
+	if result != nil {
+		t.Fatal("expected nil result when both attempts fail")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 passthrough response, got %d", rec.Code)
+	}
+	respBody := rec.Body.String()
+	if !strings.Contains(strings.ToLower(respBody), "previous_response_id") {
+		t.Fatalf("expected response body to contain previous_response_id hint, got %s", respBody)
+	}
+}
+
 func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
 	if c.waitCounts != nil {
 		if count, ok := c.waitCounts[accountID]; ok {
@@ -239,6 +457,15 @@ func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accoun
 type stubGatewayCache struct {
 	sessionBindings map[string]int64
 	deletedSessions map[string]int
+	cacheHealth     map[int64]*OpenAICacheHealthInfo
+	recordedSamples []openAICacheSampleRecord
+}
+
+type openAICacheSampleRecord struct {
+	accountID       int64
+	model           string
+	inputTokens     int64
+	cacheReadTokens int64
 }
 
 func (c *stubGatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -269,6 +496,46 @@ func (c *stubGatewayCache) DeleteSessionAccountID(ctx context.Context, groupID i
 	}
 	c.deletedSessions[sessionHash]++
 	delete(c.sessionBindings, sessionHash)
+	return nil
+}
+
+func (c *stubGatewayCache) IncrModelCallCount(ctx context.Context, accountID int64, model string) (int64, error) {
+	return 0, nil
+}
+
+func (c *stubGatewayCache) GetModelLoadBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*ModelLoadInfo, error) {
+	return nil, nil
+}
+
+func (c *stubGatewayCache) RecordOpenAICacheSample(ctx context.Context, accountID int64, model string, inputTokens int64, cacheReadTokens int64) error {
+	c.recordedSamples = append(c.recordedSamples, openAICacheSampleRecord{
+		accountID:       accountID,
+		model:           model,
+		inputTokens:     inputTokens,
+		cacheReadTokens: cacheReadTokens,
+	})
+	return nil
+}
+
+func (c *stubGatewayCache) GetOpenAICacheHealthBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*OpenAICacheHealthInfo, error) {
+	out := make(map[int64]*OpenAICacheHealthInfo, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if c.cacheHealth != nil {
+			if info, ok := c.cacheHealth[accountID]; ok {
+				out[accountID] = info
+				continue
+			}
+		}
+		out[accountID] = &OpenAICacheHealthInfo{}
+	}
+	return out, nil
+}
+
+func (c *stubGatewayCache) FindGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain string) (uuid string, accountID int64, found bool) {
+	return "", 0, false
+}
+
+func (c *stubGatewayCache) SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error {
 	return nil
 }
 
@@ -626,6 +893,171 @@ func TestOpenAISelectAccountWithLoadAwareness_PrefersLowerLoad(t *testing.T) {
 	}
 }
 
+func TestOpenAISelectAccountWithLoadAwareness_PrefersHigherCacheScoreWhenLoadClose(t *testing.T) {
+	groupID := int64(1)
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+		},
+	}
+	cache := &stubGatewayCache{
+		cacheHealth: map[int64]*OpenAICacheHealthInfo{
+			2: {
+				InputTokens:     100000,
+				CacheReadTokens: 100000,
+				Samples:         8,
+			},
+		},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, LoadRate: 40},
+			2: {AccountID: 2, LoadRate: 50},
+		},
+	}
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{
+				LoadBatchEnabled:               true,
+				StickySessionMaxWaiting:        3,
+				StickySessionWaitTimeout:       45 * time.Second,
+				FallbackWaitTimeout:            30 * time.Second,
+				FallbackMaxWaiting:             100,
+				OpenAICacheAwareEnabled:        true,
+				OpenAICacheAwareMinSamples:     6,
+				OpenAICacheAwareWeight:         25,
+				OpenAICacheAwareMinInputTokens: 12000,
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.3-codex", nil)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
+		t.Fatalf("expected account 2")
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_DoesNotOverBiasLowSamples(t *testing.T) {
+	groupID := int64(1)
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+		},
+	}
+	cache := &stubGatewayCache{
+		cacheHealth: map[int64]*OpenAICacheHealthInfo{
+			2: {
+				InputTokens:     100000,
+				CacheReadTokens: 100000,
+				Samples:         1,
+			},
+		},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, LoadRate: 40},
+			2: {AccountID: 2, LoadRate: 50},
+		},
+	}
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{
+				LoadBatchEnabled:               true,
+				StickySessionMaxWaiting:        3,
+				StickySessionWaitTimeout:       45 * time.Second,
+				FallbackWaitTimeout:            30 * time.Second,
+				FallbackMaxWaiting:             100,
+				OpenAICacheAwareEnabled:        true,
+				OpenAICacheAwareMinSamples:     6,
+				OpenAICacheAwareWeight:         25,
+				OpenAICacheAwareMinInputTokens: 12000,
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.3-codex", nil)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil || selection.Account.ID != 1 {
+		t.Fatalf("expected account 1")
+	}
+}
+
+func TestOpenAISelectAccountWithLoadAwareness_PriorityDominatesCacheScore(t *testing.T) {
+	groupID := int64(1)
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+			{ID: 2, Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1},
+		},
+	}
+	cache := &stubGatewayCache{
+		cacheHealth: map[int64]*OpenAICacheHealthInfo{
+			2: {
+				InputTokens:     100000,
+				CacheReadTokens: 100000,
+				Samples:         10,
+			},
+		},
+	}
+	concurrencyCache := stubConcurrencyCache{
+		loadMap: map[int64]*AccountLoadInfo{
+			1: {AccountID: 1, LoadRate: 80},
+			2: {AccountID: 2, LoadRate: 10},
+		},
+	}
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			Scheduling: config.GatewaySchedulingConfig{
+				LoadBatchEnabled:               true,
+				StickySessionMaxWaiting:        3,
+				StickySessionWaitTimeout:       45 * time.Second,
+				FallbackWaitTimeout:            30 * time.Second,
+				FallbackMaxWaiting:             100,
+				OpenAICacheAwareEnabled:        true,
+				OpenAICacheAwareMinSamples:     6,
+				OpenAICacheAwareWeight:         25,
+				OpenAICacheAwareMinInputTokens: 12000,
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.3-codex", nil)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil || selection.Account.ID != 1 {
+		t.Fatalf("expected account 1")
+	}
+}
+
 func TestOpenAISelectAccountForModelWithExclusions_StickyExcludedFallback(t *testing.T) {
 	sessionHash := "excluded"
 	repo := stubOpenAIAccountRepo{
@@ -868,6 +1300,131 @@ func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
 	}
 	if selection == nil || selection.Account == nil || selection.Account.ID != 2 {
 		t.Fatalf("expected account 2")
+	}
+}
+
+func TestOpenAIGatewayService_ShouldAutoUpgradeMiniModel_LongInput(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				OpenAIMiniAutoUpgradeEnabled:        true,
+				OpenAIMiniAutoUpgradeMinInputTokens: 18000,
+				OpenAIMiniAutoUpgradeTargetModel:    "gpt-5.3-codex",
+			},
+		},
+	}
+
+	input := []any{
+		map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{
+					"type": "input_text",
+					"text": strings.Repeat("a", 80000),
+				},
+			},
+		},
+	}
+
+	targetModel, upgraded := svc.ShouldAutoUpgradeMiniModel("gpt-5-codex-mini-high", input)
+	if !upgraded {
+		t.Fatalf("expected mini model to auto-upgrade")
+	}
+	if targetModel != "gpt-5.3-codex" {
+		t.Fatalf("expected target gpt-5.3-codex, got %s", targetModel)
+	}
+}
+
+func TestOpenAIGatewayService_ShouldNotAutoUpgradeMiniModel_ShortInput(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				OpenAIMiniAutoUpgradeEnabled:        true,
+				OpenAIMiniAutoUpgradeMinInputTokens: 18000,
+				OpenAIMiniAutoUpgradeTargetModel:    "gpt-5.3-codex",
+			},
+		},
+	}
+
+	input := []any{
+		map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{
+					"type": "input_text",
+					"text": strings.Repeat("a", 5000),
+				},
+			},
+		},
+	}
+
+	targetModel, upgraded := svc.ShouldAutoUpgradeMiniModel("gpt-5.1-codex-mini", input)
+	if upgraded {
+		t.Fatalf("expected no upgrade, got target %s", targetModel)
+	}
+}
+
+func TestOpenAIGatewayService_MiniUpgradeFallbackSelection(t *testing.T) {
+	groupID := int64(1)
+	repo := stubOpenAIAccountRepo{
+		accounts: []Account{
+			{
+				ID:          1,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"gpt-5.1-codex-mini": "gpt-5.1-codex-mini",
+					},
+				},
+			},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        repo,
+		cache:              &stubGatewayCache{},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{
+				OpenAIMiniAutoUpgradeEnabled:        true,
+				OpenAIMiniAutoUpgradeMinInputTokens: 18000,
+				OpenAIMiniAutoUpgradeTargetModel:    "gpt-5.3-codex",
+			},
+		},
+	}
+
+	input := []any{
+		map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{
+					"type": "input_text",
+					"text": strings.Repeat("a", 80000),
+				},
+			},
+		},
+	}
+
+	targetModel, upgraded := svc.ShouldAutoUpgradeMiniModel("gpt-5.1-codex-mini", input)
+	if !upgraded {
+		t.Fatalf("expected upgrade decision")
+	}
+
+	upgradedSelection, upgradedErr := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", targetModel, nil)
+	if upgradedErr == nil || upgradedSelection != nil {
+		t.Fatalf("expected upgraded model selection to fail")
+	}
+
+	fallbackSelection, fallbackErr := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.1-codex-mini", nil)
+	if fallbackErr != nil {
+		t.Fatalf("expected fallback model selection success, got error: %v", fallbackErr)
+	}
+	if fallbackSelection == nil || fallbackSelection.Account == nil || fallbackSelection.Account.ID != 1 {
+		t.Fatalf("expected fallback account 1")
 	}
 }
 

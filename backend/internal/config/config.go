@@ -453,6 +453,11 @@ type GatewayConfig struct {
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
 
+	// OpenAI mini 长上下文自动升档配置
+	OpenAIMiniAutoUpgradeEnabled        bool   `mapstructure:"openai_mini_auto_upgrade_enabled"`
+	OpenAIMiniAutoUpgradeMinInputTokens int    `mapstructure:"openai_mini_auto_upgrade_min_input_tokens"`
+	OpenAIMiniAutoUpgradeTargetModel    string `mapstructure:"openai_mini_auto_upgrade_target_model"`
+
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
 
@@ -684,6 +689,12 @@ type GatewaySchedulingConfig struct {
 
 	// 负载计算
 	LoadBatchEnabled bool `mapstructure:"load_batch_enabled"`
+
+	// OpenAI cache-aware 调度配置（Balanced）
+	OpenAICacheAwareEnabled        bool    `mapstructure:"openai_cache_aware_enabled"`
+	OpenAICacheAwareMinSamples     int     `mapstructure:"openai_cache_aware_min_samples"`
+	OpenAICacheAwareWeight         float64 `mapstructure:"openai_cache_aware_weight"`
+	OpenAICacheAwareMinInputTokens int     `mapstructure:"openai_cache_aware_min_input_tokens"`
 
 	// 过期槽位清理周期（0 表示禁用）
 	SlotCleanupInterval time.Duration `mapstructure:"slot_cleanup_interval"`
@@ -1409,6 +1420,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.fallback_max_waiting", 100)
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_enabled", true)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_min_samples", 6)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_weight", 25.0)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_min_input_tokens", 12000)
 	viper.SetDefault("gateway.scheduling.slot_cleanup_interval", 30*time.Second)
 	viper.SetDefault("gateway.scheduling.db_fallback_enabled", true)
 	viper.SetDefault("gateway.scheduling.db_fallback_timeout_seconds", 0)
@@ -1435,6 +1450,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
+	viper.SetDefault("gateway.openai_mini_auto_upgrade_enabled", true)
+	viper.SetDefault("gateway.openai_mini_auto_upgrade_min_input_tokens", 18000)
+	viper.SetDefault("gateway.openai_mini_auto_upgrade_target_model", "gpt-5.3-codex")
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
 	// 用户消息串行队列默认值
 	viper.SetDefault("gateway.user_message_queue.enabled", false)
@@ -2169,6 +2187,15 @@ func (c *Config) Validate() error {
 	if c.Gateway.Scheduling.FallbackMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.fallback_max_waiting must be positive")
 	}
+	if c.Gateway.Scheduling.OpenAICacheAwareMinSamples < 1 {
+		return fmt.Errorf("gateway.scheduling.openai_cache_aware_min_samples must be >= 1")
+	}
+	if c.Gateway.Scheduling.OpenAICacheAwareWeight < 0 {
+		return fmt.Errorf("gateway.scheduling.openai_cache_aware_weight must be non-negative")
+	}
+	if c.Gateway.Scheduling.OpenAICacheAwareMinInputTokens < 0 {
+		return fmt.Errorf("gateway.scheduling.openai_cache_aware_min_input_tokens must be non-negative")
+	}
 	if c.Gateway.Scheduling.SlotCleanupInterval < 0 {
 		return fmt.Errorf("gateway.scheduling.slot_cleanup_interval must be non-negative")
 	}
@@ -2200,6 +2227,12 @@ func (c *Config) Validate() error {
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 &&
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds < c.Gateway.Scheduling.OutboxLagWarnSeconds {
 		return fmt.Errorf("gateway.scheduling.outbox_lag_rebuild_seconds must be >= outbox_lag_warn_seconds")
+	}
+	if c.Gateway.OpenAIMiniAutoUpgradeMinInputTokens < 0 {
+		return fmt.Errorf("gateway.openai_mini_auto_upgrade_min_input_tokens must be non-negative")
+	}
+	if c.Gateway.OpenAIMiniAutoUpgradeEnabled && strings.TrimSpace(c.Gateway.OpenAIMiniAutoUpgradeTargetModel) == "" {
+		return fmt.Errorf("gateway.openai_mini_auto_upgrade_target_model is required when gateway.openai_mini_auto_upgrade_enabled=true")
 	}
 	if c.Ops.MetricsCollectorCache.TTL < 0 {
 		return fmt.Errorf("ops.metrics_collector_cache.ttl must be non-negative")

@@ -10,14 +10,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"math"
 	"math/rand"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -34,9 +38,10 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.104.0"
+	openaiPlatformAPIURL                 = "https://api.openai.com/v1/responses"
+	openaiStickySessionTTL               = time.Hour // 粘性会话TTL
+	openaiPreviousResponseUnsupportedTTL = 6 * time.Hour
+	codexCLIUserAgent                    = "codex_cli_rs/0.104.0"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -50,6 +55,12 @@ const (
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
 )
+
+// openaiSSEDataRe matches SSE data lines with optional whitespace after colon.
+// Some upstream APIs return non-standard "data:" without space (should be "data: ").
+var openaiSSEDataRe = regexp.MustCompile(`^data:\s*`)
+
+var openaiPreviousResponseUnsupportedUntil sync.Map // key: accountID:model, value: unix timestamp
 
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
@@ -205,6 +216,8 @@ type OpenAIForwardResult struct {
 	RequestID string
 	Usage     OpenAIUsage
 	Model     string
+	// PromptCacheKey is captured from request body for cache-health sampling.
+	PromptCacheKey string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
 	ReasoningEffort *string
@@ -1267,16 +1280,42 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 			}
 		}
 	} else {
-		var available []accountWithLoad
+		type accountWithLoadAndScore struct {
+			account       *Account
+			loadInfo      *AccountLoadInfo
+			effectiveLoad float64
+		}
+		var (
+			available      []accountWithLoadAndScore
+			cacheHealthMap map[int64]*OpenAICacheHealthInfo
+		)
+		cacheAwareEnabled := cfg.OpenAICacheAwareEnabled && s.cache != nil && strings.TrimSpace(requestedModel) != ""
+		if cacheAwareEnabled {
+			accountIDs := make([]int64, 0, len(candidates))
+			for _, acc := range candidates {
+				accountIDs = append(accountIDs, acc.ID)
+			}
+			cacheModel := normalizeOpenAICacheHealthModel(requestedModel)
+			healthMap, healthErr := s.cache.GetOpenAICacheHealthBatch(ctx, accountIDs, cacheModel)
+			if healthErr == nil {
+				cacheHealthMap = healthMap
+			}
+		}
 		for _, acc := range candidates {
 			loadInfo := loadMap[acc.ID]
 			if loadInfo == nil {
 				loadInfo = &AccountLoadInfo{AccountID: acc.ID}
 			}
 			if loadInfo.LoadRate < 100 {
-				available = append(available, accountWithLoad{
-					account:  acc,
-					loadInfo: loadInfo,
+				effectiveLoad := float64(loadInfo.LoadRate)
+				if cacheAwareEnabled {
+					cacheScore := calculateOpenAICacheScore(cacheHealthMap[acc.ID], cfg.OpenAICacheAwareMinSamples)
+					effectiveLoad = effectiveLoad - (cacheScore * cfg.OpenAICacheAwareWeight)
+				}
+				available = append(available, accountWithLoadAndScore{
+					account:       acc,
+					loadInfo:      loadInfo,
+					effectiveLoad: effectiveLoad,
 				})
 			}
 		}
@@ -1287,8 +1326,8 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 				if a.account.Priority != b.account.Priority {
 					return a.account.Priority < b.account.Priority
 				}
-				if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
-					return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+				if a.effectiveLoad != b.effectiveLoad {
+					return a.effectiveLoad < b.effectiveLoad
 				}
 				switch {
 				case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
@@ -1301,7 +1340,29 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 					return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
 				}
 			})
-			shuffleWithinSortGroups(available)
+			i := 0
+			for i < len(available) {
+				j := i + 1
+				for j < len(available) {
+					left, right := available[i], available[j]
+					if left.account.Priority != right.account.Priority {
+						break
+					}
+					if left.effectiveLoad != right.effectiveLoad {
+						break
+					}
+					if !sameLastUsedAt(left.account.LastUsedAt, right.account.LastUsedAt) {
+						break
+					}
+					j++
+				}
+				if j-i > 1 {
+					rand.Shuffle(j-i, func(a, b int) {
+						available[i+a], available[i+b] = available[i+b], available[i+a]
+					})
+				}
+				i = j
+			}
 
 			for _, item := range available {
 				result, err := s.tryAcquireAccountSlot(ctx, item.account.ID, item.account.Concurrency)
@@ -1375,13 +1436,224 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 		return s.cfg.Gateway.Scheduling
 	}
 	return config.GatewaySchedulingConfig{
-		StickySessionMaxWaiting:  3,
-		StickySessionWaitTimeout: 45 * time.Second,
-		FallbackWaitTimeout:      30 * time.Second,
-		FallbackMaxWaiting:       100,
-		LoadBatchEnabled:         true,
-		SlotCleanupInterval:      30 * time.Second,
+		StickySessionMaxWaiting:        3,
+		StickySessionWaitTimeout:       45 * time.Second,
+		FallbackWaitTimeout:            30 * time.Second,
+		FallbackMaxWaiting:             100,
+		LoadBatchEnabled:               true,
+		OpenAICacheAwareEnabled:        true,
+		OpenAICacheAwareMinSamples:     6,
+		OpenAICacheAwareWeight:         25,
+		OpenAICacheAwareMinInputTokens: 12000,
+		SlotCleanupInterval:            30 * time.Second,
 	}
+}
+
+func (s *OpenAIGatewayService) miniAutoUpgradeEnabled() bool {
+	if s.cfg == nil {
+		return true
+	}
+	return s.cfg.Gateway.OpenAIMiniAutoUpgradeEnabled
+}
+
+func (s *OpenAIGatewayService) miniAutoUpgradeTargetModel() string {
+	if s.cfg == nil {
+		return "gpt-5.3-codex"
+	}
+	target := strings.TrimSpace(s.cfg.Gateway.OpenAIMiniAutoUpgradeTargetModel)
+	if target == "" {
+		return "gpt-5.3-codex"
+	}
+	return target
+}
+
+func (s *OpenAIGatewayService) miniAutoUpgradeMinInputTokens() int {
+	if s.cfg == nil {
+		return 18000
+	}
+	return s.cfg.Gateway.OpenAIMiniAutoUpgradeMinInputTokens
+}
+
+// EstimateInputTokens estimates tokens from the OpenAI Responses API input payload.
+// It uses a lightweight chars/4 heuristic to avoid heavy tokenizer dependencies.
+func (s *OpenAIGatewayService) EstimateInputTokens(input any) int {
+	return estimateOpenAIInputTokens(input)
+}
+
+// ShouldAutoUpgradeMiniModel determines whether gpt-5.1-codex-mini should auto-upgrade
+// to gpt-5.3-codex based on request input size.
+func (s *OpenAIGatewayService) ShouldAutoUpgradeMiniModel(model string, input any) (string, bool) {
+	if !s.miniAutoUpgradeEnabled() {
+		return "", false
+	}
+	if normalizeCodexModel(model) != "gpt-5.1-codex-mini" {
+		return "", false
+	}
+
+	estimatedTokens := s.EstimateInputTokens(input)
+	if estimatedTokens < s.miniAutoUpgradeMinInputTokens() {
+		return "", false
+	}
+
+	return s.miniAutoUpgradeTargetModel(), true
+}
+
+func estimateOpenAIInputTokens(input any) int {
+	if input == nil {
+		return 0
+	}
+
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return 0
+	}
+
+	charCount := utf8.RuneCount(raw)
+	if charCount <= 0 {
+		return 0
+	}
+
+	estimated := int(math.Ceil(float64(charCount) / 4.0))
+	if estimated < 0 {
+		return 0
+	}
+	return estimated
+}
+
+func normalizeOpenAICacheHealthModel(model string) string {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return ""
+	}
+
+	modelID := trimmed
+	if strings.Contains(modelID, "/") {
+		parts := strings.Split(modelID, "/")
+		modelID = parts[len(parts)-1]
+	}
+
+	if mapped := getNormalizedCodexModel(modelID); mapped != "" {
+		return mapped
+	}
+
+	lower := strings.ToLower(modelID)
+	if strings.Contains(lower, "codex") || strings.Contains(lower, "gpt-5") {
+		if normalized := normalizeCodexModel(modelID); normalized != "" {
+			return normalized
+		}
+	}
+
+	return modelID
+}
+
+func calculateOpenAICacheScore(info *OpenAICacheHealthInfo, minSamples int) float64 {
+	if info == nil || info.InputTokens <= 0 || info.Samples <= 0 {
+		return 0
+	}
+
+	hitRate := float64(info.CacheReadTokens) / float64(info.InputTokens)
+	if hitRate < 0 {
+		hitRate = 0
+	}
+	if hitRate > 1 {
+		hitRate = 1
+	}
+
+	if minSamples <= 0 {
+		minSamples = 1
+	}
+	confidence := float64(info.Samples) / float64(minSamples)
+	if confidence < 0 {
+		confidence = 0
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
+
+	return hitRate * confidence
+}
+
+func previousResponseCapabilityKey(accountID int64, model string) string {
+	normalizedModel := normalizeOpenAICacheHealthModel(model)
+	if normalizedModel == "" {
+		normalizedModel = strings.TrimSpace(model)
+	}
+	return fmt.Sprintf("%d:%s", accountID, normalizedModel)
+}
+
+func (s *OpenAIGatewayService) isPreviousResponseIDSupported(accountID int64, model string) bool {
+	if accountID <= 0 {
+		return true
+	}
+	key := previousResponseCapabilityKey(accountID, model)
+	raw, ok := openaiPreviousResponseUnsupportedUntil.Load(key)
+	if !ok {
+		return true
+	}
+	untilUnix, ok := raw.(int64)
+	if !ok {
+		openaiPreviousResponseUnsupportedUntil.Delete(key)
+		return true
+	}
+	if time.Now().Unix() >= untilUnix {
+		openaiPreviousResponseUnsupportedUntil.Delete(key)
+		return true
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) markPreviousResponseIDUnsupported(accountID int64, model string) {
+	if accountID <= 0 {
+		return
+	}
+	key := previousResponseCapabilityKey(accountID, model)
+	openaiPreviousResponseUnsupportedUntil.Store(key, time.Now().Add(openaiPreviousResponseUnsupportedTTL).Unix())
+}
+
+func (s *OpenAIGatewayService) clearPreviousResponseIDUnsupported(accountID int64, model string) {
+	if accountID <= 0 {
+		return
+	}
+	openaiPreviousResponseUnsupportedUntil.Delete(previousResponseCapabilityKey(accountID, model))
+}
+
+func extractPreviousResponseID(reqBody map[string]any) string {
+	if reqBody == nil {
+		return ""
+	}
+	value, _ := reqBody["previous_response_id"].(string)
+	return strings.TrimSpace(value)
+}
+
+func removePreviousResponseID(reqBody map[string]any) bool {
+	if extractPreviousResponseID(reqBody) == "" {
+		return false
+	}
+	delete(reqBody, "previous_response_id")
+	return true
+}
+
+func isPreviousResponseIDUnsupportedResponse(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	if !strings.Contains(text, "previous_response_id") {
+		return false
+	}
+	return strings.Contains(text, "unsupported parameter") ||
+		strings.Contains(text, "unknown parameter") ||
+		strings.Contains(text, "not supported")
+}
+
+func readAndRestoreResponseBody(resp *http.Response) []byte {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return body
 }
 
 // GetAccessToken gets the access token for an OpenAI account
@@ -1504,6 +1776,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			promptCacheKey = strings.TrimSpace(v)
 		}
 	}
+	originalPreviousResponseID := extractPreviousResponseID(reqBody)
 
 	// Track if body needs re-serialization
 	bodyModified := false
@@ -1597,6 +1870,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	// OpenAI Responses 输入兼容：部分客户端会发送 content.type="text"，
+	// 但上游 Responses API 仅接受 input_text 等枚举。
+	// 这里将 text 规范化为 input_text，确保请求可被上游接受。
+	if normalizeOpenAIResponsesInputContentTypes(reqBody) {
+		bodyModified = true
+	}
+
 	if account.Type == AccountTypeOAuth {
 		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI)
 		if codexResult.Modified {
@@ -1608,6 +1888,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		if codexResult.PromptCacheKey != "" {
 			promptCacheKey = codexResult.PromptCacheKey
+		}
+	}
+
+	currentRequestModel, _ := reqBody["model"].(string)
+
+	// Capability-aware routing for previous_response_id:
+	// if this account+model is known unsupported, degrade to full request immediately.
+	if originalPreviousResponseID != "" && !s.isPreviousResponseIDSupported(account.ID, currentRequestModel) {
+		if removePreviousResponseID(reqBody) {
+			bodyModified = true
+			log.Printf(
+				"[OpenAI] previous_response_id disabled by capability cache: account=%d model=%s",
+				account.ID,
+				currentRequestModel,
+			)
 		}
 	}
 
@@ -1654,9 +1949,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 		}
 
-		// Remove unsupported fields (not supported by upstream OpenAI API)
-		unsupportedFields := []string{"prompt_cache_retention", "safety_identifier"}
-		for _, unsupportedField := range unsupportedFields {
+		// Remove unsupported fields.
+		// Keep previous_response_id so incremental append can reach upstream Responses API.
+		for _, unsupportedField := range []string{"prompt_cache_retention", "safety_identifier"} {
 			if _, has := reqBody[unsupportedField]; has {
 				delete(reqBody, unsupportedField)
 				bodyModified = true
@@ -1883,21 +2178,31 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	// Build upstream request
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
-	if err != nil {
-		return nil, err
-	}
-
 	// Get proxy URL
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
 
+	sendUpstream := func(requestBody []byte) (*http.Response, error) {
+		upstreamReq, buildErr := s.buildUpstreamRequest(ctx, c, account, requestBody, token, reqStream, promptCacheKey, isCodexCLI)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		if c != nil {
+			c.Set(OpsUpstreamRequestBodyKey, string(requestBody))
+		}
+		upstreamStart := time.Now()
+		resp, doErr := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		if doErr != nil {
+			return nil, doErr
+		}
+		return resp, nil
+	}
+
 	// Send request
-	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+	resp, err := sendUpstream(body)
 	if err != nil {
 		// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -1921,6 +2226,52 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	defer func() { _ = resp.Body.Close() }()
 
 	// Handle error response
+	if resp.StatusCode >= 400 {
+		currentPreviousResponseID := extractPreviousResponseID(reqBody)
+		if currentPreviousResponseID != "" {
+			respBody := readAndRestoreResponseBody(resp)
+			if isPreviousResponseIDUnsupportedResponse(resp.StatusCode, respBody) {
+				currentModel, _ := reqBody["model"].(string)
+				s.markPreviousResponseIDUnsupported(account.ID, currentModel)
+				log.Printf(
+					"[OpenAI] previous_response_id unsupported by upstream, downgrade request: account=%d model=%s",
+					account.ID,
+					currentModel,
+				)
+				if removePreviousResponseID(reqBody) {
+					body, err = json.Marshal(reqBody)
+					if err != nil {
+						return nil, fmt.Errorf("serialize request body: %w", err)
+					}
+
+					_ = resp.Body.Close()
+
+					resp, err = sendUpstream(body)
+					if err != nil {
+						safeErr := sanitizeUpstreamErrorMessage(err.Error())
+						setOpsUpstreamError(c, 0, safeErr, "")
+						appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+							Platform:           account.Platform,
+							AccountID:          account.ID,
+							AccountName:        account.Name,
+							UpstreamStatusCode: 0,
+							Kind:               "request_error",
+							Message:            safeErr,
+						})
+						c.JSON(http.StatusBadGateway, gin.H{
+							"error": gin.H{
+								"type":    "upstream_error",
+								"message": "Upstream request failed",
+							},
+						})
+						return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+					}
+				}
+			}
+		}
+	}
+
+	// Handle error response (post-downgrade path)
 	if resp.StatusCode >= 400 {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -1952,6 +2303,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, body)
+	}
+
+	if originalPreviousResponseID != "" && extractPreviousResponseID(reqBody) != "" {
+		currentModel, _ := reqBody["model"].(string)
+		s.clearPreviousResponseIDUnsupported(account.ID, currentModel)
 	}
 
 	// Handle normal response
@@ -1988,6 +2344,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		RequestID:       resp.Header.Get("x-request-id"),
 		Usage:           *usage,
 		Model:           originalModel,
+		PromptCacheKey:  promptCacheKey,
 		ReasoningEffort: reasoningEffort,
 		Stream:          reqStream,
 		OpenAIWSMode:    false,
@@ -2560,6 +2917,52 @@ func writeOpenAIPassthroughResponseHeaders(dst http.Header, src http.Header, fil
 	}
 }
 
+// normalizeOpenAIResponsesInputContentTypes normalizes OpenAI Responses API input content item types.
+//
+// 背景：部分第三方/旧客户端会发送：
+//
+//	{"type":"text","text":"..."}
+//
+// 但 OpenAI Responses API 期望：
+//
+//	{"type":"input_text","text":"..."}
+//
+// 该函数仅在发现需要兼容时修改 reqBody，并返回是否发生了修改。
+func normalizeOpenAIResponsesInputContentTypes(reqBody map[string]any) bool {
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+
+	modified := false
+	for _, itemAny := range input {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		contentAny, ok := item["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, cAny := range contentAny {
+			contentItem, ok := cAny.(map[string]any)
+			if !ok {
+				continue
+			}
+			typ, ok := contentItem["type"].(string)
+			if !ok {
+				continue
+			}
+			if typ == "text" {
+				contentItem["type"] = "input_text"
+				modified = true
+			}
+		}
+	}
+
+	return modified
+}
+
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
 	// Determine target URL based on account type
 	var targetURL string
@@ -2676,6 +3079,30 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			account.Type,
 			truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
+	}
+
+	if isPreviousResponseIDUnsupportedResponse(resp.StatusCode, body) {
+		clientMessage := "previous_response_id is not supported by this upstream route; retry without previous_response_id"
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               "http_error",
+			Message:            upstreamMsg,
+			Detail:             upstreamDetail,
+		})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": clientMessage,
+			},
+		})
+		return nil, &PreviousResponseIDUnsupportedError{
+			StatusCode: resp.StatusCode,
+			Message:    upstreamMsg,
+		}
 	}
 
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
@@ -3469,6 +3896,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	inserted, err := s.usageLogRepo.Create(ctx, usageLog)
+	if inserted {
+		s.recordOpenAICacheHealthSample(ctx, account, result)
+	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		logger.LegacyPrintf("service.openai_gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
@@ -3509,6 +3939,40 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	s.deferredService.ScheduleLastUsedUpdate(account.ID)
 
 	return nil
+}
+
+func (s *OpenAIGatewayService) recordOpenAICacheHealthSample(ctx context.Context, account *Account, result *OpenAIForwardResult) {
+	if s.cache == nil || account == nil || result == nil {
+		return
+	}
+
+	cfg := s.schedulingConfig()
+	if !cfg.OpenAICacheAwareEnabled {
+		return
+	}
+
+	if strings.TrimSpace(result.PromptCacheKey) == "" {
+		return
+	}
+
+	if result.Usage.InputTokens < cfg.OpenAICacheAwareMinInputTokens {
+		return
+	}
+
+	model := normalizeOpenAICacheHealthModel(result.Model)
+	if model == "" {
+		return
+	}
+
+	if err := s.cache.RecordOpenAICacheSample(
+		ctx,
+		account.ID,
+		model,
+		int64(result.Usage.InputTokens),
+		int64(result.Usage.CacheReadInputTokens),
+	); err != nil {
+		log.Printf("[OpenAI] record cache health sample failed: account=%d model=%s err=%v", account.ID, model, err)
+	}
 }
 
 // ParseCodexRateLimitHeaders extracts Codex usage limits from response headers.

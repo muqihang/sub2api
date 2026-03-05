@@ -65,3 +65,13 @@ func TestFilterHeadersEnabledUsesAllowlist(t *testing.T) {
 		t.Fatalf("expected X-Blocked removed, got %q", filtered.Get("X-Blocked"))
 	}
 }
+
+func TestFilterHeadersAllowsCodexTurnStateByDefault(t *testing.T) {
+	src := http.Header{}
+	src.Add("X-Codex-Turn-State", "turn-state-token")
+
+	filtered := FilterHeaders(src, CompileHeaderFilter(config.ResponseHeaderConfig{Enabled: false}))
+	if filtered.Get("X-Codex-Turn-State") != "turn-state-token" {
+		t.Fatalf("expected X-Codex-Turn-State passthrough, got %q", filtered.Get("X-Codex-Turn-State"))
+	}
+}

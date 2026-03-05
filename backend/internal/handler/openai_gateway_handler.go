@@ -191,6 +191,44 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 
+	originalModel := reqModel
+	originalBody := append([]byte(nil), body...)
+	currentModel := reqModel
+	currentBody := body
+	autoUpgradedMini := false
+
+	inputValue := gjson.GetBytes(body, "input").Value()
+	if targetModel, shouldUpgrade := h.gatewayService.ShouldAutoUpgradeMiniModel(reqModel, inputValue); shouldUpgrade {
+		var reqBodyForUpgrade map[string]any
+		if cachedReqBody, ok := c.Get(service.OpenAIParsedRequestBodyKey); ok {
+			if parsedReqBody, ok := cachedReqBody.(map[string]any); ok {
+				reqBodyForUpgrade = parsedReqBody
+			}
+		}
+		if reqBodyForUpgrade == nil {
+			if err := json.Unmarshal(body, &reqBodyForUpgrade); err != nil {
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+				return
+			}
+		}
+
+		reqBodyForUpgrade["model"] = targetModel
+		updatedBody, marshalErr := json.Marshal(reqBodyForUpgrade)
+		if marshalErr != nil {
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to process request")
+			return
+		}
+		currentModel = targetModel
+		currentBody = updatedBody
+		autoUpgradedMini = true
+		c.Set(service.OpenAIParsedRequestBodyKey, reqBodyForUpgrade)
+		setOpsRequestContext(c, currentModel, reqStream, currentBody)
+		reqLog.Info("openai.auto_upgrade_model_applied",
+			zap.String("from_model", originalModel),
+			zap.String("to_model", currentModel),
+		)
+	}
+
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
@@ -204,7 +242,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
-			reqModel,
+			currentModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 		)
@@ -213,6 +251,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			if autoUpgradedMini && len(failedAccountIDs) == 0 {
+				reqLog.Info("openai.auto_upgrade_fallback_to_original_model",
+					zap.String("upgraded_model", currentModel),
+					zap.String("original_model", originalModel),
+				)
+				currentModel = originalModel
+				currentBody = originalBody
+				autoUpgradedMini = false
+				setOpsRequestContext(c, currentModel, reqStream, currentBody)
+				continue
+			}
 			if len(failedAccountIDs) == 0 {
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
 				return
@@ -252,7 +301,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, body)
+		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, currentBody)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()

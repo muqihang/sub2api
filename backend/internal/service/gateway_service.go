@@ -343,6 +343,21 @@ var allowedHeaders = map[string]bool{
 // GatewayCache 定义网关服务的缓存操作接口。
 // 提供粘性会话（Sticky Session）的存储、查询、刷新和删除功能。
 //
+// ModelLoadInfo 模型负载信息（用于 Antigravity 调度）
+// Model load info for Antigravity scheduling
+type ModelLoadInfo struct {
+	CallCount  int64     // 当前分钟调用次数 / Call count in current minute
+	LastUsedAt time.Time // 最后调度时间（零值表示未调度过）/ Last scheduling time (zero means never scheduled)
+}
+
+// OpenAICacheHealthInfo OpenAI 缓存命中健康度统计（按 account+model 聚合）。
+type OpenAICacheHealthInfo struct {
+	InputTokens     int64
+	CacheReadTokens int64
+	Samples         int64
+	UpdatedAt       time.Time
+}
+
 // GatewayCache defines cache operations for gateway service.
 // Provides sticky session storage, retrieval, refresh and deletion capabilities.
 type GatewayCache interface {
@@ -358,6 +373,30 @@ type GatewayCache interface {
 	// DeleteSessionAccountID 删除粘性会话绑定，用于账号不可用时主动清理
 	// Delete sticky session binding, used to proactively clean up when account becomes unavailable
 	DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error
+
+	// IncrModelCallCount 增加模型调用次数并更新最后调度时间（Antigravity 专用）
+	// Increment model call count and update last scheduling time (Antigravity only)
+	// 返回更新后的调用次数
+	IncrModelCallCount(ctx context.Context, accountID int64, model string) (int64, error)
+
+	// GetModelLoadBatch 批量获取账号的模型负载信息（Antigravity 专用）
+	// Batch get model load info for accounts (Antigravity only)
+	GetModelLoadBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*ModelLoadInfo, error)
+
+	// RecordOpenAICacheSample 记录 OpenAI 缓存样本（按 account+model 累计）
+	RecordOpenAICacheSample(ctx context.Context, accountID int64, model string, inputTokens int64, cacheReadTokens int64) error
+
+	// GetOpenAICacheHealthBatch 批量查询 OpenAI 缓存健康度（按 account+model）
+	GetOpenAICacheHealthBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*OpenAICacheHealthInfo, error)
+
+	// FindGeminiSession 查找 Gemini 会话（MGET 倒序匹配）
+	// Find Gemini session using MGET reverse order matching
+	// 返回最长匹配的会话信息（uuid, accountID）
+	FindGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain string) (uuid string, accountID int64, found bool)
+
+	// SaveGeminiSession 保存 Gemini 会话
+	// Save Gemini session binding
+	SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error
 }
 
 // derefGroupID safely dereferences *int64 to int64, returning 0 if nil
@@ -497,6 +536,23 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 	case http.StatusBadGateway:
 		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
 	}
+}
+
+// PreviousResponseIDUnsupportedError indicates the upstream route does not support previous_response_id.
+type PreviousResponseIDUnsupportedError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *PreviousResponseIDUnsupportedError) Error() string {
+	if e == nil {
+		return "previous_response_id unsupported"
+	}
+	msg := strings.TrimSpace(e.Message)
+	if msg == "" {
+		msg = "previous_response_id unsupported by upstream"
+	}
+	return fmt.Sprintf("upstream error: %d (%s)", e.StatusCode, msg)
 }
 
 // GatewayService handles API gateway operations
