@@ -27,7 +27,7 @@ func NewGroupHandler(adminService service.AdminService) *GroupHandler {
 type CreateGroupRequest struct {
 	Name             string   `json:"name" binding:"required"`
 	Description      string   `json:"description"`
-	Platform         string   `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity"`
+	Platform         string   `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity sora"`
 	RateMultiplier   float64  `json:"rate_multiplier"`
 	IsExclusive      bool     `json:"is_exclusive"`
 	SubscriptionType string   `json:"subscription_type" binding:"omitempty,oneof=standard subscription"`
@@ -38,6 +38,10 @@ type CreateGroupRequest struct {
 	ImagePrice1K                    *float64 `json:"image_price_1k"`
 	ImagePrice2K                    *float64 `json:"image_price_2k"`
 	ImagePrice4K                    *float64 `json:"image_price_4k"`
+	SoraImagePrice360               *float64 `json:"sora_image_price_360"`
+	SoraImagePrice540               *float64 `json:"sora_image_price_540"`
+	SoraVideoPricePerRequest        *float64 `json:"sora_video_price_per_request"`
+	SoraVideoPricePerRequestHD      *float64 `json:"sora_video_price_per_request_hd"`
 	ClaudeCodeOnly                  bool     `json:"claude_code_only"`
 	FallbackGroupID                 *int64   `json:"fallback_group_id"`
 	FallbackGroupIDOnInvalidRequest *int64   `json:"fallback_group_id_on_invalid_request"`
@@ -47,6 +51,8 @@ type CreateGroupRequest struct {
 	MCPXMLInject        *bool              `json:"mcp_xml_inject"`
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string `json:"supported_model_scopes"`
+	// Sora 存储配额
+	SoraStorageQuotaBytes int64 `json:"sora_storage_quota_bytes"`
 	// 从指定分组复制账号（创建后自动绑定）
 	CopyAccountsFromGroupIDs []int64 `json:"copy_accounts_from_group_ids"`
 }
@@ -55,7 +61,7 @@ type CreateGroupRequest struct {
 type UpdateGroupRequest struct {
 	Name             string   `json:"name"`
 	Description      string   `json:"description"`
-	Platform         string   `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity"`
+	Platform         string   `json:"platform" binding:"omitempty,oneof=anthropic openai gemini antigravity sora"`
 	RateMultiplier   *float64 `json:"rate_multiplier"`
 	IsExclusive      *bool    `json:"is_exclusive"`
 	Status           string   `json:"status" binding:"omitempty,oneof=active inactive"`
@@ -67,6 +73,10 @@ type UpdateGroupRequest struct {
 	ImagePrice1K                    *float64 `json:"image_price_1k"`
 	ImagePrice2K                    *float64 `json:"image_price_2k"`
 	ImagePrice4K                    *float64 `json:"image_price_4k"`
+	SoraImagePrice360               *float64 `json:"sora_image_price_360"`
+	SoraImagePrice540               *float64 `json:"sora_image_price_540"`
+	SoraVideoPricePerRequest        *float64 `json:"sora_video_price_per_request"`
+	SoraVideoPricePerRequestHD      *float64 `json:"sora_video_price_per_request_hd"`
 	ClaudeCodeOnly                  *bool    `json:"claude_code_only"`
 	FallbackGroupID                 *int64   `json:"fallback_group_id"`
 	FallbackGroupIDOnInvalidRequest *int64   `json:"fallback_group_id_on_invalid_request"`
@@ -76,6 +86,8 @@ type UpdateGroupRequest struct {
 	MCPXMLInject        *bool              `json:"mcp_xml_inject"`
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes *[]string `json:"supported_model_scopes"`
+	// Sora 存储配额
+	SoraStorageQuotaBytes *int64 `json:"sora_storage_quota_bytes"`
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
 	CopyAccountsFromGroupIDs []int64 `json:"copy_accounts_from_group_ids"`
 }
@@ -179,6 +191,10 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		ImagePrice1K:                    req.ImagePrice1K,
 		ImagePrice2K:                    req.ImagePrice2K,
 		ImagePrice4K:                    req.ImagePrice4K,
+		SoraImagePrice360:               req.SoraImagePrice360,
+		SoraImagePrice540:               req.SoraImagePrice540,
+		SoraVideoPricePerRequest:        req.SoraVideoPricePerRequest,
+		SoraVideoPricePerRequestHD:      req.SoraVideoPricePerRequestHD,
 		ClaudeCodeOnly:                  req.ClaudeCodeOnly,
 		FallbackGroupID:                 req.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: req.FallbackGroupIDOnInvalidRequest,
@@ -186,6 +202,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		ModelRoutingEnabled:             req.ModelRoutingEnabled,
 		MCPXMLInject:                    req.MCPXMLInject,
 		SupportedModelScopes:            req.SupportedModelScopes,
+		SoraStorageQuotaBytes:           req.SoraStorageQuotaBytes,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {
@@ -225,6 +242,10 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		ImagePrice1K:                    req.ImagePrice1K,
 		ImagePrice2K:                    req.ImagePrice2K,
 		ImagePrice4K:                    req.ImagePrice4K,
+		SoraImagePrice360:               req.SoraImagePrice360,
+		SoraImagePrice540:               req.SoraImagePrice540,
+		SoraVideoPricePerRequest:        req.SoraVideoPricePerRequest,
+		SoraVideoPricePerRequestHD:      req.SoraVideoPricePerRequestHD,
 		ClaudeCodeOnly:                  req.ClaudeCodeOnly,
 		FallbackGroupID:                 req.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: req.FallbackGroupIDOnInvalidRequest,
@@ -232,6 +253,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		ModelRoutingEnabled:             req.ModelRoutingEnabled,
 		MCPXMLInject:                    req.MCPXMLInject,
 		SupportedModelScopes:            req.SupportedModelScopes,
+		SoraStorageQuotaBytes:           req.SoraStorageQuotaBytes,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {
@@ -301,4 +323,37 @@ func (h *GroupHandler) GetGroupAPIKeys(c *gin.Context) {
 		outKeys = append(outKeys, *dto.APIKeyFromService(&keys[i]))
 	}
 	response.Paginated(c, outKeys, total, page, pageSize)
+}
+
+// UpdateSortOrderRequest represents the request to update group sort orders
+type UpdateSortOrderRequest struct {
+	Updates []struct {
+		ID        int64 `json:"id" binding:"required"`
+		SortOrder int   `json:"sort_order"`
+	} `json:"updates" binding:"required,min=1"`
+}
+
+// UpdateSortOrder handles updating group sort orders
+// PUT /api/v1/admin/groups/sort-order
+func (h *GroupHandler) UpdateSortOrder(c *gin.Context) {
+	var req UpdateSortOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	updates := make([]service.GroupSortOrderUpdate, 0, len(req.Updates))
+	for _, u := range req.Updates {
+		updates = append(updates, service.GroupSortOrderUpdate{
+			ID:        u.ID,
+			SortOrder: u.SortOrder,
+		})
+	}
+
+	if err := h.adminService.UpdateGroupSortOrders(c.Request.Context(), updates); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{"message": "Sort order updated successfully"})
 }

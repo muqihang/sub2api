@@ -76,34 +76,24 @@
       </div>
     </div>
 
-    <!-- Scope Rate Limit Indicators (Antigravity) -->
-    <template v-if="activeScopeRateLimits.length > 0">
-      <div v-for="item in activeScopeRateLimits" :key="item.scope" class="group relative">
-        <span
-          class="inline-flex items-center gap-1 rounded bg-orange-100 px-1.5 py-0.5 text-xs font-medium text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-        >
-          <Icon name="exclamationTriangle" size="xs" :stroke-width="2" />
-          {{ formatScopeName(item.scope) }}
-        </span>
-        <!-- Tooltip -->
-        <div
-          class="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
-        >
-          {{ t('admin.accounts.status.scopeRateLimitedUntil', { scope: formatScopeName(item.scope), time: formatTime(item.reset_at) }) }}
-          <div
-            class="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-gray-900 dark:border-t-gray-700"          ></div>
-        </div>
-      </div>
-    </template>
-
     <!-- Model Rate Limit Indicators (Antigravity OAuth Smart Retry) -->
-    <template v-if="activeModelRateLimits.length > 0">
-      <div v-for="item in activeModelRateLimits" :key="item.model" class="group relative">
+    <div
+      v-if="activeModelRateLimits.length > 0"
+      :class="[
+        activeModelRateLimits.length <= 4
+          ? 'flex flex-col gap-1'
+          : activeModelRateLimits.length <= 8
+            ? 'columns-2 gap-x-2'
+            : 'columns-3 gap-x-2'
+      ]"
+    >
+      <div v-for="item in activeModelRateLimits" :key="item.model" class="group relative mb-1 break-inside-avoid">
         <span
           class="inline-flex items-center gap-1 rounded bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
         >
           <Icon name="exclamationTriangle" size="xs" :stroke-width="2" />
           {{ formatScopeName(item.model) }}
+          <span class="text-[10px] opacity-70">{{ formatModelResetTime(item.reset_at) }}</span>
         </span>
         <!-- Tooltip -->
         <div
@@ -115,7 +105,7 @@
           ></div>
         </div>
       </div>
-    </template>
+    </div>
 
     <!-- Overload Indicator (529) -->
     <div v-if="isOverloaded" class="group relative">
@@ -160,15 +150,6 @@ const isRateLimited = computed(() => {
   return new Date(props.account.rate_limit_reset_at) > new Date()
 })
 
-// Computed: active scope rate limits (Antigravity)
-const activeScopeRateLimits = computed(() => {
-  const scopeLimits = props.account.scope_rate_limits
-  if (!scopeLimits) return []
-  const now = new Date()
-  return Object.entries(scopeLimits)
-    .filter(([, info]) => new Date(info.reset_at) > now)
-    .map(([scope, info]) => ({ scope, reset_at: info.reset_at }))
-})
 
 // Computed: active model rate limits (Antigravity OAuth Smart Retry)
 const activeModelRateLimits = computed(() => {
@@ -183,17 +164,52 @@ const activeModelRateLimits = computed(() => {
 })
 
 const formatScopeName = (scope: string): string => {
-  const names: Record<string, string> = {
+  const aliases: Record<string, string> = {
+    // Claude 系列
+    'claude-opus-4-6': 'COpus46',
+    'claude-opus-4-6-thinking': 'COpus46T',
+    'claude-sonnet-4-6': 'CSon46',
+    'claude-sonnet-4-5': 'CSon45',
+    'claude-sonnet-4-5-thinking': 'CSon45T',
+    // Gemini 2.5 系列
+    'gemini-2.5-flash': 'G25F',
+    'gemini-2.5-flash-lite': 'G25FL',
+    'gemini-2.5-flash-thinking': 'G25FT',
+    'gemini-2.5-pro': 'G25P',
+    // Gemini 3 系列
+    'gemini-3-flash': 'G3F',
+    'gemini-3.1-pro-high': 'G3PH',
+    'gemini-3.1-pro-low': 'G3PL',
+    'gemini-3-pro-image': 'G3PI',
+    'gemini-3.1-flash-image': 'GImage',
+    // 其他
+    'gpt-oss-120b-medium': 'GPT120',
+    'tab_flash_lite_preview': 'TabFL',
+    // 旧版 scope 别名（兼容）
     claude: 'Claude',
-    claude_sonnet: 'Claude Sonnet',
-    claude_opus: 'Claude Opus',
-    claude_haiku: 'Claude Haiku',
+    claude_sonnet: 'CSon',
+    claude_opus: 'COpus',
+    claude_haiku: 'CHaiku',
     gemini_text: 'Gemini',
-    gemini_image: 'Image',
-    gemini_flash: 'Gemini Flash',
-    gemini_pro: 'Gemini Pro'
+    gemini_image: 'GImg',
+    gemini_flash: 'GFlash',
+    gemini_pro: 'GPro',
   }
-  return names[scope] || scope
+  return aliases[scope] || scope
+}
+
+const formatModelResetTime = (resetAt: string): string => {
+  const date = new Date(resetAt)
+  const now = new Date()
+  const diffMs = date.getTime() - now.getTime()
+  if (diffMs <= 0) return ''
+  const totalSecs = Math.floor(diffMs / 1000)
+  const h = Math.floor(totalSecs / 3600)
+  const m = Math.floor((totalSecs % 3600) / 60)
+  const s = totalSecs % 60
+  if (h > 0) return `${h}h${m}m`
+  if (m > 0) return `${m}m${s}s`
+  return `${s}s`
 }
 
 // Computed: is overloaded (529)

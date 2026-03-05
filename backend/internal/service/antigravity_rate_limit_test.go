@@ -15,6 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// 编译期接口断言
+var _ HTTPUpstream = (*stubAntigravityUpstream)(nil)
+var _ HTTPUpstream = (*recordingOKUpstream)(nil)
+var _ AccountRepository = (*stubAntigravityAccountRepo)(nil)
+var _ SchedulerCache = (*stubSchedulerCache)(nil)
+
 type stubAntigravityUpstream struct {
 	firstBase  string
 	secondBase string
@@ -59,12 +65,6 @@ func (s *stubAntigravityUpstream) DoWithTLS(req *http.Request, proxyURL string, 
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
-type scopeLimitCall struct {
-	accountID int64
-	scope     AntigravityQuotaScope
-	resetAt   time.Time
-}
-
 type rateLimitCall struct {
 	accountID int64
 	resetAt   time.Time
@@ -78,14 +78,8 @@ type modelRateLimitCall struct {
 
 type stubAntigravityAccountRepo struct {
 	AccountRepository
-	scopeCalls          []scopeLimitCall
 	rateCalls           []rateLimitCall
 	modelRateLimitCalls []modelRateLimitCall
-}
-
-func (s *stubAntigravityAccountRepo) SetAntigravityQuotaScopeLimit(ctx context.Context, id int64, scope AntigravityQuotaScope, resetAt time.Time) error {
-	s.scopeCalls = append(s.scopeCalls, scopeLimitCall{accountID: id, scope: scope, resetAt: resetAt})
-	return nil
 }
 
 func (s *stubAntigravityAccountRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
@@ -98,7 +92,9 @@ func (s *stubAntigravityAccountRepo) SetModelRateLimit(ctx context.Context, id i
 	return nil
 }
 
-func TestAntigravityRetryLoop_URLFallback_UsesLatestSuccess(t *testing.T) {
+func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) {
+	t.Setenv(antigravityForwardBaseURLEnv, "")
+
 	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
 	oldAvailability := antigravity.DefaultURLAvailability
 	defer func() {
@@ -131,10 +127,9 @@ func TestAntigravityRetryLoop_URLFallback_UsesLatestSuccess(t *testing.T) {
 		accessToken:    "token",
 		action:         "generateContent",
 		body:           []byte(`{"input":"test"}`),
-		quotaScope:     AntigravityQuotaScopeClaude,
 		httpUpstream:   upstream,
 		requestedModel: "claude-sonnet-4-5",
-		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, quotaScope AntigravityQuotaScope, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
+		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
 			handleErrorCalled = true
 			return nil
 		},
@@ -144,32 +139,16 @@ func TestAntigravityRetryLoop_URLFallback_UsesLatestSuccess(t *testing.T) {
 	require.NotNil(t, result)
 	require.NotNil(t, result.resp)
 	defer func() { _ = result.resp.Body.Close() }()
-	require.Equal(t, http.StatusOK, result.resp.StatusCode)
-	require.False(t, handleErrorCalled)
-	require.Len(t, upstream.calls, 2)
-	require.True(t, strings.HasPrefix(upstream.calls[0], base1))
-	require.True(t, strings.HasPrefix(upstream.calls[1], base2))
+	require.Equal(t, http.StatusTooManyRequests, result.resp.StatusCode)
+	require.True(t, handleErrorCalled)
+	require.Len(t, upstream.calls, antigravityMaxRetries)
+	for _, callURL := range upstream.calls {
+		require.True(t, strings.HasPrefix(callURL, base1))
+	}
 
 	available := antigravity.DefaultURLAvailability.GetAvailableURLs()
 	require.NotEmpty(t, available)
-	require.Equal(t, base2, available[0])
-}
-
-func TestAntigravityHandleUpstreamError_UsesScopeLimit(t *testing.T) {
-	// 分区限流始终开启，不再支持通过环境变量关闭
-	repo := &stubAntigravityAccountRepo{}
-	svc := &AntigravityGatewayService{accountRepo: repo}
-	account := &Account{ID: 9, Name: "acc-9", Platform: PlatformAntigravity}
-
-	body := buildGeminiRateLimitBody("3s")
-	svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusTooManyRequests, http.Header{}, body, AntigravityQuotaScopeClaude, 0, "", false)
-
-	require.Len(t, repo.scopeCalls, 1)
-	require.Empty(t, repo.rateCalls)
-	call := repo.scopeCalls[0]
-	require.Equal(t, account.ID, call.accountID)
-	require.Equal(t, AntigravityQuotaScopeClaude, call.scope)
-	require.WithinDuration(t, time.Now().Add(3*time.Second), call.resetAt, 2*time.Second)
+	require.Equal(t, base1, available[0])
 }
 
 // TestHandleUpstreamError_429_ModelRateLimit 测试 429 模型限流场景
@@ -189,7 +168,7 @@ func TestHandleUpstreamError_429_ModelRateLimit(t *testing.T) {
 		}
 	}`)
 
-	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusTooManyRequests, http.Header{}, body, AntigravityQuotaScopeClaude, 0, "", false)
+	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusTooManyRequests, http.Header{}, body, "claude-sonnet-4-5", 0, "", false)
 
 	// 应该触发模型限流
 	require.NotNil(t, result)
@@ -200,31 +179,48 @@ func TestHandleUpstreamError_429_ModelRateLimit(t *testing.T) {
 	require.Equal(t, "claude-sonnet-4-5", repo.modelRateLimitCalls[0].modelKey)
 }
 
-// TestHandleUpstreamError_429_NonModelRateLimit 测试 429 非模型限流场景（走 scope 限流）
+// TestHandleUpstreamError_429_NonModelRateLimit 测试 429 非模型限流场景（走模型级限流兜底）
 func TestHandleUpstreamError_429_NonModelRateLimit(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
 	svc := &AntigravityGatewayService{accountRepo: repo}
 	account := &Account{ID: 2, Name: "acc-2", Platform: PlatformAntigravity}
 
-	// 429 + 普通限流响应（无 RATE_LIMIT_EXCEEDED reason）→ scope 限流
+	// 429 + 普通限流响应（无 RATE_LIMIT_EXCEEDED reason）→ 走模型级限流兜底
 	body := buildGeminiRateLimitBody("5s")
 
-	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusTooManyRequests, http.Header{}, body, AntigravityQuotaScopeClaude, 0, "", false)
+	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusTooManyRequests, http.Header{}, body, "claude-sonnet-4-5", 0, "", false)
 
-	// 不应该触发模型限流，应该走 scope 限流
+	// handleModelRateLimit 不会处理（因为没有 RATE_LIMIT_EXCEEDED），
+	// 但 429 兜底逻辑会使用 requestedModel 设置模型级限流
 	require.Nil(t, result)
-	require.Empty(t, repo.modelRateLimitCalls)
-	require.Len(t, repo.scopeCalls, 1)
-	require.Equal(t, AntigravityQuotaScopeClaude, repo.scopeCalls[0].scope)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, "claude-sonnet-4-5", repo.modelRateLimitCalls[0].modelKey)
 }
 
-// TestHandleUpstreamError_503_ModelRateLimit 测试 503 模型限流场景
-func TestHandleUpstreamError_503_ModelRateLimit(t *testing.T) {
+// TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey 测试 429 非模型限流场景
+// 验证：requestedModel 会被映射到 Antigravity 最终模型（例如 claude-opus-4-6 -> claude-opus-4-6-thinking）
+func TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey(t *testing.T) {
+	repo := &stubAntigravityAccountRepo{}
+	svc := &AntigravityGatewayService{accountRepo: repo}
+	account := &Account{ID: 20, Name: "acc-20", Platform: PlatformAntigravity}
+
+	body := buildGeminiRateLimitBody("5s")
+
+	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusTooManyRequests, http.Header{}, body, "claude-opus-4-6", 0, "", false)
+
+	require.Nil(t, result)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, "claude-opus-4-6-thinking", repo.modelRateLimitCalls[0].modelKey)
+}
+
+// TestHandleUpstreamError_503_ModelCapacityExhausted 测试 503 模型容量不足场景
+// MODEL_CAPACITY_EXHAUSTED 时应等待重试，不切换账号
+func TestHandleUpstreamError_503_ModelCapacityExhausted(t *testing.T) {
 	repo := &stubAntigravityAccountRepo{}
 	svc := &AntigravityGatewayService{accountRepo: repo}
 	account := &Account{ID: 3, Name: "acc-3", Platform: PlatformAntigravity}
 
-	// 503 + MODEL_CAPACITY_EXHAUSTED → 模型限流
+	// 503 + MODEL_CAPACITY_EXHAUSTED → 等待重试，不切换账号
 	body := []byte(`{
 		"error": {
 			"status": "UNAVAILABLE",
@@ -235,15 +231,15 @@ func TestHandleUpstreamError_503_ModelRateLimit(t *testing.T) {
 		}
 	}`)
 
-	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusServiceUnavailable, http.Header{}, body, AntigravityQuotaScopeGeminiText, 0, "", false)
+	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusServiceUnavailable, http.Header{}, body, "gemini-3-pro-high", 0, "", false)
 
-	// 应该触发模型限流
+	// MODEL_CAPACITY_EXHAUSTED 应该标记为已处理，不切换账号，不设置模型限流
+	// 实际重试由 handleSmartRetry 处理
 	require.NotNil(t, result)
 	require.True(t, result.Handled)
-	require.NotNil(t, result.SwitchError)
-	require.Equal(t, "gemini-3-pro-high", result.SwitchError.RateLimitedModel)
-	require.Len(t, repo.modelRateLimitCalls, 1)
-	require.Equal(t, "gemini-3-pro-high", repo.modelRateLimitCalls[0].modelKey)
+	require.False(t, result.ShouldRetry, "MODEL_CAPACITY_EXHAUSTED should not trigger retry from handleModelRateLimit path")
+	require.Nil(t, result.SwitchError, "MODEL_CAPACITY_EXHAUSTED should not trigger account switch")
+	require.Empty(t, repo.modelRateLimitCalls, "MODEL_CAPACITY_EXHAUSTED should not set model rate limit")
 }
 
 // TestHandleUpstreamError_503_NonModelRateLimit 测试 503 非模型限流场景（不处理）
@@ -263,12 +259,11 @@ func TestHandleUpstreamError_503_NonModelRateLimit(t *testing.T) {
 		}
 	}`)
 
-	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusServiceUnavailable, http.Header{}, body, AntigravityQuotaScopeGeminiText, 0, "", false)
+	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusServiceUnavailable, http.Header{}, body, "gemini-3-pro-high", 0, "", false)
 
 	// 503 非模型限流不应该做任何处理
 	require.Nil(t, result)
 	require.Empty(t, repo.modelRateLimitCalls, "503 non-model rate limit should not trigger model rate limit")
-	require.Empty(t, repo.scopeCalls, "503 non-model rate limit should not trigger scope rate limit")
 	require.Empty(t, repo.rateCalls, "503 non-model rate limit should not trigger account rate limit")
 }
 
@@ -281,12 +276,11 @@ func TestHandleUpstreamError_503_EmptyBody(t *testing.T) {
 	// 503 + 空响应体 → 不做任何处理
 	body := []byte(`{}`)
 
-	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusServiceUnavailable, http.Header{}, body, AntigravityQuotaScopeGeminiText, 0, "", false)
+	result := svc.handleUpstreamError(context.Background(), "[test]", account, http.StatusServiceUnavailable, http.Header{}, body, "gemini-3-pro-high", 0, "", false)
 
 	// 503 空响应不应该做任何处理
 	require.Nil(t, result)
 	require.Empty(t, repo.modelRateLimitCalls)
-	require.Empty(t, repo.scopeCalls)
 	require.Empty(t, repo.rateCalls)
 }
 
@@ -307,15 +301,7 @@ func TestAccountIsSchedulableForModel_AntigravityRateLimits(t *testing.T) {
 	require.False(t, account.IsSchedulableForModel("gemini-3-flash"))
 
 	account.RateLimitResetAt = nil
-	account.Extra = map[string]any{
-		antigravityQuotaScopesKey: map[string]any{
-			"claude": map[string]any{
-				"rate_limit_reset_at": future.Format(time.RFC3339),
-			},
-		},
-	}
-
-	require.False(t, account.IsSchedulableForModel("claude-sonnet-4-5"))
+	require.True(t, account.IsSchedulableForModel("claude-sonnet-4-5"))
 	require.True(t, account.IsSchedulableForModel("gemini-3-flash"))
 }
 
@@ -341,11 +327,12 @@ func TestParseGeminiRateLimitResetTime_QuotaResetDelay_RoundsUp(t *testing.T) {
 
 func TestParseAntigravitySmartRetryInfo(t *testing.T) {
 	tests := []struct {
-		name          string
-		body          string
-		expectedDelay time.Duration
-		expectedModel string
-		expectedNil   bool
+		name                             string
+		body                             string
+		expectedDelay                    time.Duration
+		expectedModel                    string
+		expectedNil                      bool
+		expectedIsModelCapacityExhausted bool
 	}{
 		{
 			name: "valid complete response with RATE_LIMIT_EXCEEDED",
@@ -408,8 +395,9 @@ func TestParseAntigravitySmartRetryInfo(t *testing.T) {
 					"message": "No capacity available for model gemini-3-pro-high on the server"
 				}
 			}`,
-			expectedDelay: 39 * time.Second,
-			expectedModel: "gemini-3-pro-high",
+			expectedDelay:                    39 * time.Second,
+			expectedModel:                    "gemini-3-pro-high",
+			expectedIsModelCapacityExhausted: true,
 		},
 		{
 			name: "503 UNAVAILABLE without MODEL_CAPACITY_EXHAUSTED - should return nil",
@@ -520,6 +508,9 @@ func TestParseAntigravitySmartRetryInfo(t *testing.T) {
 			if result.ModelName != tt.expectedModel {
 				t.Errorf("ModelName = %q, want %q", result.ModelName, tt.expectedModel)
 			}
+			if result.IsModelCapacityExhausted != tt.expectedIsModelCapacityExhausted {
+				t.Errorf("IsModelCapacityExhausted = %v, want %v", result.IsModelCapacityExhausted, tt.expectedIsModelCapacityExhausted)
+			}
 		})
 	}
 }
@@ -531,13 +522,14 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 	apiKeyAccount := &Account{Type: AccountTypeAPIKey}
 
 	tests := []struct {
-		name                    string
-		account                 *Account
-		body                    string
-		expectedShouldRetry     bool
-		expectedShouldRateLimit bool
-		minWait                 time.Duration
-		modelName               string
+		name                             string
+		account                          *Account
+		body                             string
+		expectedShouldRetry              bool
+		expectedShouldRateLimit          bool
+		expectedIsModelCapacityExhausted bool
+		minWait                          time.Duration
+		modelName                        string
 	}{
 		{
 			name:    "OAuth account with short delay (< 7s) - smart retry",
@@ -635,6 +627,7 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			}`,
 			expectedShouldRetry:     false,
 			expectedShouldRateLimit: true,
+			minWait:                 7 * time.Second,
 			modelName:               "gemini-pro",
 		},
 		{
@@ -650,12 +643,14 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					]
 				}
 			}`,
-			expectedShouldRetry:     false,
-			expectedShouldRateLimit: true,
-			modelName:               "gemini-3-pro-high",
+			expectedShouldRetry:              true,
+			expectedShouldRateLimit:          false,
+			expectedIsModelCapacityExhausted: true,
+			minWait:                          1 * time.Second,
+			modelName:                        "gemini-3-pro-high",
 		},
 		{
-			name:    "503 UNAVAILABLE with MODEL_CAPACITY_EXHAUSTED - no retryDelay - use default rate limit",
+			name:    "503 UNAVAILABLE with MODEL_CAPACITY_EXHAUSTED - no retryDelay - use fixed wait",
 			account: oauthAccount,
 			body: `{
 				"error": {
@@ -667,9 +662,11 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 					"message": "No capacity available for model gemini-2.5-flash on the server"
 				}
 			}`,
-			expectedShouldRetry:     false,
-			expectedShouldRateLimit: true,
-			modelName:               "gemini-2.5-flash",
+			expectedShouldRetry:              true,
+			expectedShouldRateLimit:          false,
+			expectedIsModelCapacityExhausted: true,
+			minWait:                          1 * time.Second,
+			modelName:                        "gemini-2.5-flash",
 		},
 		{
 			name:    "429 RESOURCE_EXHAUSTED with RATE_LIMIT_EXCEEDED - no retryDelay - use default rate limit",
@@ -686,22 +683,31 @@ func TestShouldTriggerAntigravitySmartRetry(t *testing.T) {
 			}`,
 			expectedShouldRetry:     false,
 			expectedShouldRateLimit: true,
+			minWait:                 30 * time.Second,
 			modelName:               "claude-sonnet-4-5",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			shouldRetry, shouldRateLimit, wait, model := shouldTriggerAntigravitySmartRetry(tt.account, []byte(tt.body))
+			shouldRetry, shouldRateLimit, wait, model, isModelCapacityExhausted := shouldTriggerAntigravitySmartRetry(tt.account, []byte(tt.body))
 			if shouldRetry != tt.expectedShouldRetry {
 				t.Errorf("shouldRetry = %v, want %v", shouldRetry, tt.expectedShouldRetry)
 			}
 			if shouldRateLimit != tt.expectedShouldRateLimit {
 				t.Errorf("shouldRateLimit = %v, want %v", shouldRateLimit, tt.expectedShouldRateLimit)
 			}
+			if isModelCapacityExhausted != tt.expectedIsModelCapacityExhausted {
+				t.Errorf("isModelCapacityExhausted = %v, want %v", isModelCapacityExhausted, tt.expectedIsModelCapacityExhausted)
+			}
 			if shouldRetry {
 				if wait < tt.minWait {
 					t.Errorf("wait = %v, want >= %v", wait, tt.minWait)
+				}
+			}
+			if shouldRateLimit && tt.minWait > 0 {
+				if wait < tt.minWait {
+					t.Errorf("rate limit wait = %v, want >= %v", wait, tt.minWait)
 				}
 			}
 			if (shouldRetry || shouldRateLimit) && model != tt.modelName {
@@ -803,7 +809,7 @@ func TestSetModelRateLimitByModelName_NotConvertToScope(t *testing.T) {
 	require.NotEqual(t, "claude_sonnet", call.modelKey, "should NOT be scope")
 }
 
-func TestAntigravityRetryLoop_PreCheck_WaitsWhenRemainingBelowThreshold(t *testing.T) {
+func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRateLimited(t *testing.T) {
 	upstream := &recordingOKUpstream{}
 	account := &Account{
 		ID:          1,
@@ -815,19 +821,15 @@ func TestAntigravityRetryLoop_PreCheck_WaitsWhenRemainingBelowThreshold(t *testi
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"claude-sonnet-4-5": map[string]any{
-					// RFC3339 here is second-precision; keep it safely in the future.
 					"rate_limit_reset_at": time.Now().Add(2 * time.Second).Format(time.RFC3339),
 				},
 			},
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-
 	svc := &AntigravityGatewayService{}
 	result, err := svc.antigravityRetryLoop(antigravityRetryLoopParams{
-		ctx:             ctx,
+		ctx:             context.Background(),
 		prefix:          "[test]",
 		account:         account,
 		accessToken:     "token",
@@ -836,17 +838,21 @@ func TestAntigravityRetryLoop_PreCheck_WaitsWhenRemainingBelowThreshold(t *testi
 		requestedModel:  "claude-sonnet-4-5",
 		httpUpstream:    upstream,
 		isStickySession: true,
-		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, quotaScope AntigravityQuotaScope, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
+		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
 			return nil
 		},
 	})
 
-	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Nil(t, result)
-	require.Equal(t, 0, upstream.calls, "should not call upstream while waiting on pre-check")
+	var switchErr *AntigravityAccountSwitchError
+	require.ErrorAs(t, err, &switchErr)
+	require.Equal(t, account.ID, switchErr.OriginalAccountID)
+	require.Equal(t, "claude-sonnet-4-5", switchErr.RateLimitedModel)
+	require.True(t, switchErr.IsStickySession)
+	require.Equal(t, 0, upstream.calls, "should not call upstream when switching on pre-check")
 }
 
-func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRemainingAtOrAboveThreshold(t *testing.T) {
+func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRemainingLong(t *testing.T) {
 	upstream := &recordingOKUpstream{}
 	account := &Account{
 		ID:          2,
@@ -875,7 +881,7 @@ func TestAntigravityRetryLoop_PreCheck_SwitchesWhenRemainingAtOrAboveThreshold(t
 		requestedModel:  "claude-sonnet-4-5",
 		httpUpstream:    upstream,
 		isStickySession: true,
-		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, quotaScope AntigravityQuotaScope, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
+		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
 			return nil
 		},
 	})
@@ -944,6 +950,22 @@ func TestIsAntigravityAccountSwitchError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveAntigravityForwardBaseURL_DefaultDaily(t *testing.T) {
+	t.Setenv(antigravityForwardBaseURLEnv, "")
+
+	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
+	defer func() {
+		antigravity.BaseURLs = oldBaseURLs
+	}()
+
+	prodURL := "https://prod.test"
+	dailyURL := "https://daily.test"
+	antigravity.BaseURLs = []string{dailyURL, prodURL}
+
+	resolved := resolveAntigravityForwardBaseURL()
+	require.Equal(t, dailyURL, resolved)
 }
 
 func TestAntigravityAccountSwitchError_Error(t *testing.T) {

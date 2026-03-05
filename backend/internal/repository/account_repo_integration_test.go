@@ -238,7 +238,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 
 			tt.setup(client)
 
-			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search)
+			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, 0)
 			s.Require().NoError(err)
 			s.Require().Len(accounts, tt.wantCount)
 			if tt.validate != nil {
@@ -305,7 +305,7 @@ func (s *AccountRepoSuite) TestPreload_And_VirtualFields() {
 	s.Require().Len(got.Groups, 1, "expected Groups to be populated")
 	s.Require().Equal(group.ID, got.Groups[0].ID)
 
-	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc")
+	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0)
 	s.Require().NoError(err, "ListWithFilters")
 	s.Require().Equal(int64(1), page.Total)
 	s.Require().Len(accounts, 1)
@@ -498,6 +498,38 @@ func (s *AccountRepoSuite) TestClearRateLimit() {
 	s.Require().Nil(got.RateLimitedAt)
 	s.Require().Nil(got.RateLimitResetAt)
 	s.Require().Nil(got.OverloadUntil)
+}
+
+func (s *AccountRepoSuite) TestTempUnschedulableFieldsLoadedByGetByIDAndGetByIDs() {
+	acc1 := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-temp-1"})
+	acc2 := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-temp-2"})
+
+	until := time.Now().Add(15 * time.Minute).UTC().Truncate(time.Second)
+	reason := `{"rule":"429","matched_keyword":"too many requests"}`
+	s.Require().NoError(s.repo.SetTempUnschedulable(s.ctx, acc1.ID, until, reason))
+
+	gotByID, err := s.repo.GetByID(s.ctx, acc1.ID)
+	s.Require().NoError(err)
+	s.Require().NotNil(gotByID.TempUnschedulableUntil)
+	s.Require().WithinDuration(until, *gotByID.TempUnschedulableUntil, time.Second)
+	s.Require().Equal(reason, gotByID.TempUnschedulableReason)
+
+	gotByIDs, err := s.repo.GetByIDs(s.ctx, []int64{acc2.ID, acc1.ID})
+	s.Require().NoError(err)
+	s.Require().Len(gotByIDs, 2)
+	s.Require().Equal(acc2.ID, gotByIDs[0].ID)
+	s.Require().Nil(gotByIDs[0].TempUnschedulableUntil)
+	s.Require().Equal("", gotByIDs[0].TempUnschedulableReason)
+	s.Require().Equal(acc1.ID, gotByIDs[1].ID)
+	s.Require().NotNil(gotByIDs[1].TempUnschedulableUntil)
+	s.Require().WithinDuration(until, *gotByIDs[1].TempUnschedulableUntil, time.Second)
+	s.Require().Equal(reason, gotByIDs[1].TempUnschedulableReason)
+
+	s.Require().NoError(s.repo.ClearTempUnschedulable(s.ctx, acc1.ID))
+	cleared, err := s.repo.GetByID(s.ctx, acc1.ID)
+	s.Require().NoError(err)
+	s.Require().Nil(cleared.TempUnschedulableUntil)
+	s.Require().Equal("", cleared.TempUnschedulableReason)
 }
 
 // --- UpdateLastUsed ---

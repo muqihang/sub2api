@@ -87,6 +87,28 @@ func (Group) Fields() []ent.Field {
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
 
+		// Sora 按次计费配置（阶段 1）
+		field.Float("sora_image_price_360").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("sora_image_price_540").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("sora_video_price_per_request").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("sora_video_price_per_request_hd").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+
+		// Sora 存储配额
+		field.Int64("sora_storage_quota_bytes").
+			Default(0),
+
 		// Claude Code 客户端限制 (added by migration 029)
 		field.Bool("claude_code_only").
 			Default(false).
@@ -121,6 +143,11 @@ func (Group) Fields() []ent.Field {
 			Default([]string{"claude", "gemini_text", "gemini_image"}).
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("支持的模型系列：claude, gemini_text, gemini_image"),
+
+		// 分组排序 (added by migration 052)
+		field.Int("sort_order").
+			Default(0).
+			Comment("分组显示排序，数值越小越靠前"),
 	}
 }
 
@@ -149,5 +176,6 @@ func (Group) Indexes() []ent.Index {
 		index.Fields("subscription_type"),
 		index.Fields("is_exclusive"),
 		index.Fields("deleted_at"),
+		index.Fields("sort_order"),
 	}
 }

@@ -3,9 +3,9 @@
     <TablePageLayout>
       <!-- Single Row: Search, Filters, and Actions -->
       <template #filters>
-        <div class="flex w-full flex-col gap-3 md:flex-row md:flex-wrap-reverse md:items-center md:justify-between md:gap-4">
+        <div class="flex flex-wrap items-center gap-3">
           <!-- Left: Search + Active Filters -->
-          <div class="flex min-w-[280px] flex-1 flex-wrap content-start items-center gap-3 md:order-1">
+          <div class="flex flex-1 flex-wrap items-center gap-3">
             <!-- Search Box -->
             <div class="relative w-full md:w-64">
               <Icon
@@ -100,7 +100,7 @@
           </div>
 
           <!-- Right: Actions and Settings -->
-          <div class="flex w-full items-center justify-between gap-2 md:order-2 md:ml-auto md:max-w-full md:flex-wrap md:justify-end md:gap-3">
+          <div class="flex flex-wrap items-center justify-end gap-2">
             <!-- Mobile: Secondary buttons (icon only) -->
             <div class="flex items-center gap-2 md:contents">
               <!-- Refresh Button -->
@@ -342,8 +342,11 @@
             </div>
           </template>
 
-          <template #cell-concurrency="{ value }">
-            <span class="text-sm text-gray-700 dark:text-gray-300">{{ value }}</span>
+          <template #cell-concurrency="{ row }">
+            <UserConcurrencyCell
+              :current="row.current_concurrency ?? 0"
+              :max="row.concurrency"
+            />
           </template>
 
           <template #cell-status="{ value }">
@@ -535,6 +538,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
 import Select from '@/components/common/Select.vue'
 import UserAttributesConfigModal from '@/components/user/UserAttributesConfigModal.vue'
+import UserConcurrencyCell from '@/components/user/UserConcurrencyCell.vue'
 import UserCreateModal from '@/components/admin/user/UserCreateModal.vue'
 import UserEditModal from '@/components/admin/user/UserEditModal.vue'
 import UserApiKeysModal from '@/components/admin/user/UserApiKeysModal.vue'
@@ -651,16 +655,28 @@ const saveColumnsToStorage = () => {
 
 // Toggle column visibility
 const toggleColumn = (key: string) => {
+  const wasHidden = hiddenColumns.has(key)
   if (hiddenColumns.has(key)) {
     hiddenColumns.delete(key)
   } else {
     hiddenColumns.add(key)
   }
   saveColumnsToStorage()
+  if (wasHidden && (key === 'usage' || key.startsWith('attr_'))) {
+    refreshCurrentPageSecondaryData()
+  }
+  if (key === 'subscriptions') {
+    loadUsers()
+  }
 }
 
 // Check if column is visible (not in hidden set)
 const isColumnVisible = (key: string) => !hiddenColumns.has(key)
+const hasVisibleUsageColumn = computed(() => !hiddenColumns.has('usage'))
+const hasVisibleSubscriptionsColumn = computed(() => !hiddenColumns.has('subscriptions'))
+const hasVisibleAttributeColumns = computed(() =>
+  attributeDefinitions.value.some((def) => def.enabled && !hiddenColumns.has(`attr_${def.id}`))
+)
 
 // Filtered columns based on visibility
 const columns = computed<Column[]>(() =>
@@ -772,6 +788,60 @@ const editingUser = ref<AdminUser | null>(null)
 const deletingUser = ref<AdminUser | null>(null)
 const viewingUser = ref<AdminUser | null>(null)
 let abortController: AbortController | null = null
+let secondaryDataSeq = 0
+
+const loadUsersSecondaryData = async (
+  userIds: number[],
+  signal?: AbortSignal,
+  expectedSeq?: number
+) => {
+  if (userIds.length === 0) return
+
+  const tasks: Promise<void>[] = []
+
+  if (hasVisibleUsageColumn.value) {
+    tasks.push(
+      (async () => {
+        try {
+          const usageResponse = await adminAPI.dashboard.getBatchUsersUsage(userIds)
+          if (signal?.aborted) return
+          if (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq) return
+          usageStats.value = usageResponse.stats
+        } catch (e) {
+          if (signal?.aborted) return
+          console.error('Failed to load usage stats:', e)
+        }
+      })()
+    )
+  }
+
+  if (attributeDefinitions.value.length > 0 && hasVisibleAttributeColumns.value) {
+    tasks.push(
+      (async () => {
+        try {
+          const attrResponse = await adminAPI.userAttributes.getBatchUserAttributes(userIds)
+          if (signal?.aborted) return
+          if (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq) return
+          userAttributeValues.value = attrResponse.attributes
+        } catch (e) {
+          if (signal?.aborted) return
+          console.error('Failed to load user attribute values:', e)
+        }
+      })()
+    )
+  }
+
+  if (tasks.length > 0) {
+    await Promise.allSettled(tasks)
+  }
+}
+
+const refreshCurrentPageSecondaryData = () => {
+  const userIds = users.value.map((u) => u.id)
+  if (userIds.length === 0) return
+  const seq = ++secondaryDataSeq
+  void loadUsersSecondaryData(userIds, undefined, seq)
+}
 
 // Action Menu State
 const activeMenuId = ref<number | null>(null)
@@ -909,7 +979,8 @@ const loadUsers = async () => {
         role: filters.role as any,
         status: filters.status as any,
         search: searchQuery.value || undefined,
-        attributes: Object.keys(attrFilters).length > 0 ? attrFilters : undefined
+        attributes: Object.keys(attrFilters).length > 0 ? attrFilters : undefined,
+        include_subscriptions: hasVisibleSubscriptionsColumn.value
       },
       { signal }
     )
@@ -919,38 +990,17 @@ const loadUsers = async () => {
     users.value = response.items
     pagination.total = response.total
     pagination.pages = response.pages
+    usageStats.value = {}
+    userAttributeValues.value = {}
 
-    // Load usage stats and attribute values for all users in the list
+    // Defer heavy secondary data so table can render first.
     if (response.items.length > 0) {
       const userIds = response.items.map((u) => u.id)
-      // Load usage stats
-      try {
-        const usageResponse = await adminAPI.dashboard.getBatchUsersUsage(userIds)
-        if (signal.aborted) {
-          return
-        }
-        usageStats.value = usageResponse.stats
-      } catch (e) {
-        if (signal.aborted) {
-          return
-        }
-        console.error('Failed to load usage stats:', e)
-      }
-      // Load attribute values
-      if (attributeDefinitions.value.length > 0) {
-        try {
-          const attrResponse = await adminAPI.userAttributes.getBatchUserAttributes(userIds)
-          if (signal.aborted) {
-            return
-          }
-          userAttributeValues.value = attrResponse.attributes
-        } catch (e) {
-          if (signal.aborted) {
-            return
-          }
-          console.error('Failed to load user attribute values:', e)
-        }
-      }
+      const seq = ++secondaryDataSeq
+      window.setTimeout(() => {
+        if (signal.aborted || seq !== secondaryDataSeq) return
+        void loadUsersSecondaryData(userIds, signal, seq)
+      }, 50)
     }
   } catch (error: any) {
     const errorInfo = error as { name?: string; code?: string }

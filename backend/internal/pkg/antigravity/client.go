@@ -14,6 +14,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 )
 
 // NewAPIRequestWithURL 使用指定的 base URL 创建 Antigravity API 请求（v1internal 端点）
@@ -33,7 +36,7 @@ func NewAPIRequestWithURL(ctx context.Context, baseURL, action, accessToken stri
 	// 基础 Headers（与 Antigravity-Manager 保持一致，只设置这 3 个）
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", EffectiveUserAgent())
+	req.Header.Set("User-Agent", GetUserAgent())
 
 	return req, nil
 }
@@ -115,6 +118,23 @@ type LoadCodeAssistResponse struct {
 	IneligibleTiers         []*IneligibleTier `json:"ineligibleTiers,omitempty"`
 }
 
+// OnboardUserRequest onboardUser 请求
+type OnboardUserRequest struct {
+	TierID   string `json:"tierId"`
+	Metadata struct {
+		IDEType    string `json:"ideType"`
+		Platform   string `json:"platform,omitempty"`
+		PluginType string `json:"pluginType,omitempty"`
+	} `json:"metadata"`
+}
+
+// OnboardUserResponse onboardUser 响应
+type OnboardUserResponse struct {
+	Name     string         `json:"name,omitempty"`
+	Done     bool           `json:"done"`
+	Response map[string]any `json:"response,omitempty"`
+}
+
 // GetTier 获取账户类型
 // 优先返回 paidTier（付费订阅级别），否则返回 currentTier
 func (r *LoadCodeAssistResponse) GetTier() string {
@@ -132,22 +152,26 @@ type Client struct {
 	httpClient *http.Client
 }
 
-func NewClient(proxyURL string) *Client {
+func NewClient(proxyURL string) (*Client, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
-	if strings.TrimSpace(proxyURL) != "" {
-		if proxyURLParsed, err := url.Parse(proxyURL); err == nil {
-			client.Transport = &http.Transport{
-				Proxy: http.ProxyURL(proxyURLParsed),
-			}
+	_, parsed, err := proxyurl.Parse(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if parsed != nil {
+		transport := &http.Transport{}
+		if err := proxyutil.ConfigureTransportProxy(transport, parsed); err != nil {
+			return nil, fmt.Errorf("configure proxy: %w", err)
 		}
+		client.Transport = transport
 	}
 
 	return &Client{
 		httpClient: client,
-	}
+	}, nil
 }
 
 // isConnectionError 判断是否为连接错误（网络超时、DNS 失败、连接拒绝）
@@ -187,9 +211,14 @@ func shouldFallbackToNextURL(err error, statusCode int) bool {
 
 // ExchangeCode 用 authorization code 交换 token
 func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*TokenResponse, error) {
+	clientSecret, err := getClientSecret()
+	if err != nil {
+		return nil, err
+	}
+
 	params := url.Values{}
 	params.Set("client_id", ClientID)
-	params.Set("client_secret", ClientSecret)
+	params.Set("client_secret", clientSecret)
 	params.Set("code", code)
 	params.Set("redirect_uri", RedirectURI)
 	params.Set("grant_type", "authorization_code")
@@ -226,9 +255,14 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 
 // RefreshToken 刷新 access_token
 func (c *Client) RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
+	clientSecret, err := getClientSecret()
+	if err != nil {
+		return nil, err
+	}
+
 	params := url.Values{}
 	params.Set("client_id", ClientID)
-	params.Set("client_secret", ClientSecret)
+	params.Set("client_secret", clientSecret)
 	params.Set("refresh_token", refreshToken)
 	params.Set("grant_type", "refresh_token")
 
@@ -314,9 +348,9 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 			lastErr = fmt.Errorf("创建请求失败: %w", err)
 			continue
 		}
-			req.Header.Set("Authorization", "Bearer "+accessToken)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("User-Agent", EffectiveUserAgent())
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", GetUserAgent())
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -361,6 +395,117 @@ func (c *Client) LoadCodeAssist(ctx context.Context, accessToken string) (*LoadC
 	return nil, nil, lastErr
 }
 
+// OnboardUser 触发账号 onboarding，并返回 project_id
+// 说明：
+// 1) 部分账号 loadCodeAssist 不会立即返回 cloudaicompanionProject；
+// 2) 这时需要调用 onboardUser 完成初始化，之后才能拿到 project_id。
+func (c *Client) OnboardUser(ctx context.Context, accessToken, tierID string) (string, error) {
+	tierID = strings.TrimSpace(tierID)
+	if tierID == "" {
+		return "", fmt.Errorf("tier_id 为空")
+	}
+
+	reqBody := OnboardUserRequest{TierID: tierID}
+	reqBody.Metadata.IDEType = "ANTIGRAVITY"
+	reqBody.Metadata.Platform = "PLATFORM_UNSPECIFIED"
+	reqBody.Metadata.PluginType = "GEMINI"
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	availableURLs := BaseURLs
+	var lastErr error
+
+	for urlIdx, baseURL := range availableURLs {
+		apiURL := baseURL + "/v1internal:onboardUser"
+
+		for attempt := 1; attempt <= 5; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
+			if err != nil {
+				lastErr = fmt.Errorf("创建请求失败: %w", err)
+				break
+			}
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", GetUserAgent())
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				lastErr = fmt.Errorf("onboardUser 请求失败: %w", err)
+				if shouldFallbackToNextURL(err, 0) && urlIdx < len(availableURLs)-1 {
+					log.Printf("[antigravity] onboardUser URL fallback: %s -> %s", baseURL, availableURLs[urlIdx+1])
+					break
+				}
+				return "", lastErr
+			}
+
+			respBodyBytes, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				return "", fmt.Errorf("读取响应失败: %w", err)
+			}
+
+			if shouldFallbackToNextURL(nil, resp.StatusCode) && urlIdx < len(availableURLs)-1 {
+				log.Printf("[antigravity] onboardUser URL fallback (HTTP %d): %s -> %s", resp.StatusCode, baseURL, availableURLs[urlIdx+1])
+				break
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				lastErr = fmt.Errorf("onboardUser 失败 (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
+				return "", lastErr
+			}
+
+			var onboardResp OnboardUserResponse
+			if err := json.Unmarshal(respBodyBytes, &onboardResp); err != nil {
+				lastErr = fmt.Errorf("onboardUser 响应解析失败: %w", err)
+				return "", lastErr
+			}
+
+			if onboardResp.Done {
+				if projectID := extractProjectIDFromOnboardResponse(onboardResp.Response); projectID != "" {
+					DefaultURLAvailability.MarkSuccess(baseURL)
+					return projectID, nil
+				}
+				lastErr = fmt.Errorf("onboardUser 完成但未返回 project_id")
+				return "", lastErr
+			}
+
+			// done=false 时等待后重试（与 CLIProxyAPI 行为一致）
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+	}
+
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("onboardUser 未返回 project_id")
+}
+
+func extractProjectIDFromOnboardResponse(resp map[string]any) string {
+	if len(resp) == 0 {
+		return ""
+	}
+
+	if v, ok := resp["cloudaicompanionProject"]; ok {
+		switch project := v.(type) {
+		case string:
+			return strings.TrimSpace(project)
+		case map[string]any:
+			if id, ok := project["id"].(string); ok {
+				return strings.TrimSpace(id)
+			}
+		}
+	}
+
+	return ""
+}
+
 // ModelQuotaInfo 模型配额信息
 type ModelQuotaInfo struct {
 	RemainingFraction float64 `json:"remainingFraction"`
@@ -402,9 +547,9 @@ func (c *Client) FetchAvailableModels(ctx context.Context, accessToken, projectI
 			lastErr = fmt.Errorf("创建请求失败: %w", err)
 			continue
 		}
-			req.Header.Set("Authorization", "Bearer "+accessToken)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("User-Agent", EffectiveUserAgent())
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", GetUserAgent())
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

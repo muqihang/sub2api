@@ -25,11 +25,17 @@ type AccountRepository interface {
 	// GetByCRSAccountID finds an account previously synced from CRS.
 	// Returns (nil, nil) if not found.
 	GetByCRSAccountID(ctx context.Context, crsAccountID string) (*Account, error)
+	// FindByExtraField 根据 extra 字段中的键值对查找账号（限定 platform='sora'）
+	// 用于查找通过 linked_openai_account_id 关联的 Sora 账号
+	FindByExtraField(ctx context.Context, key string, value any) ([]Account, error)
+	// ListCRSAccountIDs returns a map of crs_account_id -> local account ID
+	// for all accounts that have been synced from CRS.
+	ListCRSAccountIDs(ctx context.Context) (map[string]int64, error)
 	Update(ctx context.Context, account *Account) error
 	Delete(ctx context.Context, id int64) error
 
 	List(ctx context.Context, params pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error)
-	ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string) ([]Account, *pagination.PaginationResult, error)
+	ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64) ([]Account, *pagination.PaginationResult, error)
 	ListByGroup(ctx context.Context, groupID int64) ([]Account, error)
 	ListActive(ctx context.Context) ([]Account, error)
 	ListByPlatform(ctx context.Context, platform string) ([]Account, error)
@@ -48,9 +54,10 @@ type AccountRepository interface {
 	ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error)
 	ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]Account, error)
 	ListSchedulableByGroupIDAndPlatforms(ctx context.Context, groupID int64, platforms []string) ([]Account, error)
+	ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error)
+	ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]Account, error)
 
 	SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error
-	SetAntigravityQuotaScopeLimit(ctx context.Context, id int64, scope AntigravityQuotaScope, resetAt time.Time) error
 	SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time) error
 	SetOverloaded(ctx context.Context, id int64, until time.Time) error
 	SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error
@@ -114,6 +121,10 @@ type AccountService struct {
 	groupRepo   GroupRepository
 }
 
+type groupExistenceBatchChecker interface {
+	ExistsByIDs(ctx context.Context, ids []int64) (map[int64]bool, error)
+}
+
 // NewAccountService 创建账号服务实例
 func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository) *AccountService {
 	return &AccountService{
@@ -126,11 +137,8 @@ func NewAccountService(accountRepo AccountRepository, groupRepo GroupRepository)
 func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (*Account, error) {
 	// 验证分组是否存在（如果指定了分组）
 	if len(req.GroupIDs) > 0 {
-		for _, groupID := range req.GroupIDs {
-			_, err := s.groupRepo.GetByID(ctx, groupID)
-			if err != nil {
-				return nil, fmt.Errorf("get group: %w", err)
-			}
+		if err := s.validateGroupIDsExist(ctx, req.GroupIDs); err != nil {
+			return nil, err
 		}
 	}
 
@@ -251,11 +259,8 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 
 	// 先验证分组是否存在（在任何写操作之前）
 	if req.GroupIDs != nil {
-		for _, groupID := range *req.GroupIDs {
-			_, err := s.groupRepo.GetByID(ctx, groupID)
-			if err != nil {
-				return nil, fmt.Errorf("get group: %w", err)
-			}
+		if err := s.validateGroupIDsExist(ctx, *req.GroupIDs); err != nil {
+			return nil, err
 		}
 	}
 
@@ -292,6 +297,39 @@ func (s *AccountService) Delete(ctx context.Context, id int64) error {
 		return fmt.Errorf("delete account: %w", err)
 	}
 
+	return nil
+}
+
+func (s *AccountService) validateGroupIDsExist(ctx context.Context, groupIDs []int64) error {
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	if s.groupRepo == nil {
+		return fmt.Errorf("group repository not configured")
+	}
+
+	if batchChecker, ok := s.groupRepo.(groupExistenceBatchChecker); ok {
+		existsByID, err := batchChecker.ExistsByIDs(ctx, groupIDs)
+		if err != nil {
+			return fmt.Errorf("check groups exists: %w", err)
+		}
+		for _, groupID := range groupIDs {
+			if groupID <= 0 {
+				return fmt.Errorf("get group: %w", ErrGroupNotFound)
+			}
+			if !existsByID[groupID] {
+				return fmt.Errorf("get group: %w", ErrGroupNotFound)
+			}
+		}
+		return nil
+	}
+
+	for _, groupID := range groupIDs {
+		_, err := s.groupRepo.GetByID(ctx, groupID)
+		if err != nil {
+			return fmt.Errorf("get group: %w", err)
+		}
+	}
 	return nil
 }
 

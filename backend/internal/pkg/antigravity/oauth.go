@@ -6,11 +6,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 const (
@@ -20,8 +23,10 @@ const (
 	UserInfoURL  = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 	// Antigravity OAuth 客户端凭证
-	ClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	ClientSecret = "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"
+	ClientID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+
+	// AntigravityOAuthClientSecretEnv 是 Antigravity OAuth client_secret 的环境变量名。
+	AntigravityOAuthClientSecretEnv = "ANTIGRAVITY_OAUTH_CLIENT_SECRET"
 
 	// 固定的 redirect_uri（用户需手动复制 code）
 	RedirectURI = "http://localhost:8085/callback"
@@ -33,22 +38,16 @@ const (
 		"https://www.googleapis.com/auth/cclog " +
 		"https://www.googleapis.com/auth/experimentsandconfigs"
 
-	// User-Agent（与 Antigravity-Manager 保持一致）
-	//
-	// 为了避免每次升级都需要修改源码并重新构建镜像，支持环境变量覆盖：
-	// - ANTIGRAVITY_USER_AGENT: 直接指定完整 User-Agent（优先级最高）
-	// - ANTIGRAVITY_VERSION: 仅指定版本号，将拼接为 "antigravity/<version> windows/amd64"
-	//
-	// 注意：环境变量变更需要重启进程/容器才能生效（Docker 容器内 env 在启动时固定）。
-	DefaultUserAgentOSArch  = "windows/amd64"
-	DefaultUserAgentVersion = "1.15.8"
-	DefaultUserAgent        = "antigravity/" + DefaultUserAgentVersion + " " + DefaultUserAgentOSArch
-
-	AntigravityUserAgentEnv = "ANTIGRAVITY_USER_AGENT"
-	AntigravityVersionEnv   = "ANTIGRAVITY_VERSION"
-	// V1Internal userAgent field override (request body field `userAgent`).
-	// Some upstream behaviors appear to depend on this value; we keep it versioned by default.
+	// User-Agent 相关环境变量。
+	// - ANTIGRAVITY_USER_AGENT_VERSION: 兼容上游，设置版本号
+	// - ANTIGRAVITY_USER_AGENT: 直接覆盖完整 UA（优先级高）
+	// - ANTIGRAVITY_VERSION: 仅设置版本号（优先级高于 *_USER_AGENT_VERSION）
+	// - ANTIGRAVITY_V1INTERNAL_USER_AGENT: 覆盖 v1internal 请求体中的 userAgent 字段
+	AntigravityUserAgentVersionEnv    = "ANTIGRAVITY_USER_AGENT_VERSION"
+	AntigravityUserAgentEnv           = "ANTIGRAVITY_USER_AGENT"
+	AntigravityVersionEnv             = "ANTIGRAVITY_VERSION"
 	AntigravityV1InternalUserAgentEnv = "ANTIGRAVITY_V1INTERNAL_USER_AGENT"
+	DefaultUserAgentOSArch            = "windows/amd64"
 
 	// Session 过期时间
 	SessionTTL = 30 * time.Minute
@@ -61,29 +60,55 @@ const (
 	antigravityDailyBaseURL = "https://daily-cloudcode-pa.sandbox.googleapis.com"
 )
 
-// EffectiveUserAgent returns the User-Agent used for Antigravity upstream requests.
+// defaultUserAgentVersion 可通过环境变量 ANTIGRAVITY_USER_AGENT_VERSION 配置，默认 1.19.6
+var defaultUserAgentVersion = "1.19.6"
+
+// defaultClientSecret 可通过环境变量 ANTIGRAVITY_OAUTH_CLIENT_SECRET 配置
+var defaultClientSecret = "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"
+
+func init() {
+	// 从环境变量读取版本号，未设置则使用默认值
+	if version := os.Getenv(AntigravityUserAgentVersionEnv); version != "" {
+		defaultUserAgentVersion = version
+	}
+	// 从环境变量读取 client_secret，未设置则使用默认值
+	if secret := os.Getenv(AntigravityOAuthClientSecretEnv); secret != "" {
+		defaultClientSecret = secret
+	}
+}
+
+func composeUserAgent(version string) string {
+	return fmt.Sprintf("antigravity/%s %s", version, DefaultUserAgentOSArch)
+}
+
+// EffectiveUserAgent returns the effective User-Agent used for Antigravity upstream requests.
 //
 // Priority:
-//  1) ANTIGRAVITY_USER_AGENT (full override)
-//  2) ANTIGRAVITY_VERSION (compose "antigravity/<ver> windows/amd64")
-//  3) DefaultUserAgent (built-in default)
+//  1. ANTIGRAVITY_USER_AGENT (full override)
+//  2. ANTIGRAVITY_VERSION (compose "antigravity/<ver> windows/amd64")
+//  3. ANTIGRAVITY_USER_AGENT_VERSION (compose "antigravity/<ver> windows/amd64")
+//  4. defaultUserAgentVersion
 func EffectiveUserAgent() string {
 	if ua := strings.TrimSpace(os.Getenv(AntigravityUserAgentEnv)); ua != "" {
 		return ua
 	}
 	if ver := strings.TrimSpace(os.Getenv(AntigravityVersionEnv)); ver != "" {
-		return fmt.Sprintf("antigravity/%s %s", ver, DefaultUserAgentOSArch)
+		return composeUserAgent(ver)
 	}
-	return DefaultUserAgent
+	if ver := strings.TrimSpace(os.Getenv(AntigravityUserAgentVersionEnv)); ver != "" {
+		return composeUserAgent(ver)
+	}
+	return composeUserAgent(defaultUserAgentVersion)
 }
 
-// EffectiveV1InternalUserAgent returns the `userAgent` field used inside v1internal request bodies.
+// EffectiveV1InternalUserAgent returns the effective `userAgent` field value used in v1internal request bodies.
 //
 // Priority:
-//  1) ANTIGRAVITY_V1INTERNAL_USER_AGENT (full override)
-//  2) ANTIGRAVITY_VERSION (compose "antigravity/<ver>")
-//  3) ANTIGRAVITY_USER_AGENT (use first token before space, e.g. "antigravity/<ver>")
-//  4) Default ("antigravity/<DefaultUserAgentVersion>")
+//  1. ANTIGRAVITY_V1INTERNAL_USER_AGENT (full override)
+//  2. ANTIGRAVITY_VERSION (compose "antigravity/<ver>")
+//  3. ANTIGRAVITY_USER_AGENT (use first token before space)
+//  4. ANTIGRAVITY_USER_AGENT_VERSION (compose "antigravity/<ver>")
+//  5. defaultUserAgentVersion
 func EffectiveV1InternalUserAgent() string {
 	if ua := strings.TrimSpace(os.Getenv(AntigravityV1InternalUserAgentEnv)); ua != "" {
 		return ua
@@ -97,7 +122,22 @@ func EffectiveV1InternalUserAgent() string {
 		}
 		return full
 	}
-	return fmt.Sprintf("antigravity/%s", DefaultUserAgentVersion)
+	if ver := strings.TrimSpace(os.Getenv(AntigravityUserAgentVersionEnv)); ver != "" {
+		return fmt.Sprintf("antigravity/%s", ver)
+	}
+	return fmt.Sprintf("antigravity/%s", defaultUserAgentVersion)
+}
+
+// GetUserAgent 返回当前配置的 User-Agent（兼容历史调用点）。
+func GetUserAgent() string {
+	return EffectiveUserAgent()
+}
+
+func getClientSecret() (string, error) {
+	if v := strings.TrimSpace(defaultClientSecret); v != "" {
+		return v, nil
+	}
+	return "", infraerrors.Newf(http.StatusBadRequest, "ANTIGRAVITY_OAUTH_CLIENT_SECRET_MISSING", "missing antigravity oauth client_secret; set %s", AntigravityOAuthClientSecretEnv)
 }
 
 // BaseURLs 定义 Antigravity API 端点（与 Antigravity-Manager 保持一致）
