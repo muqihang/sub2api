@@ -3427,7 +3427,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				hooks.AfterTurn(turn, nil, finalErr)
 			}
 			sessionLease.MarkBroken()
-			return finalErr
+			return relayErr
 		}
 		turnRetry = 0
 		turnPrevRecoveryTried = false
