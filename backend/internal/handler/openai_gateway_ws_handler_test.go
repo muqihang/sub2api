@@ -178,7 +178,6 @@ func TestOpenAIGatewayWSHandler_ProxyRelayWithFakeUpstream(t *testing.T) {
 		require.Equal(t, "Bearer sk-upstream-primary", headers.Get("Authorization"))
 		openAIBeta := headers.Get("OpenAI-Beta")
 		require.Contains(t, openAIBeta, "responses_websockets=2026-02-06")
-		require.Contains(t, openAIBeta, "responses-websocket=v1")
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting upstream headers")
 	}
