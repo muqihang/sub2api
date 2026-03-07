@@ -2403,6 +2403,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		payloadBytes       int
 	}
 
+	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+
 	applyPayloadMutation := func(current []byte, path string, value any) ([]byte, error) {
 		next, err := sjson.SetBytes(current, path, value)
 		if err == nil {
@@ -2482,7 +2484,26 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
-		if turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)); turnMetadata != "" {
+
+		turnMetadata := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
+		if account != nil && account.Type == AccountTypeOAuth {
+			payload := make(map[string]any)
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", err)
+			}
+			normalizeOpenAIResponsesInputContentTypes(payload)
+			applyCodexOAuthTransform(payload, isCodexCLI)
+			if turnMetadata != "" {
+				setOpenAIWSTurnMetadata(payload, turnMetadata)
+			}
+			rebuilt, marshalErr := json.Marshal(payload)
+			if marshalErr != nil {
+				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", marshalErr)
+			}
+			normalized = rebuilt
+			promptCacheKey = strings.TrimSpace(openAIWSPayloadStringFromRaw(normalized, "prompt_cache_key"))
+			previousResponseID = strings.TrimSpace(openAIWSPayloadStringFromRaw(normalized, "previous_response_id"))
+		} else if turnMetadata != "" {
 			next, setErr := applyPayloadMutation(normalized, "client_metadata."+openAIWSTurnMetadataHeader, turnMetadata)
 			if setErr != nil {
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", setErr)
@@ -2541,7 +2562,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
-	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
 	baseAcquireReq := openAIWSAcquireRequest{
 		Account: account,
