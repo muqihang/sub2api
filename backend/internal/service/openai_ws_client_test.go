@@ -3,9 +3,11 @@ package service
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -109,4 +111,32 @@ func TestCoderOpenAIWSClientDialer_ProxyTransportTLSHandshakeTimeout(t *testing.
 	require.True(t, ok)
 	require.NotNil(t, transport)
 	require.Equal(t, 10*time.Second, transport.TLSHandshakeTimeout)
+}
+
+func TestCoderOpenAIWSClientDialer_DoesNotNegotiateCompression(t *testing.T) {
+	requestHeaders := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestHeaders <- r.Header.Clone()
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+		require.NoError(t, err)
+		defer conn.CloseNow()
+		_ = conn.Close(websocket.StatusNormalClosure, "done")
+	}))
+	defer server.Close()
+
+	dialer := newDefaultOpenAIWSClientDialer()
+	impl, ok := dialer.(*coderOpenAIWSClientDialer)
+	require.True(t, ok)
+
+	conn, _, _, err := impl.Dial(t.Context(), "ws"+server.URL[len("http"):], nil, "")
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	defer conn.Close()
+
+	select {
+	case headers := <-requestHeaders:
+		require.Empty(t, headers.Get("Sec-WebSocket-Extensions"), "上游 WS 拨号不应协商 permessage-deflate")
+	case <-time.After(3 * time.Second):
+		t.Fatal("等待上游 WS 握手头超时")
+	}
 }
