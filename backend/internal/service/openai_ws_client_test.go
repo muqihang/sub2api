@@ -140,3 +140,10 @@ func TestCoderOpenAIWSClientDialer_DoesNotNegotiateCompression(t *testing.T) {
 		t.Fatal("等待上游 WS 握手头超时")
 	}
 }
+
+func TestShouldUseGorillaOpenAIWSDialer(t *testing.T) {
+	headers := http.Header{}
+	require.False(t, shouldUseGorillaOpenAIWSDialer(headers))
+	headers.Set("chatgpt-account-id", "acct_123")
+	require.True(t, shouldUseGorillaOpenAIWSDialer(headers))
+}

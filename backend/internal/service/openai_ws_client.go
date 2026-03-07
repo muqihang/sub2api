@@ -14,6 +14,7 @@ import (
 	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	coderws "github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	gorillaws "github.com/gorilla/websocket"
 )
 
 const openAIWSMessageReadLimitBytes int64 = 16 * 1024 * 1024
@@ -77,6 +78,10 @@ func (d *coderOpenAIWSClientDialer) Dial(
 		return nil, 0, nil, errors.New("ws url is empty")
 	}
 
+	if shouldUseGorillaOpenAIWSDialer(headers) {
+		return d.dialWithGorilla(ctx, targetURL, headers, proxyURL)
+	}
+
 	opts := &coderws.DialOptions{
 		HTTPHeader:      cloneHeader(headers),
 		CompressionMode: coderws.CompressionDisabled,
@@ -99,8 +104,6 @@ func (d *coderOpenAIWSClientDialer) Dial(
 		}
 		return nil, status, respHeaders, err
 	}
-	// coder/websocket 默认单消息读取上限为 32KB，Codex WS 事件（如 rate_limits/大 delta）
-	// 可能超过该阈值，需显式提高上限，避免本地 read_fail(message too big)。
 	conn.SetReadLimit(openAIWSMessageReadLimitBytes)
 	respHeaders := http.Header(nil)
 	if resp != nil {
@@ -213,6 +216,48 @@ func closeOpenAIWSProxyClient(client *http.Client) {
 	}
 }
 
+func shouldUseGorillaOpenAIWSDialer(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	return strings.TrimSpace(headers.Get("chatgpt-account-id")) != ""
+}
+
+func (d *coderOpenAIWSClientDialer) dialWithGorilla(
+	ctx context.Context,
+	wsURL string,
+	headers http.Header,
+	proxyURL string,
+) (openAIWSClientConn, int, http.Header, error) {
+	gorillaDialer := &gorillaws.Dialer{
+		HandshakeTimeout:  40 * time.Second,
+		EnableCompression: false,
+	}
+	if proxy := strings.TrimSpace(proxyURL); proxy != "" {
+		parsedProxyURL, err := url.Parse(proxy)
+		if err != nil {
+			return nil, 0, nil, fmt.Errorf("invalid proxy url: %w", err)
+		}
+		gorillaDialer.Proxy = http.ProxyURL(parsedProxyURL)
+	}
+	conn, resp, err := gorillaDialer.DialContext(ctx, wsURL, cloneHeader(headers))
+	if err != nil {
+		status := 0
+		respHeaders := http.Header(nil)
+		if resp != nil {
+			status = resp.StatusCode
+			respHeaders = cloneHeader(resp.Header)
+		}
+		return nil, status, respHeaders, err
+	}
+	conn.SetReadLimit(openAIWSMessageReadLimitBytes)
+	respHeaders := http.Header(nil)
+	if resp != nil {
+		respHeaders = cloneHeader(resp.Header)
+	}
+	return &gorillaOpenAIWSClientConn{conn: conn}, 0, respHeaders, nil
+}
+
 func (d *coderOpenAIWSClientDialer) SnapshotTransportMetrics() OpenAIWSTransportMetricsSnapshot {
 	if d == nil {
 		return OpenAIWSTransportMetricsSnapshot{}
@@ -309,4 +354,105 @@ func (c *coderOpenAIWSClientConn) Close() error {
 	_ = c.conn.Close(coderws.StatusNormalClosure, "")
 	_ = c.conn.CloseNow()
 	return nil
+}
+
+type gorillaOpenAIWSClientConn struct {
+	conn *gorillaws.Conn
+}
+
+var _ openaiwsv2.FrameConn = (*gorillaOpenAIWSClientConn)(nil)
+
+func (c *gorillaOpenAIWSClientConn) WriteJSON(ctx context.Context, value any) error {
+	if c == nil || c.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.conn.SetWriteDeadline(deadline)
+	} else {
+		_ = c.conn.SetWriteDeadline(time.Time{})
+	}
+	return c.conn.WriteJSON(value)
+}
+
+func (c *gorillaOpenAIWSClientConn) ReadMessage(ctx context.Context) ([]byte, error) {
+	msgType, payload, err := c.ReadFrame(ctx)
+	if err != nil {
+		return nil, err
+	}
+	switch msgType {
+	case coderws.MessageText, coderws.MessageBinary:
+		return payload, nil
+	default:
+		return nil, errOpenAIWSConnClosed
+	}
+}
+
+func (c *gorillaOpenAIWSClientConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	if c == nil || c.conn == nil {
+		return coderws.MessageText, nil, errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.conn.SetReadDeadline(deadline)
+	} else {
+		_ = c.conn.SetReadDeadline(time.Time{})
+	}
+	msgType, payload, err := c.conn.ReadMessage()
+	if err != nil {
+		return coderws.MessageText, nil, err
+	}
+	switch msgType {
+	case gorillaws.TextMessage:
+		return coderws.MessageText, payload, nil
+	case gorillaws.BinaryMessage:
+		return coderws.MessageBinary, payload, nil
+	default:
+		return coderws.MessageText, payload, nil
+	}
+}
+
+func (c *gorillaOpenAIWSClientConn) WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error {
+	if c == nil || c.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.conn.SetWriteDeadline(deadline)
+	} else {
+		_ = c.conn.SetWriteDeadline(time.Time{})
+	}
+	gType := gorillaws.TextMessage
+	if msgType == coderws.MessageBinary {
+		gType = gorillaws.BinaryMessage
+	}
+	return c.conn.WriteMessage(gType, payload)
+}
+
+func (c *gorillaOpenAIWSClientConn) Ping(ctx context.Context) error {
+	if c == nil || c.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	if d, ok := ctx.Deadline(); ok {
+		deadline = d
+	}
+	return c.conn.WriteControl(gorillaws.PingMessage, nil, deadline)
+}
+
+func (c *gorillaOpenAIWSClientConn) Close() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	_ = c.conn.WriteControl(gorillaws.CloseMessage, gorillaws.FormatCloseMessage(gorillaws.CloseNormalClosure, ""), time.Now().Add(time.Second))
+	return c.conn.Close()
 }
