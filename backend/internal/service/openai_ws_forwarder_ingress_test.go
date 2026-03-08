@@ -45,6 +45,30 @@ func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 	}
 }
 
+func TestSanitizeOpenAIWSClientPayloadRaw(t *testing.T) {
+	t.Parallel()
+
+	t.Run("strip_context_management", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.4","context_management":{"mode":"session"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+
+		updated, removed, err := sanitizeOpenAIWSClientPayloadRaw(payload)
+		require.NoError(t, err)
+		require.True(t, removed)
+		require.False(t, gjson.GetBytes(updated, "context_management").Exists())
+		require.Equal(t, "response.create", gjson.GetBytes(updated, "type").String())
+		require.Equal(t, "gpt-5.4", gjson.GetBytes(updated, "model").String())
+	})
+
+	t.Run("keep_payload_when_context_management_missing", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.4","input":[]}`)
+
+		updated, removed, err := sanitizeOpenAIWSClientPayloadRaw(payload)
+		require.NoError(t, err)
+		require.False(t, removed)
+		require.JSONEq(t, string(payload), string(updated))
+	})
+}
+
 func TestIsOpenAIWSIngressPreviousResponseNotFound(t *testing.T) {
 	t.Parallel()
 

@@ -33,6 +33,7 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService *service.ErrorPassthroughService
 	concurrencyHelper       *ConcurrencyHelper
 	maxAccountSwitches      int
+	wsFirstMessageTimeout   time.Duration
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -47,10 +48,14 @@ func NewOpenAIGatewayHandler(
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 3
+	wsFirstMessageTimeout := 90 * time.Second
 	if cfg != nil {
 		pingInterval = time.Duration(cfg.Concurrency.PingInterval) * time.Second
 		if cfg.Gateway.MaxAccountSwitches > 0 {
 			maxAccountSwitches = cfg.Gateway.MaxAccountSwitches
+		}
+		if cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds > 0 {
+			wsFirstMessageTimeout = time.Duration(cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds) * time.Second
 		}
 	}
 	return &OpenAIGatewayHandler{
@@ -61,6 +66,7 @@ func NewOpenAIGatewayHandler(
 		errorPassthroughService: errorPassthroughService,
 		concurrencyHelper:       NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		maxAccountSwitches:      maxAccountSwitches,
+		wsFirstMessageTimeout:   wsFirstMessageTimeout,
 	}
 }
 
@@ -621,7 +627,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	wsConn.SetReadLimit(16 * 1024 * 1024)
 
 	ctx := c.Request.Context()
-	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	firstMessageTimeout := h.responsesWSFirstMessageTimeout()
+	readCtx, cancel := context.WithTimeout(ctx, firstMessageTimeout)
 	msgType, firstMessage, err := wsConn.Read(readCtx)
 	cancel()
 	if err != nil {
@@ -631,7 +638,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			zap.String("client_ip", clientIP),
 			zap.String("close_status", closeStatus),
 			zap.String("close_reason", closeReason),
-			zap.Duration("read_timeout", 30*time.Second),
+			zap.Duration("read_timeout", firstMessageTimeout),
 		)
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "missing first response.create message")
 		return
@@ -937,6 +944,13 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTas
 	if h.usageRecordWorkerPool != nil {
 		h.usageRecordWorkerPool.Submit(task)
 		return
+func (h *OpenAIGatewayHandler) responsesWSFirstMessageTimeout() time.Duration {
+	if h != nil && h.wsFirstMessageTimeout > 0 {
+		return h.wsFirstMessageTimeout
+	}
+	return 90 * time.Second
+}
+
 	}
 	// 回退路径：worker 池未注入时同步执行，避免退回到无界 goroutine 模式。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

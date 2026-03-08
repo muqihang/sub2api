@@ -135,6 +135,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.RetryBackoffMaxMS != 2000 {
 		t.Fatalf("Gateway.OpenAIWS.RetryBackoffMaxMS = %d, want 2000", cfg.Gateway.OpenAIWS.RetryBackoffMaxMS)
 	}
+	if cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds != 90 {
+		t.Fatalf("Gateway.OpenAIWS.FirstMessageTimeoutSeconds = %d, want 90", cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds)
+	}
 	if cfg.Gateway.OpenAIWS.RetryJitterRatio != 0.2 {
 		t.Fatalf("Gateway.OpenAIWS.RetryJitterRatio = %v, want 0.2", cfg.Gateway.OpenAIWS.RetryJitterRatio)
 	}
@@ -1341,6 +1344,11 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "dial_timeout_seconds 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.DialTimeoutSeconds = 0 },
 			wantErr: "gateway.openai_ws.dial_timeout_seconds",
+		},
+		{
+			name:    "first_message_timeout_seconds 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.FirstMessageTimeoutSeconds = 0 },
+			wantErr: "gateway.openai_ws.first_message_timeout_seconds",
 		},
 		{
 			name:    "read_timeout_seconds 必须为正数",

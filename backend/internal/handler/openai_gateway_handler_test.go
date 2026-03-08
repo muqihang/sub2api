@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -491,6 +492,55 @@ func TestOpenAIResponsesWebSocket_RejectsMessageIDAsPreviousResponseID(t *testin
 	require.ErrorAs(t, err, &closeErr)
 	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
 	require.Contains(t, strings.ToLower(closeErr.Reason), "previous_response_id")
+}
+
+func TestOpenAIResponsesWebSocket_FirstMessageTimeoutUsesConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+		acquireAccountSlotFn: func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds = 1
+	h := NewOpenAIGatewayHandler(
+		&service.OpenAIGatewayService{},
+		service.NewConcurrencyService(cache),
+		&service.BillingCacheService{},
+		&service.APIKeyService{},
+		nil,
+		nil,
+		cfg,
+	)
+	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
+	defer wsServer.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(wsServer.URL, "http")+"/openai/v1/responses", nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() {
+		_ = clientConn.CloseNow()
+	}()
+
+	start := time.Now()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	_, _, err = clientConn.Read(readCtx)
+	cancelRead()
+	require.Error(t, err)
+	require.Less(t, time.Since(start), 1400*time.Millisecond, "应在配置的首帧超时后由服务端提前关闭，而不是等客户端本地 read deadline")
+	require.NotContains(t, strings.ToLower(err.Error()), "context deadline exceeded")
+	var closeErr coderws.CloseError
+	if errors.As(err, &closeErr) {
+		require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+		require.Contains(t, strings.ToLower(closeErr.Reason), "missing first response.create")
+	} else {
+		require.Contains(t, strings.ToLower(err.Error()), "eof")
+	}
 }
 
 func TestOpenAIResponsesWebSocket_PreviousResponseIDKindLoggedBeforeAcquireFailure(t *testing.T) {

@@ -245,6 +245,8 @@ gateway:
     oauth_max_conns_factor: 1.0
     apikey_max_conns_factor: 1.0
     dial_timeout_seconds: 10
+    # ingress 客户端 upgrade 成功后，等待首条 response.create 的超时（秒）
+    first_message_timeout_seconds: 90
     read_timeout_seconds: 900
     write_timeout_seconds: 120
     pool_target_utilization: 0.7

@@ -559,12 +559,14 @@ type GatewayOpenAIWSConfig struct {
 	// OAuthMaxConnsFactor: OAuth 账号连接池系数（effective=ceil(concurrency*factor)）
 	OAuthMaxConnsFactor float64 `mapstructure:"oauth_max_conns_factor"`
 	// APIKeyMaxConnsFactor: API Key 账号连接池系数（effective=ceil(concurrency*factor)）
-	APIKeyMaxConnsFactor  float64 `mapstructure:"apikey_max_conns_factor"`
-	DialTimeoutSeconds    int     `mapstructure:"dial_timeout_seconds"`
-	ReadTimeoutSeconds    int     `mapstructure:"read_timeout_seconds"`
-	WriteTimeoutSeconds   int     `mapstructure:"write_timeout_seconds"`
-	PoolTargetUtilization float64 `mapstructure:"pool_target_utilization"`
-	QueueLimitPerConn     int     `mapstructure:"queue_limit_per_conn"`
+	APIKeyMaxConnsFactor float64 `mapstructure:"apikey_max_conns_factor"`
+	DialTimeoutSeconds   int     `mapstructure:"dial_timeout_seconds"`
+	// FirstMessageTimeoutSeconds: ingress 客户端升级成功后等待首条 response.create 的超时（秒）
+	FirstMessageTimeoutSeconds int     `mapstructure:"first_message_timeout_seconds"`
+	ReadTimeoutSeconds         int     `mapstructure:"read_timeout_seconds"`
+	WriteTimeoutSeconds        int     `mapstructure:"write_timeout_seconds"`
+	PoolTargetUtilization      float64 `mapstructure:"pool_target_utilization"`
+	QueueLimitPerConn          int     `mapstructure:"queue_limit_per_conn"`
 	// EventFlushBatchSize: WS 流式写出批量 flush 阈值（事件条数）
 	EventFlushBatchSize int `mapstructure:"event_flush_batch_size"`
 	// EventFlushIntervalMS: WS 流式写出最大等待时间（毫秒）；0 表示仅按 batch 触发
@@ -1364,6 +1366,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.oauth_max_conns_factor", 1.0)
 	viper.SetDefault("gateway.openai_ws.apikey_max_conns_factor", 1.0)
 	viper.SetDefault("gateway.openai_ws.dial_timeout_seconds", 10)
+	viper.SetDefault("gateway.openai_ws.first_message_timeout_seconds", 90)
 	viper.SetDefault("gateway.openai_ws.read_timeout_seconds", 900)
 	viper.SetDefault("gateway.openai_ws.write_timeout_seconds", 120)
 	viper.SetDefault("gateway.openai_ws.pool_target_utilization", 0.7)
@@ -2018,6 +2021,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.DialTimeoutSeconds <= 0 {
 		return fmt.Errorf("gateway.openai_ws.dial_timeout_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.FirstMessageTimeoutSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_ws.first_message_timeout_seconds must be positive")
 	}
 	if c.Gateway.OpenAIWS.ReadTimeoutSeconds <= 0 {
 		return fmt.Errorf("gateway.openai_ws.read_timeout_seconds must be positive")

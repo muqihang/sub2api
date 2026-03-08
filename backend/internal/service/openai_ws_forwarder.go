@@ -1375,6 +1375,39 @@ func alignStoreDisabledPreviousResponseID(
 	payload []byte,
 	expectedPreviousResponseID string,
 ) ([]byte, bool, error) {
+func sanitizeOpenAIWSClientPayloadRaw(payload []byte) ([]byte, bool, error) {
+	updated := payload
+	removedAny := false
+	for _, field := range []string{"context_management"} {
+		next, removed, err := dropOpenAIWSFieldFromRawPayload(updated, field)
+		if err != nil {
+			return payload, removedAny, err
+		}
+		updated = next
+		removedAny = removedAny || removed
+	}
+	return updated, removedAny, nil
+}
+
+func dropOpenAIWSFieldFromRawPayload(payload []byte, field string) ([]byte, bool, error) {
+	trimmedField := strings.TrimSpace(field)
+	if len(payload) == 0 || trimmedField == "" {
+		return payload, false, nil
+	}
+	if !gjson.GetBytes(payload, trimmedField).Exists() {
+		return payload, false, nil
+	}
+	updated := payload
+	for i := 0; i < openAIWSMaxPrevResponseIDDeletePasses && gjson.GetBytes(updated, trimmedField).Exists(); i++ {
+		next, err := sjson.DeleteBytes(updated, trimmedField)
+		if err != nil {
+			return payload, false, err
+		}
+		updated = next
+	}
+	return updated, !gjson.GetBytes(updated, trimmedField).Exists(), nil
+}
+
 	if len(payload) == 0 {
 		return payload, false, nil
 	}
@@ -2440,8 +2473,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", errors.New("invalid json"))
 		}
 
-		values := gjson.GetManyBytes(trimmed, "type", "model", "prompt_cache_key", "previous_response_id")
-		eventType := strings.TrimSpace(values[0].String())
+		eventType := strings.TrimSpace(gjson.GetBytes(trimmed, "type").String())
 		normalized := trimmed
 		switch eventType {
 		case "":
@@ -2466,7 +2498,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 
-		originalModel := strings.TrimSpace(values[1].String())
+		sanitizedPayload, _, sanitizeErr := sanitizeOpenAIWSClientPayloadRaw(normalized)
+		if sanitizeErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", sanitizeErr)
+		}
+		normalized = sanitizedPayload
+
+		values := gjson.GetManyBytes(normalized, "model", "prompt_cache_key", "previous_response_id")
+		originalModel := strings.TrimSpace(values[0].String())
 		if originalModel == "" {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
 				coderws.StatusPolicyViolation,
@@ -2474,8 +2513,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				nil,
 			)
 		}
-		promptCacheKey := strings.TrimSpace(values[2].String())
-		previousResponseID := strings.TrimSpace(values[3].String())
+		promptCacheKey := strings.TrimSpace(values[1].String())
+		previousResponseID := strings.TrimSpace(values[2].String())
 		previousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
 		if previousResponseID != "" && previousResponseIDKind == OpenAIPreviousResponseIDKindMessageID {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
@@ -2821,6 +2860,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						errMessage,
 						truncateOpenAIWSLogValue(turnPreviousResponseID, openAIWSIDValueMaxLen),
 						normalizeOpenAIWSLogValue(turnPreviousResponseIDKind),
+		earlyBoundResponseID := ""
 						truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
 						turnStoreDisabled,
 						turnPromptCacheKey != "",
@@ -2863,6 +2903,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				tokenEventCount++
 			}
 			isTerminalEvent := isOpenAIWSTerminalEvent(eventType)
+			if stateStore != nil && responseID != "" && responseID != earlyBoundResponseID {
+				earlyBoundResponseID = responseID
+				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, s.openAIWSResponseStickyTTL()))
+			}
 			if isTerminalEvent {
 				terminalEventCount++
 			}
