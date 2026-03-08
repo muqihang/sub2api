@@ -67,6 +67,17 @@ func TestSanitizeOpenAIWSClientPayloadRaw(t *testing.T) {
 		require.False(t, removed)
 		require.JSONEq(t, string(payload), string(updated))
 	})
+
+	t.Run("inject_empty_input_for_generate_false_warmup", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","generate":false,"model":"gpt-5.4","instructions":"warmup","tools":[]}`)
+
+		updated, removed, err := sanitizeOpenAIWSClientPayloadRaw(payload)
+		require.NoError(t, err)
+		require.True(t, removed)
+		require.True(t, gjson.GetBytes(updated, "input").Exists())
+		require.Equal(t, "[]", gjson.GetBytes(updated, "input").Raw)
+		require.Equal(t, false, gjson.GetBytes(updated, "generate").Bool())
+	})
 }
 
 func TestIsOpenAIWSIngressPreviousResponseNotFound(t *testing.T) {

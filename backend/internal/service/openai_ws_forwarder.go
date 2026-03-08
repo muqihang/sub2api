@@ -1386,7 +1386,40 @@ func sanitizeOpenAIWSClientPayloadRaw(payload []byte) ([]byte, bool, error) {
 		updated = next
 		removedAny = removedAny || removed
 	}
+	if normalized, injected, err := injectWarmupEmptyInputIfMissing(updated); err != nil {
+		return payload, removedAny, err
+	} else {
+		updated = normalized
+		removedAny = removedAny || injected
+	}
 	return updated, removedAny, nil
+}
+
+func injectWarmupEmptyInputIfMissing(payload []byte) ([]byte, bool, error) {
+	if len(payload) == 0 {
+		return payload, false, nil
+	}
+	generateValue := gjson.GetBytes(payload, "generate")
+	if !generateValue.Exists() || generateValue.Type != gjson.False || generateValue.Bool() {
+		return payload, false, nil
+	}
+	if gjson.GetBytes(payload, "input").Exists() {
+		return payload, false, nil
+	}
+	updated, err := sjson.SetRawBytes(payload, "input", []byte("[]"))
+	if err == nil {
+		return updated, true, nil
+	}
+	var reqBody map[string]any
+	if unmarshalErr := json.Unmarshal(payload, &reqBody); unmarshalErr != nil {
+		return payload, false, err
+	}
+	reqBody["input"] = []any{}
+	rebuilt, marshalErr := json.Marshal(reqBody)
+	if marshalErr != nil {
+		return payload, false, marshalErr
+	}
+	return rebuilt, true, nil
 }
 
 func dropOpenAIWSFieldFromRawPayload(payload []byte, field string) ([]byte, bool, error) {
