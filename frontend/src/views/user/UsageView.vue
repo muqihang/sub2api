@@ -113,6 +113,9 @@
 
             <!-- Actions -->
             <div class="ml-auto flex items-center gap-3">
+              <button @click="applyFilters" :disabled="loading" class="btn btn-secondary">
+                {{ t('common.refresh') }}
+              </button>
               <button @click="resetFilters" class="btn btn-secondary">
                 {{ t('common.reset') }}
               </button>
@@ -160,6 +163,12 @@
           <template #cell-reasoning_effort="{ row }">
             <span class="text-sm text-gray-900 dark:text-white">
               {{ formatReasoningEffort(row.reasoning_effort) }}
+            </span>
+          </template>
+
+          <template #cell-endpoint="{ row }">
+            <span class="text-sm text-gray-600 dark:text-gray-300 block max-w-[320px] whitespace-normal break-all">
+              {{ formatUsageEndpoints(row) }}
             </span>
           </template>
 
@@ -423,6 +432,14 @@
               <span class="text-gray-400">{{ t('admin.usage.outputCost') }}</span>
               <span class="font-medium text-white">${{ tooltipData.output_cost.toFixed(6) }}</span>
             </div>
+            <div v-if="tooltipData && tooltipData.input_tokens > 0" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.inputTokenPrice') }}</span>
+              <span class="font-medium text-sky-300">{{ formatTokenPricePerMillion(tooltipData.input_cost, tooltipData.input_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+            </div>
+            <div v-if="tooltipData && tooltipData.output_tokens > 0" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.outputTokenPrice') }}</span>
+              <span class="font-medium text-violet-300">{{ formatTokenPricePerMillion(tooltipData.output_cost, tooltipData.output_tokens) }} {{ t('usage.perMillionTokens') }}</span>
+            </div>
             <div v-if="tooltipData && tooltipData.cache_creation_cost > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.cacheCreationCost') }}</span>
               <span class="font-medium text-white">${{ tooltipData.cache_creation_cost.toFixed(6) }}</span>
@@ -433,6 +450,10 @@
             </div>
           </div>
           <!-- Rate and Summary -->
+          <div class="flex items-center justify-between gap-6">
+            <span class="text-gray-400">{{ t('usage.serviceTier') }}</span>
+            <span class="font-semibold text-cyan-300">{{ getUsageServiceTierLabel(tooltipData?.service_tier, t) }}</span>
+          </div>
           <div class="flex items-center justify-between gap-6">
             <span class="text-gray-400">{{ t('usage.rate') }}</span>
             <span class="font-semibold text-blue-400"
@@ -475,6 +496,9 @@ import Icon from '@/components/icons/Icon.vue'
 import type { UsageLog, ApiKey, UsageQueryParams, UsageStatsResponse } from '@/types'
 import type { Column } from '@/components/common/types'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
+import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
+import { formatTokenPricePerMillion } from '@/utils/usagePricing'
+import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
 
 const { t } = useI18n()
@@ -499,6 +523,7 @@ const columns = computed<Column[]>(() => [
   { key: 'api_key', label: t('usage.apiKeyFilter'), sortable: false },
   { key: 'model', label: t('usage.model'), sortable: true },
   { key: 'reasoning_effort', label: t('usage.reasoningEffort'), sortable: false },
+  { key: 'endpoint', label: t('usage.endpoint'), sortable: false },
   { key: 'stream', label: t('usage.type'), sortable: false },
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
@@ -560,7 +585,7 @@ const onDateRangeChange = (range: {
 
 const pagination = reactive({
   page: 1,
-  page_size: 20,
+  page_size: getPersistedPageSize(),
   total: 0,
   pages: 0
 })
@@ -596,6 +621,11 @@ const getRequestTypeExportText = (log: UsageLog): string => {
   if (requestType === 'stream') return 'Stream'
   if (requestType === 'sync') return 'Sync'
   return 'Unknown'
+}
+
+const formatUsageEndpoints = (log: UsageLog): string => {
+  const inbound = log.inbound_endpoint?.trim()
+  return inbound || '-'
 }
 
 const formatTokens = (value: number): string => {
@@ -772,6 +802,7 @@ const exportToCSV = async () => {
       'API Key Name',
       'Model',
       'Reasoning Effort',
+      'Inbound Endpoint',
       'Type',
       'Input Tokens',
       'Output Tokens',
@@ -789,6 +820,7 @@ const exportToCSV = async () => {
         log.api_key?.name || '',
         log.model,
         formatReasoningEffort(log.reasoning_effort),
+        log.inbound_endpoint || '',
         getRequestTypeExportText(log),
         log.input_tokens,
         log.output_tokens,

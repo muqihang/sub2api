@@ -44,6 +44,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			log.AccountID,
 			log.RequestID,
 			log.Model,
+			sqlmock.AnyArg(), // upstream_model
 			sqlmock.AnyArg(), // group_id
 			sqlmock.AnyArg(), // subscription_id
 			log.InputTokens,
@@ -71,7 +72,10 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			log.ImageCount,
 			sqlmock.AnyArg(), // image_size
 			sqlmock.AnyArg(), // media_type
+			sqlmock.AnyArg(), // service_tier
 			sqlmock.AnyArg(), // reasoning_effort
+			sqlmock.AnyArg(), // inbound_endpoint
+			sqlmock.AnyArg(), // upstream_endpoint
 			log.CacheTTLOverridden,
 			createdAt,
 		).
@@ -81,9 +85,76 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, inserted)
 	require.Equal(t, int64(99), log.ID)
+	require.Nil(t, log.ServiceTier)
 	require.Equal(t, service.RequestTypeWSV2, log.RequestType)
 	require.True(t, log.Stream)
 	require.True(t, log.OpenAIWSMode)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	createdAt := time.Date(2025, 1, 2, 12, 0, 0, 0, time.UTC)
+	serviceTier := "priority"
+	log := &service.UsageLog{
+		UserID:      1,
+		APIKeyID:    2,
+		AccountID:   3,
+		RequestID:   "req-service-tier",
+		Model:       "gpt-5.4",
+		ServiceTier: &serviceTier,
+		CreatedAt:   createdAt,
+	}
+
+	mock.ExpectQuery("INSERT INTO usage_logs").
+		WithArgs(
+			log.UserID,
+			log.APIKeyID,
+			log.AccountID,
+			log.RequestID,
+			log.Model,
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			log.InputTokens,
+			log.OutputTokens,
+			log.CacheCreationTokens,
+			log.CacheReadTokens,
+			log.CacheCreation5mTokens,
+			log.CacheCreation1hTokens,
+			log.InputCost,
+			log.OutputCost,
+			log.CacheCreationCost,
+			log.CacheReadCost,
+			log.TotalCost,
+			log.ActualCost,
+			log.RateMultiplier,
+			log.AccountRateMultiplier,
+			log.BillingType,
+			int16(service.RequestTypeSync),
+			false,
+			false,
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			log.ImageCount,
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			serviceTier,
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			log.CacheTTLOverridden,
+			createdAt,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
+
+	inserted, err := repo.Create(context.Background(), log)
+	require.NoError(t, err)
+	require.True(t, inserted)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -125,7 +196,7 @@ func TestUsageLogRepositoryGetUsageTrendWithFiltersRequestTypePriority(t *testin
 
 	mock.ExpectQuery("AND \\(request_type = \\$3 OR \\(request_type = 0 AND stream = TRUE AND openai_ws_mode = FALSE\\)\\)").
 		WithArgs(start, end, requestType).
-		WillReturnRows(sqlmock.NewRows([]string{"date", "requests", "input_tokens", "output_tokens", "cache_tokens", "total_tokens", "cost", "actual_cost"}))
+		WillReturnRows(sqlmock.NewRows([]string{"date", "requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens", "total_tokens", "cost", "actual_cost"}))
 
 	trend, err := repo.GetUsageTrendWithFilters(context.Background(), start, end, "day", 0, 0, 0, 0, "", &requestType, &stream, nil)
 	require.NoError(t, err)
@@ -144,7 +215,7 @@ func TestUsageLogRepositoryGetModelStatsWithFiltersRequestTypePriority(t *testin
 
 	mock.ExpectQuery("AND \\(request_type = \\$3 OR \\(request_type = 0 AND openai_ws_mode = TRUE\\)\\)").
 		WithArgs(start, end, requestType).
-		WillReturnRows(sqlmock.NewRows([]string{"model", "requests", "input_tokens", "output_tokens", "total_tokens", "cost", "actual_cost"}))
+		WillReturnRows(sqlmock.NewRows([]string{"model", "requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens", "total_tokens", "cost", "actual_cost"}))
 
 	stats, err := repo.GetModelStatsWithFilters(context.Background(), start, end, 0, 0, 0, 0, &requestType, &stream, nil)
 	require.NoError(t, err)
@@ -180,6 +251,37 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, int64(1), stats.TotalRequests)
 	require.Equal(t, int64(9), stats.TotalTokens)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogRepositoryGetUserSpendingRanking(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+
+	rows := sqlmock.NewRows([]string{"user_id", "email", "actual_cost", "requests", "tokens", "total_actual_cost", "total_requests", "total_tokens"}).
+		AddRow(int64(2), "beta@example.com", 12.5, int64(9), int64(900), 40.0, int64(30), int64(2600)).
+		AddRow(int64(1), "alpha@example.com", 12.5, int64(8), int64(800), 40.0, int64(30), int64(2600)).
+		AddRow(int64(3), "gamma@example.com", 4.25, int64(5), int64(300), 40.0, int64(30), int64(2600))
+
+	mock.ExpectQuery("WITH user_spend AS \\(").
+		WithArgs(start, end, 12).
+		WillReturnRows(rows)
+
+	got, err := repo.GetUserSpendingRanking(context.Background(), start, end, 12)
+	require.NoError(t, err)
+	require.Equal(t, &usagestats.UserSpendingRankingResponse{
+		Ranking: []usagestats.UserSpendingRankingItem{
+			{UserID: 2, Email: "beta@example.com", ActualCost: 12.5, Requests: 9, Tokens: 900},
+			{UserID: 1, Email: "alpha@example.com", ActualCost: 12.5, Requests: 8, Tokens: 800},
+			{UserID: 3, Email: "gamma@example.com", ActualCost: 4.25, Requests: 5, Tokens: 300},
+		},
+		TotalActualCost: 40.0,
+		TotalRequests:   30,
+		TotalTokens:     2600,
+	}, got)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -253,6 +355,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			int64(30), // account_id
 			sql.NullString{Valid: true, String: "req-1"},
 			"gpt-5",           // model
+			sql.NullString{},  // upstream_model
 			sql.NullInt64{},   // group_id
 			sql.NullInt64{},   // subscription_id
 			1,                 // input_tokens
@@ -280,11 +383,16 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			0,
 			sql.NullString{},
 			sql.NullString{},
+			sql.NullString{Valid: true, String: "priority"},
+			sql.NullString{},
+			sql.NullString{},
 			sql.NullString{},
 			false,
 			now,
 		}})
 		require.NoError(t, err)
+		require.NotNil(t, log.ServiceTier)
+		require.Equal(t, "priority", *log.ServiceTier)
 		require.Equal(t, service.RequestTypeWSV2, log.RequestType)
 		require.True(t, log.Stream)
 		require.True(t, log.OpenAIWSMode)
@@ -299,6 +407,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			int64(31),
 			sql.NullString{Valid: true, String: "req-2"},
 			"gpt-5",
+			sql.NullString{},
 			sql.NullInt64{},
 			sql.NullInt64{},
 			1, 2, 3, 4, 5, 6,
@@ -316,13 +425,58 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			0,
 			sql.NullString{},
 			sql.NullString{},
+			sql.NullString{Valid: true, String: "flex"},
+			sql.NullString{},
+			sql.NullString{},
 			sql.NullString{},
 			false,
 			now,
 		}})
 		require.NoError(t, err)
+		require.NotNil(t, log.ServiceTier)
+		require.Equal(t, "flex", *log.ServiceTier)
 		require.Equal(t, service.RequestTypeStream, log.RequestType)
 		require.True(t, log.Stream)
 		require.False(t, log.OpenAIWSMode)
 	})
+
+	t.Run("service_tier_is_scanned", func(t *testing.T) {
+		now := time.Now().UTC()
+		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+			int64(3),
+			int64(12),
+			int64(22),
+			int64(32),
+			sql.NullString{Valid: true, String: "req-3"},
+			"gpt-5.4",
+			sql.NullString{},
+			sql.NullInt64{},
+			sql.NullInt64{},
+			1, 2, 3, 4, 5, 6,
+			0.1, 0.2, 0.3, 0.4, 1.0, 0.9,
+			1.0,
+			sql.NullFloat64{},
+			int16(service.BillingTypeBalance),
+			int16(service.RequestTypeSync),
+			false,
+			false,
+			sql.NullInt64{},
+			sql.NullInt64{},
+			sql.NullString{},
+			sql.NullString{},
+			0,
+			sql.NullString{},
+			sql.NullString{},
+			sql.NullString{Valid: true, String: "priority"},
+			sql.NullString{},
+			sql.NullString{},
+			sql.NullString{},
+			false,
+			now,
+		}})
+		require.NoError(t, err)
+		require.NotNil(t, log.ServiceTier)
+		require.Equal(t, "priority", *log.ServiceTier)
+	})
+
 }

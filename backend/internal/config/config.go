@@ -947,9 +947,10 @@ type DashboardAggregationConfig struct {
 
 // DashboardAggregationRetentionConfig 预聚合保留窗口
 type DashboardAggregationRetentionConfig struct {
-	UsageLogsDays int `mapstructure:"usage_logs_days"`
-	HourlyDays    int `mapstructure:"hourly_days"`
-	DailyDays     int `mapstructure:"daily_days"`
+	UsageLogsDays         int `mapstructure:"usage_logs_days"`
+	UsageBillingDedupDays int `mapstructure:"usage_billing_dedup_days"`
+	HourlyDays            int `mapstructure:"hourly_days"`
+	DailyDays             int `mapstructure:"daily_days"`
 }
 
 // UsageCleanupConfig 使用记录清理任务配置
@@ -1314,6 +1315,7 @@ func setDefaults() {
 	viper.SetDefault("dashboard_aggregation.backfill_enabled", false)
 	viper.SetDefault("dashboard_aggregation.backfill_max_days", 31)
 	viper.SetDefault("dashboard_aggregation.retention.usage_logs_days", 90)
+	viper.SetDefault("dashboard_aggregation.retention.usage_billing_dedup_days", 365)
 	viper.SetDefault("dashboard_aggregation.retention.hourly_days", 180)
 	viper.SetDefault("dashboard_aggregation.retention.daily_days", 730)
 	viper.SetDefault("dashboard_aggregation.recompute_days", 2)
@@ -1416,7 +1418,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
-	viper.SetDefault("gateway.max_line_size", 40*1024*1024)
+	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
@@ -1779,6 +1781,12 @@ func (c *Config) Validate() error {
 		if c.DashboardAgg.Retention.UsageLogsDays <= 0 {
 			return fmt.Errorf("dashboard_aggregation.retention.usage_logs_days must be positive")
 		}
+		if c.DashboardAgg.Retention.UsageBillingDedupDays <= 0 {
+			return fmt.Errorf("dashboard_aggregation.retention.usage_billing_dedup_days must be positive")
+		}
+		if c.DashboardAgg.Retention.UsageBillingDedupDays < c.DashboardAgg.Retention.UsageLogsDays {
+			return fmt.Errorf("dashboard_aggregation.retention.usage_billing_dedup_days must be greater than or equal to usage_logs_days")
+		}
 		if c.DashboardAgg.Retention.HourlyDays <= 0 {
 			return fmt.Errorf("dashboard_aggregation.retention.hourly_days must be positive")
 		}
@@ -1800,6 +1808,14 @@ func (c *Config) Validate() error {
 		}
 		if c.DashboardAgg.Retention.UsageLogsDays < 0 {
 			return fmt.Errorf("dashboard_aggregation.retention.usage_logs_days must be non-negative")
+		}
+		if c.DashboardAgg.Retention.UsageBillingDedupDays < 0 {
+			return fmt.Errorf("dashboard_aggregation.retention.usage_billing_dedup_days must be non-negative")
+		}
+		if c.DashboardAgg.Retention.UsageBillingDedupDays > 0 &&
+			c.DashboardAgg.Retention.UsageLogsDays > 0 &&
+			c.DashboardAgg.Retention.UsageBillingDedupDays < c.DashboardAgg.Retention.UsageLogsDays {
+			return fmt.Errorf("dashboard_aggregation.retention.usage_billing_dedup_days must be greater than or equal to usage_logs_days")
 		}
 		if c.DashboardAgg.Retention.HourlyDays < 0 {
 			return fmt.Errorf("dashboard_aggregation.retention.hourly_days must be non-negative")

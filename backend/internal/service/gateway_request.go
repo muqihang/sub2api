@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
@@ -27,6 +28,12 @@ var (
 	patternEmptyContentSpaced = []byte(`"content": []`)
 	patternEmptyContentSp1    = []byte(`"content" : []`)
 	patternEmptyContentSp2    = []byte(`"content" :[]`)
+
+	// Fast-path patterns for empty text blocks: {"type":"text","text":""}
+	patternEmptyText       = []byte(`"text":""`)
+	patternEmptyTextSpaced = []byte(`"text": ""`)
+	patternEmptyTextSp1    = []byte(`"text" : ""`)
+	patternEmptyTextSp2    = []byte(`"text" :""`)
 )
 
 // SessionContext 粘性会话上下文，用于区分不同来源的请求。
@@ -59,6 +66,7 @@ type ParsedRequest struct {
 	Messages        []any           // messages 数组
 	HasSystem       bool            // 是否包含 system 字段（包含 null 也视为显式传入）
 	ThinkingEnabled bool            // 是否开启 thinking（部分平台会影响最终模型名）
+	OutputEffort    string          // output_config.effort（Claude API 的推理强度控制）
 	MaxTokens       int             // max_tokens 值（用于探测请求拦截）
 	SessionContext  *SessionContext // 可选：请求上下文区分因子（nil 时行为不变）
 
@@ -114,6 +122,9 @@ func ParseGatewayRequest(body []byte, protocol string) (*ParsedRequest, error) {
 	if thinkingType == "enabled" || thinkingType == "adaptive" {
 		parsed.ThinkingEnabled = true
 	}
+
+	// output_config.effort: Claude API 的推理强度控制参数
+	parsed.OutputEffort = strings.TrimSpace(gjson.Get(jsonStr, "output_config.effort").String())
 
 	// max_tokens: 仅接受整数值
 	maxTokensResult := gjson.Get(jsonStr, "max_tokens")
@@ -228,15 +239,22 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 		bytes.Contains(body, patternThinkingField) ||
 		bytes.Contains(body, patternThinkingFieldSpaced)
 
-	// Also check for empty content arrays that need fixing.
+	// Also check for empty content arrays and empty text blocks that need fixing.
 	// Note: This is a heuristic check; the actual empty content handling is done below.
 	hasEmptyContent := bytes.Contains(body, patternEmptyContent) ||
 		bytes.Contains(body, patternEmptyContentSpaced) ||
 		bytes.Contains(body, patternEmptyContentSp1) ||
 		bytes.Contains(body, patternEmptyContentSp2)
 
+	// Check for empty text blocks: {"type":"text","text":""}
+	// These cause upstream 400: "text content blocks must be non-empty"
+	hasEmptyTextBlock := bytes.Contains(body, patternEmptyText) ||
+		bytes.Contains(body, patternEmptyTextSpaced) ||
+		bytes.Contains(body, patternEmptyTextSp1) ||
+		bytes.Contains(body, patternEmptyTextSp2)
+
 	// Fast path: nothing to process
-	if !hasThinkingContent && !hasEmptyContent {
+	if !hasThinkingContent && !hasEmptyContent && !hasEmptyTextBlock {
 		return body
 	}
 
@@ -255,9 +273,10 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 		bytes.Contains(body, patternTypeRedactedThinking) ||
 		bytes.Contains(body, patternTypeRedactedSpaced) ||
 		bytes.Contains(body, patternThinkingFieldSpaced)
-	if !hasEmptyContent && !containsThinkingBlocks {
+	if !hasEmptyContent && !hasEmptyTextBlock && !containsThinkingBlocks {
 		if topThinking := gjson.Get(jsonStr, "thinking"); topThinking.Exists() {
 			if out, err := sjson.DeleteBytes(body, "thinking"); err == nil {
+				out = removeThinkingDependentContextStrategies(out)
 				return out
 			}
 			return body
@@ -313,6 +332,16 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 			}
 
 			blockType, _ := blockMap["type"].(string)
+
+			// Strip empty text blocks: {"type":"text","text":""}
+			// Upstream rejects these with 400: "text content blocks must be non-empty"
+			if blockType == "text" {
+				if txt, _ := blockMap["text"].(string); txt == "" {
+					modifiedThisMsg = true
+					ensureNewContent(bi)
+					continue
+				}
+			}
 
 			// Convert thinking blocks to text (preserve content) and drop redacted_thinking.
 			switch blockType {
@@ -395,6 +424,10 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 		} else {
 			return body
 		}
+		// Removing "thinking" makes any context_management strategy that requires it invalid
+		// (e.g. clear_thinking_20251015).  Strip those entries so the retry request does not
+		// receive a 400 "strategy requires thinking to be enabled or adaptive".
+		out = removeThinkingDependentContextStrategies(out)
 	}
 	if modified {
 		msgsBytes, err := json.Marshal(messages)
@@ -407,6 +440,49 @@ func FilterThinkingBlocksForRetry(body []byte) []byte {
 		}
 	}
 	return out
+}
+
+// removeThinkingDependentContextStrategies 从 context_management.edits 中移除
+// 需要 thinking 启用的策略（如 clear_thinking_20251015）。
+// 当顶层 "thinking" 字段被禁用时必须调用，否则上游会返回
+// "strategy requires thinking to be enabled or adaptive"。
+func removeThinkingDependentContextStrategies(body []byte) []byte {
+	jsonStr := *(*string)(unsafe.Pointer(&body))
+	editsRes := gjson.Get(jsonStr, "context_management.edits")
+	if !editsRes.Exists() || !editsRes.IsArray() {
+		return body
+	}
+
+	var filtered []json.RawMessage
+	hasRemoved := false
+	editsRes.ForEach(func(_, v gjson.Result) bool {
+		if v.Get("type").String() == "clear_thinking_20251015" {
+			hasRemoved = true
+			return true
+		}
+		filtered = append(filtered, json.RawMessage(v.Raw))
+		return true
+	})
+
+	if !hasRemoved {
+		return body
+	}
+
+	if len(filtered) == 0 {
+		if b, err := sjson.DeleteBytes(body, "context_management.edits"); err == nil {
+			return b
+		}
+		return body
+	}
+
+	filteredBytes, err := json.Marshal(filtered)
+	if err != nil {
+		return body
+	}
+	if b, err := sjson.SetRawBytes(body, "context_management.edits", filteredBytes); err == nil {
+		return b
+	}
+	return body
 }
 
 // FilterSignatureSensitiveBlocksForRetry is a stronger retry filter for cases where upstream errors indicate
@@ -444,6 +520,28 @@ func FilterSignatureSensitiveBlocksForRetry(body []byte) []byte {
 	if _, exists := req["thinking"]; exists {
 		delete(req, "thinking")
 		modified = true
+		// Remove context_management strategies that require thinking to be enabled
+		// (e.g. clear_thinking_20251015), otherwise upstream returns 400.
+		if cm, ok := req["context_management"].(map[string]any); ok {
+			if edits, ok := cm["edits"].([]any); ok {
+				filtered := make([]any, 0, len(edits))
+				for _, edit := range edits {
+					if editMap, ok := edit.(map[string]any); ok {
+						if editMap["type"] == "clear_thinking_20251015" {
+							continue
+						}
+					}
+					filtered = append(filtered, edit)
+				}
+				if len(filtered) != len(edits) {
+					if len(filtered) == 0 {
+						delete(cm, "edits")
+					} else {
+						cm["edits"] = filtered
+					}
+				}
+			}
+		}
 	}
 
 	messages, ok := req["messages"].([]any)
@@ -674,4 +772,106 @@ func filterThinkingBlocksInternal(body []byte, _ bool) []byte {
 		return body
 	}
 	return newBody
+}
+
+// NormalizeClaudeOutputEffort normalizes Claude's output_config.effort value.
+// Returns nil for empty or unrecognized values.
+func NormalizeClaudeOutputEffort(raw string) *string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return nil
+	}
+	switch value {
+	case "low", "medium", "high", "max":
+		return &value
+	default:
+		return nil
+	}
+}
+
+// =========================
+// Thinking Budget Rectifier
+// =========================
+
+const (
+	// BudgetRectifyBudgetTokens is the budget_tokens value to set when rectifying.
+	BudgetRectifyBudgetTokens = 32000
+	// BudgetRectifyMaxTokens is the max_tokens value to set when rectifying.
+	BudgetRectifyMaxTokens = 64000
+	// BudgetRectifyMinMaxTokens is the minimum max_tokens that must exceed budget_tokens.
+	BudgetRectifyMinMaxTokens = 32001
+)
+
+// isThinkingBudgetConstraintError detects whether an upstream error message indicates
+// a budget_tokens constraint violation (e.g. "budget_tokens >= 1024").
+// Matches three conditions (all must be true):
+//  1. Contains "budget_tokens" or "budget tokens"
+//  2. Contains "thinking"
+//  3. Contains ">= 1024" or "greater than or equal to 1024" or ("1024" + "input should be")
+func isThinkingBudgetConstraintError(errMsg string) bool {
+	m := strings.ToLower(errMsg)
+
+	// Condition 1: budget_tokens or budget tokens
+	hasBudget := strings.Contains(m, "budget_tokens") || strings.Contains(m, "budget tokens")
+	if !hasBudget {
+		return false
+	}
+
+	// Condition 2: thinking
+	if !strings.Contains(m, "thinking") {
+		return false
+	}
+
+	// Condition 3: constraint indicator
+	if strings.Contains(m, ">= 1024") || strings.Contains(m, "greater than or equal to 1024") {
+		return true
+	}
+	if strings.Contains(m, "1024") && strings.Contains(m, "input should be") {
+		return true
+	}
+
+	return false
+}
+
+// RectifyThinkingBudget modifies the request body to fix budget_tokens constraint errors.
+// It sets thinking.budget_tokens = 32000, thinking.type = "enabled" (unless adaptive),
+// and ensures max_tokens >= 32001.
+// Returns (modified body, true) if changes were applied, or (original body, false) if not.
+func RectifyThinkingBudget(body []byte) ([]byte, bool) {
+	// If thinking type is "adaptive", skip rectification entirely
+	thinkingType := gjson.GetBytes(body, "thinking.type").String()
+	if thinkingType == "adaptive" {
+		return body, false
+	}
+
+	modified := body
+	changed := false
+
+	// Set thinking.type = "enabled"
+	if thinkingType != "enabled" {
+		if result, err := sjson.SetBytes(modified, "thinking.type", "enabled"); err == nil {
+			modified = result
+			changed = true
+		}
+	}
+
+	// Set thinking.budget_tokens = 32000
+	currentBudget := gjson.GetBytes(modified, "thinking.budget_tokens").Int()
+	if currentBudget != BudgetRectifyBudgetTokens {
+		if result, err := sjson.SetBytes(modified, "thinking.budget_tokens", BudgetRectifyBudgetTokens); err == nil {
+			modified = result
+			changed = true
+		}
+	}
+
+	// Ensure max_tokens >= BudgetRectifyMinMaxTokens
+	maxTokens := gjson.GetBytes(modified, "max_tokens").Int()
+	if maxTokens < int64(BudgetRectifyMinMaxTokens) {
+		if result, err := sjson.SetBytes(modified, "max_tokens", BudgetRectifyMaxTokens); err == nil {
+			modified = result
+			changed = true
+		}
+	}
+
+	return modified, changed
 }

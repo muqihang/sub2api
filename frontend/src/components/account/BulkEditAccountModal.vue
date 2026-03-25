@@ -164,27 +164,10 @@
               </p>
             </div>
 
-            <!-- Model Checkbox List -->
-            <div class="mb-3 grid grid-cols-2 gap-2">
-              <label
-                v-for="model in filteredModels"
-                :key="model.value"
-                class="flex cursor-pointer items-center rounded-lg border p-3 transition-all hover:bg-gray-50 dark:border-dark-600 dark:hover:bg-dark-700"
-                :class="
-                  allowedModels.includes(model.value)
-                    ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                    : 'border-gray-200'
-                "
-              >
-                <input
-                  v-model="allowedModels"
-                  type="checkbox"
-                  :value="model.value"
-                  class="mr-2 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                />
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ model.label }}</span>
-              </label>
-            </div>
+            <ModelWhitelistSelector
+              v-model="allowedModels"
+              :platforms="selectedPlatforms"
+            />
 
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
@@ -469,7 +452,7 @@
       </div>
 
       <!-- Concurrency & Priority -->
-      <div class="grid grid-cols-2 gap-4 border-t border-gray-200 pt-4 dark:border-dark-600 lg:grid-cols-3">
+      <div class="grid grid-cols-2 gap-4 border-t border-gray-200 pt-4 dark:border-dark-600 lg:grid-cols-4">
         <div>
           <div class="mb-3 flex items-center justify-between">
             <label
@@ -496,7 +479,38 @@
             class="input"
             :class="!enableConcurrency && 'cursor-not-allowed opacity-50'"
             aria-labelledby="bulk-edit-concurrency-label"
+            @input="concurrency = Math.max(1, concurrency || 1)"
           />
+        </div>
+        <div>
+          <div class="mb-3 flex items-center justify-between">
+            <label
+              id="bulk-edit-load-factor-label"
+              class="input-label mb-0"
+              for="bulk-edit-load-factor-enabled"
+            >
+              {{ t('admin.accounts.loadFactor') }}
+            </label>
+            <input
+              v-model="enableLoadFactor"
+              id="bulk-edit-load-factor-enabled"
+              type="checkbox"
+              aria-controls="bulk-edit-load-factor"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+          </div>
+          <input
+            v-model.number="loadFactor"
+            id="bulk-edit-load-factor"
+            type="number"
+            min="1"
+            :disabled="!enableLoadFactor"
+            class="input"
+            :class="!enableLoadFactor && 'cursor-not-allowed opacity-50'"
+            aria-labelledby="bulk-edit-load-factor-label"
+            @input="loadFactor = (loadFactor &amp;&amp; loadFactor >= 1) ? loadFactor : null"
+          />
+          <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
         </div>
         <div>
           <div class="mb-3 flex items-center justify-between">
@@ -801,8 +815,12 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
+import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { buildModelMappingObject as buildModelMappingPayload } from '@/composables/useModelWhitelist'
+import {
+  buildModelMappingObject as buildModelMappingPayload,
+  getPresetMappingsByPlatform
+} from '@/composables/useModelWhitelist'
 
 interface Props {
   show: boolean
@@ -834,26 +852,20 @@ const allAnthropicOAuthOrSetupToken = computed(() => {
   )
 })
 
-const platformModelPrefix: Record<string, string[]> = {
-  anthropic: ['claude-'],
-  antigravity: ['claude-', 'gemini-', 'gpt-oss-', 'tab_'],
-  openai: ['gpt-'],
-  gemini: ['gemini-'],
-  sora: []
-}
-
-const filteredModels = computed(() => {
-  if (props.selectedPlatforms.length === 0) return allModels
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
-  if (prefixes.length === 0) return allModels
-  return allModels.filter(m => prefixes.some(prefix => m.value.startsWith(prefix)))
-})
-
 const filteredPresets = computed(() => {
-  if (props.selectedPlatforms.length === 0) return presetMappings
-  const prefixes = [...new Set(props.selectedPlatforms.flatMap(p => platformModelPrefix[p] || []))]
-  if (prefixes.length === 0) return presetMappings
-  return presetMappings.filter(m => prefixes.some(prefix => m.from.startsWith(prefix)))
+  if (props.selectedPlatforms.length === 0) return []
+
+  const dedupedPresets = new Map<string, ReturnType<typeof getPresetMappingsByPlatform>[number]>()
+  for (const platform of props.selectedPlatforms) {
+    for (const preset of getPresetMappingsByPlatform(platform)) {
+      const key = `${preset.from}=>${preset.to}`
+      if (!dedupedPresets.has(key)) {
+        dedupedPresets.set(key, preset)
+      }
+    }
+  }
+
+  return Array.from(dedupedPresets.values())
 })
 
 // Model mapping type
@@ -869,6 +881,7 @@ const enableCustomErrorCodes = ref(false)
 const enableInterceptWarmup = ref(false)
 const enableProxy = ref(false)
 const enableConcurrency = ref(false)
+const enableLoadFactor = ref(false)
 const enablePriority = ref(false)
 const enableRateMultiplier = ref(false)
 const enableStatus = ref(false)
@@ -889,6 +902,7 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const proxyId = ref<number | null>(null)
 const concurrency = ref(1)
+const loadFactor = ref<number | null>(null)
 const priority = ref(1)
 const rateMultiplier = ref(1)
 const status = ref<'active' | 'inactive'>('active')
@@ -903,190 +917,6 @@ const umqModeOptions = computed(() => [
   { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
   { value: 'serialize', label: t('admin.accounts.quotaControl.rpmLimit.umqModeSerialize') },
 ])
-
-// All models list (combined Anthropic + OpenAI + Gemini)
-const allModels = [
-  { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5' },
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-  { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5' },
-  { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-  { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
-  { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
-  { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
-  { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-  { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
-  { value: 'gpt-5.2-2025-12-11', label: 'GPT-5.2' },
-  { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
-  { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
-  { value: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
-  { value: 'gpt-5.1-2025-11-13', label: 'GPT-5.1' },
-  { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
-  { value: 'gpt-5-2025-08-07', label: 'GPT-5' },
-  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-  { value: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image' },
-  { value: 'gemini-3-pro-image', label: 'Gemini 3 Pro Image (Legacy)' },
-  { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview' },
-  { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro Preview' }
-]
-
-// Preset mappings (combined Anthropic + OpenAI + Gemini)
-const presetMappings = [
-  {
-    label: 'Sonnet 4',
-    from: 'claude-sonnet-4-20250514',
-    to: 'claude-sonnet-4-20250514',
-    color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400'
-  },
-  {
-    label: 'Sonnet 4.5',
-    from: 'claude-sonnet-4-5-20250929',
-    to: 'claude-sonnet-4-5-20250929',
-    color:
-      'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400'
-  },
-  {
-    label: 'Opus 4.5',
-    from: 'claude-opus-4-5-20251101',
-    to: 'claude-opus-4-5-20251101',
-    color:
-      'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400'
-  },
-  {
-    label: 'Opus 4.6',
-    from: 'claude-opus-4-6',
-    to: 'claude-opus-4-6-thinking',
-    color:
-      'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400'
-  },
-  {
-    label: 'Opus 4.6-thinking',
-    from: 'claude-opus-4-6-thinking',
-    to: 'claude-opus-4-6-thinking',
-    color:
-      'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400'
-  },
-  {
-    label: 'Sonnet 4.6',
-    from: 'claude-sonnet-4-6',
-    to: 'claude-sonnet-4-6',
-    color:
-      'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400'
-  },
-  {
-    label: 'Sonnet4→4.6',
-    from: 'claude-sonnet-4-20250514',
-    to: 'claude-sonnet-4-6',
-    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
-  },
-  {
-    label: 'Sonnet4.5→4.6',
-    from: 'claude-sonnet-4-5-20250929',
-    to: 'claude-sonnet-4-6',
-    color: 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400'
-  },
-  {
-    label: 'Sonnet3.5→4.6',
-    from: 'claude-3-5-sonnet-20241022',
-    to: 'claude-sonnet-4-6',
-    color: 'bg-teal-100 text-teal-700 hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400'
-  },
-  {
-    label: 'Opus4.5→4.6',
-    from: 'claude-opus-4-5-20251101',
-    to: 'claude-opus-4-6-thinking',
-    color:
-      'bg-violet-100 text-violet-700 hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-400'
-  },
-  {
-    label: 'Opus->Sonnet',
-    from: 'claude-opus-4-5-20251101',
-    to: 'claude-sonnet-4-5-20250929',
-    color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
-  },
-  {
-    label: 'Gemini 3.1 Image',
-    from: 'gemini-3.1-flash-image',
-    to: 'gemini-3.1-flash-image',
-    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
-  },
-  {
-    label: 'G3 Image→3.1',
-    from: 'gemini-3-pro-image',
-    to: 'gemini-3.1-flash-image',
-    color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400'
-  },
-  {
-    label: 'GPT-5.3 Codex',
-    from: 'gpt-5.3-codex',
-    to: 'gpt-5.3-codex',
-    color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400'
-  },
-  {
-    label: 'GPT-5.3 Spark',
-    from: 'gpt-5.3-codex-spark',
-    to: 'gpt-5.3-codex-spark',
-    color: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400'
-  },
-  {
-    label: '5.2→5.3',
-    from: 'gpt-5.2-codex',
-    to: 'gpt-5.3-codex',
-    color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400'
-  },
-  {
-    label: 'GPT-5.2',
-    from: 'gpt-5.2-2025-12-11',
-    to: 'gpt-5.2-2025-12-11',
-    color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
-  },
-  {
-    label: 'GPT-5.2 Codex',
-    from: 'gpt-5.2-codex',
-    to: 'gpt-5.2-codex',
-    color: 'bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400'
-  },
-  {
-    label: 'Max->Codex',
-    from: 'gpt-5.1-codex-max',
-    to: 'gpt-5.1-codex',
-    color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400'
-  },
-  {
-    label: '3-Pro-Preview→3.1-Pro-High',
-    from: 'gemini-3-pro-preview',
-    to: 'gemini-3.1-pro-high',
-    color: 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400'
-  },
-  {
-    label: '3-Pro-High→3.1-Pro-High',
-    from: 'gemini-3-pro-high',
-    to: 'gemini-3.1-pro-high',
-    color: 'bg-orange-100 text-orange-700 hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400'
-  },
-  {
-    label: '3-Pro-Low→3.1-Pro-Low',
-    from: 'gemini-3-pro-low',
-    to: 'gemini-3.1-pro-low',
-    color: 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400'
-  },
-  {
-    label: '3-Flash透传',
-    from: 'gemini-3-flash',
-    to: 'gemini-3-flash',
-    color: 'bg-lime-100 text-lime-700 hover:bg-lime-200 dark:bg-lime-900/30 dark:text-lime-400'
-  },
-  {
-    label: '2.5-Flash-Lite透传',
-    from: 'gemini-2.5-flash-lite',
-    to: 'gemini-2.5-flash-lite',
-    color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
-  }
-]
 
 // Common HTTP error codes
 const commonErrorCodes = [
@@ -1195,6 +1025,12 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.concurrency = concurrency.value
   }
 
+  if (enableLoadFactor.value) {
+    // 空值/NaN/0 时发送 0（后端约定 <= 0 表示清除）
+    const lf = loadFactor.value
+    updates.load_factor = (lf != null && !Number.isNaN(lf) && lf > 0) ? lf : 0
+  }
+
   if (enablePriority.value) {
     updates.priority = priority.value
   }
@@ -1220,24 +1056,21 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   }
 
   if (enableModelRestriction.value) {
-    const modelMapping = buildModelMappingObject()
-
     // 统一使用 model_mapping 字段
     if (modelRestrictionMode.value === 'whitelist') {
-      if (allowedModels.value.length > 0) {
-        // 白名单模式：将模型转换为 model_mapping 格式（key=value）
-        const mapping: Record<string, string> = {}
-        for (const m of allowedModels.value) {
-          mapping[m] = m
-        }
-        credentials.model_mapping = mapping
-        credentialsChanged = true
+      // 白名单模式：将模型转换为 model_mapping 格式（key=value）
+      // 空白名单表示“支持所有模型”，需显式发送空对象以覆盖已有限制。
+      const mapping: Record<string, string> = {}
+      for (const m of allowedModels.value) {
+        mapping[m] = m
       }
+      credentials.model_mapping = mapping
+      credentialsChanged = true
     } else {
-      if (modelMapping) {
-        credentials.model_mapping = modelMapping
-        credentialsChanged = true
-      }
+      // 映射模式下空配置同样表示“支持所有模型”。
+      const modelMapping = buildModelMappingObject()
+      credentials.model_mapping = modelMapping ?? {}
+      credentialsChanged = true
     }
   }
 
@@ -1340,6 +1173,7 @@ const handleSubmit = async () => {
     enableInterceptWarmup.value ||
     enableProxy.value ||
     enableConcurrency.value ||
+    enableLoadFactor.value ||
     enablePriority.value ||
     enableRateMultiplier.value ||
     enableStatus.value ||
@@ -1430,6 +1264,7 @@ watch(
       enableInterceptWarmup.value = false
       enableProxy.value = false
       enableConcurrency.value = false
+      enableLoadFactor.value = false
       enablePriority.value = false
       enableRateMultiplier.value = false
       enableStatus.value = false
@@ -1446,6 +1281,7 @@ watch(
       interceptWarmupRequests.value = false
       proxyId.value = null
       concurrency.value = 1
+      loadFactor.value = null
       priority.value = 1
       rateMultiplier.value = 1
       status.value = 'active'

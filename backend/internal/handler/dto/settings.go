@@ -22,6 +22,7 @@ type SystemSettings struct {
 	RegistrationEmailSuffixWhitelist []string `json:"registration_email_suffix_whitelist"`
 	PromoCodeEnabled                 bool     `json:"promo_code_enabled"`
 	PasswordResetEnabled             bool     `json:"password_reset_enabled"`
+	FrontendURL                      string   `json:"frontend_url"`
 	InvitationCodeEnabled            bool     `json:"invitation_code_enabled"`
 	TotpEnabled                      bool     `json:"totp_enabled"`                   // TOTP 双因素认证
 	TotpEncryptionKeyConfigured      bool     `json:"totp_encryption_key_configured"` // TOTP 加密密钥是否已配置
@@ -78,9 +79,13 @@ type SystemSettings struct {
 	OpsMetricsIntervalSeconds    int    `json:"ops_metrics_interval_seconds"`
 
 	MinClaudeCodeVersion string `json:"min_claude_code_version"`
+	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
 	AllowUngroupedKeyScheduling bool `json:"allow_ungrouped_key_scheduling"`
+
+	// Backend Mode
+	BackendModeEnabled bool `json:"backend_mode_enabled"`
 }
 
 type DefaultSubscriptionSetting struct {
@@ -111,6 +116,7 @@ type PublicSettings struct {
 	CustomMenuItems                  []CustomMenuItem `json:"custom_menu_items"`
 	LinuxDoOAuthEnabled              bool             `json:"linuxdo_oauth_enabled"`
 	SoraClientEnabled                bool             `json:"sora_client_enabled"`
+	BackendModeEnabled               bool             `json:"backend_mode_enabled"`
 	Version                          string           `json:"version"`
 }
 
@@ -152,6 +158,12 @@ type ListSoraS3ProfilesResponse struct {
 	Items           []SoraS3Profile `json:"items"`
 }
 
+// OverloadCooldownSettings 529过载冷却配置 DTO
+type OverloadCooldownSettings struct {
+	Enabled         bool `json:"enabled"`
+	CooldownMinutes int  `json:"cooldown_minutes"`
+}
+
 // StreamTimeoutSettings 流超时处理配置 DTO
 type StreamTimeoutSettings struct {
 	Enabled                bool   `json:"enabled"`
@@ -159,6 +171,26 @@ type StreamTimeoutSettings struct {
 	TempUnschedMinutes     int    `json:"temp_unsched_minutes"`
 	ThresholdCount         int    `json:"threshold_count"`
 	ThresholdWindowMinutes int    `json:"threshold_window_minutes"`
+}
+
+// RectifierSettings 请求整流器配置 DTO
+type RectifierSettings struct {
+	Enabled                  bool `json:"enabled"`
+	ThinkingSignatureEnabled bool `json:"thinking_signature_enabled"`
+	ThinkingBudgetEnabled    bool `json:"thinking_budget_enabled"`
+}
+
+// BetaPolicyRule Beta 策略规则 DTO
+type BetaPolicyRule struct {
+	BetaToken    string `json:"beta_token"`
+	Action       string `json:"action"`
+	Scope        string `json:"scope"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// BetaPolicySettings Beta 策略配置 DTO
+type BetaPolicySettings struct {
+	Rules []BetaPolicyRule `json:"rules"`
 }
 
 // ParseCustomMenuItems parses a JSON string into a slice of CustomMenuItem.

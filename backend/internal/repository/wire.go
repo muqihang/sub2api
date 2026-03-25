@@ -53,13 +53,16 @@ var ProviderSet = wire.NewSet(
 	NewAPIKeyRepository,
 	NewGroupRepository,
 	NewAccountRepository,
-	NewSoraAccountRepository, // Sora 账号扩展表仓储
+	NewSoraAccountRepository,         // Sora 账号扩展表仓储
+	NewScheduledTestPlanRepository,   // 定时测试计划仓储
+	NewScheduledTestResultRepository, // 定时测试结果仓储
 	NewProxyRepository,
 	NewRedeemCodeRepository,
 	NewPromoCodeRepository,
 	NewAnnouncementRepository,
 	NewAnnouncementReadRepository,
 	NewUsageLogRepository,
+	NewUsageBillingRepository,
 	NewIdempotencyRepository,
 	NewUsageCleanupRepository,
 	NewDashboardAggregationRepository,
@@ -96,6 +99,10 @@ var ProviderSet = wire.NewSet(
 
 	// Encryptors
 	NewAESEncryptor,
+
+	// Backup infrastructure
+	NewPgDumper,
+	NewS3BackupStoreFactory,
 
 	// HTTP service ports (DI Strategy A: return interface directly)
 	NewTurnstileVerifier,

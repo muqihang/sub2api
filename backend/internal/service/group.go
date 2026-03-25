@@ -57,11 +57,17 @@ type Group struct {
 	// 分组排序
 	SortOrder int
 
+	// OpenAI Messages 调度配置（仅 openai 平台使用）
+	AllowMessagesDispatch bool
+	DefaultMappedModel    string
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
-	AccountGroups []AccountGroup
-	AccountCount  int64
+	AccountGroups           []AccountGroup
+	AccountCount            int64
+	ActiveAccountCount      int64
+	RateLimitedAccountCount int64
 }
 
 func (g *Group) IsActive() bool {

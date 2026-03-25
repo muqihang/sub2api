@@ -190,7 +190,7 @@ func TestTierInfo_UnmarshalJSON_通过JSON嵌套结构(t *testing.T) {
 func TestGetTier_PaidTier优先(t *testing.T) {
 	resp := &LoadCodeAssistResponse{
 		CurrentTier: &TierInfo{ID: "free-tier"},
-		PaidTier:    &TierInfo{ID: "g1-pro-tier"},
+		PaidTier:    &PaidTierInfo{ID: "g1-pro-tier"},
 	}
 	if got := resp.GetTier(); got != "g1-pro-tier" {
 		t.Errorf("应返回 paidTier: got %s", got)
@@ -209,11 +209,37 @@ func TestGetTier_回退到CurrentTier(t *testing.T) {
 func TestGetTier_PaidTier为空ID(t *testing.T) {
 	resp := &LoadCodeAssistResponse{
 		CurrentTier: &TierInfo{ID: "free-tier"},
-		PaidTier:    &TierInfo{ID: ""},
+		PaidTier:    &PaidTierInfo{ID: ""},
 	}
 	// paidTier.ID 为空时应回退到 currentTier
 	if got := resp.GetTier(); got != "free-tier" {
 		t.Errorf("paidTier.ID 为空时应回退到 currentTier: got %s", got)
+	}
+}
+
+func TestGetAvailableCredits(t *testing.T) {
+	resp := &LoadCodeAssistResponse{
+		PaidTier: &PaidTierInfo{
+			ID: "g1-pro-tier",
+			AvailableCredits: []AvailableCredit{
+				{
+					CreditType:                  "GOOGLE_ONE_AI",
+					CreditAmount:                "25",
+					MinimumCreditAmountForUsage: "5",
+				},
+			},
+		},
+	}
+
+	credits := resp.GetAvailableCredits()
+	if len(credits) != 1 {
+		t.Fatalf("AI Credits 数量不匹配: got %d", len(credits))
+	}
+	if credits[0].GetAmount() != 25 {
+		t.Errorf("CreditAmount 解析不正确: got %v", credits[0].GetAmount())
+	}
+	if credits[0].GetMinimumAmount() != 5 {
+		t.Errorf("MinimumCreditAmountForUsage 解析不正确: got %v", credits[0].GetMinimumAmount())
 	}
 }
 
@@ -248,8 +274,8 @@ func TestNewClient_无代理(t *testing.T) {
 	if client.httpClient == nil {
 		t.Fatal("httpClient 为 nil")
 	}
-	if client.httpClient.Timeout != 30*time.Second {
-		t.Errorf("Timeout 不匹配: got %v, want 30s", client.httpClient.Timeout)
+	if client.httpClient.Timeout != clientTimeout {
+		t.Errorf("Timeout 不匹配: got %v, want %v", client.httpClient.Timeout, clientTimeout)
 	}
 	// 无代理时 Transport 应为 nil（使用默认）
 	if client.httpClient.Transport != nil {
@@ -296,11 +322,11 @@ func TestNewClient_无效代理URL(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isConnectionError
+// IsConnectionError
 // ---------------------------------------------------------------------------
 
 func TestIsConnectionError_nil(t *testing.T) {
-	if isConnectionError(nil) {
+	if IsConnectionError(nil) {
 		t.Error("nil 错误不应判定为连接错误")
 	}
 }
@@ -312,7 +338,7 @@ func TestIsConnectionError_超时错误(t *testing.T) {
 		Net: "tcp",
 		Err: &timeoutError{},
 	}
-	if !isConnectionError(err) {
+	if !IsConnectionError(err) {
 		t.Error("超时错误应判定为连接错误")
 	}
 }
@@ -330,7 +356,7 @@ func TestIsConnectionError_netOpError(t *testing.T) {
 		Net: "tcp",
 		Err: fmt.Errorf("connection refused"),
 	}
-	if !isConnectionError(err) {
+	if !IsConnectionError(err) {
 		t.Error("net.OpError 应判定为连接错误")
 	}
 }
@@ -341,14 +367,14 @@ func TestIsConnectionError_urlError(t *testing.T) {
 		URL: "https://example.com",
 		Err: fmt.Errorf("some error"),
 	}
-	if !isConnectionError(err) {
+	if !IsConnectionError(err) {
 		t.Error("url.Error 应判定为连接错误")
 	}
 }
 
 func TestIsConnectionError_普通错误(t *testing.T) {
 	err := fmt.Errorf("some random error")
-	if isConnectionError(err) {
+	if IsConnectionError(err) {
 		t.Error("普通错误不应判定为连接错误")
 	}
 }
@@ -360,7 +386,7 @@ func TestIsConnectionError_包装的netOpError(t *testing.T) {
 		Err: fmt.Errorf("connection refused"),
 	}
 	err := fmt.Errorf("wrapping: %w", inner)
-	if !isConnectionError(err) {
+	if !IsConnectionError(err) {
 		t.Error("被包装的 net.OpError 应判定为连接错误")
 	}
 }

@@ -12,6 +12,7 @@ type AdminHandlers struct {
 	Account          *admin.AccountHandler
 	Announcement     *admin.AnnouncementHandler
 	DataManagement   *admin.DataManagementHandler
+	Backup           *admin.BackupHandler
 	OAuth            *admin.OAuthHandler
 	OpenAIOAuth      *admin.OpenAIOAuthHandler
 	GeminiOAuth      *admin.GeminiOAuthHandler
@@ -27,6 +28,7 @@ type AdminHandlers struct {
 	UserAttribute    *admin.UserAttributeHandler
 	ErrorPassthrough *admin.ErrorPassthroughHandler
 	APIKey           *admin.AdminAPIKeyHandler
+	ScheduledTest    *admin.ScheduledTestHandler
 }
 
 // Handlers contains all HTTP handlers

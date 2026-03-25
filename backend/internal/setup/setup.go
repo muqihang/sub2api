@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -23,9 +24,18 @@ import (
 
 // Config paths
 const (
-	ConfigFileName  = "config.yaml"
-	InstallLockFile = ".installed"
+	ConfigFileName             = "config.yaml"
+	InstallLockFile            = ".installed"
+	defaultUserConcurrency     = 5
+	simpleModeAdminConcurrency = 30
 )
+
+func setupDefaultAdminConcurrency() int {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("RUN_MODE")), config.RunModeSimple) {
+		return simpleModeAdminConcurrency
+	}
+	return defaultUserConcurrency
+}
 
 // GetDataDir returns the data directory for storing config and lock files.
 // Priority: DATA_DIR env > /app/data (if exists and writable) > current directory
@@ -154,8 +164,8 @@ func NeedsSetup() bool {
 func TestDatabaseConnection(cfg *DatabaseConfig) error {
 	// First, connect to the default 'postgres' database to check/create target database
 	defaultDSN := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.SSLMode,
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
 	)
 
 	db, err := sql.Open("postgres", defaultDSN)
@@ -390,7 +400,7 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 		Role:        service.RoleAdmin,
 		Status:      service.StatusActive,
 		Balance:     0,
-		Concurrency: 5,
+		Concurrency: setupDefaultAdminConcurrency(),
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -462,7 +472,7 @@ func writeConfigFile(cfg *SetupConfig) error {
 			APIKeyPrefix    string  `yaml:"api_key_prefix"`
 			RateMultiplier  float64 `yaml:"rate_multiplier"`
 		}{
-			UserConcurrency: 5,
+			UserConcurrency: defaultUserConcurrency,
 			UserBalance:     0,
 			APIKeyPrefix:    "sk-",
 			RateMultiplier:  1.0,

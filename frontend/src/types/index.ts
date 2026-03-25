@@ -106,6 +106,7 @@ export interface PublicSettings {
   custom_menu_items: CustomMenuItem[]
   linuxdo_oauth_enabled: boolean
   sora_client_enabled: boolean
+  backend_mode_enabled: boolean
   version: string
 }
 
@@ -155,6 +156,7 @@ export interface UpdateSubscriptionRequest {
 // ==================== Announcement Types ====================
 
 export type AnnouncementStatus = 'draft' | 'active' | 'archived'
+export type AnnouncementNotifyMode = 'silent' | 'popup'
 
 export type AnnouncementConditionType = 'subscription' | 'balance'
 
@@ -180,6 +182,7 @@ export interface Announcement {
   title: string
   content: string
   status: AnnouncementStatus
+  notify_mode: AnnouncementNotifyMode
   targeting: AnnouncementTargeting
   starts_at?: string
   ends_at?: string
@@ -193,6 +196,7 @@ export interface UserAnnouncement {
   id: number
   title: string
   content: string
+  notify_mode: AnnouncementNotifyMode
   starts_at?: string
   ends_at?: string
   read_at?: string
@@ -204,6 +208,7 @@ export interface CreateAnnouncementRequest {
   title: string
   content: string
   status?: AnnouncementStatus
+  notify_mode?: AnnouncementNotifyMode
   targeting: AnnouncementTargeting
   starts_at?: number
   ends_at?: number
@@ -213,6 +218,7 @@ export interface UpdateAnnouncementRequest {
   title?: string
   content?: string
   status?: AnnouncementStatus
+  notify_mode?: AnnouncementNotifyMode
   targeting?: AnnouncementTargeting
   starts_at?: number
   ends_at?: number
@@ -384,6 +390,8 @@ export interface Group {
   claude_code_only: boolean
   fallback_group_id: number | null
   fallback_group_id_on_invalid_request: number | null
+  // OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
+  allow_messages_dispatch?: boolean
   created_at: string
   updated_at: string
 }
@@ -395,12 +403,19 @@ export interface AdminGroup extends Group {
 
   // MCP XML 协议注入（仅 antigravity 平台使用）
   mcp_xml_inject: boolean
+  // Claude usage 模拟开关（仅 anthropic 平台使用）
+  simulate_claude_max_enabled: boolean
 
   // 支持的模型系列（仅 antigravity 平台使用）
   supported_model_scopes?: string[]
 
   // 分组下账号数量（仅管理员可见）
   account_count?: number
+  active_account_count?: number
+  rate_limited_account_count?: number
+
+  // OpenAI Messages 调度配置（仅 openai 平台使用）
+  default_mapped_model?: string
 
   // 分组排序
   sort_order: number
@@ -431,6 +446,9 @@ export interface ApiKey {
   window_5h_start: string | null
   window_1d_start: string | null
   window_7d_start: string | null
+  reset_5h_at: string | null
+  reset_1d_at: string | null
+  reset_7d_at: string | null
 }
 
 export interface CreateApiKeyRequest {
@@ -483,6 +501,7 @@ export interface CreateGroupRequest {
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
+  simulate_claude_max_enabled?: boolean
   supported_model_scopes?: string[]
   // 从指定分组复制账号
   copy_accounts_from_group_ids?: number[]
@@ -511,6 +530,7 @@ export interface UpdateGroupRequest {
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
   mcp_xml_inject?: boolean
+  simulate_claude_max_enabled?: boolean
   supported_model_scopes?: string[]
   copy_accounts_from_group_ids?: number[]
 }
@@ -518,7 +538,7 @@ export interface UpdateGroupRequest {
 // ==================== Account & Proxy Types ====================
 
 export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'sora'
-export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream'
+export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
@@ -653,6 +673,7 @@ export interface Account {
   } & Record<string, unknown>)
   proxy_id: number | null
   concurrency: number
+  load_factor?: number | null
   current_concurrency?: number // Real-time concurrency count from Redis
   priority: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
@@ -705,6 +726,30 @@ export interface Account {
   cache_ttl_override_enabled?: boolean | null
   cache_ttl_override_target?: string | null
 
+  // 客户端亲和调度（仅 Anthropic/Antigravity 平台有效）
+  // 启用后新会话会优先调度到客户端之前使用过的账号
+  client_affinity_enabled?: boolean | null
+  affinity_client_count?: number | null
+  affinity_clients?: string[] | null
+
+  // API Key 账号配额限制
+  quota_limit?: number | null
+  quota_used?: number | null
+  quota_daily_limit?: number | null
+  quota_daily_used?: number | null
+  quota_weekly_limit?: number | null
+  quota_weekly_used?: number | null
+
+  // 配额固定时间重置配置
+  quota_daily_reset_mode?: 'rolling' | 'fixed' | null
+  quota_daily_reset_hour?: number | null
+  quota_weekly_reset_mode?: 'rolling' | 'fixed' | null
+  quota_weekly_reset_day?: number | null
+  quota_weekly_reset_hour?: number | null
+  quota_reset_timezone?: string | null
+  quota_daily_reset_at?: string | null
+  quota_weekly_reset_at?: string | null
+
   // 运行时状态（仅当启用对应限制时返回）
   current_window_cost?: number | null // 当前窗口费用
   active_sessions?: number | null // 当前活跃会话数
@@ -736,6 +781,7 @@ export interface AntigravityModelQuota {
 }
 
 export interface AccountUsageInfo {
+  source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null
   seven_day: UsageProgress | null
@@ -747,6 +793,26 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  ai_credits?: Array<{
+    credit_type?: string
+    amount?: number
+    minimum_balance?: number
+  }> | null
+  // Antigravity 403 forbidden 状态
+  is_forbidden?: boolean
+  forbidden_reason?: string
+  forbidden_type?: string   // "validation" | "violation" | "forbidden"
+  validation_url?: string   // 验证/申诉链接
+
+  // 状态标记（后端自动推导）
+  needs_verify?: boolean    // 需要人工验证（forbidden_type=validation）
+  is_banned?: boolean       // 账号被封（forbidden_type=violation）
+  needs_reauth?: boolean    // token 失效需重新授权（401）
+
+  // 机器可读错误码：forbidden / unauthenticated / rate_limited / network_error
+  error_code?: string
+
+  error?: string            // usage 获取失败时的错误信息
 }
 
 // OpenAI Codex usage snapshot (from response headers)
@@ -783,6 +849,7 @@ export interface CreateAccountRequest {
   extra?: Record<string, unknown>
   proxy_id?: number | null
   concurrency?: number
+  load_factor?: number | null
   priority?: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
   group_ids?: number[]
@@ -799,10 +866,11 @@ export interface UpdateAccountRequest {
   extra?: Record<string, unknown>
   proxy_id?: number | null
   concurrency?: number
+  load_factor?: number | null
   priority?: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
   schedulable?: boolean
-  status?: 'active' | 'inactive'
+  status?: 'active' | 'inactive' | 'error'
   group_ids?: number[]
   expires_at?: number | null
   auto_pause_on_expired?: boolean
@@ -910,7 +978,11 @@ export interface UsageLog {
   account_id: number | null
   request_id: string
   model: string
+  upstream_model?: string | null
+  service_tier?: string | null
   reasoning_effort?: string | null
+  inbound_endpoint?: string | null
+  upstream_endpoint?: string | null
 
   group_id: number | null
   subscription_id: number | null
@@ -1098,7 +1170,8 @@ export interface TrendDataPoint {
   requests: number
   input_tokens: number
   output_tokens: number
-  cache_tokens: number
+  cache_creation_tokens: number
+  cache_read_tokens: number
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
@@ -1109,9 +1182,19 @@ export interface ModelStat {
   requests: number
   input_tokens: number
   output_tokens: number
+  cache_creation_tokens: number
+  cache_read_tokens: number
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
+}
+
+export interface EndpointStat {
+  endpoint: string
+  requests: number
+  total_tokens: number
+  cost: number
+  actual_cost: number
 }
 
 export interface GroupStat {
@@ -1123,14 +1206,41 @@ export interface GroupStat {
   actual_cost: number // 实际扣除
 }
 
+export interface UserBreakdownItem {
+  user_id: number
+  email: string
+  requests: number
+  total_tokens: number
+  cost: number
+  actual_cost: number
+}
+
 export interface UserUsageTrendPoint {
   date: string
   user_id: number
   email: string
+  username: string
   requests: number
   tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
+}
+
+export interface UserSpendingRankingItem {
+  user_id: number
+  email: string
+  actual_cost: number
+  requests: number
+  tokens: number
+}
+
+export interface UserSpendingRankingResponse {
+  ranking: UserSpendingRankingItem[]
+  total_actual_cost: number
+  total_requests: number
+  total_tokens: number
+  start_date: string
+  end_date: string
 }
 
 export interface ApiKeyUsageTrendPoint {
@@ -1292,6 +1402,8 @@ export interface AccountUsageStatsResponse {
   history: AccountUsageHistory[]
   summary: AccountUsageSummary
   models: ModelStat[]
+  endpoints: EndpointStat[]
+  upstream_endpoints: EndpointStat[]
 }
 
 // ==================== User Attribute Types ====================
@@ -1456,4 +1568,49 @@ export interface TotpLoginResponse {
 export interface TotpLogin2FARequest {
   temp_token: string
   totp_code: string
+}
+
+// ==================== Scheduled Test Types ====================
+
+export interface ScheduledTestPlan {
+  id: number
+  account_id: number
+  model_id: string
+  cron_expression: string
+  enabled: boolean
+  max_results: number
+  auto_recover: boolean
+  last_run_at: string | null
+  next_run_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ScheduledTestResult {
+  id: number
+  plan_id: number
+  status: string
+  response_text: string
+  error_message: string
+  latency_ms: number
+  started_at: string
+  finished_at: string
+  created_at: string
+}
+
+export interface CreateScheduledTestPlanRequest {
+  account_id: number
+  model_id: string
+  cron_expression: string
+  enabled?: boolean
+  max_results?: number
+  auto_recover?: boolean
+}
+
+export interface UpdateScheduledTestPlanRequest {
+  model_id?: string
+  cron_expression?: string
+  enabled?: boolean
+  max_results?: number
+  auto_recover?: boolean
 }

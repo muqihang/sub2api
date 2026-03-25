@@ -15,6 +15,7 @@ func ProvideAdminHandlers(
 	accountHandler *admin.AccountHandler,
 	announcementHandler *admin.AnnouncementHandler,
 	dataManagementHandler *admin.DataManagementHandler,
+	backupHandler *admin.BackupHandler,
 	oauthHandler *admin.OAuthHandler,
 	openaiOAuthHandler *admin.OpenAIOAuthHandler,
 	geminiOAuthHandler *admin.GeminiOAuthHandler,
@@ -30,6 +31,7 @@ func ProvideAdminHandlers(
 	userAttributeHandler *admin.UserAttributeHandler,
 	errorPassthroughHandler *admin.ErrorPassthroughHandler,
 	apiKeyHandler *admin.AdminAPIKeyHandler,
+	scheduledTestHandler *admin.ScheduledTestHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:        dashboardHandler,
@@ -38,6 +40,7 @@ func ProvideAdminHandlers(
 		Account:          accountHandler,
 		Announcement:     announcementHandler,
 		DataManagement:   dataManagementHandler,
+		Backup:           backupHandler,
 		OAuth:            oauthHandler,
 		OpenAIOAuth:      openaiOAuthHandler,
 		GeminiOAuth:      geminiOAuthHandler,
@@ -53,6 +56,7 @@ func ProvideAdminHandlers(
 		UserAttribute:    userAttributeHandler,
 		ErrorPassthrough: errorPassthroughHandler,
 		APIKey:           apiKeyHandler,
+		ScheduledTest:    scheduledTestHandler,
 	}
 }
 
@@ -126,6 +130,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAccountHandler,
 	admin.NewAnnouncementHandler,
 	admin.NewDataManagementHandler,
+	admin.NewBackupHandler,
 	admin.NewOAuthHandler,
 	admin.NewOpenAIOAuthHandler,
 	admin.NewGeminiOAuthHandler,
@@ -141,6 +146,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewUserAttributeHandler,
 	admin.NewErrorPassthroughHandler,
 	admin.NewAdminAPIKeyHandler,
+	admin.NewScheduledTestHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

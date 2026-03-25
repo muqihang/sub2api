@@ -80,6 +80,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		RegistrationEmailSuffixWhitelist:     settings.RegistrationEmailSuffixWhitelist,
 		PromoCodeEnabled:                     settings.PromoCodeEnabled,
 		PasswordResetEnabled:                 settings.PasswordResetEnabled,
+		FrontendURL:                          settings.FrontendURL,
 		InvitationCodeEnabled:                settings.InvitationCodeEnabled,
 		TotpEnabled:                          settings.TotpEnabled,
 		TotpEncryptionKeyConfigured:          h.settingService.IsTotpEncryptionKeyConfigured(),
@@ -124,7 +125,9 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		OpsQueryModeDefault:                  settings.OpsQueryModeDefault,
 		OpsMetricsIntervalSeconds:            settings.OpsMetricsIntervalSeconds,
 		MinClaudeCodeVersion:                 settings.MinClaudeCodeVersion,
+		MaxClaudeCodeVersion:                 settings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:          settings.AllowUngroupedKeyScheduling,
+		BackendModeEnabled:                   settings.BackendModeEnabled,
 	})
 }
 
@@ -136,6 +139,7 @@ type UpdateSettingsRequest struct {
 	RegistrationEmailSuffixWhitelist []string `json:"registration_email_suffix_whitelist"`
 	PromoCodeEnabled                 bool     `json:"promo_code_enabled"`
 	PasswordResetEnabled             bool     `json:"password_reset_enabled"`
+	FrontendURL                      string   `json:"frontend_url"`
 	InvitationCodeEnabled            bool     `json:"invitation_code_enabled"`
 	TotpEnabled                      bool     `json:"totp_enabled"` // TOTP 双因素认证
 
@@ -196,9 +200,13 @@ type UpdateSettingsRequest struct {
 	OpsMetricsIntervalSeconds    *int    `json:"ops_metrics_interval_seconds"`
 
 	MinClaudeCodeVersion string `json:"min_claude_code_version"`
+	MaxClaudeCodeVersion string `json:"max_claude_code_version"`
 
 	// 分组隔离
 	AllowUngroupedKeyScheduling bool `json:"allow_ungrouped_key_scheduling"`
+
+	// Backend Mode
+	BackendModeEnabled bool `json:"backend_mode_enabled"`
 }
 
 // UpdateSettings 更新系统设置
@@ -322,6 +330,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	// Frontend URL 验证
+	req.FrontendURL = strings.TrimSpace(req.FrontendURL)
+	if req.FrontendURL != "" {
+		if err := config.ValidateAbsoluteHTTPURL(req.FrontendURL); err != nil {
+			response.BadRequest(c, "Frontend URL must be an absolute http(s) URL")
+			return
+		}
+	}
+
 	// 自定义菜单项验证
 	const (
 		maxCustomMenuItems    = 20
@@ -427,12 +444,29 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	// 验证最高版本号格式（空字符串=禁用，或合法 semver）
+	if req.MaxClaudeCodeVersion != "" {
+		if !semverPattern.MatchString(req.MaxClaudeCodeVersion) {
+			response.Error(c, http.StatusBadRequest, "max_claude_code_version must be empty or a valid semver (e.g. 3.0.0)")
+			return
+		}
+	}
+
+	// 交叉验证：如果同时设置了最低和最高版本号，最高版本号必须 >= 最低版本号
+	if req.MinClaudeCodeVersion != "" && req.MaxClaudeCodeVersion != "" {
+		if service.CompareVersions(req.MaxClaudeCodeVersion, req.MinClaudeCodeVersion) < 0 {
+			response.Error(c, http.StatusBadRequest, "max_claude_code_version must be greater than or equal to min_claude_code_version")
+			return
+		}
+	}
+
 	settings := &service.SystemSettings{
 		RegistrationEnabled:              req.RegistrationEnabled,
 		EmailVerifyEnabled:               req.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist: req.RegistrationEmailSuffixWhitelist,
 		PromoCodeEnabled:                 req.PromoCodeEnabled,
 		PasswordResetEnabled:             req.PasswordResetEnabled,
+		FrontendURL:                      req.FrontendURL,
 		InvitationCodeEnabled:            req.InvitationCodeEnabled,
 		TotpEnabled:                      req.TotpEnabled,
 		SMTPHost:                         req.SMTPHost,
@@ -472,7 +506,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		EnableIdentityPatch:              req.EnableIdentityPatch,
 		IdentityPatchPrompt:              req.IdentityPatchPrompt,
 		MinClaudeCodeVersion:             req.MinClaudeCodeVersion,
+		MaxClaudeCodeVersion:             req.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:      req.AllowUngroupedKeyScheduling,
+		BackendModeEnabled:               req.BackendModeEnabled,
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
 				return *req.OpsMonitoringEnabled
@@ -526,6 +562,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		RegistrationEmailSuffixWhitelist:     updatedSettings.RegistrationEmailSuffixWhitelist,
 		PromoCodeEnabled:                     updatedSettings.PromoCodeEnabled,
 		PasswordResetEnabled:                 updatedSettings.PasswordResetEnabled,
+		FrontendURL:                          updatedSettings.FrontendURL,
 		InvitationCodeEnabled:                updatedSettings.InvitationCodeEnabled,
 		TotpEnabled:                          updatedSettings.TotpEnabled,
 		TotpEncryptionKeyConfigured:          h.settingService.IsTotpEncryptionKeyConfigured(),
@@ -570,7 +607,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpsQueryModeDefault:                  updatedSettings.OpsQueryModeDefault,
 		OpsMetricsIntervalSeconds:            updatedSettings.OpsMetricsIntervalSeconds,
 		MinClaudeCodeVersion:                 updatedSettings.MinClaudeCodeVersion,
+		MaxClaudeCodeVersion:                 updatedSettings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:          updatedSettings.AllowUngroupedKeyScheduling,
+		BackendModeEnabled:                   updatedSettings.BackendModeEnabled,
 	})
 }
 
@@ -607,6 +646,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.PasswordResetEnabled != after.PasswordResetEnabled {
 		changed = append(changed, "password_reset_enabled")
+	}
+	if before.FrontendURL != after.FrontendURL {
+		changed = append(changed, "frontend_url")
 	}
 	if before.TotpEnabled != after.TotpEnabled {
 		changed = append(changed, "totp_enabled")
@@ -722,8 +764,14 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.MinClaudeCodeVersion != after.MinClaudeCodeVersion {
 		changed = append(changed, "min_claude_code_version")
 	}
+	if before.MaxClaudeCodeVersion != after.MaxClaudeCodeVersion {
+		changed = append(changed, "max_claude_code_version")
+	}
 	if before.AllowUngroupedKeyScheduling != after.AllowUngroupedKeyScheduling {
 		changed = append(changed, "allow_ungrouped_key_scheduling")
+	}
+	if before.BackendModeEnabled != after.BackendModeEnabled {
+		changed = append(changed, "backend_mode_enabled")
 	}
 	if before.PurchaseSubscriptionEnabled != after.PurchaseSubscriptionEnabled {
 		changed = append(changed, "purchase_subscription_enabled")
@@ -950,6 +998,58 @@ func (h *SettingHandler) DeleteAdminAPIKey(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "Admin API key deleted"})
+}
+
+// GetOverloadCooldownSettings 获取529过载冷却配置
+// GET /api/v1/admin/settings/overload-cooldown
+func (h *SettingHandler) GetOverloadCooldownSettings(c *gin.Context) {
+	settings, err := h.settingService.GetOverloadCooldownSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.OverloadCooldownSettings{
+		Enabled:         settings.Enabled,
+		CooldownMinutes: settings.CooldownMinutes,
+	})
+}
+
+// UpdateOverloadCooldownSettingsRequest 更新529过载冷却配置请求
+type UpdateOverloadCooldownSettingsRequest struct {
+	Enabled         bool `json:"enabled"`
+	CooldownMinutes int  `json:"cooldown_minutes"`
+}
+
+// UpdateOverloadCooldownSettings 更新529过载冷却配置
+// PUT /api/v1/admin/settings/overload-cooldown
+func (h *SettingHandler) UpdateOverloadCooldownSettings(c *gin.Context) {
+	var req UpdateOverloadCooldownSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	settings := &service.OverloadCooldownSettings{
+		Enabled:         req.Enabled,
+		CooldownMinutes: req.CooldownMinutes,
+	}
+
+	if err := h.settingService.SetOverloadCooldownSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updatedSettings, err := h.settingService.GetOverloadCooldownSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.OverloadCooldownSettings{
+		Enabled:         updatedSettings.Enabled,
+		CooldownMinutes: updatedSettings.CooldownMinutes,
+	})
 }
 
 // GetStreamTimeoutSettings 获取流超时处理配置
@@ -1346,6 +1446,118 @@ func (h *SettingHandler) TestSoraS3Connection(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"message": "S3 连接成功"})
+}
+
+// GetRectifierSettings 获取请求整流器配置
+// GET /api/v1/admin/settings/rectifier
+func (h *SettingHandler) GetRectifierSettings(c *gin.Context) {
+	settings, err := h.settingService.GetRectifierSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.RectifierSettings{
+		Enabled:                  settings.Enabled,
+		ThinkingSignatureEnabled: settings.ThinkingSignatureEnabled,
+		ThinkingBudgetEnabled:    settings.ThinkingBudgetEnabled,
+	})
+}
+
+// UpdateRectifierSettingsRequest 更新整流器配置请求
+type UpdateRectifierSettingsRequest struct {
+	Enabled                  bool `json:"enabled"`
+	ThinkingSignatureEnabled bool `json:"thinking_signature_enabled"`
+	ThinkingBudgetEnabled    bool `json:"thinking_budget_enabled"`
+}
+
+// UpdateRectifierSettings 更新请求整流器配置
+// PUT /api/v1/admin/settings/rectifier
+func (h *SettingHandler) UpdateRectifierSettings(c *gin.Context) {
+	var req UpdateRectifierSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	settings := &service.RectifierSettings{
+		Enabled:                  req.Enabled,
+		ThinkingSignatureEnabled: req.ThinkingSignatureEnabled,
+		ThinkingBudgetEnabled:    req.ThinkingBudgetEnabled,
+	}
+
+	if err := h.settingService.SetRectifierSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	// 重新获取设置返回
+	updatedSettings, err := h.settingService.GetRectifierSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.RectifierSettings{
+		Enabled:                  updatedSettings.Enabled,
+		ThinkingSignatureEnabled: updatedSettings.ThinkingSignatureEnabled,
+		ThinkingBudgetEnabled:    updatedSettings.ThinkingBudgetEnabled,
+	})
+}
+
+// GetBetaPolicySettings 获取 Beta 策略配置
+// GET /api/v1/admin/settings/beta-policy
+func (h *SettingHandler) GetBetaPolicySettings(c *gin.Context) {
+	settings, err := h.settingService.GetBetaPolicySettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	rules := make([]dto.BetaPolicyRule, len(settings.Rules))
+	for i, r := range settings.Rules {
+		rules[i] = dto.BetaPolicyRule(r)
+	}
+	response.Success(c, dto.BetaPolicySettings{Rules: rules})
+}
+
+// UpdateBetaPolicySettingsRequest 更新 Beta 策略配置请求
+type UpdateBetaPolicySettingsRequest struct {
+	Rules []dto.BetaPolicyRule `json:"rules"`
+}
+
+// UpdateBetaPolicySettings 更新 Beta 策略配置
+// PUT /api/v1/admin/settings/beta-policy
+func (h *SettingHandler) UpdateBetaPolicySettings(c *gin.Context) {
+	var req UpdateBetaPolicySettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	rules := make([]service.BetaPolicyRule, len(req.Rules))
+	for i, r := range req.Rules {
+		rules[i] = service.BetaPolicyRule(r)
+	}
+
+	settings := &service.BetaPolicySettings{Rules: rules}
+	if err := h.settingService.SetBetaPolicySettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	// Re-fetch to return updated settings
+	updated, err := h.settingService.GetBetaPolicySettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	outRules := make([]dto.BetaPolicyRule, len(updated.Rules))
+	for i, r := range updated.Rules {
+		outRules[i] = dto.BetaPolicyRule(r)
+	}
+	response.Success(c, dto.BetaPolicySettings{Rules: outRules})
 }
 
 // UpdateStreamTimeoutSettingsRequest 更新流超时配置请求

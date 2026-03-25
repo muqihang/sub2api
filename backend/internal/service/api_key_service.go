@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +63,8 @@ type APIKeyRepository interface {
 	ListByGroupID(ctx context.Context, groupID int64, params pagination.PaginationParams) ([]APIKey, *pagination.PaginationResult, error)
 	SearchAPIKeys(ctx context.Context, userID int64, keyword string, limit int) ([]APIKey, error)
 	ClearGroupIDByGroupID(ctx context.Context, groupID int64) (int64, error)
+	// UpdateGroupIDByUserAndGroup 将用户下绑定 oldGroupID 的所有 Key 迁移到 newGroupID
+	UpdateGroupIDByUserAndGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (int64, error)
 	CountByGroupID(ctx context.Context, groupID int64) (int64, error)
 	ListKeysByUserID(ctx context.Context, userID int64) ([]string, error)
 	ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error)
@@ -84,6 +87,39 @@ type APIKeyRateLimitData struct {
 	Window5hStart *time.Time
 	Window1dStart *time.Time
 	Window7dStart *time.Time
+}
+
+// EffectiveUsage5h returns the 5h window usage, or 0 if the window has expired.
+func (d *APIKeyRateLimitData) EffectiveUsage5h() float64 {
+	if IsWindowExpired(d.Window5hStart, RateLimitWindow5h) {
+		return 0
+	}
+	return d.Usage5h
+}
+
+// EffectiveUsage1d returns the 1d window usage, or 0 if the window has expired.
+func (d *APIKeyRateLimitData) EffectiveUsage1d() float64 {
+	if IsWindowExpired(d.Window1dStart, RateLimitWindow1d) {
+		return 0
+	}
+	return d.Usage1d
+}
+
+// EffectiveUsage7d returns the 7d window usage, or 0 if the window has expired.
+func (d *APIKeyRateLimitData) EffectiveUsage7d() float64 {
+	if IsWindowExpired(d.Window7dStart, RateLimitWindow7d) {
+		return 0
+	}
+	return d.Usage7d
+}
+
+// APIKeyQuotaUsageState captures the latest quota fields after an atomic quota update.
+// It is intentionally small so repositories can return it from a single SQL statement.
+type APIKeyQuotaUsageState struct {
+	QuotaUsed float64
+	Quota     float64
+	Key       string
+	Status    string
 }
 
 // APIKeyCache defines cache operations for API key service
@@ -790,6 +826,21 @@ func (s *APIKeyService) CheckAPIKeyQuotaAndExpiry(apiKey *APIKey) error {
 // Also checks if quota is exhausted and updates status accordingly
 func (s *APIKeyService) UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error {
 	if cost <= 0 {
+		return nil
+	}
+
+	type quotaStateReader interface {
+		IncrementQuotaUsedAndGetState(ctx context.Context, id int64, amount float64) (*APIKeyQuotaUsageState, error)
+	}
+
+	if repo, ok := s.apiKeyRepo.(quotaStateReader); ok {
+		state, err := repo.IncrementQuotaUsedAndGetState(ctx, apiKeyID, cost)
+		if err != nil {
+			return fmt.Errorf("increment quota used: %w", err)
+		}
+		if state != nil && state.Status == StatusAPIKeyQuotaExhausted && strings.TrimSpace(state.Key) != "" {
+			s.InvalidateAuthCacheByKey(ctx, state.Key)
+		}
 		return nil
 	}
 

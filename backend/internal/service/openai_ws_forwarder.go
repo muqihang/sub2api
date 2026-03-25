@@ -26,8 +26,9 @@ import (
 )
 
 const (
-	openAIWSBetaV1Value = "responses_websockets=2026-02-04"
-	openAIWSBetaV2Value = "responses_websockets=2026-02-06"
+	openAIWSBetaV1Value  = "responses_websockets=2026-02-04"
+	openAIWSBetaV2Value  = "responses_websockets=2026-02-06"
+	openAIWSBetaCompatV1 = "responses-websocket=v1"
 
 	openAIWSTurnStateHeader    = "x-codex-turn-state"
 	openAIWSTurnMetadataHeader = "x-codex-turn-metadata"
@@ -254,6 +255,77 @@ func hasOpenAIWSHeader(headers http.Header, key string) bool {
 		return false
 	}
 	return strings.TrimSpace(headers.Get(key)) != ""
+}
+
+func mergeOpenAIBetaValues(values ...string) string {
+	parts := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, rawValue := range values {
+		for _, token := range strings.Split(rawValue, ",") {
+			trimmed := strings.TrimSpace(token)
+			if trimmed == "" {
+				continue
+			}
+			normalized := strings.ToLower(trimmed)
+			if _, exists := seen[normalized]; exists {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			parts = append(parts, trimmed)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// IsOpenAIWSIngressAccountRetryable reports whether ingress websocket proxy
+// should retry with another account for the current client connection.
+// Retry is only safe when no downstream business event has been written yet.
+func IsOpenAIWSIngressAccountRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	var closeErr *OpenAIWSClientCloseError
+	if errors.As(err, &closeErr) {
+		return false
+	}
+
+	var turnErr *openAIWSIngressTurnError
+	if errors.As(err, &turnErr) && turnErr != nil {
+		if turnErr.wroteDownstream {
+			return false
+		}
+		switch strings.TrimSpace(turnErr.stage) {
+		case "write_upstream", "read_upstream":
+			return true
+		default:
+			return false
+		}
+	}
+
+	var dialErr *openAIWSDialError
+	if errors.As(err, &dialErr) && dialErr != nil {
+		return true
+	}
+
+	var fallbackErr *openAIWSFallbackError
+	if errors.As(err, &fallbackErr) && fallbackErr != nil {
+		reason := strings.TrimSpace(strings.TrimPrefix(fallbackErr.Reason, "prewarm_"))
+		switch reason {
+		case "dial_failed", "acquire_timeout", "acquire_conn", "conn_queue_full", "upstream_5xx":
+			return true
+		default:
+			return false
+		}
+	}
+
+	if errors.Is(err, errOpenAIWSConnQueueFull) {
+		return true
+	}
+	return false
 }
 
 type openAIWSSessionHeaderResolution struct {
@@ -864,7 +936,8 @@ func isOpenAIWSClientDisconnectError(err error) bool {
 		strings.Contains(message, "unexpected eof") ||
 		strings.Contains(message, "use of closed network connection") ||
 		strings.Contains(message, "connection reset by peer") ||
-		strings.Contains(message, "broken pipe")
+		strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "an established connection was aborted")
 }
 
 func classifyOpenAIWSReadFallbackReason(err error) string {
@@ -1123,11 +1196,22 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 			headers.Set("accept-language", v)
 		}
 	}
-	if sessionResolution.SessionID != "" {
-		headers.Set("session_id", sessionResolution.SessionID)
-	}
-	if sessionResolution.ConversationID != "" {
-		headers.Set("conversation_id", sessionResolution.ConversationID)
+	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
+	if account != nil && account.Type == AccountTypeOAuth {
+		apiKeyID := getAPIKeyIDFromContext(c)
+		if sessionResolution.SessionID != "" {
+			headers.Set("session_id", isolateOpenAISessionID(apiKeyID, sessionResolution.SessionID))
+		}
+		if sessionResolution.ConversationID != "" {
+			headers.Set("conversation_id", isolateOpenAISessionID(apiKeyID, sessionResolution.ConversationID))
+		}
+	} else {
+		if sessionResolution.SessionID != "" {
+			headers.Set("session_id", sessionResolution.SessionID)
+		}
+		if sessionResolution.ConversationID != "" {
+			headers.Set("conversation_id", sessionResolution.ConversationID)
+		}
 	}
 	if state := strings.TrimSpace(turnState); state != "" {
 		headers.Set(openAIWSTurnStateHeader, state)
@@ -1140,11 +1224,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		if isCodexCLI {
-			headers.Set("originator", "codex_cli_rs")
-		} else {
-			headers.Set("originator", "opencode")
-		}
+		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
 
 	betaValue := openAIWSBetaV2Value
@@ -1303,6 +1383,72 @@ func shouldForceNewConnOnStoreDisabled(mode, lastFailureReason string) bool {
 	}
 }
 
+func sanitizeOpenAIWSClientPayloadRaw(payload []byte) ([]byte, bool, error) {
+	updated := payload
+	removedAny := false
+	for _, field := range []string{"context_management"} {
+		next, removed, err := dropOpenAIWSFieldFromRawPayload(updated, field)
+		if err != nil {
+			return payload, removedAny, err
+		}
+		updated = next
+		removedAny = removedAny || removed
+	}
+	if normalized, injected, err := injectWarmupEmptyInputIfMissing(updated); err != nil {
+		return payload, removedAny, err
+	} else {
+		updated = normalized
+		removedAny = removedAny || injected
+	}
+	return updated, removedAny, nil
+}
+
+func injectWarmupEmptyInputIfMissing(payload []byte) ([]byte, bool, error) {
+	if len(payload) == 0 {
+		return payload, false, nil
+	}
+	generateValue := gjson.GetBytes(payload, "generate")
+	if !generateValue.Exists() || generateValue.Type != gjson.False || generateValue.Bool() {
+		return payload, false, nil
+	}
+	if gjson.GetBytes(payload, "input").Exists() {
+		return payload, false, nil
+	}
+	updated, err := sjson.SetRawBytes(payload, "input", []byte("[]"))
+	if err == nil {
+		return updated, true, nil
+	}
+	var reqBody map[string]any
+	if unmarshalErr := json.Unmarshal(payload, &reqBody); unmarshalErr != nil {
+		return payload, false, err
+	}
+	reqBody["input"] = []any{}
+	rebuilt, marshalErr := json.Marshal(reqBody)
+	if marshalErr != nil {
+		return payload, false, marshalErr
+	}
+	return rebuilt, true, nil
+}
+
+func dropOpenAIWSFieldFromRawPayload(payload []byte, field string) ([]byte, bool, error) {
+	trimmedField := strings.TrimSpace(field)
+	if len(payload) == 0 || trimmedField == "" {
+		return payload, false, nil
+	}
+	if !gjson.GetBytes(payload, trimmedField).Exists() {
+		return payload, false, nil
+	}
+	updated := payload
+	for i := 0; i < openAIWSMaxPrevResponseIDDeletePasses && gjson.GetBytes(updated, trimmedField).Exists(); i++ {
+		next, err := sjson.DeleteBytes(updated, trimmedField)
+		if err != nil {
+			return payload, false, err
+		}
+		updated = next
+	}
+	return updated, !gjson.GetBytes(updated, trimmedField).Exists(), nil
+}
+
 func dropPreviousResponseIDFromRawPayload(payload []byte) ([]byte, bool, error) {
 	return dropPreviousResponseIDFromRawPayloadWithDeleteFn(payload, sjson.DeleteBytes)
 }
@@ -1375,72 +1521,6 @@ func alignStoreDisabledPreviousResponseID(
 	payload []byte,
 	expectedPreviousResponseID string,
 ) ([]byte, bool, error) {
-func sanitizeOpenAIWSClientPayloadRaw(payload []byte) ([]byte, bool, error) {
-	updated := payload
-	removedAny := false
-	for _, field := range []string{"context_management"} {
-		next, removed, err := dropOpenAIWSFieldFromRawPayload(updated, field)
-		if err != nil {
-			return payload, removedAny, err
-		}
-		updated = next
-		removedAny = removedAny || removed
-	}
-	if normalized, injected, err := injectWarmupEmptyInputIfMissing(updated); err != nil {
-		return payload, removedAny, err
-	} else {
-		updated = normalized
-		removedAny = removedAny || injected
-	}
-	return updated, removedAny, nil
-}
-
-func injectWarmupEmptyInputIfMissing(payload []byte) ([]byte, bool, error) {
-	if len(payload) == 0 {
-		return payload, false, nil
-	}
-	generateValue := gjson.GetBytes(payload, "generate")
-	if !generateValue.Exists() || generateValue.Type != gjson.False || generateValue.Bool() {
-		return payload, false, nil
-	}
-	if gjson.GetBytes(payload, "input").Exists() {
-		return payload, false, nil
-	}
-	updated, err := sjson.SetRawBytes(payload, "input", []byte("[]"))
-	if err == nil {
-		return updated, true, nil
-	}
-	var reqBody map[string]any
-	if unmarshalErr := json.Unmarshal(payload, &reqBody); unmarshalErr != nil {
-		return payload, false, err
-	}
-	reqBody["input"] = []any{}
-	rebuilt, marshalErr := json.Marshal(reqBody)
-	if marshalErr != nil {
-		return payload, false, marshalErr
-	}
-	return rebuilt, true, nil
-}
-
-func dropOpenAIWSFieldFromRawPayload(payload []byte, field string) ([]byte, bool, error) {
-	trimmedField := strings.TrimSpace(field)
-	if len(payload) == 0 || trimmedField == "" {
-		return payload, false, nil
-	}
-	if !gjson.GetBytes(payload, trimmedField).Exists() {
-		return payload, false, nil
-	}
-	updated := payload
-	for i := 0; i < openAIWSMaxPrevResponseIDDeletePasses && gjson.GetBytes(updated, trimmedField).Exists(); i++ {
-		next, err := sjson.DeleteBytes(updated, trimmedField)
-		if err != nil {
-			return payload, false, err
-		}
-		updated = next
-	}
-	return updated, !gjson.GetBytes(updated, trimmedField).Exists(), nil
-}
-
 	if len(payload) == 0 {
 		return payload, false, nil
 	}
@@ -1922,9 +2002,22 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			wsPath,
 			account.ProxyID != nil && account.Proxy != nil,
 		)
+		var dialErr *openAIWSDialError
+		if errors.As(err, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
+			s.persistOpenAIWSRateLimitSignal(ctx, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(err.Error()))
+		}
 		return nil, wrapOpenAIWSFallback(classifyOpenAIWSAcquireError(err), err)
 	}
-	defer lease.Release()
+	// cleanExit 标记正常终端事件退出，此时上游不会再发送帧，连接可安全归还复用。
+	// 所有异常路径（读写错误、error 事件等）已在各自分支中提前调用 MarkBroken，
+	// 因此 defer 中只需处理正常退出时不 MarkBroken 即可。
+	cleanExit := false
+	defer func() {
+		if !cleanExit {
+			lease.MarkBroken()
+		}
+		lease.Release()
+	}()
 	connID := strings.TrimSpace(lease.ConnID())
 	logOpenAIWSModeDebug(
 		"connected account_id=%d account_type=%s transport=%s conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d has_previous_response_id=%v",
@@ -2205,6 +2298,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "Upstream websocket error"
@@ -2301,6 +2395,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		if isTerminalEvent {
+			cleanExit = true
 			break
 		}
 	}
@@ -2371,9 +2466,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		RequestID:       responseID,
 		Usage:           *usage,
 		Model:           originalModel,
+		ServiceTier:     extractOpenAIServiceTier(reqBody),
 		ReasoningEffort: extractOpenAIReasoningEffort(reqBody, originalModel),
 		Stream:          reqStream,
 		OpenAIWSMode:    true,
+		ResponseHeaders: lease.HandshakeHeaders(),
 		Duration:        time.Since(startTime),
 		FirstTokenMs:    firstTokenMs,
 	}, nil
@@ -2469,7 +2566,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		payloadBytes       int
 	}
 
-	isCodexCLI := openai.IsCodexCLIRequest(c.GetHeader("User-Agent")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 
 	applyPayloadMutation := func(current []byte, path string, value any) ([]byte, error) {
 		next, err := sjson.SetBytes(current, path, value)
@@ -2564,7 +2661,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", err)
 			}
 			normalizeOpenAIResponsesInputContentTypes(payload)
-			applyCodexOAuthTransform(payload, isCodexCLI)
+			applyCodexOAuthTransform(payload, isCodexCLI, false)
 			if turnMetadata != "" {
 				setOpenAIWSTurnMetadata(payload, turnMetadata)
 			}
@@ -2733,6 +2830,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				wsPath,
 				account.ProxyID != nil && account.Proxy != nil,
 			)
+			var dialErr *openAIWSDialError
+			if errors.As(acquireErr, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
+				s.persistOpenAIWSRateLimitSignal(ctx, account, dialErr.ResponseHeaders, nil, "rate_limit_exceeded", "rate_limit_error", strings.TrimSpace(acquireErr.Error()))
+			}
 			if errors.Is(acquireErr, errOpenAIWSPreferredConnUnavailable) {
 				return nil, NewOpenAIWSClientCloseError(
 					coderws.StatusPolicyViolation,
@@ -2821,6 +2922,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		responseID := ""
+		earlyBoundResponseID := ""
 		usage := OpenAIUsage{}
 		var firstTokenMs *int
 		reqStream := openAIWSPayloadBoolFromRaw(payload, "stream", true)
@@ -2863,6 +2965,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if responseID == "" && eventResponseID != "" {
 				responseID = eventResponseID
 			}
+			if stateStore != nil && responseID != "" && responseID != earlyBoundResponseID {
+				earlyBoundResponseID = responseID
+				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, s.openAIWSResponseStickyTTL()))
+			}
 			if eventType != "" {
 				eventCount++
 				if firstEventType == "" {
@@ -2872,6 +2978,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			if eventType == "error" {
 				errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(upstreamMessage)
+				s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), upstreamMessage, errCodeRaw, errTypeRaw, errMsgRaw)
 				fallbackReason, _ := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
 				errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
 				recoverablePrevNotFound := fallbackReason == openAIWSIngressStagePreviousResponseNotFound &&
@@ -2893,7 +3000,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						errMessage,
 						truncateOpenAIWSLogValue(turnPreviousResponseID, openAIWSIDValueMaxLen),
 						normalizeOpenAIWSLogValue(turnPreviousResponseIDKind),
-		earlyBoundResponseID := ""
 						truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
 						turnStoreDisabled,
 						turnPromptCacheKey != "",
@@ -2936,10 +3042,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				tokenEventCount++
 			}
 			isTerminalEvent := isOpenAIWSTerminalEvent(eventType)
-			if stateStore != nil && responseID != "" && responseID != earlyBoundResponseID {
-				earlyBoundResponseID = responseID
-				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, s.openAIWSResponseStickyTTL()))
-			}
 			if isTerminalEvent {
 				terminalEventCount++
 			}
@@ -3044,9 +3146,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					RequestID:       responseID,
 					Usage:           usage,
 					Model:           originalModel,
+					ServiceTier:     extractOpenAIServiceTierFromBody(payload),
 					ReasoningEffort: extractOpenAIReasoningEffortFromBody(payload, originalModel),
 					Stream:          reqStream,
 					OpenAIWSMode:    true,
+					ResponseHeaders: lease.HandshakeHeaders(),
 					Duration:        time.Since(turnStart),
 					FirstTokenMs:    firstTokenMs,
 				}, nil
@@ -3090,12 +3194,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			pinnedSessionConnID = connID
 		}
 	}
+	// lastTurnClean 标记最后一轮 sendAndRelay 是否正常完成（收到终端事件且客户端未断连）。
+	// 所有异常路径（读写错误、error 事件、客户端断连）已在各自分支或上层（L3403）中 MarkBroken，
+	// 因此 releaseSessionLease 中只需在非正常结束时 MarkBroken。
+	lastTurnClean := false
 	releaseSessionLease := func() {
 		if sessionLease == nil {
 			return
 		}
-		if dedicatedMode {
-			// dedicated 会话结束后主动标记损坏，确保连接不会跨会话复用。
+		if !lastTurnClean {
 			sessionLease.MarkBroken()
 		}
 		unpinSessionConn(sessionConnID)
@@ -3490,6 +3597,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel)
 		if relayErr != nil {
+			lastTurnClean = false
 			if recoverIngressPrevResponseNotFound(relayErr, turn, connID) {
 				continue
 			}
@@ -3509,6 +3617,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		turnRetry = 0
 		turnPrevRecoveryTried = false
 		lastTurnFinishedAt = time.Now()
+		lastTurnClean = true
 		if hooks != nil && hooks.AfterTurn != nil {
 			hooks.AfterTurn(turn, result, nil)
 		}
@@ -3734,6 +3843,7 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
 				errMsg = "OpenAI websocket prewarm error"
@@ -3928,7 +4038,7 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 	if s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return nil, nil
 	}
-	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() {
+	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return nil, nil
 	}
@@ -3997,6 +4107,36 @@ func classifyOpenAIWSAcquireError(err error) string {
 	return "acquire_conn"
 }
 
+func isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw string) bool {
+	code := strings.ToLower(strings.TrimSpace(codeRaw))
+	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
+	msg := strings.ToLower(strings.TrimSpace(msgRaw))
+
+	if strings.Contains(errType, "rate_limit") || strings.Contains(errType, "usage_limit") {
+		return true
+	}
+	if strings.Contains(code, "rate_limit") || strings.Contains(code, "usage_limit") || strings.Contains(code, "insufficient_quota") {
+		return true
+	}
+	if strings.Contains(msg, "usage limit") && strings.Contains(msg, "reached") {
+		return true
+	}
+	if strings.Contains(msg, "rate limit") && (strings.Contains(msg, "reached") || strings.Contains(msg, "exceeded")) {
+		return true
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Context, account *Account, headers http.Header, responseBody []byte, codeRaw, errTypeRaw, msgRaw string) {
+	if s == nil || s.rateLimitService == nil || account == nil || account.Platform != PlatformOpenAI {
+		return
+	}
+	if !isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw) {
+		return
+	}
+	s.rateLimitService.HandleUpstreamError(ctx, account, http.StatusTooManyRequests, headers, responseBody)
+}
+
 func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bool) {
 	code := strings.ToLower(strings.TrimSpace(codeRaw))
 	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
@@ -4009,8 +4149,13 @@ func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (stri
 		return "ws_unsupported", true
 	case "websocket_connection_limit_reached":
 		return "ws_connection_limit_reached", true
+	case "invalid_encrypted_content":
+		return "invalid_encrypted_content", true
 	case "previous_response_not_found":
 		return "previous_response_not_found", true
+	}
+	if isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw) {
+		return "upstream_rate_limited", false
 	}
 	if strings.Contains(msg, "upgrade required") || strings.Contains(msg, "status 426") {
 		return "upgrade_required", true
@@ -4023,6 +4168,10 @@ func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (stri
 	}
 	if strings.Contains(msg, "connection limit") && strings.Contains(msg, "websocket") {
 		return "ws_connection_limit_reached", true
+	}
+	if strings.Contains(msg, "invalid_encrypted_content") ||
+		(strings.Contains(msg, "encrypted content") && strings.Contains(msg, "could not be verified")) {
+		return "invalid_encrypted_content", true
 	}
 	if strings.Contains(msg, "previous_response_not_found") ||
 		(strings.Contains(msg, "previous response") && strings.Contains(msg, "not found")) {
@@ -4048,6 +4197,7 @@ func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
 	case strings.Contains(errType, "invalid_request"),
 		strings.Contains(code, "invalid_request"),
 		strings.Contains(code, "bad_request"),
+		code == "invalid_encrypted_content",
 		code == "previous_response_not_found":
 		return http.StatusBadRequest
 	case strings.Contains(errType, "authentication"),
@@ -4057,9 +4207,7 @@ func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
 	case strings.Contains(errType, "permission"),
 		strings.Contains(code, "forbidden"):
 		return http.StatusForbidden
-	case strings.Contains(errType, "rate_limit"),
-		strings.Contains(code, "rate_limit"),
-		strings.Contains(code, "insufficient_quota"):
+	case isOpenAIWSRateLimitError(codeRaw, errTypeRaw, ""):
 		return http.StatusTooManyRequests
 	default:
 		return http.StatusBadGateway

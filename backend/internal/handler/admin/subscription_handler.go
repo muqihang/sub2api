@@ -77,12 +77,13 @@ func (h *SubscriptionHandler) List(c *gin.Context) {
 		}
 	}
 	status := c.Query("status")
+	platform := c.Query("platform")
 
 	// Parse sorting parameters
 	sortBy := c.DefaultQuery("sort_by", "created_at")
 	sortOrder := c.DefaultQuery("sort_order", "desc")
 
-	subscriptions, pagination, err := h.subscriptionService.List(c.Request.Context(), page, pageSize, userID, groupID, status, sortBy, sortOrder)
+	subscriptions, pagination, err := h.subscriptionService.List(c.Request.Context(), page, pageSize, userID, groupID, status, platform, sortBy, sortOrder)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -214,6 +215,38 @@ func (h *SubscriptionHandler) Extend(c *gin.Context) {
 		}
 		return dto.UserSubscriptionFromServiceAdmin(subscription), nil
 	})
+}
+
+// ResetSubscriptionQuotaRequest represents the reset quota request
+type ResetSubscriptionQuotaRequest struct {
+	Daily   bool `json:"daily"`
+	Weekly  bool `json:"weekly"`
+	Monthly bool `json:"monthly"`
+}
+
+// ResetQuota resets daily, weekly, and/or monthly usage for a subscription.
+// POST /api/v1/admin/subscriptions/:id/reset-quota
+func (h *SubscriptionHandler) ResetQuota(c *gin.Context) {
+	subscriptionID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid subscription ID")
+		return
+	}
+	var req ResetSubscriptionQuotaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if !req.Daily && !req.Weekly && !req.Monthly {
+		response.BadRequest(c, "At least one of 'daily', 'weekly', or 'monthly' must be true")
+		return
+	}
+	sub, err := h.subscriptionService.AdminResetQuota(c.Request.Context(), subscriptionID, req.Daily, req.Weekly, req.Monthly)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.UserSubscriptionFromServiceAdmin(sub))
 }
 
 // Revoke handles revoking a subscription

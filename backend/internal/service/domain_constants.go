@@ -33,6 +33,7 @@ const (
 	AccountTypeSetupToken = domain.AccountTypeSetupToken // Setup Token类型账号（inference only scope）
 	AccountTypeAPIKey     = domain.AccountTypeAPIKey     // API Key类型账号
 	AccountTypeUpstream   = domain.AccountTypeUpstream   // 上游透传类型账号（通过 Base URL + API Key 连接上游）
+	AccountTypeBedrock    = domain.AccountTypeBedrock    // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
 )
 
 // Redeem type constants
@@ -79,6 +80,7 @@ const (
 	SettingKeyRegistrationEmailSuffixWhitelist = "registration_email_suffix_whitelist" // 注册邮箱后缀白名单（JSON 数组）
 	SettingKeyPromoCodeEnabled                 = "promo_code_enabled"                  // 是否启用优惠码功能
 	SettingKeyPasswordResetEnabled             = "password_reset_enabled"              // 是否启用忘记密码功能（需要先开启邮件验证）
+	SettingKeyFrontendURL                      = "frontend_url"                        // 前端基础URL，用于生成邮件中的重置密码链接
 	SettingKeyInvitationCodeEnabled            = "invitation_code_enabled"             // 是否启用邀请码注册
 
 	// 邮件服务设置
@@ -169,11 +171,32 @@ const (
 	SettingKeyOpsRuntimeLogConfig = "ops_runtime_log_config"
 
 	// =========================
+	// Overload Cooldown (529)
+	// =========================
+
+	// SettingKeyOverloadCooldownSettings stores JSON config for 529 overload cooldown handling.
+	SettingKeyOverloadCooldownSettings = "overload_cooldown_settings"
+
+	// =========================
 	// Stream Timeout Handling
 	// =========================
 
 	// SettingKeyStreamTimeoutSettings stores JSON config for stream timeout handling.
 	SettingKeyStreamTimeoutSettings = "stream_timeout_settings"
+
+	// =========================
+	// Request Rectifier (请求整流器)
+	// =========================
+
+	// SettingKeyRectifierSettings stores JSON config for rectifier settings (thinking signature + budget).
+	SettingKeyRectifierSettings = "rectifier_settings"
+
+	// =========================
+	// Beta Policy Settings
+	// =========================
+
+	// SettingKeyBetaPolicySettings stores JSON config for beta policy rules.
+	SettingKeyBetaPolicySettings = "beta_policy_settings"
 
 	// =========================
 	// Sora S3 存储配置
@@ -203,8 +226,14 @@ const (
 	// SettingKeyMinClaudeCodeVersion 最低 Claude Code 版本号要求 (semver, 如 "2.1.0"，空值=不检查)
 	SettingKeyMinClaudeCodeVersion = "min_claude_code_version"
 
+	// SettingKeyMaxClaudeCodeVersion 最高 Claude Code 版本号限制 (semver, 如 "3.0.0"，空值=不检查)
+	SettingKeyMaxClaudeCodeVersion = "max_claude_code_version"
+
 	// SettingKeyAllowUngroupedKeyScheduling 允许未分组 API Key 调度（默认 false：未分组 Key 返回 403）
 	SettingKeyAllowUngroupedKeyScheduling = "allow_ungrouped_key_scheduling"
+
+	// SettingKeyBackendModeEnabled Backend 模式：禁用用户注册和自助服务，仅管理员可登录
+	SettingKeyBackendModeEnabled = "backend_mode_enabled"
 )
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).

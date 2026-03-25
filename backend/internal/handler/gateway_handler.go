@@ -417,6 +417,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if fs.SwitchCount > 0 {
 				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 			}
+			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
+			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity {
 				result, err = h.antigravityGatewayService.ForwardGemini(requestCtx, c, account, reqModel, "generateContent", reqStream, body, hasBoundSession)
 			} else {
@@ -428,6 +430,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if err != nil {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
+					if c.Writer.Size() != writerSizeBeforeForward {
+						h.handleFailoverExhausted(c, failoverErr, service.PlatformGemini, true)
+						return
+					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
 					switch action {
 					case FailoverContinue:
@@ -460,19 +467,29 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 			userAgent := c.GetHeader("User-Agent")
 			clientIP := ip.GetClientIP(c)
+			requestPayloadHash := service.HashUsageRequestPayload(body)
+			inboundEndpoint := GetInboundEndpoint(c)
+			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+
+			if result.ReasoningEffort == nil {
+				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsedReq.OutputEffort)
+			}
 
 			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 			h.submitUsageRecordTask(func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-					Result:            result,
-					APIKey:            apiKey,
-					User:              apiKey.User,
-					Account:           account,
-					Subscription:      subscription,
-					UserAgent:         userAgent,
-					IPAddress:         clientIP,
-					ForceCacheBilling: fs.ForceCacheBilling,
-					APIKeyService:     h.apiKeyService,
+					Result:             result,
+					APIKey:             apiKey,
+					User:               apiKey.User,
+					Account:            account,
+					Subscription:       subscription,
+					InboundEndpoint:    inboundEndpoint,
+					UpstreamEndpoint:   upstreamEndpoint,
+					UserAgent:          userAgent,
+					IPAddress:          clientIP,
+					RequestPayloadHash: requestPayloadHash,
+					ForceCacheBilling:  fs.ForceCacheBilling,
+					APIKeyService:      h.apiKeyService,
 				}); err != nil {
 					logger.L().With(
 						zap.String("component", "handler.gateway.messages"),
@@ -661,6 +678,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if fs.SwitchCount > 0 {
 				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 			}
+			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
+			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, body, hasBoundSession)
 			} else {
@@ -678,6 +697,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				// Beta policy block: return 400 immediately, no failover
+				var betaBlockedErr *service.BetaBlockedError
+				if errors.As(err, &betaBlockedErr) {
+					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", betaBlockedErr.Message)
+					return
+				}
+
 				var promptTooLongErr *service.PromptTooLongError
 				if errors.As(err, &promptTooLongErr) {
 					reqLog.Warn("gateway.prompt_too_long_from_antigravity",
@@ -723,6 +749,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
+					if c.Writer.Size() != writerSizeBeforeForward {
+						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
+						return
+					}
 					action := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, failoverErr)
 					switch action {
 					case FailoverContinue:
@@ -755,19 +786,29 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 			userAgent := c.GetHeader("User-Agent")
 			clientIP := ip.GetClientIP(c)
+			requestPayloadHash := service.HashUsageRequestPayload(body)
+			inboundEndpoint := GetInboundEndpoint(c)
+			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+
+			if result.ReasoningEffort == nil {
+				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsedReq.OutputEffort)
+			}
 
 			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 			h.submitUsageRecordTask(func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-					Result:            result,
-					APIKey:            currentAPIKey,
-					User:              currentAPIKey.User,
-					Account:           account,
-					Subscription:      currentSubscription,
-					UserAgent:         userAgent,
-					IPAddress:         clientIP,
-					ForceCacheBilling: fs.ForceCacheBilling,
-					APIKeyService:     h.apiKeyService,
+					Result:             result,
+					APIKey:             currentAPIKey,
+					User:               currentAPIKey.User,
+					Account:            account,
+					Subscription:       currentSubscription,
+					InboundEndpoint:    inboundEndpoint,
+					UpstreamEndpoint:   upstreamEndpoint,
+					UserAgent:          userAgent,
+					IPAddress:          clientIP,
+					RequestPayloadHash: requestPayloadHash,
+					ForceCacheBilling:  fs.ForceCacheBilling,
+					APIKeyService:      h.apiKeyService,
 				}); err != nil {
 					logger.L().With(
 						zap.String("component", "handler.gateway.messages"),
@@ -928,7 +969,7 @@ func (h *GatewayHandler) parseUsageDateRange(c *gin.Context) (time.Time, time.Ti
 	}
 	if s := c.Query("end_date"); s != "" {
 		if t, err := timezone.ParseInLocation("2006-01-02", s); err == nil {
-			endTime = t.Add(24*time.Hour - time.Second) // end of day
+			endTime = t.AddDate(0, 0, 1) // half-open range upper bound
 		}
 	}
 	return startTime, endTime
@@ -997,34 +1038,46 @@ func (h *GatewayHandler) usageQuotaLimited(c *gin.Context, ctx context.Context, 
 		if err == nil && rateLimitData != nil {
 			var rateLimits []gin.H
 			if apiKey.RateLimit5h > 0 {
-				used := rateLimitData.Usage5h
-				rateLimits = append(rateLimits, gin.H{
+				used := rateLimitData.EffectiveUsage5h()
+				entry := gin.H{
 					"window":       "5h",
 					"limit":        apiKey.RateLimit5h,
 					"used":         used,
 					"remaining":    max(0, apiKey.RateLimit5h-used),
 					"window_start": rateLimitData.Window5hStart,
-				})
+				}
+				if rateLimitData.Window5hStart != nil && !service.IsWindowExpired(rateLimitData.Window5hStart, service.RateLimitWindow5h) {
+					entry["reset_at"] = rateLimitData.Window5hStart.Add(service.RateLimitWindow5h)
+				}
+				rateLimits = append(rateLimits, entry)
 			}
 			if apiKey.RateLimit1d > 0 {
-				used := rateLimitData.Usage1d
-				rateLimits = append(rateLimits, gin.H{
+				used := rateLimitData.EffectiveUsage1d()
+				entry := gin.H{
 					"window":       "1d",
 					"limit":        apiKey.RateLimit1d,
 					"used":         used,
 					"remaining":    max(0, apiKey.RateLimit1d-used),
 					"window_start": rateLimitData.Window1dStart,
-				})
+				}
+				if rateLimitData.Window1dStart != nil && !service.IsWindowExpired(rateLimitData.Window1dStart, service.RateLimitWindow1d) {
+					entry["reset_at"] = rateLimitData.Window1dStart.Add(service.RateLimitWindow1d)
+				}
+				rateLimits = append(rateLimits, entry)
 			}
 			if apiKey.RateLimit7d > 0 {
-				used := rateLimitData.Usage7d
-				rateLimits = append(rateLimits, gin.H{
+				used := rateLimitData.EffectiveUsage7d()
+				entry := gin.H{
 					"window":       "7d",
 					"limit":        apiKey.RateLimit7d,
 					"used":         used,
 					"remaining":    max(0, apiKey.RateLimit7d-used),
 					"window_start": rateLimitData.Window7dStart,
-				})
+				}
+				if rateLimitData.Window7dStart != nil && !service.IsWindowExpired(rateLimitData.Window7dStart, service.RateLimitWindow7d) {
+					entry["reset_at"] = rateLimitData.Window7dStart.Add(service.RateLimitWindow7d)
+				}
+				rateLimits = append(rateLimits, entry)
 			}
 			if len(rateLimits) > 0 {
 				resp["rate_limits"] = rateLimits
@@ -1192,6 +1245,10 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 		}
 	}
 
+	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
+	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
+	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
+
 	// 使用默认的错误映射
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
@@ -1200,6 +1257,7 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 // handleFailoverExhaustedSimple 简化版本，用于没有响应体的情况
 func (h *GatewayHandler) handleFailoverExhaustedSimple(c *gin.Context, statusCode int, streamStarted bool) {
 	status, errType, errMsg := h.mapUpstreamError(statusCode)
+	service.SetOpsUpstreamError(c, statusCode, errMsg, "")
 	h.handleStreamingAwareError(c, status, errType, errMsg, streamStarted)
 }
 
@@ -1249,7 +1307,7 @@ func (h *GatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarte
 	return true
 }
 
-// checkClaudeCodeVersion 检查 Claude Code 客户端版本是否满足最低要求
+// checkClaudeCodeVersion 检查 Claude Code 客户端版本是否满足版本要求
 // 仅对已识别的 Claude Code 客户端执行，count_tokens 路径除外
 func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
 	ctx := c.Request.Context()
@@ -1262,8 +1320,8 @@ func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
 		return true
 	}
 
-	minVersion := h.settingService.GetMinClaudeCodeVersion(ctx)
-	if minVersion == "" {
+	minVersion, maxVersion := h.settingService.GetClaudeCodeVersionBounds(ctx)
+	if minVersion == "" && maxVersion == "" {
 		return true // 未设置，不检查
 	}
 
@@ -1274,10 +1332,19 @@ func (h *GatewayHandler) checkClaudeCodeVersion(c *gin.Context) bool {
 		return false
 	}
 
-	if service.CompareVersions(clientVersion, minVersion) < 0 {
+	if minVersion != "" && service.CompareVersions(clientVersion, minVersion) < 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
 			fmt.Sprintf("Your Claude Code version (%s) is below the minimum required version (%s). Please update: npm update -g @anthropic-ai/claude-code",
 				clientVersion, minVersion))
+		return false
+	}
+
+	if maxVersion != "" && service.CompareVersions(clientVersion, maxVersion) > 0 {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("Your Claude Code version (%s) exceeds the maximum allowed version (%s). "+
+				"Please downgrade: npm install -g @anthropic-ai/claude-code@%s && "+
+				"set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 to prevent auto-upgrade",
+				clientVersion, maxVersion, maxVersion))
 		return false
 	}
 

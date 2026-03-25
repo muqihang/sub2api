@@ -176,6 +176,14 @@ func (m *mockAccountRepoForGemini) BulkUpdate(ctx context.Context, ids []int64, 
 	return 0, nil
 }
 
+func (m *mockAccountRepoForGemini) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	return nil
+}
+
+func (m *mockAccountRepoForGemini) ResetQuotaUsed(ctx context.Context, id int64) error {
+	return nil
+}
+
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForGemini)(nil)
 
@@ -222,8 +230,8 @@ func (m *mockGroupRepoForGemini) ListActiveByPlatform(ctx context.Context, platf
 func (m *mockGroupRepoForGemini) ExistsByName(ctx context.Context, name string) (bool, error) {
 	return false, nil
 }
-func (m *mockGroupRepoForGemini) GetAccountCount(ctx context.Context, groupID int64) (int64, error) {
-	return 0, nil
+func (m *mockGroupRepoForGemini) GetAccountCount(ctx context.Context, groupID int64) (int64, int64, error) {
+	return 0, 0, nil
 }
 func (m *mockGroupRepoForGemini) DeleteAccountGroupsByGroupID(ctx context.Context, groupID int64) (int64, error) {
 	return 0, nil
