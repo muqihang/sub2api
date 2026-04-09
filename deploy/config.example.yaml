@@ -349,6 +349,12 @@ gateway:
     # Enable batch load calculation for scheduling
     # 启用调度批量负载计算
     load_batch_enabled: true
+    # Snapshot bucket MGET chunk size
+    # 调度快照分桶读取时的 MGET 分块大小
+    snapshot_mget_chunk_size: 128
+    # Snapshot bucket write chunk size
+    # 调度快照重建写入时的分块大小
+    snapshot_write_chunk_size: 256
     # Slot cleanup interval (duration)
     # 并发槽位清理周期（时间段）
     slot_cleanup_interval: 30s
@@ -867,10 +873,10 @@ rate_limit:
 pricing:
   # URL to fetch model pricing data (default: pinned model-price-repo commit)
   # 获取模型定价数据的 URL（默认：固定 commit 的 model-price-repo）
-  remote_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/c7947e9871687e664180bc971d4837f1fc2784a9/model_prices_and_context_window.json"
+  remote_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/refs/heads/main//model_prices_and_context_window.json"
   # Hash verification URL (optional)
   # 哈希校验 URL（可选）
-  hash_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/c7947e9871687e664180bc971d4837f1fc2784a9/model_prices_and_context_window.sha256"
+  hash_url: "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/refs/heads/main//model_prices_and_context_window.sha256"
   # Local data directory for caching
   # 本地数据缓存目录
   data_dir: "./data"

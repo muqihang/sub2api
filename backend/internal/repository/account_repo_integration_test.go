@@ -208,15 +208,16 @@ func (s *AccountRepoSuite) TestList() {
 
 func (s *AccountRepoSuite) TestListWithFilters() {
 	tests := []struct {
-		name      string
-		setup     func(client *dbent.Client)
-		platform  string
-		accType   string
-		status    string
-		search    string
-		groupID   int64
-		wantCount int
-		validate  func(accounts []service.Account)
+		name        string
+		setup       func(client *dbent.Client)
+		platform    string
+		accType     string
+		status      string
+		search      string
+		groupID     int64
+		privacyMode string
+		wantCount   int
+		validate    func(accounts []service.Account)
 	}{
 		{
 			name: "filter_by_platform",
@@ -255,6 +256,22 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 			},
 		},
 		{
+			name: "filter_by_status_active_excludes_rate_limited",
+			setup: func(client *dbent.Client) {
+				mustCreateAccount(s.T(), client, &service.Account{Name: "active-normal", Status: service.StatusActive})
+				rateLimited := mustCreateAccount(s.T(), client, &service.Account{Name: "active-rate-limited", Status: service.StatusActive})
+				err := client.Account.UpdateOneID(rateLimited.ID).
+					SetRateLimitResetAt(time.Now().Add(10 * time.Minute)).
+					Exec(context.Background())
+				s.Require().NoError(err)
+			},
+			status:    service.StatusActive,
+			wantCount: 1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("active-normal", accounts[0].Name)
+			},
+		},
+		{
 			name: "filter_by_search",
 			setup: func(client *dbent.Client) {
 				mustCreateAccount(s.T(), client, &service.Account{Name: "alpha-account"})
@@ -281,6 +298,32 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 				s.Require().Empty(accounts[0].GroupIDs)
 			},
 		},
+		{
+			name: "filter_by_privacy_mode",
+			setup: func(client *dbent.Client) {
+				mustCreateAccount(s.T(), client, &service.Account{Name: "privacy-ok", Extra: map[string]any{"privacy_mode": service.PrivacyModeTrainingOff}})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "privacy-fail", Extra: map[string]any{"privacy_mode": service.PrivacyModeFailed}})
+			},
+			privacyMode: service.PrivacyModeTrainingOff,
+			wantCount:   1,
+			validate: func(accounts []service.Account) {
+				s.Require().Equal("privacy-ok", accounts[0].Name)
+			},
+		},
+		{
+			name: "filter_by_privacy_mode_unset",
+			setup: func(client *dbent.Client) {
+				mustCreateAccount(s.T(), client, &service.Account{Name: "privacy-unset", Extra: nil})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "privacy-empty", Extra: map[string]any{"privacy_mode": ""}})
+				mustCreateAccount(s.T(), client, &service.Account{Name: "privacy-set", Extra: map[string]any{"privacy_mode": service.PrivacyModeTrainingOff}})
+			},
+			privacyMode: service.AccountPrivacyModeUnsetFilter,
+			wantCount:   2,
+			validate: func(accounts []service.Account) {
+				names := []string{accounts[0].Name, accounts[1].Name}
+				s.ElementsMatch([]string{"privacy-unset", "privacy-empty"}, names)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -293,7 +336,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 
 			tt.setup(client)
 
-			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, tt.groupID)
+			accounts, _, err := repo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, tt.platform, tt.accType, tt.status, tt.search, tt.groupID, tt.privacyMode)
 			s.Require().NoError(err)
 			s.Require().Len(accounts, tt.wantCount)
 			if tt.validate != nil {
@@ -360,7 +403,7 @@ func (s *AccountRepoSuite) TestPreload_And_VirtualFields() {
 	s.Require().Len(got.Groups, 1, "expected Groups to be populated")
 	s.Require().Equal(group.ID, got.Groups[0].ID)
 
-	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0)
+	accounts, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "", "acc", 0, "")
 	s.Require().NoError(err, "ListWithFilters")
 	s.Require().Equal(int64(1), page.Total)
 	s.Require().Len(accounts, 1)

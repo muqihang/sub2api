@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,9 +12,34 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type geminiCompatHTTPUpstreamStub struct {
+	response *http.Response
+	err      error
+	calls    int
+	lastReq  *http.Request
+}
+
+func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	s.calls++
+	s.lastReq = req
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.response == nil {
+		return nil, fmt.Errorf("missing stub response")
+	}
+	resp := *s.response
+	return &resp, nil
+}
+
+func (s *geminiCompatHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return s.Do(req, proxyURL, accountID, accountConcurrency)
+}
 
 // TestConvertClaudeToolsToGeminiTools_CustomType 测试custom类型工具转换
 func TestConvertClaudeToolsToGeminiTools_CustomType(t *testing.T) {
@@ -138,6 +164,35 @@ func TestConvertClaudeToolsToGeminiTools_CustomType(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeToolsToGeminiTools_PreservesWebSearchAlongsideFunctions(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"name":         "get_weather",
+			"description":  "Get weather info",
+			"input_schema": map[string]any{"type": "object"},
+		},
+		map[string]any{
+			"type": "web_search_20250305",
+			"name": "web_search",
+		},
+	}
+
+	result := convertClaudeToolsToGeminiTools(tools)
+	require.Len(t, result, 2)
+
+	functionDecl, ok := result[0].(map[string]any)
+	require.True(t, ok)
+	funcDecls, ok := functionDecl["functionDeclarations"].([]any)
+	require.True(t, ok)
+	require.Len(t, funcDecls, 1)
+
+	searchDecl, ok := result[1].(map[string]any)
+	require.True(t, ok)
+	googleSearch, ok := searchDecl["googleSearch"].(map[string]any)
+	require.True(t, ok)
+	require.Empty(t, googleSearch)
+}
+
 func TestGeminiHandleNativeNonStreamingResponse_DebugDisabledDoesNotEmitHeaderLogs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logSink, restore := captureStructuredLog(t)
@@ -168,6 +223,89 @@ func TestGeminiHandleNativeNonStreamingResponse_DebugDisabledDoesNotEmitHeaderLo
 	require.NoError(t, err)
 	require.NotNil(t, usage)
 	require.False(t, logSink.ContainsMessage("[GeminiAPI]"), "debug 关闭时不应输出 Gemini 响应头日志")
+}
+
+func TestGeminiMessagesCompatServiceForward_PreservesRequestedModelAndMappedUpstreamModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"x-request-id": []string{"gemini-req-1"}},
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)),
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
+	account := &Account{
+		ID:   1,
+		Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "test-key",
+			"model_mapping": map[string]any{
+				"claude-sonnet-4": "claude-sonnet-4-20250514",
+			},
+		},
+	}
+	body := []byte(`{"model":"claude-sonnet-4","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "claude-sonnet-4", result.Model)
+	require.Equal(t, "claude-sonnet-4-20250514", result.UpstreamModel)
+	require.Equal(t, 1, httpStub.calls)
+	require.NotNil(t, httpStub.lastReq)
+	require.Contains(t, httpStub.lastReq.URL.String(), "/models/claude-sonnet-4-20250514:")
+}
+
+func TestGeminiMessagesCompatServiceForward_NormalizesWebSearchToolForAIStudio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"x-request-id": []string{"gemini-req-2"}},
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)),
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
+	account := &Account{
+		ID:   1,
+		Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "test-key",
+		},
+	}
+	body := []byte(`{"model":"claude-sonnet-4","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"tools":[{"name":"get_weather","description":"Get weather info","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search"}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, httpStub.lastReq)
+
+	postedBody, err := io.ReadAll(httpStub.lastReq.Body)
+	require.NoError(t, err)
+
+	var posted map[string]any
+	require.NoError(t, json.Unmarshal(postedBody, &posted))
+	tools, ok := posted["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 2)
+
+	searchTool, ok := tools[1].(map[string]any)
+	require.True(t, ok)
+	_, hasSnake := searchTool["google_search"]
+	_, hasCamel := searchTool["googleSearch"]
+	require.True(t, hasSnake)
+	require.False(t, hasCamel)
+	_, hasFuncDecl := searchTool["functionDeclarations"]
+	require.False(t, hasFuncDecl)
 }
 
 func TestConvertClaudeMessagesToGeminiGenerateContent_AddsThoughtSignatureForToolUse(t *testing.T) {

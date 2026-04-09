@@ -4,7 +4,7 @@
  */
 
 import { apiClient } from '../client'
-import type { CustomMenuItem } from '@/types'
+import type { CustomMenuItem, CustomEndpoint } from '@/types'
 
 export interface DefaultSubscriptionSetting {
   group_id: number
@@ -40,9 +40,9 @@ export interface SystemSettings {
   hide_ccs_import_button: boolean
   purchase_subscription_enabled: boolean
   purchase_subscription_url: string
-  sora_client_enabled: boolean
   backend_mode_enabled: boolean
   custom_menu_items: CustomMenuItem[]
+  custom_endpoints: CustomEndpoint[]
   // SMTP settings
   smtp_host: string
   smtp_port: number
@@ -85,6 +85,11 @@ export interface SystemSettings {
 
   // 分组隔离
   allow_ungrouped_key_scheduling: boolean
+
+  // Gateway forwarding behavior
+  enable_fingerprint_unification: boolean
+  enable_metadata_passthrough: boolean
+  enable_cch_signing: boolean
 }
 
 export interface UpdateSettingsRequest {
@@ -109,9 +114,9 @@ export interface UpdateSettingsRequest {
   hide_ccs_import_button?: boolean
   purchase_subscription_enabled?: boolean
   purchase_subscription_url?: string
-  sora_client_enabled?: boolean
   backend_mode_enabled?: boolean
   custom_menu_items?: CustomMenuItem[]
+  custom_endpoints?: CustomEndpoint[]
   smtp_host?: string
   smtp_port?: number
   smtp_username?: string
@@ -140,6 +145,9 @@ export interface UpdateSettingsRequest {
   min_claude_code_version?: string
   max_claude_code_version?: string
   allow_ungrouped_key_scheduling?: boolean
+  enable_fingerprint_unification?: boolean
+  enable_metadata_passthrough?: boolean
+  enable_cch_signing?: boolean
 }
 
 /**
@@ -315,6 +323,8 @@ export interface RectifierSettings {
   enabled: boolean
   thinking_signature_enabled: boolean
   thinking_budget_enabled: boolean
+  apikey_signature_enabled: boolean
+  apikey_signature_patterns: string[]
 }
 
 /**
@@ -351,6 +361,9 @@ export interface BetaPolicyRule {
   action: 'pass' | 'filter' | 'block'
   scope: 'all' | 'oauth' | 'apikey' | 'bedrock'
   error_message?: string
+  model_whitelist?: string[]
+  fallback_action?: 'pass' | 'filter' | 'block'
+  fallback_error_message?: string
 }
 
 /**
@@ -384,142 +397,6 @@ export async function updateBetaPolicySettings(
   return data
 }
 
-// ==================== Sora S3 Settings ====================
-
-export interface SoraS3Settings {
-  enabled: boolean
-  endpoint: string
-  region: string
-  bucket: string
-  access_key_id: string
-  secret_access_key_configured: boolean
-  prefix: string
-  force_path_style: boolean
-  cdn_url: string
-  default_storage_quota_bytes: number
-}
-
-export interface SoraS3Profile {
-  profile_id: string
-  name: string
-  is_active: boolean
-  enabled: boolean
-  endpoint: string
-  region: string
-  bucket: string
-  access_key_id: string
-  secret_access_key_configured: boolean
-  prefix: string
-  force_path_style: boolean
-  cdn_url: string
-  default_storage_quota_bytes: number
-  updated_at: string
-}
-
-export interface ListSoraS3ProfilesResponse {
-  active_profile_id: string
-  items: SoraS3Profile[]
-}
-
-export interface UpdateSoraS3SettingsRequest {
-  profile_id?: string
-  enabled: boolean
-  endpoint: string
-  region: string
-  bucket: string
-  access_key_id: string
-  secret_access_key?: string
-  prefix: string
-  force_path_style: boolean
-  cdn_url: string
-  default_storage_quota_bytes: number
-}
-
-export interface CreateSoraS3ProfileRequest {
-  profile_id: string
-  name: string
-  set_active?: boolean
-  enabled: boolean
-  endpoint: string
-  region: string
-  bucket: string
-  access_key_id: string
-  secret_access_key?: string
-  prefix: string
-  force_path_style: boolean
-  cdn_url: string
-  default_storage_quota_bytes: number
-}
-
-export interface UpdateSoraS3ProfileRequest {
-  name: string
-  enabled: boolean
-  endpoint: string
-  region: string
-  bucket: string
-  access_key_id: string
-  secret_access_key?: string
-  prefix: string
-  force_path_style: boolean
-  cdn_url: string
-  default_storage_quota_bytes: number
-}
-
-export interface TestSoraS3ConnectionRequest {
-  profile_id?: string
-  enabled: boolean
-  endpoint: string
-  region: string
-  bucket: string
-  access_key_id: string
-  secret_access_key?: string
-  prefix: string
-  force_path_style: boolean
-  cdn_url: string
-  default_storage_quota_bytes?: number
-}
-
-export async function getSoraS3Settings(): Promise<SoraS3Settings> {
-  const { data } = await apiClient.get<SoraS3Settings>('/admin/settings/sora-s3')
-  return data
-}
-
-export async function updateSoraS3Settings(settings: UpdateSoraS3SettingsRequest): Promise<SoraS3Settings> {
-  const { data } = await apiClient.put<SoraS3Settings>('/admin/settings/sora-s3', settings)
-  return data
-}
-
-export async function testSoraS3Connection(
-  settings: TestSoraS3ConnectionRequest
-): Promise<{ message: string }> {
-  const { data } = await apiClient.post<{ message: string }>('/admin/settings/sora-s3/test', settings)
-  return data
-}
-
-export async function listSoraS3Profiles(): Promise<ListSoraS3ProfilesResponse> {
-  const { data } = await apiClient.get<ListSoraS3ProfilesResponse>('/admin/settings/sora-s3/profiles')
-  return data
-}
-
-export async function createSoraS3Profile(request: CreateSoraS3ProfileRequest): Promise<SoraS3Profile> {
-  const { data } = await apiClient.post<SoraS3Profile>('/admin/settings/sora-s3/profiles', request)
-  return data
-}
-
-export async function updateSoraS3Profile(profileID: string, request: UpdateSoraS3ProfileRequest): Promise<SoraS3Profile> {
-  const { data } = await apiClient.put<SoraS3Profile>(`/admin/settings/sora-s3/profiles/${profileID}`, request)
-  return data
-}
-
-export async function deleteSoraS3Profile(profileID: string): Promise<void> {
-  await apiClient.delete(`/admin/settings/sora-s3/profiles/${profileID}`)
-}
-
-export async function setActiveSoraS3Profile(profileID: string): Promise<SoraS3Profile> {
-  const { data } = await apiClient.post<SoraS3Profile>(`/admin/settings/sora-s3/profiles/${profileID}/activate`)
-  return data
-}
-
 export const settingsAPI = {
   getSettings,
   updateSettings,
@@ -535,15 +412,7 @@ export const settingsAPI = {
   getRectifierSettings,
   updateRectifierSettings,
   getBetaPolicySettings,
-  updateBetaPolicySettings,
-  getSoraS3Settings,
-  updateSoraS3Settings,
-  testSoraS3Connection,
-  listSoraS3Profiles,
-  createSoraS3Profile,
-  updateSoraS3Profile,
-  deleteSoraS3Profile,
-  setActiveSoraS3Profile
+  updateBetaPolicySettings
 }
 
 export default settingsAPI

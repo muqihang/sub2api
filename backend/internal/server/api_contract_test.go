@@ -204,16 +204,13 @@ func TestAPIContracts(t *testing.T) {
 						"image_price_1k": null,
 						"image_price_2k": null,
 						"image_price_4k": null,
-							"sora_image_price_360": null,
-							"sora_image_price_540": null,
-							"sora_storage_quota_bytes": 0,
-							"sora_video_price_per_request": null,
-							"sora_video_price_per_request_hd": null,
 							"claude_code_only": false,
 						"allow_messages_dispatch": false,
 						"fallback_group_id": null,
 						"fallback_group_id_on_invalid_request": null,
 						"allow_messages_dispatch": false,
+						"require_oauth_only": false,
+						"require_privacy_set": false,
 						"created_at": "2025-01-02T03:04:05Z",
 						"updated_at": "2025-01-02T03:04:05Z"
 					}
@@ -530,7 +527,6 @@ func TestAPIContracts(t *testing.T) {
 						"fallback_model_openai": "gpt-4o",
 						"enable_identity_patch": true,
 						"identity_patch_prompt": "",
-						"sora_client_enabled": false,
 						"invitation_code_enabled": false,
 						"home_content": "",
 					"hide_ccs_import_button": false,
@@ -540,7 +536,11 @@ func TestAPIContracts(t *testing.T) {
 					"max_claude_code_version": "",
 					"allow_ungrouped_key_scheduling": false,
 					"backend_mode_enabled": false,
-					"custom_menu_items": []
+					"enable_cch_signing": false,
+					"enable_fingerprint_unification": true,
+					"enable_metadata_passthrough": false,
+					"custom_menu_items": [],
+					"custom_endpoints": []
 				}
 			}`,
 		},
@@ -648,11 +648,11 @@ func newContractDeps(t *testing.T) *contractDeps {
 	settingRepo := newStubSettingRepo()
 	settingService := service.NewSettingService(settingRepo, cfg)
 
-	adminService := service.NewAdminService(userRepo, groupRepo, &accountRepo, nil, proxyRepo, apiKeyRepo, redeemRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	adminService := service.NewAdminService(userRepo, groupRepo, &accountRepo, proxyRepo, apiKeyRepo, redeemRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	authHandler := handler.NewAuthHandler(cfg, nil, userService, settingService, nil, redeemService, nil)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageHandler := handler.NewUsageHandler(usageService, apiKeyService)
-	adminSettingHandler := adminhandler.NewSettingHandler(settingService, nil, nil, nil, nil)
+	adminSettingHandler := adminhandler.NewSettingHandler(settingService, nil, nil, nil)
 	adminAccountHandler := adminhandler.NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	jwtAuth := func(c *gin.Context) {
@@ -989,7 +989,7 @@ func (s *stubAccountRepo) List(ctx context.Context, params pagination.Pagination
 	return nil, nil, errors.New("not implemented")
 }
 
-func (s *stubAccountRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64) ([]service.Account, *pagination.PaginationResult, error) {
+func (s *stubAccountRepo) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
 	return nil, nil, errors.New("not implemented")
 }
 

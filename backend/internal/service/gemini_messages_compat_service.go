@@ -137,7 +137,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, geminiStickySessionTTL)
 	}
 
-	return selected, nil
+	return s.hydrateSelectedAccount(ctx, selected)
 }
 
 // resolvePlatformAndSchedulingMode 解析目标平台和调度模式。
@@ -416,6 +416,20 @@ func (s *GeminiMessagesCompatService) getSchedulableAccount(ctx context.Context,
 	return s.accountRepo.GetByID(ctx, accountID)
 }
 
+func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
+	if account == nil || s.schedulerSnapshot == nil {
+		return account, nil
+	}
+	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
+	if err != nil {
+		return nil, err
+	}
+	if hydrated == nil {
+		return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
+	}
+	return hydrated, nil
+}
+
 func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, error) {
 	if s.schedulerSnapshot != nil {
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
@@ -546,7 +560,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 	if selected == nil {
 		return nil, errors.New("no available Gemini accounts")
 	}
-	return selected, nil
+	return s.hydrateSelectedAccount(ctx, selected)
 }
 
 func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
@@ -612,7 +626,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				fullURL += "?alt=sse"
 			}
 
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(geminiReq))
+			restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
+			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
 			if err != nil {
 				return nil, "", err
 			}
@@ -685,7 +700,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					fullURL += "?alt=sse"
 				}
 
-				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(geminiReq))
+				restGeminiReq := normalizeGeminiRequestForAIStudio(geminiReq)
+				upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(restGeminiReq))
 				if err != nil {
 					return nil, "", err
 				}
@@ -1028,14 +1044,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	}
 
 	return &ForwardResult{
-		RequestID:    requestID,
-		Usage:        *usage,
-		Model:        originalModel,
-		Stream:       req.Stream,
-		Duration:     time.Since(startTime),
-		FirstTokenMs: firstTokenMs,
-		ImageCount:   imageCount,
-		ImageSize:    imageSize,
+		RequestID:     requestID,
+		Usage:         *usage,
+		Model:         originalModel,
+		UpstreamModel: mappedModel,
+		Stream:        req.Stream,
+		Duration:      time.Since(startTime),
+		FirstTokenMs:  firstTokenMs,
+		ImageCount:    imageCount,
+		ImageSize:     imageSize,
 	}, nil
 }
 
@@ -1241,12 +1258,13 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				estimated := estimateGeminiCountTokens(body)
 				c.JSON(http.StatusOK, map[string]any{"totalTokens": estimated})
 				return &ForwardResult{
-					RequestID:    "",
-					Usage:        ClaudeUsage{},
-					Model:        originalModel,
-					Stream:       false,
-					Duration:     time.Since(startTime),
-					FirstTokenMs: nil,
+					RequestID:     "",
+					Usage:         ClaudeUsage{},
+					Model:         originalModel,
+					UpstreamModel: mappedModel,
+					Stream:        false,
+					Duration:      time.Since(startTime),
+					FirstTokenMs:  nil,
 				}, nil
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
@@ -1310,12 +1328,13 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				estimated := estimateGeminiCountTokens(body)
 				c.JSON(http.StatusOK, map[string]any{"totalTokens": estimated})
 				return &ForwardResult{
-					RequestID:    "",
-					Usage:        ClaudeUsage{},
-					Model:        originalModel,
-					Stream:       false,
-					Duration:     time.Since(startTime),
-					FirstTokenMs: nil,
+					RequestID:     "",
+					Usage:         ClaudeUsage{},
+					Model:         originalModel,
+					UpstreamModel: mappedModel,
+					Stream:        false,
+					Duration:      time.Since(startTime),
+					FirstTokenMs:  nil,
 				}, nil
 			}
 			// Final attempt: surface the upstream error body (passed through below) instead of a generic retry error.
@@ -1350,12 +1369,13 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			estimated := estimateGeminiCountTokens(body)
 			c.JSON(http.StatusOK, map[string]any{"totalTokens": estimated})
 			return &ForwardResult{
-				RequestID:    requestID,
-				Usage:        ClaudeUsage{},
-				Model:        originalModel,
-				Stream:       false,
-				Duration:     time.Since(startTime),
-				FirstTokenMs: nil,
+				RequestID:     requestID,
+				Usage:         ClaudeUsage{},
+				Model:         originalModel,
+				UpstreamModel: mappedModel,
+				Stream:        false,
+				Duration:      time.Since(startTime),
+				FirstTokenMs:  nil,
 			}, nil
 		}
 
@@ -1527,14 +1547,15 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	}
 
 	return &ForwardResult{
-		RequestID:    requestID,
-		Usage:        *usage,
-		Model:        originalModel,
-		Stream:       stream,
-		Duration:     time.Since(startTime),
-		FirstTokenMs: firstTokenMs,
-		ImageCount:   imageCount,
-		ImageSize:    imageSize,
+		RequestID:     requestID,
+		Usage:         *usage,
+		Model:         originalModel,
+		UpstreamModel: mappedModel,
+		Stream:        stream,
+		Duration:      time.Since(startTime),
+		FirstTokenMs:  firstTokenMs,
+		ImageCount:    imageCount,
+		ImageSize:     imageSize,
 	}, nil
 }
 
@@ -2687,12 +2708,27 @@ func extractGeminiUsage(data []byte) *ClaudeUsage {
 	cand := int(usage.Get("candidatesTokenCount").Int())
 	cached := int(usage.Get("cachedContentTokenCount").Int())
 	thoughts := int(usage.Get("thoughtsTokenCount").Int())
+
+	// 从 candidatesTokensDetails 提取 IMAGE 模态 token 数
+	imageTokens := 0
+	candidateDetails := usage.Get("candidatesTokensDetails")
+	if candidateDetails.Exists() {
+		candidateDetails.ForEach(func(_, detail gjson.Result) bool {
+			if detail.Get("modality").String() == "IMAGE" {
+				imageTokens = int(detail.Get("tokenCount").Int())
+				return false
+			}
+			return true
+		})
+	}
+
 	// 注意：Gemini 的 promptTokenCount 包含 cachedContentTokenCount，
 	// 但 Claude 的 input_tokens 不包含 cache_read_input_tokens，需要减去
 	return &ClaudeUsage{
 		InputTokens:          prompt - cached,
 		OutputTokens:         cand + thoughts,
 		CacheReadInputTokens: cached,
+		ImageOutputTokens:    imageTokens,
 	}
 }
 
@@ -3164,10 +3200,15 @@ func convertClaudeToolsToGeminiTools(tools any) []any {
 		return nil
 	}
 
+	hasWebSearch := false
 	funcDecls := make([]any, 0, len(arr))
 	for _, t := range arr {
 		tm, ok := t.(map[string]any)
 		if !ok {
+			continue
+		}
+		if isClaudeWebSearchToolMap(tm) {
+			hasWebSearch = true
 			continue
 		}
 
@@ -3213,13 +3254,75 @@ func convertClaudeToolsToGeminiTools(tools any) []any {
 		})
 	}
 
-	if len(funcDecls) == 0 {
+	out := make([]any, 0, 2)
+	if len(funcDecls) > 0 {
+		out = append(out, map[string]any{
+			"functionDeclarations": funcDecls,
+		})
+	}
+	if hasWebSearch {
+		out = append(out, map[string]any{
+			"googleSearch": map[string]any{},
+		})
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	return []any{
-		map[string]any{
-			"functionDeclarations": funcDecls,
-		},
+	return out
+}
+
+func normalizeGeminiRequestForAIStudio(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return body
+	}
+
+	modified := false
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		googleSearch, ok := tool["googleSearch"]
+		if !ok {
+			continue
+		}
+		if _, exists := tool["google_search"]; exists {
+			continue
+		}
+		tool["google_search"] = googleSearch
+		delete(tool, "googleSearch")
+		modified = true
+	}
+
+	if !modified {
+		return body
+	}
+
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return normalized
+}
+
+func isClaudeWebSearchToolMap(tool map[string]any) bool {
+	toolType, _ := tool["type"].(string)
+	if strings.HasPrefix(toolType, "web_search") || toolType == "google_search" {
+		return true
+	}
+
+	name, _ := tool["name"].(string)
+	switch strings.TrimSpace(name) {
+	case "web_search", "google_search", "web_search_20250305":
+		return true
+	default:
+		return false
 	}
 }
 

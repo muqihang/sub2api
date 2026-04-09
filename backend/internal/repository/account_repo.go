@@ -404,6 +404,17 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 	return nil
 }
 
+func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
+	_, err := r.client.Account.UpdateOneID(id).
+		SetCredentials(normalizeJSONMap(credentials)).
+		Save(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
 func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 	groupIDs, err := r.loadAccountGroupIDs(ctx, id)
 	if err != nil {
@@ -443,10 +454,10 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *accountRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Account, *pagination.PaginationResult, error) {
-	return r.ListWithFilters(ctx, params, "", "", "", "", 0)
+	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "")
 }
 
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64) ([]service.Account, *pagination.PaginationResult, error) {
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.client.Account.Query()
 
 	if platform != "" {
@@ -457,6 +468,14 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 	}
 	if status != "" {
 		switch status {
+		case service.StatusActive:
+			q = q.Where(
+				dbaccount.StatusEQ(status),
+				dbaccount.Or(
+					dbaccount.RateLimitResetAtIsNil(),
+					dbaccount.RateLimitResetAtLTE(time.Now()),
+				),
+			)
 		case "rate_limited":
 			q = q.Where(dbaccount.RateLimitResetAtGT(time.Now()))
 		case "temp_unschedulable":
@@ -478,6 +497,20 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		q = q.Where(dbaccount.Not(dbaccount.HasAccountGroups()))
 	} else if groupID > 0 {
 		q = q.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(groupID)))
+	}
+	if privacyMode != "" {
+		q = q.Where(dbpredicate.Account(func(s *entsql.Selector) {
+			path := sqljson.Path("privacy_mode")
+			switch privacyMode {
+			case service.AccountPrivacyModeUnsetFilter:
+				s.Where(entsql.Or(
+					entsql.Not(sqljson.HasKey(dbaccount.FieldExtra, path)),
+					sqljson.ValueEQ(dbaccount.FieldExtra, "", path),
+				))
+			default:
+				s.Where(sqljson.ValueEQ(dbaccount.FieldExtra, privacyMode, path))
+			}
+		}))
 	}
 
 	total, err := q.Count(ctx)
@@ -1667,20 +1700,13 @@ func itoa(v int) string {
 }
 
 // FindByExtraField 根据 extra 字段中的键值对查找账号。
-// 该方法限定 platform='sora'，避免误查询其他平台的账号。
 // 使用 PostgreSQL JSONB @> 操作符进行高效查询（需要 GIN 索引支持）。
 //
-// 应用场景：查找通过 linked_openai_account_id 关联的 Sora 账号。
-//
 // FindByExtraField finds accounts by key-value pairs in the extra field.
-// Limited to platform='sora' to avoid querying accounts from other platforms.
 // Uses PostgreSQL JSONB @> operator for efficient queries (requires GIN index).
-//
-// Use case: Finding Sora accounts linked via linked_openai_account_id.
 func (r *accountRepository) FindByExtraField(ctx context.Context, key string, value any) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
 		Where(
-			dbaccount.PlatformEQ("sora"), // 限定平台为 sora
 			dbaccount.DeletedAtIsNil(),
 			func(s *entsql.Selector) {
 				path := sqljson.Path(key)
