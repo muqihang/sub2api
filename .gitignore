@@ -82,6 +82,9 @@ temp/
 *.temp
 *.log
 *.bak
+*.pyc
+__pycache__/
+tools/__pycache__/
 .cache/
 .dev/
 .serena/
@@ -132,6 +135,7 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+codex-manager/
 
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md

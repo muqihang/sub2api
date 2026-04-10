@@ -303,6 +303,17 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/openai-rt-import',
+    name: 'AdminOpenAIRTImport',
+    component: () => import('@/views/admin/OpenAIRTImportView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'OpenAI Token Import',
+      hideInMenu: false
+    }
+  },
+  {
     path: '/admin/announcements',
     name: 'AdminAnnouncements',
     component: () => import('@/views/admin/AnnouncementsView.vue'),
