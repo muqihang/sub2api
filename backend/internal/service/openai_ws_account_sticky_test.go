@@ -169,7 +169,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_Excluded(t *test
 	require.Nil(t, selection)
 }
 
-func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_ForceHTTPStillSticky(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_ForceHTTPSkipsSticky(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(23)
 	account := Account{
@@ -199,12 +199,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_ForceHTTPStillSt
 
 	selection, err := svc.SelectAccountByPreviousResponseID(ctx, &groupID, "resp_prev_force_http", "gpt-5.1", nil)
 	require.NoError(t, err)
-	require.NotNil(t, selection, "HTTP 场景也应支持 previous_response_id 粘连")
-	require.NotNil(t, selection.Account)
-	require.Equal(t, account.ID, selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
+	require.Nil(t, selection, "force_http / 非 WSv2 场景不应使用 previous_response_id 粘连")
 }
 
 func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_BusyKeepsSticky(t *testing.T) {

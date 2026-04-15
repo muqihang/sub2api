@@ -381,7 +381,9 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 1
 	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
-	cfg.Gateway.OpenAIWS.LBTopK = 2
+	// Keep account selection deterministic in integration tests so retry scenarios
+	// always pick the highest-priority account first before switching.
+	cfg.Gateway.OpenAIWS.LBTopK = 1
 	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 3600
 
 	accountRepo := &wsHandlerAccountRepo{accounts: accounts}
@@ -403,6 +405,8 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 		nil,
 		nil,
 		nil,
+		nil,
+		nil,
 		cache,
 		cfg,
 		nil,
@@ -410,6 +414,9 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 		nil,
 		nil,
 		billingCacheService,
+		nil,
+		nil,
+		nil,
 		nil,
 		nil,
 		nil,

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -224,7 +225,7 @@ func (s *captureHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*
 	}, nil
 }
 
-func (s *captureHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ bool) (*http.Response, error) {
+func (s *captureHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
@@ -405,7 +406,7 @@ func TestOpenAIGatewayService_BuildUpstreamRequest_ForwardsCodexTurnStateHeader(
 	}
 }
 
-func TestOpenAIGatewayService_Forward_PreservesPreviousResponseIDForHTTP(t *testing.T) {
+func TestOpenAIGatewayService_Forward_RemovesPreviousResponseIDForHTTP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -449,8 +450,8 @@ func TestOpenAIGatewayService_Forward_PreservesPreviousResponseIDForHTTP(t *test
 		t.Fatalf("unmarshal forwarded body: %v", err)
 	}
 
-	if value, exists := forwarded["previous_response_id"]; !exists || strings.TrimSpace(fmt.Sprint(value)) != "resp_prev_123" {
-		t.Fatalf("expected previous_response_id to be preserved for HTTP forwarding, got %#v", forwarded["previous_response_id"])
+	if _, exists := forwarded["previous_response_id"]; exists {
+		t.Fatalf("expected previous_response_id to be removed for HTTP forwarding, got %#v", forwarded["previous_response_id"])
 	}
 	if _, exists := forwarded["prompt_cache_retention"]; !exists {
 		t.Fatal("expected prompt_cache_retention to be preserved")
