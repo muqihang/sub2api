@@ -3,6 +3,7 @@ package admin
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -231,6 +232,14 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 
 	// Build credentials from token info
 	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	extra := map[string]any{
+		"openai_pool_role":               service.OpenAIPoolRoleMain,
+		"openai_auth_state":              service.OpenAIAuthStateHealthy,
+		"openai_token_source":            service.OpenAITokenSourceRTManaged,
+		"openai_validation_outcome":      service.OpenAIValidationOutcomeRTValidated,
+		"openai_last_refresh_error_code": "",
+		"openai_last_validated_at":       time.Now().UTC().Format(time.RFC3339),
+	}
 
 	platform := oauthPlatformFromPath(c)
 
@@ -249,7 +258,7 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Platform:    platform,
 		Type:        "oauth",
 		Credentials: credentials,
-		Extra:       nil,
+		Extra:       extra,
 		ProxyID:     req.ProxyID,
 		Concurrency: req.Concurrency,
 		Priority:    req.Priority,

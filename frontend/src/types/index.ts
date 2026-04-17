@@ -974,12 +974,23 @@ export interface AdminDataImportError {
   message: string
 }
 
+export interface AdminDataImportAccountResult {
+  name: string
+  action: string
+  pool_role?: 'main' | 'quarantine'
+  token_source?: 'rt_managed' | 'at_only'
+  validation_outcome?: string
+  message?: string
+}
+
 export interface AdminDataImportResult {
   proxy_created: number
   proxy_reused: number
   proxy_failed: number
   account_created: number
+  account_updated?: number
   account_failed: number
+  account_results?: AdminDataImportAccountResult[]
   errors?: AdminDataImportError[]
 }
 

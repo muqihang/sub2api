@@ -64,12 +64,14 @@ type DataImportRequest struct {
 }
 
 type DataImportResult struct {
-	ProxyCreated   int               `json:"proxy_created"`
-	ProxyReused    int               `json:"proxy_reused"`
-	ProxyFailed    int               `json:"proxy_failed"`
-	AccountCreated int               `json:"account_created"`
-	AccountFailed  int               `json:"account_failed"`
-	Errors         []DataImportError `json:"errors,omitempty"`
+	ProxyCreated   int                       `json:"proxy_created"`
+	ProxyReused    int                       `json:"proxy_reused"`
+	ProxyFailed    int                       `json:"proxy_failed"`
+	AccountCreated int                       `json:"account_created"`
+	AccountUpdated int                       `json:"account_updated"`
+	AccountFailed  int                       `json:"account_failed"`
+	AccountResults []DataImportAccountResult `json:"account_results,omitempty"`
+	Errors         []DataImportError         `json:"errors,omitempty"`
 }
 
 type DataImportError struct {
@@ -77,6 +79,15 @@ type DataImportError struct {
 	Name     string `json:"name,omitempty"`
 	ProxyKey string `json:"proxy_key,omitempty"`
 	Message  string `json:"message"`
+}
+
+type DataImportAccountResult struct {
+	Name              string `json:"name"`
+	Action            string `json:"action"`
+	PoolRole          string `json:"pool_role,omitempty"`
+	TokenSource       string `json:"token_source,omitempty"`
+	ValidationOutcome string `json:"validation_outcome,omitempty"`
+	Message           string `json:"message,omitempty"`
 }
 
 func buildProxyKey(protocol, host string, port int, username, password string) string {
@@ -270,6 +281,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 	// 收集需要异步设置隐私的 Antigravity OAuth 账号
 	var privacyAccounts []*service.Account
+	openAIOAuthAccounts, _ := h.listAccountsFiltered(ctx, service.PlatformOpenAI, service.AccountTypeOAuth, "", "", 0, "", "updated_at", "desc")
 
 	for i := range dataPayload.Accounts {
 		item := dataPayload.Accounts[i]
@@ -300,6 +312,138 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		}
 
 		enrichCredentialsFromIDToken(&item)
+
+		accountResult := DataImportAccountResult{Name: item.Name}
+
+		if item.Platform == service.PlatformOpenAI && item.Type == service.AccountTypeOAuth {
+			decision, decisionErr := service.EvaluateOpenAIImportLifecycle(ctx, h.openaiOAuthService, "", item.Credentials)
+			if decisionErr != nil {
+				result.AccountFailed++
+				result.Errors = append(result.Errors, DataImportError{
+					Kind:    "account",
+					Name:    item.Name,
+					Message: decisionErr.Error(),
+				})
+				accountResult.Action = "failed"
+				accountResult.Message = decisionErr.Error()
+				result.AccountResults = append(result.AccountResults, accountResult)
+				continue
+			}
+
+			item.Credentials = decision.Credentials
+			item.Extra = mergeMap(item.Extra, decision.Extra)
+			accountResult.PoolRole = decision.PoolRole
+			accountResult.TokenSource = decision.TokenSource
+			accountResult.ValidationOutcome = decision.ValidationOutcome
+
+			skipBindForItem := skipDefaultGroupBind || decision.PoolRole != service.OpenAIPoolRoleMain
+
+			matched, matchKey := service.FindMatchingOpenAIOAuthAccount(openAIOAuthAccounts, item.Credentials)
+			if matched != nil && !service.ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
+				msg := "import rejected: newer RT-managed account already exists"
+				result.AccountFailed++
+				result.Errors = append(result.Errors, DataImportError{
+					Kind:    "account",
+					Name:    item.Name,
+					Message: msg,
+				})
+				accountResult.Action = "failed"
+				accountResult.Message = msg
+				result.AccountResults = append(result.AccountResults, accountResult)
+				continue
+			}
+
+			if matched != nil {
+				updated, updateErr := h.adminService.UpdateAccount(ctx, matched.ID, &service.UpdateAccountInput{
+					Name:        item.Name,
+					Notes:       item.Notes,
+					Credentials: item.Credentials,
+					Extra:       item.Extra,
+					ProxyID:     proxyID,
+					Concurrency: &item.Concurrency,
+					Priority:    &item.Priority,
+					Status:      decision.Status,
+				})
+				if updateErr != nil {
+					result.AccountFailed++
+					result.Errors = append(result.Errors, DataImportError{
+						Kind:    "account",
+						Name:    item.Name,
+						Message: updateErr.Error(),
+					})
+					accountResult.Action = "failed"
+					accountResult.Message = updateErr.Error()
+					result.AccountResults = append(result.AccountResults, accountResult)
+					continue
+				}
+				if _, schedErr := h.adminService.SetAccountSchedulable(ctx, matched.ID, decision.Schedulable); schedErr != nil {
+					slog.Warn("import_openai_set_schedulable_failed", "account_id", matched.ID, "error", schedErr)
+				}
+				if updated != nil {
+					openAIOAuthAccounts = replaceOrAppendOpenAIOAuthAccount(openAIOAuthAccounts, *updated)
+				}
+				result.AccountUpdated++
+				accountResult.Action = "updated"
+				result.AccountResults = append(result.AccountResults, accountResult)
+				continue
+			}
+
+			accountInput := &service.CreateAccountInput{
+				Name:                 item.Name,
+				Notes:                item.Notes,
+				Platform:             item.Platform,
+				Type:                 item.Type,
+				Credentials:          item.Credentials,
+				Extra:                item.Extra,
+				ProxyID:              proxyID,
+				Concurrency:          item.Concurrency,
+				Priority:             item.Priority,
+				RateMultiplier:       item.RateMultiplier,
+				GroupIDs:             nil,
+				ExpiresAt:            item.ExpiresAt,
+				AutoPauseOnExpired:   item.AutoPauseOnExpired,
+				SkipDefaultGroupBind: skipBindForItem,
+			}
+
+			created, createErr := h.adminService.CreateAccount(ctx, accountInput)
+			if createErr != nil {
+				result.AccountFailed++
+				result.Errors = append(result.Errors, DataImportError{
+					Kind:    "account",
+					Name:    item.Name,
+					Message: createErr.Error(),
+				})
+				accountResult.Action = "failed"
+				accountResult.Message = createErr.Error()
+				result.AccountResults = append(result.AccountResults, accountResult)
+				continue
+			}
+			if decision.Status != service.StatusActive {
+				if _, updateErr := h.adminService.UpdateAccount(ctx, created.ID, &service.UpdateAccountInput{
+					Name:   item.Name,
+					Status: decision.Status,
+					Extra:  item.Extra,
+				}); updateErr != nil {
+					slog.Warn("import_openai_update_status_failed", "account_id", created.ID, "error", updateErr)
+				}
+			}
+			if !decision.Schedulable {
+				if _, schedErr := h.adminService.SetAccountSchedulable(ctx, created.ID, false); schedErr != nil {
+					slog.Warn("import_openai_set_schedulable_failed", "account_id", created.ID, "error", schedErr)
+				}
+			}
+			if created != nil {
+				created.Credentials = item.Credentials
+				created.Extra = item.Extra
+				created.Status = decision.Status
+				created.Schedulable = decision.Schedulable
+				openAIOAuthAccounts = append(openAIOAuthAccounts, *created)
+			}
+			result.AccountCreated++
+			accountResult.Action = "created"
+			result.AccountResults = append(result.AccountResults, accountResult)
+			continue
+		}
 
 		accountInput := &service.CreateAccountInput{
 			Name:                 item.Name,
@@ -333,6 +477,8 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			privacyAccounts = append(privacyAccounts, created)
 		}
 		result.AccountCreated++
+		accountResult.Action = "created"
+		result.AccountResults = append(result.AccountResults, accountResult)
 	}
 
 	// 异步设置 Antigravity 隐私，避免大量导入时阻塞请求
@@ -646,4 +792,25 @@ func normalizeProxyStatus(status string) string {
 	default:
 		return normalized
 	}
+}
+
+func replaceOrAppendOpenAIOAuthAccount(accounts []service.Account, updated service.Account) []service.Account {
+	for i := range accounts {
+		if accounts[i].ID == updated.ID {
+			accounts[i] = updated
+			return accounts
+		}
+	}
+	return append(accounts, updated)
+}
+
+func mergeMap(existing map[string]any, updates map[string]any) map[string]any {
+	out := make(map[string]any, len(existing)+len(updates))
+	for k, v := range existing {
+		out[k] = v
+	}
+	for k, v := range updates {
+		out[k] = v
+	}
+	return out
 }

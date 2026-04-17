@@ -10,15 +10,19 @@ import (
 )
 
 type stubAdminService struct {
-	users                []service.User
-	apiKeys              []service.APIKey
-	groups               []service.Group
-	accounts             []service.Account
-	proxies              []service.Proxy
-	proxyCounts          []service.ProxyWithAccountCount
-	redeems              []service.RedeemCode
-	createdAccounts      []*service.CreateAccountInput
-	createdProxies       []*service.CreateProxyInput
+	users           []service.User
+	apiKeys         []service.APIKey
+	groups          []service.Group
+	accounts        []service.Account
+	proxies         []service.Proxy
+	proxyCounts     []service.ProxyWithAccountCount
+	redeems         []service.RedeemCode
+	createdAccounts []*service.CreateAccountInput
+	createdProxies  []*service.CreateProxyInput
+	updatedAccounts []struct {
+		id    int64
+		input *service.UpdateAccountInput
+	}
 	updatedProxyIDs      []int64
 	updatedProxies       []*service.UpdateProxyInput
 	testedProxyIDs       []int64
@@ -253,10 +257,18 @@ func (s *stubAdminService) CreateAccount(ctx context.Context, input *service.Cre
 }
 
 func (s *stubAdminService) UpdateAccount(ctx context.Context, id int64, input *service.UpdateAccountInput) (*service.Account, error) {
+	s.updatedAccounts = append(s.updatedAccounts, struct {
+		id    int64
+		input *service.UpdateAccountInput
+	}{id: id, input: input})
 	if s.updateAccountErr != nil {
 		return nil, s.updateAccountErr
 	}
-	account := service.Account{ID: id, Name: input.Name, Status: service.StatusActive}
+	status := service.StatusActive
+	if strings.TrimSpace(input.Status) != "" {
+		status = input.Status
+	}
+	account := service.Account{ID: id, Name: input.Name, Status: status}
 	return &account, nil
 }
 

@@ -1,0 +1,239 @@
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/stretchr/testify/require"
+)
+
+type openaiLifecycleClientStub struct {
+	refreshResp *openai.TokenResponse
+	refreshErr  error
+}
+
+func (s *openaiLifecycleClientStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *openaiLifecycleClientStub) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *openaiLifecycleClientStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	if s.refreshErr != nil {
+		return nil, s.refreshErr
+	}
+	return s.refreshResp, nil
+}
+
+func TestEvaluateOpenAIImportLifecycle_RTValidated(t *testing.T) {
+	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+		},
+	})
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"access_token":  "old-at",
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+		"id_token":      "id-token",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIPoolRoleMain, decision.PoolRole)
+	require.Equal(t, OpenAIAuthStateHealthy, decision.AuthState)
+	require.Equal(t, OpenAITokenSourceRTManaged, decision.TokenSource)
+	require.Equal(t, OpenAIValidationOutcomeRTValidated, decision.ValidationOutcome)
+	require.Equal(t, StatusActive, decision.Status)
+	require.True(t, decision.Schedulable)
+	require.Equal(t, "new-at", decision.Credentials["access_token"])
+	require.Equal(t, "new-rt", decision.Credentials["refresh_token"])
+	require.Equal(t, "client-1", decision.Credentials["client_id"])
+	require.NotEmpty(t, decision.Extra["openai_last_validated_at"])
+}
+
+func TestEvaluateOpenAIImportLifecycle_ATOnlyQuarantine(t *testing.T) {
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), nil, "", map[string]any{
+		"access_token": "at-only",
+		"expires_at":   time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339),
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIAuthStateATOnly, decision.AuthState)
+	require.Equal(t, OpenAITokenSourceATOnly, decision.TokenSource)
+	require.Equal(t, OpenAIValidationOutcomeATOnlyQuarantined, decision.ValidationOutcome)
+	require.Equal(t, StatusDisabled, decision.Status)
+	require.False(t, decision.Schedulable)
+	require.Equal(t, "at-only", decision.Credentials["access_token"])
+}
+
+func TestEvaluateOpenAIImportLifecycle_RetryableValidationFailure(t *testing.T) {
+	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
+		refreshErr: errors.New("request failed: dial tcp timeout"),
+	})
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"access_token":  "old-at",
+		"refresh_token": "old-rt",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIAuthStateCooling, decision.AuthState)
+	require.Equal(t, OpenAITokenSourceRTManaged, decision.TokenSource)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationRetryableFailure, decision.ValidationOutcome)
+	require.Equal(t, StatusDisabled, decision.Status)
+	require.False(t, decision.Schedulable)
+	require.Equal(t, "oauth_refresh_failed", decision.RefreshErrorCode)
+}
+
+func TestEvaluateOpenAIImportLifecycle_TerminalValidationFailure(t *testing.T) {
+	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
+		refreshErr: errors.New("token refresh failed: status 400, body: {\"error\":\"refresh_token_expired\"}"),
+	})
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"access_token":  "old-at",
+		"refresh_token": "old-rt",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIAuthStateTerminal, decision.AuthState)
+	require.Equal(t, OpenAITokenSourceRTManaged, decision.TokenSource)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationTerminalFailure, decision.ValidationOutcome)
+	require.Equal(t, StatusError, decision.Status)
+	require.False(t, decision.Schedulable)
+	require.Equal(t, "refresh_token_expired", decision.RefreshErrorCode)
+}
+
+func TestAccount_OpenAIManagedRefreshEligibility(t *testing.T) {
+	main := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Extra: map[string]any{
+			"openai_pool_role":    OpenAIPoolRoleMain,
+			"openai_auth_state":   OpenAIAuthStateHealthy,
+			"openai_token_source": OpenAITokenSourceRTManaged,
+		},
+		Credentials: map[string]any{"refresh_token": "rt"},
+	}
+	require.True(t, main.ShouldParticipateInOpenAIManagedRefresh())
+
+	quarantine := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusDisabled,
+		Extra: map[string]any{
+			"openai_pool_role":    OpenAIPoolRoleQuarantine,
+			"openai_auth_state":   OpenAIAuthStateCooling,
+			"openai_token_source": OpenAITokenSourceRTManaged,
+		},
+		Credentials: map[string]any{"refresh_token": "rt"},
+	}
+	require.True(t, quarantine.ShouldParticipateInOpenAIManagedRefresh())
+
+	atOnly := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusDisabled,
+		Extra: map[string]any{
+			"openai_pool_role":    OpenAIPoolRoleQuarantine,
+			"openai_auth_state":   OpenAIAuthStateATOnly,
+			"openai_token_source": OpenAITokenSourceATOnly,
+		},
+		Credentials: map[string]any{"access_token": "at"},
+	}
+	require.False(t, atOnly.ShouldParticipateInOpenAIManagedRefresh())
+}
+
+func TestFindMatchingOpenAIOAuthAccount_PrefersRefreshToken(t *testing.T) {
+	accounts := []Account{
+		{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"refresh_token":      "rt-1",
+				"chatgpt_account_id": "acct-1",
+			},
+		},
+		{
+			ID:       2,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"refresh_token":      "rt-2",
+				"chatgpt_account_id": "acct-1",
+			},
+		},
+	}
+
+	account, matchKey := FindMatchingOpenAIOAuthAccount(accounts, map[string]any{
+		"refresh_token":      "rt-2",
+		"chatgpt_account_id": "acct-1",
+	})
+
+	require.NotNil(t, account)
+	require.Equal(t, int64(2), account.ID)
+	require.Equal(t, "refresh_token", matchKey)
+}
+
+func TestShouldOverwriteMatchedOpenAIAccount(t *testing.T) {
+	existing := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Extra: map[string]any{
+			"openai_pool_role":    OpenAIPoolRoleMain,
+			"openai_auth_state":   OpenAIAuthStateHealthy,
+			"openai_token_source": OpenAITokenSourceRTManaged,
+		},
+		Credentials: map[string]any{
+			"refresh_token":      "new-rt",
+			"chatgpt_account_id": "acct-1",
+		},
+	}
+
+	validated := &OpenAIImportLifecycleDecision{
+		TokenSource:       OpenAITokenSourceRTManaged,
+		ValidationOutcome: OpenAIValidationOutcomeRTValidated,
+		Credentials: map[string]any{
+			"refresh_token":      "rotated-rt",
+			"chatgpt_account_id": "acct-1",
+		},
+	}
+	require.True(t, ShouldOverwriteMatchedOpenAIAccount(existing, "chatgpt_account_id", validated))
+
+	retryableOld := &OpenAIImportLifecycleDecision{
+		TokenSource:       OpenAITokenSourceRTManaged,
+		ValidationOutcome: OpenAIValidationOutcomeRTValidationRetryableFailure,
+		Credentials: map[string]any{
+			"refresh_token":      "old-rt",
+			"chatgpt_account_id": "acct-1",
+		},
+	}
+	require.False(t, ShouldOverwriteMatchedOpenAIAccount(existing, "chatgpt_account_id", retryableOld))
+
+	atOnly := &OpenAIImportLifecycleDecision{
+		TokenSource:       OpenAITokenSourceATOnly,
+		ValidationOutcome: OpenAIValidationOutcomeATOnlyQuarantined,
+		Credentials: map[string]any{
+			"access_token":       "at-only",
+			"chatgpt_account_id": "acct-1",
+		},
+	}
+	require.False(t, ShouldOverwriteMatchedOpenAIAccount(existing, "chatgpt_account_id", atOnly))
+}

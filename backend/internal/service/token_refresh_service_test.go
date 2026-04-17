@@ -22,6 +22,8 @@ type tokenRefreshAccountRepo struct {
 	setTempUnschedCalls    int
 	lastAccount            *Account
 	updateErr              error
+	listActiveAccounts     []Account
+	listByPlatformAccounts []Account
 }
 
 func (r *tokenRefreshAccountRepo) Update(ctx context.Context, account *Account) error {
@@ -62,6 +64,20 @@ func (r *tokenRefreshAccountRepo) ClearTempUnschedulable(ctx context.Context, id
 func (r *tokenRefreshAccountRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.setTempUnschedCalls++
 	return nil
+}
+
+func (r *tokenRefreshAccountRepo) ListActive(ctx context.Context) ([]Account, error) {
+	if r.listActiveAccounts != nil {
+		return append([]Account(nil), r.listActiveAccounts...), nil
+	}
+	return r.mockAccountRepoForGemini.ListActive(ctx)
+}
+
+func (r *tokenRefreshAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	if platform == PlatformOpenAI && r.listByPlatformAccounts != nil {
+		return append([]Account(nil), r.listByPlatformAccounts...), nil
+	}
+	return r.mockAccountRepoForGemini.ListByPlatform(ctx, platform)
 }
 
 type tokenCacheInvalidatorStub struct {
@@ -143,6 +159,70 @@ func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
 	require.Equal(t, 0, repo.fullUpdateCalls)
 	require.Equal(t, 1, invalidator.calls)
 	require.Equal(t, "new-token", account.GetCredential("access_token"))
+}
+
+func TestTokenRefreshService_ListManagedAccountsIncludesOpenAIQuarantine(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{
+		listActiveAccounts: []Account{
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusActive,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateHealthy,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-main"},
+			},
+		},
+		listByPlatformAccounts: []Account{
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusActive,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateHealthy,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-main"},
+			},
+			{
+				ID:       2,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusDisabled,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleQuarantine,
+					"openai_auth_state":   OpenAIAuthStateCooling,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-quarantine"},
+			},
+			{
+				ID:       3,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusDisabled,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleQuarantine,
+					"openai_auth_state":   OpenAIAuthStateATOnly,
+					"openai_token_source": OpenAITokenSourceATOnly,
+				},
+				Credentials: map[string]any{"access_token": "at-only"},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Len(t, accounts, 2)
+	require.Equal(t, int64(1), accounts[0].ID)
+	require.Equal(t, int64(2), accounts[1].ID)
 }
 
 func TestTokenRefreshService_RefreshWithRetry_InvalidatorErrorIgnored(t *testing.T) {
@@ -535,6 +615,8 @@ func TestIsNonRetryableRefreshError(t *testing.T) {
 		{name: "unauthorized_client", err: errors.New("unauthorized_client"), expected: true},
 		{name: "access_denied", err: errors.New("access_denied"), expected: true},
 		{name: "no_refresh_token", err: errors.New("no refresh token available"), expected: true},
+		{name: "refresh_token_expired", err: errors.New("refresh_token_expired"), expected: true},
+		{name: "refresh_token_reused", err: errors.New("refresh_token_reused"), expected: true},
 		{name: "invalid_grant_with_desc", err: errors.New("Error: invalid_grant - token revoked"), expected: true},
 		{name: "case_insensitive", err: errors.New("INVALID_GRANT"), expected: true},
 	}

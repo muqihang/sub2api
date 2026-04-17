@@ -53,11 +53,14 @@ type SyncFromCRSInput struct {
 }
 
 type SyncFromCRSItemResult struct {
-	CRSAccountID string `json:"crs_account_id"`
-	Kind         string `json:"kind"`
-	Name         string `json:"name"`
-	Action       string `json:"action"` // created/updated/failed/skipped
-	Error        string `json:"error,omitempty"`
+	CRSAccountID      string `json:"crs_account_id"`
+	Kind              string `json:"kind"`
+	Name              string `json:"name"`
+	Action            string `json:"action"` // created/updated/failed/skipped
+	Error             string `json:"error,omitempty"`
+	PoolRole          string `json:"pool_role,omitempty"`
+	TokenSource       string `json:"token_source,omitempty"`
+	ValidationOutcome string `json:"validation_outcome,omitempty"`
 }
 
 type SyncFromCRSResult struct {
@@ -518,6 +521,8 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		result.Items = append(result.Items, item)
 	}
 
+	openAIOAuthAccounts, _ := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+
 	// OpenAI OAuth -> sub2api openai oauth
 	for _, src := range exported.Data.OpenAIOAuthAccounts {
 		item := SyncFromCRSItemResult{
@@ -563,7 +568,6 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		}
 		priority := clampPriority(src.Priority)
 		concurrency := 3
-		status := mapCRSStatus(src.IsActive, src.Status)
 
 		// 🔧 Preserve all CRS extra fields and add sync metadata
 		extra := make(map[string]any)
@@ -580,6 +584,26 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			extra["email"] = crsEmail
 		}
 
+		proxyURL := ""
+		if proxyID != nil {
+			if proxy, proxyErr := s.proxyRepo.GetByID(ctx, *proxyID); proxyErr == nil && proxy != nil {
+				proxyURL = proxy.URL()
+			}
+		}
+		decision, decisionErr := EvaluateOpenAIImportLifecycle(ctx, s.openaiOAuthService, proxyURL, credentials)
+		if decisionErr != nil {
+			item.Action = "failed"
+			item.Error = decisionErr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+		item.PoolRole = decision.PoolRole
+		item.TokenSource = decision.TokenSource
+		item.ValidationOutcome = decision.ValidationOutcome
+		credentials = decision.Credentials
+		extra = mergeMap(extra, decision.Extra)
+
 		existing, err := s.accountRepo.GetByCRSAccountID(ctx, src.ID)
 		if err != nil {
 			item.Action = "failed"
@@ -587,6 +611,18 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
+		}
+		if existing == nil {
+			if matched, matchKey := FindMatchingOpenAIOAuthAccount(openAIOAuthAccounts, credentials); matched != nil {
+				if !ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
+					item.Action = "failed"
+					item.Error = "sync rejected: newer RT-managed account already exists"
+					result.Failed++
+					result.Items = append(result.Items, item)
+					continue
+				}
+				existing = matched
+			}
 		}
 
 		if existing == nil {
@@ -606,8 +642,8 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				ProxyID:     proxyID,
 				Concurrency: concurrency,
 				Priority:    priority,
-				Status:      status,
-				Schedulable: src.Schedulable,
+				Status:      decision.Status,
+				Schedulable: decision.Schedulable,
 			}
 			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
@@ -616,12 +652,19 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				result.Items = append(result.Items, item)
 				continue
 			}
-			// 🔄 Refresh OAuth token after creation
-			if refreshedCreds := s.refreshOAuthToken(ctx, account); refreshedCreds != nil {
-				_ = persistAccountCredentials(ctx, s.accountRepo, account, refreshedCreds)
-			}
+			openAIOAuthAccounts = replaceOpenAIAccountInSlice(openAIOAuthAccounts, *account)
 			item.Action = "created"
 			result.Created++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
+		if !ShouldOverwriteMatchedOpenAIAccount(existing, "crs_account_id", decision) &&
+			existing.GetOpenAIRefreshToken() != stringValue(credentials["refresh_token"]) &&
+			existing.IsOpenAIRTManaged() {
+			item.Action = "failed"
+			item.Error = "sync rejected: stale RT cannot overwrite newer local RT"
+			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
 		}
@@ -636,8 +679,8 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		}
 		existing.Concurrency = concurrency
 		existing.Priority = priority
-		existing.Status = status
-		existing.Schedulable = src.Schedulable
+		existing.Status = decision.Status
+		existing.Schedulable = decision.Schedulable
 
 		if err := s.accountRepo.Update(ctx, existing); err != nil {
 			item.Action = "failed"
@@ -646,11 +689,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			result.Items = append(result.Items, item)
 			continue
 		}
-
-		// 🔄 Refresh OAuth token after update
-		if refreshedCreds := s.refreshOAuthToken(ctx, existing); refreshedCreds != nil {
-			_ = persistAccountCredentials(ctx, s.accountRepo, existing, refreshedCreds)
-		}
+		openAIOAuthAccounts = replaceOpenAIAccountInSlice(openAIOAuthAccounts, *existing)
 
 		item.Action = "updated"
 		result.Updated++
@@ -1086,6 +1125,16 @@ func defaultName(name, id string) string {
 		return strings.TrimSpace(name)
 	}
 	return "CRS " + id
+}
+
+func replaceOpenAIAccountInSlice(accounts []Account, updated Account) []Account {
+	for i := range accounts {
+		if accounts[i].ID == updated.ID {
+			accounts[i] = updated
+			return accounts
+		}
+	}
+	return append(accounts, updated)
 }
 
 func clampPriority(priority int) int {

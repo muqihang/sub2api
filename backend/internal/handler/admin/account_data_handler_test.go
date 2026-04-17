@@ -2,11 +2,14 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -47,14 +50,39 @@ type dataAccount struct {
 }
 
 func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
+	return setupAccountDataRouterWithOpenAIClient(nil)
+}
+
+type accountDataOpenAIClientStub struct {
+	refreshResp *openai.TokenResponse
+	refreshErr  error
+}
+
+func (s *accountDataOpenAIClientStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *accountDataOpenAIClientStub) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *accountDataOpenAIClientStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	if s.refreshErr != nil {
+		return nil, s.refreshErr
+	}
+	return s.refreshResp, nil
+}
+
+func setupAccountDataRouterWithOpenAIClient(client service.OpenAIOAuthClient) (*gin.Engine, *stubAdminService) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	adminSvc := newStubAdminService()
+	openaiOAuthService := service.NewOpenAIOAuthService(nil, client)
 
 	h := NewAccountHandler(
 		adminSvc,
 		nil,
-		nil,
+		openaiOAuthService,
 		nil,
 		nil,
 		nil,
@@ -274,4 +302,94 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdProxies, 0)
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
+}
+
+func TestImportData_OpenAIRTValidationPromotesToMainPool(t *testing.T) {
+	router, adminSvc := setupAccountDataRouterWithOpenAIClient(&accountDataOpenAIClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "validated-at",
+			RefreshToken: "validated-rt",
+			ExpiresIn:    3600,
+		},
+	})
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":     "openai-rt",
+					"platform": service.PlatformOpenAI,
+					"type":     service.AccountTypeOAuth,
+					"credentials": map[string]any{
+						"access_token":  "old-at",
+						"refresh_token": "old-rt",
+						"client_id":     "client-1",
+					},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.True(t, created.SkipDefaultGroupBind)
+	require.Equal(t, "validated-at", created.Credentials["access_token"])
+	require.Equal(t, "validated-rt", created.Credentials["refresh_token"])
+	require.Equal(t, service.OpenAIPoolRoleMain, created.Extra["openai_pool_role"])
+	require.Equal(t, service.OpenAITokenSourceRTManaged, created.Extra["openai_token_source"])
+	require.Equal(t, service.OpenAIValidationOutcomeRTValidated, created.Extra["openai_validation_outcome"])
+	require.Empty(t, adminSvc.updatedAccounts, "validated RT import should remain active and not require a follow-up downgrade")
+}
+
+func TestImportData_OpenAIATOnlyQuarantinesAndDisablesScheduling(t *testing.T) {
+	router, adminSvc := setupAccountDataRouterWithOpenAIClient(&accountDataOpenAIClientStub{})
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":     "openai-at-only",
+					"platform": service.PlatformOpenAI,
+					"type":     service.AccountTypeOAuth,
+					"credentials": map[string]any{
+						"access_token": "at-only",
+					},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.True(t, created.SkipDefaultGroupBind)
+	require.Equal(t, service.OpenAIPoolRoleQuarantine, created.Extra["openai_pool_role"])
+	require.Equal(t, service.OpenAITokenSourceATOnly, created.Extra["openai_token_source"])
+	require.Equal(t, service.OpenAIValidationOutcomeATOnlyQuarantined, created.Extra["openai_validation_outcome"])
+
+	require.Len(t, adminSvc.updatedAccounts, 1)
+	require.Equal(t, service.StatusDisabled, adminSvc.updatedAccounts[0].input.Status)
 }

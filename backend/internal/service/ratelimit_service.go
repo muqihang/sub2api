@@ -25,6 +25,8 @@ type RateLimitService struct {
 	timeoutCounterCache   TimeoutCounterCache
 	settingService        *SettingService
 	tokenCacheInvalidator TokenCacheInvalidator
+	openAIRefreshAPI      *OAuthRefreshAPI
+	openAIRefreshExecutor OAuthRefreshExecutor
 	usageCacheMu          sync.RWMutex
 	usageCache            map[int64]*geminiUsageCacheEntry
 }
@@ -77,6 +79,13 @@ func (s *RateLimitService) SetSettingService(settingService *SettingService) {
 // SetTokenCacheInvalidator 设置 token 缓存清理器（可选依赖）
 func (s *RateLimitService) SetTokenCacheInvalidator(invalidator TokenCacheInvalidator) {
 	s.tokenCacheInvalidator = invalidator
+}
+
+// SetOpenAIAuthRecovery injects the unified refresh API and OpenAI executor
+// used for immediate recovery after recoverable upstream 401s.
+func (s *RateLimitService) SetOpenAIAuthRecovery(api *OAuthRefreshAPI, executor OAuthRefreshExecutor) {
+	s.openAIRefreshAPI = api
+	s.openAIRefreshExecutor = executor
 }
 
 // ErrorPolicyResult 表示错误策略检查的结果
@@ -160,23 +169,13 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
-		// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
 		openai401Code := extractUpstreamErrorCode(responseBody)
-		if account.Platform == PlatformOpenAI && (openai401Code == "token_invalidated" || openai401Code == "token_revoked") {
+		if account.Platform == PlatformOpenAI && isTerminalOpenAIAuthErrorCode(openai401Code) {
 			msg := "Token revoked (401): account authentication permanently revoked"
 			if upstreamMsg != "" {
 				msg = "Token revoked (401): " + upstreamMsg
 			}
-			s.handleAuthError(ctx, account, msg)
-			shouldDisable = true
-			break
-		}
-		// OpenAI: {"detail":"Unauthorized"} 表示 token 完全无效（非标准 OpenAI 错误格式），直接标记 error
-		if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail").String() == "Unauthorized" {
-			msg := "Unauthorized (401): account authentication failed permanently"
-			if upstreamMsg != "" {
-				msg = "Unauthorized (401): " + upstreamMsg
-			}
+			s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, openai401Code, "")
 			s.handleAuthError(ctx, account, msg)
 			shouldDisable = true
 			break
@@ -199,6 +198,29 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				slog.Warn("oauth_401_force_refresh_update_failed", "account_id", account.ID, "error", err)
 			} else {
 				slog.Info("oauth_401_force_refresh_set", "account_id", account.ID, "platform", account.Platform)
+			}
+			if account.Platform == PlatformOpenAI {
+				recovered, terminalFailure, refreshErrorCode := s.tryRecoverOpenAIAuth401(ctx, account)
+				switch {
+				case recovered:
+					s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateHealthy, OpenAIValidationOutcomeRTValidated, "", time.Now().UTC().Format(time.RFC3339))
+					shouldDisable = true
+					break
+				case terminalFailure:
+					msg := "Authentication failed (401): refresh token is not recoverable"
+					if upstreamMsg != "" {
+						msg = "Authentication failed (401): " + upstreamMsg
+					}
+					s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, refreshErrorCode, "")
+					s.handleAuthError(ctx, account, msg)
+					shouldDisable = true
+					break
+				default:
+					s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateCooling, OpenAIValidationOutcomeRTValidationRetryableFailure, refreshErrorCode, "")
+				}
+				if shouldDisable {
+					break
+				}
 			}
 			// 3. 临时不可调度，替代 SetError（保持 status=active 让刷新服务能拾取）
 			msg := "Authentication failed (401): invalid or expired credentials"
@@ -274,6 +296,47 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	}
 
 	return shouldDisable
+}
+
+func (s *RateLimitService) tryRecoverOpenAIAuth401(ctx context.Context, account *Account) (recovered bool, terminal bool, refreshErrorCode string) {
+	if s == nil || account == nil || !account.IsOpenAIRTManaged() || s.openAIRefreshAPI == nil || s.openAIRefreshExecutor == nil {
+		return false, false, ""
+	}
+
+	result, err := s.openAIRefreshAPI.RefreshIfNeeded(ctx, account, s.openAIRefreshExecutor, time.Hour)
+	if err != nil {
+		code := classifyOpenAIRefreshError(err)
+		return false, isTerminalOpenAIAuthErrorCode(code), code
+	}
+	if result.LockHeld {
+		return false, false, ""
+	}
+	return true, false, ""
+}
+
+func (s *RateLimitService) updateOpenAIAuthLifecycle(ctx context.Context, account *Account, authState, validationOutcome, refreshErrorCode, validatedAt string) {
+	if s == nil || s.accountRepo == nil || account == nil || !account.IsOpenAIOAuth() {
+		return
+	}
+	updates := map[string]any{
+		"openai_pool_role":               account.GetOpenAIPoolRole(),
+		"openai_auth_state":              authState,
+		"openai_token_source":            account.GetOpenAITokenSource(),
+		"openai_validation_outcome":      validationOutcome,
+		"openai_last_refresh_error_code": refreshErrorCode,
+	}
+	if updates["openai_pool_role"] == "" {
+		updates["openai_pool_role"] = OpenAIPoolRoleMain
+	}
+	if updates["openai_token_source"] == "" {
+		updates["openai_token_source"] = OpenAITokenSourceRTManaged
+	}
+	if validatedAt != "" {
+		updates["openai_last_validated_at"] = validatedAt
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("openai_auth_lifecycle_update_failed", "account_id", account.ID, "error", err)
+	}
 }
 
 // PreCheckUsage proactively checks local quota before dispatching a request.

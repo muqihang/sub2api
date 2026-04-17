@@ -159,7 +159,7 @@ func (s *TokenRefreshService) processRefresh() {
 	refreshWindow := time.Duration(s.cfg.RefreshBeforeExpiryHours * float64(time.Hour))
 
 	// 获取所有active状态的账号
-	accounts, err := s.listActiveAccounts(ctx)
+	accounts, err := s.listManagedAccounts(ctx)
 	if err != nil {
 		slog.Error("token_refresh.list_accounts_failed", "error", err)
 		return
@@ -236,10 +236,36 @@ func (s *TokenRefreshService) processRefresh() {
 	}
 }
 
-// listActiveAccounts 获取所有active状态的账号
-// 使用ListActive确保刷新所有活跃账号的token（包括临时禁用的）
-func (s *TokenRefreshService) listActiveAccounts(ctx context.Context) ([]Account, error) {
-	return s.accountRepo.ListActive(ctx)
+// listManagedAccounts 获取参与后台刷新闭环的账号。
+// 默认包含所有 active 账号；额外补充 OpenAI quarantine 中仍可续期的 RT 账号。
+func (s *TokenRefreshService) listManagedAccounts(ctx context.Context) ([]Account, error) {
+	activeAccounts, err := s.accountRepo.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Account, 0, len(activeAccounts))
+	seen := make(map[int64]struct{}, len(activeAccounts))
+	for _, account := range activeAccounts {
+		out = append(out, account)
+		seen[account.ID] = struct{}{}
+	}
+
+	openAIAccounts, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		return out, nil
+	}
+	for _, account := range openAIAccounts {
+		if _, exists := seen[account.ID]; exists {
+			continue
+		}
+		if account.ShouldParticipateInOpenAIManagedRefresh() {
+			out = append(out, account)
+			seen[account.ID] = struct{}{}
+		}
+	}
+
+	return out, nil
 }
 
 // refreshWithRetry 带重试的刷新
@@ -283,6 +309,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
 		if isNonRetryableRefreshError(err) {
+			if account.Platform == PlatformOpenAI {
+				s.recordOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, classifyOpenAIRefreshError(err), "")
+			}
 			errorMsg := fmt.Sprintf("Token refresh failed (non-retryable): %v", err)
 			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
 				slog.Error("token_refresh.set_error_status_failed",
@@ -323,6 +352,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 	// 刷新失败但 access_token 可能仍有效，尝试设置隐私
 	s.ensureOpenAIPrivacy(ctx, account)
 	s.ensureAntigravityPrivacy(ctx, account)
+	if account.Platform == PlatformOpenAI {
+		s.recordOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateCooling, OpenAIValidationOutcomeRTValidationRetryableFailure, classifyOpenAIRefreshError(lastErr), "")
+	}
 
 	// 设置临时不可调度 10 分钟（不标记 error，保持 status=active 让下个刷新周期能继续尝试）
 	until := time.Now().Add(tokenRefreshTempUnschedDuration)
@@ -344,6 +376,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
+	if account.Platform == PlatformOpenAI {
+		s.recordOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateHealthy, OpenAIValidationOutcomeRTValidated, "", time.Now().UTC().Format(time.RFC3339))
+	}
 	// Antigravity 账户：如果之前是因为缺少 project_id 而标记为 error，现在成功获取到了，清除错误状态
 	if account.Platform == PlatformAntigravity &&
 		account.Status == StatusError &&
@@ -405,6 +440,31 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	s.ensureAntigravityPrivacy(ctx, account)
 }
 
+func (s *TokenRefreshService) recordOpenAIAuthLifecycle(ctx context.Context, account *Account, authState, validationOutcome, refreshErrorCode, validatedAt string) {
+	if s == nil || s.accountRepo == nil || account == nil || !account.IsOpenAIOAuth() {
+		return
+	}
+	updates := map[string]any{
+		"openai_pool_role":               account.GetOpenAIPoolRole(),
+		"openai_auth_state":              authState,
+		"openai_token_source":            account.GetOpenAITokenSource(),
+		"openai_validation_outcome":      validationOutcome,
+		"openai_last_refresh_error_code": refreshErrorCode,
+	}
+	if updates["openai_pool_role"] == "" {
+		updates["openai_pool_role"] = OpenAIPoolRoleMain
+	}
+	if updates["openai_token_source"] == "" {
+		updates["openai_token_source"] = OpenAITokenSourceRTManaged
+	}
+	if validatedAt != "" {
+		updates["openai_last_validated_at"] = validatedAt
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("token_refresh.openai_lifecycle_update_failed", "account_id", account.ID, "error", err)
+	}
+}
+
 // errRefreshSkipped 表示刷新被跳过（锁竞争或已被其他路径刷新），不计入 failed 或 refreshed
 var errRefreshSkipped = fmt.Errorf("refresh skipped")
 
@@ -421,7 +481,12 @@ func isNonRetryableRefreshError(err error) bool {
 		"invalid_client",      // 客户端配置错误
 		"unauthorized_client", // 客户端未授权
 		"access_denied",       // 访问被拒绝
-		"missing_project_id",  // 缺少 project_id
+		"refresh_token_expired",
+		"refresh_token_reused",
+		"token_invalidated",
+		"token_revoked",
+		"deactivated_workspace",
+		"missing_project_id", // 缺少 project_id
 		"no refresh token available",
 	}
 	for _, needle := range nonRetryable {

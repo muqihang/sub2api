@@ -89,15 +89,18 @@ func (r *OpenAITokenRefresher) CacheKey(account *Account) string {
 
 // CanRefresh 检查是否能处理此账号
 func (r *OpenAITokenRefresher) CanRefresh(account *Account) bool {
-	return account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
+	return account != nil && account.ShouldParticipateInOpenAIManagedRefresh()
 }
 
 // NeedsRefresh 检查token是否需要刷新
 // expires_at 缺失且处于限流状态时需要刷新，防止限流期间 token 静默过期
 func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
+	if account != nil && account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
+		return true
+	}
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return account.IsRateLimited()
+		return account != nil && (account.IsRateLimited() || account.Status == StatusDisabled)
 	}
 
 	return time.Until(*expiresAt) < refreshWindow
