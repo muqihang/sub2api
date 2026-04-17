@@ -49,16 +49,50 @@ class ImportResult:
         }
 
 
-def normalize_refresh_tokens(raw_text: str) -> list[str]:
+@dataclass(frozen=True)
+class RefreshTokenEntry:
+    refresh_token: str
+    name_hint: str = ""
+    account_password: str = ""
+    mail_password: str = ""
+
+
+def parse_refresh_token_entries(raw_text: str) -> list[RefreshTokenEntry]:
     seen: set[str] = set()
-    tokens: list[str] = []
+    entries: list[RefreshTokenEntry] = []
     for line in raw_text.splitlines():
-        token = line.strip()
-        if not token or token in seen:
+        stripped = line.strip()
+        if not stripped:
             continue
-        seen.add(token)
-        tokens.append(token)
-    return tokens
+
+        parts = [part.strip() for part in stripped.split("----")]
+        refresh_token = stripped
+        name_hint = ""
+        account_password = ""
+        mail_password = ""
+
+        if len(parts) >= 4 and parts[-1].startswith("rt_"):
+            name_hint = parts[0]
+            account_password = parts[1]
+            mail_password = parts[2]
+            refresh_token = parts[-1]
+        elif len(parts) == 2 and parts[-1].startswith("rt_"):
+            name_hint = parts[0]
+            refresh_token = parts[-1]
+
+        refresh_token = refresh_token.strip()
+        if not refresh_token or refresh_token in seen:
+            continue
+        seen.add(refresh_token)
+        entries.append(
+            RefreshTokenEntry(
+                refresh_token=refresh_token,
+                name_hint=name_hint,
+                account_password=account_password,
+                mail_password=mail_password,
+            )
+        )
+    return entries
 
 
 def parse_access_token_entries(raw_text: str) -> list[dict[str, str]]:
@@ -141,12 +175,36 @@ def choose_account_name(
     return f"{fallback_prefix}-{current_time.strftime('%Y%m%d-%H%M%S')}-{index:02d}"
 
 
+def choose_refresh_entry_name(
+    entry: RefreshTokenEntry,
+    token_info: dict[str, Any],
+    fallback_prefix: str = DEFAULT_FALLBACK_PREFIX,
+    index: int = 1,
+    now: datetime | None = None,
+) -> str:
+    if entry.name_hint:
+        return entry.name_hint
+    return choose_account_name(token_info, fallback_prefix=fallback_prefix, index=index, now=now)
+
+
 def find_existing_account(accounts: list[dict[str, Any]], refresh_token: str) -> dict[str, Any] | None:
     target = refresh_token.strip()
     for account in accounts:
         credentials = account.get("credentials") or {}
         existing_refresh_token = str(credentials.get("refresh_token", "")).strip()
         if existing_refresh_token == target:
+            return account
+    return None
+
+
+def find_existing_account_by_email(accounts: list[dict[str, Any]], email: str) -> dict[str, Any] | None:
+    target = email.strip().lower()
+    if not target:
+        return None
+    for account in accounts:
+        credentials = account.get("credentials") or {}
+        existing_email = str(credentials.get("email", "")).strip().lower()
+        if existing_email == target:
             return account
     return None
 
@@ -438,7 +496,7 @@ def import_tokens(args: argparse.Namespace) -> list[ImportResult]:
     )
 
     input_text = gather_input_text(args)
-    tokens = normalize_refresh_tokens(input_text) if args.mode == "rt" else parse_access_token_entries(input_text)
+    tokens = parse_refresh_token_entries(input_text) if args.mode == "rt" else parse_access_token_entries(input_text)
     if not tokens:
         raise ScriptError("No token input provided")
 
@@ -462,11 +520,12 @@ def _import_refresh_tokens(
     args: argparse.Namespace,
     accounts: list[dict[str, Any]],
     bearer_token: str,
-    tokens: list[str],
+    tokens: list[RefreshTokenEntry],
     timestamp_now: datetime,
 ) -> list[ImportResult]:
     results: list[ImportResult] = []
-    for index, refresh_token in enumerate(tokens, 1):
+    for index, entry in enumerate(tokens, 1):
+        refresh_token = entry.refresh_token
         last_error = ""
         for attempt in range(1, args.retries + 1):
             try:
@@ -480,7 +539,13 @@ def _import_refresh_tokens(
                 bundle = token_response_to_bundle(token_response)
                 if not bundle.get("refresh_token"):
                     bundle["refresh_token"] = refresh_token
-                name = choose_account_name(bundle, fallback_prefix=args.fallback_prefix, index=index, now=timestamp_now)
+                name = choose_refresh_entry_name(
+                    entry,
+                    bundle,
+                    fallback_prefix=args.fallback_prefix,
+                    index=index,
+                    now=timestamp_now,
+                )
 
                 if args.validate_only:
                     results.append(
@@ -495,6 +560,8 @@ def _import_refresh_tokens(
                     break
 
                 existing = find_existing_account(accounts, refresh_token)
+                if existing is None and entry.name_hint:
+                    existing = find_existing_account_by_email(accounts, entry.name_hint)
                 if existing:
                     payload = build_update_payload(existing, name, bundle, args.client_id)
                     updated = update_account(args.sub2api_url, bearer_token, int(existing["id"]), payload, args.timeout)
