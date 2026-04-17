@@ -200,3 +200,49 @@ func TestOpenAIGatewayService_ResolveOpenAIProxyURLUsesBucketProxy(t *testing.T)
 
 	require.Equal(t, "http://127.0.0.1:8080", svc.resolveOpenAIProxyURL(account))
 }
+
+func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshot(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://127.0.0.1:8080"},
+	}
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accounts: []Account{
+				{
+					ID:       1,
+					Name:     "acc-1",
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Status:   StatusActive,
+					Extra: map[string]any{
+						"openai_gateway_profile_id":       "profile-1",
+						"openai_gateway_profile_mode":     OpenAIGatewayProfileModeFixed,
+						"openai_gateway_egress_bucket":    "bucket-a",
+						"openai_gateway_last_verified_at": "2026-04-17T00:00:00Z",
+						"openai_gateway_client_family":    openAIGatewayClientFamilyCodexOfficial,
+						"openai_auth_state":               OpenAIAuthStateHealthy,
+						"openai_pool_role":                OpenAIPoolRoleMain,
+						"openai_token_source":             OpenAITokenSourceRTManaged,
+						"openai_last_refresh_error_code":  "",
+						"openai_last_validated_at":        "2026-04-17T00:00:00Z",
+					},
+				},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	snapshot, err := svc.BuildAdminStatusSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.NotNil(t, snapshot.Health)
+	require.Len(t, snapshot.Buckets, 2)
+	require.Len(t, snapshot.Accounts, 1)
+	require.Equal(t, int64(1), snapshot.Accounts[0].AccountID)
+	require.Equal(t, "bucket-a", snapshot.Accounts[0].EgressBucket)
+	require.Equal(t, "profile-1", snapshot.Accounts[0].ProfileID)
+}

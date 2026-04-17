@@ -85,6 +85,29 @@ type OpenAIGatewayVerifySnapshot struct {
 	RequestedOriginator string                         `json:"requested_originator,omitempty"`
 }
 
+type OpenAIGatewayAdminAccountSnapshot struct {
+	AccountID            int64  `json:"account_id"`
+	AccountName          string `json:"account_name"`
+	Status               string `json:"status"`
+	Schedulable          bool   `json:"schedulable"`
+	ProfileID            string `json:"profile_id,omitempty"`
+	ProfileMode          string `json:"profile_mode,omitempty"`
+	EgressBucket         string `json:"egress_bucket,omitempty"`
+	PoolRole             string `json:"pool_role,omitempty"`
+	AuthState            string `json:"auth_state,omitempty"`
+	TokenSource          string `json:"token_source,omitempty"`
+	ClientFamily         string `json:"client_family,omitempty"`
+	LastVerifiedAt       string `json:"last_verified_at,omitempty"`
+	LastValidatedAt      string `json:"last_validated_at,omitempty"`
+	LastRefreshErrorCode string `json:"last_refresh_error_code,omitempty"`
+}
+
+type OpenAIGatewayAdminStatusSnapshot struct {
+	Health   *OpenAIGatewayHealthSnapshot             `json:"health"`
+	Buckets  []config.OpenAIGatewayEgressBucketConfig `json:"buckets"`
+	Accounts []OpenAIGatewayAdminAccountSnapshot      `json:"accounts"`
+}
+
 type OpenAIGatewayCoreService struct {
 	accountRepo          AccountRepository
 	cfg                  *config.Config
@@ -182,6 +205,22 @@ func (s *OpenAIGatewayCoreService) ResolveEgressProxyURL(account *Account, fallb
 		return strings.TrimSpace(fallbackProxyURL)
 	}
 	return strings.TrimSpace(fallbackProxyURL)
+}
+
+func (s *OpenAIGatewayCoreService) HasEgressBucket(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
+	}
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	for _, bucket := range s.cfg.Gateway.OpenAICore.EgressBuckets {
+		if strings.TrimSpace(bucket.Name) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveOpenAIAccountProxyURL(account *Account) string {
@@ -374,6 +413,43 @@ func (s *OpenAIGatewayCoreService) BuildVerifySnapshot(ctx context.Context, acco
 		RequestedUA:         strings.TrimSpace(headers.Get("User-Agent")),
 		RequestedOriginator: strings.TrimSpace(headers.Get("originator")),
 	}, nil
+}
+
+func (s *OpenAIGatewayCoreService) BuildAdminStatusSnapshot(ctx context.Context, ws OpenAIWSPerformanceMetricsSnapshot) (*OpenAIGatewayAdminStatusSnapshot, error) {
+	health, err := s.BuildHealthSnapshot(ctx, ws)
+	if err != nil {
+		return nil, err
+	}
+	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		return nil, err
+	}
+	result := &OpenAIGatewayAdminStatusSnapshot{
+		Health:  health,
+		Buckets: append([]config.OpenAIGatewayEgressBucketConfig(nil), s.cfg.Gateway.OpenAICore.EgressBuckets...),
+	}
+	for _, account := range accounts {
+		if !account.IsOpenAIOAuth() {
+			continue
+		}
+		result.Accounts = append(result.Accounts, OpenAIGatewayAdminAccountSnapshot{
+			AccountID:            account.ID,
+			AccountName:          account.Name,
+			Status:               account.Status,
+			Schedulable:          account.Schedulable,
+			ProfileID:            strings.TrimSpace(account.GetExtraString("openai_gateway_profile_id")),
+			ProfileMode:          strings.TrimSpace(account.GetExtraString("openai_gateway_profile_mode")),
+			EgressBucket:         s.ResolveEgressBucket(&account),
+			PoolRole:             account.GetOpenAIPoolRole(),
+			AuthState:            account.GetOpenAIAuthState(),
+			TokenSource:          account.GetOpenAITokenSource(),
+			ClientFamily:         strings.TrimSpace(account.GetExtraString("openai_gateway_client_family")),
+			LastVerifiedAt:       strings.TrimSpace(account.GetExtraString("openai_gateway_last_verified_at")),
+			LastValidatedAt:      strings.TrimSpace(account.GetExtraString("openai_last_validated_at")),
+			LastRefreshErrorCode: strings.TrimSpace(account.GetExtraString("openai_last_refresh_error_code")),
+		})
+	}
+	return result, nil
 }
 
 func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, headers http.Header) (*OpenAIGatewayCanonicalProfile, map[string]any) {

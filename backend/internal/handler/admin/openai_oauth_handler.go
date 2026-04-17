@@ -16,8 +16,10 @@ import (
 
 // OpenAIOAuthHandler handles OpenAI OAuth-related operations
 type OpenAIOAuthHandler struct {
-	openaiOAuthService *service.OpenAIOAuthService
-	adminService       service.AdminService
+	openaiOAuthService   *service.OpenAIOAuthService
+	gatewayCoreService   *service.OpenAIGatewayCoreService
+	openaiGatewayService *service.OpenAIGatewayService
+	adminService         service.AdminService
 }
 
 func oauthPlatformFromPath(c *gin.Context) string {
@@ -25,10 +27,17 @@ func oauthPlatformFromPath(c *gin.Context) string {
 }
 
 // NewOpenAIOAuthHandler creates a new OpenAI OAuth handler
-func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, adminService service.AdminService) *OpenAIOAuthHandler {
+func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, openaiGatewayService *service.OpenAIGatewayService, adminService service.AdminService) *OpenAIOAuthHandler {
 	return &OpenAIOAuthHandler{
 		openaiOAuthService: openaiOAuthService,
-		adminService:       adminService,
+		gatewayCoreService: func() *service.OpenAIGatewayCoreService {
+			if openaiGatewayService == nil {
+				return nil
+			}
+			return openaiGatewayService.GatewayCoreService()
+		}(),
+		openaiGatewayService: openaiGatewayService,
+		adminService:         adminService,
 	}
 }
 
@@ -299,4 +308,156 @@ func (h *OpenAIOAuthHandler) GatewayTemplates(c *gin.Context) {
 		strings.TrimSpace(c.Query("gateway_token")),
 	)
 	response.Success(c, templates)
+}
+
+// DownloadGatewayTemplate returns a plain-text downloadable OpenAI Gateway template.
+// GET /api/v1/admin/openai/gateway/templates/download
+func (h *OpenAIOAuthHandler) DownloadGatewayTemplate(c *gin.Context) {
+	baseURL := strings.TrimSpace(c.Query("base_url"))
+	if baseURL == "" && c.Request != nil {
+		scheme := "http"
+		if forwarded := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); forwarded != "" {
+			scheme = forwarded
+		} else if c.Request.TLS != nil {
+			scheme = "https"
+		}
+		if host := strings.TrimSpace(c.Request.Host); host != "" {
+			baseURL = scheme + "://" + host
+		}
+	}
+	if baseURL == "" {
+		response.Error(c, http.StatusBadRequest, "base_url is required")
+		return
+	}
+
+	templates := service.BuildOpenAIGatewayClientTemplates(
+		baseURL,
+		strings.TrimSpace(c.Query("api_key")),
+		strings.TrimSpace(c.Query("gateway_token")),
+	)
+	format := strings.TrimSpace(c.Query("format"))
+	filename := "openai-gateway-template.txt"
+	content := templates.CurlExample
+	switch format {
+	case "curl":
+		filename = "curl.txt"
+		content = templates.CurlExample
+	case "python":
+		filename = "python-sdk.py"
+		content = templates.PythonSDK
+	case "node":
+		filename = "node-sdk.mjs"
+		content = templates.NodeSDK
+	case "codex-config.toml":
+		filename = "config.toml"
+		content = templates.CodexConfigTOML
+	case "codex-auth.json":
+		filename = "auth.json"
+		content = templates.CodexAuthJSON
+	case "codex-wrapper.sh":
+		filename = "codex-wrapper.sh"
+		content = templates.CodexWrapperSH
+	case "", "bundle.txt":
+		filename = "openai-gateway-bundle.txt"
+		content = strings.Join([]string{
+			"[curl]",
+			templates.CurlExample,
+			"",
+			"[python]",
+			templates.PythonSDK,
+			"",
+			"[node]",
+			templates.NodeSDK,
+			"",
+			"[codex config.toml]",
+			templates.CodexConfigTOML,
+			"",
+			"[codex auth.json]",
+			templates.CodexAuthJSON,
+			"",
+			"[codex wrapper.sh]",
+			templates.CodexWrapperSH,
+		}, "\n")
+	default:
+		response.Error(c, http.StatusBadRequest, "invalid format")
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(content))
+}
+
+// GatewayStatus returns the admin OpenAI Gateway status snapshot.
+// GET /api/v1/admin/openai/gateway/status
+func (h *OpenAIOAuthHandler) GatewayStatus(c *gin.Context) {
+	if h.gatewayCoreService == nil || h.openaiGatewayService == nil || !h.gatewayCoreService.IsEnabled() {
+		response.Error(c, http.StatusServiceUnavailable, "openai gateway core disabled")
+		return
+	}
+	snapshot, err := h.gatewayCoreService.BuildAdminStatusSnapshot(c.Request.Context(), h.openaiGatewayService.SnapshotOpenAIWSPerformanceMetrics())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, snapshot)
+}
+
+// UpdateGatewayRuntime updates per-account OpenAI gateway runtime settings.
+// POST /api/v1/admin/openai/gateway/accounts/:id/runtime
+func (h *OpenAIOAuthHandler) UpdateGatewayRuntime(c *gin.Context) {
+	if h.gatewayCoreService == nil || !h.gatewayCoreService.IsEnabled() {
+		response.Error(c, http.StatusServiceUnavailable, "openai gateway core disabled")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if account.Platform != service.PlatformOpenAI || account.Type != service.AccountTypeOAuth {
+		response.BadRequest(c, "Account must be an OpenAI OAuth account")
+		return
+	}
+
+	var req struct {
+		EgressBucket string `json:"egress_bucket"`
+		ProfileMode  string `json:"profile_mode"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.EgressBucket) != "" && !h.gatewayCoreService.HasEgressBucket(req.EgressBucket) {
+		response.BadRequest(c, "Unknown egress bucket")
+		return
+	}
+	if mode := strings.TrimSpace(req.ProfileMode); mode != "" &&
+		mode != service.OpenAIGatewayProfileModeFixed &&
+		mode != service.OpenAIGatewayProfileModeObserve &&
+		mode != service.OpenAIGatewayProfileModeFrozen {
+		response.BadRequest(c, "Invalid profile_mode")
+		return
+	}
+
+	extra := map[string]any{}
+	for k, v := range account.Extra {
+		extra[k] = v
+	}
+	extra["openai_gateway_egress_bucket"] = strings.TrimSpace(req.EgressBucket)
+	extra["openai_gateway_profile_mode"] = strings.TrimSpace(req.ProfileMode)
+
+	updated, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+		Name:  account.Name,
+		Extra: extra,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.AccountFromService(updated))
 }

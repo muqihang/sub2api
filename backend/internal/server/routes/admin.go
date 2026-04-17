@@ -316,7 +316,10 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/refresh-token", h.Admin.OpenAIOAuth.RefreshToken)
 		openai.POST("/accounts/:id/refresh", h.Admin.OpenAIOAuth.RefreshAccountToken)
 		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
+		openai.GET("/gateway/status", h.Admin.OpenAIOAuth.GatewayStatus)
+		openai.POST("/gateway/accounts/:id/runtime", h.Admin.OpenAIOAuth.UpdateGatewayRuntime)
 		openai.GET("/gateway/templates", h.Admin.OpenAIOAuth.GatewayTemplates)
+		openai.GET("/gateway/templates/download", h.Admin.OpenAIOAuth.DownloadGatewayTemplate)
 	}
 }
 
