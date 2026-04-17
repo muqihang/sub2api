@@ -81,6 +81,16 @@ func (r stubOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Co
 	return r.ListSchedulableByPlatform(ctx, platform)
 }
 
+func (r stubOpenAIAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	var result []Account
+	for _, acc := range r.accounts {
+		if acc.Platform == platform {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
 type stubConcurrencyCache struct {
 	ConcurrencyCache
 	loadBatchErr    error
@@ -2515,6 +2525,55 @@ func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t 
 			require.Equal(t, tt.wantOriginator, req.Header.Get("originator"))
 		})
 	}
+}
+
+func TestOpenAIBuildUpstreamRequestOAuthAppliesGatewayCanonicalProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5","metadata":{"user_id":"{\"device_id\":\"old-device\",\"account_uuid\":\"acct-1\",\"session_id\":\"123e4567-e89b-12d3-a456-426614174000\"}"}}`)))
+	c.Request.Header.Set("User-Agent", "totally-different/1.0")
+	c.Request.Header.Set("X-Stainless-Lang", "python")
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.CanonicalUserAgent = "codex_cli_rs/0.104.0"
+	cfg.Gateway.OpenAICore.CanonicalStainlessLang = "js"
+	cfg.Gateway.OpenAICore.CanonicalStainlessPackageVersion = "0.70.0"
+	cfg.Gateway.OpenAICore.CanonicalStainlessOS = "Linux"
+	cfg.Gateway.OpenAICore.CanonicalStainlessArch = "arm64"
+	cfg.Gateway.OpenAICore.CanonicalStainlessRuntime = "node"
+	cfg.Gateway.OpenAICore.CanonicalStainlessRuntimeVersion = "v24.13.0"
+
+	repo := &snapshotUpdateAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{
+			accounts: []Account{
+				{
+					ID:       10,
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Status:   StatusActive,
+					Credentials: map[string]any{
+						"chatgpt_account_id": "acct-1",
+					},
+				},
+			},
+		},
+	}
+	core := NewOpenAIGatewayCoreService(repo, cfg, nil)
+	svc := &OpenAIGatewayService{cfg: cfg, gatewayCoreService: core}
+	account, errGet := repo.GetByID(context.Background(), 10)
+	require.NoError(t, errGet)
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5","metadata":{"user_id":"{\"device_id\":\"old-device\",\"account_uuid\":\"acct-1\",\"session_id\":\"123e4567-e89b-12d3-a456-426614174000\"}"}}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "codex_cli_rs/0.104.0", req.Header.Get("User-Agent"))
+	require.Equal(t, "js", req.Header.Get("X-Stainless-Lang"))
+	body, readErr := io.ReadAll(req.Body)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(body), "old-device")
 }
 
 // ==================== P1-08 修复：model 替换性能优化测试 ====================

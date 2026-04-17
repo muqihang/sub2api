@@ -338,6 +338,7 @@ type OpenAIGatewayService struct {
 	httpUpstream          HTTPUpstream
 	deferredService       *DeferredService
 	openAITokenProvider   *OpenAITokenProvider
+	gatewayCoreService    *OpenAIGatewayCoreService
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
 	resolver              *ModelPricingResolver
@@ -360,6 +361,14 @@ type OpenAIGatewayService struct {
 	codexSnapshotThrottle *accountWriteThrottle
 }
 
+func (s *OpenAIGatewayService) resolveOpenAIProxyURL(account *Account) string {
+	fallback := resolveOpenAIAccountProxyURL(account)
+	if s == nil || s.gatewayCoreService == nil || !s.gatewayCoreService.IsEnabled() {
+		return fallback
+	}
+	return s.gatewayCoreService.ResolveEgressProxyURL(account, fallback)
+}
+
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
 func NewOpenAIGatewayService(
 	accountRepo AccountRepository,
@@ -378,6 +387,7 @@ func NewOpenAIGatewayService(
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
 	openAITokenProvider *OpenAITokenProvider,
+	gatewayCoreService *OpenAIGatewayCoreService,
 	resolver *ModelPricingResolver,
 	channelService *ChannelService,
 	balanceNotifyService *BalanceNotifyService,
@@ -406,6 +416,7 @@ func NewOpenAIGatewayService(
 		httpUpstream:          httpUpstream,
 		deferredService:       deferredService,
 		openAITokenProvider:   openAITokenProvider,
+		gatewayCoreService:    gatewayCoreService,
 		toolCorrector:         NewCodexToolCorrector(),
 		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
 		resolver:              resolver,
@@ -2865,10 +2876,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		// Get proxy URL
-		proxyURL := ""
-		if account.ProxyID != nil && account.Proxy != nil {
-			proxyURL = account.Proxy.URL()
-		}
+		proxyURL := s.resolveOpenAIProxyURL(account)
 
 		// Send request
 		upstreamStart := time.Now()
@@ -3158,10 +3166,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	proxyURL := s.resolveOpenAIProxyURL(account)
 
 	if c != nil {
 		c.Set("openai_passthrough", true)
@@ -3343,6 +3348,24 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	var gatewayRuntime *OpenAIGatewayAccountRuntime
+	if s != nil && s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() && account != nil && account.IsOpenAIOAuth() {
+		clientHeaders := http.Header{}
+		if c != nil && c.Request != nil {
+			clientHeaders = c.Request.Header
+		}
+		runtime, runtimeErr := s.gatewayCoreService.ResolveAccountRuntime(ctx, account, clientHeaders, GetOpenAIClientTransport(c))
+		if runtimeErr != nil {
+			return nil, runtimeErr
+		}
+		if runtime != nil {
+			gatewayRuntime = runtime
+			if rewrittenBody, rewriteErr := s.gatewayCoreService.RewriteMetadataUserID(body, account, runtime); rewriteErr == nil && len(rewrittenBody) > 0 {
+				body = rewrittenBody
+			}
+		}
+	}
+
 	targetURL := openaiPlatformAPIURL
 	switch account.Type {
 	case AccountTypeOAuth:
@@ -3432,11 +3455,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
 	}
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		req.Header.Set("user-agent", codexCLIUserAgent)
+	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+		s.gatewayCoreService.ApplyCanonicalHeaders(req.Header, gatewayRuntime.Profile)
 	}
-	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
+	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
@@ -3893,6 +3915,26 @@ func normalizeOpenAIResponsesInputContentTypes(reqBody map[string]any) bool {
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	var gatewayRuntime *OpenAIGatewayAccountRuntime
+	if s != nil && s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() && account != nil && account.IsOpenAIOAuth() {
+		clientHeaders := http.Header{}
+		transport := OpenAIClientTransportHTTP
+		if c != nil && c.Request != nil {
+			clientHeaders = c.Request.Header
+			transport = GetOpenAIClientTransport(c)
+		}
+		runtime, runtimeErr := s.gatewayCoreService.ResolveAccountRuntime(ctx, account, clientHeaders, transport)
+		if runtimeErr != nil {
+			return nil, runtimeErr
+		}
+		if runtime != nil {
+			gatewayRuntime = runtime
+			if rewrittenBody, rewriteErr := s.gatewayCoreService.RewriteMetadataUserID(body, account, runtime); rewriteErr == nil && len(rewrittenBody) > 0 {
+				body = rewrittenBody
+			}
+		}
+	}
+
 	// Determine target URL based on account type
 	var targetURL string
 	switch account.Type {
@@ -3973,6 +4015,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	customUA := account.GetOpenAIUserAgent()
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
+	}
+	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+		s.gatewayCoreService.ApplyCanonicalHeaders(req.Header, gatewayRuntime.Profile)
 	}
 
 	// 若开启 ForceCodexCLI，则强制将上游 User-Agent 伪装为 Codex CLI。

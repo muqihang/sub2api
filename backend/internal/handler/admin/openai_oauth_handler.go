@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -270,4 +271,32 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	}
 
 	response.Success(c, dto.AccountFromService(account))
+}
+
+// GatewayTemplates returns OpenAI Gateway client templates for SDKs and Codex CLI.
+// GET /api/v1/admin/openai/gateway/templates
+func (h *OpenAIOAuthHandler) GatewayTemplates(c *gin.Context) {
+	baseURL := strings.TrimSpace(c.Query("base_url"))
+	if baseURL == "" && c.Request != nil {
+		scheme := "http"
+		if forwarded := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); forwarded != "" {
+			scheme = forwarded
+		} else if c.Request.TLS != nil {
+			scheme = "https"
+		}
+		if host := strings.TrimSpace(c.Request.Host); host != "" {
+			baseURL = scheme + "://" + host
+		}
+	}
+	if baseURL == "" {
+		response.Error(c, http.StatusBadRequest, "base_url is required")
+		return
+	}
+
+	templates := service.BuildOpenAIGatewayClientTemplates(
+		baseURL,
+		strings.TrimSpace(c.Query("api_key")),
+		strings.TrimSpace(c.Query("gateway_token")),
+	)
+	response.Success(c, templates)
 }

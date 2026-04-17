@@ -420,6 +420,7 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	h := &OpenAIGatewayHandler{

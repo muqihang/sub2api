@@ -231,6 +231,44 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
+  # OpenAI Gateway Core：用于统一 OpenAI OAuth 号池的 canonical profile、egress bucket、
+  # health/verify 探针与可选 client token。
+  openai_core:
+    enabled: true
+    # 默认 profile 模式：
+    # - fixed: 固定 canonical profile（推荐，稳定）
+    # - observe: 初始/后续可从客户端头观察更新
+    # - frozen: 仅使用已持久化 profile，不再变动
+    default_profile_mode: fixed
+    # 默认出口桶（当前单住宅 IP 建议保持 default；后续多出口时可扩展）
+    default_egress_bucket: default
+    # /openai/_health 与 /openai/_verify 是否要求 X-OpenAI-Gateway-Token
+    probe_require_client_token: true
+    # 固定模式下默认 canonical profile
+    canonical_user_agent: "codex_cli_rs/0.104.0"
+    canonical_stainless_lang: "js"
+    canonical_stainless_package_version: "0.70.0"
+    canonical_stainless_os: "Linux"
+    canonical_stainless_arch: "arm64"
+    canonical_stainless_runtime: "node"
+    canonical_stainless_runtime_version: "v24.13.0"
+    # 出口桶：
+    # - 当前单住宅 IP 可只保留 default 且 proxy_url 为空（表示直接走宿主机出口）
+    # - 后续多出口时，可为不同 bucket 配不同 proxy_url，然后按账号 extra.openai_gateway_egress_bucket 绑定
+    egress_buckets:
+      - name: "default"
+        enabled: true
+        proxy_url: ""
+      # - name: "bucket-a"
+      #   enabled: true
+      #   proxy_url: "socks5://127.0.0.1:9001"
+    # 可选：Gateway probe/client tokens
+    # 配置后：
+    # - /openai/_health 与 /openai/_verify 默认要求 token
+    # - 常规 OpenAI 请求若显式携带错误 token，会被 401 拒绝
+    client_tokens:
+      - name: "probe"
+        token: "change-me-openai-gateway-token"
   # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
   openai_ws:
     # 新版 WS mode 路由（默认关闭）。关闭时保持当前 legacy 实现行为。

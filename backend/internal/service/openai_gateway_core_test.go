@@ -1,0 +1,202 @@
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/stretchr/testify/require"
+)
+
+type openAIGatewayCoreRepoStub struct {
+	mockAccountRepoForGemini
+	updateExtraCalls int
+	lastExtra        map[string]any
+}
+
+func (r *openAIGatewayCoreRepoStub) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	r.updateExtraCalls++
+	r.lastExtra = cloneCredentials(updates)
+	if r.accountsByID != nil {
+		if acc, ok := r.accountsByID[id]; ok && acc != nil {
+			acc.Extra = mergeMap(acc.Extra, updates)
+		}
+	}
+	return nil
+}
+
+func (r *openAIGatewayCoreRepoStub) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	if platform == PlatformOpenAI {
+		return append([]Account(nil), r.accounts...), nil
+	}
+	return nil, nil
+}
+
+func TestOpenAIGatewayCoreService_AuthenticateClientHeaders(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.ClientTokens = []config.OpenAIGatewayClientTokenConfig{
+		{Name: "probe", Token: "tok-123"},
+	}
+
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil)
+
+	headers := http.Header{}
+	headers.Set(OpenAIGatewayClientTokenHeader, "tok-123")
+	client, err := svc.AuthenticateClientHeaders(headers)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	require.True(t, client.Authenticated)
+	require.Equal(t, "probe", client.Name)
+
+	headers.Set(OpenAIGatewayClientTokenHeader, "bad")
+	client, err = svc.AuthenticateClientHeaders(headers)
+	require.Error(t, err)
+	require.Nil(t, client)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntime_StablePerAccount(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{
+				1: {ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Credentials: map[string]any{"chatgpt_account_id": "acct-1"}},
+				2: {ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Credentials: map[string]any{"chatgpt_account_id": "acct-2"}},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	headers := http.Header{}
+	headers.Set("User-Agent", "codex_cli_rs/9.9.9")
+	headers.Set("X-Stainless-Lang", "python")
+
+	runtime1, err := svc.ResolveAccountRuntime(context.Background(), repo.accountsByID[1], headers, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.NotNil(t, runtime1)
+	require.Equal(t, "default", runtime1.EgressBucket)
+	require.NotEmpty(t, runtime1.Profile.ProfileID)
+	require.Equal(t, OpenAIGatewayProfileModeFixed, runtime1.Profile.Mode)
+
+	runtime1Again, err := svc.ResolveAccountRuntime(context.Background(), repo.accountsByID[1], http.Header{"User-Agent": []string{"totally-different/1.0"}}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.Equal(t, runtime1.Profile.ProfileID, runtime1Again.Profile.ProfileID)
+	require.Equal(t, runtime1.Profile.UserAgent, runtime1Again.Profile.UserAgent)
+
+	runtime2, err := svc.ResolveAccountRuntime(context.Background(), repo.accountsByID[2], headers, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.NotEqual(t, runtime1.Profile.ProfileID, runtime2.Profile.ProfileID)
+	require.GreaterOrEqual(t, repo.updateExtraCalls, 2)
+}
+
+func TestOpenAIGatewayCoreService_ResolveEgressBucket(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+		{Name: "bucket-a", Enabled: true, ProxyURL: "socks5://127.0.0.1:9001"},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil)
+
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	require.Equal(t, "default", svc.ResolveEgressBucket(account))
+	require.Equal(t, "", svc.ResolveEgressProxyURL(account, ""))
+
+	account.Extra = map[string]any{"openai_gateway_egress_bucket": "bucket-a"}
+	require.Equal(t, "bucket-a", svc.ResolveEgressBucket(account))
+	require.Equal(t, "socks5://127.0.0.1:9001", svc.ResolveEgressProxyURL(account, ""))
+
+	account.Extra["openai_gateway_egress_bucket"] = "missing"
+	require.Equal(t, "", svc.ResolveEgressProxyURL(account, ""))
+
+	cfg.Gateway.OpenAICore.EgressBuckets = append(cfg.Gateway.OpenAICore.EgressBuckets, config.OpenAIGatewayEgressBucketConfig{
+		Name: "bucket-disabled", Enabled: false, ProxyURL: "http://127.0.0.1:8080",
+	})
+	account.Extra["openai_gateway_egress_bucket"] = "bucket-disabled"
+	require.Equal(t, "fallback-proxy", svc.ResolveEgressProxyURL(account, "fallback-proxy"))
+}
+
+func TestOpenAIGatewayCoreService_BuildHealthSnapshot(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accounts: []Account{
+				{
+					ID:       1,
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Status:   StatusActive,
+					Extra: map[string]any{
+						"openai_gateway_egress_bucket": "default",
+						"openai_token_source":          OpenAITokenSourceRTManaged,
+						"openai_auth_state":            OpenAIAuthStateHealthy,
+					},
+				},
+				{
+					ID:       2,
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Status:   StatusError,
+					Extra: map[string]any{
+						"openai_gateway_egress_bucket": "default",
+						"openai_token_source":          OpenAITokenSourceRTManaged,
+						"openai_auth_state":            OpenAIAuthStateTerminal,
+					},
+				},
+			},
+		},
+	}
+	provider := &OpenAITokenProvider{}
+	provider.metrics = &openAITokenRuntimeMetricsStore{}
+	provider.metrics.refreshFailure.Store(1)
+	provider.metrics.lastObservedUnixMs.Store(time.Now().UnixMilli())
+
+	svc := NewOpenAIGatewayCoreService(repo, cfg, provider)
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.Equal(t, "degraded", health.GatewayStatus)
+	require.Equal(t, "degraded", health.OAuthStatus)
+	require.Equal(t, int64(2), health.OpenAIOAuthAccountsTotal)
+	require.Equal(t, int64(1), health.TerminalAccountsTotal)
+	require.Equal(t, int64(2), health.EgressBuckets["default"])
+	require.NotEmpty(t, health.DegradedReason)
+}
+
+func TestOpenAIGatewayService_ResolveOpenAIProxyURLUsesBucketProxy(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://127.0.0.1:8080"},
+	}
+	core := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil)
+	svc := &OpenAIGatewayService{cfg: cfg, gatewayCoreService: core}
+
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "bucket-a",
+		},
+		Proxy: &Proxy{
+			Protocol: "socks5",
+			Host:     "10.0.0.2",
+			Port:     1080,
+		},
+	}
+
+	require.Equal(t, "http://127.0.0.1:8080", svc.resolveOpenAIProxyURL(account))
+}

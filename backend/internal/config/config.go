@@ -358,6 +358,8 @@ type GatewayConfig struct {
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
+	// OpenAICore: OpenAI Gateway Core 配置
+	OpenAICore GatewayOpenAICoreConfig `mapstructure:"openai_core"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -563,6 +565,48 @@ type GatewayOpenAIWSConfig struct {
 	StickyPreviousResponseTTLSeconds int `mapstructure:"sticky_previous_response_ttl_seconds"`
 
 	SchedulerScoreWeights GatewayOpenAIWSSchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
+}
+
+// GatewayOpenAICoreConfig OpenAI Gateway Core 配置。
+// 第一版用于统一 OpenAI OAuth 号池的 canonical profile、egress bucket、health/verify 与 client token。
+type GatewayOpenAICoreConfig struct {
+	// Enabled: 是否启用 OpenAI Gateway Core（默认 true）
+	Enabled bool `mapstructure:"enabled"`
+	// DefaultProfileMode: 默认 profile 模式（fixed/observe/frozen）
+	DefaultProfileMode string `mapstructure:"default_profile_mode"`
+	// DefaultEgressBucket: 默认出口桶名称
+	DefaultEgressBucket string `mapstructure:"default_egress_bucket"`
+	// ProbeRequireClientToken: /openai/_health 和 /openai/_verify 是否要求 client token
+	ProbeRequireClientToken bool `mapstructure:"probe_require_client_token"`
+	// CanonicalUserAgent: 固定模式下默认 User-Agent
+	CanonicalUserAgent string `mapstructure:"canonical_user_agent"`
+	// CanonicalStainlessLang: 固定模式下默认 X-Stainless-Lang
+	CanonicalStainlessLang string `mapstructure:"canonical_stainless_lang"`
+	// CanonicalStainlessPackageVersion: 固定模式下默认 X-Stainless-Package-Version
+	CanonicalStainlessPackageVersion string `mapstructure:"canonical_stainless_package_version"`
+	// CanonicalStainlessOS: 固定模式下默认 X-Stainless-OS
+	CanonicalStainlessOS string `mapstructure:"canonical_stainless_os"`
+	// CanonicalStainlessArch: 固定模式下默认 X-Stainless-Arch
+	CanonicalStainlessArch string `mapstructure:"canonical_stainless_arch"`
+	// CanonicalStainlessRuntime: 固定模式下默认 X-Stainless-Runtime
+	CanonicalStainlessRuntime string `mapstructure:"canonical_stainless_runtime"`
+	// CanonicalStainlessRuntimeVersion: 固定模式下默认 X-Stainless-Runtime-Version
+	CanonicalStainlessRuntimeVersion string `mapstructure:"canonical_stainless_runtime_version"`
+	// EgressBuckets: OpenAI Gateway 出口桶配置
+	EgressBuckets []OpenAIGatewayEgressBucketConfig `mapstructure:"egress_buckets"`
+	// ClientTokens: OpenAI Gateway probe/client tokens
+	ClientTokens []OpenAIGatewayClientTokenConfig `mapstructure:"client_tokens"`
+}
+
+type OpenAIGatewayClientTokenConfig struct {
+	Name  string `mapstructure:"name"`
+	Token string `mapstructure:"token"`
+}
+
+type OpenAIGatewayEgressBucketConfig struct {
+	Name     string `mapstructure:"name"`
+	Enabled  bool   `mapstructure:"enabled"`
+	ProxyURL string `mapstructure:"proxy_url"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1371,6 +1415,24 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
+	viper.SetDefault("gateway.openai_core.enabled", true)
+	viper.SetDefault("gateway.openai_core.default_profile_mode", "fixed")
+	viper.SetDefault("gateway.openai_core.default_egress_bucket", "default")
+	viper.SetDefault("gateway.openai_core.probe_require_client_token", true)
+	viper.SetDefault("gateway.openai_core.canonical_user_agent", "codex_cli_rs/0.104.0")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_lang", "js")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_package_version", "0.70.0")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_os", "Linux")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_arch", "arm64")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_runtime", "node")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_runtime_version", "v24.13.0")
+	viper.SetDefault("gateway.openai_core.egress_buckets", []map[string]any{
+		{
+			"name":      "default",
+			"enabled":   true,
+			"proxy_url": "",
+		},
+	})
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -2000,6 +2062,29 @@ func (c *Config) Validate() error {
 	// 兼容旧键 sticky_previous_response_ttl_seconds
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {
 		c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
+	}
+	if mode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAICore.DefaultProfileMode)); mode != "" {
+		switch mode {
+		case "fixed", "observe", "frozen":
+		default:
+			return fmt.Errorf("gateway.openai_core.default_profile_mode must be one of: fixed/observe/frozen")
+		}
+	}
+	if strings.TrimSpace(c.Gateway.OpenAICore.DefaultEgressBucket) == "" {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket is required")
+	}
+	for _, bucket := range c.Gateway.OpenAICore.EgressBuckets {
+		if strings.TrimSpace(bucket.Name) == "" {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[].name is required")
+		}
+	}
+	for _, item := range c.Gateway.OpenAICore.ClientTokens {
+		if strings.TrimSpace(item.Name) == "" {
+			return fmt.Errorf("gateway.openai_core.client_tokens[].name is required")
+		}
+		if strings.TrimSpace(item.Token) == "" {
+			return fmt.Errorf("gateway.openai_core.client_tokens[].token is required")
+		}
 	}
 	if c.Gateway.OpenAIWS.MaxConnsPerAccount <= 0 {
 		return fmt.Errorf("gateway.openai_ws.max_conns_per_account must be positive")

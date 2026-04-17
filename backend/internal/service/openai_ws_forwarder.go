@@ -1189,11 +1189,18 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 ) (http.Header, openAIWSSessionHeaderResolution) {
 	headers := make(http.Header)
 	headers.Set("authorization", "Bearer "+token)
+	var gatewayRuntime *OpenAIGatewayAccountRuntime
 
 	sessionResolution := resolveOpenAIWSSessionHeaders(c, promptCacheKey)
 	if c != nil && c.Request != nil {
 		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" {
 			headers.Set("accept-language", v)
+		}
+		if s != nil && s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() && account != nil && account.IsOpenAIOAuth() {
+			runtime, err := s.gatewayCoreService.ResolveAccountRuntime(c.Request.Context(), account, c.Request.Header, OpenAIClientTransportWS)
+			if err == nil {
+				gatewayRuntime = runtime
+			}
 		}
 	}
 	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
@@ -1244,10 +1251,10 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 			headers.Set("user-agent", ua)
 		}
 	}
-	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		headers.Set("user-agent", codexCLIUserAgent)
+	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+		s.gatewayCoreService.ApplyCanonicalHeaders(headers, gatewayRuntime.Profile)
 	}
-	if account != nil && account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(headers.Get("user-agent")) {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		headers.Set("user-agent", codexCLIUserAgent)
 	}
 
@@ -1267,6 +1274,13 @@ func (s *OpenAIGatewayService) buildOpenAIWSCreatePayload(reqBody map[string]any
 		payload["stream"] = true
 	}
 	payload["type"] = "response.create"
+
+	if s != nil && s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() && account != nil && account.IsOpenAIOAuth() {
+		runtime, err := s.gatewayCoreService.ResolveAccountRuntime(context.Background(), account, http.Header{}, OpenAIClientTransportWS)
+		if err == nil && runtime != nil {
+			payload = s.gatewayCoreService.RewritePayloadMetadataUserID(payload, account, runtime)
+		}
+	}
 
 	// OAuth 默认保持 store=false，避免误依赖服务端历史。
 	if account != nil && account.Type == AccountTypeOAuth && !s.isOpenAIWSStoreRecoveryAllowed(account) {
@@ -1960,7 +1974,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		hasOpenAIWSHeader(wsHeaders, "authorization"),
 		hasOpenAIWSHeader(wsHeaders, "session_id"),
 		hasOpenAIWSHeader(wsHeaders, "conversation_id"),
-		account.ProxyID != nil && account.Proxy != nil,
+		s.resolveOpenAIProxyURL(account) != "",
 	)
 
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
@@ -1972,12 +1986,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		Headers:         wsHeaders,
 		PreferredConnID: preferredConnID,
 		ForceNewConn:    forceNewConn,
-		ProxyURL: func() string {
-			if account.ProxyID != nil && account.Proxy != nil {
-				return account.Proxy.URL()
-			}
-			return ""
-		}(),
+		ProxyURL:        s.resolveOpenAIProxyURL(account),
 	})
 	if err != nil {
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
@@ -2731,15 +2740,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
 	baseAcquireReq := openAIWSAcquireRequest{
-		Account: account,
-		WSURL:   wsURL,
-		Headers: wsHeaders,
-		ProxyURL: func() string {
-			if account.ProxyID != nil && account.Proxy != nil {
-				return account.Proxy.URL()
-			}
-			return ""
-		}(),
+		Account:      account,
+		WSURL:        wsURL,
+		Headers:      wsHeaders,
+		ProxyURL:     s.resolveOpenAIProxyURL(account),
 		ForceNewConn: false,
 	}
 	pool := s.getOpenAIWSConnPool()

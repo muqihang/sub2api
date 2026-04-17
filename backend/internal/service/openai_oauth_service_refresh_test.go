@@ -7,12 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
 )
 
 type openaiOAuthClientRefreshStub struct {
 	refreshCalls int32
+	lastProxyURL string
 }
 
 func (s *openaiOAuthClientRefreshStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
@@ -26,6 +28,7 @@ func (s *openaiOAuthClientRefreshStub) RefreshToken(ctx context.Context, refresh
 
 func (s *openaiOAuthClientRefreshStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
 	atomic.AddInt32(&s.refreshCalls, 1)
+	s.lastProxyURL = proxyURL
 	return nil, errors.New("not implemented")
 }
 
@@ -51,4 +54,35 @@ func TestOpenAIOAuthService_RefreshAccountToken_NoRefreshTokenUsesExistingAccess
 	require.Equal(t, "existing-access-token", info.AccessToken)
 	require.Equal(t, "client-id-1", info.ClientID)
 	require.Zero(t, atomic.LoadInt32(&client.refreshCalls), "existing access token should be reused without calling refresh")
+}
+
+func TestOpenAIOAuthService_RefreshAccountToken_UsesGatewayBucketProxy(t *testing.T) {
+	client := &openaiOAuthClientRefreshStub{}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+		{Name: "bucket-a", Enabled: true, ProxyURL: "socks5://127.0.0.1:9001"},
+	}
+	core := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	svc := NewOpenAIOAuthService(nil, client)
+	svc.SetGatewayCoreService(core)
+
+	account := &Account{
+		ID:       88,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"refresh_token": "rt-1",
+			"client_id":     "client-id-1",
+		},
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "bucket-a",
+		},
+	}
+
+	_, err := svc.RefreshAccountToken(context.Background(), account)
+	require.Error(t, err)
+	require.Equal(t, "socks5://127.0.0.1:9001", client.lastProxyURL)
 }

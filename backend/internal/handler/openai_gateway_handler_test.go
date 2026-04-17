@@ -572,6 +572,7 @@ func TestOpenAIResponsesWebSocket_FirstMessageTimeoutUsesConfig(t *testing.T) {
 	cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds = 1
 	h := NewOpenAIGatewayHandler(
 		&service.OpenAIGatewayService{},
+		nil,
 		service.NewConcurrencyService(cache),
 		&service.BillingCacheService{},
 		&service.APIKeyService{},

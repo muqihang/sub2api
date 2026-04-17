@@ -28,6 +28,7 @@ import (
 // OpenAIGatewayHandler handles OpenAI API gateway requests
 type OpenAIGatewayHandler struct {
 	gatewayService          *service.OpenAIGatewayService
+	gatewayCoreService      *service.OpenAIGatewayCoreService
 	billingCacheService     *service.BillingCacheService
 	apiKeyService           *service.APIKeyService
 	usageRecordWorkerPool   *service.UsageRecordWorkerPool
@@ -58,6 +59,7 @@ func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedM
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
 func NewOpenAIGatewayHandler(
 	gatewayService *service.OpenAIGatewayService,
+	gatewayCoreService *service.OpenAIGatewayCoreService,
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
 	apiKeyService *service.APIKeyService,
@@ -79,6 +81,7 @@ func NewOpenAIGatewayHandler(
 	}
 	return &OpenAIGatewayHandler{
 		gatewayService:          gatewayService,
+		gatewayCoreService:      gatewayCoreService,
 		billingCacheService:     billingCacheService,
 		apiKeyService:           apiKeyService,
 		usageRecordWorkerPool:   usageRecordWorkerPool,
@@ -88,6 +91,108 @@ func NewOpenAIGatewayHandler(
 		wsFirstMessageTimeout:   wsFirstMessageTimeout,
 		cfg:                     cfg,
 	}
+}
+
+// Health returns OpenAI Gateway Core health status.
+// GET /openai/_health
+func (h *OpenAIGatewayHandler) Health(c *gin.Context) {
+	if h.gatewayCoreService == nil || !h.gatewayCoreService.IsEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "openai gateway core disabled"})
+		return
+	}
+	client, ok := h.authenticateGatewayProbe(c)
+	if !ok {
+		return
+	}
+	ws := service.OpenAIWSPerformanceMetricsSnapshot{}
+	if h.gatewayService != nil {
+		ws = h.gatewayService.SnapshotOpenAIWSPerformanceMetrics()
+	}
+	data, err := h.gatewayCoreService.BuildHealthSnapshot(c.Request.Context(), ws)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"client": client,
+		"data":   data,
+	})
+}
+
+// Verify returns the canonical profile and bucket resolution for a specific OpenAI account.
+// GET /openai/_verify?account_id=123&transport=http
+func (h *OpenAIGatewayHandler) Verify(c *gin.Context) {
+	if h.gatewayCoreService == nil || !h.gatewayCoreService.IsEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "openai gateway core disabled"})
+		return
+	}
+	client, ok := h.authenticateGatewayProbe(c)
+	if !ok {
+		return
+	}
+	accountID, err := strconv.ParseInt(strings.TrimSpace(c.Query("account_id")), 10, 64)
+	if err != nil || accountID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account_id is required"})
+		return
+	}
+	transport := service.OpenAIClientTransportHTTP
+	if strings.EqualFold(strings.TrimSpace(c.Query("transport")), "ws") {
+		transport = service.OpenAIClientTransportWS
+	}
+	data, err := h.gatewayCoreService.BuildVerifySnapshot(c.Request.Context(), accountID, c.Request.Header, transport)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"client": client,
+		"data":   data,
+	})
+}
+
+func (h *OpenAIGatewayHandler) authenticateGatewayProbe(c *gin.Context) (*service.OpenAIGatewayClientIdentity, bool) {
+	if h.gatewayCoreService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "openai gateway core unavailable"})
+		return nil, false
+	}
+	client, err := h.gatewayCoreService.AuthenticateClientHeaders(c.Request.Header)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "openai gateway client token unauthorized"})
+		return nil, false
+	}
+	if h.gatewayCoreService.ProbeRequiresClientToken() && (client == nil || !client.Authenticated) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "openai gateway client token required"})
+		return nil, false
+	}
+	return client, true
+}
+
+func (h *OpenAIGatewayHandler) enforceOptionalGatewayClientAuth(c *gin.Context, reqLog *zap.Logger) bool {
+	if h.gatewayCoreService == nil || !h.gatewayCoreService.IsEnabled() || c == nil || c.Request == nil {
+		return true
+	}
+	client, err := h.gatewayCoreService.AuthenticateClientHeaders(c.Request.Header)
+	if err != nil {
+		if reqLog != nil {
+			reqLog.Warn("openai.gateway_client_auth_rejected", zap.Error(err))
+		}
+		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid OpenAI gateway client token")
+		return false
+	}
+	if client != nil {
+		c.Set("openai_gateway_client_family", client.Family)
+		if client.Name != "" {
+			c.Set("openai_gateway_client_name", client.Name)
+		}
+		if reqLog != nil {
+			reqLog.Debug("openai.gateway_client_auth",
+				zap.Bool("authenticated", client.Authenticated),
+				zap.String("client_name", client.Name),
+				zap.String("client_family", client.Family),
+			)
+		}
+	}
+	return true
 }
 
 // Responses handles OpenAI Responses API endpoint
@@ -122,6 +227,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		zap.Any("group_id", apiKey.GroupID),
 	)
 	if !h.ensureResponsesDependencies(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
 		return
 	}
 
@@ -584,6 +692,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	}
 
 	if !h.ensureResponsesDependencies(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
 		return
 	}
 
@@ -1091,6 +1202,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.Bool("openai_ws_mode", true),
 	)
 	if !h.ensureResponsesDependencies(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
 		return
 	}
 	reqLog.Info("openai.websocket_ingress_started")

@@ -18,6 +18,7 @@ type OpenAIOAuthService struct {
 	proxyRepo            ProxyRepository
 	oauthClient          OpenAIOAuthClient
 	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
+	gatewayCoreService   *OpenAIGatewayCoreService
 }
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
@@ -33,6 +34,10 @@ func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthCli
 // 用于调用 chatgpt.com/backend-api 获取账号信息（plan_type 等）。
 func (s *OpenAIOAuthService) SetPrivacyClientFactory(factory PrivacyClientFactory) {
 	s.privacyClientFactory = factory
+}
+
+func (s *OpenAIOAuthService) SetGatewayCoreService(core *OpenAIGatewayCoreService) {
+	s.gatewayCoreService = core
 }
 
 // OpenAIAuthURLResult contains the authorization URL and session info
@@ -322,6 +327,9 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		if err == nil && proxy != nil {
 			proxyURL = proxy.URL()
 		}
+	}
+	if s.gatewayCoreService != nil {
+		proxyURL = s.gatewayCoreService.ResolveEgressProxyURL(account, proxyURL)
 	}
 
 	clientID := account.GetCredential("client_id")

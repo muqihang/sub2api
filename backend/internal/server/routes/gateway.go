@@ -124,6 +124,8 @@ func RegisterGatewayRoutes(
 		}
 		h.Gateway.ChatCompletions(c)
 	})
+	r.GET("/openai/_health", h.OpenAIGateway.Health)
+	r.GET("/openai/_verify", h.OpenAIGateway.Verify)
 
 	// Antigravity 模型列表
 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)

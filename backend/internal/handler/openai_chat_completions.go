@@ -46,6 +46,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
 
 	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
