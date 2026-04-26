@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -133,6 +134,7 @@ type AugmentQuickLoginGrant struct {
 	State     string   `json:"state"`
 	ExpiresAt string   `json:"expires_at"`
 	TenantURL string   `json:"tenant_url,omitempty"`
+	PortalURL string   `json:"portal_url,omitempty"`
 	Scopes    []string `json:"scopes"`
 }
 
@@ -147,6 +149,7 @@ type AugmentSessionBundle struct {
 	RefreshToken  string   `json:"refresh_token"`
 	ExpiresAt     string   `json:"expires_at"`
 	TenantURL     string   `json:"tenant_url"`
+	PortalURL     string   `json:"portal_url,omitempty"`
 	Scopes        []string `json:"scopes"`
 	SessionSource string   `json:"session_source"`
 }
@@ -454,6 +457,7 @@ func (s *AugmentPluginService) CreateQuickLoginGrant(ctx context.Context, userID
 
 	now := s.now()
 	expiresAt := now.Add(augmentPluginGrantTTL)
+	portalURL, _ := s.BuildQuickLoginPortalURL(ctx, userID, options.TenantURL)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -478,8 +482,65 @@ func (s *AugmentPluginService) CreateQuickLoginGrant(ctx context.Context, userID
 		State:     state,
 		ExpiresAt: expiresAt.Format(time.RFC3339),
 		TenantURL: responseTenantURL,
+		PortalURL: portalURL,
 		Scopes:    responseScopes,
 	}, nil
+}
+
+func (s *AugmentPluginService) BuildQuickLoginPortalURL(ctx context.Context, userID int64, gatewayBaseURL string) (string, error) {
+	if s.users == nil {
+		return "", nil
+	}
+
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if user == nil || !user.IsActive() {
+		return "", ErrUserNotActive
+	}
+
+	principal := AugmentPluginPrincipal{
+		Kind: augmentPrincipalKindJWT,
+		User: user,
+	}
+
+	summary, err := s.BuildSummary(ctx, principal)
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(summary.GatewayAPIKey)
+	if token == "" {
+		return "", nil
+	}
+
+	compat, err := s.BuildCompatMetadata(ctx, principal, gatewayBaseURL)
+	if err != nil {
+		return "", err
+	}
+
+	baseURL := ""
+	if settings, settingsErr := s.publicSettings(ctx); settingsErr == nil && settings != nil {
+		baseURL = normalizeAugmentAbsoluteURL(settings.APIBaseURL)
+	}
+	if baseURL == "" && compat != nil {
+		baseURL = normalizeAugmentAbsoluteURL(compat.GatewayBaseURL)
+	}
+	if baseURL == "" {
+		baseURL = normalizeAugmentAbsoluteURL(gatewayBaseURL)
+	}
+	if baseURL == "" {
+		return "", nil
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", nil
+	}
+	query := parsed.Query()
+	query.Set("token", token)
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 func (s *AugmentPluginService) ExchangeGrant(ctx context.Context, grant, state, tenantURL string) (*AugmentSessionBundle, error) {
@@ -497,11 +558,17 @@ func (s *AugmentPluginService) ExchangeGrant(ctx context.Context, grant, state, 
 		return nil, ErrAugmentPluginGrantInvalid
 	}
 
+	portalURL, _ := s.BuildQuickLoginPortalURL(ctx, record.UserID, tenantURL)
+
 	if record.Mode == AugmentQuickLoginModeOfficialPassthrough {
 		if record.SessionBundle == nil {
 			return nil, ErrAugmentPluginOfficialAuth
 		}
-		return cloneAugmentSessionBundle(record.SessionBundle), nil
+		bundle := cloneAugmentSessionBundle(record.SessionBundle)
+		if bundle != nil {
+			bundle.PortalURL = portalURL
+		}
+		return bundle, nil
 	}
 
 	if s.auth == nil || s.users == nil {
@@ -518,7 +585,9 @@ func (s *AugmentPluginService) ExchangeGrant(ctx context.Context, grant, state, 
 		return nil, err
 	}
 
-	return s.newSessionBundle(pair, tenantURL, AugmentSessionSourceLocalCompat), nil
+	bundle := s.newSessionBundle(pair, tenantURL, AugmentSessionSourceLocalCompat)
+	bundle.PortalURL = portalURL
+	return bundle, nil
 }
 
 func (s *AugmentPluginService) RefreshSession(ctx context.Context, refreshToken, tenantURL string) (*AugmentSessionBundle, error) {
@@ -834,6 +903,21 @@ func (s *AugmentPluginService) newSessionBundle(pair *TokenPair, tenantURL, sess
 		Scopes:        append([]string(nil), defaultAugmentPluginScopes...),
 		SessionSource: sessionSource,
 	}
+}
+
+func normalizeAugmentAbsoluteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return strings.TrimRight(parsed.String(), "/")
 }
 
 func normalizeAugmentQuickLoginMode(mode string) (string, error) {

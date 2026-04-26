@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -255,6 +256,100 @@ func TestAugmentQuickLoginGrantAcceptsOfficialPassthroughBundle(t *testing.T) {
 	require.Contains(t, exchangeRec.Body.String(), `"session_source":"official"`)
 }
 
+func TestAugmentCallbackExchangeIncludesPortalURLFromGrantRecord(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       1,
+		Email:    "admin@zhumeng.local",
+		Username: "zhumeng",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := service.APIKey{
+		ID:        1,
+		UserID:    user.ID,
+		Key:       "sk-plugin-generated",
+		Name:      "Augment Plugin",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			keysByUser: map[int64][]service.APIKey{
+				user.ID: {apiKey},
+			},
+		},
+		nil,
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+
+	handler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+	)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+	router.POST("/api/v1/plugin/augment/callback/exchange", handler.AugmentCallbackExchange)
+
+	grantReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{
+			"official_session_bundle":"{\"tenant_url\":\"https://official.augment.local\",\"access_token\":\"official-access\",\"refresh_token\":\"official-refresh\",\"expires_at\":\"2026-04-21T12:30:00Z\",\"scopes\":[\"augment:session\"]}"
+		}`)),
+	)
+	grantReq.Header.Set("Content-Type", "application/json")
+	grantReq.Header.Set("Origin", "http://127.0.0.1:18082")
+	grantRec := httptest.NewRecorder()
+	router.ServeHTTP(grantRec, grantReq)
+	require.Equal(t, http.StatusOK, grantRec.Code)
+
+	var grantBody struct {
+		Data struct {
+			Grant string `json:"grant"`
+			State string `json:"state"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(grantRec.Body.Bytes(), &grantBody))
+
+	exchangePayload, err := json.Marshal(map[string]string{
+		"grant": grantBody.Data.Grant,
+		"state": grantBody.Data.State,
+	})
+	require.NoError(t, err)
+
+	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/augment/callback/exchange", bytes.NewReader(exchangePayload))
+	exchangeReq.Header.Set("Content-Type", "application/json")
+	exchangeReq.Header.Set("Origin", "http://127.0.0.1:18082")
+	exchangeRec := httptest.NewRecorder()
+	router.ServeHTTP(exchangeRec, exchangeReq)
+	require.Equal(t, http.StatusOK, exchangeRec.Code)
+	require.Contains(t, exchangeRec.Body.String(), `"portal_url":"http://127.0.0.1:18081?token=sk-plugin-generated"`)
+}
+
 func TestAugmentQuickLoginGrantDefaultsToLocalCompatWithoutOfficialInputs(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -321,6 +416,85 @@ func TestAugmentQuickLoginGrantDefaultsToLocalCompatWithoutOfficialInputs(t *tes
 	require.Contains(t, exchangeRec.Body.String(), `"access_token":"access-token"`)
 	require.Contains(t, exchangeRec.Body.String(), `"refresh_token":"refresh-token"`)
 	require.Contains(t, exchangeRec.Body.String(), `"session_source":"local_compat"`)
+}
+
+func TestAugmentQuickLoginGrantIncludesPortalInVSCodeDeeplink(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       1,
+		Email:    "admin@zhumeng.local",
+		Username: "zhumeng",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := service.APIKey{
+		ID:        1,
+		UserID:    user.ID,
+		Key:       "sk-plugin-generated",
+		Name:      "Augment Plugin",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			keysByUser: map[int64][]service.APIKey{
+				user.ID: {apiKey},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+
+	handler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+	)
+
+	router := gin.New()
+	router.POST("/api/v1/plugin/augment/quick-login/grant", func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Set(string(servermiddleware.ContextKeyUserRole), user.Role)
+		handler.AugmentQuickLoginGrant(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/augment/quick-login/grant", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	deeplink, _ := body.Data["vscode_deeplink"].(string)
+	require.NotEmpty(t, deeplink)
+	parsed, err := url.Parse(deeplink)
+	require.NoError(t, err)
+	portal := parsed.Query().Get("portal")
+	require.NotEmpty(t, portal)
+	require.Contains(t, portal, "http://127.0.0.1:18081")
+	require.Contains(t, portal, "token=")
 }
 
 func TestBuildAugmentQuickLoginGrantOptionsKeepsGenericSessionInputsInLocalCompatMode(t *testing.T) {

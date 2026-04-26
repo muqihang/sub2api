@@ -19,6 +19,7 @@ type augmentQuickLoginGrantResponse struct {
 	State          string   `json:"state"`
 	ExpiresAt      string   `json:"expires_at"`
 	TenantURL      string   `json:"tenant_url,omitempty"`
+	PortalURL      string   `json:"portal_url,omitempty"`
 	Scopes         []string `json:"scopes"`
 	VSCodeDeeplink string   `json:"vscode_deeplink,omitempty"`
 }
@@ -100,8 +101,9 @@ func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
 		State:          grant.State,
 		ExpiresAt:      grant.ExpiresAt,
 		TenantURL:      grant.TenantURL,
+		PortalURL:      grant.PortalURL,
 		Scopes:         grant.Scopes,
-		VSCodeDeeplink: buildAugmentVSCodeDeeplink(grant.Grant, grant.State, h.augmentTenantURL(c)),
+		VSCodeDeeplink: buildAugmentVSCodeDeeplink(grant.Grant, grant.State, h.augmentTenantURL(c), grant.PortalURL),
 	})
 }
 
@@ -247,20 +249,20 @@ func (h *AuthHandler) augmentPrincipalFromBearer(c *gin.Context) (*service.Augme
 }
 
 func (h *AuthHandler) augmentGatewayBaseURL(c *gin.Context) string {
-	if origin := normalizeAbsoluteURL(c.GetHeader("Origin"), false); origin != "" {
-		return origin
-	}
-
-	if origin := requestOrigin(c); origin != "" {
-		return origin
-	}
-
 	if h.settingSvc != nil {
 		if settings, err := h.settingSvc.GetPublicSettings(c.Request.Context()); err == nil {
 			if apiBaseURL := normalizeAbsoluteURL(settings.APIBaseURL, false); apiBaseURL != "" {
 				return apiBaseURL
 			}
 		}
+	}
+
+	if origin := normalizeAbsoluteURL(c.GetHeader("Origin"), false); origin != "" {
+		return origin
+	}
+
+	if origin := requestOrigin(c); origin != "" {
+		return origin
 	}
 
 	if h.cfg != nil {
@@ -337,13 +339,16 @@ func normalizeAbsoluteURL(raw string, originOnly bool) string {
 	return strings.TrimRight(parsed.String(), "/")
 }
 
-func buildAugmentVSCodeDeeplink(grant, state, issuer string) string {
+func buildAugmentVSCodeDeeplink(grant, state, issuer, portal string) string {
 	values := url.Values{}
 	values.Set("grant", strings.TrimSpace(grant))
 	values.Set("state", strings.TrimSpace(state))
 	values.Set("source", "quick_login")
 	if normalizedIssuer := normalizeAbsoluteURL(issuer, true); normalizedIssuer != "" {
 		values.Set("issuer", normalizedIssuer)
+	}
+	if normalizedPortal := normalizeAbsoluteURL(portal, false); normalizedPortal != "" {
+		values.Set("portal", normalizedPortal)
 	}
 	return "vscode://Augment.vscode-augment/autoAuth?" + values.Encode()
 }
