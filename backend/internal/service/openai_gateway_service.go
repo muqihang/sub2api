@@ -3003,11 +3003,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
 	}
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+		s.gatewayCoreService.ApplyCanonicalHeaders(req.Header, gatewayRuntime.Profile)
+	}
+	if account.Type == AccountTypeOAuth && customUA == "" && gatewayRuntime == nil && !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
-	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
+	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
