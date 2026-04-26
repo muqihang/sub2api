@@ -27,9 +27,6 @@ const (
 
 	// Scopes
 	DefaultScopes = "openid profile email offline_access"
-	// RefreshScopes - scope for token refresh (without offline_access, aligned with CRS project)
-	RefreshScopes = "openid profile email"
-
 	// Session TTL
 	SessionTTL = 30 * time.Minute
 )
@@ -248,6 +245,7 @@ type IDTokenClaims struct {
 	Aud           []string `json:"aud"` // OpenAI returns aud as an array
 	Exp           int64    `json:"exp"`
 	Iat           int64    `json:"iat"`
+	SCP           []string `json:"scp,omitempty"`
 
 	// OpenAI specific claims (nested under https://api.openai.com/auth)
 	OpenAIAuth *OpenAIAuthClaims `json:"https://api.openai.com/auth,omitempty"`
@@ -291,7 +289,6 @@ func BuildRefreshTokenRequest(refreshToken string) *RefreshTokenRequest {
 		GrantType:    "refresh_token",
 		RefreshToken: refreshToken,
 		ClientID:     ClientID,
-		Scope:        RefreshScopes,
 	}
 }
 
@@ -312,7 +309,9 @@ func (r *RefreshTokenRequest) ToFormData() string {
 	params.Set("grant_type", r.GrantType)
 	params.Set("client_id", r.ClientID)
 	params.Set("refresh_token", r.RefreshToken)
-	params.Set("scope", r.Scope)
+	if strings.TrimSpace(r.Scope) != "" {
+		params.Set("scope", r.Scope)
+	}
 	return params.Encode()
 }
 

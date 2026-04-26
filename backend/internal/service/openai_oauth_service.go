@@ -117,19 +117,21 @@ type OpenAIExchangeCodeInput struct {
 
 // OpenAITokenInfo represents the token information for OpenAI
 type OpenAITokenInfo struct {
-	AccessToken           string `json:"access_token"`
-	RefreshToken          string `json:"refresh_token"`
-	IDToken               string `json:"id_token,omitempty"`
-	ExpiresIn             int64  `json:"expires_in"`
-	ExpiresAt             int64  `json:"expires_at"`
-	ClientID              string `json:"client_id,omitempty"`
-	Email                 string `json:"email,omitempty"`
-	ChatGPTAccountID      string `json:"chatgpt_account_id,omitempty"`
-	ChatGPTUserID         string `json:"chatgpt_user_id,omitempty"`
-	OrganizationID        string `json:"organization_id,omitempty"`
-	PlanType              string `json:"plan_type,omitempty"`
-	SubscriptionExpiresAt string `json:"subscription_expires_at,omitempty"`
-	PrivacyMode           string `json:"privacy_mode,omitempty"`
+	AccessToken           string   `json:"access_token"`
+	RefreshToken          string   `json:"refresh_token"`
+	IDToken               string   `json:"id_token,omitempty"`
+	ExpiresIn             int64    `json:"expires_in"`
+	ExpiresAt             int64    `json:"expires_at"`
+	Scope                 string   `json:"scope,omitempty"`
+	Scopes                []string `json:"scopes,omitempty"`
+	ClientID              string   `json:"client_id,omitempty"`
+	Email                 string   `json:"email,omitempty"`
+	ChatGPTAccountID      string   `json:"chatgpt_account_id,omitempty"`
+	ChatGPTUserID         string   `json:"chatgpt_user_id,omitempty"`
+	OrganizationID        string   `json:"organization_id,omitempty"`
+	PlanType              string   `json:"plan_type,omitempty"`
+	SubscriptionExpiresAt string   `json:"subscription_expires_at,omitempty"`
+	PrivacyMode           string   `json:"privacy_mode,omitempty"`
 }
 
 // ExchangeCode exchanges authorization code for tokens
@@ -239,10 +241,12 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		Scope:        strings.TrimSpace(tokenResp.Scope),
 	}
 	if trimmed := strings.TrimSpace(clientID); trimmed != "" {
 		tokenInfo.ClientID = trimmed
 	}
+	tokenInfo.Scopes = extractOpenAIScopesFromAccessToken(tokenResp.AccessToken)
 
 	if userInfo != nil {
 		tokenInfo.Email = userInfo.Email
@@ -372,6 +376,12 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	}
 	if strings.TrimSpace(tokenInfo.ClientID) != "" {
 		creds["client_id"] = strings.TrimSpace(tokenInfo.ClientID)
+	}
+	if strings.TrimSpace(tokenInfo.Scope) != "" {
+		creds["scope"] = strings.TrimSpace(tokenInfo.Scope)
+	}
+	if len(tokenInfo.Scopes) > 0 {
+		creds["scopes"] = append([]string(nil), tokenInfo.Scopes...)
 	}
 
 	return creds

@@ -38,6 +38,7 @@ func TestEvaluateOpenAIImportLifecycle_RTValidated(t *testing.T) {
 			AccessToken:  "new-at",
 			RefreshToken: "new-rt",
 			ExpiresIn:    3600,
+			Scope:        "openid email profile api.responses.write",
 		},
 	})
 
@@ -59,6 +60,35 @@ func TestEvaluateOpenAIImportLifecycle_RTValidated(t *testing.T) {
 	require.Equal(t, "new-rt", decision.Credentials["refresh_token"])
 	require.Equal(t, "client-1", decision.Credentials["client_id"])
 	require.NotEmpty(t, decision.Extra["openai_last_validated_at"])
+	require.Equal(t, true, decision.Extra["openai_responses_write_capable"])
+	require.Equal(t, "openid email profile api.responses.write", decision.Extra["openai_last_granted_scope"])
+}
+
+func TestEvaluateOpenAIImportLifecycle_ScopeInsufficientQuarantined(t *testing.T) {
+	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+			Scope:        "openid email profile model.request model.read",
+		},
+	})
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"access_token":  "old-at",
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIAuthStateTerminal, decision.AuthState)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationScopeInsufficient, decision.ValidationOutcome)
+	require.Equal(t, StatusDisabled, decision.Status)
+	require.False(t, decision.Schedulable)
+	require.Equal(t, openAIAuthErrorCodeResponsesWriteMissing, decision.RefreshErrorCode)
+	require.Equal(t, false, decision.Extra["openai_responses_write_capable"])
+	require.Equal(t, "openid email profile model.request model.read", decision.Extra["openai_last_granted_scope"])
 }
 
 func TestEvaluateOpenAIImportLifecycle_ATOnlyQuarantine(t *testing.T) {

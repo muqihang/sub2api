@@ -101,6 +101,16 @@ func GoogleErrorWriter(c *gin.Context, status int, message string) {
 	})
 }
 
+// OpenAIErrorWriter 按 OpenAI API 规范输出错误
+func OpenAIErrorWriter(c *gin.Context, status int, message string) {
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"type":    "invalid_request_error",
+			"message": message,
+		},
+	})
+}
+
 // RequireGroupAssignment 检查 API Key 是否已分配到分组，
 // 如果未分组且系统设置不允许未分组 Key 调度则返回 403。
 func RequireGroupAssignment(settingService *service.SettingService, writeError GatewayErrorWriter) gin.HandlerFunc {

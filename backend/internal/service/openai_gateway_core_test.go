@@ -230,6 +230,9 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshot(t *testing.T) {
 						"openai_token_source":             OpenAITokenSourceRTManaged,
 						"openai_last_refresh_error_code":  "",
 						"openai_last_validated_at":        "2026-04-17T00:00:00Z",
+						"openai_last_granted_scope":       "openid email profile api.responses.write",
+						"openai_last_access_token_scopes": []string{"openid", "email", "profile", "api.responses.write"},
+						"openai_responses_write_capable":  true,
 					},
 				},
 			},
@@ -245,4 +248,7 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshot(t *testing.T) {
 	require.Equal(t, int64(1), snapshot.Accounts[0].AccountID)
 	require.Equal(t, "bucket-a", snapshot.Accounts[0].EgressBucket)
 	require.Equal(t, "profile-1", snapshot.Accounts[0].ProfileID)
+	require.Equal(t, "openid email profile api.responses.write", snapshot.Accounts[0].LastGrantedScope)
+	require.Equal(t, []string{"openid", "email", "profile", "api.responses.write"}, snapshot.Accounts[0].LastAccessTokenScopes)
+	require.True(t, snapshot.Accounts[0].ResponsesWriteCapable)
 }

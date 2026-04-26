@@ -325,6 +325,7 @@ func (s *RateLimitService) updateOpenAIAuthLifecycle(ctx context.Context, accoun
 		"openai_validation_outcome":      validationOutcome,
 		"openai_last_refresh_error_code": refreshErrorCode,
 	}
+	updates = mergeMap(updates, buildOpenAITokenCapabilityExtra(extractOpenAITokenCapabilityFromCredentials(account.Credentials)))
 	if updates["openai_pool_role"] == "" {
 		updates["openai_pool_role"] = OpenAIPoolRoleMain
 	}

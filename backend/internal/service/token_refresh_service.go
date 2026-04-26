@@ -451,6 +451,7 @@ func (s *TokenRefreshService) recordOpenAIAuthLifecycle(ctx context.Context, acc
 		"openai_validation_outcome":      validationOutcome,
 		"openai_last_refresh_error_code": refreshErrorCode,
 	}
+	updates = mergeMap(updates, buildOpenAITokenCapabilityExtra(extractOpenAITokenCapabilityFromCredentials(account.Credentials)))
 	if updates["openai_pool_role"] == "" {
 		updates["openai_pool_role"] = OpenAIPoolRoleMain
 	}

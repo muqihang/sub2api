@@ -81,6 +81,7 @@ func RegisterGatewayRoutes(
 
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
+	requireGroupOpenAI := middleware.RequireGroupAssignment(settingService, middleware.OpenAIErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
 
 	// API网关（Claude API兼容）
@@ -168,6 +169,8 @@ func RegisterGatewayRoutes(
 	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
+	r.POST("/v1/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
+	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		if getGroupPlatform(c) == service.PlatformOpenAI {
@@ -176,6 +179,23 @@ func RegisterGatewayRoutes(
 		}
 		h.Gateway.ChatCompletions(c)
 	})
+
+	// OpenAI Gateway Core 显式前缀入口（供 OpenAI/Codex 客户端直连）
+	openaiGateway := r.Group("/openai/v1")
+	openaiGateway.Use(bodyLimit)
+	openaiGateway.Use(clientRequestID)
+	openaiGateway.Use(opsErrorLogger)
+	openaiGateway.Use(endpointNorm)
+	openaiGateway.Use(gin.HandlerFunc(apiKeyAuth))
+	openaiGateway.Use(requireGroupAnthropic)
+	{
+		openaiGateway.POST("/responses", h.OpenAIGateway.Responses)
+		openaiGateway.POST("/responses/*subpath", h.OpenAIGateway.Responses)
+		openaiGateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
+		openaiGateway.POST("/chat/completions", h.OpenAIGateway.ChatCompletions)
+	}
+	r.POST("/openai/v1/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
+
 	r.GET("/openai/_health", h.OpenAIGateway.Health)
 	r.GET("/openai/_verify", h.OpenAIGateway.Verify)
 

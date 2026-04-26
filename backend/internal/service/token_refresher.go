@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -117,6 +118,24 @@ func (r *OpenAITokenRefresher) Refresh(ctx context.Context, account *Account) (m
 	// 使用服务提供的方法构建新凭证，并保留原有字段
 	newCredentials := r.openaiOAuthService.BuildAccountCredentials(tokenInfo)
 	newCredentials = MergeCredentials(account.Credentials, newCredentials)
+	capability := evaluateOpenAITokenCapability(tokenInfo)
+
+	if capability.Known && !capability.ResponsesWriteCapable {
+		if r.accountRepo != nil {
+			newCredentials["_token_version"] = time.Now().UnixMilli()
+			if err := persistAccountCredentials(ctx, r.accountRepo, account, newCredentials); err != nil {
+				return nil, fmt.Errorf("%s: persist credentials failed: %w", openAIAuthErrorCodeResponsesWriteMissing, err)
+			}
+			_ = r.accountRepo.UpdateExtra(ctx, account.ID, mergeMap(map[string]any{
+				"openai_pool_role":               OpenAIPoolRoleQuarantine,
+				"openai_auth_state":              OpenAIAuthStateTerminal,
+				"openai_token_source":            account.GetOpenAITokenSource(),
+				"openai_validation_outcome":      OpenAIValidationOutcomeRTValidationScopeInsufficient,
+				"openai_last_refresh_error_code": openAIAuthErrorCodeResponsesWriteMissing,
+			}, buildOpenAITokenCapabilityExtra(capability)))
+		}
+		return nil, fmt.Errorf("%s: missing %s", openAIAuthErrorCodeResponsesWriteMissing, OpenAIRequiredResponsesWriteScope)
+	}
 
 	return newCredentials, nil
 }

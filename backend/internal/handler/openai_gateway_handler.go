@@ -1049,7 +1049,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 	userReleaseFunc, userAcquired, err := h.concurrencyHelper.TryAcquireUserSlot(ctx, userID, userConcurrency)
 	if err != nil {
 		reqLog.Warn("openai.user_slot_acquire_failed", zap.Error(err))
-		h.handleConcurrencyError(c, err, "user", *streamStarted)
+		h.handleConcurrencyError(c, err, "user", isStreamStarted(streamStarted))
 		return nil, false
 	}
 	if userAcquired {
@@ -1077,7 +1077,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 	userReleaseFunc, err = h.concurrencyHelper.AcquireUserSlotWithWait(c, userID, userConcurrency, reqStream, streamStarted)
 	if err != nil {
 		reqLog.Warn("openai.user_slot_acquire_failed_after_wait", zap.Error(err))
-		h.handleConcurrencyError(c, err, "user", *streamStarted)
+		h.handleConcurrencyError(c, err, "user", isStreamStarted(streamStarted))
 		return nil, false
 	}
 
@@ -1099,7 +1099,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	reqLog *zap.Logger,
 ) (func(), bool) {
 	if selection == nil || selection.Account == nil {
-		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", isStreamStarted(streamStarted))
 		return nil, false
 	}
 
@@ -1109,7 +1109,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		return wrapReleaseOnDone(ctx, selection.ReleaseFunc), true
 	}
 	if selection.WaitPlan == nil {
-		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", isStreamStarted(streamStarted))
 		return nil, false
 	}
 
@@ -1120,7 +1120,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	)
 	if err != nil {
 		reqLog.Warn("openai.account_slot_quick_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		h.handleConcurrencyError(c, err, "account", *streamStarted)
+		h.handleConcurrencyError(c, err, "account", isStreamStarted(streamStarted))
 		return nil, false
 	}
 	if fastAcquired {
@@ -1138,7 +1138,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 			zap.Int64("account_id", account.ID),
 			zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 		)
-		h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", *streamStarted)
+		h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", isStreamStarted(streamStarted))
 		return nil, false
 	}
 
@@ -1161,7 +1161,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	)
 	if err != nil {
 		reqLog.Warn("openai.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
-		h.handleConcurrencyError(c, err, "account", *streamStarted)
+		h.handleConcurrencyError(c, err, "account", isStreamStarted(streamStarted))
 		return nil, false
 	}
 
@@ -1635,6 +1635,10 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(task service.UsageRecordTas
 		}
 	}()
 	task(ctx)
+}
+
+func isStreamStarted(streamStarted *bool) bool {
+	return streamStarted != nil && *streamStarted
 }
 
 // handleConcurrencyError handles concurrency-related errors with proper 429 response

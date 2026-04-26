@@ -273,6 +273,12 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:         false,
 	}
 	s.fallbackPrices["gpt-5.3-codex"] = s.fallbackPrices["gpt-5.1-codex"]
+	s.fallbackPrices["gpt-image-2"] = &ModelPricing{
+		InputPricePerToken:       5e-6, // $5 per MTok (text input)
+		CacheReadPricePerToken:   1.25e-6,
+		ImageOutputPricePerToken: 3e-5, // $30 per MTok (image output)
+		SupportsCacheBreakdown:   false,
+	}
 }
 
 // getFallbackPricing 根据模型系列获取回退价格
@@ -310,6 +316,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-3.1-pro") || strings.Contains(modelLower, "gemini-3-1-pro") {
 		return s.fallbackPrices["gemini-3.1-pro"]
+	}
+	if strings.HasPrefix(modelLower, "gpt-image-2") {
+		return s.fallbackPrices["gpt-image-2"]
 	}
 
 	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。
@@ -872,11 +881,18 @@ func (s *BillingService) getImageUnitPrice(model string, imageSize string, group
 func (s *BillingService) getDefaultImagePrice(model string, imageSize string) float64 {
 	basePrice := 0.0
 
-	// 从 PricingService 获取 output_cost_per_image
+	// 从 PricingService 获取模型默认图片单价。
+	// LiteLLM/OpenAI 图片模型通常使用 output_cost_per_image_token 表示单张图价格；
+	// 老数据源也可能使用 output_cost_per_image。
 	if s.pricingService != nil {
 		pricing := s.pricingService.GetModelPricing(model)
-		if pricing != nil && pricing.OutputCostPerImage > 0 {
-			basePrice = pricing.OutputCostPerImage
+		if pricing != nil {
+			switch {
+			case pricing.OutputCostPerImage > 0:
+				basePrice = pricing.OutputCostPerImage
+			case pricing.OutputCostPerImageToken > 0:
+				basePrice = pricing.OutputCostPerImageToken
+			}
 		}
 	}
 

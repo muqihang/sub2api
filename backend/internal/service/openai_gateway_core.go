@@ -86,20 +86,23 @@ type OpenAIGatewayVerifySnapshot struct {
 }
 
 type OpenAIGatewayAdminAccountSnapshot struct {
-	AccountID            int64  `json:"account_id"`
-	AccountName          string `json:"account_name"`
-	Status               string `json:"status"`
-	Schedulable          bool   `json:"schedulable"`
-	ProfileID            string `json:"profile_id,omitempty"`
-	ProfileMode          string `json:"profile_mode,omitempty"`
-	EgressBucket         string `json:"egress_bucket,omitempty"`
-	PoolRole             string `json:"pool_role,omitempty"`
-	AuthState            string `json:"auth_state,omitempty"`
-	TokenSource          string `json:"token_source,omitempty"`
-	ClientFamily         string `json:"client_family,omitempty"`
-	LastVerifiedAt       string `json:"last_verified_at,omitempty"`
-	LastValidatedAt      string `json:"last_validated_at,omitempty"`
-	LastRefreshErrorCode string `json:"last_refresh_error_code,omitempty"`
+	AccountID             int64    `json:"account_id"`
+	AccountName           string   `json:"account_name"`
+	Status                string   `json:"status"`
+	Schedulable           bool     `json:"schedulable"`
+	ProfileID             string   `json:"profile_id,omitempty"`
+	ProfileMode           string   `json:"profile_mode,omitempty"`
+	EgressBucket          string   `json:"egress_bucket,omitempty"`
+	PoolRole              string   `json:"pool_role,omitempty"`
+	AuthState             string   `json:"auth_state,omitempty"`
+	TokenSource           string   `json:"token_source,omitempty"`
+	ClientFamily          string   `json:"client_family,omitempty"`
+	LastVerifiedAt        string   `json:"last_verified_at,omitempty"`
+	LastValidatedAt       string   `json:"last_validated_at,omitempty"`
+	LastRefreshErrorCode  string   `json:"last_refresh_error_code,omitempty"`
+	LastGrantedScope      string   `json:"last_granted_scope,omitempty"`
+	LastAccessTokenScopes []string `json:"last_access_token_scopes,omitempty"`
+	ResponsesWriteCapable bool     `json:"responses_write_capable"`
 }
 
 type OpenAIGatewayAdminStatusSnapshot struct {
@@ -433,20 +436,23 @@ func (s *OpenAIGatewayCoreService) BuildAdminStatusSnapshot(ctx context.Context,
 			continue
 		}
 		result.Accounts = append(result.Accounts, OpenAIGatewayAdminAccountSnapshot{
-			AccountID:            account.ID,
-			AccountName:          account.Name,
-			Status:               account.Status,
-			Schedulable:          account.Schedulable,
-			ProfileID:            strings.TrimSpace(account.GetExtraString("openai_gateway_profile_id")),
-			ProfileMode:          strings.TrimSpace(account.GetExtraString("openai_gateway_profile_mode")),
-			EgressBucket:         s.ResolveEgressBucket(&account),
-			PoolRole:             account.GetOpenAIPoolRole(),
-			AuthState:            account.GetOpenAIAuthState(),
-			TokenSource:          account.GetOpenAITokenSource(),
-			ClientFamily:         strings.TrimSpace(account.GetExtraString("openai_gateway_client_family")),
-			LastVerifiedAt:       strings.TrimSpace(account.GetExtraString("openai_gateway_last_verified_at")),
-			LastValidatedAt:      strings.TrimSpace(account.GetExtraString("openai_last_validated_at")),
-			LastRefreshErrorCode: strings.TrimSpace(account.GetExtraString("openai_last_refresh_error_code")),
+			AccountID:             account.ID,
+			AccountName:           account.Name,
+			Status:                account.Status,
+			Schedulable:           account.Schedulable,
+			ProfileID:             strings.TrimSpace(account.GetExtraString("openai_gateway_profile_id")),
+			ProfileMode:           strings.TrimSpace(account.GetExtraString("openai_gateway_profile_mode")),
+			EgressBucket:          s.ResolveEgressBucket(&account),
+			PoolRole:              account.GetOpenAIPoolRole(),
+			AuthState:             account.GetOpenAIAuthState(),
+			TokenSource:           account.GetOpenAITokenSource(),
+			ClientFamily:          strings.TrimSpace(account.GetExtraString("openai_gateway_client_family")),
+			LastVerifiedAt:        strings.TrimSpace(account.GetExtraString("openai_gateway_last_verified_at")),
+			LastValidatedAt:       strings.TrimSpace(account.GetExtraString("openai_last_validated_at")),
+			LastRefreshErrorCode:  strings.TrimSpace(account.GetExtraString("openai_last_refresh_error_code")),
+			LastGrantedScope:      strings.TrimSpace(account.GetExtraString("openai_last_granted_scope")),
+			LastAccessTokenScopes: scopesFromAny(account.Extra["openai_last_access_token_scopes"]),
+			ResponsesWriteCapable: account.getExtraBool("openai_responses_write_capable"),
 		})
 	}
 	return result, nil

@@ -20,18 +20,20 @@ const (
 	OpenAITokenSourceRTManaged = "rt_managed"
 	OpenAITokenSourceATOnly    = "at_only"
 
-	OpenAIValidationOutcomeRTValidated                  = "rt_validated"
-	OpenAIValidationOutcomeRTValidationRetryableFailure = "rt_validation_retryable_failure"
-	OpenAIValidationOutcomeRTValidationTerminalFailure  = "rt_validation_terminal_failure"
-	OpenAIValidationOutcomeATOnlyQuarantined            = "at_only_quarantined"
+	OpenAIValidationOutcomeRTValidated                   = "rt_validated"
+	OpenAIValidationOutcomeRTValidationRetryableFailure  = "rt_validation_retryable_failure"
+	OpenAIValidationOutcomeRTValidationTerminalFailure   = "rt_validation_terminal_failure"
+	OpenAIValidationOutcomeRTValidationScopeInsufficient = "rt_validation_scope_insufficient"
+	OpenAIValidationOutcomeATOnlyQuarantined             = "at_only_quarantined"
 
-	openAIAuthErrorCodeUnknown          = "oauth_refresh_failed"
-	openAIAuthErrorCodeTokenInvalidated = "token_invalidated"
-	openAIAuthErrorCodeTokenRevoked     = "token_revoked"
-	openAIAuthErrorCodeWorkspaceDown    = "deactivated_workspace"
-	openAIAuthErrorCodeRTExpired        = "refresh_token_expired"
-	openAIAuthErrorCodeRTReused         = "refresh_token_reused"
-	openAIAuthErrorCodeInvalidGrant     = "invalid_grant"
+	openAIAuthErrorCodeUnknown               = "oauth_refresh_failed"
+	openAIAuthErrorCodeTokenInvalidated      = "token_invalidated"
+	openAIAuthErrorCodeTokenRevoked          = "token_revoked"
+	openAIAuthErrorCodeWorkspaceDown         = "deactivated_workspace"
+	openAIAuthErrorCodeRTExpired             = "refresh_token_expired"
+	openAIAuthErrorCodeRTReused              = "refresh_token_reused"
+	openAIAuthErrorCodeInvalidGrant          = "invalid_grant"
+	openAIAuthErrorCodeResponsesWriteMissing = "responses_write_scope_missing"
 )
 
 type OpenAIImportLifecycleDecision struct {
@@ -140,6 +142,34 @@ func EvaluateOpenAIImportLifecycle(
 
 	validated := openaiOAuthService.BuildAccountCredentials(tokenInfo)
 	validated = MergeCredentials(normalized, validated)
+	capability := evaluateOpenAITokenCapability(tokenInfo)
+	extra := mergeMap(map[string]any{
+		"openai_pool_role":               OpenAIPoolRoleMain,
+		"openai_auth_state":              OpenAIAuthStateHealthy,
+		"openai_token_source":            OpenAITokenSourceRTManaged,
+		"openai_validation_outcome":      OpenAIValidationOutcomeRTValidated,
+		"openai_last_refresh_error_code": "",
+		"openai_last_validated_at":       now,
+	}, buildOpenAITokenCapabilityExtra(capability))
+
+	if capability.Known && !capability.ResponsesWriteCapable {
+		return &OpenAIImportLifecycleDecision{
+			PoolRole:          OpenAIPoolRoleQuarantine,
+			AuthState:         OpenAIAuthStateTerminal,
+			TokenSource:       OpenAITokenSourceRTManaged,
+			ValidationOutcome: OpenAIValidationOutcomeRTValidationScopeInsufficient,
+			Status:            StatusDisabled,
+			Schedulable:       false,
+			Credentials:       validated,
+			RefreshErrorCode:  openAIAuthErrorCodeResponsesWriteMissing,
+			Extra: mergeMap(extra, map[string]any{
+				"openai_pool_role":               OpenAIPoolRoleQuarantine,
+				"openai_auth_state":              OpenAIAuthStateTerminal,
+				"openai_validation_outcome":      OpenAIValidationOutcomeRTValidationScopeInsufficient,
+				"openai_last_refresh_error_code": openAIAuthErrorCodeResponsesWriteMissing,
+			}),
+		}, nil
+	}
 
 	return &OpenAIImportLifecycleDecision{
 		PoolRole:          OpenAIPoolRoleMain,
@@ -150,14 +180,7 @@ func EvaluateOpenAIImportLifecycle(
 		Schedulable:       true,
 		Credentials:       validated,
 		RefreshErrorCode:  "",
-		Extra: map[string]any{
-			"openai_pool_role":               OpenAIPoolRoleMain,
-			"openai_auth_state":              OpenAIAuthStateHealthy,
-			"openai_token_source":            OpenAITokenSourceRTManaged,
-			"openai_validation_outcome":      OpenAIValidationOutcomeRTValidated,
-			"openai_last_refresh_error_code": "",
-			"openai_last_validated_at":       now,
-		},
+		Extra:             extra,
 	}, nil
 }
 
@@ -173,6 +196,8 @@ func classifyOpenAIRefreshError(err error) string {
 		return openAIAuthErrorCodeRTReused
 	case strings.Contains(msg, openAIAuthErrorCodeInvalidGrant):
 		return openAIAuthErrorCodeInvalidGrant
+	case strings.Contains(msg, openAIAuthErrorCodeResponsesWriteMissing):
+		return openAIAuthErrorCodeResponsesWriteMissing
 	case strings.Contains(msg, openAIAuthErrorCodeTokenInvalidated):
 		return openAIAuthErrorCodeTokenInvalidated
 	case strings.Contains(msg, openAIAuthErrorCodeTokenRevoked):
@@ -189,6 +214,7 @@ func isTerminalOpenAIAuthErrorCode(code string) bool {
 	case openAIAuthErrorCodeRTExpired,
 		openAIAuthErrorCodeRTReused,
 		openAIAuthErrorCodeInvalidGrant,
+		openAIAuthErrorCodeResponsesWriteMissing,
 		openAIAuthErrorCodeTokenInvalidated,
 		openAIAuthErrorCodeTokenRevoked,
 		openAIAuthErrorCodeWorkspaceDown:
