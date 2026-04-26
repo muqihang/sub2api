@@ -388,6 +388,7 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 var ProviderSet = wire.NewSet(
 	// Core services
 	NewAuthService,
+	NewAugmentPluginService,
 	NewUserService,
 	NewAPIKeyService,
 	ProvideAPIKeyAuthCacheInvalidator,

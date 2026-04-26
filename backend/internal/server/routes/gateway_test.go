@@ -9,6 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +21,16 @@ func newGatewayRoutesTestRouter() *gin.Engine {
 	RegisterGatewayRoutes(
 		router,
 		&handler.Handlers{
+			Auth: handler.NewAuthHandler(
+				&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				service.NewAugmentPluginService(nil, nil, nil, nil, nil, nil),
+			),
 			Gateway:       &handler.GatewayHandler{},
 			OpenAIGateway: &handler.OpenAIGatewayHandler{},
 		},
@@ -46,5 +57,38 @@ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 
 		router.ServeHTTP(w, req)
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI responses handler", path)
+	}
+}
+
+func TestGatewayRoutesLegacyAugmentEndpointsAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/batch-upload"},
+		{method: http.MethodPost, path: "/checkpoint-blobs"},
+		{method: http.MethodPost, path: "/find-missing"},
+		{method: http.MethodPost, path: "/chat"},
+		{method: http.MethodPost, path: "/chat-stream"},
+		{method: http.MethodPost, path: "/prompt-enhancer"},
+		{method: http.MethodPost, path: "/instruction-stream"},
+		{method: http.MethodPost, path: "/next-edit-stream"},
+		{method: http.MethodPost, path: "/remote-agents/list"},
+		{method: http.MethodPost, path: "/agents/codebase-retrieval"},
+		{method: http.MethodGet, path: "/usage/api/balance"},
+		{method: http.MethodGet, path: "/usage/api/get-models"},
+		{method: http.MethodGet, path: "/usage/api/getLoginToken"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+			require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should be registered", tc.path)
+		})
 	}
 }

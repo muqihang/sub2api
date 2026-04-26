@@ -14,7 +14,7 @@ import { resolveDocumentTitle } from './title'
 /**
  * Route definitions with lazy loading
  */
-const routes: RouteRecordRaw[] = [
+export const routes: RouteRecordRaw[] = [
   // ==================== Setup Routes ====================
   {
     path: '/setup',
@@ -281,6 +281,42 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'customPage.title',
     }
   },
+  {
+    path: '/plugin/augment/quick-login',
+    name: 'PluginAugmentQuickLogin',
+    component: () => import('@/views/plugin/augment/QuickLoginView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      hideInMenu: true,
+      title: 'Augment Quick Login',
+      titleKey: 'plugin.augment.quickLogin.title'
+    }
+  },
+  {
+    path: '/plugin/augment/account',
+    name: 'PluginAugmentAccount',
+    component: () => import('@/views/plugin/augment/AccountView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      hideInMenu: true,
+      title: 'Augment Account',
+      titleKey: 'plugin.augment.accountTitle'
+    }
+  },
+  {
+    path: '/plugin/augment/billing',
+    name: 'PluginAugmentBilling',
+    component: () => import('@/views/plugin/augment/BillingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      hideInMenu: true,
+      title: 'Augment Billing',
+      titleKey: 'plugin.augment.billingTitle'
+    }
+  },
 
   // ==================== Admin Routes ====================
   {
@@ -530,7 +566,12 @@ let authInitialized = false
 const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
-const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/setup']
+export const BACKEND_MODE_ALLOWED_PATHS = [
+  '/login',
+  '/key-usage',
+  '/setup',
+  '/plugin/augment/quick-login'
+]
 
 router.beforeEach((to, _from, next) => {
   // 开始导航加载状态

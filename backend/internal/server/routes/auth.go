@@ -95,4 +95,21 @@ func RegisterAuthRoutes(
 		// 撤销所有会话（需要认证）
 		authenticated.POST("/auth/revoke-all-sessions", h.Auth.RevokeAllSessions)
 	}
+
+	plugin := v1.Group("/plugin/augment")
+	{
+		plugin.POST("/callback/exchange", h.Auth.AugmentCallbackExchange)
+		plugin.POST("/session/refresh", rateLimiter.LimitWithOptions("refresh-token", 30, time.Minute, middleware.RateLimitOptions{
+			FailureMode: middleware.RateLimitFailClose,
+		}), h.Auth.AugmentSessionRefresh)
+		plugin.POST("/api-key/verify", h.Auth.AugmentAPIKeyVerify)
+		plugin.GET("/summary", h.Auth.AugmentSummary)
+		plugin.GET("/compat/metadata", h.Auth.AugmentCompatMetadata)
+	}
+
+	pluginAuthenticated := v1.Group("/plugin/augment")
+	pluginAuthenticated.Use(gin.HandlerFunc(jwtAuth))
+	{
+		pluginAuthenticated.POST("/quick-login/grant", h.Auth.AugmentQuickLoginGrant)
+	}
 }
