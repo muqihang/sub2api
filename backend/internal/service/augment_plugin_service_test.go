@@ -772,6 +772,84 @@ func TestAugmentPluginServiceBuildSummaryCreatesPluginKeyWhenMissing(t *testing.
 	require.Equal(t, "sk-plugin-generated", summary.PrimaryAPIKey)
 }
 
+func TestAugmentPluginServiceBuildSummaryJWTPrincipalSkipsExpiredAndQuotaExhaustedKeys(t *testing.T) {
+	t.Parallel()
+
+	fixedNow := time.Date(2026, 4, 25, 23, 0, 0, 0, time.UTC)
+	expiredAt := fixedNow.Add(-time.Hour)
+	user := &User{
+		ID:          15,
+		Email:       "usable-key@example.com",
+		Username:    "usable-key-user",
+		Role:        RoleUser,
+		Status:      StatusActive,
+		Balance:     4.5,
+		Concurrency: 1,
+	}
+
+	expiredKey := APIKey{
+		ID:        40,
+		UserID:    user.ID,
+		Key:       "sk-expired-active",
+		Name:      "expired-active",
+		Status:    StatusActive,
+		CreatedAt: fixedNow.Add(-3 * time.Hour),
+		ExpiresAt: &expiredAt,
+	}
+	quotaExhaustedKey := APIKey{
+		ID:        41,
+		UserID:    user.ID,
+		Key:       "sk-quota-active",
+		Name:      "quota-active",
+		Status:    StatusActive,
+		CreatedAt: fixedNow.Add(-2 * time.Hour),
+		Quota:     10,
+		QuotaUsed: 10,
+	}
+	usableKey := APIKey{
+		ID:        42,
+		UserID:    user.ID,
+		Key:       "sk-usable-active",
+		Name:      "usable-active",
+		Status:    StatusActive,
+		CreatedAt: fixedNow.Add(-time.Hour),
+	}
+
+	svc := NewAugmentPluginService(
+		&config.Config{},
+		&augmentAuthServiceStub{
+			generateTokenPairFn: func(ctx context.Context, user *User, familyID string) (*TokenPair, error) {
+				return nil, errors.New("unexpected generate call")
+			},
+			refreshTokenPairFn: func(ctx context.Context, refreshToken string) (*TokenPairWithUser, error) {
+				return nil, errors.New("unexpected refresh call")
+			},
+			validateTokenFn: func(token string) (*JWTClaims, error) {
+				return nil, ErrInvalidToken
+			},
+		},
+		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
+		&augmentAPIKeyServiceStub{
+			keysByUser: map[int64][]APIKey{
+				user.ID: {expiredKey, quotaExhaustedKey, usableKey},
+			},
+		},
+		&augmentSubscriptionServiceStub{},
+		&augmentSettingServiceStub{
+			public: &PublicSettings{SiteName: "Augment Local"},
+		},
+	)
+	svc.now = func() time.Time { return fixedNow }
+
+	summary, err := svc.BuildSummary(context.Background(), AugmentPluginPrincipal{
+		Kind: augmentPrincipalKindJWT,
+		User: user,
+	})
+	require.NoError(t, err)
+	require.Equal(t, usableKey.Key, summary.GatewayAPIKey)
+	require.Equal(t, usableKey.Key, summary.PrimaryAPIKey)
+}
+
 func TestAugmentPluginServiceBuildSummaryAPIKeyPrincipalDoesNotLeakSiblingActiveKey(t *testing.T) {
 	t.Parallel()
 

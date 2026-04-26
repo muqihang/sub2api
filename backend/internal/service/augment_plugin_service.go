@@ -1007,7 +1007,7 @@ func selectPrimaryActiveAPIKey(keys []APIKey) string {
 		return copied[i].CreatedAt.Before(copied[j].CreatedAt)
 	})
 	for i := range copied {
-		if copied[i].Status == StatusActive {
+		if copied[i].Status == StatusActive && !copied[i].IsExpired() && !copied[i].IsQuotaExhausted() {
 			return copied[i].Key
 		}
 	}
