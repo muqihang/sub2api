@@ -1,0 +1,273 @@
+package handler
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+type augmentLegacyBalanceLoginToken struct {
+	TenantURL     string `json:"tenantUrl"`
+	AccessToken   string `json:"accessToken"`
+	SessionSource string `json:"sessionSource,omitempty"`
+}
+
+type augmentLegacyBalanceData struct {
+	RemainAmount float64                         `json:"remain_amount"`
+	Name         string                          `json:"name,omitempty"`
+	Unlimited    bool                            `json:"unlimited,omitempty"`
+	StatusText   string                          `json:"status_text,omitempty"`
+	ExpiredTime  int64                           `json:"expired_time,omitempty"`
+	LoginToken   *augmentLegacyBalanceLoginToken `json:"login_token,omitempty"`
+}
+
+type augmentLegacyInternalModel struct {
+	Name                     string `json:"name"`
+	SuggestedPrefixCharCount int    `json:"suggested_prefix_char_count"`
+	SuggestedSuffixCharCount int    `json:"suggested_suffix_char_count"`
+	CompletionTimeoutMS      int    `json:"completion_timeout_ms"`
+}
+
+type augmentLegacyCheckpointBlobsPayload struct {
+	CheckpointID string   `json:"checkpoint_id"`
+	AddedBlobs   []string `json:"added_blobs"`
+	DeletedBlobs []string `json:"deleted_blobs"`
+}
+
+type augmentLegacyCheckpointBlobsRequest struct {
+	Blobs augmentLegacyCheckpointBlobsPayload `json:"blobs"`
+}
+
+func (h *AuthHandler) AugmentLegacyBalance(c *gin.Context) {
+	if h.augmentPluginService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "augment plugin service is unavailable"})
+		return
+	}
+
+	principal, ok := h.augmentPrincipalFromBearer(c)
+	if !ok {
+		return
+	}
+
+	summary, err := h.augmentPluginService.BuildSummary(c.Request.Context(), *principal)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	loginToken, err := h.augmentPluginService.IssueLegacyLoginToken(c.Request.Context(), *principal, h.augmentTenantURL(c))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	data := augmentLegacyBalanceData{}
+	if summary != nil && summary.User != nil {
+		data.RemainAmount = summary.User.Balance
+		if summary.User.Email != "" {
+			data.Name = summary.User.Email
+		} else {
+			data.Name = summary.User.Username
+		}
+		if summary.User.Status != "" {
+			data.StatusText = summary.User.Status
+		}
+	}
+	if summary != nil && summary.Plan != nil {
+		data.Unlimited = summary.Plan.ActiveCount > 0
+		if summary.Plan.ExpiresAt != nil && *summary.Plan.ExpiresAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, *summary.Plan.ExpiresAt); parseErr == nil {
+				data.ExpiredTime = parsed.Unix()
+			}
+		}
+	}
+	if loginToken != nil && loginToken.TenantURL != "" && loginToken.AccessToken != "" {
+		data.LoginToken = &augmentLegacyBalanceLoginToken{
+			TenantURL:     loginToken.TenantURL,
+			AccessToken:   loginToken.AccessToken,
+			SessionSource: loginToken.SessionSource,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    data,
+	})
+}
+
+func (h *AuthHandler) AugmentLegacyModels(c *gin.Context) {
+	if h.augmentPluginService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
+		return
+	}
+
+	principal, ok := h.augmentPrincipalFromBearer(c)
+	if !ok {
+		return
+	}
+
+	compat, err := h.augmentPluginService.BuildCompatMetadata(c.Request.Context(), *principal, h.augmentGatewayBaseURL(c))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	models := map[string]map[string]any{}
+	defaultModel := ""
+	if compat != nil {
+		defaultModel = compat.DefaultModel
+		for _, group := range compat.ModelRegistry.Groups {
+			modelID := group.DefaultModel
+			if modelID == "" {
+				continue
+			}
+			entry := models[modelID]
+			if entry == nil {
+				entry = map[string]any{}
+			}
+			entry["displayName"] = modelID
+			entry["description"] = group.Name
+			entry["priority"] = 1
+			if modelID == defaultModel {
+				entry["isDefault"] = true
+			}
+			models[modelID] = entry
+		}
+	}
+
+	if defaultModel != "" {
+		entry := models[defaultModel]
+		if entry == nil {
+			entry = map[string]any{}
+		}
+		entry["displayName"] = defaultModel
+		entry["priority"] = 0
+		entry["isDefault"] = true
+		models[defaultModel] = entry
+	}
+
+	if len(models) == 0 {
+		c.JSON(http.StatusOK, map[string]any{})
+		return
+	}
+
+	c.JSON(http.StatusOK, models)
+}
+
+func (h *AuthHandler) AugmentLegacyLoginToken(c *gin.Context) {
+	if h.augmentPluginService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
+		return
+	}
+
+	principal, ok := h.augmentPrincipalFromBearer(c)
+	if !ok {
+		return
+	}
+
+	loginToken, err := h.augmentPluginService.IssueLegacyLoginToken(c.Request.Context(), *principal, h.augmentTenantURL(c))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, loginToken)
+}
+
+func (h *AuthHandler) AugmentLegacyInternalGetModels(c *gin.Context) {
+	if h.augmentPluginService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
+		return
+	}
+
+	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+		return
+	}
+
+	defaultModel := "gpt-5.4"
+	models := []augmentLegacyInternalModel{
+		{
+			Name:                     defaultModel,
+			SuggestedPrefixCharCount: 0,
+			SuggestedSuffixCharCount: 0,
+			CompletionTimeoutMS:      120000,
+		},
+	}
+
+	registry := map[string]string{
+		"GPT-5.4": defaultModel,
+	}
+	registryJSON, _ := json.Marshal(registry)
+	infoRegistry := map[string]map[string]any{
+		defaultModel: {
+			"description": "",
+			"disabled":    false,
+			"displayName": "GPT-5.4",
+			"shortName":   "GPT-5.4",
+		},
+	}
+	infoRegistryJSON, _ := json.Marshal(infoRegistry)
+
+	featureFlags := gin.H{
+		"additional_chat_models": string(registryJSON),
+		"additionalChatModels":   string(registryJSON),
+		"agent_chat_model":       defaultModel,
+		"agentChatModel":         defaultModel,
+		"enable_model_registry":  true,
+		"enableModelRegistry":    true,
+		"model_registry":         string(registryJSON),
+		"modelRegistry":          string(registryJSON),
+		"model_info_registry":    string(infoRegistryJSON),
+		"modelInfoRegistry":      string(infoRegistryJSON),
+		"show_thinking_summary":  true,
+		"showThinkingSummary":    true,
+		"fraud_sign_endpoints":   false,
+		"fraudSignEndpoints":     false,
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"default_model": defaultModel,
+		"models":        models,
+		"feature_flags": featureFlags,
+	})
+}
+
+func (h *AuthHandler) AugmentLegacyCheckpointBlobs(c *gin.Context) {
+	if h.augmentPluginService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
+		return
+	}
+
+	principal, ok := h.augmentPrincipalFromBearer(c)
+	if !ok {
+		return
+	}
+
+	var req augmentLegacyCheckpointBlobsRequest
+	if !augmentLegacyDecodeRequest(c, &req) {
+		return
+	}
+
+	namespace := h.augmentLegacyNamespace(c, principal)
+	newCheckpointID, err := h.augmentPluginService.AdvanceLegacyCheckpointForNamespace(
+		namespace,
+		req.Blobs.CheckpointID,
+		req.Blobs.AddedBlobs,
+		req.Blobs.DeletedBlobs,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	augmentLegacyTrace(c, "checkpoint_blobs", "namespace", namespace, "checkpoint_id", req.Blobs.CheckpointID, "added_blobs", len(req.Blobs.AddedBlobs), "deleted_blobs", len(req.Blobs.DeletedBlobs))
+	c.JSON(http.StatusOK, gin.H{
+		"new_checkpoint_id": newCheckpointID,
+	})
+}
+
+func (h *AuthHandler) AugmentLegacyNoContent(c *gin.Context) {
+	c.Status(http.StatusNoContent)
+}
