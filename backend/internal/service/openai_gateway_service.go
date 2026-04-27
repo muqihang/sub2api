@@ -3003,10 +3003,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
 	}
-	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
-		s.gatewayCoreService.ApplyCanonicalHeaders(req.Header, gatewayRuntime.Profile)
-	}
-	if account.Type == AccountTypeOAuth && customUA == "" && gatewayRuntime == nil && !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
+	if account.Type == AccountTypeOAuth && customUA == "" && !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
