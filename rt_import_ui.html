@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RT 导入工具</title>
+  <title>OpenAI 导入工具</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -228,9 +228,9 @@
 <body>
   <div class="page">
     <section class="hero">
-      <div class="target">目标导入实例：<strong>http://127.0.0.1:18081</strong></div>
-      <h1>OpenAI Token 导入工具</h1>
-      <p>支持两种模式：<code>RT 导入</code> 和 <code>AT 导入</code>。点击开始后会调用本地助手服务，并把成功项导入到当前 <code>sub2api</code> 的 <code>18081</code> 实例。</p>
+      <div class="target">目标导入实例：<strong id="targetUrl">加载中…</strong></div>
+      <h1>OpenAI Token / JSON 导入工具</h1>
+      <p>支持三种模式：<code>RT 导入</code>、<code>AT 导入</code> 和 <code>JSON 导入</code>。JSON 模式支持直接粘贴附件内容或上传文件，转换后可直接导入当前 <code>sub2api</code> 的 <code>18081</code> 实例。</p>
     </section>
 
     <section class="grid">
@@ -240,8 +240,14 @@
           <div class="mode-switch" role="tablist" aria-label="导入模式">
             <button id="modeRtBtn" type="button" class="active">RT 导入</button>
             <button id="modeAtBtn" type="button">AT 导入</button>
+            <button id="modeJsonBtn" type="button">JSON 导入</button>
           </div>
           <p id="modeHint" class="subtle">每行一个 RT，重复项会自动去重。默认会执行“验证 → 导入/更新”。</p>
+          <div id="jsonUploadRow" class="actions" style="display:none; margin-top: 0;">
+            <button id="jsonFileBtn" class="secondary" type="button">选择 JSON 文件</button>
+            <span id="jsonFileName" class="small">未选择文件。</span>
+            <input id="jsonFileInput" type="file" accept="application/json,.json" style="display:none;" />
+          </div>
           <textarea id="tokens" placeholder="rt_xxx&#10;rt_yyy&#10;rt_zzz"></textarea>
           <div class="actions">
             <button id="pasteBtn" class="secondary" type="button">从剪贴板粘贴</button>
@@ -290,7 +296,7 @@
             <thead>
               <tr>
                 <th>状态</th>
-                <th>Token</th>
+                <th>标识</th>
                 <th>动作</th>
                 <th>账号</th>
                 <th>说明</th>
@@ -312,15 +318,21 @@
     const copyReportBtn = document.getElementById('copyReportBtn')
     const modeRtBtn = document.getElementById('modeRtBtn')
     const modeAtBtn = document.getElementById('modeAtBtn')
+    const modeJsonBtn = document.getElementById('modeJsonBtn')
     const modeHintEl = document.getElementById('modeHint')
     const tokensEl = document.getElementById('tokens')
     const validateOnlyEl = document.getElementById('validateOnly')
+    const jsonUploadRow = document.getElementById('jsonUploadRow')
+    const jsonFileBtn = document.getElementById('jsonFileBtn')
+    const jsonFileInput = document.getElementById('jsonFileInput')
+    const jsonFileName = document.getElementById('jsonFileName')
     const statusEl = document.getElementById('status')
     const logEl = document.getElementById('log')
     const resultsBody = document.getElementById('resultsBody')
     const totalCountEl = document.getElementById('totalCount')
     const successCountEl = document.getElementById('successCount')
     const failedCountEl = document.getElementById('failedCount')
+    const targetUrlEl = document.getElementById('targetUrl')
 
     let latestReport = null
     let currentMode = 'rt'
@@ -333,6 +345,10 @@
       at: {
         hint: '每行一个 AT；如果同时带 RT，请使用 `AT----RT`。AT-only 导入后无法自动续期。',
         placeholder: 'eyJhb...\\neyJhb_access----rt_xxx\\neyJhb_access_2'
+      },
+      json: {
+        hint: '支持粘贴单个账号 JSON 或上传文件。注意：后台账号导入是新建行为，重复导入会产生重复账号。',
+        placeholder: '{\\n  \"type\": \"codex\",\\n  \"email\": \"alice@example.com\",\\n  \"access_token\": \"eyJ...\",\\n  \"refresh_token\": \"rt_...\"\\n}'
       }
     }
 
@@ -348,9 +364,13 @@
       currentMode = mode
       modeRtBtn.classList.toggle('active', mode === 'rt')
       modeAtBtn.classList.toggle('active', mode === 'at')
+      modeJsonBtn.classList.toggle('active', mode === 'json')
       modeHintEl.textContent = modeConfig[mode].hint
       tokensEl.placeholder = modeConfig[mode].placeholder
-      setStatus(mode === 'rt' ? '当前模式：RT 导入。' : '当前模式：AT 导入。', 'info')
+      jsonUploadRow.style.display = mode === 'json' ? 'flex' : 'none'
+      if (mode === 'rt') setStatus('当前模式：RT 导入。', 'info')
+      else if (mode === 'at') setStatus('当前模式：AT 导入。', 'info')
+      else setStatus('当前模式：JSON 导入。', 'info')
     }
 
     const setStatus = (message, type = 'info') => {
@@ -364,7 +384,7 @@
         return
       }
       resultsBody.innerHTML = results.map((item) => {
-        const rawToken = item.refresh_token || item.token || ''
+        const rawToken = item.preview || item.refresh_token || item.token || ''
         const tokenPreview = rawToken.length > 18
           ? `${rawToken.slice(0, 8)}...${rawToken.slice(-6)}`
           : rawToken
@@ -405,7 +425,7 @@
     runBtn.addEventListener('click', async () => {
       const tokens = tokensEl.value.trim()
       if (!tokens) {
-        setStatus('请先粘贴至少一条 token。', 'error')
+        setStatus(currentMode === 'json' ? '请先粘贴 JSON 或选择文件。' : '请先粘贴至少一条 token。', 'error')
         return
       }
       setRunning(true)
@@ -446,6 +466,8 @@
 
     clearBtn.addEventListener('click', () => {
       tokensEl.value = ''
+      if (jsonFileInput) jsonFileInput.value = ''
+      if (jsonFileName) jsonFileName.textContent = '未选择文件。'
       latestReport = null
       copyReportBtn.disabled = true
       totalCountEl.textContent = successCountEl.textContent = failedCountEl.textContent = '0'
@@ -456,6 +478,26 @@
 
     modeRtBtn.addEventListener('click', () => applyMode('rt'))
     modeAtBtn.addEventListener('click', () => applyMode('at'))
+    modeJsonBtn.addEventListener('click', () => applyMode('json'))
+
+    jsonFileBtn.addEventListener('click', () => {
+      jsonFileInput.click()
+    })
+
+    jsonFileInput.addEventListener('change', async (event) => {
+      const file = event.target.files && event.target.files[0]
+      if (!file) {
+        jsonFileName.textContent = '未选择文件。'
+        return
+      }
+      jsonFileName.textContent = file.name
+      try {
+        tokensEl.value = await file.text()
+        setStatus(`已加载文件：${file.name}`, 'info')
+      } catch (error) {
+        setStatus(`读取文件失败：${error}`, 'error')
+      }
+    })
 
     copyReportBtn.addEventListener('click', async () => {
       if (!latestReport) return
@@ -466,6 +508,17 @@
         setStatus(`复制失败：${error}`, 'error')
       }
     })
+
+    fetch('/health')
+      .then((resp) => resp.json())
+      .then((data) => {
+        if (data && data.sub2api_url && targetUrlEl) {
+          targetUrlEl.textContent = data.sub2api_url
+        }
+      })
+      .catch(() => {
+        if (targetUrlEl) targetUrlEl.textContent = '目标地址读取失败'
+      })
 
     applyMode('rt')
   </script>

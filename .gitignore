@@ -118,6 +118,8 @@ backend/.installed
 # 其他
 # ===================
 tests
+!tools/tests/
+!tools/tests/*.py
 CLAUDE.md
 .claude
 scripts

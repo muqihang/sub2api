@@ -16,8 +16,9 @@ from typing import Any
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18600
-DEFAULT_SUB2API_URL = "http://127.0.0.1:18081"
+DEFAULT_SUB2API_URL = "https://zmapi.eu.cc"
 SCRIPT_NAME = "tools/import_openai_rt_to_sub2api.py"
+JSON_SCRIPT_NAME = "tools/convert_openai_account_json_to_sub2api.py"
 HTML_NAME = "rt_import_ui.html"
 
 
@@ -40,7 +41,25 @@ def build_import_command(
     validate_only: bool,
     mode: str = "rt",
     sub2api_url: str = DEFAULT_SUB2API_URL,
+    input_file: Path | None = None,
 ) -> list[str]:
+    if mode == "json":
+        if input_file is None:
+            raise ValueError("input_file is required for json mode")
+        command = [
+            sys.executable,
+            str((repo_root / JSON_SCRIPT_NAME).resolve()),
+            str(input_file),
+            "--sub2api-url",
+            sub2api_url,
+        ]
+        if validate_only:
+            command.append("--validate-only")
+        else:
+            command.append("--import-to-sub2api")
+        command.extend(["--report-file", str(report_path)])
+        return command
+
     command = [
         sys.executable,
         str((repo_root / SCRIPT_NAME).resolve()),
@@ -92,16 +111,29 @@ class RTImportUIHandler(BaseHTTPRequestHandler):
         raw_tokens = str(payload.get("tokens", ""))
         validate_only = bool(payload.get("validate_only", False))
         mode = str(payload.get("mode", "rt")).strip().lower()
-        if mode not in {"rt", "at"}:
+        if mode not in {"rt", "at", "json"}:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "Unsupported mode"})
             return
-        tokens = normalize_ui_tokens(raw_tokens)
-        if not tokens:
+        content = raw_tokens.strip()
+        if not content:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "No token lines provided"})
             return
 
         with tempfile.NamedTemporaryFile(prefix="rt-import-", suffix=".json", delete=False) as temp_file:
             report_path = Path(temp_file.name)
+
+        input_path: Path | None = None
+        tokens: list[str] = []
+        if mode == "json":
+            with tempfile.NamedTemporaryFile(prefix="json-import-source-", suffix=".json", delete=False, mode="w", encoding="utf-8") as source_file:
+                source_file.write(raw_tokens)
+                input_path = Path(source_file.name)
+        else:
+            tokens = normalize_ui_tokens(raw_tokens)
+            if not tokens:
+                report_path.unlink(missing_ok=True)
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "No token lines provided"})
+                return
 
         command = build_import_command(
             repo_root=self.server.repo_root,
@@ -109,17 +141,22 @@ class RTImportUIHandler(BaseHTTPRequestHandler):
             validate_only=validate_only,
             mode=mode,
             sub2api_url=self.server.sub2api_url,
+            input_file=input_path,
         )
 
-        completed = subprocess.run(
-            command,
-            input="\n".join(tokens) + "\n",
-            text=True,
-            capture_output=True,
-            cwd=self.server.repo_root,
-            timeout=600,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=None if mode == "json" else "\n".join(tokens) + "\n",
+                text=True,
+                capture_output=True,
+                cwd=self.server.repo_root,
+                timeout=600,
+                check=False,
+            )
+        finally:
+            if input_path is not None:
+                input_path.unlink(missing_ok=True)
 
         report_data: dict[str, Any] | None = None
         if report_path.exists():
