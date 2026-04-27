@@ -199,6 +199,14 @@ func RegisterGatewayRoutes(
 		codexDirect.POST("/responses/*subpath", responsesHandler)
 		codexDirect.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 	}
+	openaiGateway := r.Group("/openai/v1")
+	openaiGateway.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
+	{
+		openaiGateway.POST("/responses", h.OpenAIGateway.Responses)
+		openaiGateway.POST("/responses/*subpath", h.OpenAIGateway.Responses)
+		openaiGateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
+		openaiGateway.POST("/chat/completions", h.OpenAIGateway.ChatCompletions)
+	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		if getGroupPlatform(c) == service.PlatformOpenAI {
