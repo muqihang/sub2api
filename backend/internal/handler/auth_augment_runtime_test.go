@@ -766,6 +766,37 @@ func TestAugmentLegacyChatStreamAcceptsToolFollowupHistoryShape(t *testing.T) {
 	require.True(t, sawToolResult)
 }
 
+func TestAugmentLegacyBuildChatMessagesDropsOrphanToolCalls(t *testing.T) {
+	t.Parallel()
+
+	h := &AuthHandler{}
+	req := augmentLegacyChatRequest{
+		Message: "Please provide a clear and concise summary of our conversation so far.",
+		ChatHistory: []augmentLegacyChatHistoryItem{
+			{
+				ResponseNodes: []augmentLegacyChatNode{
+					{
+						ID:   1,
+						Type: ptrInt(augmentResponseNodeToolUse),
+						ToolUse: &augmentLegacyToolUseNode{
+							ToolUseID: "call-orphan-1",
+							ToolName:  "codebase-retrieval",
+							InputJSON: `{"query":"repo layout"}`,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	messages := h.augmentLegacyBuildChatMessages(req, "")
+	for _, msg := range messages {
+		require.Empty(t, msg.ToolCalls)
+	}
+	require.NotEmpty(t, messages)
+	require.Equal(t, "user", messages[len(messages)-1].Role)
+}
+
 func TestAugmentLegacyChatStreamAcceptsNullCheckpointID(t *testing.T) {
 	t.Parallel()
 

@@ -1127,6 +1127,40 @@ func augmentLegacyExtractToolCallMessages(nodes []augmentLegacyChatNode) []apico
 	return out
 }
 
+func augmentLegacyFilterToolCallMessagesWithResults(toolCalls, toolResults []apicompat.ChatMessage) []apicompat.ChatMessage {
+	if len(toolCalls) == 0 || len(toolResults) == 0 {
+		return nil
+	}
+	resultIDs := make(map[string]struct{}, len(toolResults))
+	for _, msg := range toolResults {
+		if id := strings.TrimSpace(msg.ToolCallID); id != "" {
+			resultIDs[id] = struct{}{}
+		}
+	}
+	if len(resultIDs) == 0 {
+		return nil
+	}
+
+	out := make([]apicompat.ChatMessage, 0, len(toolCalls))
+	for _, msg := range toolCalls {
+		if len(msg.ToolCalls) == 0 {
+			continue
+		}
+		filtered := make([]apicompat.ChatToolCall, 0, len(msg.ToolCalls))
+		for _, toolCall := range msg.ToolCalls {
+			if _, ok := resultIDs[strings.TrimSpace(toolCall.ID)]; ok {
+				filtered = append(filtered, toolCall)
+			}
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		msg.ToolCalls = filtered
+		out = append(out, msg)
+	}
+	return out
+}
+
 func augmentLegacyResolveChatUserInput(req augmentLegacyChatRequest) augmentLegacyResolvedChatUserInput {
 	parts := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
@@ -1406,10 +1440,11 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 		if text := augmentLegacyHistoryRequestText(item); text != "" {
 			messages = append(messages, augmentLegacyMakeMessage("user", text))
 		}
-		if toolCalls := augmentLegacyExtractToolCallMessages(item.ResponseNodes); len(toolCalls) > 0 {
+		toolResults := augmentLegacyExtractToolResultMessages(item.RequestNodes)
+		if toolCalls := augmentLegacyFilterToolCallMessagesWithResults(augmentLegacyExtractToolCallMessages(item.ResponseNodes), toolResults); len(toolCalls) > 0 {
 			messages = append(messages, toolCalls...)
 		}
-		if toolResults := augmentLegacyExtractToolResultMessages(item.RequestNodes); len(toolResults) > 0 {
+		if len(toolResults) > 0 {
 			messages = append(messages, toolResults...)
 		}
 		if text := strings.TrimSpace(item.ResponseText); text != "" {
