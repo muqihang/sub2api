@@ -1161,6 +1161,55 @@ func augmentLegacyFilterToolCallMessagesWithResults(toolCalls, toolResults []api
 	return out
 }
 
+func augmentLegacyToolCallIDsFromMessages(toolCalls []apicompat.ChatMessage) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, msg := range toolCalls {
+		for _, toolCall := range msg.ToolCalls {
+			if id := strings.TrimSpace(toolCall.ID); id != "" {
+				ids[id] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+func augmentLegacySyntheticToolCallMessagesForResults(toolResults []apicompat.ChatMessage, existingIDs map[string]struct{}) []apicompat.ChatMessage {
+	if len(toolResults) == 0 {
+		return nil
+	}
+	out := make([]apicompat.ChatMessage, 0, len(toolResults))
+	for _, result := range toolResults {
+		toolCallID := strings.TrimSpace(result.ToolCallID)
+		if toolCallID == "" {
+			continue
+		}
+		if _, ok := existingIDs[toolCallID]; ok {
+			continue
+		}
+		existingIDs[toolCallID] = struct{}{}
+		out = append(out, apicompat.ChatMessage{
+			Role: "assistant",
+			ToolCalls: []apicompat.ChatToolCall{{
+				ID:   toolCallID,
+				Type: "function",
+				Function: apicompat.ChatFunctionCall{
+					Name:      augmentLegacyInferToolNameForToolResult(result),
+					Arguments: "{}",
+				},
+			}},
+		})
+	}
+	return out
+}
+
+func augmentLegacyInferToolNameForToolResult(result apicompat.ChatMessage) string {
+	content, err := decodeOpenAIMessageContent(result.Content)
+	if err == nil && strings.Contains(strings.ToUpper(content), "[CODEBASE_RETRIEVAL]") {
+		return "codebase-retrieval"
+	}
+	return "codebase-retrieval"
+}
+
 func augmentLegacyResolveChatUserInput(req augmentLegacyChatRequest) augmentLegacyResolvedChatUserInput {
 	parts := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
@@ -1443,6 +1492,11 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 		toolResults := augmentLegacyExtractToolResultMessages(item.RequestNodes)
 		if toolCalls := augmentLegacyFilterToolCallMessagesWithResults(augmentLegacyExtractToolCallMessages(item.ResponseNodes), toolResults); len(toolCalls) > 0 {
 			messages = append(messages, toolCalls...)
+			if syntheticToolCalls := augmentLegacySyntheticToolCallMessagesForResults(toolResults, augmentLegacyToolCallIDsFromMessages(toolCalls)); len(syntheticToolCalls) > 0 {
+				messages = append(messages, syntheticToolCalls...)
+			}
+		} else if syntheticToolCalls := augmentLegacySyntheticToolCallMessagesForResults(toolResults, map[string]struct{}{}); len(syntheticToolCalls) > 0 {
+			messages = append(messages, syntheticToolCalls...)
 		}
 		if len(toolResults) > 0 {
 			messages = append(messages, toolResults...)
@@ -1458,6 +1512,9 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 
 	currentToolResults := augmentLegacyExtractToolResultMessages(augmentLegacyMergeNodes(req.Nodes, req.StructuredRequestNodes, req.RequestNodes))
 	if len(currentToolResults) > 0 {
+		if syntheticToolCalls := augmentLegacySyntheticToolCallMessagesForResults(currentToolResults, map[string]struct{}{}); len(syntheticToolCalls) > 0 {
+			messages = append(messages, syntheticToolCalls...)
+		}
 		messages = append(messages, currentToolResults...)
 	}
 

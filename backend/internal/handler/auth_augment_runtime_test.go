@@ -797,6 +797,39 @@ func TestAugmentLegacyBuildChatMessagesDropsOrphanToolCalls(t *testing.T) {
 	require.Equal(t, "user", messages[len(messages)-1].Role)
 }
 
+func TestAugmentLegacyBuildChatMessagesSynthesizesToolCallsForOrphanToolResults(t *testing.T) {
+	t.Parallel()
+
+	h := &AuthHandler{}
+	req := augmentLegacyChatRequest{
+		Message: "请用 3 点总结本会话到目前为止的关键结论。",
+		ChatHistory: []augmentLegacyChatHistoryItem{
+			{
+				RequestNodes: []augmentLegacyChatNode{
+					{
+						ID:   1,
+						Type: ptrInt(augmentRequestNodeToolResult),
+						ToolResultNode: &augmentLegacyToolResultNode{
+							ToolUseID: "call-result-only-1",
+							Content:   "[CODEBASE_RETRIEVAL]\nbackend/internal/handler/auth_augment_runtime.go",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	messages := h.augmentLegacyBuildChatMessages(req, "")
+	require.Len(t, messages, 3)
+	require.Equal(t, "assistant", messages[0].Role)
+	require.Len(t, messages[0].ToolCalls, 1)
+	require.Equal(t, "call-result-only-1", messages[0].ToolCalls[0].ID)
+	require.Equal(t, "codebase-retrieval", messages[0].ToolCalls[0].Function.Name)
+	require.Equal(t, "tool", messages[1].Role)
+	require.Equal(t, "call-result-only-1", messages[1].ToolCallID)
+	require.Equal(t, "user", messages[2].Role)
+}
+
 func TestAugmentLegacyChatStreamAcceptsNullCheckpointID(t *testing.T) {
 	t.Parallel()
 
@@ -863,8 +896,14 @@ func TestAugmentLegacyChatStreamAcceptsToolResultOnlyFollowup(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(*capturedBody), &openaiBody))
 	messages, ok := openaiBody["messages"].([]any)
 	require.True(t, ok)
-	require.Len(t, messages, 1)
+	require.Len(t, messages, 2)
 	msg, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "assistant", msg["role"])
+	toolCalls, ok := msg["tool_calls"].([]any)
+	require.True(t, ok)
+	require.Len(t, toolCalls, 1)
+	msg, ok = messages[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "tool", msg["role"])
 	require.Equal(t, "codebase-retrieval-1", msg["tool_call_id"])
@@ -923,13 +962,19 @@ func TestAugmentLegacyChatStreamToolFollowupPreservesSameTurnRequestTextWithoutR
 	require.NoError(t, json.Unmarshal([]byte(*capturedBody), &openaiBody))
 	messages, ok := openaiBody["messages"].([]any)
 	require.True(t, ok)
-	require.Len(t, messages, 2)
+	require.Len(t, messages, 3)
 
 	msg, ok := messages[0].(map[string]any)
 	require.True(t, ok)
+	require.Equal(t, "assistant", msg["role"])
+	toolCalls, ok := msg["tool_calls"].([]any)
+	require.True(t, ok)
+	require.Len(t, toolCalls, 1)
+	msg, ok = messages[1].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "tool", msg["role"])
 	require.Equal(t, "codebase-retrieval-1", msg["tool_call_id"])
-	userMsg, ok := messages[1].(map[string]any)
+	userMsg, ok := messages[2].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "user", userMsg["role"])
 	require.Contains(t, stringValueOrRawJSON(t, userMsg["content"]), "请继续回答，不要重复问候")
