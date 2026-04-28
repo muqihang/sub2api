@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -1107,4 +1108,92 @@ func TestAugmentPluginServiceLegacyBlobRetrievalFallsBackWhenCheckpointMissing(t
 	require.Equal(t, "blob-runtime", resolved.Records[0].BlobName)
 	require.Equal(t, "backend/internal/handler/auth_augment_runtime.go", resolved.Records[0].Path)
 	require.Contains(t, svc.BuildLegacyFormattedRetrieval("find retrieval handler", resolved, 2000), "backend/internal/handler/auth_augment_runtime.go")
+}
+
+func TestAugmentPluginServiceLegacyFormattedRetrievalRanksExactRouteAboveNoise(t *testing.T) {
+	t.Parallel()
+
+	svc := NewAugmentPluginService(nil, nil, nil, nil, nil, nil)
+	resolved := AugmentLegacyResolvedBlobs{
+		Namespace: "phase-f-ranking",
+		Records: []augmentLegacyBlobRecord{
+			{
+				BlobName: "blob-ent-noise",
+				Path:     "ent/schema/generated_codebase_retrieval.go",
+				Content:  "package ent\n// generated codebase retrieval metadata\n",
+			},
+			{
+				BlobName: "blob-route",
+				Path:     "backend/internal/server/routes/gateway.go",
+				Content:  "r.POST(\"/agents/codebase-retrieval\", h.Auth.AugmentLegacyCodebaseRetrieval)\n",
+			},
+		},
+	}
+
+	formatted := svc.BuildLegacyFormattedRetrieval("where is /agents/codebase-retrieval registered?", resolved, 2000)
+	require.Less(t,
+		strings.Index(formatted, "### backend/internal/server/routes/gateway.go"),
+		strings.Index(formatted, "### ent/schema/generated_codebase_retrieval.go"),
+	)
+}
+
+func TestAugmentPluginServiceLegacyFormattedRetrievalRanksExactSymbolAbovePathNoise(t *testing.T) {
+	t.Parallel()
+
+	svc := NewAugmentPluginService(nil, nil, nil, nil, nil, nil)
+	resolved := AugmentLegacyResolvedBlobs{
+		Namespace: "phase-f-symbol-ranking",
+		Records: []augmentLegacyBlobRecord{
+			{
+				BlobName: "blob-doc",
+				Path:     "docs/notes/augment_retrieval.md",
+				Content:  "AugmentLegacyCodebaseRetrieval is mentioned in notes but not implemented here.\n",
+			},
+			{
+				BlobName: "blob-handler",
+				Path:     "backend/internal/handler/auth_augment_runtime.go",
+				Content:  "func (h *AuthHandler) AugmentLegacyCodebaseRetrieval(c *gin.Context) {\n\tc.JSON(http.StatusOK, gin.H{\"formatted_retrieval\": text})\n}\n",
+			},
+		},
+	}
+
+	formatted := svc.BuildLegacyFormattedRetrieval("Find AugmentLegacyCodebaseRetrieval implementation", resolved, 2000)
+	require.Less(t,
+		strings.Index(formatted, "### backend/internal/handler/auth_augment_runtime.go"),
+		strings.Index(formatted, "### docs/notes/augment_retrieval.md"),
+	)
+}
+
+func TestAugmentPluginServiceLegacyFormattedRetrievalSelectsMatchedSnippetFromLargeFile(t *testing.T) {
+	t.Parallel()
+
+	svc := NewAugmentPluginService(nil, nil, nil, nil, nil, nil)
+	var content strings.Builder
+	for index := 0; index < 80; index++ {
+		content.WriteString("func unrelated")
+		content.WriteString(string(rune('A' + index%26)))
+		content.WriteString("() {}\n")
+	}
+	content.WriteString("func augmentLegacyBuildChatMessages() { /* target */ }\n")
+	for index := 0; index < 80; index++ {
+		content.WriteString("func trailing")
+		content.WriteString(string(rune('A' + index%26)))
+		content.WriteString("() {}\n")
+	}
+	resolved := AugmentLegacyResolvedBlobs{
+		Namespace: "phase-f-snippet",
+		Records: []augmentLegacyBlobRecord{
+			{
+				BlobName: "blob-runtime",
+				Path:     "backend/internal/handler/auth_augment_runtime.go",
+				Content:  content.String(),
+			},
+		},
+	}
+
+	formatted := svc.BuildLegacyFormattedRetrieval("augmentLegacyBuildChatMessages", resolved, 900)
+	require.Contains(t, formatted, "### backend/internal/handler/auth_augment_runtime.go")
+	require.Contains(t, formatted, "augmentLegacyBuildChatMessages")
+	require.NotContains(t, formatted, "func unrelatedA")
+	require.NotContains(t, formatted, "func trailingZ")
 }

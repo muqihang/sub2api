@@ -233,18 +233,232 @@ func (s *AugmentPluginService) BuildLegacyFormattedRetrieval(informationRequest 
 		}
 	}
 
-	for _, record := range blobs.Records {
+	for _, record := range rankAugmentLegacyBlobRecords(req, blobs.Records) {
 		path := strings.TrimSpace(record.Path)
 		if path == "" {
 			path = record.BlobName
 		}
-		section := fmt.Sprintf("### %s\n%s\n\n", path, record.Content)
+		section := fmt.Sprintf("### %s\n%s\n\n", path, augmentLegacyRetrievalSnippet(req, record.Content))
 		if writeLimited(section) {
 			break
 		}
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+type augmentLegacyScoredBlobRecord struct {
+	record augmentLegacyBlobRecord
+	score  int
+}
+
+func rankAugmentLegacyBlobRecords(query string, records []augmentLegacyBlobRecord) []augmentLegacyBlobRecord {
+	if len(records) <= 1 {
+		return records
+	}
+
+	tokens := augmentLegacyRetrievalQueryTokens(query)
+	scored := make([]augmentLegacyScoredBlobRecord, 0, len(records))
+	for _, record := range records {
+		scored = append(scored, augmentLegacyScoredBlobRecord{
+			record: record,
+			score:  augmentLegacyBlobRecordScore(query, tokens, record),
+		})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		leftPath := strings.TrimSpace(scored[i].record.Path)
+		if leftPath == "" {
+			leftPath = scored[i].record.BlobName
+		}
+		rightPath := strings.TrimSpace(scored[j].record.Path)
+		if rightPath == "" {
+			rightPath = scored[j].record.BlobName
+		}
+		return leftPath < rightPath
+	})
+
+	ranked := make([]augmentLegacyBlobRecord, 0, len(scored))
+	for _, item := range scored {
+		ranked = append(ranked, item.record)
+	}
+	return ranked
+}
+
+func augmentLegacyBlobRecordScore(query string, tokens []string, record augmentLegacyBlobRecord) int {
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	pathLower := strings.ToLower(strings.TrimSpace(record.Path))
+	if pathLower == "" {
+		pathLower = strings.ToLower(strings.TrimSpace(record.BlobName))
+	}
+	contentLower := strings.ToLower(record.Content)
+
+	score := 0
+	if queryLower != "" {
+		if strings.Contains(pathLower, queryLower) {
+			score += 180
+		}
+		if strings.Contains(contentLower, queryLower) {
+			score += 120
+		}
+		for _, exact := range augmentLegacyRetrievalExactPhrases(queryLower) {
+			if strings.Contains(pathLower, exact) {
+				score += 240
+			}
+			if strings.Contains(contentLower, exact) {
+				score += 300
+			}
+		}
+	}
+
+	for _, token := range tokens {
+		if len(token) < 3 {
+			continue
+		}
+		if strings.Contains(pathLower, token) {
+			score += 35
+		}
+		if strings.Contains(contentLower, token) {
+			score += 8
+		}
+		if augmentLegacyLooksLikeIdentifier(token) && augmentLegacyContentLooksLikeDefinition(contentLower, token) {
+			score += 140
+		}
+	}
+
+	switch {
+	case strings.Contains(pathLower, "/ent/"),
+		strings.Contains(pathLower, "ent/"),
+		strings.Contains(pathLower, "generated"),
+		strings.Contains(contentLower, "code generated"),
+		strings.Contains(contentLower, "generated code"):
+		score -= 160
+	case strings.Contains(pathLower, "/docs/") || strings.HasPrefix(pathLower, "docs/"):
+		score -= 25
+	}
+
+	if strings.Contains(pathLower, "_test.go") && !augmentLegacyQueryMentionsTests(queryLower) {
+		score -= 20
+	}
+
+	return score
+}
+
+func augmentLegacyRetrievalExactPhrases(queryLower string) []string {
+	phrases := make([]string, 0)
+	for _, part := range strings.Fields(queryLower) {
+		part = strings.Trim(part, " \t\r\n.,;:()[]{}'\"`")
+		if strings.Contains(part, "/") || strings.Contains(part, "-") || strings.Contains(part, "_") || strings.Contains(part, ".") {
+			if part != "" {
+				phrases = append(phrases, part)
+			}
+		}
+	}
+	return phrases
+}
+
+func augmentLegacyRetrievalQueryTokens(query string) []string {
+	seen := make(map[string]struct{})
+	tokens := make([]string, 0)
+	for _, token := range strings.FieldsFunc(query, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			r != '_'
+	}) {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		tokens = append(tokens, token)
+	}
+	return tokens
+}
+
+func augmentLegacyLooksLikeIdentifier(token string) bool {
+	if len(token) < 6 {
+		return false
+	}
+	for _, r := range token {
+		if r == '_' {
+			return true
+		}
+	}
+	return true
+}
+
+func augmentLegacyContentLooksLikeDefinition(contentLower string, token string) bool {
+	if !strings.Contains(contentLower, token) {
+		return false
+	}
+	return strings.Contains(contentLower, "func ") ||
+		strings.Contains(contentLower, "func (") ||
+		strings.Contains(contentLower, "type ") ||
+		strings.Contains(contentLower, "const ") ||
+		strings.Contains(contentLower, "var ")
+}
+
+func augmentLegacyQueryMentionsTests(queryLower string) bool {
+	return strings.Contains(queryLower, "test") || strings.Contains(queryLower, "测试")
+}
+
+func augmentLegacyRetrievalSnippet(query string, content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) <= 30 {
+		return content
+	}
+
+	matchIndex := augmentLegacyBestSnippetLine(query, lines)
+	if matchIndex < 0 {
+		return content
+	}
+
+	start := matchIndex - 1
+	if start < 0 {
+		start = 0
+	}
+	end := matchIndex + 2
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.TrimSpace(strings.Join(lines[start:end], "\n"))
+}
+
+func augmentLegacyBestSnippetLine(query string, lines []string) int {
+	tokens := augmentLegacyRetrievalQueryTokens(query)
+	phrases := augmentLegacyRetrievalExactPhrases(strings.ToLower(query))
+	bestIndex := -1
+	bestScore := 0
+	for index, line := range lines {
+		lineLower := strings.ToLower(line)
+		score := 0
+		for _, phrase := range phrases {
+			if strings.Contains(lineLower, phrase) {
+				score += 10
+			}
+		}
+		for _, token := range tokens {
+			if len(token) >= 3 && strings.Contains(lineLower, token) {
+				score += 2
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			bestIndex = index
+		}
+	}
+	return bestIndex
 }
 
 func (s *AugmentPluginService) Now() time.Time {
