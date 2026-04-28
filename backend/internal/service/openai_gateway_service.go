@@ -2715,10 +2715,21 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
-	upstreamPassthroughModel := ""
+	upstreamPassthroughModel := strings.TrimSpace(reqModel)
+	if account != nil && upstreamPassthroughModel != "" {
+		mappedModel := strings.TrimSpace(account.GetMappedModel(upstreamPassthroughModel))
+		if mappedModel != "" && mappedModel != upstreamPassthroughModel {
+			nextBody, setErr := sjson.SetBytes(body, "model", mappedModel)
+			if setErr != nil {
+				return nil, fmt.Errorf("set passthrough model mapping: %w", setErr)
+			}
+			body = nextBody
+			upstreamPassthroughModel = mappedModel
+		}
+	}
 	if isOpenAIResponsesCompactPath(c) {
-		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
-		if compactMappedModel != "" && compactMappedModel != reqModel {
+		compactMappedModel := resolveOpenAICompactForwardModel(account, upstreamPassthroughModel)
+		if compactMappedModel != "" && compactMappedModel != upstreamPassthroughModel {
 			nextBody, setErr := sjson.SetBytes(body, "model", compactMappedModel)
 			if setErr != nil {
 				return nil, fmt.Errorf("set compact passthrough model: %w", setErr)
