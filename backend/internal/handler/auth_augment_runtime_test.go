@@ -293,6 +293,17 @@ func TestAugmentLegacyRuntimeCompatibilityEndpoints(t *testing.T) {
 	require.Contains(t, nextStreamBody, "next_edit")
 }
 
+func TestAugmentLegacySetLoopbackCodexHeaders(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", nil)
+	augmentLegacySetLoopbackCodexHeaders(req)
+
+	require.Equal(t, "codex_cli_rs/0.125.0", req.Header.Get("User-Agent"))
+	require.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+	require.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
+}
+
 func TestAugmentLegacyChatUsesNodeTextAndKeepsUserQuestionSeparateFromRetrieval(t *testing.T) {
 	t.Parallel()
 

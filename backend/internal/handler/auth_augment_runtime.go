@@ -1703,6 +1703,7 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletion(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+bearer)
+	augmentLegacySetLoopbackCodexHeaders(httpReq)
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -1749,6 +1750,7 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletionStream(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+bearer)
+	augmentLegacySetLoopbackCodexHeaders(httpReq)
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -1907,6 +1909,21 @@ func augmentLegacyWriteNDJSON(c *gin.Context, chunks ...gin.H) {
 		}
 		_, _ = c.Writer.Write(append(b, '\n'))
 		c.Writer.Flush()
+	}
+}
+
+func augmentLegacySetLoopbackCodexHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(req.Header.Get("User-Agent")) == "" {
+		req.Header.Set("User-Agent", "codex_cli_rs/0.125.0")
+	}
+	if strings.TrimSpace(req.Header.Get("originator")) == "" {
+		req.Header.Set("originator", "codex_cli_rs")
+	}
+	if strings.TrimSpace(req.Header.Get("OpenAI-Beta")) == "" {
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
 	}
 }
 
