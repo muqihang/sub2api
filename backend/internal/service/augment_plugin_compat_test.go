@@ -55,3 +55,93 @@ func registerGatewayRoutes() {
 
 	require.Equal(t, "backend/internal/server/routes/gateway.go", ranked[0].Path)
 }
+
+func TestBuildLegacyFormattedRetrievalPrioritizesExactHandlerEvidence(t *testing.T) {
+	t.Parallel()
+
+	prompt := "Find `AugmentLegacyCodebaseRetrieval`. Report the exact file path, request struct fields, service methods it calls, and JSON field returned to the client. Use codebase retrieval evidence only."
+	records := []augmentLegacyBlobRecord{
+		{
+			Path:    "backend/internal/service/gateway_service.go",
+			Content: strings.Repeat("package service\nfunc GatewayService() { requestServiceHandlerRouteJSONField() }\n", 80),
+		},
+		{
+			Path:    "frontend/src/i18n/locales/en.ts",
+			Content: strings.Repeat("service request response field route handler evidence\n", 120),
+		},
+		{
+			Path: "backend/internal/server/routes/gateway.go",
+			Content: `package routes
+
+func RegisterGatewayRoutes(r Router, h *Handlers) {
+	r.POST("/agents/codebase-retrieval", h.Auth.AugmentLegacyCodebaseRetrieval)
+}
+`,
+		},
+		{
+			Path: "backend/internal/handler/auth_augment_runtime.go",
+			Content: `package handler
+
+type augmentLegacyCodebaseRetrievalRequest struct {
+	InformationRequest string ` + "`json:\"information_request\"`" + `
+	Blobs augmentLegacyCheckpointBlobsPayload ` + "`json:\"blobs\"`" + `
+	Dialog []map[string]any ` + "`json:\"dialog\"`" + `
+	MaxOutputLength int ` + "`json:\"max_output_length\"`" + `
+	DisableCodebaseRetrieval bool ` + "`json:\"disable_codebase_retrieval\"`" + `
+	EnableCommitRetrieval bool ` + "`json:\"enable_commit_retrieval\"`" + `
+	EnableConversationRetrieval bool ` + "`json:\"enable_conversation_retrieval\"`" + `
+}
+
+func (h *AuthHandler) AugmentLegacyCodebaseRetrieval(c *gin.Context) {
+	var req augmentLegacyCodebaseRetrievalRequest
+	namespace := h.augmentLegacyNamespace(c, principal)
+	records := h.augmentPluginService.ResolveLegacyBlobsForNamespace(namespace, req.Blobs.CheckpointID, req.Blobs.AddedBlobs, req.Blobs.DeletedBlobs)
+	text := h.augmentPluginService.BuildLegacyFormattedRetrieval(req.InformationRequest, records, req.MaxOutputLength)
+	c.JSON(http.StatusOK, gin.H{"formatted_retrieval": text})
+}
+`,
+		},
+		{
+			Path: "backend/internal/service/augment_plugin_compat.go",
+			Content: `package service
+
+func (s *AugmentPluginService) ResolveLegacyBlobsForNamespace(namespace, checkpointID string, added, deleted []string) AugmentLegacyResolvedBlobs {
+	return AugmentLegacyResolvedBlobs{}
+}
+
+func (s *AugmentPluginService) BuildLegacyFormattedRetrieval(informationRequest string, blobs AugmentLegacyResolvedBlobs, maxOutputLength int) string {
+	return "formatted retrieval"
+}
+`,
+		},
+		{
+			Path: "backend/internal/handler/auth_augment_runtime_test.go",
+			Content: `package handler
+
+func TestRoute(t *testing.T) {
+	router.POST("/agents/codebase-retrieval", authHandler.AugmentLegacyCodebaseRetrieval)
+}
+`,
+		},
+	}
+
+	formatted := (&AugmentPluginService{}).BuildLegacyFormattedRetrieval(prompt, AugmentLegacyResolvedBlobs{Records: records}, 6000)
+
+	handlerIndex := strings.Index(formatted, "backend/internal/handler/auth_augment_runtime.go")
+	serviceIndex := strings.Index(formatted, "backend/internal/service/augment_plugin_compat.go")
+	routeIndex := strings.Index(formatted, "backend/internal/server/routes/gateway.go")
+	noiseIndex := strings.Index(formatted, "backend/internal/service/gateway_service.go")
+	require.NotEqual(t, -1, handlerIndex)
+	require.NotEqual(t, -1, serviceIndex)
+	require.NotEqual(t, -1, routeIndex)
+	require.NotEqual(t, -1, noiseIndex)
+	require.Less(t, handlerIndex, noiseIndex)
+	require.Less(t, serviceIndex, noiseIndex)
+	require.Less(t, routeIndex, noiseIndex)
+	require.Contains(t, formatted, "type augmentLegacyCodebaseRetrievalRequest struct")
+	require.Contains(t, formatted, "InformationRequest string")
+	require.Contains(t, formatted, "func (h *AuthHandler) AugmentLegacyCodebaseRetrieval")
+	require.Contains(t, formatted, "ResolveLegacyBlobsForNamespace")
+	require.Contains(t, formatted, "BuildLegacyFormattedRetrieval")
+	require.Contains(t, formatted, `"formatted_retrieval"`)
+}
