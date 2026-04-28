@@ -894,6 +894,85 @@ func TestAugmentLegacyChatStreamToolFollowupPreservesSameTurnRequestTextWithoutR
 	require.NotContains(t, *capturedBody, "旧回答，不应被重新拼成新的用户请求")
 }
 
+func TestAugmentLegacyChatStreamIncludesHistoryRequestNodeText(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, capturedBody := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"message":"我刚才给你的 CE-011R-E prompt 是什么？",
+		"chat_history":[
+			{
+				"request_id":"ce-011r-e",
+				"request_message":null,
+				"response_text":"已完成。",
+				"requestNodes":[
+					{
+						"id":1,
+						"type":0,
+						"textNode":{"content":"CE-011R-E：请基于 sub2api 当前仓库验证标题摘要和缓存命中情况。"}
+					}
+				]
+			}
+		],
+		"blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	lines := nonEmptyLines(t, resp.Body)
+	require.NotEmpty(t, lines)
+	require.Contains(t, *capturedBody, "CE-011R-E：请基于 sub2api 当前仓库验证标题摘要和缓存命中情况。")
+	require.Contains(t, *capturedBody, "我刚才给你的 CE-011R-E prompt 是什么？")
+}
+
+func TestAugmentLegacyChatStreamAddsStablePromptCacheKeyFromConversation(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, capturedBody := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"conversationId":"conv-ce-011r-e",
+		"message":"继续验证缓存。",
+		"blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-request-session-id", "session-51ba670a")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	lines := nonEmptyLines(t, resp.Body)
+	require.NotEmpty(t, lines)
+
+	var openaiBody map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*capturedBody), &openaiBody))
+	cacheKey, ok := openaiBody["prompt_cache_key"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, cacheKey)
+	require.Contains(t, cacheKey, "augment_legacy_")
+	require.NotContains(t, cacheKey, "conv-ce-011r-e")
+	require.NotContains(t, cacheKey, "session-51ba670a")
+}
+
 func TestAugmentLegacyChatSkipsLocalRetrievalWhenDisableRetrievalIsTrue(t *testing.T) {
 	t.Parallel()
 
@@ -1247,6 +1326,98 @@ func TestAugmentLegacyChatStreamFlushesBeforeUpstreamCompletes(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("expected first streamed NDJSON chunk before upstream finished")
 	}
+}
+
+func TestAugmentLegacyChatStreamReturnsHTTPErrorWhenLoopbackFailsBeforeStreaming(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       2,
+		Email:    "compat@example.com",
+		Username: "compat",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        2,
+		UserID:    user.ID,
+		Key:       "sk-compat-runtime",
+		Name:      "compat-runtime",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	group := service.Group{
+		ID:                 101,
+		Name:               "OpenAI",
+		Platform:           service.PlatformOpenAI,
+		Status:             service.StatusActive,
+		Hydrated:           true,
+		DefaultMappedModel: "gpt-5.4",
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+
+	authHandler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+	)
+
+	router := gin.New()
+	router.POST("/chat-stream", authHandler.AugmentLegacyChatStream)
+	router.POST("/openai/v1/chat/completions", func(c *gin.Context) {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"message": "Upstream service temporarily unavailable",
+				"type":    "upstream_error",
+			},
+		})
+	})
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+	reqBody := `{"model":"gpt-5.4","message":"stream main","blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	require.Contains(t, string(body), "upstream_error")
+	require.NotContains(t, string(body), "loopback chat completion stream")
 }
 
 func TestAugmentLegacyChatStreamBuffersSplitToolCallArgumentsUntilValidJSON(t *testing.T) {

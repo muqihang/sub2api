@@ -647,7 +647,7 @@ func (h *AuthHandler) AugmentLegacyCodebaseRetrieval(c *gin.Context) {
 
 	namespace := h.augmentLegacyNamespace(c, principal)
 	records := h.augmentPluginService.ResolveLegacyBlobsForNamespace(namespace, req.Blobs.CheckpointID, req.Blobs.AddedBlobs, req.Blobs.DeletedBlobs)
-	augmentLegacyTrace(c, "codebase_retrieval", "namespace", namespace, "checkpoint_id", strings.TrimSpace(req.Blobs.CheckpointID), "record_count", len(records.Records), "checkpoint_not_found", records.CheckpointNotFound, "resolution_reason", records.ResolutionReason)
+	augmentLegacyTrace(c, "codebase_retrieval", "namespace", namespace, "checkpoint_id", strings.TrimSpace(req.Blobs.CheckpointID), "record_count", len(records.Records), "unknown_count", len(records.Unknown), "active_blob_count", len(records.Records)+len(records.Unknown), "added_blob_count", len(req.Blobs.AddedBlobs), "deleted_blob_count", len(req.Blobs.DeletedBlobs), "checkpoint_not_found", records.CheckpointNotFound, "resolution_reason", records.ResolutionReason)
 	text := h.augmentPluginService.BuildLegacyFormattedRetrieval(req.InformationRequest, records, req.MaxOutputLength)
 	c.JSON(http.StatusOK, gin.H{"formatted_retrieval": text})
 }
@@ -817,6 +817,13 @@ func augmentLegacyNormalizeHistoryItems(items []augmentLegacyChatHistoryItem) []
 		augmentLegacyNormalizeHistoryItem(&items[i])
 	}
 	return items
+}
+
+func augmentLegacyHistoryRequestText(item augmentLegacyChatHistoryItem) string {
+	if text := strings.TrimSpace(item.RequestMessage); text != "" {
+		return text
+	}
+	return strings.TrimSpace(augmentLegacyExtractRequestNodeText(item.RequestNodes))
 }
 
 func augmentLegacyNormalizeNodeType(node augmentLegacyChatNode) int {
@@ -1396,7 +1403,7 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 	}
 
 	for _, item := range req.ChatHistory {
-		if text := strings.TrimSpace(item.RequestMessage); text != "" {
+		if text := augmentLegacyHistoryRequestText(item); text != "" {
 			messages = append(messages, augmentLegacyMakeMessage("user", text))
 		}
 		if toolCalls := augmentLegacyExtractToolCallMessages(item.ResponseNodes); len(toolCalls) > 0 {
@@ -1440,6 +1447,39 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 	return messages
 }
 
+func augmentLegacyLoopbackPromptCacheKey(ginContext *gin.Context, req augmentLegacyChatRequest) string {
+	sessionID := ""
+	if ginContext != nil {
+		sessionID = strings.TrimSpace(ginContext.GetHeader("x-request-session-id"))
+	}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if sessionID == "" && conversationID == "" {
+		return ""
+	}
+
+	parts := []string{"augment_legacy"}
+	if sessionID != "" {
+		parts = append(parts, "session="+sessionID)
+	}
+	if conversationID != "" {
+		parts = append(parts, "conversation="+conversationID)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return "augment_legacy_" + hex.EncodeToString(sum[:8])
+}
+
+func augmentLegacyAttachLoopbackPromptCacheKey(ginContext *gin.Context, req augmentLegacyChatRequest, body map[string]any) {
+	if body == nil {
+		return
+	}
+	if existing, ok := body["prompt_cache_key"].(string); ok && strings.TrimSpace(existing) != "" {
+		return
+	}
+	if cacheKey := augmentLegacyLoopbackPromptCacheKey(ginContext, req); cacheKey != "" {
+		body["prompt_cache_key"] = cacheKey
+	}
+}
+
 func (h *AuthHandler) augmentLegacyResolveRetrieval(c *gin.Context, principal *service.AugmentPluginPrincipal, req augmentLegacyChatRequest) (string, []string, bool) {
 	namespace := h.augmentLegacyNamespace(c, principal)
 	resolved := h.augmentPluginService.ResolveLegacyBlobsForNamespace(namespace, req.Blobs.CheckpointID, req.Blobs.AddedBlobs, req.Blobs.DeletedBlobs)
@@ -1466,6 +1506,8 @@ func (h *AuthHandler) augmentLegacyResolveRetrieval(c *gin.Context, principal *s
 		"resolve_retrieval",
 		"namespace", namespace,
 		"checkpoint_id", strings.TrimSpace(req.Blobs.CheckpointID),
+		"record_count", len(resolved.Records),
+		"active_blob_count", len(resolved.Records)+len(resolved.Unknown),
 		"added_blobs", len(req.Blobs.AddedBlobs),
 		"deleted_blobs", len(req.Blobs.DeletedBlobs),
 		"unknown_blobs", len(resolved.Unknown),
@@ -1904,6 +1946,7 @@ func (h *AuthHandler) AugmentLegacyChat(c *gin.Context) {
 		"messages": messages,
 		"stream":   false,
 	}
+	augmentLegacyAttachLoopbackPromptCacheKey(c, req, body)
 	if tools := h.augmentLegacyToolDefinitionsToOpenAI(req.ToolDefinitions); len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
@@ -1979,18 +2022,22 @@ func (h *AuthHandler) AugmentLegacyChatStream(c *gin.Context) {
 		"model":    model,
 		"messages": messages,
 	}
+	augmentLegacyAttachLoopbackPromptCacheKey(c, req, body)
 	if tools := h.augmentLegacyToolDefinitionsToOpenAI(req.ToolDefinitions); len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
-	c.Header("Content-Type", "application/x-ndjson")
-	c.Status(http.StatusOK)
-
 	nextID := 0
 	firstChunk := true
+	streamStarted := false
 	finalStopReason := augmentStopReasonEndTurn
 	toolCallBuffer := newAugmentLegacyStreamToolCallBuffer()
 	emitChunk := func(chunk gin.H) error {
+		if !streamStarted {
+			c.Header("Content-Type", "application/x-ndjson")
+			c.Status(http.StatusOK)
+			streamStarted = true
+		}
 		b, err := json.Marshal(chunk)
 		if err != nil {
 			return err
@@ -2056,6 +2103,13 @@ func (h *AuthHandler) AugmentLegacyChatStream(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		if !streamStarted {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+				"message": "Upstream service temporarily unavailable, please retry.",
+				"type":    "upstream_error",
+			}})
+			return
+		}
 		_ = emitWithMeta(err.Error(), nil, ptrInt(augmentStopReasonEndTurn))
 		return
 	}

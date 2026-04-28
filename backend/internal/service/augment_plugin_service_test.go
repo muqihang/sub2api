@@ -1006,3 +1006,105 @@ func TestAugmentPluginServiceBuildCompatMetadataPrefersCurrentAPIKeyGroupDefault
 	require.NoError(t, err)
 	require.Equal(t, "gpt-5.4", compat.DefaultModel)
 }
+
+func TestAugmentPluginServiceLegacyBlobRetrievalRoundTripReturnsStoredRecords(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	cfg := &config.Config{Pricing: config.PricingConfig{DataDir: tmpDir}}
+	user := &User{
+		ID:       77,
+		Email:    "retrieval@example.com",
+		Username: "retrieval-user",
+		Role:     RoleAdmin,
+		Status:   StatusActive,
+	}
+
+	svc := NewAugmentPluginService(
+		cfg,
+		&augmentAuthServiceStub{},
+		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
+		&augmentAPIKeyServiceStub{},
+		&augmentSubscriptionServiceStub{},
+		&augmentSettingServiceStub{public: &PublicSettings{SiteName: "逐梦站", APIBaseURL: "http://127.0.0.1:18081"}},
+	)
+
+	namespace := "phase-f-local-retrieval"
+	stored := svc.StoreLegacyBlobsForNamespace(namespace, []AugmentLegacyUploadedBlob{
+		{
+			BlobName: "blob-gateway",
+			Path:     "backend/internal/server/routes/gateway.go",
+			Content:  "r.POST(\"/agents/codebase-retrieval\", h.Auth.AugmentLegacyCodebaseRetrieval)\n",
+		},
+	})
+	require.Equal(t, []string{"blob-gateway"}, stored)
+
+	checkpointID, err := svc.AdvanceLegacyCheckpointForNamespace(namespace, "", []string{"blob-gateway"}, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, checkpointID)
+
+	svcReloaded := NewAugmentPluginService(
+		cfg,
+		&augmentAuthServiceStub{},
+		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
+		&augmentAPIKeyServiceStub{},
+		&augmentSubscriptionServiceStub{},
+		&augmentSettingServiceStub{public: &PublicSettings{SiteName: "逐梦站", APIBaseURL: "http://127.0.0.1:18081"}},
+	)
+
+	resolved := svcReloaded.ResolveLegacyBlobsForNamespace(namespace, checkpointID, nil, nil)
+	require.False(t, resolved.CheckpointNotFound)
+	require.Equal(t, namespace, resolved.Namespace)
+	require.Len(t, resolved.Records, 1)
+	require.Empty(t, resolved.Unknown)
+	require.Equal(t, "blob-gateway", resolved.Records[0].BlobName)
+	require.Equal(t, "backend/internal/server/routes/gateway.go", resolved.Records[0].Path)
+	require.Equal(t, "r.POST(\"/agents/codebase-retrieval\", h.Auth.AugmentLegacyCodebaseRetrieval)\n", resolved.Records[0].Content)
+
+	formatted := svcReloaded.BuildLegacyFormattedRetrieval("find the retrieval route", resolved, 2000)
+	require.Contains(t, formatted, "[CODEBASE_RETRIEVAL]")
+	require.Contains(t, formatted, "request: find the retrieval route")
+	require.Contains(t, formatted, "backend/internal/server/routes/gateway.go")
+	require.Contains(t, formatted, "r.POST(\"/agents/codebase-retrieval\", h.Auth.AugmentLegacyCodebaseRetrieval)")
+}
+
+func TestAugmentPluginServiceLegacyBlobRetrievalFallsBackWhenCheckpointMissing(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	cfg := &config.Config{Pricing: config.PricingConfig{DataDir: tmpDir}}
+	user := &User{
+		ID:       78,
+		Email:    "fallback@example.com",
+		Username: "fallback-user",
+		Role:     RoleAdmin,
+		Status:   StatusActive,
+	}
+
+	svc := NewAugmentPluginService(
+		cfg,
+		&augmentAuthServiceStub{},
+		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
+		&augmentAPIKeyServiceStub{},
+		&augmentSubscriptionServiceStub{},
+		&augmentSettingServiceStub{public: &PublicSettings{SiteName: "逐梦站", APIBaseURL: "http://127.0.0.1:18081"}},
+	)
+
+	namespace := "phase-f-fallback"
+	stored := svc.StoreLegacyBlobsForNamespace(namespace, []AugmentLegacyUploadedBlob{
+		{
+			BlobName: "blob-runtime",
+			Path:     "backend/internal/handler/auth_augment_runtime.go",
+			Content:  "func (h *AuthHandler) AugmentLegacyCodebaseRetrieval(c *gin.Context) {}\n",
+		},
+	})
+	require.Equal(t, []string{"blob-runtime"}, stored)
+
+	resolved := svc.ResolveLegacyBlobsForNamespace(namespace, "checkpoint-does-not-exist", nil, nil)
+	require.True(t, resolved.CheckpointNotFound)
+	require.Equal(t, namespace, resolved.Namespace)
+	require.NotEmpty(t, resolved.Records)
+	require.Equal(t, "blob-runtime", resolved.Records[0].BlobName)
+	require.Equal(t, "backend/internal/handler/auth_augment_runtime.go", resolved.Records[0].Path)
+	require.Contains(t, svc.BuildLegacyFormattedRetrieval("find retrieval handler", resolved, 2000), "backend/internal/handler/auth_augment_runtime.go")
+}

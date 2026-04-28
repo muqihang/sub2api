@@ -113,6 +113,10 @@ func (s *AugmentPluginService) ResolveLegacyBlobsForNamespace(namespace, checkpo
 				baseNames[name] = struct{}{}
 				active[name] = struct{}{}
 			}
+		} else {
+			for name := range state.Blobs {
+				active[name] = struct{}{}
+			}
 		}
 	}
 	for _, name := range added {
@@ -134,6 +138,9 @@ func (s *AugmentPluginService) ResolveLegacyBlobsForNamespace(namespace, checkpo
 	resolutionReason := "namespace_state_loaded"
 	if checkpointID != "" && !checkpointFound {
 		resolutionReason = "checkpoint_missing"
+		if len(records) > 0 {
+			resolutionReason = "checkpoint_missing_namespace_fallback"
+		}
 	} else if checkpointID == "" {
 		resolutionReason = "no_checkpoint"
 	}

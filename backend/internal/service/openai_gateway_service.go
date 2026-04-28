@@ -892,6 +892,18 @@ func isolateOpenAISessionID(apiKeyID int64, raw string) string {
 	return fmt.Sprintf("%016x", h.Sum64())
 }
 
+func applyOpenAIAPIKeyPromptCacheSessionHeader(c *gin.Context, req *http.Request, promptCacheKey string) {
+	if req == nil || strings.TrimSpace(req.Header.Get("session_id")) != "" {
+		return
+	}
+	key := strings.TrimSpace(promptCacheKey)
+	if key == "" {
+		return
+	}
+	apiKeyID := getAPIKeyIDFromContext(c)
+	req.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, key)))
+}
+
 func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Account, apiKeyID int64, result CodexClientRestrictionDetectionResult, body []byte) {
 	if !result.Enabled {
 		return
@@ -2996,6 +3008,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if clientConversationID != "" {
 			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
 		}
+	} else if account.Type == AccountTypeAPIKey {
+		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, gjson.GetBytes(body, "prompt_cache_key").String())
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
@@ -3671,6 +3685,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("conversation_id", isolated)
 			req.Header.Set("session_id", isolated)
 		}
+	} else if account.Type == AccountTypeAPIKey {
+		if promptCacheKey == "" {
+			promptCacheKey = gjson.GetBytes(body, "prompt_cache_key").String()
+		}
+		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, promptCacheKey)
 	}
 
 	// Apply custom User-Agent if configured

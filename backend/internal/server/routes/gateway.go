@@ -2,6 +2,7 @@ package routes
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
@@ -82,6 +83,7 @@ func RegisterGatewayRoutes(
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
+	apiKeyAuthWithAugmentBearer := augmentGatewayAPIKeyAuth(apiKeyAuth, h.Auth)
 
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
@@ -189,11 +191,11 @@ func RegisterGatewayRoutes(
 		}
 		h.Gateway.Responses(c)
 	}
-	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
+	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
+	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
+	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
 	codexDirect := r.Group("/backend-api/codex")
-	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
+	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic)
 	{
 		codexDirect.POST("/responses", responsesHandler)
 		codexDirect.POST("/responses/*subpath", responsesHandler)
@@ -282,4 +284,19 @@ func getGroupPlatform(c *gin.Context) string {
 		return ""
 	}
 	return apiKey.Group.Platform
+}
+
+func augmentGatewayAPIKeyAuth(apiKeyAuth middleware.APIKeyAuthMiddleware, authHandler *handler.AuthHandler) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		originalAuthorization := c.GetHeader("Authorization")
+		if authHandler != nil {
+			if gatewayKey, ok := authHandler.AugmentGatewayAPIKeyFromAuthorization(c.Request.Context(), originalAuthorization); ok {
+				c.Request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(gatewayKey))
+			}
+		}
+		gin.HandlerFunc(apiKeyAuth)(c)
+		if originalAuthorization != "" {
+			c.Request.Header.Set("Authorization", originalAuthorization)
+		}
+	}
 }
