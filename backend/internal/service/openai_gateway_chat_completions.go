@@ -171,19 +171,26 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 	}
 	if account.Type == AccountTypeAPIKey {
+		var reqBody map[string]any
+		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
+			return nil, fmt.Errorf("unmarshal for api key responses normalization: %w", err)
+		}
+		modifiedAPIKeyBody := false
 		if trimmedKey := strings.TrimSpace(promptCacheKey); trimmedKey != "" {
-			var reqBody map[string]any
-			if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
-				return nil, fmt.Errorf("unmarshal for prompt cache key injection: %w", err)
-			}
 			if existing, ok := reqBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
 				reqBody["prompt_cache_key"] = trimmedKey
-				updated, err := json.Marshal(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("remarshal after prompt cache key injection: %w", err)
-				}
-				responsesBody = updated
+				modifiedAPIKeyBody = true
 			}
+		}
+		if applyInstructions(reqBody, false) {
+			modifiedAPIKeyBody = true
+		}
+		if modifiedAPIKeyBody {
+			updated, err := json.Marshal(reqBody)
+			if err != nil {
+				return nil, fmt.Errorf("remarshal after api key responses normalization: %w", err)
+			}
+			responsesBody = updated
 		}
 	}
 
