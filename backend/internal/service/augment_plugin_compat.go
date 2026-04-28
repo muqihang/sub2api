@@ -1,10 +1,22 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+)
+
+const (
+	augmentLegacyWorkspaceRootEnv      = "AUGMENT_LEGACY_WORKSPACE_ROOT"
+	augmentLegacyWorkspaceMaxFiles     = 8000
+	augmentLegacyWorkspaceMaxBytes     = 32 << 20
+	augmentLegacyWorkspaceMaxFileBytes = 512 << 10
 )
 
 type AugmentLegacyUploadedBlob struct {
@@ -157,6 +169,12 @@ func (s *AugmentPluginService) ResolveLegacyBlobsForNamespace(namespace, checkpo
 		}
 		records = append(records, record)
 	}
+	if len(records) == 0 && len(unknown) == 0 && checkpointID == "" && len(added) == 0 && len(deleted) == 0 {
+		if workspaceRecords := s.loadLegacyWorkspaceFallbackRecordsLocked(); len(workspaceRecords) > 0 {
+			records = workspaceRecords
+			resolutionReason = "workspace_fallback_no_checkpoint"
+		}
+	}
 	return AugmentLegacyResolvedBlobs{
 		Records:            records,
 		Unknown:            unknown,
@@ -164,6 +182,117 @@ func (s *AugmentPluginService) ResolveLegacyBlobsForNamespace(namespace, checkpo
 		Namespace:          namespace,
 		ResolutionReason:   resolutionReason,
 	}
+}
+
+func (s *AugmentPluginService) loadLegacyWorkspaceFallbackRecordsLocked() []augmentLegacyBlobRecord {
+	root := strings.TrimSpace(os.Getenv(augmentLegacyWorkspaceRootEnv))
+	if root == "" {
+		root = inferAugmentLegacyWorkspaceRoot()
+	}
+	if root == "" {
+		return nil
+	}
+
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+
+	now := s.now()
+	records := make([]augmentLegacyBlobRecord, 0)
+	totalBytes := 0
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		name := entry.Name()
+		if entry.IsDir() {
+			if shouldSkipAugmentLegacyWorkspaceDir(name) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if len(records) >= augmentLegacyWorkspaceMaxFiles || totalBytes >= augmentLegacyWorkspaceMaxBytes {
+			return fs.SkipAll
+		}
+		if !shouldIndexAugmentLegacyWorkspaceFile(name) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || info.Size() <= 0 || info.Size() > augmentLegacyWorkspaceMaxFileBytes {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		contentBytes, err := os.ReadFile(path)
+		if err != nil || len(contentBytes) == 0 {
+			return nil
+		}
+		if len(contentBytes)+totalBytes > augmentLegacyWorkspaceMaxBytes {
+			return fs.SkipAll
+		}
+		totalBytes += len(contentBytes)
+		records = append(records, augmentLegacyBlobRecord{
+			BlobName:   augmentLegacyWorkspaceBlobName(rel, contentBytes),
+			Path:       rel,
+			Content:    string(contentBytes),
+			UploadedAt: now,
+		})
+		return nil
+	})
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Path < records[j].Path
+	})
+	return records
+}
+
+func inferAugmentLegacyWorkspaceRoot() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	if filepath.Base(wd) == "backend" {
+		return filepath.Dir(wd)
+	}
+	return ""
+}
+
+func shouldSkipAugmentLegacyWorkspaceDir(name string) bool {
+	switch strings.TrimSpace(name) {
+	case ".git", ".hg", ".svn", ".idea", ".vscode", ".DS_Store",
+		"node_modules", "vendor", "dist", "build", "out", "target", ".next",
+		"coverage", ".cache", ".turbo", ".worktrees", "tmp", "temp", "augment-compat":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldIndexAugmentLegacyWorkspaceFile(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".go", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json",
+		".md", ".yaml", ".yml", ".toml", ".sql", ".proto", ".sh",
+		".py", ".rs", ".java", ".kt", ".swift", ".c", ".cc", ".cpp",
+		".h", ".hpp", ".vue", ".svelte", ".css", ".scss", ".html":
+		return true
+	default:
+		return false
+	}
+}
+
+func augmentLegacyWorkspaceBlobName(path string, content []byte) string {
+	sum := sha256.Sum256(append([]byte(path+"\x00"), content...))
+	return "workspace-" + hex.EncodeToString(sum[:])
 }
 
 func (s *AugmentPluginService) SaveLegacyChat(session AugmentLegacySavedChat) {
@@ -321,11 +450,21 @@ func augmentLegacyBlobRecordScore(query string, tokens []string, record augmentL
 			score += 35
 		}
 		if strings.Contains(contentLower, token) {
-			score += 8
+			score += 4
 		}
-		if augmentLegacyLooksLikeIdentifier(token) && augmentLegacyContentLooksLikeDefinition(contentLower, token) {
-			score += 140
+		if len(token) >= 12 && strings.Contains(contentLower, token) {
+			score += 360
 		}
+		if augmentLegacyLooksLikeIdentifier(token) && !augmentLegacyRetrievalStopToken(token) && augmentLegacyContentLooksLikeDefinition(contentLower, token) {
+			score += 260
+		}
+	}
+
+	if augmentLegacyPathLooksLikeBusinessSource(pathLower) {
+		score += 180
+	}
+	if augmentLegacyPathLooksLikeRootDocumentation(pathLower) {
+		score -= 260
 	}
 
 	switch {
@@ -340,10 +479,34 @@ func augmentLegacyBlobRecordScore(query string, tokens []string, record augmentL
 	}
 
 	if strings.Contains(pathLower, "_test.go") && !augmentLegacyQueryMentionsTests(queryLower) {
-		score -= 20
+		score -= 400
 	}
 
 	return score
+}
+
+func augmentLegacyPathLooksLikeBusinessSource(pathLower string) bool {
+	if strings.Contains(pathLower, "backend/internal/") ||
+		strings.Contains(pathLower, "frontend/src/") ||
+		strings.Contains(pathLower, "cmd/server/") {
+		return true
+	}
+	switch filepath.Ext(pathLower) {
+	case ".go", ".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".rs", ".java", ".kt", ".swift":
+		return true
+	default:
+		return false
+	}
+}
+
+func augmentLegacyPathLooksLikeRootDocumentation(pathLower string) bool {
+	base := filepath.Base(pathLower)
+	switch base {
+	case "readme.md", "readme_cn.md", "readme_ja.md", "changelog.md", "dev_guide.md":
+		return true
+	default:
+		return strings.HasPrefix(pathLower, "docs/")
+	}
 }
 
 func augmentLegacyRetrievalExactPhrases(queryLower string) []string {
@@ -386,11 +549,22 @@ func augmentLegacyLooksLikeIdentifier(token string) bool {
 		return false
 	}
 	for _, r := range token {
-		if r == '_' {
+		if r == '_' || (r >= '0' && r <= '9') {
 			return true
 		}
 	}
-	return true
+	return len(token) >= 12
+}
+
+func augmentLegacyRetrievalStopToken(token string) bool {
+	switch token {
+	case "service", "handler", "route", "routes", "runtime", "request", "response",
+		"retrieval", "codebase", "context", "engine", "gateway", "backend",
+		"frontend", "internal", "package", "function", "method", "struct":
+		return true
+	default:
+		return false
+	}
 }
 
 func augmentLegacyContentLooksLikeDefinition(contentLower string, token string) bool {
