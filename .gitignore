@@ -136,3 +136,6 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+
+# Local runtime data may contain state and pricing caches.
+data/
