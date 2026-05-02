@@ -490,6 +490,128 @@ func TestAugmentLegacyPromptEnhancerUsesNodeText(t *testing.T) {
 	require.Contains(t, content, "保留中文")
 }
 
+func TestAugmentLegacyFinalEnvelopeCaptureWritesPrePostSummaryWithoutRaw(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-P1B-TEST-PREPOST")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"message":"[CE-A-P1B-TEST-PREPOST] 请总结当前仓库结构",
+		"blobs":{"checkpoint_id":"","added_blobs":["blob-a"],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, nonEmptyLines(t, resp.Body))
+
+	rows := readAugmentCaptureSummaryRows(t, captureDir)
+	require.Len(t, rows, 1)
+	row := rows[0]
+	require.Equal(t, "chat-stream", row["endpoint"])
+	require.Equal(t, "local_gateway", row["route"])
+	require.Equal(t, "final_envelope", row["reason"])
+	require.Equal(t, "pre_post", row["final_capture_stage"])
+	require.Equal(t, true, row["final_envelope_capture_enabled"])
+	require.Equal(t, true, row["final_message_array_present"])
+	require.Equal(t, false, row["has_tool_results"])
+	require.Equal(t, "explicit_message", row["resolved_user_input_source"])
+	require.Equal(t, false, row["final_contains_information_request"])
+	require.Equal(t, float64(1), row["added_blobs_count"])
+	require.Nil(t, row["raw_request_path"])
+	require.Nil(t, row["raw_response_path"])
+}
+
+func TestAugmentLegacyFinalEnvelopeCaptureKeepsToolResultOnlyChatStream(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-P1B-TEST-TOOL")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"requestNodes":[{
+			"id":1,
+			"type":1,
+			"toolResultNode":{
+				"toolUseId":"codebase-retrieval-1",
+				"content":"[CODEBASE_RETRIEVAL]\nbackend/internal/server/routes/gateway.go"
+			}
+		}],
+		"blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, nonEmptyLines(t, resp.Body))
+
+	rows := readAugmentCaptureSummaryRows(t, captureDir)
+	require.Len(t, rows, 1)
+	row := rows[0]
+	require.Equal(t, "tool_result_followup", row["resolved_user_input_source"])
+	require.Equal(t, true, row["has_tool_results"])
+	require.Equal(t, true, row["final_message_array_present"])
+	require.Equal(t, float64(1), row["final_tool_result_count"])
+	require.Equal(t, true, row["final_contains_codebase_retrieval_marker"])
+	require.Contains(t, row["final_codebase_retrieval_marker_roles"], "tool")
+}
+
+func TestAugmentLegacyPromptEnhancerDoesNotWriteFinalEnvelopeRow(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-P1B-TEST-PROMPT")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"nodes":[{"id":1,"type":0,"text_node":{"content":"把这个仓库问题改写成更清晰的 Prompt"}}],
+		"user_guidelines":"保留中文"
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/prompt-enhancer", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	_, err = os.Stat(filepath.Join(captureDir, "safe-summary.jsonl"))
+	require.True(t, os.IsNotExist(err), "prompt-enhancer must not emit a final-envelope row")
+}
+
 func TestAugmentLegacyChatStreamAcceptsPromptAndCamelCaseRequestNodes(t *testing.T) {
 	t.Parallel()
 
@@ -2405,4 +2527,32 @@ func nonEmptyLines(t *testing.T, r io.Reader) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+func readAugmentCaptureSummaryRows(t *testing.T, captureDir string) []map[string]any {
+	t.Helper()
+	f, err := os.Open(filepath.Join(captureDir, "safe-summary.jsonl"))
+	require.NoError(t, err)
+	defer f.Close()
+
+	rows := make([]map[string]any, 0)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var row map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &row))
+		rows = append(rows, row)
+	}
+	require.NoError(t, scanner.Err())
+	return rows
+}
+
+func readAugmentCaptureRawText(t *testing.T, captureDir string, relativePath string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(captureDir, filepath.FromSlash(relativePath)))
+	require.NoError(t, err)
+	return string(body)
 }

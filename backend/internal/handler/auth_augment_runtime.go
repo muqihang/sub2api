@@ -1781,13 +1781,12 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletion(
 	ctx context.Context,
 	c *gin.Context,
 	bearer string,
-	body map[string]any,
+	endpoint string,
+	reqBody []byte,
+	captureMeta *augmentLegacyFinalEnvelopeCaptureMeta,
 ) (*augmentLegacyLoopbackChatResult, error) {
 	baseURL := h.augmentLegacyLoopbackBaseURL(c)
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	startedAt := time.Now()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/openai/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
@@ -1796,6 +1795,7 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletion(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+bearer)
 	augmentLegacySetLoopbackCodexHeaders(httpReq)
+	h.augmentLegacyCaptureFinalEnvelope(c, endpoint, reqBody, nil, 0, nil, startedAt, augmentLegacyCaptureMetaOrZero(captureMeta))
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -1826,15 +1826,13 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletionStream(
 	ctx context.Context,
 	c *gin.Context,
 	bearer string,
-	body map[string]any,
+	endpoint string,
+	reqBody []byte,
+	captureMeta *augmentLegacyFinalEnvelopeCaptureMeta,
 	onChunk func(apicompat.ChatCompletionsChunk) error,
 ) error {
 	baseURL := h.augmentLegacyLoopbackBaseURL(c)
-	body["stream"] = true
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
+	startedAt := time.Now()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/openai/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
@@ -1843,6 +1841,7 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletionStream(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+bearer)
 	augmentLegacySetLoopbackCodexHeaders(httpReq)
+	h.augmentLegacyCaptureFinalEnvelope(c, endpoint, reqBody, nil, 0, nil, startedAt, augmentLegacyCaptureMetaOrZero(captureMeta))
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -2060,8 +2059,14 @@ func (h *AuthHandler) AugmentLegacyChat(c *gin.Context) {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, augmentLegacyChatChunk(err.Error(), nil, ptrInt(augmentStopReasonEndTurn), unknown, checkpointNotFound))
+		return
+	}
+	captureMeta := augmentLegacyBuildFinalEnvelopeCaptureMeta(req, resolvedUserInput)
 
-	res, err := h.augmentLegacyLoopbackChatCompletion(c.Request.Context(), c, bearer, body)
+	res, err := h.augmentLegacyLoopbackChatCompletion(c.Request.Context(), c, bearer, "chat", reqBody, &captureMeta)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, augmentLegacyChatChunk(err.Error(), nil, ptrInt(augmentStopReasonEndTurn), unknown, checkpointNotFound))
 		return
@@ -2136,6 +2141,16 @@ func (h *AuthHandler) AugmentLegacyChatStream(c *gin.Context) {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
+	body["stream"] = true
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"message": "Upstream service temporarily unavailable, please retry.",
+			"type":    "upstream_error",
+		}})
+		return
+	}
+	captureMeta := augmentLegacyBuildFinalEnvelopeCaptureMeta(req, resolvedUserInput)
 	nextID := 0
 	firstChunk := true
 	streamStarted := false
@@ -2169,7 +2184,7 @@ func (h *AuthHandler) AugmentLegacyChatStream(c *gin.Context) {
 		return emitChunk(chunk)
 	}
 
-	err = h.augmentLegacyLoopbackChatCompletionStream(c.Request.Context(), c, bearer, body, func(streamChunk apicompat.ChatCompletionsChunk) error {
+	err = h.augmentLegacyLoopbackChatCompletionStream(c.Request.Context(), c, bearer, "chat-stream", reqBody, &captureMeta, func(streamChunk apicompat.ChatCompletionsChunk) error {
 		pendingChunks := make([]gin.H, 0, 4)
 		if len(streamChunk.Choices) > 0 {
 			choice := streamChunk.Choices[0]
@@ -2243,11 +2258,15 @@ func (h *AuthHandler) augmentLegacySimpleTextPromptCompletion(
 	}
 	messages = append(messages, augmentLegacyMakeMessage("user", user))
 	resolvedModel := h.augmentLegacyResolveModel(c, principal, model)
-	return h.augmentLegacyLoopbackChatCompletion(ctx, c, bearer, map[string]any{
+	reqBody, err := json.Marshal(map[string]any{
 		"model":    resolvedModel,
 		"messages": messages,
 		"stream":   false,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return h.augmentLegacyLoopbackChatCompletion(ctx, c, bearer, "simple-text-prompt", reqBody, nil)
 }
 
 func (h *AuthHandler) AugmentLegacyPromptEnhancer(c *gin.Context) {
