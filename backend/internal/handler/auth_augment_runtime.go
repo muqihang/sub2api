@@ -1276,6 +1276,50 @@ func augmentLegacyResolveChatUserMessage(req augmentLegacyChatRequest) string {
 	return augmentLegacyResolveChatUserInput(req).Text
 }
 
+func augmentLegacyCaptureCaseIDFromChatRequest(req augmentLegacyChatRequest) string {
+	candidates := []string{
+		augmentLegacyResolveChatUserInput(req).Text,
+		req.Message,
+		req.Prompt,
+		req.Instruction,
+		req.ConversationID,
+		req.ConversationIDCamel,
+		req.Path,
+		req.SelectedCode,
+		req.SelectedCodeCamel,
+		req.SelectedText,
+		req.SelectedTextCamel,
+	}
+	for _, item := range req.ChatHistory {
+		candidates = append(candidates,
+			item.RequestMessage,
+			item.RequestMessageCamel,
+			item.Message,
+			item.ResponseText,
+			item.ResponseTextCamel,
+			item.Response,
+			item.Text,
+		)
+	}
+	for _, item := range req.ChatHistoryCamel {
+		candidates = append(candidates,
+			item.RequestMessage,
+			item.RequestMessageCamel,
+			item.Message,
+			item.ResponseText,
+			item.ResponseTextCamel,
+			item.Response,
+			item.Text,
+		)
+	}
+	for _, candidate := range candidates {
+		if match := augmentLegacyCaseMarkerPattern.FindStringSubmatch(candidate); len(match) == 2 {
+			return sanitizeCaptureComponent(match[1])
+		}
+	}
+	return ""
+}
+
 func augmentLegacyResolveInstructionText(instruction string, nodes []augmentLegacyChatNode) string {
 	if text := strings.TrimSpace(instruction); text != "" {
 		return text

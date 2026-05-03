@@ -20,6 +20,7 @@ import (
 
 type augmentLegacyFinalEnvelopeCaptureMeta struct {
 	Enabled             bool
+	CaseID              string
 	InformationRequest  string
 	ResolvedInputSource string
 	HasToolResults      bool
@@ -61,7 +62,7 @@ func (h *AuthHandler) augmentLegacyCaptureFinalEnvelope(
 		return
 	}
 
-	caseID := augmentLegacyCaptureCaseID(requestBody)
+	caseID := augmentLegacyCaptureCaseID(requestBody, meta)
 	requestID := augmentLegacyCaptureRequestID(c)
 	rawDir := filepath.Join(captureDir, "raw", caseID)
 
@@ -141,7 +142,10 @@ func augmentLegacyCaptureDir() string {
 	return absDir
 }
 
-func augmentLegacyCaptureCaseID(requestBody []byte) string {
+func augmentLegacyCaptureCaseID(requestBody []byte, meta augmentLegacyFinalEnvelopeCaptureMeta) string {
+	if caseID := sanitizeCaptureComponent(meta.CaseID); caseID != "" {
+		return caseID
+	}
 	if match := augmentLegacyCaseMarkerPattern.FindStringSubmatch(string(requestBody)); len(match) == 2 {
 		return sanitizeCaptureComponent(match[1])
 	}
@@ -190,7 +194,7 @@ func augmentLegacyBuildFinalEnvelopeSummary(
 	return map[string]any{
 		"schema_version":                           1,
 		"captured_at":                              time.Now().UTC().Format(time.RFC3339Nano),
-		"case_id":                                  augmentLegacyCaptureCaseID(requestBody),
+		"case_id":                                  augmentLegacyCaptureCaseID(requestBody, meta),
 		"request_id":                               augmentLegacyCaptureRequestID(c),
 		"endpoint":                                 endpoint,
 		"route":                                    "local_gateway",
@@ -639,6 +643,7 @@ func appendJSONLine(path string, value any) error {
 func augmentLegacyBuildFinalEnvelopeCaptureMeta(req augmentLegacyChatRequest, resolved augmentLegacyResolvedChatUserInput) augmentLegacyFinalEnvelopeCaptureMeta {
 	return augmentLegacyFinalEnvelopeCaptureMeta{
 		Enabled:             true,
+		CaseID:              augmentLegacyCaptureCaseIDFromChatRequest(req),
 		InformationRequest:  resolved.Text,
 		ResolvedInputSource: resolved.Source,
 		HasToolResults:      resolved.HasToolResults,

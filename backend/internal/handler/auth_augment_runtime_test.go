@@ -535,6 +535,52 @@ func TestAugmentLegacyFinalEnvelopeCaptureWritesPrePostSummaryWithoutRaw(t *test
 	require.Nil(t, row["raw_response_path"])
 }
 
+func TestAugmentLegacyCaptureCaseIDFromChatRequest(t *testing.T) {
+	req := augmentLegacyChatRequest{
+		Message: "[CE-A-Q1-PATH-001] 请检索 route 注册。",
+	}
+
+	require.Equal(t, "CE-A-Q1-PATH-001", augmentLegacyCaptureCaseIDFromChatRequest(req))
+}
+
+func TestAugmentLegacyFinalEnvelopeCapturePrefersIngressCaseIDOverFallbackEnv(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-Q1-FALLBACK")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"message":"[CE-A-Q1-PATH-001] 请检索 route 注册。",
+		"blobs":{"checkpoint_id":"","added_blobs":["blob-a"],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, nonEmptyLines(t, resp.Body))
+
+	rows := readAugmentCaptureSummaryRows(t, captureDir)
+	require.Len(t, rows, 1)
+	row := rows[0]
+	require.Equal(t, "CE-A-Q1-PATH-001", row["case_id"])
+	rawRequestPath, ok := row["raw_request_path"].(string)
+	require.True(t, ok)
+	require.Contains(t, rawRequestPath, "CE-A-Q1-PATH-001")
+	require.Nil(t, row["raw_response_path"])
+}
+
 func TestAugmentLegacyFinalEnvelopeCaptureKeepsToolResultOnlyChatStream(t *testing.T) {
 	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
 	defer server.Close()
