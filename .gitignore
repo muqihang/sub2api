@@ -143,5 +143,8 @@ aicodex
 output/
 codex-manager/
 
+# Local runtime data may contain state and pricing caches.
+data/
+
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md

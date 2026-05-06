@@ -685,7 +685,7 @@ export const BACKEND_MODE_ALLOWED_PATHS = [
   '/key-usage',
   '/setup',
   '/payment/result',
-  '/plugin/augment/quick-login'
+  '/plugin/augment/quick-login',
 ]
 const BACKEND_MODE_CALLBACK_PATHS = [
   '/auth/callback',

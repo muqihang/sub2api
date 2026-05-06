@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -90,6 +91,51 @@ func TestOpenAIGatewayService_Forward_NonCompactRequestIgnoresCompactOnlyModelMa
 	require.Equal(t, "gpt-5.4", result.Model)
 	require.Equal(t, "gpt-5.4", result.UpstreamModel)
 	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
+}
+
+func TestOpenAIGatewayService_APIKeyPassthroughAppliesModelMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.1-codex-mini","stream":false,"instructions":"mapping-test","input":"hello"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-apikey-map"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_apikey_map","status":"completed","model":"gpt-5.4-mini","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          4,
+		Name:        "openai-apikey-pass",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://example.test",
+			"model_mapping": map[string]any{
+				"gpt-5.1-codex-mini": "gpt-5.4-mini",
+			},
+		},
+		Extra:       map[string]any{"openai_passthrough": true},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "gpt-5.1-codex-mini", result.Model)
+	require.Equal(t, "gpt-5.4-mini", result.UpstreamModel)
+	require.Equal(t, "gpt-5.4-mini", gjson.GetBytes(upstream.lastBody, "model").String())
 }
 
 func TestOpenAIGatewayService_OAuthPassthrough_CompactOnlyModelMappingOverridesUpstreamModel(t *testing.T) {

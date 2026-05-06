@@ -647,7 +647,7 @@ func (h *AuthHandler) AugmentLegacyCodebaseRetrieval(c *gin.Context) {
 
 	namespace := h.augmentLegacyNamespace(c, principal)
 	records := h.augmentPluginService.ResolveLegacyBlobsForNamespace(namespace, req.Blobs.CheckpointID, req.Blobs.AddedBlobs, req.Blobs.DeletedBlobs)
-	augmentLegacyTrace(c, "codebase_retrieval", "namespace", namespace, "checkpoint_id", strings.TrimSpace(req.Blobs.CheckpointID), "record_count", len(records.Records), "checkpoint_not_found", records.CheckpointNotFound, "resolution_reason", records.ResolutionReason)
+	augmentLegacyTrace(c, "codebase_retrieval", "namespace", namespace, "checkpoint_id", strings.TrimSpace(req.Blobs.CheckpointID), "record_count", len(records.Records), "unknown_count", len(records.Unknown), "active_blob_count", len(records.Records)+len(records.Unknown), "added_blob_count", len(req.Blobs.AddedBlobs), "deleted_blob_count", len(req.Blobs.DeletedBlobs), "checkpoint_not_found", records.CheckpointNotFound, "resolution_reason", records.ResolutionReason)
 	text := h.augmentPluginService.BuildLegacyFormattedRetrieval(req.InformationRequest, records, req.MaxOutputLength)
 	c.JSON(http.StatusOK, gin.H{"formatted_retrieval": text})
 }
@@ -817,6 +817,13 @@ func augmentLegacyNormalizeHistoryItems(items []augmentLegacyChatHistoryItem) []
 		augmentLegacyNormalizeHistoryItem(&items[i])
 	}
 	return items
+}
+
+func augmentLegacyHistoryRequestText(item augmentLegacyChatHistoryItem) string {
+	if text := strings.TrimSpace(item.RequestMessage); text != "" {
+		return text
+	}
+	return strings.TrimSpace(augmentLegacyExtractRequestNodeText(item.RequestNodes))
 }
 
 func augmentLegacyNormalizeNodeType(node augmentLegacyChatNode) int {
@@ -1120,6 +1127,89 @@ func augmentLegacyExtractToolCallMessages(nodes []augmentLegacyChatNode) []apico
 	return out
 }
 
+func augmentLegacyFilterToolCallMessagesWithResults(toolCalls, toolResults []apicompat.ChatMessage) []apicompat.ChatMessage {
+	if len(toolCalls) == 0 || len(toolResults) == 0 {
+		return nil
+	}
+	resultIDs := make(map[string]struct{}, len(toolResults))
+	for _, msg := range toolResults {
+		if id := strings.TrimSpace(msg.ToolCallID); id != "" {
+			resultIDs[id] = struct{}{}
+		}
+	}
+	if len(resultIDs) == 0 {
+		return nil
+	}
+
+	out := make([]apicompat.ChatMessage, 0, len(toolCalls))
+	for _, msg := range toolCalls {
+		if len(msg.ToolCalls) == 0 {
+			continue
+		}
+		filtered := make([]apicompat.ChatToolCall, 0, len(msg.ToolCalls))
+		for _, toolCall := range msg.ToolCalls {
+			if _, ok := resultIDs[strings.TrimSpace(toolCall.ID)]; ok {
+				filtered = append(filtered, toolCall)
+			}
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		msg.ToolCalls = filtered
+		out = append(out, msg)
+	}
+	return out
+}
+
+func augmentLegacyToolCallIDsFromMessages(toolCalls []apicompat.ChatMessage) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, msg := range toolCalls {
+		for _, toolCall := range msg.ToolCalls {
+			if id := strings.TrimSpace(toolCall.ID); id != "" {
+				ids[id] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+func augmentLegacySyntheticToolCallMessagesForResults(toolResults []apicompat.ChatMessage, existingIDs map[string]struct{}) []apicompat.ChatMessage {
+	if len(toolResults) == 0 {
+		return nil
+	}
+	out := make([]apicompat.ChatMessage, 0, len(toolResults))
+	for _, result := range toolResults {
+		toolCallID := strings.TrimSpace(result.ToolCallID)
+		if toolCallID == "" {
+			continue
+		}
+		if _, ok := existingIDs[toolCallID]; ok {
+			continue
+		}
+		existingIDs[toolCallID] = struct{}{}
+		out = append(out, apicompat.ChatMessage{
+			Role: "assistant",
+			ToolCalls: []apicompat.ChatToolCall{{
+				ID:   toolCallID,
+				Type: "function",
+				Function: apicompat.ChatFunctionCall{
+					Name:      augmentLegacyInferToolNameForToolResult(result),
+					Arguments: "{}",
+				},
+			}},
+		})
+	}
+	return out
+}
+
+func augmentLegacyInferToolNameForToolResult(result apicompat.ChatMessage) string {
+	content, err := decodeOpenAIMessageContent(result.Content)
+	if err == nil && strings.Contains(strings.ToUpper(content), "[CODEBASE_RETRIEVAL]") {
+		return "codebase-retrieval"
+	}
+	return "codebase-retrieval"
+}
+
 func augmentLegacyResolveChatUserInput(req augmentLegacyChatRequest) augmentLegacyResolvedChatUserInput {
 	parts := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
@@ -1184,6 +1274,50 @@ func augmentLegacyResolveChatUserInput(req augmentLegacyChatRequest) augmentLega
 
 func augmentLegacyResolveChatUserMessage(req augmentLegacyChatRequest) string {
 	return augmentLegacyResolveChatUserInput(req).Text
+}
+
+func augmentLegacyCaptureCaseIDFromChatRequest(req augmentLegacyChatRequest) string {
+	candidates := []string{
+		augmentLegacyResolveChatUserInput(req).Text,
+		req.Message,
+		req.Prompt,
+		req.Instruction,
+		req.ConversationID,
+		req.ConversationIDCamel,
+		req.Path,
+		req.SelectedCode,
+		req.SelectedCodeCamel,
+		req.SelectedText,
+		req.SelectedTextCamel,
+	}
+	for _, item := range req.ChatHistory {
+		candidates = append(candidates,
+			item.RequestMessage,
+			item.RequestMessageCamel,
+			item.Message,
+			item.ResponseText,
+			item.ResponseTextCamel,
+			item.Response,
+			item.Text,
+		)
+	}
+	for _, item := range req.ChatHistoryCamel {
+		candidates = append(candidates,
+			item.RequestMessage,
+			item.RequestMessageCamel,
+			item.Message,
+			item.ResponseText,
+			item.ResponseTextCamel,
+			item.Response,
+			item.Text,
+		)
+	}
+	for _, candidate := range candidates {
+		if match := augmentLegacyCaseMarkerPattern.FindStringSubmatch(candidate); len(match) == 2 {
+			return sanitizeCaptureComponent(match[1])
+		}
+	}
+	return ""
 }
 
 func augmentLegacyResolveInstructionText(instruction string, nodes []augmentLegacyChatNode) string {
@@ -1396,13 +1530,19 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 	}
 
 	for _, item := range req.ChatHistory {
-		if text := strings.TrimSpace(item.RequestMessage); text != "" {
+		if text := augmentLegacyHistoryRequestText(item); text != "" {
 			messages = append(messages, augmentLegacyMakeMessage("user", text))
 		}
-		if toolCalls := augmentLegacyExtractToolCallMessages(item.ResponseNodes); len(toolCalls) > 0 {
+		toolResults := augmentLegacyExtractToolResultMessages(item.RequestNodes)
+		if toolCalls := augmentLegacyFilterToolCallMessagesWithResults(augmentLegacyExtractToolCallMessages(item.ResponseNodes), toolResults); len(toolCalls) > 0 {
 			messages = append(messages, toolCalls...)
+			if syntheticToolCalls := augmentLegacySyntheticToolCallMessagesForResults(toolResults, augmentLegacyToolCallIDsFromMessages(toolCalls)); len(syntheticToolCalls) > 0 {
+				messages = append(messages, syntheticToolCalls...)
+			}
+		} else if syntheticToolCalls := augmentLegacySyntheticToolCallMessagesForResults(toolResults, map[string]struct{}{}); len(syntheticToolCalls) > 0 {
+			messages = append(messages, syntheticToolCalls...)
 		}
-		if toolResults := augmentLegacyExtractToolResultMessages(item.RequestNodes); len(toolResults) > 0 {
+		if len(toolResults) > 0 {
 			messages = append(messages, toolResults...)
 		}
 		if text := strings.TrimSpace(item.ResponseText); text != "" {
@@ -1416,6 +1556,9 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 
 	currentToolResults := augmentLegacyExtractToolResultMessages(augmentLegacyMergeNodes(req.Nodes, req.StructuredRequestNodes, req.RequestNodes))
 	if len(currentToolResults) > 0 {
+		if syntheticToolCalls := augmentLegacySyntheticToolCallMessagesForResults(currentToolResults, map[string]struct{}{}); len(syntheticToolCalls) > 0 {
+			messages = append(messages, syntheticToolCalls...)
+		}
 		messages = append(messages, currentToolResults...)
 	}
 
@@ -1438,6 +1581,39 @@ func (h *AuthHandler) augmentLegacyBuildChatMessages(req augmentLegacyChatReques
 		messages = append(messages, augmentLegacyMakeMessage("user", userText))
 	}
 	return messages
+}
+
+func augmentLegacyLoopbackPromptCacheKey(ginContext *gin.Context, req augmentLegacyChatRequest) string {
+	sessionID := ""
+	if ginContext != nil {
+		sessionID = strings.TrimSpace(ginContext.GetHeader("x-request-session-id"))
+	}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if sessionID == "" && conversationID == "" {
+		return ""
+	}
+
+	parts := []string{"augment_legacy"}
+	if sessionID != "" {
+		parts = append(parts, "session="+sessionID)
+	}
+	if conversationID != "" {
+		parts = append(parts, "conversation="+conversationID)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return "augment_legacy_" + hex.EncodeToString(sum[:8])
+}
+
+func augmentLegacyAttachLoopbackPromptCacheKey(ginContext *gin.Context, req augmentLegacyChatRequest, body map[string]any) {
+	if body == nil {
+		return
+	}
+	if existing, ok := body["prompt_cache_key"].(string); ok && strings.TrimSpace(existing) != "" {
+		return
+	}
+	if cacheKey := augmentLegacyLoopbackPromptCacheKey(ginContext, req); cacheKey != "" {
+		body["prompt_cache_key"] = cacheKey
+	}
 }
 
 func (h *AuthHandler) augmentLegacyResolveRetrieval(c *gin.Context, principal *service.AugmentPluginPrincipal, req augmentLegacyChatRequest) (string, []string, bool) {
@@ -1466,6 +1642,8 @@ func (h *AuthHandler) augmentLegacyResolveRetrieval(c *gin.Context, principal *s
 		"resolve_retrieval",
 		"namespace", namespace,
 		"checkpoint_id", strings.TrimSpace(req.Blobs.CheckpointID),
+		"record_count", len(resolved.Records),
+		"active_blob_count", len(resolved.Records)+len(resolved.Unknown),
 		"added_blobs", len(req.Blobs.AddedBlobs),
 		"deleted_blobs", len(req.Blobs.DeletedBlobs),
 		"unknown_blobs", len(resolved.Unknown),
@@ -1647,13 +1825,12 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletion(
 	ctx context.Context,
 	c *gin.Context,
 	bearer string,
-	body map[string]any,
+	endpoint string,
+	reqBody []byte,
+	captureMeta *augmentLegacyFinalEnvelopeCaptureMeta,
 ) (*augmentLegacyLoopbackChatResult, error) {
 	baseURL := h.augmentLegacyLoopbackBaseURL(c)
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	startedAt := time.Now()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/openai/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
@@ -1661,6 +1838,8 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletion(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+bearer)
+	augmentLegacySetLoopbackCodexHeaders(httpReq)
+	h.augmentLegacyCaptureFinalEnvelope(c, endpoint, reqBody, nil, 0, nil, startedAt, augmentLegacyCaptureMetaOrZero(captureMeta))
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -1691,15 +1870,13 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletionStream(
 	ctx context.Context,
 	c *gin.Context,
 	bearer string,
-	body map[string]any,
+	endpoint string,
+	reqBody []byte,
+	captureMeta *augmentLegacyFinalEnvelopeCaptureMeta,
 	onChunk func(apicompat.ChatCompletionsChunk) error,
 ) error {
 	baseURL := h.augmentLegacyLoopbackBaseURL(c)
-	body["stream"] = true
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
+	startedAt := time.Now()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/openai/v1/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
@@ -1707,6 +1884,8 @@ func (h *AuthHandler) augmentLegacyLoopbackChatCompletionStream(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+bearer)
+	augmentLegacySetLoopbackCodexHeaders(httpReq)
+	h.augmentLegacyCaptureFinalEnvelope(c, endpoint, reqBody, nil, 0, nil, startedAt, augmentLegacyCaptureMetaOrZero(captureMeta))
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -1868,6 +2047,21 @@ func augmentLegacyWriteNDJSON(c *gin.Context, chunks ...gin.H) {
 	}
 }
 
+func augmentLegacySetLoopbackCodexHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(req.Header.Get("User-Agent")) == "" {
+		req.Header.Set("User-Agent", "codex_cli_rs/0.125.0")
+	}
+	if strings.TrimSpace(req.Header.Get("originator")) == "" {
+		req.Header.Set("originator", "codex_cli_rs")
+	}
+	if strings.TrimSpace(req.Header.Get("OpenAI-Beta")) == "" {
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
+	}
+}
+
 func (h *AuthHandler) AugmentLegacyChat(c *gin.Context) {
 	if h.augmentPluginService == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
@@ -1904,12 +2098,19 @@ func (h *AuthHandler) AugmentLegacyChat(c *gin.Context) {
 		"messages": messages,
 		"stream":   false,
 	}
+	augmentLegacyAttachLoopbackPromptCacheKey(c, req, body)
 	if tools := h.augmentLegacyToolDefinitionsToOpenAI(req.ToolDefinitions); len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, augmentLegacyChatChunk(err.Error(), nil, ptrInt(augmentStopReasonEndTurn), unknown, checkpointNotFound))
+		return
+	}
+	captureMeta := augmentLegacyBuildFinalEnvelopeCaptureMeta(req, resolvedUserInput)
 
-	res, err := h.augmentLegacyLoopbackChatCompletion(c.Request.Context(), c, bearer, body)
+	res, err := h.augmentLegacyLoopbackChatCompletion(c.Request.Context(), c, bearer, "chat", reqBody, &captureMeta)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, augmentLegacyChatChunk(err.Error(), nil, ptrInt(augmentStopReasonEndTurn), unknown, checkpointNotFound))
 		return
@@ -1979,18 +2180,32 @@ func (h *AuthHandler) AugmentLegacyChatStream(c *gin.Context) {
 		"model":    model,
 		"messages": messages,
 	}
+	augmentLegacyAttachLoopbackPromptCacheKey(c, req, body)
 	if tools := h.augmentLegacyToolDefinitionsToOpenAI(req.ToolDefinitions); len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
 	}
-	c.Header("Content-Type", "application/x-ndjson")
-	c.Status(http.StatusOK)
-
+	body["stream"] = true
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+			"message": "Upstream service temporarily unavailable, please retry.",
+			"type":    "upstream_error",
+		}})
+		return
+	}
+	captureMeta := augmentLegacyBuildFinalEnvelopeCaptureMeta(req, resolvedUserInput)
 	nextID := 0
 	firstChunk := true
+	streamStarted := false
 	finalStopReason := augmentStopReasonEndTurn
 	toolCallBuffer := newAugmentLegacyStreamToolCallBuffer()
 	emitChunk := func(chunk gin.H) error {
+		if !streamStarted {
+			c.Header("Content-Type", "application/x-ndjson")
+			c.Status(http.StatusOK)
+			streamStarted = true
+		}
 		b, err := json.Marshal(chunk)
 		if err != nil {
 			return err
@@ -2013,7 +2228,7 @@ func (h *AuthHandler) AugmentLegacyChatStream(c *gin.Context) {
 		return emitChunk(chunk)
 	}
 
-	err = h.augmentLegacyLoopbackChatCompletionStream(c.Request.Context(), c, bearer, body, func(streamChunk apicompat.ChatCompletionsChunk) error {
+	err = h.augmentLegacyLoopbackChatCompletionStream(c.Request.Context(), c, bearer, "chat-stream", reqBody, &captureMeta, func(streamChunk apicompat.ChatCompletionsChunk) error {
 		pendingChunks := make([]gin.H, 0, 4)
 		if len(streamChunk.Choices) > 0 {
 			choice := streamChunk.Choices[0]
@@ -2056,6 +2271,13 @@ func (h *AuthHandler) AugmentLegacyChatStream(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		if !streamStarted {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+				"message": "Upstream service temporarily unavailable, please retry.",
+				"type":    "upstream_error",
+			}})
+			return
+		}
 		_ = emitWithMeta(err.Error(), nil, ptrInt(augmentStopReasonEndTurn))
 		return
 	}
@@ -2080,11 +2302,15 @@ func (h *AuthHandler) augmentLegacySimpleTextPromptCompletion(
 	}
 	messages = append(messages, augmentLegacyMakeMessage("user", user))
 	resolvedModel := h.augmentLegacyResolveModel(c, principal, model)
-	return h.augmentLegacyLoopbackChatCompletion(ctx, c, bearer, map[string]any{
+	reqBody, err := json.Marshal(map[string]any{
 		"model":    resolvedModel,
 		"messages": messages,
 		"stream":   false,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return h.augmentLegacyLoopbackChatCompletion(ctx, c, bearer, "simple-text-prompt", reqBody, nil)
 }
 
 func (h *AuthHandler) AugmentLegacyPromptEnhancer(c *gin.Context) {

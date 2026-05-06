@@ -187,6 +187,29 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return nil, fmt.Errorf("remarshal after codex transform: %w", err)
 		}
 	}
+	if account.Type == AccountTypeAPIKey {
+		var reqBody map[string]any
+		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
+			return nil, fmt.Errorf("unmarshal for api key responses normalization: %w", err)
+		}
+		modifiedAPIKeyBody := false
+		if trimmedKey := strings.TrimSpace(promptCacheKey); trimmedKey != "" {
+			if existing, ok := reqBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
+				reqBody["prompt_cache_key"] = trimmedKey
+				modifiedAPIKeyBody = true
+			}
+		}
+		if applyInstructions(reqBody, false) {
+			modifiedAPIKeyBody = true
+		}
+		if modifiedAPIKeyBody {
+			updated, err := json.Marshal(reqBody)
+			if err != nil {
+				return nil, fmt.Errorf("remarshal after api key responses normalization: %w", err)
+			}
+			responsesBody = updated
+		}
+	}
 
 	// 4b. Apply OpenAI fast policy (may filter service_tier or block the request).
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, responsesBody)
@@ -214,7 +237,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	if promptCacheKey != "" {
-		upstreamReq.Header.Set("session_id", generateSessionUUID(promptCacheKey))
+		apiKeyID := getAPIKeyIDFromContext(c)
+		upstreamReq.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey)))
 	}
 
 	// 7. Send request

@@ -293,6 +293,17 @@ func TestAugmentLegacyRuntimeCompatibilityEndpoints(t *testing.T) {
 	require.Contains(t, nextStreamBody, "next_edit")
 }
 
+func TestAugmentLegacySetLoopbackCodexHeaders(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", nil)
+	augmentLegacySetLoopbackCodexHeaders(req)
+
+	require.Equal(t, "codex_cli_rs/0.125.0", req.Header.Get("User-Agent"))
+	require.Equal(t, "codex_cli_rs", req.Header.Get("originator"))
+	require.Equal(t, "responses=experimental", req.Header.Get("OpenAI-Beta"))
+}
+
 func TestAugmentLegacyChatUsesNodeTextAndKeepsUserQuestionSeparateFromRetrieval(t *testing.T) {
 	t.Parallel()
 
@@ -477,6 +488,174 @@ func TestAugmentLegacyPromptEnhancerUsesNodeText(t *testing.T) {
 	content := stringValueOrRawJSON(t, msg["content"])
 	require.Contains(t, content, "把这个仓库问题改写成更清晰的 Prompt")
 	require.Contains(t, content, "保留中文")
+}
+
+func TestAugmentLegacyFinalEnvelopeCaptureWritesPrePostSummaryWithoutRaw(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-P1B-TEST-PREPOST")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"message":"[CE-A-P1B-TEST-PREPOST] 请总结当前仓库结构",
+		"blobs":{"checkpoint_id":"","added_blobs":["blob-a"],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, nonEmptyLines(t, resp.Body))
+
+	rows := readAugmentCaptureSummaryRows(t, captureDir)
+	require.Len(t, rows, 1)
+	row := rows[0]
+	require.Equal(t, "chat-stream", row["endpoint"])
+	require.Equal(t, "local_gateway", row["route"])
+	require.Equal(t, "final_envelope", row["reason"])
+	require.Equal(t, "pre_post", row["final_capture_stage"])
+	require.Equal(t, true, row["final_envelope_capture_enabled"])
+	require.Equal(t, true, row["final_message_array_present"])
+	require.Equal(t, false, row["has_tool_results"])
+	require.Equal(t, "explicit_message", row["resolved_user_input_source"])
+	require.Equal(t, false, row["final_contains_information_request"])
+	require.Equal(t, float64(1), row["added_blobs_count"])
+	require.Nil(t, row["raw_request_path"])
+	require.Nil(t, row["raw_response_path"])
+}
+
+func TestAugmentLegacyCaptureCaseIDFromChatRequest(t *testing.T) {
+	req := augmentLegacyChatRequest{
+		Message: "[CE-A-Q1-PATH-001] 请检索 route 注册。",
+	}
+
+	require.Equal(t, "CE-A-Q1-PATH-001", augmentLegacyCaptureCaseIDFromChatRequest(req))
+}
+
+func TestAugmentLegacyFinalEnvelopeCapturePrefersIngressCaseIDOverFallbackEnv(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-Q1-FALLBACK")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"message":"[CE-A-Q1-PATH-001] 请检索 route 注册。",
+		"blobs":{"checkpoint_id":"","added_blobs":["blob-a"],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, nonEmptyLines(t, resp.Body))
+
+	rows := readAugmentCaptureSummaryRows(t, captureDir)
+	require.Len(t, rows, 1)
+	row := rows[0]
+	require.Equal(t, "CE-A-Q1-PATH-001", row["case_id"])
+	rawRequestPath, ok := row["raw_request_path"].(string)
+	require.True(t, ok)
+	require.Contains(t, rawRequestPath, "CE-A-Q1-PATH-001")
+	require.Nil(t, row["raw_response_path"])
+}
+
+func TestAugmentLegacyFinalEnvelopeCaptureKeepsToolResultOnlyChatStream(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-P1B-TEST-TOOL")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"requestNodes":[{
+			"id":1,
+			"type":1,
+			"toolResultNode":{
+				"toolUseId":"codebase-retrieval-1",
+				"content":"[CODEBASE_RETRIEVAL]\nbackend/internal/server/routes/gateway.go"
+			}
+		}],
+		"blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, nonEmptyLines(t, resp.Body))
+
+	rows := readAugmentCaptureSummaryRows(t, captureDir)
+	require.Len(t, rows, 1)
+	row := rows[0]
+	require.Equal(t, "tool_result_followup", row["resolved_user_input_source"])
+	require.Equal(t, true, row["has_tool_results"])
+	require.Equal(t, true, row["final_message_array_present"])
+	require.Equal(t, float64(1), row["final_tool_result_count"])
+	require.Equal(t, true, row["final_contains_codebase_retrieval_marker"])
+	require.Contains(t, row["final_codebase_retrieval_marker_roles"], "tool")
+}
+
+func TestAugmentLegacyPromptEnhancerDoesNotWriteFinalEnvelopeRow(t *testing.T) {
+	server, apiKey, _ := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	captureDir := filepath.Join(t.TempDir(), "captures", "context-engine-envelope")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_ENVELOPE", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_FINAL", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_RAW", "1")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_CASE_ID", "CE-A-P1B-TEST-PROMPT")
+	t.Setenv("AUGMENT_CAPTURE_CONTEXT_ENGINE_DIR", captureDir)
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"nodes":[{"id":1,"type":0,"text_node":{"content":"把这个仓库问题改写成更清晰的 Prompt"}}],
+		"user_guidelines":"保留中文"
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/prompt-enhancer", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	_, err = os.Stat(filepath.Join(captureDir, "safe-summary.jsonl"))
+	require.True(t, os.IsNotExist(err), "prompt-enhancer must not emit a final-envelope row")
 }
 
 func TestAugmentLegacyChatStreamAcceptsPromptAndCamelCaseRequestNodes(t *testing.T) {
@@ -755,6 +934,70 @@ func TestAugmentLegacyChatStreamAcceptsToolFollowupHistoryShape(t *testing.T) {
 	require.True(t, sawToolResult)
 }
 
+func TestAugmentLegacyBuildChatMessagesDropsOrphanToolCalls(t *testing.T) {
+	t.Parallel()
+
+	h := &AuthHandler{}
+	req := augmentLegacyChatRequest{
+		Message: "Please provide a clear and concise summary of our conversation so far.",
+		ChatHistory: []augmentLegacyChatHistoryItem{
+			{
+				ResponseNodes: []augmentLegacyChatNode{
+					{
+						ID:   1,
+						Type: ptrInt(augmentResponseNodeToolUse),
+						ToolUse: &augmentLegacyToolUseNode{
+							ToolUseID: "call-orphan-1",
+							ToolName:  "codebase-retrieval",
+							InputJSON: `{"query":"repo layout"}`,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	messages := h.augmentLegacyBuildChatMessages(req, "")
+	for _, msg := range messages {
+		require.Empty(t, msg.ToolCalls)
+	}
+	require.NotEmpty(t, messages)
+	require.Equal(t, "user", messages[len(messages)-1].Role)
+}
+
+func TestAugmentLegacyBuildChatMessagesSynthesizesToolCallsForOrphanToolResults(t *testing.T) {
+	t.Parallel()
+
+	h := &AuthHandler{}
+	req := augmentLegacyChatRequest{
+		Message: "请用 3 点总结本会话到目前为止的关键结论。",
+		ChatHistory: []augmentLegacyChatHistoryItem{
+			{
+				RequestNodes: []augmentLegacyChatNode{
+					{
+						ID:   1,
+						Type: ptrInt(augmentRequestNodeToolResult),
+						ToolResultNode: &augmentLegacyToolResultNode{
+							ToolUseID: "call-result-only-1",
+							Content:   "[CODEBASE_RETRIEVAL]\nbackend/internal/handler/auth_augment_runtime.go",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	messages := h.augmentLegacyBuildChatMessages(req, "")
+	require.Len(t, messages, 3)
+	require.Equal(t, "assistant", messages[0].Role)
+	require.Len(t, messages[0].ToolCalls, 1)
+	require.Equal(t, "call-result-only-1", messages[0].ToolCalls[0].ID)
+	require.Equal(t, "codebase-retrieval", messages[0].ToolCalls[0].Function.Name)
+	require.Equal(t, "tool", messages[1].Role)
+	require.Equal(t, "call-result-only-1", messages[1].ToolCallID)
+	require.Equal(t, "user", messages[2].Role)
+}
+
 func TestAugmentLegacyChatStreamAcceptsNullCheckpointID(t *testing.T) {
 	t.Parallel()
 
@@ -821,8 +1064,14 @@ func TestAugmentLegacyChatStreamAcceptsToolResultOnlyFollowup(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(*capturedBody), &openaiBody))
 	messages, ok := openaiBody["messages"].([]any)
 	require.True(t, ok)
-	require.Len(t, messages, 1)
+	require.Len(t, messages, 2)
 	msg, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "assistant", msg["role"])
+	toolCalls, ok := msg["tool_calls"].([]any)
+	require.True(t, ok)
+	require.Len(t, toolCalls, 1)
+	msg, ok = messages[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "tool", msg["role"])
 	require.Equal(t, "codebase-retrieval-1", msg["tool_call_id"])
@@ -881,17 +1130,102 @@ func TestAugmentLegacyChatStreamToolFollowupPreservesSameTurnRequestTextWithoutR
 	require.NoError(t, json.Unmarshal([]byte(*capturedBody), &openaiBody))
 	messages, ok := openaiBody["messages"].([]any)
 	require.True(t, ok)
-	require.Len(t, messages, 2)
+	require.Len(t, messages, 3)
 
 	msg, ok := messages[0].(map[string]any)
 	require.True(t, ok)
+	require.Equal(t, "assistant", msg["role"])
+	toolCalls, ok := msg["tool_calls"].([]any)
+	require.True(t, ok)
+	require.Len(t, toolCalls, 1)
+	msg, ok = messages[1].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, "tool", msg["role"])
 	require.Equal(t, "codebase-retrieval-1", msg["tool_call_id"])
-	userMsg, ok := messages[1].(map[string]any)
+	userMsg, ok := messages[2].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "user", userMsg["role"])
 	require.Contains(t, stringValueOrRawJSON(t, userMsg["content"]), "请继续回答，不要重复问候")
 	require.NotContains(t, *capturedBody, "旧回答，不应被重新拼成新的用户请求")
+}
+
+func TestAugmentLegacyChatStreamIncludesHistoryRequestNodeText(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, capturedBody := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"message":"我刚才给你的 CE-011R-E prompt 是什么？",
+		"chat_history":[
+			{
+				"request_id":"ce-011r-e",
+				"request_message":null,
+				"response_text":"已完成。",
+				"requestNodes":[
+					{
+						"id":1,
+						"type":0,
+						"textNode":{"content":"CE-011R-E：请基于 sub2api 当前仓库验证标题摘要和缓存命中情况。"}
+					}
+				]
+			}
+		],
+		"blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	lines := nonEmptyLines(t, resp.Body)
+	require.NotEmpty(t, lines)
+	require.Contains(t, *capturedBody, "CE-011R-E：请基于 sub2api 当前仓库验证标题摘要和缓存命中情况。")
+	require.Contains(t, *capturedBody, "我刚才给你的 CE-011R-E prompt 是什么？")
+}
+
+func TestAugmentLegacyChatStreamAddsStablePromptCacheKeyFromConversation(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, capturedBody := newAugmentLegacyRuntimeTestServer(t)
+	defer server.Close()
+
+	client := server.Client()
+	reqBody := `{
+		"model":"gpt-5.4",
+		"conversationId":"conv-ce-011r-e",
+		"message":"继续验证缓存。",
+		"blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}
+	}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-request-session-id", "session-51ba670a")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	lines := nonEmptyLines(t, resp.Body)
+	require.NotEmpty(t, lines)
+
+	var openaiBody map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*capturedBody), &openaiBody))
+	cacheKey, ok := openaiBody["prompt_cache_key"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, cacheKey)
+	require.Contains(t, cacheKey, "augment_legacy_")
+	require.NotContains(t, cacheKey, "conv-ce-011r-e")
+	require.NotContains(t, cacheKey, "session-51ba670a")
 }
 
 func TestAugmentLegacyChatSkipsLocalRetrievalWhenDisableRetrievalIsTrue(t *testing.T) {
@@ -1247,6 +1581,98 @@ func TestAugmentLegacyChatStreamFlushesBeforeUpstreamCompletes(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("expected first streamed NDJSON chunk before upstream finished")
 	}
+}
+
+func TestAugmentLegacyChatStreamReturnsHTTPErrorWhenLoopbackFailsBeforeStreaming(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       2,
+		Email:    "compat@example.com",
+		Username: "compat",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        2,
+		UserID:    user.ID,
+		Key:       "sk-compat-runtime",
+		Name:      "compat-runtime",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	group := service.Group{
+		ID:                 101,
+		Name:               "OpenAI",
+		Platform:           service.PlatformOpenAI,
+		Status:             service.StatusActive,
+		Hydrated:           true,
+		DefaultMappedModel: "gpt-5.4",
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+
+	authHandler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+	)
+
+	router := gin.New()
+	router.POST("/chat-stream", authHandler.AugmentLegacyChatStream)
+	router.POST("/openai/v1/chat/completions", func(c *gin.Context) {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": gin.H{
+				"message": "Upstream service temporarily unavailable",
+				"type":    "upstream_error",
+			},
+		})
+	})
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+	reqBody := `{"model":"gpt-5.4","message":"stream main","blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}}`
+	httpReq, err := http.NewRequest(http.MethodPost, server.URL+"/chat-stream", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(httpReq)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	require.Contains(t, string(body), "upstream_error")
+	require.NotContains(t, string(body), "loopback chat completion stream")
 }
 
 func TestAugmentLegacyChatStreamBuffersSplitToolCallArgumentsUntilValidJSON(t *testing.T) {
@@ -2147,4 +2573,32 @@ func nonEmptyLines(t *testing.T, r io.Reader) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+func readAugmentCaptureSummaryRows(t *testing.T, captureDir string) []map[string]any {
+	t.Helper()
+	f, err := os.Open(filepath.Join(captureDir, "safe-summary.jsonl"))
+	require.NoError(t, err)
+	defer f.Close()
+
+	rows := make([]map[string]any, 0)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var row map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &row))
+		rows = append(rows, row)
+	}
+	require.NoError(t, scanner.Err())
+	return rows
+}
+
+func readAugmentCaptureRawText(t *testing.T, captureDir string, relativePath string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(captureDir, filepath.FromSlash(relativePath)))
+	require.NoError(t, err)
+	return string(body)
 }

@@ -2825,6 +2825,33 @@ func TestOpenAIBuildUpstreamRequestPreservesCompactPathForAPIKeyBaseURL(t *testi
 	require.Equal(t, "https://example.com/v1/responses/compact", req.URL.String())
 }
 
+func TestOpenAIBuildUpstreamRequestAPIKeyPromotesPromptCacheKeyToSessionHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5","prompt_cache_key":"augment-cache-session-1"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/responses", bytes.NewReader(body))
+	c.Set("api_key", &APIKey{ID: 77})
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}}
+	account := &Account{
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+	}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "token", false, "augment-cache-session-1", false)
+	require.NoError(t, err)
+	require.Equal(t, generateSessionUUID(isolateOpenAISessionID(77, "augment-cache-session-1")), req.Header.Get("Session_Id"))
+
+	passthroughReq, err := svc.buildUpstreamRequestOpenAIPassthrough(c.Request.Context(), c, account, body, "token")
+	require.NoError(t, err)
+	require.Equal(t, generateSessionUUID(isolateOpenAISessionID(77, "augment-cache-session-1")), passthroughReq.Header.Get("Session_Id"))
+}
+
 func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

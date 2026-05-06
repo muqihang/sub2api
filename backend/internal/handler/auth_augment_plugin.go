@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -246,6 +247,25 @@ func (h *AuthHandler) augmentPrincipalFromBearer(c *gin.Context) (*service.Augme
 		return nil, false
 	}
 	return principal, true
+}
+
+func (h *AuthHandler) AugmentGatewayAPIKeyFromAuthorization(ctx context.Context, authorization string) (string, bool) {
+	if h == nil || h.augmentPluginService == nil {
+		return "", false
+	}
+	token := extractBearerToken(authorization)
+	if token == "" {
+		return "", false
+	}
+	principal, err := h.augmentPluginService.ResolvePrincipalFromBearer(ctx, token)
+	if err != nil {
+		return "", false
+	}
+	gatewayKey, err := h.augmentLegacyGatewayBearer(ctx, principal)
+	if err != nil || strings.TrimSpace(gatewayKey) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(gatewayKey), true
 }
 
 func (h *AuthHandler) augmentGatewayBaseURL(c *gin.Context) string {

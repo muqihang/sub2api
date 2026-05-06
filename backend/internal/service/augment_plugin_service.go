@@ -863,8 +863,8 @@ func (s *AugmentPluginService) AdvanceLegacyCheckpointForNamespace(namespace, ba
 	}
 
 	baseID = strings.TrimSpace(baseID)
-	added = dedupeStrings(added)
-	deleted = dedupeStrings(deleted)
+	added = dedupeAugmentStrings(added)
+	deleted = dedupeAugmentStrings(deleted)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -943,7 +943,7 @@ func normalizeOfficialAugmentSessionBundle(bundle *AugmentSessionBundle) (*Augme
 		RefreshToken:  strings.TrimSpace(bundle.RefreshToken),
 		ExpiresAt:     strings.TrimSpace(bundle.ExpiresAt),
 		TenantURL:     strings.TrimSpace(bundle.TenantURL),
-		Scopes:        dedupeStrings(bundle.Scopes),
+		Scopes:        dedupeAugmentStrings(bundle.Scopes),
 		SessionSource: AugmentSessionSourceOfficial,
 	}
 	if normalized.AccessToken == "" || normalized.TenantURL == "" {
@@ -1008,7 +1008,7 @@ func (s *AugmentPluginService) buildPlanSummary(ctx context.Context, userID int6
 
 	return &AugmentPluginPlanSummary{
 		ActiveCount: len(subs),
-		GroupNames:  dedupeStrings(names),
+		GroupNames:  dedupeAugmentStrings(names),
 		ExpiresAt:   expiresAt,
 	}, nil
 }
@@ -1232,7 +1232,7 @@ func hasString(values []string, target string) bool {
 	return false
 }
 
-func dedupeStrings(values []string) []string {
+func dedupeAugmentStrings(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}

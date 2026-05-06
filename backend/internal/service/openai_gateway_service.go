@@ -1282,6 +1282,18 @@ func isolateOpenAISessionID(apiKeyID int64, raw string) string {
 	return fmt.Sprintf("%016x", h.Sum64())
 }
 
+func applyOpenAIAPIKeyPromptCacheSessionHeader(c *gin.Context, req *http.Request, promptCacheKey string) {
+	if req == nil || strings.TrimSpace(req.Header.Get("session_id")) != "" {
+		return
+	}
+	key := strings.TrimSpace(promptCacheKey)
+	if key == "" {
+		return
+	}
+	apiKeyID := getAPIKeyIDFromContext(c)
+	req.Header.Set("session_id", generateSessionUUID(isolateOpenAISessionID(apiKeyID, key)))
+}
+
 func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Account, apiKeyID int64, result CodexClientRestrictionDetectionResult, body []byte) {
 	if !result.Enabled {
 		return
@@ -3267,10 +3279,21 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
-	upstreamPassthroughModel := ""
+	upstreamPassthroughModel := strings.TrimSpace(reqModel)
+	if account != nil && upstreamPassthroughModel != "" {
+		mappedModel := strings.TrimSpace(account.GetMappedModel(upstreamPassthroughModel))
+		if mappedModel != "" && mappedModel != upstreamPassthroughModel {
+			nextBody, setErr := sjson.SetBytes(body, "model", mappedModel)
+			if setErr != nil {
+				return nil, fmt.Errorf("set passthrough model mapping: %w", setErr)
+			}
+			body = nextBody
+			upstreamPassthroughModel = mappedModel
+		}
+	}
 	if isOpenAIResponsesCompactPath(c) {
-		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
-		if compactMappedModel != "" && compactMappedModel != reqModel {
+		compactMappedModel := resolveOpenAICompactForwardModel(account, upstreamPassthroughModel)
+		if compactMappedModel != "" && compactMappedModel != upstreamPassthroughModel {
 			nextBody, setErr := sjson.SetBytes(body, "model", compactMappedModel)
 			if setErr != nil {
 				return nil, fmt.Errorf("set compact passthrough model: %w", setErr)
@@ -3659,6 +3682,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if clientConversationID != "" {
 			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
 		}
+	} else if account.Type == AccountTypeAPIKey {
+		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, gjson.GetBytes(body, "prompt_cache_key").String())
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
@@ -3666,11 +3691,10 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
 	}
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+	if account.Type == AccountTypeOAuth && customUA == "" && !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
-	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
+	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
@@ -4426,6 +4450,11 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 				req.Header.Set("conversation_id", isolated)
 			}
 		}
+	} else if account.Type == AccountTypeAPIKey {
+		if promptCacheKey == "" {
+			promptCacheKey = gjson.GetBytes(body, "prompt_cache_key").String()
+		}
+		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, promptCacheKey)
 	}
 
 	// Apply custom User-Agent if configured
