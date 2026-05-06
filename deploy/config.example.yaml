@@ -269,6 +269,19 @@ gateway:
     client_tokens:
       - name: "probe"
         token: "change-me-openai-gateway-token"
+  # cc-gateway adapter: forwards selected Anthropic / Antigravity account
+  # credentials to cc-gateway for identity rewriting and egress bucket routing.
+  # Disabled by default; when enabled, set providers explicitly.
+  cc_gateway:
+    enabled: false
+    base_url: "http://cc-gateway:8443"
+    token: "change-me-cc-gateway-token"
+    timeout_seconds: 600
+    # Bucket name only. Proxy URLs live in cc-gateway config, not request headers.
+    default_egress_bucket: default
+    providers:
+      anthropic: false
+      antigravity: false
   # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
   openai_ws:
     # 新版 WS mode 路由（默认关闭）。关闭时保持当前 legacy 实现行为。

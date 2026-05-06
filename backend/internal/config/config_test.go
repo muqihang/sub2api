@@ -78,6 +78,54 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultCCGatewayConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.False(t, cfg.Gateway.CCGateway.Enabled)
+	require.Equal(t, "", cfg.Gateway.CCGateway.BaseURL)
+	require.Equal(t, "", cfg.Gateway.CCGateway.Token)
+	require.Equal(t, 600, cfg.Gateway.CCGateway.TimeoutSeconds)
+	require.Equal(t, "default", cfg.Gateway.CCGateway.DefaultEgressBucket)
+	require.False(t, cfg.Gateway.CCGateway.Providers.Anthropic)
+	require.False(t, cfg.Gateway.CCGateway.Providers.Antigravity)
+}
+
+func TestLoadCCGatewayConfigFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_TIMEOUT_SECONDS", "30")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTIGRAVITY", "true")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.True(t, cfg.Gateway.CCGateway.Enabled)
+	require.Equal(t, "http://cc-gateway:8443", cfg.Gateway.CCGateway.BaseURL)
+	require.Equal(t, "ccg-token", cfg.Gateway.CCGateway.Token)
+	require.Equal(t, 30, cfg.Gateway.CCGateway.TimeoutSeconds)
+	require.Equal(t, "bucket-a", cfg.Gateway.CCGateway.DefaultEgressBucket)
+	require.True(t, cfg.Gateway.CCGateway.Providers.Anthropic)
+	require.True(t, cfg.Gateway.CCGateway.Providers.Antigravity)
+}
+
+func TestLoadRejectsCCGatewayNonHTTPBaseURL(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "ftp://cc-gateway")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.cc_gateway.base_url scheme")
+}
+
 func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
