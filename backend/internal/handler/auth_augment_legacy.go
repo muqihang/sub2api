@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -103,49 +104,23 @@ func (h *AuthHandler) AugmentLegacyModels(c *gin.Context) {
 		return
 	}
 
-	principal, ok := h.augmentPrincipalFromBearer(c)
-	if !ok {
+	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
 		return
 	}
 
-	compat, err := h.augmentPluginService.BuildCompatMetadata(c.Request.Context(), *principal, h.augmentGatewayBaseURL(c))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
-		return
-	}
-
+	visibleModels := h.augmentGatewayModelRegistry().VisibleModels()
+	defaultModel := augmentGatewayDefaultModelID(visibleModels)
 	models := map[string]map[string]any{}
-	defaultModel := ""
-	if compat != nil {
-		defaultModel = compat.DefaultModel
-		for _, group := range compat.ModelRegistry.Groups {
-			modelID := group.DefaultModel
-			if modelID == "" {
-				continue
-			}
-			entry := models[modelID]
-			if entry == nil {
-				entry = map[string]any{}
-			}
-			entry["displayName"] = modelID
-			entry["description"] = group.Name
-			entry["priority"] = 1
-			if modelID == defaultModel {
-				entry["isDefault"] = true
-			}
-			models[modelID] = entry
+	for index, model := range visibleModels {
+		entry := map[string]any{
+			"displayName": model.ID,
+			"description": "",
+			"priority":    index,
 		}
-	}
-
-	if defaultModel != "" {
-		entry := models[defaultModel]
-		if entry == nil {
-			entry = map[string]any{}
+		if model.ID == defaultModel {
+			entry["isDefault"] = true
 		}
-		entry["displayName"] = defaultModel
-		entry["priority"] = 0
-		entry["isDefault"] = true
-		models[defaultModel] = entry
+		models[model.ID] = entry
 	}
 
 	if len(models) == 0 {
@@ -186,28 +161,29 @@ func (h *AuthHandler) AugmentLegacyInternalGetModels(c *gin.Context) {
 		return
 	}
 
-	defaultModel := "gpt-5.4"
-	models := []augmentLegacyInternalModel{
-		{
-			Name:                     defaultModel,
+	visibleModels := h.augmentGatewayModelRegistry().VisibleModels()
+	defaultModel := augmentGatewayDefaultModelID(visibleModels)
+	models := make([]augmentLegacyInternalModel, 0, len(visibleModels))
+	registry := make(map[string]string, len(visibleModels))
+	infoRegistry := make(map[string]map[string]any, len(visibleModels))
+	for index, model := range visibleModels {
+		displayName := augmentGatewayModelDisplayName(model.ID)
+		models = append(models, augmentLegacyInternalModel{
+			Name:                     model.ID,
 			SuggestedPrefixCharCount: 0,
 			SuggestedSuffixCharCount: 0,
 			CompletionTimeoutMS:      120000,
-		},
-	}
-
-	registry := map[string]string{
-		"GPT-5.4": defaultModel,
-	}
-	registryJSON, _ := json.Marshal(registry)
-	infoRegistry := map[string]map[string]any{
-		defaultModel: {
+		})
+		registry[displayName] = model.ID
+		infoRegistry[model.ID] = map[string]any{
 			"description": "",
 			"disabled":    false,
-			"displayName": "GPT-5.4",
-			"shortName":   "GPT-5.4",
-		},
+			"displayName": displayName,
+			"shortName":   augmentGatewayModelShortName(model.ID),
+			"priority":    index,
+		}
 	}
+	registryJSON, _ := json.Marshal(registry)
 	infoRegistryJSON, _ := json.Marshal(infoRegistry)
 
 	featureFlags := gin.H{
@@ -232,6 +208,67 @@ func (h *AuthHandler) AugmentLegacyInternalGetModels(c *gin.Context) {
 		"models":        models,
 		"feature_flags": featureFlags,
 	})
+}
+
+func (h *AuthHandler) augmentGatewayModelRegistry() *service.AugmentGatewayModelRegistry {
+	if h == nil || h.cfg == nil {
+		return service.NewDefaultAugmentGatewayModelRegistry()
+	}
+	cfg := h.cfg.Gateway.Augment
+	if !cfg.Enabled &&
+		len(cfg.EnabledModels) == 0 &&
+		cfg.ProviderGroups.OpenAI == 0 &&
+		cfg.ProviderGroups.DeepSeek == 0 &&
+		cfg.ProviderGroups.Anthropic == 0 &&
+		cfg.ProviderGroups.Gemini == 0 {
+		return service.NewDefaultAugmentGatewayModelRegistry()
+	}
+	return service.NewAugmentGatewayModelRegistry(cfg)
+}
+
+func augmentGatewayDefaultModelID(models []service.AugmentGatewayModel) string {
+	if len(models) == 0 {
+		return ""
+	}
+	return models[0].ID
+}
+
+func augmentGatewayModelDisplayName(modelID string) string {
+	switch modelID {
+	case "gpt-5.4":
+		return "GPT-5.4"
+	case "gpt-5.5":
+		return "GPT-5.5"
+	case "gpt-5.4-mini":
+		return "GPT-5.4 Mini"
+	case "deepseek-v4-pro":
+		return "DeepSeek V4 Pro"
+	case "deepseek-v4-flash":
+		return "DeepSeek V4 Flash"
+	case "claude-sonnet-4-5":
+		return "Claude Sonnet 4.5"
+	case "gemini-2.5-pro":
+		return "Gemini 2.5 Pro"
+	default:
+		return modelID
+	}
+}
+
+func augmentGatewayModelShortName(modelID string) string {
+	switch modelID {
+	case "gpt-5.4-mini":
+		return "GPT Mini"
+	case "deepseek-v4-pro":
+		return "DeepSeek Pro"
+	case "deepseek-v4-flash":
+		return "DeepSeek Flash"
+	case "claude-sonnet-4-5":
+		return "Sonnet 4.5"
+	case "gemini-2.5-pro":
+		return "Gemini Pro"
+	default:
+		return augmentGatewayModelDisplayName(modelID)
+	}
 }
 
 func (h *AuthHandler) AugmentLegacyCheckpointBlobs(c *gin.Context) {

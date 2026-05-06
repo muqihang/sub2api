@@ -913,3 +913,182 @@ func TestAugmentLegacyModelsPrefersCurrentAPIKeyGroupDefaultModel(t *testing.T) 
 	require.Equal(t, true, body["gpt-5.4"]["isDefault"])
 	require.NotContains(t, body["claude-sonnet-4-5"], "isDefault")
 }
+
+func TestAugmentLegacyModelsExposeDefaultAugmentGatewayRegistry(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	authHandler, apiKey := newAugmentModelRegistryTestHandler()
+	router := gin.New()
+	router.GET("/usage/api/get-models", authHandler.AugmentLegacyModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage/api/get-models", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body, len(firstBatchAugmentModelIDs()))
+	for _, modelID := range firstBatchAugmentModelIDs() {
+		entry, ok := body[modelID]
+		require.Truef(t, ok, "missing model %s", modelID)
+		require.Equal(t, modelID, entry["displayName"])
+		require.Contains(t, entry, "priority")
+	}
+	require.Equal(t, true, body["gpt-5.4"]["isDefault"])
+	require.NotContains(t, body, "claude-sonnet-4-5")
+	require.NotContains(t, body, "gemini-2.5-pro")
+}
+
+func TestAugmentLegacyInternalGetModelsExposeDefaultAugmentGatewayRegistry(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	authHandler, apiKey := newAugmentModelRegistryTestHandler()
+	router := gin.New()
+	router.POST("/get-models", authHandler.AugmentLegacyInternalGetModels)
+
+	req := httptest.NewRequest(http.MethodPost, "/get-models", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body struct {
+		DefaultModel string                       `json:"default_model"`
+		Models       []augmentLegacyInternalModel `json:"models"`
+		FeatureFlags map[string]any               `json:"feature_flags"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Equal(t, "gpt-5.4", body.DefaultModel)
+	require.Equal(t, firstBatchAugmentModelIDs(), augmentLegacyInternalModelNames(body.Models))
+	require.Equal(t, true, body.FeatureFlags["show_thinking_summary"])
+	require.Equal(t, true, body.FeatureFlags["showThinkingSummary"])
+
+	modelRegistry := decodeStringMapFeatureFlag(t, body.FeatureFlags, "model_registry")
+	require.ElementsMatch(t, firstBatchAugmentModelIDs(), mapValues(modelRegistry))
+	require.NotContains(t, mapValues(modelRegistry), "claude-sonnet-4-5")
+	require.NotContains(t, mapValues(modelRegistry), "gemini-2.5-pro")
+
+	modelRegistryCamel := decodeStringMapFeatureFlag(t, body.FeatureFlags, "modelRegistry")
+	require.Equal(t, modelRegistry, modelRegistryCamel)
+
+	additionalChatModels := decodeStringMapFeatureFlag(t, body.FeatureFlags, "additional_chat_models")
+	require.Equal(t, modelRegistry, additionalChatModels)
+
+	modelInfoRegistry := decodeNestedFeatureFlag(t, body.FeatureFlags, "model_info_registry")
+	require.Len(t, modelInfoRegistry, len(firstBatchAugmentModelIDs()))
+	for index, modelID := range firstBatchAugmentModelIDs() {
+		info, ok := modelInfoRegistry[modelID]
+		require.Truef(t, ok, "missing model info %s", modelID)
+		require.Contains(t, info, "displayName")
+		require.Contains(t, info, "shortName")
+		require.Equal(t, false, info["disabled"])
+		require.Equal(t, float64(index), info["priority"])
+		require.NotContains(t, info, "provider")
+		require.NotContains(t, info, "protocol")
+		require.NotContains(t, info, "upstream_model")
+		require.NotContains(t, info, "upstreamModel")
+		require.NotContains(t, info, "thinking")
+		require.NotContains(t, info, "reasoning_effort")
+		require.NotContains(t, info, "reasoningEffort")
+		require.NotContains(t, info, "tool_choice")
+		require.NotContains(t, info, "toolChoice")
+	}
+	require.NotContains(t, modelInfoRegistry, "claude-sonnet-4-5")
+	require.NotContains(t, modelInfoRegistry, "gemini-2.5-pro")
+
+	modelInfoRegistryCamel := decodeNestedFeatureFlag(t, body.FeatureFlags, "modelInfoRegistry")
+	require.Equal(t, modelInfoRegistry, modelInfoRegistryCamel)
+}
+
+func newAugmentModelRegistryTestHandler() (*AuthHandler, string) {
+	user := &service.User{
+		ID:       42,
+		Email:    "models@example.com",
+		Username: "models",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        42,
+		UserID:    user.ID,
+		Key:       "sk-augment-model-registry",
+		Name:      "augment-model-registry",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	cfg := &config.Config{
+		Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+		Gateway: config.GatewayConfig{
+			Augment: config.GatewayAugmentConfig{
+				Enabled:       true,
+				EnabledModels: firstBatchAugmentModelIDs(),
+			},
+		},
+	}
+	pluginService := service.NewAugmentPluginService(
+		cfg,
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+	return NewAuthHandler(cfg, nil, nil, nil, nil, nil, nil, pluginService), apiKey.Key
+}
+
+func firstBatchAugmentModelIDs() []string {
+	return []string{
+		"gpt-5.4",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+	}
+}
+
+func augmentLegacyInternalModelNames(models []augmentLegacyInternalModel) []string {
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		names = append(names, model.Name)
+	}
+	return names
+}
+
+func decodeStringMapFeatureFlag(t *testing.T, flags map[string]any, key string) map[string]string {
+	t.Helper()
+	raw, ok := flags[key].(string)
+	require.Truef(t, ok, "feature flag %s must be a JSON string", key)
+	var decoded map[string]string
+	require.NoError(t, json.Unmarshal([]byte(raw), &decoded))
+	return decoded
+}
+
+func decodeNestedFeatureFlag(t *testing.T, flags map[string]any, key string) map[string]map[string]any {
+	t.Helper()
+	raw, ok := flags[key].(string)
+	require.Truef(t, ok, "feature flag %s must be a JSON string", key)
+	var decoded map[string]map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &decoded))
+	return decoded
+}
+
+func mapValues(values map[string]string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
