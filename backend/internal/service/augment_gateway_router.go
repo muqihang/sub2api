@@ -9,10 +9,15 @@ import (
 const AugmentGatewayDefaultModelID = "gpt-5.4"
 
 type AugmentGatewayModelUnavailableKind string
+type AugmentGatewayProviderUnavailableKind string
 
 const (
 	AugmentGatewayModelUnavailableUnknown  AugmentGatewayModelUnavailableKind = "unknown"
 	AugmentGatewayModelUnavailableDisabled AugmentGatewayModelUnavailableKind = "disabled"
+)
+
+const (
+	AugmentGatewayProviderUnavailableNoProviderGroup AugmentGatewayProviderUnavailableKind = "no_provider_group"
 )
 
 type AugmentGatewayRoutedModel struct {
@@ -27,6 +32,12 @@ type AugmentGatewayModelUnavailableError struct {
 	Kind    AugmentGatewayModelUnavailableKind
 }
 
+type AugmentGatewayProviderUnavailableError struct {
+	ModelID  string
+	Provider AugmentGatewayProvider
+	Kind     AugmentGatewayProviderUnavailableKind
+}
+
 func (e *AugmentGatewayModelUnavailableError) Error() string {
 	if e == nil {
 		return "<nil>"
@@ -38,6 +49,18 @@ func (e *AugmentGatewayModelUnavailableError) Error() string {
 		fallthrough
 	default:
 		return fmt.Sprintf("augment gateway model %q is not supported", e.ModelID)
+	}
+}
+
+func (e *AugmentGatewayProviderUnavailableError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	switch e.Kind {
+	case AugmentGatewayProviderUnavailableNoProviderGroup:
+		fallthrough
+	default:
+		return fmt.Sprintf("augment gateway provider %q for model %q has no provider group configured", e.Provider, e.ModelID)
 	}
 }
 
@@ -85,6 +108,13 @@ func (r *AugmentGatewayRouter) Resolve(modelID string) (AugmentGatewayRoutedMode
 			Kind:    AugmentGatewayModelUnavailableDisabled,
 		}
 	}
+	if model.ProviderGroupID == 0 {
+		return AugmentGatewayRoutedModel{}, &AugmentGatewayProviderUnavailableError{
+			ModelID:  requestedModelID,
+			Provider: model.Provider,
+			Kind:     AugmentGatewayProviderUnavailableNoProviderGroup,
+		}
+	}
 
 	return AugmentGatewayRoutedModel{
 		RequestedModelID: requestedModelID,
@@ -96,6 +126,14 @@ func (r *AugmentGatewayRouter) Resolve(modelID string) (AugmentGatewayRoutedMode
 
 func IsAugmentGatewayModelUnavailable(err error) (*AugmentGatewayModelUnavailableError, bool) {
 	var unavailable *AugmentGatewayModelUnavailableError
+	if errors.As(err, &unavailable) {
+		return unavailable, true
+	}
+	return nil, false
+}
+
+func IsAugmentGatewayProviderUnavailable(err error) (*AugmentGatewayProviderUnavailableError, bool) {
+	var unavailable *AugmentGatewayProviderUnavailableError
 	if errors.As(err, &unavailable) {
 		return unavailable, true
 	}
