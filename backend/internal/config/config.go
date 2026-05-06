@@ -624,6 +624,8 @@ type GatewayConfig struct {
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 	// OpenAICore: OpenAI Gateway Core 配置
 	OpenAICore GatewayOpenAICoreConfig `mapstructure:"openai_core"`
+	// Augment: 逐梦 Augment Code 专用模型池配置
+	Augment GatewayAugmentConfig `mapstructure:"augment"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
 
@@ -705,6 +707,19 @@ type GatewayConfig struct {
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+type GatewayAugmentConfig struct {
+	Enabled        bool                               `mapstructure:"enabled"`
+	EnabledModels  []string                           `mapstructure:"enabled_models"`
+	ProviderGroups GatewayAugmentProviderGroupsConfig `mapstructure:"provider_groups"`
+}
+
+type GatewayAugmentProviderGroupsConfig struct {
+	OpenAI    int64 `mapstructure:"openai"`
+	DeepSeek  int64 `mapstructure:"deepseek"`
+	Anthropic int64 `mapstructure:"anthropic"`
+	Gemini    int64 `mapstructure:"gemini"`
 }
 
 // UserMessageQueueConfig 用户消息串行队列配置
@@ -1366,6 +1381,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.Environment = strings.TrimSpace(cfg.Log.Environment)
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
+	cfg.Gateway.Augment.EnabledModels = normalizeStringSlice(cfg.Gateway.Augment.EnabledModels)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -1725,6 +1741,18 @@ func setDefaults() {
 			"proxy_url": "",
 		},
 	})
+	viper.SetDefault("gateway.augment.enabled", true)
+	viper.SetDefault("gateway.augment.enabled_models", []string{
+		"gpt-5.4",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+	})
+	viper.SetDefault("gateway.augment.provider_groups.openai", int64(0))
+	viper.SetDefault("gateway.augment.provider_groups.deepseek", int64(0))
+	viper.SetDefault("gateway.augment.provider_groups.anthropic", int64(0))
+	viper.SetDefault("gateway.augment.provider_groups.gemini", int64(0))
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -2694,6 +2722,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIMiniAutoUpgradeEnabled && strings.TrimSpace(c.Gateway.OpenAIMiniAutoUpgradeTargetModel) == "" {
 		return fmt.Errorf("gateway.openai_mini_auto_upgrade_target_model is required when gateway.openai_mini_auto_upgrade_enabled=true")
+	}
+	if c.Gateway.Augment.ProviderGroups.OpenAI < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.openai must be non-negative")
+	}
+	if c.Gateway.Augment.ProviderGroups.DeepSeek < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.deepseek must be non-negative")
+	}
+	if c.Gateway.Augment.ProviderGroups.Anthropic < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.anthropic must be non-negative")
+	}
+	if c.Gateway.Augment.ProviderGroups.Gemini < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.gemini must be non-negative")
 	}
 	if c.Ops.MetricsCollectorCache.TTL < 0 {
 		return fmt.Errorf("ops.metrics_collector_cache.ttl must be non-negative")

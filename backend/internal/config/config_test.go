@@ -163,6 +163,23 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultAugmentGatewayConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Gateway.Augment.Enabled)
+	require.Equal(t, []string{
+		"gpt-5.4",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+	}, cfg.Gateway.Augment.EnabledModels)
+	require.NotContains(t, cfg.Gateway.Augment.EnabledModels, "claude-sonnet-4-5")
+	require.NotContains(t, cfg.Gateway.Augment.EnabledModels, "gemini-2.5-pro")
+}
+
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_STICKY_RESPONSE_ID_TTL_SECONDS", "0")
