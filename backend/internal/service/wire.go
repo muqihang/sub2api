@@ -430,11 +430,97 @@ func ProvideAPIKeyService(
 	return svc
 }
 
+func ProvideAugmentPluginService(
+	cfg *config.Config,
+	authService *AuthService,
+	userService *UserService,
+	apiKeyService *APIKeyService,
+	subscriptionService *SubscriptionService,
+	settingService *SettingService,
+) *AugmentPluginService {
+	return NewAugmentPluginService(cfg, authService, userService, apiKeyService, subscriptionService, settingService)
+}
+
+func ProvideAugmentGatewayModelRegistry(cfg *config.Config) *AugmentGatewayModelRegistry {
+	if cfg == nil {
+		return NewDefaultAugmentGatewayModelRegistry()
+	}
+	return NewAugmentGatewayModelRegistry(cfg.Gateway.Augment)
+}
+
+func ProvideAugmentGatewayRouter(registry *AugmentGatewayModelRegistry) *AugmentGatewayRouter {
+	return NewAugmentGatewayRouter(registry)
+}
+
+func ProvideOpenAIGatewayCoreService(
+	accountRepo AccountRepository,
+	cfg *config.Config,
+	openAITokenProvider *OpenAITokenProvider,
+	openAIOAuthService *OpenAIOAuthService,
+) *OpenAIGatewayCoreService {
+	svc := NewOpenAIGatewayCoreService(accountRepo, cfg, openAITokenProvider)
+	openAIOAuthService.SetGatewayCoreService(svc)
+	return svc
+}
+
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	gatewayCoreService *OpenAIGatewayCoreService,
+	modelPricingResolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+) *OpenAIGatewayService {
+	return NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		gatewayCoreService,
+		modelPricingResolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+	)
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
 	NewAuthService,
-	NewAugmentPluginService,
+	ProvideAugmentPluginService,
+	ProvideAugmentGatewayModelRegistry,
+	ProvideAugmentGatewayRouter,
+	NewAugmentGatewayReasoningTurnStore,
+	NewAugmentGatewayProviderExecutor,
+	NewAugmentGatewayService,
 	NewUserService,
 	ProvideAPIKeyService,
 	ProvideAPIKeyAuthCacheInvalidator,
@@ -451,8 +537,8 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementService,
 	NewAdminService,
 	NewGatewayService,
-	NewOpenAIGatewayCoreService,
-	NewOpenAIGatewayService,
+	ProvideOpenAIGatewayCoreService,
+	ProvideOpenAIGatewayService,
 	NewOAuthService,
 	NewOpenAIOAuthService,
 	NewGeminiOAuthService,

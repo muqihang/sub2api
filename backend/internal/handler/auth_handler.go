@@ -18,14 +18,15 @@ import (
 
 // AuthHandler handles authentication-related requests
 type AuthHandler struct {
-	cfg                  *config.Config
-	authService          *service.AuthService
-	userService          *service.UserService
-	settingSvc           *service.SettingService
-	promoService         *service.PromoService
-	redeemService        *service.RedeemService
-	totpService          *service.TotpService
-	augmentPluginService *service.AugmentPluginService
+	cfg                   *config.Config
+	authService           *service.AuthService
+	userService           *service.UserService
+	settingSvc            *service.SettingService
+	promoService          *service.PromoService
+	redeemService         *service.RedeemService
+	totpService           *service.TotpService
+	augmentPluginService  *service.AugmentPluginService
+	augmentGatewayService *service.AugmentGatewayService
 }
 
 // NewAuthHandler creates a new AuthHandler
@@ -37,18 +38,34 @@ func NewAuthHandler(
 	promoService *service.PromoService,
 	redeemService *service.RedeemService,
 	totpService *service.TotpService,
-	augmentPluginService *service.AugmentPluginService,
+	augmentDeps ...any,
 ) *AuthHandler {
+	augmentPluginService, augmentGatewayService := resolveAuthHandlerAugmentDeps(augmentDeps...)
 	return &AuthHandler{
-		cfg:                  cfg,
-		authService:          authService,
-		userService:          userService,
-		settingSvc:           settingService,
-		promoService:         promoService,
-		redeemService:        redeemService,
-		totpService:          totpService,
-		augmentPluginService: augmentPluginService,
+		cfg:                   cfg,
+		authService:           authService,
+		userService:           userService,
+		settingSvc:            settingService,
+		promoService:          promoService,
+		redeemService:         redeemService,
+		totpService:           totpService,
+		augmentPluginService:  augmentPluginService,
+		augmentGatewayService: augmentGatewayService,
 	}
+}
+
+func resolveAuthHandlerAugmentDeps(augmentDeps ...any) (*service.AugmentPluginService, *service.AugmentGatewayService) {
+	var augmentPluginService *service.AugmentPluginService
+	var augmentGatewayService *service.AugmentGatewayService
+	for _, dep := range augmentDeps {
+		switch typed := dep.(type) {
+		case *service.AugmentPluginService:
+			augmentPluginService = typed
+		case *service.AugmentGatewayService:
+			augmentGatewayService = typed
+		}
+	}
+	return augmentPluginService, augmentGatewayService
 }
 
 // RegisterRequest represents the registration request payload

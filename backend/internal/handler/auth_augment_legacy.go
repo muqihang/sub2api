@@ -211,6 +211,11 @@ func (h *AuthHandler) AugmentLegacyInternalGetModels(c *gin.Context) {
 }
 
 func (h *AuthHandler) augmentGatewayModelRegistry() *service.AugmentGatewayModelRegistry {
+	if h != nil && h.augmentGatewayService != nil {
+		if registry := h.augmentGatewayService.Registry(); registry != nil {
+			return registry
+		}
+	}
 	if h == nil || h.cfg == nil {
 		return service.NewDefaultAugmentGatewayModelRegistry()
 	}

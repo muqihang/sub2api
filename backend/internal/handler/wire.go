@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -82,6 +83,52 @@ func ProvideSettingHandler(settingService *service.SettingService, buildInfo Bui
 	return NewSettingHandler(settingService, buildInfo.Version)
 }
 
+// ProvideAuthHandler wires AuthHandler with explicit Augment dependencies while
+// NewAuthHandler keeps direct test call sites source-compatible.
+func ProvideAuthHandler(
+	cfg *config.Config,
+	authService *service.AuthService,
+	userService *service.UserService,
+	settingService *service.SettingService,
+	promoService *service.PromoService,
+	redeemService *service.RedeemService,
+	totpService *service.TotpService,
+	augmentPluginService *service.AugmentPluginService,
+	augmentGatewayService *service.AugmentGatewayService,
+) *AuthHandler {
+	return NewAuthHandler(
+		cfg,
+		authService,
+		userService,
+		settingService,
+		promoService,
+		redeemService,
+		totpService,
+		augmentPluginService,
+		augmentGatewayService,
+	)
+}
+
+func ProvideOpenAIGatewayHandler(
+	gatewayService *service.OpenAIGatewayService,
+	concurrencyService *service.ConcurrencyService,
+	billingCacheService *service.BillingCacheService,
+	apiKeyService *service.APIKeyService,
+	usageRecordWorkerPool *service.UsageRecordWorkerPool,
+	errorPassthroughService *service.ErrorPassthroughService,
+	cfg *config.Config,
+) *OpenAIGatewayHandler {
+	return NewOpenAIGatewayHandler(
+		gatewayService,
+		concurrencyService,
+		billingCacheService,
+		apiKeyService,
+		usageRecordWorkerPool,
+		errorPassthroughService,
+		cfg,
+	)
+}
+
 // ProvideHandlers creates the Handlers struct
 func ProvideHandlers(
 	authHandler *AuthHandler,
@@ -126,7 +173,7 @@ func ProvideHandlers(
 // ProviderSet is the Wire provider set for all handlers
 var ProviderSet = wire.NewSet(
 	// Top-level handlers
-	NewAuthHandler,
+	ProvideAuthHandler,
 	NewUserHandler,
 	NewAPIKeyHandler,
 	NewUsageHandler,
@@ -135,7 +182,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementHandler,
 	NewChannelMonitorUserHandler,
 	NewGatewayHandler,
-	NewOpenAIGatewayHandler,
+	ProvideOpenAIGatewayHandler,
 	NewTotpHandler,
 	ProvideSettingHandler,
 	NewPaymentHandler,
