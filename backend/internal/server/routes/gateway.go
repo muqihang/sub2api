@@ -141,6 +141,30 @@ func RegisterGatewayRoutes(
 			}
 			h.Gateway.ChatCompletions(c)
 		})
+		gateway.POST("/images/generations", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Images API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Images(c)
+		})
+		gateway.POST("/images/edits", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Images API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Images(c)
+		})
 	}
 
 	// Gemini 原生 API 兼容层（Gemini SDK/CLI 直连）
@@ -169,8 +193,13 @@ func RegisterGatewayRoutes(
 	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
-	r.POST("/v1/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
-	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
+	codexDirect := r.Group("/backend-api/codex")
+	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
+	{
+		codexDirect.POST("/responses", responsesHandler)
+		codexDirect.POST("/responses/*subpath", responsesHandler)
+		codexDirect.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
+	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 		if getGroupPlatform(c) == service.PlatformOpenAI {
@@ -178,6 +207,30 @@ func RegisterGatewayRoutes(
 			return
 		}
 		h.Gateway.ChatCompletions(c)
+	})
+	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Images API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Images(c)
+	})
+	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Images API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Images(c)
 	})
 
 	// OpenAI Gateway Core 显式前缀入口（供 OpenAI/Codex 客户端直连）
@@ -187,14 +240,15 @@ func RegisterGatewayRoutes(
 	openaiGateway.Use(opsErrorLogger)
 	openaiGateway.Use(endpointNorm)
 	openaiGateway.Use(gin.HandlerFunc(apiKeyAuth))
-	openaiGateway.Use(requireGroupAnthropic)
+	openaiGateway.Use(requireGroupOpenAI)
 	{
 		openaiGateway.POST("/responses", h.OpenAIGateway.Responses)
 		openaiGateway.POST("/responses/*subpath", h.OpenAIGateway.Responses)
 		openaiGateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 		openaiGateway.POST("/chat/completions", h.OpenAIGateway.ChatCompletions)
+		openaiGateway.POST("/images/generations", h.OpenAIGateway.Images)
+		openaiGateway.POST("/images/edits", h.OpenAIGateway.Images)
 	}
-	r.POST("/openai/v1/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
 
 	r.GET("/openai/_health", h.OpenAIGateway.Health)
 	r.GET("/openai/_verify", h.OpenAIGateway.Verify)

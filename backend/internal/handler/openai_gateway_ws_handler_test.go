@@ -398,7 +398,7 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 		},
 	}
 	concurrencyService := service.NewConcurrencyService(concurrencyCache)
-	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, cfg)
+	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg)
 
 	gatewayService := service.NewOpenAIGatewayService(
 		accountRepo,

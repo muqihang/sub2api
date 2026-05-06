@@ -90,7 +90,7 @@ func (s *OpenAIGatewayService) SelectAPIKeyAccountForModel(ctx context.Context, 
 		}
 		filtered = append(filtered, accounts[i])
 	}
-	selected := s.selectBestAccount(ctx, groupID, filtered, requestedModel, excludedIDs)
+	selected, _ := s.selectBestAccount(ctx, groupID, filtered, requestedModel, excludedIDs, false)
 	if selected == nil {
 		if requestedModel != "" {
 			return nil, fmt.Errorf("no available OpenAI api_key accounts supporting model: %s", requestedModel)

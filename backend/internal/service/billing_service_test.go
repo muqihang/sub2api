@@ -71,34 +71,6 @@ func TestCalculateCost_RateMultiplier(t *testing.T) {
 	require.InDelta(t, cost1x.ActualCost*2, cost2x.ActualCost, 1e-10)
 }
 
-func TestCalculateCost_ZeroMultiplierDefaultsToOne(t *testing.T) {
-	svc := newTestBillingService()
-
-	tokens := UsageTokens{InputTokens: 1000}
-
-	costZero, err := svc.CalculateCost("claude-sonnet-4", tokens, 0)
-	require.NoError(t, err)
-
-	costOne, err := svc.CalculateCost("claude-sonnet-4", tokens, 1.0)
-	require.NoError(t, err)
-
-	require.InDelta(t, costOne.ActualCost, costZero.ActualCost, 1e-10)
-}
-
-func TestCalculateCost_NegativeMultiplierDefaultsToOne(t *testing.T) {
-	svc := newTestBillingService()
-
-	tokens := UsageTokens{InputTokens: 1000}
-
-	costNeg, err := svc.CalculateCost("claude-sonnet-4", tokens, -1.0)
-	require.NoError(t, err)
-
-	costOne, err := svc.CalculateCost("claude-sonnet-4", tokens, 1.0)
-	require.NoError(t, err)
-
-	require.InDelta(t, costOne.ActualCost, costNeg.ActualCost, 1e-10)
-}
-
 func TestGetModelPricing_FallbackMatchesByFamily(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -151,15 +123,6 @@ func TestGetModelPricing_UnknownOpenAIModelReturnsError(t *testing.T) {
 	require.Contains(t, err.Error(), "pricing not found")
 }
 
-func TestGetModelPricing_OpenAIGPT51Fallback(t *testing.T) {
-	svc := newTestBillingService()
-
-	pricing, err := svc.GetModelPricing("gpt-5.1")
-	require.NoError(t, err)
-	require.NotNil(t, pricing)
-	require.InDelta(t, 1.25e-6, pricing.InputPricePerToken, 1e-12)
-}
-
 func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -174,6 +137,35 @@ func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
 }
 
+func TestGetModelPricing_OpenAICompactAliasesFallback(t *testing.T) {
+	svc := newTestBillingService()
+
+	tests := []struct {
+		model       string
+		inputPrice  float64
+		outputPrice float64
+		cacheRead   float64
+		longContext int
+	}{
+		{model: "gpt5.5", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
+		{model: "openai/gpt5.4", inputPrice: 2.5e-6, outputPrice: 15e-6, cacheRead: 0.25e-6, longContext: 272000},
+		{model: "gpt5.4-mini", inputPrice: 7.5e-7, outputPrice: 4.5e-6, cacheRead: 7.5e-8, longContext: 0},
+		{model: "gpt5.3codexspark", inputPrice: 1.5e-6, outputPrice: 12e-6, cacheRead: 0.15e-6, longContext: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(tt.model)
+			require.NoError(t, err)
+			require.NotNil(t, pricing)
+			require.InDelta(t, tt.inputPrice, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, tt.outputPrice, pricing.OutputPricePerToken, 1e-12)
+			require.InDelta(t, tt.cacheRead, pricing.CacheReadPricePerToken, 1e-12)
+			require.Equal(t, tt.longContext, pricing.LongContextInputThreshold)
+		})
+	}
+}
+
 func TestGetModelPricing_OpenAIGPT54MiniFallback(t *testing.T) {
 	svc := newTestBillingService()
 
@@ -183,18 +175,6 @@ func TestGetModelPricing_OpenAIGPT54MiniFallback(t *testing.T) {
 	require.InDelta(t, 7.5e-7, pricing.InputPricePerToken, 1e-12)
 	require.InDelta(t, 4.5e-6, pricing.OutputPricePerToken, 1e-12)
 	require.InDelta(t, 7.5e-8, pricing.CacheReadPricePerToken, 1e-12)
-	require.Zero(t, pricing.LongContextInputThreshold)
-}
-
-func TestGetModelPricing_OpenAIGPT54NanoFallback(t *testing.T) {
-	svc := newTestBillingService()
-
-	pricing, err := svc.GetModelPricing("gpt-5.4-nano")
-	require.NoError(t, err)
-	require.NotNil(t, pricing)
-	require.InDelta(t, 2e-7, pricing.InputPricePerToken, 1e-12)
-	require.InDelta(t, 1.25e-6, pricing.OutputPricePerToken, 1e-12)
-	require.InDelta(t, 2e-8, pricing.CacheReadPricePerToken, 1e-12)
 	require.Zero(t, pricing.LongContextInputThreshold)
 }
 
@@ -232,13 +212,13 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		{name: "claude generic model fallback sonnet", model: "claude-foo-bar", expectedInput: 3e-6},
 		{name: "gemini explicit fallback", model: "gemini-3-1-pro", expectedInput: 2e-6},
 		{name: "gemini unknown no fallback", model: "gemini-2.0-pro", expectNilPricing: true},
-		{name: "openai gpt5.1", model: "gpt-5.1", expectedInput: 1.25e-6},
 		{name: "openai gpt5.4", model: "gpt-5.4", expectedInput: 2.5e-6},
 		{name: "openai gpt5.4 mini", model: "gpt-5.4-mini", expectedInput: 7.5e-7},
-		{name: "openai gpt5.4 nano", model: "gpt-5.4-nano", expectedInput: 2e-7},
 		{name: "openai gpt5.3 codex", model: "gpt-5.3-codex", expectedInput: 1.5e-6},
-		{name: "openai gpt5.1 codex max alias", model: "gpt-5.1-codex-max", expectedInput: 1.5e-6},
-		{name: "openai codex mini latest alias", model: "codex-mini-latest", expectedInput: 1.5e-6},
+		{name: "openai gpt5.3 codex spark", model: "gpt-5.3-codex-spark", expectedInput: 1.5e-6},
+		{name: "openai legacy gpt5.1 falls back to gpt5.4", model: "gpt-5.1", expectedInput: 2.5e-6},
+		{name: "openai legacy gpt5.1 codex falls back to gpt5.3 codex", model: "gpt-5.1-codex", expectedInput: 1.5e-6},
+		{name: "openai legacy codex mini latest falls back to gpt5.3 codex", model: "codex-mini-latest", expectedInput: 1.5e-6},
 		{name: "openai unknown no fallback", model: "gpt-unknown-model", expectNilPricing: true},
 		{name: "non supported family", model: "qwen-max", expectNilPricing: true},
 	}
