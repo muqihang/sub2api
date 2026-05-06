@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -488,6 +489,263 @@ func TestAugmentLegacyPromptEnhancerUsesNodeText(t *testing.T) {
 	content := stringValueOrRawJSON(t, msg["content"])
 	require.Contains(t, content, "把这个仓库问题改写成更清晰的 Prompt")
 	require.Contains(t, content, "保留中文")
+}
+
+func TestAugmentLegacyPromptEnhancerCurrentShapeContract(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, recorder := newAugmentLegacyAuxiliaryContractTestServer(t)
+	defer server.Close()
+
+	reqBody := `{
+		"nodes": [{
+			"type": 0,
+			"text": "make this request production-safe",
+			"text_node": {"content": "make this request production-safe"}
+		}],
+		"chat_history": [],
+		"workspace_file_chunks": [],
+		"incorporated_external_sources": [],
+		"conversation_id": "conv-contract-1",
+		"model": "gpt-5.4"
+	}`
+	requireAugmentEndpointFixtureHasNoSecrets(t, reqBody)
+
+	resp := postAugmentContractJSON(t, server, apiKey, "/prompt-enhancer", reqBody)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	require.Len(t, chunks, 1)
+	finalChunk := chunks[0]
+	require.Equal(t, "contract upstream text", finalChunk["text"])
+	require.Equal(t, false, finalChunk["checkpoint_not_found"])
+	require.Equal(t, []any{}, finalChunk["unknown_blob_names"])
+	require.Equal(t, []any{}, finalChunk["workspace_file_chunks"])
+	require.Equal(t, []any{}, finalChunk["nodes"])
+
+	_, hasIncorporatedExternalSources := finalChunk["incorporated_external_sources"]
+	require.False(t, hasIncorporatedExternalSources, "current prompt-enhancer envelope does not emit incorporated_external_sources")
+	requireAugmentContractNoStreamSequencing(t, finalChunk)
+
+	calls := recorder.Calls()
+	require.Len(t, calls, 1)
+	require.Empty(t, calls[0].Cookie)
+	require.Equal(t, "Bearer "+apiKey, calls[0].Authorization)
+	openaiBody := decodeAugmentContractObject(t, calls[0].Body)
+	require.Equal(t, "gpt-5.4", openaiBody["model"])
+	require.Equal(t, false, openaiBody["stream"])
+	messages, ok := openaiBody["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, messages, 1)
+	message, ok := messages[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "user", message["role"])
+	require.Contains(t, stringValueOrRawJSON(t, message["content"]), "make this request production-safe")
+}
+
+func TestAugmentLegacyPromptEnhancerBareTextNodeCurrentShapeContract(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, recorder := newAugmentLegacyAuxiliaryContractTestServer(t)
+	defer server.Close()
+
+	reqBody := `{
+		"nodes": [{"type": 0, "text": "make this request production-safe"}],
+		"chat_history": [],
+		"workspace_file_chunks": [],
+		"incorporated_external_sources": [],
+		"conversation_id": "conv-contract-1",
+		"model": "gpt-5.4"
+	}`
+	requireAugmentEndpointFixtureHasNoSecrets(t, reqBody)
+
+	resp := postAugmentContractJSON(t, server, apiKey, "/prompt-enhancer", reqBody)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.JSONEq(t, `{"code":"EMPTY_USER_INPUT","message":"no usable user input was found in the augment request"}`, readBody(t, resp.Body))
+	require.Empty(t, recorder.Calls(), "bare node.text is not decoded by the current prompt-enhancer path")
+}
+
+func TestAugmentLegacyInstructionStreamCurrentShapeContract(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, recorder := newAugmentLegacyAuxiliaryContractTestServer(t)
+	defer server.Close()
+
+	reqBody := `{
+		"model": "gpt-5.4",
+		"instruction": "rewrite for nil safety",
+		"selected_text": "fmt.Println(value)"
+	}`
+	requireAugmentEndpointFixtureHasNoSecrets(t, reqBody)
+
+	resp := postAugmentContractJSON(t, server, apiKey, "/instruction-stream", reqBody)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	require.Len(t, chunks, 1)
+	chunk := chunks[0]
+	require.Equal(t, "contract upstream text", chunk["text"])
+	require.Equal(t, "contract upstream text", chunk["replacement_text"])
+	require.Equal(t, "fmt.Println(value)", chunk["replacement_old_text"])
+	require.Equal(t, float64(1), chunk["replacement_start_line"])
+	require.Equal(t, float64(1), chunk["replacement_end_line"])
+	require.Equal(t, []any{}, chunk["unknown_blob_names"])
+	require.Equal(t, false, chunk["checkpoint_not_found"])
+	requireAugmentContractNoStreamSequencing(t, chunk)
+
+	calls := recorder.Calls()
+	require.Len(t, calls, 1)
+	openaiBody := decodeAugmentContractObject(t, calls[0].Body)
+	require.Equal(t, "gpt-5.4", openaiBody["model"])
+	require.Equal(t, false, openaiBody["stream"])
+	require.Contains(t, calls[0].Body, "rewrite for nil safety")
+	require.Contains(t, calls[0].Body, "fmt.Println(value)")
+}
+
+func TestAugmentLegacySmartPasteCurrentShapeContract(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, recorder := newAugmentLegacyAuxiliaryContractTestServer(t)
+	defer server.Close()
+
+	reqBody := `{
+		"model": "gpt-5.4",
+		"instruction": "adapt pasted code to this file",
+		"selected_text": "oldCall()"
+	}`
+	requireAugmentEndpointFixtureHasNoSecrets(t, reqBody)
+
+	resp := postAugmentContractJSON(t, server, apiKey, "/smart-paste-stream", reqBody)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	require.Len(t, chunks, 1)
+	chunk := chunks[0]
+	require.Equal(t, "contract upstream text", chunk["text"])
+	require.Equal(t, "contract upstream text", chunk["replacement_text"])
+	require.Equal(t, "oldCall()", chunk["replacement_old_text"])
+	require.Equal(t, []any{}, chunk["unknown_blob_names"])
+	require.Equal(t, false, chunk["checkpoint_not_found"])
+	requireAugmentContractNoStreamSequencing(t, chunk)
+
+	calls := recorder.Calls()
+	require.Len(t, calls, 1)
+	require.Contains(t, calls[0].Body, "adapt pasted code to this file")
+	require.Contains(t, calls[0].Body, "oldCall()")
+}
+
+func TestAugmentLegacyGenerateCommitCurrentShapeContract(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, recorder := newAugmentLegacyAuxiliaryContractTestServer(t)
+	defer server.Close()
+
+	reqBody := `{
+		"changed_file_stats": {},
+		"diff": "diff --git a/main.go b/main.go\n+fmt.Println(\"safe\")",
+		"generatedCommitMessageSubrequest": {
+			"relevant_commit_messages": ["fix runtime panic"],
+			"example_commit_messages": ["test: lock contracts"]
+		}
+	}`
+	requireAugmentEndpointFixtureHasNoSecrets(t, reqBody)
+
+	resp := postAugmentContractJSON(t, server, apiKey, "/generate-commit-message-stream", reqBody)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	require.Len(t, chunks, 1)
+	chunk := chunks[0]
+	require.Equal(t, "contract upstream text", chunk["text"])
+	requireAugmentContractNoStreamSequencing(t, chunk)
+
+	calls := recorder.Calls()
+	require.Len(t, calls, 1)
+	openaiBody := decodeAugmentContractObject(t, calls[0].Body)
+	require.Equal(t, "gpt-5.4", openaiBody["model"])
+	require.Contains(t, calls[0].Body, "fix runtime panic")
+	require.Contains(t, calls[0].Body, "test: lock contracts")
+}
+
+func TestAugmentLegacyNextEditCurrentShapeContract(t *testing.T) {
+	t.Parallel()
+
+	server, apiKey, recorder := newAugmentLegacyAuxiliaryContractTestServer(t)
+	defer server.Close()
+
+	locationReqBody := `{
+		"instruction": "change file",
+		"path": "src/main.go",
+		"blobs": {"checkpoint_id": "", "added_blobs": ["blob-a"], "deleted_blobs": []},
+		"recent_changes": [],
+		"diagnostics": [],
+		"num_results": 1,
+		"is_single_file": true
+	}`
+	requireAugmentEndpointFixtureHasNoSecrets(t, locationReqBody)
+
+	locationResp := postAugmentContractJSON(t, server, apiKey, "/next_edit_loc", locationReqBody)
+	defer locationResp.Body.Close()
+	require.Equal(t, http.StatusOK, locationResp.StatusCode)
+
+	locationBody := decodeAugmentContractObjectFromReader(t, locationResp.Body)
+	require.Equal(t, []any{}, locationBody["unknown_blob_names"])
+	require.Equal(t, false, locationBody["checkpoint_not_found"])
+	require.Equal(t, []any{}, locationBody["critical_errors"])
+	candidateLocations, ok := locationBody["candidate_locations"].([]any)
+	require.True(t, ok)
+	require.Len(t, candidateLocations, 1)
+	candidate, ok := candidateLocations[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, float64(1), candidate["score"])
+	require.Equal(t, "heuristic", candidate["debug_info"])
+	item, ok := candidate["item"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "src/main.go", item["path"])
+	require.Empty(t, recorder.Calls(), "next_edit_loc is satisfied by the current local handler without an upstream model call")
+
+	streamReqBody := `{
+		"model": "gpt-5.4",
+		"instruction": "change file",
+		"path": "src/main.go",
+		"blob_name": "blob-a",
+		"blobs": {"checkpoint_id": "", "added_blobs": ["blob-a"], "deleted_blobs": []},
+		"recent_changes": [],
+		"diagnostics": [],
+		"client_created_at": "2026-05-06T00:00:00Z"
+	}`
+	requireAugmentEndpointFixtureHasNoSecrets(t, streamReqBody)
+
+	streamResp := postAugmentContractJSON(t, server, apiKey, "/next-edit-stream", streamReqBody)
+	defer streamResp.Body.Close()
+	require.Equal(t, http.StatusOK, streamResp.StatusCode)
+
+	streamChunks := decodeAugmentContractNDJSON(t, streamResp.Body)
+	require.Len(t, streamChunks, 1)
+	streamChunk := streamChunks[0]
+	require.Equal(t, []any{}, streamChunk["unknown_blob_names"])
+	require.Equal(t, false, streamChunk["checkpoint_not_found"])
+	requireAugmentContractNoStreamSequencing(t, streamChunk)
+	nextEdit, ok := streamChunk["next_edit"].(map[string]any)
+	require.True(t, ok)
+	require.NotEmpty(t, nextEdit["suggestion_id"])
+	require.Equal(t, "src/main.go", nextEdit["path"])
+	require.Equal(t, "blob-a", nextEdit["blob_name"])
+	require.Equal(t, "package main\nfunc main(){}\n", nextEdit["existing_code"])
+	require.Equal(t, "contract upstream text", nextEdit["suggested_code"])
+	require.Equal(t, float64(1), nextEdit["editing_score"])
+	require.Equal(t, float64(1), nextEdit["localization_score"])
+	require.Equal(t, "compat generated suggestion", nextEdit["change_description"])
+
+	calls := recorder.Calls()
+	require.Len(t, calls, 1, "next-edit-stream currently uses the legacy simple-text loopback path, not a future AugmentGatewayRouter mock")
+	require.Contains(t, calls[0].Body, "Generate the full suggested code")
+	require.Contains(t, calls[0].Body, "package main")
 }
 
 func TestAugmentLegacyFinalEnvelopeCaptureWritesPrePostSummaryWithoutRaw(t *testing.T) {
@@ -2538,6 +2796,185 @@ func newAugmentLegacyRuntimeTestServerWithGroups(t *testing.T, groups []service.
 
 	server := httptest.NewServer(router)
 	return server, apiKey.Key, &capturedOpenAIBody
+}
+
+type augmentLegacyContractLoopbackCall struct {
+	Body          string
+	Authorization string
+	Cookie        string
+}
+
+type augmentLegacyContractLoopbackRecorder struct {
+	mu    sync.Mutex
+	calls []augmentLegacyContractLoopbackCall
+}
+
+func (r *augmentLegacyContractLoopbackRecorder) Record(c *gin.Context, body string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, augmentLegacyContractLoopbackCall{
+		Body:          body,
+		Authorization: c.GetHeader("Authorization"),
+		Cookie:        c.GetHeader("Cookie"),
+	})
+}
+
+func (r *augmentLegacyContractLoopbackRecorder) Calls() []augmentLegacyContractLoopbackCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]augmentLegacyContractLoopbackCall(nil), r.calls...)
+}
+
+func newAugmentLegacyAuxiliaryContractTestServer(t *testing.T) (*httptest.Server, string, *augmentLegacyContractLoopbackRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       2,
+		Email:    "compat@example.com",
+		Username: "compat",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        2,
+		UserID:    user.ID,
+		Key:       "sk-compat-runtime",
+		Name:      "compat-runtime",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	group := service.Group{
+		ID:                 101,
+		Name:               "OpenAI",
+		Platform:           service.PlatformOpenAI,
+		Status:             service.StatusActive,
+		Hydrated:           true,
+		DefaultMappedModel: "gpt-5.4",
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+	pluginService.StoreLegacyBlobsForNamespace(buildAugmentLegacyNamespace(&service.AugmentPluginPrincipal{
+		User:   user,
+		APIKey: apiKey,
+	}, ""), []service.AugmentLegacyUploadedBlob{
+		{BlobName: "blob-a", Path: "src/main.go", Content: "package main\nfunc main(){}\n"},
+	})
+
+	authHandler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+	)
+
+	recorder := &augmentLegacyContractLoopbackRecorder{}
+	router := gin.New()
+	router.POST("/prompt-enhancer", authHandler.AugmentLegacyPromptEnhancer)
+	router.POST("/instruction-stream", authHandler.AugmentLegacyInstructionStream)
+	router.POST("/smart-paste-stream", authHandler.AugmentLegacySmartPasteStream)
+	router.POST("/generate-commit-message-stream", authHandler.AugmentLegacyGenerateCommitMessageStream)
+	router.POST("/next_edit_loc", authHandler.AugmentLegacyNextEditLocation)
+	router.POST("/next-edit-stream", authHandler.AugmentLegacyNextEditStream)
+	router.POST("/openai/v1/chat/completions", func(c *gin.Context) {
+		body, _ := io.ReadAll(c.Request.Body)
+		recorder.Record(c, string(body))
+		c.JSON(http.StatusOK, gin.H{
+			"id":      "chatcmpl-contract",
+			"object":  "chat.completion",
+			"created": 1710000000,
+			"model":   "gpt-5.4",
+			"choices": []gin.H{
+				{
+					"index": 0,
+					"message": gin.H{
+						"role":    "assistant",
+						"content": "contract upstream text",
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": gin.H{
+				"prompt_tokens":     10,
+				"completion_tokens": 4,
+				"total_tokens":      14,
+			},
+		})
+	})
+
+	return httptest.NewServer(router), apiKey.Key, recorder
+}
+
+func postAugmentContractJSON(t *testing.T, server *httptest.Server, apiKey string, path string, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := server.Client().Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
+func requireAugmentEndpointFixtureHasNoSecrets(t *testing.T, fixture string) {
+	t.Helper()
+	lower := strings.ToLower(fixture)
+	for _, forbidden := range []string{"authorization", "cookie", "refresh_token", "access_token", "session_object", "full_session"} {
+		require.NotContains(t, lower, forbidden)
+	}
+}
+
+func decodeAugmentContractObject(t *testing.T, body string) map[string]any {
+	t.Helper()
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(body), &out))
+	return out
+}
+
+func decodeAugmentContractObjectFromReader(t *testing.T, r io.Reader) map[string]any {
+	t.Helper()
+	return decodeAugmentContractObject(t, readBody(t, r))
+}
+
+func decodeAugmentContractNDJSON(t *testing.T, r io.Reader) []map[string]any {
+	t.Helper()
+	lines := nonEmptyLines(t, r)
+	chunks := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		chunks = append(chunks, decodeAugmentContractObject(t, line))
+	}
+	return chunks
+}
+
+func requireAugmentContractNoStreamSequencing(t *testing.T, chunk map[string]any) {
+	t.Helper()
+	_, hasStreamID := chunk["stream_id"]
+	require.False(t, hasStreamID, "current auxiliary Augment compatibility chunks do not emit stream_id")
+	_, hasSeq := chunk["seq"]
+	require.False(t, hasSeq, "current auxiliary Augment compatibility chunks do not emit seq")
 }
 
 func stringValueOrRawJSON(t *testing.T, value any) string {
