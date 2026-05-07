@@ -8,6 +8,7 @@
 - 至少一个 OpenAI 账号能正常走 `/v1/responses`
 - 生产环境没有意外走直连或未绑定出口桶
 - 预检输出不暴露明文 upstream token 或 proxy URL
+- 一旦发现不安全 JSON 输出，脚本会直接失败并退出
 
 ## 用法
 
@@ -82,6 +83,17 @@ deploy/openai-gateway-preflight.sh
 - `egress_fail_closed`、`allow_account_proxy_fallback`、`allow_direct_fallback` 符合生产策略
 - canonical route 与兼容 alias 的鉴权矩阵均通过
 - WS 与 HTTP 使用同一账号 runtime、egress 与 token secrecy 规则
+
+## 输出安全检查
+
+`deploy/openai-gateway-preflight.sh` 会把每个接口的 JSON 响应单独捕获后再检查，而不是扫描整段终端输出。默认会拦截以下情况并直接失败：
+
+- JSON 中出现 `access_token`、`refresh_token`、`id_token`、`api_key` 的非空明文值
+- 响应里出现 `sk-...` 形式的 OpenAI key
+- 响应里出现 `scheme://user:pass@host` 形式的代理凭证
+- 响应里出现明文 `Bearer ...` token
+
+字段名本身的文档说明不会触发失败；只有具体敏感值暴露才会失败。
 
 ## 上线前建议
 

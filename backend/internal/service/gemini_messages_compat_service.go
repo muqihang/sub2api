@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 
@@ -1685,6 +1686,9 @@ func sleepGeminiBackoff(attempt int) {
 
 var (
 	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
+	bearerTokenRegex         = regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._-]{10,}`)
+	urlLikeRegex             = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"']+`)
+	openAIKeyRegex           = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
 	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
 )
 
@@ -1692,7 +1696,18 @@ func sanitizeUpstreamErrorMessage(msg string) string {
 	if msg == "" {
 		return msg
 	}
-	return sensitiveQueryParamRegex.ReplaceAllString(msg, `$1***`)
+	out := strings.TrimSpace(msg)
+	out = logredact.RedactText(out, "api_key")
+	out = sensitiveQueryParamRegex.ReplaceAllString(out, `$1***`)
+	out = bearerTokenRegex.ReplaceAllString(out, `${1}***`)
+	out = openAIKeyRegex.ReplaceAllString(out, "sk-***")
+	out = urlLikeRegex.ReplaceAllStringFunc(out, func(raw string) string {
+		if !strings.Contains(raw, "@") && !sensitiveQueryParamRegex.MatchString(raw) {
+			return raw
+		}
+		return MaskOpenAIProxyURL(raw)
+	})
+	return out
 }
 
 func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, account *Account, upstreamStatus int, upstreamRequestID string, body []byte) error {

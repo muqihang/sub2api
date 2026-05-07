@@ -78,6 +78,57 @@ func TestOpenAIGatewayHandler_VerifyReturnsProfileAndBucket(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "\"egress_bucket\":\"default\"")
 }
 
+func TestOpenAIGatewayHandler_VerifyRedactsProxyURLByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.ClientTokens = []config.OpenAIGatewayClientTokenConfig{
+		{Name: "probe", Token: "tok-123"},
+	}
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://user:pass@127.0.0.1:8080/path?q=1"},
+	}
+
+	repo := &serviceMockAccountRepo{
+		accountsByID: map[int64]*service.Account{
+			1: {
+				ID:       1,
+				Platform: service.PlatformOpenAI,
+				Type:     service.AccountTypeOAuth,
+				Status:   service.StatusActive,
+				Credentials: map[string]any{
+					"chatgpt_account_id": "acct-1",
+				},
+				Extra: map[string]any{
+					"openai_gateway_egress_bucket": "bucket-a",
+				},
+			},
+		},
+	}
+	core := service.NewOpenAIGatewayCoreService(repo, cfg, nil)
+	h := NewOpenAIGatewayHandler(nil, core, nil, nil, nil, nil, nil, cfg)
+
+	router := gin.New()
+	router.GET("/openai/_verify", h.Verify)
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/_verify?account_id=1&transport=http", nil)
+	req.Header.Set(service.OpenAIGatewayClientTokenHeader, "tok-123")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	require.Contains(t, body, "\"proxy_selected\":true")
+	require.Contains(t, body, "\"proxy_label\":\"http://127.0.0.1:8080\"")
+	require.Contains(t, body, "\"proxy_hash\":\"")
+	require.NotContains(t, body, "\"debug_proxy_url\"")
+	require.NotContains(t, body, "\"proxy_url\"")
+	require.NotContains(t, body, "user:pass")
+	require.NotContains(t, body, "q=1")
+}
+
 func TestOpenAIGatewayHandler_EnforceOptionalGatewayClientAuthRejectsInvalidToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

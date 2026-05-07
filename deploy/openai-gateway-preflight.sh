@@ -15,6 +15,13 @@ if [[ -z "${BASE_URL}" ]]; then
 fi
 
 trimmed_base="${BASE_URL%/}"
+tmpdir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "${tmpdir}"
+}
+
+trap cleanup EXIT
 
 curl_json() {
   local method="$1"
@@ -42,22 +49,67 @@ pretty_print() {
   fi
 }
 
+assert_safe_json_output() {
+  local label="$1"
+  local file="$2"
+
+  if command -v jq >/dev/null 2>&1; then
+    local unsafe_values
+    unsafe_values="$(
+      jq -r '
+        .. | objects | to_entries[]? |
+        select(.key | ascii_downcase | test("^(access_token|refresh_token|id_token|api_key)$")) |
+        .value |
+        select(type == "string") |
+        select(. != "" and . != "***" and . != "<redacted>")
+      ' "${file}"
+    )"
+    if [[ -n "${unsafe_values}" ]]; then
+      echo "unsafe output detected in ${label}: sensitive credential field value exposed" >&2
+      return 1
+    fi
+  fi
+
+  if grep -E 'sk-[A-Za-z0-9_-]{12,}|://[^/@:[:space:]]+:[^/@[:space:]]+@' "${file}" >/dev/null 2>&1; then
+    echo "unsafe output detected in ${label}: raw secret or proxy credentials exposed" >&2
+    return 1
+  fi
+
+  if grep -Eiq 'Bearer [A-Za-z0-9._-]{16,}' "${file}"; then
+    echo "unsafe output detected in ${label}: bearer token exposed" >&2
+    return 1
+  fi
+}
+
+capture_and_check_json() {
+  local label="$1"
+  local outfile="$2"
+  shift 2
+
+  "$@" >"${outfile}"
+  pretty_print <"${outfile}"
+  assert_safe_json_output "${label}" "${outfile}"
+}
+
 gateway_headers=()
 if [[ -n "${GATEWAY_TOKEN}" ]]; then
   gateway_headers+=(-H "X-OpenAI-Gateway-Token: ${GATEWAY_TOKEN}")
 fi
 
 echo "==> [1/4] app health"
-curl_json GET "${trimmed_base}/health" "" | pretty_print
+capture_and_check_json "app health" "${tmpdir}/health.json" \
+  curl_json GET "${trimmed_base}/health" ""
 echo
 
 echo "==> [2/4] openai gateway health"
-curl_json GET "${trimmed_base}/openai/_health" "" "${gateway_headers[@]}" | pretty_print
+capture_and_check_json "openai gateway health" "${tmpdir}/openai-health.json" \
+  curl_json GET "${trimmed_base}/openai/_health" "" "${gateway_headers[@]}"
 echo
 
 if [[ -n "${ACCOUNT_ID}" ]]; then
   echo "==> [3/4] openai gateway verify"
-  curl_json GET "${trimmed_base}/openai/_verify?account_id=${ACCOUNT_ID}&transport=http" "" "${gateway_headers[@]}" | pretty_print
+  capture_and_check_json "openai gateway verify" "${tmpdir}/openai-verify.json" \
+    curl_json GET "${trimmed_base}/openai/_verify?account_id=${ACCOUNT_ID}&transport=http" "" "${gateway_headers[@]}"
   echo
 else
   echo "==> [3/4] openai gateway verify skipped (ACCOUNT_ID not set)"
@@ -66,9 +118,10 @@ fi
 
 if [[ -n "${API_KEY}" ]]; then
   echo "==> [4/4] openai responses smoke"
-  curl_json POST "${trimmed_base}/v1/responses" "{\"model\":\"${MODEL}\",\"input\":\"preflight hello\"}" \
-    -H "Authorization: Bearer ${API_KEY}" \
-    "${gateway_headers[@]}" | pretty_print
+  capture_and_check_json "openai responses smoke" "${tmpdir}/openai-responses.json" \
+    curl_json POST "${trimmed_base}/v1/responses" "{\"model\":\"${MODEL}\",\"input\":\"preflight hello\"}" \
+      -H "Authorization: Bearer ${API_KEY}" \
+      "${gateway_headers[@]}"
   echo
 else
   echo "==> [4/4] openai responses smoke skipped (API_KEY not set)"

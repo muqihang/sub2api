@@ -1,13 +1,16 @@
 package repository
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -217,6 +220,31 @@ func (s *HTTPUpstreamSuite) TestAccountConcurrencyOverridesPoolSettings() {
 	require.Equal(s.T(), 12, transport.MaxConnsPerHost, "MaxConnsPerHost mismatch")
 	require.Equal(s.T(), 12, transport.MaxIdleConns, "MaxIdleConns mismatch")
 	require.Equal(s.T(), 12, transport.MaxIdleConnsPerHost, "MaxIdleConnsPerHost mismatch")
+}
+
+func (s *HTTPUpstreamSuite) TestGetClientEntryWithTLS_LogsRedactedProxy() {
+	svc := s.newService()
+
+	var buf bytes.Buffer
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(oldDefault)
+
+	_, err := svc.getClientEntryWithTLS(
+		"http://user:pass@proxy.local:8080/path?q=1",
+		7,
+		2,
+		&tlsfingerprint.Profile{Name: "test-profile"},
+		false,
+		false,
+	)
+	require.NoError(s.T(), err)
+
+	logOutput := buf.String()
+	require.Contains(s.T(), logOutput, "proxy.local:8080")
+	require.NotContains(s.T(), logOutput, "user:pass")
+	require.NotContains(s.T(), logOutput, "q=1")
+	require.NotContains(s.T(), logOutput, "cache_key=")
 }
 
 // TestAccountConcurrencyFallbackToDefault 测试账户并发数为 0 时回退到默认配置

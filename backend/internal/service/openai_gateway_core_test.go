@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -327,4 +328,57 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshot(t *testing.T) {
 	require.Equal(t, "openid email profile api.responses.write", snapshot.Accounts[0].LastGrantedScope)
 	require.Equal(t, []string{"openid", "email", "profile", "api.responses.write"}, snapshot.Accounts[0].LastAccessTokenScopes)
 	require.True(t, snapshot.Accounts[0].ResponsesWriteCapable)
+}
+
+func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshotRedactsProxyURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://user:pass@127.0.0.1:8080/path?q=1"},
+	}
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accounts: []Account{
+				{
+					ID:       1,
+					Name:     "acc-1",
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Status:   StatusActive,
+					Extra: map[string]any{
+						"openai_gateway_egress_bucket": "bucket-a",
+					},
+				},
+			},
+		},
+	}
+
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+	snapshot, err := svc.BuildAdminStatusSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+
+	payload, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	body := string(payload)
+	require.Contains(t, body, "\"proxy_label\":\"http://127.0.0.1:8080\"")
+	require.Contains(t, body, "\"proxy_hash\":\"")
+	require.NotContains(t, body, "\"proxy_url\"")
+	require.NotContains(t, body, "user:pass")
+	require.NotContains(t, body, "q=1")
+}
+
+func TestOpenAIGatewayRedactSanitizeUpstreamErrorMessage(t *testing.T) {
+	raw := "proxy=http://user:pass@proxy.example.com:8080/path?access_token=tok123&refresh_token=tok456 Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz123456 api_key=sk-abcdef1234567890"
+	redacted := sanitizeUpstreamErrorMessage(raw)
+
+	require.Contains(t, redacted, "proxy.example.com:8080")
+	require.Contains(t, redacted, "Bearer ***")
+	require.Contains(t, redacted, "api_key=***")
+	require.NotContains(t, redacted, "user:pass")
+	require.NotContains(t, redacted, "tok123")
+	require.NotContains(t, redacted, "tok456")
+	require.NotContains(t, redacted, "sk-abcdefghijklmnopqrstuvwxyz123456")
+	require.NotContains(t, redacted, "path?")
 }
