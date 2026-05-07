@@ -249,6 +249,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, false) {
+					reqLog.Warn("openai.images.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 				fields := []zap.Field{
 					zap.Int64("account_id", account.ID),
