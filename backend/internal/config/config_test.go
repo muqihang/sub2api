@@ -1660,6 +1660,115 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 	}
 }
 
+func TestOpenAICoreConfigValidationRejectsDuplicateBuckets(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+		{Name: "default", Enabled: true},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[].name duplicate")
+}
+
+func TestOpenAICoreConfigValidationRejectsMissingDefaultBucket(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "missing"
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.default_egress_bucket must reference an existing egress bucket")
+}
+
+func TestOpenAICoreConfigValidationRejectsInvalidProxyURL(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true, ProxyURL: "file:///tmp/proxy.sock"},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[default].proxy_url")
+}
+
+func TestOpenAICoreConfigValidationNormalizesSocks5Proxy(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true, ProxyURL: "socks5://127.0.0.1:9001"},
+	}
+
+	require.NoError(t, cfg.Validate())
+	require.Equal(t, "socks5h://127.0.0.1:9001", cfg.Gateway.OpenAICore.EgressBuckets[0].ProxyURL)
+}
+
+func TestOpenAICoreProductionRejectsDirectFallback(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = false
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = true
+	cfg.Gateway.OpenAICore.AllowDirectFallback = true
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires egress_fail_closed=true")
+}
+
+func TestOpenAICoreProductionRequiresCredentialGate(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = false
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires require_encrypted_credentials=true")
+}
+
+func TestOpenAICoreProductionRequiresOAuthSessionMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "memory"
+	cfg.Gateway.OpenAICore.OAuthCallbackStickySingleInstance = false
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires oauth_session_store!=memory or oauth_callback_sticky_single_instance=true")
+}
+
 func TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

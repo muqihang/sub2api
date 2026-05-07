@@ -235,6 +235,8 @@ gateway:
   # health/verify 探针与可选 client token。
   openai_core:
     enabled: true
+    # 本地/迁移默认配置偏兼容；生产建议见下方 production profile 注释块。
+    production_mode: false
     # 默认 profile 模式：
     # - fixed: 固定 canonical profile（推荐，稳定）
     # - observe: 初始/后续可从客户端头观察更新
@@ -242,6 +244,25 @@ gateway:
     default_profile_mode: fixed
     # 默认出口桶（当前单住宅 IP 建议保持 default；后续多出口时可扩展）
     default_egress_bucket: default
+    # 本地兼容：允许 egress 异常时按旧行为回退。生产应全部反向配置为 fail-closed。
+    egress_fail_closed: false
+    allow_account_proxy_fallback: true
+    allow_direct_fallback: true
+    require_encrypted_credentials: false
+    credential_encryption_key: ""
+    oauth_session_store: memory
+    oauth_callback_sticky_single_instance: false
+    expose_raw_proxy_in_debug: false
+    bucket_warn_account_threshold: 2
+    # 生产安全 profile 示例：
+    # production_mode: true
+    # egress_fail_closed: true
+    # allow_account_proxy_fallback: false
+    # allow_direct_fallback: false
+    # require_encrypted_credentials: true
+    # credential_encryption_key: "${OPENAI_GATEWAY_CREDENTIAL_ENCRYPTION_KEY}"
+    # oauth_session_store: redis
+    # oauth_callback_sticky_single_instance: false
     # /openai/_health 与 /openai/_verify 是否要求 X-OpenAI-Gateway-Token
     probe_require_client_token: true
     # 固定模式下默认 canonical profile

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/spf13/viper"
 )
 
@@ -842,10 +843,30 @@ type GatewayOpenAIWSConfig struct {
 type GatewayOpenAICoreConfig struct {
 	// Enabled: 是否启用 OpenAI Gateway Core（默认 true）
 	Enabled bool `mapstructure:"enabled"`
+	// ProductionMode: 生产安全模式，启用后要求出口与凭证相关门禁 fail-closed
+	ProductionMode bool `mapstructure:"production_mode"`
 	// DefaultProfileMode: 默认 profile 模式（fixed/observe/frozen）
 	DefaultProfileMode string `mapstructure:"default_profile_mode"`
 	// DefaultEgressBucket: 默认出口桶名称
 	DefaultEgressBucket string `mapstructure:"default_egress_bucket"`
+	// EgressFailClosed: 出口桶异常时是否拒绝而非回退
+	EgressFailClosed bool `mapstructure:"egress_fail_closed"`
+	// AllowAccountProxyFallback: 是否允许出口桶异常时回退到账户代理
+	AllowAccountProxyFallback bool `mapstructure:"allow_account_proxy_fallback"`
+	// AllowDirectFallback: 是否允许出口桶异常时回退直连
+	AllowDirectFallback bool `mapstructure:"allow_direct_fallback"`
+	// RequireEncryptedCredentials: 生产模式是否要求 OpenAI 上游凭证加密/受保护
+	RequireEncryptedCredentials bool `mapstructure:"require_encrypted_credentials"`
+	// CredentialEncryptionKey: OpenAI 上游凭证加密密钥（后续 secret gate 使用）
+	CredentialEncryptionKey string `mapstructure:"credential_encryption_key"`
+	// OAuthSessionStore: OpenAI OAuth callback session 存储模式（memory/redis）
+	OAuthSessionStore string `mapstructure:"oauth_session_store"`
+	// OAuthCallbackStickySingleInstance: memory session 模式下是否已强制 sticky 单实例 callback
+	OAuthCallbackStickySingleInstance bool `mapstructure:"oauth_callback_sticky_single_instance"`
+	// ExposeRawProxyInDebug: 显式 debug/operator 模式下是否允许暴露明文 proxy URL
+	ExposeRawProxyInDebug bool `mapstructure:"expose_raw_proxy_in_debug"`
+	// BucketWarnAccountThreshold: 单 bucket 账号数超过该阈值时发出集中度告警
+	BucketWarnAccountThreshold int `mapstructure:"bucket_warn_account_threshold"`
 	// ProbeRequireClientToken: /openai/_health 和 /openai/_verify 是否要求 client token
 	ProbeRequireClientToken bool `mapstructure:"probe_require_client_token"`
 	// CanonicalUserAgent: 固定模式下默认 User-Agent
@@ -1708,8 +1729,18 @@ func setDefaults() {
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_core.enabled", true)
+	viper.SetDefault("gateway.openai_core.production_mode", false)
 	viper.SetDefault("gateway.openai_core.default_profile_mode", "fixed")
 	viper.SetDefault("gateway.openai_core.default_egress_bucket", "default")
+	viper.SetDefault("gateway.openai_core.egress_fail_closed", false)
+	viper.SetDefault("gateway.openai_core.allow_account_proxy_fallback", true)
+	viper.SetDefault("gateway.openai_core.allow_direct_fallback", true)
+	viper.SetDefault("gateway.openai_core.require_encrypted_credentials", false)
+	viper.SetDefault("gateway.openai_core.credential_encryption_key", "")
+	viper.SetDefault("gateway.openai_core.oauth_session_store", "memory")
+	viper.SetDefault("gateway.openai_core.oauth_callback_sticky_single_instance", false)
+	viper.SetDefault("gateway.openai_core.expose_raw_proxy_in_debug", false)
+	viper.SetDefault("gateway.openai_core.bucket_warn_account_threshold", 2)
 	viper.SetDefault("gateway.openai_core.probe_require_client_token", true)
 	viper.SetDefault("gateway.openai_core.canonical_user_agent", "codex_cli_rs/0.104.0")
 	viper.SetDefault("gateway.openai_core.canonical_stainless_lang", "js")
@@ -2434,9 +2465,60 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Gateway.OpenAICore.DefaultEgressBucket) == "" {
 		return fmt.Errorf("gateway.openai_core.default_egress_bucket is required")
 	}
-	for _, bucket := range c.Gateway.OpenAICore.EgressBuckets {
-		if strings.TrimSpace(bucket.Name) == "" {
+	defaultBucket := strings.TrimSpace(c.Gateway.OpenAICore.DefaultEgressBucket)
+	bucketNames := make(map[string]bool, len(c.Gateway.OpenAICore.EgressBuckets))
+	defaultBucketEnabled := false
+	for i := range c.Gateway.OpenAICore.EgressBuckets {
+		bucket := &c.Gateway.OpenAICore.EgressBuckets[i]
+		name := strings.TrimSpace(bucket.Name)
+		if name == "" {
 			return fmt.Errorf("gateway.openai_core.egress_buckets[].name is required")
+		}
+		if bucketNames[name] {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[].name duplicate: %s", name)
+		}
+		bucketNames[name] = true
+		if normalizedProxyURL, _, err := proxyurl.Parse(bucket.ProxyURL); err != nil {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[%s].proxy_url is invalid: %w", name, err)
+		} else {
+			bucket.ProxyURL = normalizedProxyURL
+		}
+		if name == defaultBucket {
+			defaultBucketEnabled = bucket.Enabled
+		}
+	}
+	if !bucketNames[defaultBucket] {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket must reference an existing egress bucket")
+	}
+	if c.Gateway.OpenAICore.EgressFailClosed && !defaultBucketEnabled {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket cannot reference a disabled bucket when egress_fail_closed=true")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.OpenAICore.OAuthSessionStore)) {
+	case "memory", "redis":
+	case "":
+		return fmt.Errorf("gateway.openai_core.oauth_session_store is required")
+	default:
+		return fmt.Errorf("gateway.openai_core.oauth_session_store must be one of: memory/redis")
+	}
+	if c.Gateway.OpenAICore.BucketWarnAccountThreshold < 0 {
+		return fmt.Errorf("gateway.openai_core.bucket_warn_account_threshold must be non-negative")
+	}
+	if c.Gateway.OpenAICore.ProductionMode {
+		if !c.Gateway.OpenAICore.EgressFailClosed {
+			return fmt.Errorf("gateway.openai_core.production_mode requires egress_fail_closed=true")
+		}
+		if c.Gateway.OpenAICore.AllowAccountProxyFallback {
+			return fmt.Errorf("gateway.openai_core.production_mode requires allow_account_proxy_fallback=false")
+		}
+		if c.Gateway.OpenAICore.AllowDirectFallback {
+			return fmt.Errorf("gateway.openai_core.production_mode requires allow_direct_fallback=false")
+		}
+		if !c.Gateway.OpenAICore.RequireEncryptedCredentials {
+			return fmt.Errorf("gateway.openai_core.production_mode requires require_encrypted_credentials=true")
+		}
+		if strings.EqualFold(strings.TrimSpace(c.Gateway.OpenAICore.OAuthSessionStore), "memory") &&
+			!c.Gateway.OpenAICore.OAuthCallbackStickySingleInstance {
+			return fmt.Errorf("gateway.openai_core.production_mode requires oauth_session_store!=memory or oauth_callback_sticky_single_instance=true")
 		}
 	}
 	for _, item := range c.Gateway.OpenAICore.ClientTokens {
