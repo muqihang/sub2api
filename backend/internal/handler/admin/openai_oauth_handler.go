@@ -113,6 +113,7 @@ type OpenAIRefreshTokenRequest struct {
 	RT           string `json:"rt"`
 	ClientID     string `json:"client_id"`
 	ProxyID      *int64 `json:"proxy_id"`
+	EgressBucket string `json:"egress_bucket"`
 }
 
 // RefreshToken refreshes an OpenAI OAuth token
@@ -147,7 +148,7 @@ func (h *OpenAIOAuthHandler) RefreshToken(c *gin.Context) {
 		clientID, _ = openai.OAuthClientConfigByPlatform(platform)
 	}
 
-	tokenInfo, err := h.openaiOAuthService.RefreshTokenWithClientID(c.Request.Context(), refreshToken, proxyURL, clientID)
+	tokenInfo, err := h.openaiOAuthService.RefreshTokenWithClientIDAndEgress(c.Request.Context(), refreshToken, proxyURL, clientID, req.EgressBucket)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

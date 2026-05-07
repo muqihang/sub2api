@@ -250,6 +250,26 @@ func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken stri
 	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, "")
 }
 
+func (s *OpenAIOAuthService) RefreshTokenWithClientIDAndEgress(ctx context.Context, refreshToken string, fallbackProxyURL string, clientID string, egressBucket string) (*OpenAITokenInfo, error) {
+	egress, err := s.resolveOAuthSessionEgress(ctx, egressBucket, fallbackProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	proxyURL := fallbackProxyURL
+	if egress != nil {
+		proxyURL = egress.ProxyURL
+	}
+	tokenInfo, err := s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
+	if err != nil {
+		return nil, err
+	}
+	tokenInfo.EgressBucket = openAIEgressBucketName(egress)
+	tokenInfo.ProxySelected = openAIEgressProxySelected(egress)
+	tokenInfo.ProxyLabel = openAIEgressProxyLabel(egress)
+	tokenInfo.ProxyHash = openAIEgressProxyHash(egress)
+	return tokenInfo, nil
+}
+
 // RefreshTokenWithClientID refreshes an OpenAI OAuth token with optional client_id.
 func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refreshToken string, proxyURL string, clientID string) (*OpenAITokenInfo, error) {
 	tokenResp, err := s.oauthClient.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)

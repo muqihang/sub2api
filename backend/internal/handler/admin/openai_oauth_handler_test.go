@@ -30,7 +30,11 @@ func (s *openAIOAuthHandlerClientStub) RefreshToken(ctx context.Context, refresh
 }
 
 func (s *openAIOAuthHandlerClientStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
-	return nil, nil
+	return &openai.TokenResponse{
+		AccessToken:  "refreshed-at",
+		RefreshToken: refreshToken,
+		ExpiresIn:    3600,
+	}, nil
 }
 
 func TestOpenAIOAuthHandler_GatewayTemplates(t *testing.T) {
@@ -170,6 +174,37 @@ func TestOpenAIOAuthHandler_CreateAccountFromOAuthPersistsEgressBucket(t *testin
 	require.Equal(t, service.PlatformOpenAI, adminSvc.createdAccounts[0].Platform)
 	require.Equal(t, service.AccountTypeOAuth, adminSvc.createdAccounts[0].Type)
 	require.Equal(t, "bucket-a", adminSvc.createdAccounts[0].Extra["openai_gateway_egress_bucket"])
+}
+
+func TestOpenAIOAuthHandler_RefreshTokenReturnsEgressBucket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://user:pass@127.0.0.1:8080"},
+	}
+	core := service.NewOpenAIGatewayCoreService(&openAIGatewayCoreAdminRepo{}, cfg, nil)
+	oauthSvc := service.NewOpenAIOAuthService(nil, &openAIOAuthHandlerClientStub{})
+	defer oauthSvc.Stop()
+	oauthSvc.SetGatewayCoreService(core)
+	h := NewOpenAIOAuthHandler(oauthSvc, nil, newStubAdminService())
+	router.POST("/api/v1/admin/openai/refresh-token", h.RefreshToken)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/refresh-token", strings.NewReader(`{"refresh_token":"rt","egress_bucket":"bucket-a"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"egress_bucket":"bucket-a"`)
+	require.Contains(t, rec.Body.String(), `"proxy_label":"http://127.0.0.1:8080"`)
+	require.NotContains(t, rec.Body.String(), "user:pass")
 }
 
 func TestOpenAIOAuthHandler_GatewayTemplatesDownload(t *testing.T) {

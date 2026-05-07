@@ -32,7 +32,12 @@ func (s *openaiOAuthClientEgressStub) RefreshToken(ctx context.Context, refreshT
 }
 
 func (s *openaiOAuthClientEgressStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
-	return nil, errors.New("not implemented")
+	s.lastProxyURL = proxyURL
+	return &openai.TokenResponse{
+		AccessToken:  "refreshed-at",
+		RefreshToken: refreshToken,
+		ExpiresIn:    3600,
+	}, nil
 }
 
 type openaiOAuthProxyRepoEgressStub struct {
@@ -133,6 +138,41 @@ func TestOpenAIOAuthService_ExchangeCodeUsesSessionEgressBucket(t *testing.T) {
 	})
 
 	require.NoError(t, err)
+	require.Equal(t, "socks5://user:pass@127.0.0.1:9001", client.lastProxyURL)
+	require.Equal(t, "bucket-a", info.EgressBucket)
+	require.True(t, info.ProxySelected)
+	require.Equal(t, "socks5h://127.0.0.1:9001", info.ProxyLabel)
+	require.NotEmpty(t, info.ProxyHash)
+}
+
+func TestOpenAIOAuthService_RefreshTokenWithEgressRejectsMissingBucketBeforeRefresh(t *testing.T) {
+	client := &openaiOAuthClientEgressStub{}
+	cfg := testOpenAIOAuthEgressConfig()
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "missing"
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	_, err := svc.RefreshTokenWithClientIDAndEgress(context.Background(), "rt", "", openai.ClientID, "")
+
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.ErrorAs(t, err, &policyErr)
+	require.Equal(t, "missing_bucket", policyErr.Code)
+	require.Equal(t, int32(0), atomic.LoadInt32(&client.exchangeCalled))
+	require.Empty(t, client.lastProxyURL)
+}
+
+func TestOpenAIOAuthService_RefreshTokenWithEgressUsesBucketProxy(t *testing.T) {
+	client := &openaiOAuthClientEgressStub{}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, testOpenAIOAuthEgressConfig(), nil))
+
+	info, err := svc.RefreshTokenWithClientIDAndEgress(context.Background(), "rt", "", openai.ClientID, "bucket-a")
+
+	require.NoError(t, err)
+	require.Equal(t, "refreshed-at", info.AccessToken)
 	require.Equal(t, "socks5://user:pass@127.0.0.1:9001", client.lastProxyURL)
 	require.Equal(t, "bucket-a", info.EgressBucket)
 	require.True(t, info.ProxySelected)

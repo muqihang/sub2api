@@ -17,6 +17,10 @@ export interface OpenAITokenInfo {
   name?: string
   plan_type?: string
   privacy_mode?: string
+  egress_bucket?: string
+  proxy_selected?: boolean
+  proxy_label?: string
+  proxy_hash?: string
   // OpenAI specific IDs (extracted from ID Token)
   chatgpt_account_id?: string
   chatgpt_user_id?: string
@@ -215,6 +219,9 @@ export function useOpenAIOAuth() {
     }
     if (tokenInfo.privacy_mode) {
       extra.privacy_mode = tokenInfo.privacy_mode
+    }
+    if (typeof tokenInfo.egress_bucket === 'string' && tokenInfo.egress_bucket.trim()) {
+      extra.openai_gateway_egress_bucket = tokenInfo.egress_bucket.trim()
     }
     return Object.keys(extra).length > 0 ? extra : undefined
   }
