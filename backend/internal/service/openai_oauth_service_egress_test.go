@@ -81,7 +81,8 @@ func TestOpenAIOAuthService_GenerateAuthURLStoresEgressMetadata(t *testing.T) {
 	require.NotContains(t, result.ProxyLabel, "user")
 	require.NotContains(t, result.ProxyLabel, "pass")
 
-	session, ok := svc.sessionStore.Get(result.SessionID)
+	session, ok, err := svc.sessionStore.Get(result.SessionID)
+	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "bucket-a", session.EgressBucket)
 	require.True(t, session.ProxySelected)
@@ -97,13 +98,13 @@ func TestOpenAIOAuthService_ExchangeCodeRejectsMissingEgressBucketBeforeTokenExc
 	svc := NewOpenAIOAuthService(nil, client)
 	defer svc.Stop()
 	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
-	svc.sessionStore.Set("sid", &openai.OAuthSession{
+	require.NoError(t, svc.sessionStore.Set("sid", &openai.OAuthSession{
 		State:        "expected-state",
 		CodeVerifier: "verifier",
 		RedirectURI:  openai.DefaultRedirectURI,
 		EgressBucket: "missing",
 		CreatedAt:    time.Now(),
-	})
+	}))
 
 	_, err := svc.ExchangeCode(context.Background(), &OpenAIExchangeCodeInput{
 		SessionID: "sid",
@@ -123,13 +124,13 @@ func TestOpenAIOAuthService_ExchangeCodeUsesSessionEgressBucket(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, client)
 	defer svc.Stop()
 	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, testOpenAIOAuthEgressConfig(), nil))
-	svc.sessionStore.Set("sid", &openai.OAuthSession{
+	require.NoError(t, svc.sessionStore.Set("sid", &openai.OAuthSession{
 		State:        "expected-state",
 		CodeVerifier: "verifier",
 		RedirectURI:  openai.DefaultRedirectURI,
 		EgressBucket: "bucket-a",
 		CreatedAt:    time.Now(),
-	})
+	}))
 
 	info, err := svc.ExchangeCode(context.Background(), &OpenAIExchangeCodeInput{
 		SessionID: "sid",

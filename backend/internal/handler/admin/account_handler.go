@@ -847,10 +847,9 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		if err != nil {
 			return nil, "", err
 		}
-		for k, v := range account.Credentials {
-			if _, exists := newCredentials[k]; !exists {
-				newCredentials[k] = v
-			}
+		newCredentials, err = service.MergeProtectedOpenAICredentials(account.Credentials, newCredentials, h.openaiOAuthService.CredentialAccessor())
+		if err != nil {
+			return nil, "", err
 		}
 	} else if account.Platform == service.PlatformGemini {
 		tokenInfo, err := h.geminiOAuthService.RefreshAccountToken(ctx, account)

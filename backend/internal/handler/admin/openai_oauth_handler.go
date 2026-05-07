@@ -198,12 +198,10 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, "failed to build openai credentials")
 		return
 	}
-
-	// Preserve non-token settings from existing credentials
-	for k, v := range account.Credentials {
-		if _, exists := newCredentials[k]; !exists {
-			newCredentials[k] = v
-		}
+	newCredentials, err = service.MergeProtectedOpenAICredentials(account.Credentials, newCredentials, h.openaiOAuthService.CredentialAccessor())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to protect openai credentials")
+		return
 	}
 
 	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{

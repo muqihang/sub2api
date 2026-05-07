@@ -120,7 +120,10 @@ func (r *OpenAITokenRefresher) Refresh(ctx context.Context, account *Account) (m
 	if err != nil {
 		return nil, err
 	}
-	newCredentials = MergeCredentials(account.Credentials, newCredentials)
+	newCredentials, err = MergeProtectedOpenAICredentials(account.Credentials, newCredentials, r.openaiOAuthService.CredentialAccessor())
+	if err != nil {
+		return nil, err
+	}
 	capability := evaluateOpenAITokenCapability(tokenInfo)
 
 	if capability.Known && !capability.ResponsesWriteCapable {

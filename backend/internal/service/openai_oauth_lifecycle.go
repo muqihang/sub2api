@@ -173,7 +173,7 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 	if err != nil {
 		return nil, err
 	}
-	validated = MergeCredentials(normalized, validated)
+	validated = MergeCredentials(protectedNormalized, validated)
 	capability := evaluateOpenAITokenCapability(tokenInfo)
 	decisionExtra := mergeMap(map[string]any{
 		"openai_pool_role":               OpenAIPoolRoleMain,

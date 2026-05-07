@@ -374,6 +374,12 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 	}
 
 	for _, account := range accounts {
+		if !account.IsOpenAI() {
+			continue
+		}
+		if credentials.HasUnsafePlaintextCredentials(&account) {
+			snapshot.UnsafeCredentialAccounts++
+		}
 		if !account.IsOpenAIOAuth() {
 			continue
 		}
@@ -386,9 +392,6 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		}
 		if account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
 			snapshot.CoolingAccountsTotal++
-		}
-		if credentials.HasUnsafePlaintextCredentials(&account) {
-			snapshot.UnsafeCredentialAccounts++
 		}
 		snapshot.EgressBuckets[s.ResolveEgressBucket(&account)]++
 	}

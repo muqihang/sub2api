@@ -142,3 +142,11 @@ func openAIProtectedCredentialKeysForAccount(account *Account) []string {
 		return nil
 	}
 }
+
+func MergeProtectedOpenAICredentials(existing, updated map[string]any, accessor *OpenAIGatewayCredentials) (map[string]any, error) {
+	merged := MergeCredentials(existing, cloneJSONMap(updated))
+	if accessor == nil {
+		return merged, nil
+	}
+	return accessor.ProtectCredentials(merged)
+}

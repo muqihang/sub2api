@@ -15,7 +15,7 @@ import (
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore         *openai.SessionStore
+	sessionStore         openai.OAuthSessionStore
 	proxyRepo            ProxyRepository
 	oauthClient          OpenAIOAuthClient
 	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
@@ -24,8 +24,15 @@ type OpenAIOAuthService struct {
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
 func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
+	return NewOpenAIOAuthServiceWithStore(proxyRepo, oauthClient, openai.NewSessionStore())
+}
+
+func NewOpenAIOAuthServiceWithStore(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient, sessionStore openai.OAuthSessionStore) *OpenAIOAuthService {
+	if sessionStore == nil {
+		sessionStore = openai.NewSessionStore()
+	}
 	return &OpenAIOAuthService{
-		sessionStore: openai.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
@@ -39,6 +46,16 @@ func (s *OpenAIOAuthService) SetPrivacyClientFactory(factory PrivacyClientFactor
 
 func (s *OpenAIOAuthService) SetGatewayCoreService(core *OpenAIGatewayCoreService) {
 	s.gatewayCoreService = core
+}
+
+func (s *OpenAIOAuthService) SetSessionStore(store openai.OAuthSessionStore) {
+	if s == nil {
+		return
+	}
+	if store == nil {
+		store = openai.NewSessionStore()
+	}
+	s.sessionStore = store
 }
 
 func (s *OpenAIOAuthService) gatewayConfig() *config.Config {
@@ -123,7 +140,9 @@ func (s *OpenAIOAuthService) GenerateAuthURLWithEgress(ctx context.Context, prox
 		ProxyLabel:    openAIEgressProxyLabel(egress),
 		ProxyHash:     openAIEgressProxyHash(egress),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Set(sessionID, session); err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_STORE_FAILED", "failed to store oauth session: %v", err)
+	}
 
 	// Build authorization URL
 	authURL := openai.BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, normalizedPlatform)
@@ -174,7 +193,10 @@ type OpenAITokenInfo struct {
 // ExchangeCode exchanges authorization code for tokens
 func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
 	// Get session
-	session, ok := s.sessionStore.Get(input.SessionID)
+	session, ok, err := s.sessionStore.Get(input.SessionID)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_LOOKUP_FAILED", "failed to load oauth session: %v", err)
+	}
 	if !ok {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
 	}
@@ -183,6 +205,10 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	}
 	if subtle.ConstantTimeCompare([]byte(input.State), []byte(session.State)) != 1 {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_STATE", "invalid oauth state")
+	}
+
+	if err := s.sessionStore.Delete(input.SessionID); err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_DELETE_FAILED", "failed to consume oauth session: %v", err)
 	}
 
 	proxyURL := session.ProxyURL
@@ -231,9 +257,6 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 			userInfo = claims.GetUserInfo()
 		}
 	}
-
-	// Delete session after successful exchange
-	s.sessionStore.Delete(input.SessionID)
 
 	tokenInfo := &OpenAITokenInfo{
 		AccessToken:   tokenResp.AccessToken,
@@ -554,7 +577,7 @@ func openAIEgressProxyHash(egress *OpenAIEgressResolution) string {
 
 // Stop stops the session store cleanup goroutine
 func (s *OpenAIOAuthService) Stop() {
-	s.sessionStore.Stop()
+	_ = s.sessionStore.Stop()
 }
 
 func normalizeOpenAIOAuthPlatform(platform string) string {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -308,4 +309,75 @@ func TestCRSSyncService_OpenAIUsesImportedExtraEgressBucketBeforeRefresh(t *test
 	require.False(t, repo.created[0].Schedulable)
 	require.Equal(t, OpenAIValidationOutcomeRTValidationRetryableFailure, result.Items[0].ValidationOutcome)
 	require.Equal(t, OpenAITokenSourceRTManaged, result.Items[0].TokenSource)
+}
+
+func TestCRSSyncService_OpenAIAPIKeyProtectsCredentialsOnCreate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/web/auth/login":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"token":   "admin-token",
+			})
+		case "/admin/sync/export-accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"exportedAt":            "2026-04-16T00:00:00Z",
+					"claudeAccounts":        []any{},
+					"claudeConsoleAccounts": []any{},
+					"openaiOAuthAccounts":   []any{},
+					"geminiOAuthAccounts":   []any{},
+					"geminiApiKeyAccounts":  []any{},
+					"openaiResponsesAccounts": []map[string]any{
+						{
+							"kind":        "openai-responses",
+							"id":          "crs-openai-apikey-1",
+							"name":        "CRS OpenAI APIKey",
+							"platform":    PlatformOpenAI,
+							"authType":    AccountTypeAPIKey,
+							"isActive":    true,
+							"schedulable": true,
+							"priority":    50,
+							"status":      StatusActive,
+							"credentials": map[string]any{
+								"api_key":  "sk-live-secret",
+								"base_url": "https://api.openai.com/v1",
+							},
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	repo := &crsSyncOpenAIRepoStub{}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("ae", 32)
+
+	svc := NewCRSSyncService(
+		repo,
+		&crsSyncProxyRepoStub{},
+		nil,
+		nil,
+		nil,
+		cfg,
+	)
+
+	result, err := svc.SyncFromCRS(context.Background(), SyncFromCRSInput{
+		BaseURL:     server.URL,
+		Username:    "admin",
+		Password:    "pass",
+		SyncProxies: false,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Created)
+	require.Len(t, repo.created, 1)
+	require.True(t, strings.HasPrefix(repo.created[0].Credentials["api_key"].(string), openAISecretProtectorPrefix))
 }

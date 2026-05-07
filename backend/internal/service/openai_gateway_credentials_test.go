@@ -140,3 +140,26 @@ func TestOpenAIGatewayCredentialAccessor_DetectsUnsafePlaintextCredentialsInProd
 	require.True(t, creds.HasUnsafePlaintextCredentials(oauthAccount))
 	require.True(t, creds.HasUnsafePlaintextCredentials(apiKeyAccount))
 }
+
+func TestMergeProtectedOpenAICredentials_ReprotectsPreservedPlaintextSecrets(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("ab", 32)
+	accessor := NewOpenAIGatewayCredentials(cfg, nil)
+
+	merged, err := MergeProtectedOpenAICredentials(
+		map[string]any{
+			"refresh_token": "plain-refresh",
+			"id_token":      "plain-id",
+			"email":         "user@example.com",
+		},
+		map[string]any{
+			"access_token": "new-access",
+		},
+		accessor,
+	)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(merged["access_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(merged["refresh_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(merged["id_token"].(string), openAISecretProtectorPrefix))
+	require.Equal(t, "user@example.com", merged["email"])
+}

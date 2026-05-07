@@ -70,6 +70,31 @@ func TestEvaluateOpenAIImportLifecycle_RTValidated(t *testing.T) {
 	require.Equal(t, "openid email profile api.responses.write", decision.Extra["openai_last_granted_scope"])
 }
 
+func TestEvaluateOpenAIImportLifecycle_RTValidatedProtectsOriginalRefreshTokenWhenRefreshResponseOmitsIt(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("ad", 32)
+	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken: "new-at",
+			ExpiresIn:   3600,
+			Scope:       "openid email profile api.responses.write",
+		},
+	})
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"access_token":  "old-at",
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+		"id_token":      "old-id",
+	})
+
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(decision.Credentials["access_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(decision.Credentials["refresh_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(decision.Credentials["id_token"].(string), openAISecretProtectorPrefix))
+}
+
 func TestEvaluateOpenAIImportLifecycle_UsesEgressBucketAndPersistsIt(t *testing.T) {
 	client := &openaiLifecycleClientStub{
 		refreshResp: &openai.TokenResponse{

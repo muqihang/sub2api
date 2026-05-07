@@ -39,7 +39,8 @@ func TestOpenAIOAuthService_GenerateAuthURL_OpenAIKeepsCodexFlow(t *testing.T) {
 	require.Equal(t, openai.ClientID, q.Get("client_id"))
 	require.Equal(t, "true", q.Get("codex_cli_simplified_flow"))
 
-	session, ok := svc.sessionStore.Get(result.SessionID)
+	session, ok, err := svc.sessionStore.Get(result.SessionID)
+	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, openai.ClientID, session.ClientID)
 }

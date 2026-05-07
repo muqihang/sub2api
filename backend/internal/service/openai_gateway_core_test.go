@@ -255,6 +255,38 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeCredentials
 	require.Equal(t, "unsafe_plaintext_credentials_present", health.DegradedReason)
 }
 
+func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeAPIKeyCredentials(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("ac", 32)
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accounts: []Account{
+				{
+					ID:       2,
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeAPIKey,
+					Status:   StatusActive,
+					Credentials: map[string]any{
+						"api_key": "sk-plain-api-key",
+					},
+				},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.Equal(t, "degraded", health.GatewayStatus)
+	require.Equal(t, int64(1), health.UnsafeCredentialAccounts)
+	require.Equal(t, "unsafe_plaintext_credentials_present", health.DegradedReason)
+}
+
 func TestOpenAIGatewayService_ResolveOpenAIEgressUsesBucketProxy(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAICore.Enabled = true
