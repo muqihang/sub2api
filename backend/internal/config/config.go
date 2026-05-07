@@ -2503,6 +2503,16 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAICore.BucketWarnAccountThreshold < 0 {
 		return fmt.Errorf("gateway.openai_core.bucket_warn_account_threshold must be non-negative")
 	}
+	keyHex := strings.TrimSpace(c.Gateway.OpenAICore.CredentialEncryptionKey)
+	if keyHex != "" {
+		key, err := hex.DecodeString(keyHex)
+		if err != nil {
+			return fmt.Errorf("gateway.openai_core.credential_encryption_key must be valid hex")
+		}
+		if len(key) != 32 {
+			return fmt.Errorf("gateway.openai_core.credential_encryption_key must decode to 32 bytes")
+		}
+	}
 	if c.Gateway.OpenAICore.ProductionMode {
 		if !c.Gateway.OpenAICore.EgressFailClosed {
 			return fmt.Errorf("gateway.openai_core.production_mode requires egress_fail_closed=true")
@@ -2515,6 +2525,9 @@ func (c *Config) Validate() error {
 		}
 		if !c.Gateway.OpenAICore.RequireEncryptedCredentials {
 			return fmt.Errorf("gateway.openai_core.production_mode requires require_encrypted_credentials=true")
+		}
+		if keyHex == "" {
+			return fmt.Errorf("gateway.openai_core.production_mode requires credential_encryption_key to be configured")
 		}
 		if strings.EqualFold(strings.TrimSpace(c.Gateway.OpenAICore.OAuthSessionStore), "memory") &&
 			!c.Gateway.OpenAICore.OAuthCallbackStickySingleInstance {

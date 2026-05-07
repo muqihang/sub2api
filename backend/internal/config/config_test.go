@@ -1769,6 +1769,36 @@ func TestOpenAICoreProductionRequiresOAuthSessionMode(t *testing.T) {
 	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires oauth_session_store!=memory or oauth_callback_sticky_single_instance=true")
 }
 
+func TestOpenAICoreProductionRequiresCredentialEncryptionKey(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = ""
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "credential_encryption_key")
+}
+
+func TestOpenAICoreRejectsInvalidCredentialEncryptionKeyLength(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 31)
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "credential_encryption_key must decode to 32 bytes")
+}
+
 func TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
