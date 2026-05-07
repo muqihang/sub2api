@@ -14,6 +14,8 @@ const (
 	openAIEgressSourceBucket          = "bucket"
 	openAIEgressSourceAccountFallback = "account_fallback"
 	openAIEgressSourceDirectFallback  = "direct_fallback"
+
+	OpenAIEgressPolicyClientMessage = "OpenAI Gateway egress policy rejected request"
 )
 
 type OpenAIEgressResolution struct {

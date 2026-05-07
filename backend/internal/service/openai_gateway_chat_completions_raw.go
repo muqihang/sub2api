@@ -157,12 +157,13 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
 
-	// 6. Send request
-	proxyURL := ""
-	if account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	egress, err := s.resolveOpenAIEgress(ctx, account)
+	if err != nil {
+		return nil, err
 	}
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+
+	// 6. Send request
+	resp, err := s.httpUpstream.Do(upstreamReq, egress.ProxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")

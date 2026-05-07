@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
@@ -148,6 +149,54 @@ func TestAccountTestService_OpenAIStreamEOFBeforeCompletedFails(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, recorder.Body.String(), "response.completed")
 	require.NotContains(t, recorder.Body.String(), `"success":true`)
+}
+
+func TestAccountTestService_OpenAIAPIKeyProbeRejectsFailClosedEgressBeforeHTTPUpstream(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+	account := &Account{
+		ID:          19005,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://api.openai.com",
+		},
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "missing",
+		},
+		Proxy: &Proxy{
+			Protocol: "socks5",
+			Host:     "10.0.0.2",
+			Port:     1080,
+		},
+	}
+	repo := &openAIAccountTestRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &queuedHTTPUpstream{
+		responses: []*http.Response{newJSONResponse(http.StatusOK, `{}`)},
+	}
+	svc := &AccountTestService{
+		accountRepo:  repo,
+		httpUpstream: upstream,
+		cfg:          cfg,
+	}
+
+	svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID)
+
+	require.Len(t, upstream.requests, 0)
+	require.Nil(t, repo.updatedExtra)
 }
 
 func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimitState(t *testing.T) {

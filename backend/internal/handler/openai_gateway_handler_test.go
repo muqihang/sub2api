@@ -188,6 +188,40 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	assert.Equal(t, "already written", w.Body.String())
 }
 
+func TestOpenAIHandleEgressPolicyError_ReturnsStable503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h := &OpenAIGatewayHandler{}
+	handled := h.handleOpenAIEgressPolicyError(c, &service.OpenAIEgressPolicyError{Code: "missing_bucket", BucketName: "secret-bucket"}, false, false)
+
+	require.True(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Equal(t, "api_error", gjson.GetBytes(w.Body.Bytes(), "error.type").String())
+	require.Equal(t, service.OpenAIEgressPolicyClientMessage, gjson.GetBytes(w.Body.Bytes(), "error.message").String())
+	require.NotContains(t, w.Body.String(), "secret-bucket")
+	require.NotContains(t, w.Body.String(), "missing_bucket")
+}
+
+func TestOpenAIHandleEgressPolicyError_ReturnsStableAnthropic503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h := &OpenAIGatewayHandler{}
+	handled := h.handleOpenAIEgressPolicyError(c, &service.OpenAIEgressPolicyError{Code: "disabled_bucket", BucketName: "secret-bucket"}, false, true)
+
+	require.True(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Equal(t, "api_error", gjson.GetBytes(w.Body.Bytes(), "error.type").String())
+	require.Equal(t, service.OpenAIEgressPolicyClientMessage, gjson.GetBytes(w.Body.Bytes(), "error.message").String())
+	require.NotContains(t, w.Body.String(), "secret-bucket")
+	require.NotContains(t, w.Body.String(), "disabled_bucket")
+}
+
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

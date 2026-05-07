@@ -791,14 +791,6 @@ func (s *OpenAIGatewayService) GatewayCoreService() *OpenAIGatewayCoreService {
 	return s.gatewayCoreService
 }
 
-func (s *OpenAIGatewayService) resolveOpenAIProxyURL(account *Account) string {
-	resolution, err := s.resolveOpenAIEgress(context.Background(), account)
-	if err != nil || resolution == nil {
-		return ""
-	}
-	return resolution.ProxyURL
-}
-
 func (s *OpenAIGatewayService) resolveOpenAIEgress(ctx context.Context, account *Account) (*OpenAIEgressResolution, error) {
 	fallback := resolveOpenAIAccountProxyURL(account)
 	if s == nil || s.gatewayCoreService == nil || !s.gatewayCoreService.IsEnabled() {

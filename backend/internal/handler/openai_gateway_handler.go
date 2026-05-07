@@ -585,6 +585,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, false) {
+					reqLog.Warn("openai.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 				fields := []zap.Field{
 					zap.Int64("account_id", account.ID),
@@ -964,6 +968,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, true) {
+					reqLog.Warn("openai_messages.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
 				reqLog.Warn("openai_messages.forward_failed",
 					zap.Int64("account_id", account.ID),
@@ -1076,6 +1084,19 @@ func (h *OpenAIGatewayHandler) ensureAnthropicErrorResponse(c *gin.Context, stre
 		return false
 	}
 	h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+	return true
+}
+
+func (h *OpenAIGatewayHandler) handleOpenAIEgressPolicyError(c *gin.Context, err error, streamStarted bool, anthropic bool) bool {
+	var policyErr *service.OpenAIEgressPolicyError
+	if !errors.As(err, &policyErr) {
+		return false
+	}
+	if anthropic {
+		h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", service.OpenAIEgressPolicyClientMessage, streamStarted)
+	} else {
+		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", service.OpenAIEgressPolicyClientMessage, streamStarted)
+	}
 	return true
 }
 

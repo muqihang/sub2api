@@ -109,20 +109,28 @@ func TestOpenAIGatewayCoreService_ResolveEgressBucket(t *testing.T) {
 
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	require.Equal(t, "default", svc.ResolveEgressBucket(account))
-	require.Equal(t, "", svc.ResolveEgressProxyURL(account, ""))
+	egress, err := svc.ResolveEgress(context.Background(), account, "")
+	require.NoError(t, err)
+	require.Empty(t, egress.ProxyURL)
 
 	account.Extra = map[string]any{"openai_gateway_egress_bucket": "bucket-a"}
 	require.Equal(t, "bucket-a", svc.ResolveEgressBucket(account))
-	require.Equal(t, "socks5://127.0.0.1:9001", svc.ResolveEgressProxyURL(account, ""))
+	egress, err = svc.ResolveEgress(context.Background(), account, "")
+	require.NoError(t, err)
+	require.Equal(t, "socks5://127.0.0.1:9001", egress.ProxyURL)
 
 	account.Extra["openai_gateway_egress_bucket"] = "missing"
-	require.Equal(t, "", svc.ResolveEgressProxyURL(account, ""))
+	egress, err = svc.ResolveEgress(context.Background(), account, "")
+	require.NoError(t, err)
+	require.Empty(t, egress.ProxyURL)
 
 	cfg.Gateway.OpenAICore.EgressBuckets = append(cfg.Gateway.OpenAICore.EgressBuckets, config.OpenAIGatewayEgressBucketConfig{
 		Name: "bucket-disabled", Enabled: false, ProxyURL: "http://127.0.0.1:8080",
 	})
 	account.Extra["openai_gateway_egress_bucket"] = "bucket-disabled"
-	require.Equal(t, "fallback-proxy", svc.ResolveEgressProxyURL(account, "fallback-proxy"))
+	egress, err = svc.ResolveEgress(context.Background(), account, "fallback-proxy")
+	require.NoError(t, err)
+	require.Equal(t, "fallback-proxy", egress.ProxyURL)
 }
 
 func TestOpenAIGatewayCoreService_BuildHealthSnapshot(t *testing.T) {
@@ -174,7 +182,7 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshot(t *testing.T) {
 	require.NotEmpty(t, health.DegradedReason)
 }
 
-func TestOpenAIGatewayService_ResolveOpenAIProxyURLUsesBucketProxy(t *testing.T) {
+func TestOpenAIGatewayService_ResolveOpenAIEgressUsesBucketProxy(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAICore.Enabled = true
 	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
@@ -198,7 +206,9 @@ func TestOpenAIGatewayService_ResolveOpenAIProxyURLUsesBucketProxy(t *testing.T)
 		},
 	}
 
-	require.Equal(t, "http://127.0.0.1:8080", svc.resolveOpenAIProxyURL(account))
+	egress, err := svc.resolveOpenAIEgress(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:8080", egress.ProxyURL)
 }
 
 func TestOpenAIGatewayService_ResolveOpenAIEgressPropagatesFailClosedPolicyError(t *testing.T) {
@@ -232,6 +242,39 @@ func TestOpenAIGatewayService_ResolveOpenAIEgressPropagatesFailClosedPolicyError
 	var policyErr *OpenAIEgressPolicyError
 	require.ErrorAs(t, err, &policyErr)
 	require.Equal(t, "missing_bucket", policyErr.Code)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeAllowsAccountProxyFallback(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = false
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = true
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil)
+	account := &Account{
+		ID:       9301,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "missing",
+		},
+		Proxy: &Proxy{
+			Protocol: "socks5",
+			Host:     "10.0.0.2",
+			Port:     1080,
+		},
+	}
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), account, http.Header{}, OpenAIClientTransportWS)
+	require.NoError(t, err)
+	require.NotNil(t, runtime)
+	require.Equal(t, "missing", runtime.EgressBucket)
+	require.True(t, runtime.ProxySelected)
+	require.Equal(t, "socks5h://10.0.0.2:1080", runtime.ProxyLabel)
 }
 
 func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshot(t *testing.T) {

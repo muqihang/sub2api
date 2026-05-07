@@ -206,14 +206,6 @@ func (s *OpenAIGatewayCoreService) ResolveEgressBucket(account *Account) string 
 	return "default"
 }
 
-func (s *OpenAIGatewayCoreService) ResolveEgressProxyURL(account *Account, fallbackProxyURL string) string {
-	resolution, err := s.ResolveEgress(context.Background(), account, fallbackProxyURL)
-	if err != nil || resolution == nil {
-		return ""
-	}
-	return resolution.ProxyURL
-}
-
 func (s *OpenAIGatewayCoreService) HasEgressBucket(name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -251,7 +243,7 @@ func (s *OpenAIGatewayCoreService) ResolveAccountRuntime(ctx context.Context, ac
 	}
 
 	profile, updates := s.resolveCanonicalProfile(account, headers)
-	egress, err := s.ResolveEgress(ctx, account, "")
+	egress, err := s.ResolveEgress(ctx, account, resolveOpenAIAccountProxyURL(account))
 	if err != nil {
 		return nil, err
 	}
