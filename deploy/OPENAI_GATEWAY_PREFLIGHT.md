@@ -86,7 +86,7 @@ deploy/openai-gateway-preflight.sh
 
 ## 输出安全检查
 
-`deploy/openai-gateway-preflight.sh` 会把每个接口的 JSON 响应单独捕获后再检查，而不是扫描整段终端输出。默认会拦截以下情况并直接失败：
+`deploy/openai-gateway-preflight.sh` 会把每个接口的 JSON 响应单独捕获后再检查，而不是扫描整段终端输出。默认会拦截以下情况并直接失败；即使目标机没有 `jq`，也会走文本级的 fail-closed 检查：
 
 - JSON 中出现 `access_token`、`refresh_token`、`id_token`、`api_key` 的非空明文值
 - 响应里出现 `sk-...` 形式的 OpenAI key

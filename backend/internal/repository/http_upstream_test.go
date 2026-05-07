@@ -247,6 +247,26 @@ func (s *HTTPUpstreamSuite) TestGetClientEntryWithTLS_LogsRedactedProxy() {
 	require.NotContains(s.T(), logOutput, "cache_key=")
 }
 
+func (s *HTTPUpstreamSuite) TestDoWithTLS_LogsRedactedProxyOnAcquireFailure() {
+	svc := s.newService()
+
+	var buf bytes.Buffer
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(oldDefault)
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/test", nil)
+	require.NoError(s.T(), err)
+
+	_, err = svc.DoWithTLS(req, "http://user:pass@proxy.local:bad", 9, 1, &tlsfingerprint.Profile{Name: "test-profile"})
+	require.Error(s.T(), err)
+
+	logOutput := buf.String()
+	require.Contains(s.T(), logOutput, "tls_fingerprint_acquire_client_failed")
+	require.Contains(s.T(), logOutput, "<invalid_proxy>")
+	require.NotContains(s.T(), logOutput, "user:pass")
+}
+
 // TestAccountConcurrencyFallbackToDefault 测试账户并发数为 0 时回退到默认配置
 // 验证未指定并发数时使用全局配置值
 func (s *HTTPUpstreamSuite) TestAccountConcurrencyFallbackToDefault() {

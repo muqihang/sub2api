@@ -370,7 +370,7 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshotRedactsProxyURL(t *tes
 }
 
 func TestOpenAIGatewayRedactSanitizeUpstreamErrorMessage(t *testing.T) {
-	raw := "proxy=http://user:pass@proxy.example.com:8080/path?access_token=tok123&refresh_token=tok456 Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz123456 api_key=sk-abcdef1234567890"
+	raw := "proxy=http://user:pass@proxy.example.com:8080/path?access_token=tok123&refresh_token=tok456 Authorization: Bearer abcdefghij/secret+tail== api_key=sk-abcdef1234567890"
 	redacted := sanitizeUpstreamErrorMessage(raw)
 
 	require.Contains(t, redacted, "proxy.example.com:8080")
@@ -379,6 +379,20 @@ func TestOpenAIGatewayRedactSanitizeUpstreamErrorMessage(t *testing.T) {
 	require.NotContains(t, redacted, "user:pass")
 	require.NotContains(t, redacted, "tok123")
 	require.NotContains(t, redacted, "tok456")
-	require.NotContains(t, redacted, "sk-abcdefghijklmnopqrstuvwxyz123456")
+	require.NotContains(t, redacted, "abcdefghij/secret+tail==")
 	require.NotContains(t, redacted, "path?")
+}
+
+func TestOpenAIGatewayRedactSanitizeUpstreamErrorBody(t *testing.T) {
+	raw := []byte(`{"access_token":"tok123","refresh_token":"tok456","detail":"Bearer abcdefghij/secret+tail==","proxy":"http://user:pass@proxy.example.com:8080/path?q=1"}`)
+	redacted := sanitizeUpstreamErrorBody(raw, 2048)
+
+	require.Contains(t, redacted, `"access_token":"***"`)
+	require.Contains(t, redacted, `"refresh_token":"***"`)
+	require.Contains(t, redacted, `Bearer ***`)
+	require.Contains(t, redacted, `proxy.example.com:8080`)
+	require.NotContains(t, redacted, `tok123`)
+	require.NotContains(t, redacted, `tok456`)
+	require.NotContains(t, redacted, `user:pass`)
+	require.NotContains(t, redacted, `q=1`)
 }

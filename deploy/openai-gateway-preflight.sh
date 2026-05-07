@@ -31,13 +31,23 @@ curl_json() {
   local headers=("$@")
 
   if [[ -n "${body}" ]]; then
-    curl -fsS --max-time "${TIMEOUT_SECONDS}" -X "${method}" "${url}" \
-      "${headers[@]}" \
-      -H "Content-Type: application/json" \
-      --data "${body}"
+    if ((${#headers[@]} > 0)); then
+      curl -fsS --max-time "${TIMEOUT_SECONDS}" -X "${method}" "${url}" \
+        "${headers[@]}" \
+        -H "Content-Type: application/json" \
+        --data "${body}"
+    else
+      curl -fsS --max-time "${TIMEOUT_SECONDS}" -X "${method}" "${url}" \
+        -H "Content-Type: application/json" \
+        --data "${body}"
+    fi
   else
-    curl -fsS --max-time "${TIMEOUT_SECONDS}" -X "${method}" "${url}" \
-      "${headers[@]}"
+    if ((${#headers[@]} > 0)); then
+      curl -fsS --max-time "${TIMEOUT_SECONDS}" -X "${method}" "${url}" \
+        "${headers[@]}"
+    else
+      curl -fsS --max-time "${TIMEOUT_SECONDS}" -X "${method}" "${url}"
+    fi
   fi
 }
 
@@ -68,14 +78,23 @@ assert_safe_json_output() {
       echo "unsafe output detected in ${label}: sensitive credential field value exposed" >&2
       return 1
     fi
+  else
+    local sensitive_matches
+    sensitive_matches="$(grep -Eio '"(access_token|refresh_token|id_token|api_key)"[[:space:]]*:[[:space:]]*"[^"]+"' "${file}" || true)"
+    if [[ -n "${sensitive_matches}" ]] && printf '%s\n' "${sensitive_matches}" \
+      | grep -Eiv ':[[:space:]]*"(\*\*\*|<redacted>)"$' \
+      | grep -q '.'; then
+      echo "unsafe output detected in ${label}: sensitive credential field value exposed" >&2
+      return 1
+    fi
   fi
 
-  if grep -E 'sk-[A-Za-z0-9_-]{12,}|://[^/@:[:space:]]+:[^/@[:space:]]+@' "${file}" >/dev/null 2>&1; then
+  if grep -E 'sk-[A-Za-z0-9_-]{12,}|://[^/@[:space:]]+@' "${file}" >/dev/null 2>&1; then
     echo "unsafe output detected in ${label}: raw secret or proxy credentials exposed" >&2
     return 1
   fi
 
-  if grep -Eiq 'Bearer [A-Za-z0-9._-]{16,}' "${file}"; then
+  if grep -Eiq 'Bearer [A-Za-z0-9._~+/=-]{16,}' "${file}"; then
     echo "unsafe output detected in ${label}: bearer token exposed" >&2
     return 1
   fi
@@ -102,14 +121,24 @@ capture_and_check_json "app health" "${tmpdir}/health.json" \
 echo
 
 echo "==> [2/4] openai gateway health"
-capture_and_check_json "openai gateway health" "${tmpdir}/openai-health.json" \
-  curl_json GET "${trimmed_base}/openai/_health" "" "${gateway_headers[@]}"
+if ((${#gateway_headers[@]} > 0)); then
+  capture_and_check_json "openai gateway health" "${tmpdir}/openai-health.json" \
+    curl_json GET "${trimmed_base}/openai/_health" "" "${gateway_headers[@]}"
+else
+  capture_and_check_json "openai gateway health" "${tmpdir}/openai-health.json" \
+    curl_json GET "${trimmed_base}/openai/_health" ""
+fi
 echo
 
 if [[ -n "${ACCOUNT_ID}" ]]; then
   echo "==> [3/4] openai gateway verify"
-  capture_and_check_json "openai gateway verify" "${tmpdir}/openai-verify.json" \
-    curl_json GET "${trimmed_base}/openai/_verify?account_id=${ACCOUNT_ID}&transport=http" "" "${gateway_headers[@]}"
+  if ((${#gateway_headers[@]} > 0)); then
+    capture_and_check_json "openai gateway verify" "${tmpdir}/openai-verify.json" \
+      curl_json GET "${trimmed_base}/openai/_verify?account_id=${ACCOUNT_ID}&transport=http" "" "${gateway_headers[@]}"
+  else
+    capture_and_check_json "openai gateway verify" "${tmpdir}/openai-verify.json" \
+      curl_json GET "${trimmed_base}/openai/_verify?account_id=${ACCOUNT_ID}&transport=http" ""
+  fi
   echo
 else
   echo "==> [3/4] openai gateway verify skipped (ACCOUNT_ID not set)"
@@ -118,10 +147,16 @@ fi
 
 if [[ -n "${API_KEY}" ]]; then
   echo "==> [4/4] openai responses smoke"
-  capture_and_check_json "openai responses smoke" "${tmpdir}/openai-responses.json" \
-    curl_json POST "${trimmed_base}/v1/responses" "{\"model\":\"${MODEL}\",\"input\":\"preflight hello\"}" \
-      -H "Authorization: Bearer ${API_KEY}" \
-      "${gateway_headers[@]}"
+  if ((${#gateway_headers[@]} > 0)); then
+    capture_and_check_json "openai responses smoke" "${tmpdir}/openai-responses.json" \
+      curl_json POST "${trimmed_base}/v1/responses" "{\"model\":\"${MODEL}\",\"input\":\"preflight hello\"}" \
+        -H "Authorization: Bearer ${API_KEY}" \
+        "${gateway_headers[@]}"
+  else
+    capture_and_check_json "openai responses smoke" "${tmpdir}/openai-responses.json" \
+      curl_json POST "${trimmed_base}/v1/responses" "{\"model\":\"${MODEL}\",\"input\":\"preflight hello\"}" \
+        -H "Authorization: Bearer ${API_KEY}"
+  fi
   echo
 else
   echo "==> [4/4] openai responses smoke skipped (API_KEY not set)"

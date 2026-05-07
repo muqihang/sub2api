@@ -185,7 +185,15 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile)
 	if err != nil {
-		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
+		slog.Debug(
+			"tls_fingerprint_acquire_client_failed",
+			"account_id",
+			accountID,
+			"proxy",
+			sanitizeProxyURLForLog(proxyURL),
+			"error",
+			sanitizeProxyErrorForLog(err, proxyURL),
+		)
 		return nil, err
 	}
 
@@ -716,6 +724,18 @@ func sanitizeProxyURLForLog(raw string) string {
 	parsed.Fragment = ""
 	parsed.RawFragment = ""
 	return parsed.String()
+}
+
+func sanitizeProxyErrorForLog(err error, rawProxyURL string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	rawProxyURL = strings.TrimSpace(rawProxyURL)
+	if rawProxyURL == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, rawProxyURL, sanitizeProxyURLForLog(rawProxyURL))
 }
 
 // defaultPoolSettings 获取默认连接池配置
