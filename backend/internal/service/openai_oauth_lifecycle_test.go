@@ -5,9 +5,11 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
 )
@@ -301,6 +303,42 @@ func TestFindMatchingOpenAIOAuthAccount_PrefersRefreshToken(t *testing.T) {
 		"refresh_token":      "rt-2",
 		"chatgpt_account_id": "acct-1",
 	})
+
+	require.NotNil(t, account)
+	require.Equal(t, int64(2), account.ID)
+	require.Equal(t, "refresh_token", matchKey)
+}
+
+func TestFindMatchingOpenAIOAuthAccountWithAccessor_MatchesEncryptedStoredToken(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("99", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+	encrypted, err := protector.ProtectCredentials(map[string]any{
+		"refresh_token": "rt-2",
+	})
+	require.NoError(t, err)
+
+	accounts := []Account{
+		{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"refresh_token": "rt-1",
+			},
+		},
+		{
+			ID:          2,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Credentials: encrypted,
+		},
+	}
+
+	account, matchKey := FindMatchingOpenAIOAuthAccountWithAccessor(accounts, map[string]any{
+		"refresh_token": "rt-2",
+	}, NewOpenAIGatewayCredentials(cfg, protector))
 
 	require.NotNil(t, account)
 	require.Equal(t, int64(2), account.ID)

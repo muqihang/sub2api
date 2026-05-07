@@ -97,3 +97,14 @@ func (c *OpenAIGatewayCredentials) resolveProtector() (*OpenAISecretProtector, e
 	}
 	return ProvideOpenAISecretProtector(c.cfg)
 }
+
+func (c *OpenAIGatewayCredentials) ProtectCredentials(input map[string]any) (map[string]any, error) {
+	protector, err := c.resolveProtector()
+	if err != nil {
+		return nil, err
+	}
+	if protector == nil {
+		return cloneJSONMap(input), nil
+	}
+	return protector.ProtectCredentials(input)
+}

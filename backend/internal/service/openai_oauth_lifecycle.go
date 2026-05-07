@@ -312,10 +312,20 @@ func (a *Account) ShouldParticipateInOpenAIManagedRefresh() bool {
 }
 
 func FindMatchingOpenAIOAuthAccount(accounts []Account, credentials map[string]any) (*Account, string) {
+	return FindMatchingOpenAIOAuthAccountWithAccessor(accounts, credentials, nil)
+}
+
+func FindMatchingOpenAIOAuthAccountWithAccessor(accounts []Account, credentials map[string]any, accessor *OpenAIGatewayCredentials) (*Account, string) {
 	refreshToken := strings.TrimSpace(stringValue(credentials["refresh_token"]))
 	if refreshToken != "" {
 		for i := range accounts {
-			if accounts[i].GetOpenAIRefreshToken() == refreshToken {
+			accountRefreshToken := accounts[i].GetOpenAIRefreshToken()
+			if accessor != nil {
+				if resolved, err := accessor.OpenAIRefreshToken(&accounts[i]); err == nil {
+					accountRefreshToken = resolved
+				}
+			}
+			if accountRefreshToken == refreshToken {
 				return &accounts[i], "refresh_token"
 			}
 		}
@@ -351,7 +361,13 @@ func FindMatchingOpenAIOAuthAccount(accounts []Account, credentials map[string]a
 	accessToken := strings.TrimSpace(stringValue(credentials["access_token"]))
 	if accessToken != "" {
 		for i := range accounts {
-			if accounts[i].GetOpenAIAccessToken() == accessToken {
+			accountAccessToken := accounts[i].GetOpenAIAccessToken()
+			if accessor != nil {
+				if resolved, err := accessor.OpenAIAccessToken(&accounts[i]); err == nil {
+					accountAccessToken = resolved
+				}
+			}
+			if accountAccessToken == accessToken {
 				return &accounts[i], "access_token"
 			}
 		}

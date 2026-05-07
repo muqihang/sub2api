@@ -528,12 +528,14 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	var apiURL string
 	var isOAuth bool
 	var chatgptAccountID string
+	var authErr error
+	openAICredentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 
 	if account.IsOAuth() {
 		isOAuth = true
 		// OAuth - use Bearer token with ChatGPT internal API
-		authToken = account.GetOpenAIAccessToken()
-		if authToken == "" {
+		authToken, authErr = openAICredentials.OpenAIAccessToken(account)
+		if authErr != nil {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
 
@@ -542,8 +544,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		chatgptAccountID = account.GetChatGPTAccountID()
 	} else if account.Type == "apikey" {
 		// API Key - use Platform API
-		authToken = account.GetOpenAIApiKey()
-		if authToken == "" {
+		authToken, authErr = openAICredentials.OpenAIAPIKey(account)
+		if authErr != nil {
 			return s.sendErrorAndEnd(c, "No API key available")
 		}
 
@@ -646,19 +648,21 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	apiURL := ""
 	isOAuth := false
 	chatgptAccountID := ""
+	var authErr error
+	openAICredentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 
 	switch {
 	case account.IsOAuth():
 		isOAuth = true
-		authToken = account.GetOpenAIAccessToken()
-		if authToken == "" {
+		authToken, authErr = openAICredentials.OpenAIAccessToken(account)
+		if authErr != nil {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
 		apiURL = chatgptCodexAPIURL + "/compact"
 		chatgptAccountID = account.GetChatGPTAccountID()
 	case account.Type == AccountTypeAPIKey:
-		authToken = account.GetOpenAIApiKey()
-		if authToken == "" {
+		authToken, authErr = openAICredentials.OpenAIAPIKey(account)
+		if authErr != nil {
 			return s.sendErrorAndEnd(c, "No API key available")
 		}
 		baseURL := account.GetOpenAIBaseURL()
@@ -1321,8 +1325,8 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 
 // testOpenAIImageAPIKey tests OpenAI image generation using an API Key account.
 func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
-	authToken := account.GetOpenAIApiKey()
-	if authToken == "" {
+	authToken, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
+	if err != nil {
 		return s.sendErrorAndEnd(c, "No API key available")
 	}
 
@@ -1414,8 +1418,8 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 
 // testOpenAIImageOAuth tests OpenAI image generation using an OAuth account via Codex /responses API.
 func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Context, account *Account, modelID, prompt string) error {
-	authToken := account.GetOpenAIAccessToken()
-	if authToken == "" {
+	authToken, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAccessToken(account)
+	if err != nil {
 		return s.sendErrorAndEnd(c, "No access token available")
 	}
 

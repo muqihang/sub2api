@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -85,4 +86,58 @@ func TestOpenAIOAuthService_RefreshAccountToken_UsesGatewayBucketProxy(t *testin
 	_, err := svc.RefreshAccountToken(context.Background(), account)
 	require.Error(t, err)
 	require.Equal(t, "socks5://127.0.0.1:9001", client.lastProxyURL)
+}
+
+func TestOpenAIOAuthService_BuildAccountCredentials_EncryptsProtectedFields(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("66", 32)
+	core := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientRefreshStub{})
+	svc.SetGatewayCoreService(core)
+
+	creds := svc.BuildAccountCredentials(&OpenAITokenInfo{
+		AccessToken:      "new-access-token",
+		RefreshToken:     "new-refresh-token",
+		IDToken:          "new-id-token",
+		ChatGPTAccountID: "acct-1",
+		ExpiresAt:        time.Now().Add(1 * time.Hour).Unix(),
+	})
+
+	require.True(t, strings.HasPrefix(creds["access_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(creds["refresh_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(creds["id_token"].(string), openAISecretProtectorPrefix))
+	require.Equal(t, "acct-1", creds["chatgpt_account_id"])
+}
+
+func TestOpenAIOAuthService_RefreshAccountToken_UsesEncryptedExistingAccessToken(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("77", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"access_token": "existing-access-token",
+		"id_token":     "existing-id-token",
+	})
+	require.NoError(t, err)
+	protected["expires_at"] = time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	protected["client_id"] = "client-id-1"
+
+	client := &openaiOAuthClientRefreshStub{}
+	svc := NewOpenAIOAuthService(nil, client)
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	account := &Account{
+		ID:          77,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: protected,
+	}
+
+	info, err := svc.RefreshAccountToken(context.Background(), account)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	require.Equal(t, "existing-access-token", info.AccessToken)
+	require.Equal(t, "existing-id-token", info.IDToken)
+	require.Zero(t, atomic.LoadInt32(&client.refreshCalls))
 }

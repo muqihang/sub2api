@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
@@ -38,6 +39,21 @@ func (s *OpenAIOAuthService) SetPrivacyClientFactory(factory PrivacyClientFactor
 
 func (s *OpenAIOAuthService) SetGatewayCoreService(core *OpenAIGatewayCoreService) {
 	s.gatewayCoreService = core
+}
+
+func (s *OpenAIOAuthService) gatewayConfig() *config.Config {
+	if s == nil || s.gatewayCoreService == nil {
+		return nil
+	}
+	return s.gatewayCoreService.cfg
+}
+
+func (s *OpenAIOAuthService) credentialAccessor() *OpenAIGatewayCredentials {
+	return NewOpenAIGatewayCredentials(s.gatewayConfig(), nil)
+}
+
+func (s *OpenAIOAuthService) CredentialAccessor() *OpenAIGatewayCredentials {
+	return s.credentialAccessor()
 }
 
 // OpenAIAuthURLResult contains the authorization URL and session info
@@ -354,15 +370,29 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
 
-	refreshToken := account.GetCredential("refresh_token")
+	refreshToken, refreshErr := s.credentialAccessor().OpenAIRefreshToken(account)
+	if refreshErr != nil {
+		refreshToken = ""
+	}
 	if refreshToken == "" {
-		accessToken := account.GetCredential("access_token")
+		accessToken, accessErr := s.credentialAccessor().OpenAIAccessToken(account)
+		if accessErr != nil {
+			accessToken = ""
+		}
 		if accessToken != "" {
+			idToken := account.GetCredential("id_token")
+			if decryptedIDToken, idTokenErr := s.credentialAccessor().resolveValue(idToken, "id_token"); idTokenErr == nil {
+				idToken = decryptedIDToken
+			}
+			clientID := account.GetCredential("client_id")
+			if decryptedClientID, clientIDErr := s.credentialAccessor().OpenAIClientID(account); clientIDErr == nil {
+				clientID = decryptedClientID
+			}
 			tokenInfo := &OpenAITokenInfo{
 				AccessToken:      accessToken,
 				RefreshToken:     "",
-				IDToken:          account.GetCredential("id_token"),
-				ClientID:         account.GetCredential("client_id"),
+				IDToken:          idToken,
+				ClientID:         clientID,
 				Email:            account.GetCredential("email"),
 				ChatGPTAccountID: account.GetCredential("chatgpt_account_id"),
 				ChatGPTUserID:    account.GetCredential("chatgpt_user_id"),
@@ -396,6 +426,9 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	}
 
 	clientID := account.GetCredential("client_id")
+	if decryptedClientID, clientIDErr := s.credentialAccessor().OpenAIClientID(account); clientIDErr == nil {
+		clientID = decryptedClientID
+	}
 	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 }
 
@@ -442,8 +475,11 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	if len(tokenInfo.Scopes) > 0 {
 		creds["scopes"] = append([]string(nil), tokenInfo.Scopes...)
 	}
-
-	return creds
+	protected, err := s.credentialAccessor().ProtectCredentials(creds)
+	if err != nil {
+		return creds
+	}
+	return protected
 }
 
 func (s *OpenAIOAuthService) resolveOpenAIOAuthProxyURL(ctx context.Context, proxyID *int64) (string, error) {

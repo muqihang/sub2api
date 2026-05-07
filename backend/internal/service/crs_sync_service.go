@@ -613,7 +613,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			continue
 		}
 		if existing == nil {
-			if matched, matchKey := FindMatchingOpenAIOAuthAccount(openAIOAuthAccounts, credentials); matched != nil {
+			if matched, matchKey := FindMatchingOpenAIOAuthAccountWithAccessor(openAIOAuthAccounts, credentials, s.openaiOAuthService.CredentialAccessor()); matched != nil {
 				if !ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
 					item.Action = "failed"
 					item.Error = "sync rejected: newer RT-managed account already exists"
