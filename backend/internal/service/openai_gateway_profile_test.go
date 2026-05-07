@@ -97,7 +97,7 @@ func TestOpenAIGatewayCanonicalProfile_WSV2Headers(t *testing.T) {
 	require.Equal(t, openAIWSBetaV2Value, headers.Get("OpenAI-Beta"))
 	require.Equal(t, "codex_vscode", headers.Get("originator"))
 	require.Empty(t, headers.Get("Version"))
-	require.Empty(t, headers.Get("X-Stainless-Lang"))
+	require.Equal(t, "js", headers.Get("X-Stainless-Lang"))
 }
 
 func TestOpenAIGatewayCanonicalProfile_UserAgentOverrideRealignsVersion(t *testing.T) {

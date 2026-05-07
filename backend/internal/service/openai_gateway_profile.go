@@ -163,6 +163,12 @@ func (a *OpenAIGatewayProfileArtifact) ApplyWS(headers http.Header) {
 		return
 	}
 	setIfNotEmpty(headers, "user-agent", a.UserAgent)
+	setIfNotEmpty(headers, "X-Stainless-Lang", a.Stainless.Lang)
+	setIfNotEmpty(headers, "X-Stainless-Package-Version", a.Stainless.PackageVersion)
+	setIfNotEmpty(headers, "X-Stainless-OS", a.Stainless.OS)
+	setIfNotEmpty(headers, "X-Stainless-Arch", a.Stainless.Arch)
+	setIfNotEmpty(headers, "X-Stainless-Runtime", a.Stainless.Runtime)
+	setIfNotEmpty(headers, "X-Stainless-Runtime-Version", a.Stainless.RuntimeVersion)
 	if a.ClearOpenAIBeta {
 		headers.Del("OpenAI-Beta")
 	} else {
@@ -174,6 +180,24 @@ func (a *OpenAIGatewayProfileArtifact) ApplyWS(headers http.Header) {
 		setIfNotEmpty(headers, "originator", a.Originator)
 	}
 	headers.Del("version")
+}
+
+func buildOpenAIGatewayFallbackProfile(headers http.Header) *OpenAIGatewayCanonicalProfile {
+	if headers == nil {
+		headers = http.Header{}
+	}
+	profile := &OpenAIGatewayCanonicalProfile{
+		UserAgent:               strings.TrimSpace(headers.Get("User-Agent")),
+		Version:                 strings.TrimSpace(headers.Get("version")),
+		StainlessLang:           strings.TrimSpace(headers.Get("X-Stainless-Lang")),
+		StainlessPackageVersion: strings.TrimSpace(headers.Get("X-Stainless-Package-Version")),
+		StainlessOS:             strings.TrimSpace(headers.Get("X-Stainless-OS")),
+		StainlessArch:           strings.TrimSpace(headers.Get("X-Stainless-Arch")),
+		StainlessRuntime:        strings.TrimSpace(headers.Get("X-Stainless-Runtime")),
+		StainlessRuntimeVersion: strings.TrimSpace(headers.Get("X-Stainless-Runtime-Version")),
+	}
+	profile.Version = alignOpenAIGatewayProfileVersion(profile.UserAgent, profile.Version, codexCLIVersion)
+	return profile
 }
 
 func defaultOpenAIGatewayCanonicalProfile(cfg *config.Config) *OpenAIGatewayCanonicalProfile {

@@ -662,6 +662,89 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testi
 	}
 }
 
+func TestOpenAIGatewayService_Forward_WSv2_AppliesCanonicalStainlessProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.104.0")
+	c.Request.Header.Set("X-Stainless-Lang", "python")
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.CanonicalUserAgent = "codex_cli_rs/0.125.0"
+	cfg.Gateway.OpenAICore.CanonicalStainlessLang = "js"
+	cfg.Gateway.OpenAICore.CanonicalStainlessPackageVersion = "0.70.0"
+	cfg.Gateway.OpenAICore.CanonicalStainlessOS = "Linux"
+	cfg.Gateway.OpenAICore.CanonicalStainlessArch = "arm64"
+	cfg.Gateway.OpenAICore.CanonicalStainlessRuntime = "node"
+	cfg.Gateway.OpenAICore.CanonicalStainlessRuntimeVersion = "v24.13.0"
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.AllowStoreRecovery = false
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.completed","response":{"id":"resp_oauth_stainless","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}
+	captureDialer := &openAIWSCaptureDialer{conn: captureConn}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(captureDialer)
+
+	repo := &snapshotUpdateAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{
+			accounts: []Account{{
+				ID:          130,
+				Name:        "openai-oauth",
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Credentials: map[string]any{
+					"access_token":       "oauth-token-1",
+					"chatgpt_account_id": "acct-130",
+				},
+				Extra: map[string]any{
+					"responses_websockets_v2_enabled": true,
+				},
+			}},
+		},
+	}
+	core := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		httpUpstream:       &httpUpstreamRecorder{},
+		cache:              &stubGatewayCache{},
+		openaiWSResolver:   NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:      NewCodexToolCorrector(),
+		openaiWSPool:       pool,
+		gatewayCoreService: core,
+	}
+	account, errGet := repo.GetByID(context.Background(), 130)
+	require.NoError(t, errGet)
+
+	body := []byte(`{"model":"gpt-5.1","stream":false,"input":[{"type":"input_text","text":"hello"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "js", captureDialer.lastHeaders.Get("X-Stainless-Lang"))
+	require.Equal(t, "0.70.0", captureDialer.lastHeaders.Get("X-Stainless-Package-Version"))
+	require.Equal(t, "codex_cli_rs/0.125.0", captureDialer.lastHeaders.Get("User-Agent"))
+}
+
 func TestOpenAIGatewayService_Forward_WSv2_HeaderSessionFallbackFromPromptCacheKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

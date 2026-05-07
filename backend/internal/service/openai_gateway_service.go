@@ -3702,28 +3702,23 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			}
 			artifact.ApplyHTTP(req.Header)
 		} else {
-			if req.Header.Get("OpenAI-Beta") == "" {
-				req.Header.Set("OpenAI-Beta", openAIGatewayResponsesBetaValue)
-			}
-			if req.Header.Get("originator") == "" {
-				req.Header.Set("originator", openAIGatewayDefaultOriginator)
-			}
-			if isCompactPath && req.Header.Get("version") == "" {
-				req.Header.Set("version", codexCLIVersion)
-			} else if !isCompactPath {
-				req.Header.Del("version")
-			}
-
-			// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
+			artifact := BuildOpenAIGatewayProfileArtifact(
+				buildOpenAIGatewayFallbackProfile(req.Header),
+				profileRouteKind,
+				OpenAIGatewayProfileArtifactOptions{
+					RequestedOriginator: req.Header.Get("originator"),
+					IsOfficialClient:    openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")),
+				},
+			)
 			if customUA != "" {
-				req.Header.Set("user-agent", customUA)
-			}
-			if customUA == "" && !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
-				req.Header.Set("user-agent", codexCLIUserAgent)
+				artifact = artifact.WithUserAgentOverride(customUA)
+			} else if !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
+				artifact = artifact.ForceCodexCLI()
 			}
 			if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-				req.Header.Set("user-agent", codexCLIUserAgent)
+				artifact = artifact.ForceCodexCLI()
 			}
+			artifact.ApplyHTTP(req.Header)
 		}
 	} else if account.Type == AccountTypeAPIKey {
 		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, gjson.GetBytes(body, "prompt_cache_key").String())
@@ -4492,25 +4487,21 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 			artifact.ApplyHTTP(req.Header)
 		} else {
-			if compatMessagesBridge {
-				req.Header.Del("OpenAI-Beta")
-				req.Header.Del("originator")
-				req.Header.Del("version")
-			} else {
-				req.Header.Set("OpenAI-Beta", openAIGatewayResponsesBetaValue)
-				req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
-				if isCompactPath && req.Header.Get("version") == "" {
-					req.Header.Set("version", codexCLIVersion)
-				} else if !isCompactPath {
-					req.Header.Del("version")
-				}
-			}
+			artifact := BuildOpenAIGatewayProfileArtifact(
+				buildOpenAIGatewayFallbackProfile(req.Header),
+				profileRouteKind,
+				OpenAIGatewayProfileArtifactOptions{
+					RequestedOriginator: req.Header.Get("originator"),
+					IsOfficialClient:    isCodexCLI,
+				},
+			)
 			if customUA != "" {
-				req.Header.Set("user-agent", customUA)
+				artifact = artifact.WithUserAgentOverride(customUA)
 			}
 			if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-				req.Header.Set("user-agent", codexCLIUserAgent)
+				artifact = artifact.ForceCodexCLI()
 			}
+			artifact.ApplyHTTP(req.Header)
 		}
 	} else if account.Type == AccountTypeAPIKey {
 		if promptCacheKey == "" {
