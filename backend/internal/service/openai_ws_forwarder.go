@@ -26,10 +26,6 @@ import (
 )
 
 const (
-	openAIWSBetaV1Value  = "responses_websockets=2026-02-04"
-	openAIWSBetaV2Value  = "responses_websockets=2026-02-06"
-	openAIWSBetaCompatV1 = "responses-websocket=v1"
-
 	openAIWSTurnStateHeader    = "x-codex-turn-state"
 	openAIWSTurnMetadataHeader = "x-codex-turn-metadata"
 
@@ -1235,31 +1231,47 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
-
-	betaValue := openAIWSBetaV2Value
-	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
-		betaValue = openAIWSBetaV1Value
-	}
-	headers.Set("OpenAI-Beta", betaValue)
 
 	customUA := ""
 	if account != nil {
 		customUA = account.GetOpenAIUserAgent()
 	}
-	if strings.TrimSpace(customUA) != "" {
-		headers.Set("user-agent", customUA)
-	} else if c != nil {
-		if ua := strings.TrimSpace(c.GetHeader("User-Agent")); ua != "" {
-			headers.Set("user-agent", ua)
-		}
-	}
 	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
-		s.gatewayCoreService.ApplyCanonicalHeaders(headers, gatewayRuntime.Profile)
-	}
-	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		headers.Set("user-agent", codexCLIUserAgent)
+		artifact := BuildOpenAIGatewayProfileArtifact(
+			gatewayRuntime.Profile,
+			resolveOpenAIGatewayWSProfileRouteKind(decision.Transport),
+			OpenAIGatewayProfileArtifactOptions{
+				RequestedOriginator: c.GetHeader("originator"),
+				IsOfficialClient:    isCodexCLI,
+			},
+		)
+		if customUA != "" {
+			artifact = artifact.WithUserAgentOverride(customUA)
+		}
+		if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+			artifact = artifact.ForceCodexCLI()
+		}
+		artifact.ApplyWS(headers)
+	} else {
+		if account != nil && account.Type == AccountTypeOAuth {
+			headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+		}
+		betaValue := openAIWSBetaV2Value
+		if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
+			betaValue = openAIWSBetaV1Value
+		}
+		headers.Set("OpenAI-Beta", betaValue)
+		if strings.TrimSpace(customUA) != "" {
+			headers.Set("user-agent", customUA)
+		} else if c != nil {
+			if ua := strings.TrimSpace(c.GetHeader("User-Agent")); ua != "" {
+				headers.Set("user-agent", ua)
+			}
+		}
+		if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+			headers.Set("user-agent", codexCLIUserAgent)
+		}
 	}
 
 	return headers, sessionResolution, nil

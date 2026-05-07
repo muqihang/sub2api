@@ -2,13 +2,10 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +41,7 @@ type OpenAIGatewayCanonicalProfile struct {
 	ProfileID               string `json:"profile_id"`
 	Mode                    string `json:"mode"`
 	UserAgent               string `json:"user_agent"`
+	Version                 string `json:"version,omitempty"`
 	StainlessLang           string `json:"stainless_lang"`
 	StainlessPackageVersion string `json:"stainless_package_version"`
 	StainlessOS             string `json:"stainless_os"`
@@ -507,6 +505,7 @@ func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, hea
 		ProfileID:               strings.TrimSpace(account.GetExtraString("openai_gateway_profile_id")),
 		Mode:                    mode,
 		UserAgent:               strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_user_agent")),
+		Version:                 strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_version")),
 		StainlessLang:           strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_stainless_lang")),
 		StainlessPackageVersion: strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_stainless_package_version")),
 		StainlessOS:             strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_stainless_os")),
@@ -543,14 +542,17 @@ func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, hea
 	}
 
 	applyValue(&profile.UserAgent, "User-Agent", defaults.UserAgent)
+	applyValue(&profile.Version, "version", defaults.Version)
 	applyValue(&profile.StainlessLang, "X-Stainless-Lang", defaults.StainlessLang)
 	applyValue(&profile.StainlessPackageVersion, "X-Stainless-Package-Version", defaults.StainlessPackageVersion)
 	applyValue(&profile.StainlessOS, "X-Stainless-OS", defaults.StainlessOS)
 	applyValue(&profile.StainlessArch, "X-Stainless-Arch", defaults.StainlessArch)
 	applyValue(&profile.StainlessRuntime, "X-Stainless-Runtime", defaults.StainlessRuntime)
 	applyValue(&profile.StainlessRuntimeVersion, "X-Stainless-Runtime-Version", defaults.StainlessRuntimeVersion)
+	profile.Version = alignOpenAIGatewayProfileVersion(profile.UserAgent, profile.Version, defaults.Version)
 
 	updates["openai_gateway_canonical_user_agent"] = profile.UserAgent
+	updates["openai_gateway_canonical_version"] = profile.Version
 	updates["openai_gateway_canonical_stainless_lang"] = profile.StainlessLang
 	updates["openai_gateway_canonical_stainless_package_version"] = profile.StainlessPackageVersion
 	updates["openai_gateway_canonical_stainless_os"] = profile.StainlessOS
@@ -562,32 +564,10 @@ func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, hea
 }
 
 func (s *OpenAIGatewayCoreService) defaultCanonicalProfile() *OpenAIGatewayCanonicalProfile {
-	if s == nil || s.cfg == nil {
-		return &OpenAIGatewayCanonicalProfile{
-			UserAgent:               codexCLIUserAgent,
-			StainlessLang:           "js",
-			StainlessPackageVersion: "0.70.0",
-			StainlessOS:             "Linux",
-			StainlessArch:           "arm64",
-			StainlessRuntime:        "node",
-			StainlessRuntimeVersion: "v24.13.0",
-		}
+	if s == nil {
+		return defaultOpenAIGatewayCanonicalProfile(nil)
 	}
-	cfg := s.cfg.Gateway.OpenAICore
-	return &OpenAIGatewayCanonicalProfile{
-		UserAgent:               strings.TrimSpace(cfg.CanonicalUserAgent),
-		StainlessLang:           strings.TrimSpace(cfg.CanonicalStainlessLang),
-		StainlessPackageVersion: strings.TrimSpace(cfg.CanonicalStainlessPackageVersion),
-		StainlessOS:             strings.TrimSpace(cfg.CanonicalStainlessOS),
-		StainlessArch:           strings.TrimSpace(cfg.CanonicalStainlessArch),
-		StainlessRuntime:        strings.TrimSpace(cfg.CanonicalStainlessRuntime),
-		StainlessRuntimeVersion: strings.TrimSpace(cfg.CanonicalStainlessRuntimeVersion),
-	}
-}
-
-func buildOpenAIGatewayProfileID(accountID int64) string {
-	sum := sha256.Sum256([]byte("openai-gateway-profile:" + strconv.FormatInt(accountID, 10)))
-	return hex.EncodeToString(sum[:])
+	return defaultOpenAIGatewayCanonicalProfile(s.cfg)
 }
 
 func (s *OpenAIGatewayCoreService) applyRuntimeUpdates(ctx context.Context, account *Account, updates map[string]any) {

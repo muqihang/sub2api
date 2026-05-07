@@ -1607,15 +1607,11 @@ func (s *OpenAIGatewayService) GenerateSessionHashWithFallback(c *gin.Context, b
 }
 
 func resolveOpenAIUpstreamOriginator(c *gin.Context, isOfficialClient bool) string {
+	requestedOriginator := ""
 	if c != nil {
-		if originator := strings.TrimSpace(c.GetHeader("originator")); originator != "" {
-			return originator
-		}
+		requestedOriginator = c.GetHeader("originator")
 	}
-	if isOfficialClient {
-		return "codex_cli_rs"
-	}
-	return "opencode"
+	return resolveOpenAIGatewayArtifactOriginator(requestedOriginator, isOfficialClient)
 }
 
 // BindStickySession sets session -> account binding with standard TTL.
@@ -3599,6 +3595,19 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	var gatewayRuntime *OpenAIGatewayAccountRuntime
+	if s != nil && s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() && account != nil && account.IsOpenAIOAuth() {
+		clientHeaders := http.Header{}
+		if c != nil && c.Request != nil {
+			clientHeaders = c.Request.Header
+		}
+		runtime, runtimeErr := s.gatewayCoreService.ResolveAccountRuntime(ctx, account, clientHeaders, OpenAIClientTransportHTTP)
+		if runtimeErr != nil {
+			return nil, runtimeErr
+		}
+		gatewayRuntime = runtime
+	}
+
 	targetURL := openaiPlatformAPIURL
 	switch account.Type {
 	case AccountTypeOAuth:
@@ -3643,6 +3652,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
 	if account.Type == AccountTypeOAuth {
 		promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+		isCompactPath := isOpenAIResponsesCompactPath(c)
+		profileRouteKind := resolveOpenAIGatewayHTTPProfileRouteKind(isCompactPath, false)
 		req.Host = "chatgpt.com"
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			req.Header.Set("chatgpt-account-id", chatgptAccountID)
@@ -3651,22 +3662,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
 		clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
 		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
-		if isOpenAIResponsesCompactPath(c) {
+		if isCompactPath {
 			req.Header.Set("accept", "application/json")
-			if req.Header.Get("version") == "" {
-				req.Header.Set("version", codexCLIVersion)
-			}
 			if clientSessionID == "" {
 				clientSessionID = resolveOpenAICompactSessionID(c)
 			}
 		} else if req.Header.Get("accept") == "" {
 			req.Header.Set("accept", "text/event-stream")
-		}
-		if req.Header.Get("OpenAI-Beta") == "" {
-			req.Header.Set("OpenAI-Beta", "responses=experimental")
-		}
-		if req.Header.Get("originator") == "" {
-			req.Header.Set("originator", "codex_cli_rs")
 		}
 		// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
 		if clientSessionID == "" {
@@ -3681,20 +3683,50 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		if clientConversationID != "" {
 			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
 		}
+
+		customUA := account.GetOpenAIUserAgent()
+		if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+			artifact := BuildOpenAIGatewayProfileArtifact(
+				gatewayRuntime.Profile,
+				profileRouteKind,
+				OpenAIGatewayProfileArtifactOptions{
+					RequestedOriginator: req.Header.Get("originator"),
+					IsOfficialClient:    openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")),
+				},
+			)
+			if customUA != "" {
+				artifact = artifact.WithUserAgentOverride(customUA)
+			}
+			if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+				artifact = artifact.ForceCodexCLI()
+			}
+			artifact.ApplyHTTP(req.Header)
+		} else {
+			if req.Header.Get("OpenAI-Beta") == "" {
+				req.Header.Set("OpenAI-Beta", openAIGatewayResponsesBetaValue)
+			}
+			if req.Header.Get("originator") == "" {
+				req.Header.Set("originator", openAIGatewayDefaultOriginator)
+			}
+			if isCompactPath && req.Header.Get("version") == "" {
+				req.Header.Set("version", codexCLIVersion)
+			} else if !isCompactPath {
+				req.Header.Del("version")
+			}
+
+			// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
+			if customUA != "" {
+				req.Header.Set("user-agent", customUA)
+			}
+			if customUA == "" && !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
+				req.Header.Set("user-agent", codexCLIUserAgent)
+			}
+			if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+				req.Header.Set("user-agent", codexCLIUserAgent)
+			}
+		}
 	} else if account.Type == AccountTypeAPIKey {
 		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, gjson.GetBytes(body, "prompt_cache_key").String())
-	}
-
-	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
-	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
-		req.Header.Set("user-agent", customUA)
-	}
-	if account.Type == AccountTypeOAuth && customUA == "" && !openai.IsCodexOfficialClientRequest(req.Header.Get("User-Agent")) {
-		req.Header.Set("user-agent", codexCLIUserAgent)
-	}
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
 	if req.Header.Get("content-type") == "" {
@@ -4419,24 +4451,16 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	}
 	if account.Type == AccountTypeOAuth {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
+		isCompactPath := isOpenAIResponsesCompactPath(c)
+		profileRouteKind := resolveOpenAIGatewayHTTPProfileRouteKind(isCompactPath, compatMessagesBridge)
 		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
 		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
 		req.Header.Del("conversation_id")
 		req.Header.Del("session_id")
 
-		if compatMessagesBridge {
-			req.Header.Del("OpenAI-Beta")
-			req.Header.Del("originator")
-		} else {
-			req.Header.Set("OpenAI-Beta", "responses=experimental")
-			req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
-		}
 		apiKeyID := getAPIKeyIDFromContext(c)
-		if isOpenAIResponsesCompactPath(c) {
+		if isCompactPath {
 			req.Header.Set("accept", "application/json")
-			if req.Header.Get("version") == "" {
-				req.Header.Set("version", codexCLIVersion)
-			}
 			compactSession := resolveOpenAICompactSessionID(c)
 			req.Header.Set("session_id", isolateOpenAISessionID(apiKeyID, compactSession))
 		} else {
@@ -4449,6 +4473,45 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 				req.Header.Set("conversation_id", isolated)
 			}
 		}
+
+		customUA := account.GetOpenAIUserAgent()
+		if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+			artifact := BuildOpenAIGatewayProfileArtifact(
+				gatewayRuntime.Profile,
+				profileRouteKind,
+				OpenAIGatewayProfileArtifactOptions{
+					RequestedOriginator: req.Header.Get("originator"),
+					IsOfficialClient:    isCodexCLI,
+				},
+			)
+			if customUA != "" {
+				artifact = artifact.WithUserAgentOverride(customUA)
+			}
+			if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+				artifact = artifact.ForceCodexCLI()
+			}
+			artifact.ApplyHTTP(req.Header)
+		} else {
+			if compatMessagesBridge {
+				req.Header.Del("OpenAI-Beta")
+				req.Header.Del("originator")
+				req.Header.Del("version")
+			} else {
+				req.Header.Set("OpenAI-Beta", openAIGatewayResponsesBetaValue)
+				req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+				if isCompactPath && req.Header.Get("version") == "" {
+					req.Header.Set("version", codexCLIVersion)
+				} else if !isCompactPath {
+					req.Header.Del("version")
+				}
+			}
+			if customUA != "" {
+				req.Header.Set("user-agent", customUA)
+			}
+			if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+				req.Header.Set("user-agent", codexCLIUserAgent)
+			}
+		}
 	} else if account.Type == AccountTypeAPIKey {
 		if promptCacheKey == "" {
 			promptCacheKey = gjson.GetBytes(body, "prompt_cache_key").String()
@@ -4456,19 +4519,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, promptCacheKey)
 	}
 
-	// Apply custom User-Agent if configured
-	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
-		req.Header.Set("user-agent", customUA)
-	}
-	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+	if gatewayRuntime != nil && gatewayRuntime.Profile != nil && account.Type != AccountTypeOAuth {
 		s.gatewayCoreService.ApplyCanonicalHeaders(req.Header, gatewayRuntime.Profile)
-	}
-
-	// 若开启 ForceCodexCLI，则强制将上游 User-Agent 伪装为 Codex CLI。
-	// 用于网关未透传/改写 User-Agent 时，仍能命中 Codex 侧识别逻辑。
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
 	// Ensure required headers exist

@@ -98,6 +98,39 @@ func TestOpenAIGatewayCoreService_ResolveAccountRuntime_StablePerAccount(t *test
 	require.GreaterOrEqual(t, repo.updateExtraCalls, 2)
 }
 
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeObserveModeAlignsVersion(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeObserve
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{
+				1: {
+					ID:       1,
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Status:   StatusActive,
+					Credentials: map[string]any{
+						"chatgpt_account_id": "acct-1",
+					},
+				},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	headers := http.Header{}
+	headers.Set("User-Agent", "codex_cli_rs/0.200.0")
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), repo.accountsByID[1], headers, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.NotNil(t, runtime)
+	require.Equal(t, "codex_cli_rs/0.200.0", runtime.Profile.UserAgent)
+	require.Equal(t, "0.200.0", runtime.Profile.Version)
+	require.Equal(t, "0.200.0", repo.accountsByID[1].GetExtraString("openai_gateway_canonical_version"))
+}
+
 func TestOpenAIGatewayCoreService_ResolveEgressBucket(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAICore.Enabled = true

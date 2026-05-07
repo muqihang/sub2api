@@ -3040,6 +3040,7 @@ func TestOpenAIBuildUpstreamRequestOAuthAppliesGatewayCanonicalProfile(t *testin
 	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5","metadata":{"user_id":"{\"device_id\":\"old-device\",\"account_uuid\":\"acct-1\",\"session_id\":\"123e4567-e89b-12d3-a456-426614174000\"}"}}`), "token", false, "", false)
 	require.NoError(t, err)
 	require.Equal(t, "codex_cli_rs/0.104.0", req.Header.Get("User-Agent"))
+	require.Empty(t, req.Header.Get("Version"))
 	require.Equal(t, "js", req.Header.Get("X-Stainless-Lang"))
 	body, readErr := io.ReadAll(req.Body)
 	require.NoError(t, readErr)
