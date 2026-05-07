@@ -5,11 +5,13 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -179,6 +181,63 @@ func TestOpenAITokenProvider_CacheMiss_FromCredentials(t *testing.T) {
 	// Should have stored in cache
 	cacheKey := OpenAITokenCacheKey(account)
 	require.Equal(t, "credential-token", cache.tokens[cacheKey])
+}
+
+func TestOpenAITokenProvider_CacheMiss_FromEncryptedCredentials(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("44", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+
+	expiresAt := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"access_token": "credential-token",
+		"expires_at":   expiresAt,
+	})
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:          101,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: protected,
+	}
+
+	provider := NewOpenAITokenProvider(nil, cache, nil, cfg)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "credential-token", token)
+
+	cacheKey := OpenAITokenCacheKey(account)
+	require.Equal(t, "credential-token", cache.tokens[cacheKey])
+}
+
+func TestOpenAITokenProvider_RejectsPlaintextCredentialInProduction(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("55", 32)
+
+	expiresAt := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	account := &Account{
+		ID:       101,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "credential-token",
+			"expires_at":   expiresAt,
+		},
+	}
+
+	provider := NewOpenAITokenProvider(nil, cache, nil, cfg)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.Error(t, err)
+	require.Empty(t, token)
+	require.Contains(t, err.Error(), "plaintext openai credential access_token")
 }
 
 func TestOpenAITokenProvider_TokenRefresh(t *testing.T) {

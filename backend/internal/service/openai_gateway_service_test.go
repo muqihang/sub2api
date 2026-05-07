@@ -3048,6 +3048,42 @@ func TestOpenAIBuildUpstreamRequestOAuthAppliesGatewayCanonicalProfile(t *testin
 	require.NotContains(t, string(body), "old-device")
 }
 
+func TestOpenAIGatewayService_GetAccessTokenDecryptsEncryptedCredentials(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("33", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+
+	oauthProtected, err := protector.ProtectCredentials(map[string]any{
+		"access_token": "oauth-secret",
+	})
+	require.NoError(t, err)
+	apiKeyProtected, err := protector.ProtectCredentials(map[string]any{
+		"api_key": "sk-secret-1234567890",
+	})
+	require.NoError(t, err)
+
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	oauthToken, oauthKind, err := svc.GetAccessToken(context.Background(), &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: oauthProtected,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "oauth-secret", oauthToken)
+	require.Equal(t, "oauth", oauthKind)
+
+	apiKeyToken, apiKeyKind, err := svc.GetAccessToken(context.Background(), &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: apiKeyProtected,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "sk-secret-1234567890", apiKeyToken)
+	require.Equal(t, "apikey", apiKeyKind)
+}
+
 // ==================== P1-08 修复：model 替换性能优化测试 ====================
 
 // ==================== P1-08 修复：model 替换性能优化测试 =============

@@ -70,9 +70,9 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 
-	apiKey := account.GetOpenAIApiKey()
-	if apiKey == "" {
-		logger.LegacyPrintf("service.openai_probe", "probe_skip_no_apikey: account_id=%d", accountID)
+	apiKey, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_probe", "probe_skip_no_apikey: account_id=%d err=%v", accountID, err)
 		return
 	}
 	baseURL := account.GetOpenAIBaseURL()

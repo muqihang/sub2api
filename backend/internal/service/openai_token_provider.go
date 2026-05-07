@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 const (
@@ -84,19 +86,26 @@ type OpenAITokenProvider struct {
 	refreshAPI         *OAuthRefreshAPI
 	executor           OAuthRefreshExecutor
 	refreshPolicy      ProviderRefreshPolicy
+	cfg                *config.Config
 }
 
 func NewOpenAITokenProvider(
 	accountRepo AccountRepository,
 	tokenCache OpenAITokenCache,
 	openAIOAuthService *OpenAIOAuthService,
+	cfgs ...*config.Config,
 ) *OpenAITokenProvider {
+	var cfg *config.Config
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
 	return &OpenAITokenProvider{
 		accountRepo:        accountRepo,
 		tokenCache:         tokenCache,
 		openAIOAuthService: openAIOAuthService,
 		metrics:            &openAITokenRuntimeMetricsStore{},
 		refreshPolicy:      OpenAIProviderRefreshPolicy(),
+		cfg:                cfg,
 	}
 }
 
@@ -212,9 +221,9 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		}
 	}
 
-	accessToken := account.GetCredential("access_token")
-	if strings.TrimSpace(accessToken) == "" {
-		return "", errors.New("access_token not found in credentials")
+	accessToken, err := NewOpenAIGatewayCredentials(p.cfg, nil).OpenAIAccessToken(account)
+	if err != nil {
+		return "", err
 	}
 
 	// 3) Populate cache with TTL.
@@ -222,9 +231,9 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		latestAccount, isStale := CheckTokenVersion(ctx, account, p.accountRepo)
 		if isStale && latestAccount != nil {
 			slog.Debug("openai_token_version_stale_use_latest", "account_id", account.ID)
-			accessToken = latestAccount.GetOpenAIAccessToken()
-			if strings.TrimSpace(accessToken) == "" {
-				return "", errors.New("access_token not found after version check")
+			accessToken, err = NewOpenAIGatewayCredentials(p.cfg, nil).OpenAIAccessToken(latestAccount)
+			if err != nil {
+				return "", err
 			}
 		} else {
 			ttl := 30 * time.Minute

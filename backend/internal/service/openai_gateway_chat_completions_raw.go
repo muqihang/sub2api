@@ -115,9 +115,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	)
 
 	// 5. Build upstream request
-	apiKey := account.GetOpenAIApiKey()
-	if apiKey == "" {
-		return nil, fmt.Errorf("account %d missing api_key", account.ID)
+	apiKey, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
+	if err != nil {
+		return nil, fmt.Errorf("account %d api_key unavailable: %w", account.ID, err)
 	}
 	baseURL := account.GetOpenAIBaseURL()
 	if baseURL == "" {

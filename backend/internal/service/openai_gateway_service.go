@@ -2350,6 +2350,7 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 
 // GetAccessToken gets the access token for an OpenAI account
 func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
+	credentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 	switch account.Type {
 	case AccountTypeOAuth:
 		// 使用 TokenProvider 获取缓存的 token
@@ -2361,15 +2362,15 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return accessToken, "oauth", nil
 		}
 		// 降级：TokenProvider 未配置时直接从账号读取
-		accessToken := account.GetOpenAIAccessToken()
-		if accessToken == "" {
-			return "", "", errors.New("access_token not found in credentials")
+		accessToken, err := credentials.OpenAIAccessToken(account)
+		if err != nil {
+			return "", "", err
 		}
 		return accessToken, "oauth", nil
 	case AccountTypeAPIKey:
-		apiKey := account.GetOpenAIApiKey()
-		if apiKey == "" {
-			return "", "", errors.New("api_key not found in credentials")
+		apiKey, err := credentials.OpenAIAPIKey(account)
+		if err != nil {
+			return "", "", err
 		}
 		return apiKey, "apikey", nil
 	default:
