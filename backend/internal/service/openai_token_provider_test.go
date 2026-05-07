@@ -127,13 +127,13 @@ func (s *openAIOAuthServiceStub) RefreshAccountToken(ctx context.Context, accoun
 	return s.tokenInfo, nil
 }
 
-func (s *openAIOAuthServiceStub) BuildAccountCredentials(info *OpenAITokenInfo) map[string]any {
+func (s *openAIOAuthServiceStub) BuildAccountCredentials(info *OpenAITokenInfo) (map[string]any, error) {
 	now := time.Now()
 	return map[string]any{
 		"access_token":  info.AccessToken,
 		"refresh_token": info.RefreshToken,
 		"expires_at":    now.Add(time.Duration(info.ExpiresIn) * time.Second).Format(time.RFC3339),
-	}
+	}, nil
 }
 
 func TestOpenAITokenProvider_CacheHit(t *testing.T) {
@@ -392,7 +392,10 @@ func (p *testOpenAITokenProvider) GetAccessToken(ctx context.Context, account *A
 					if err != nil {
 						refreshFailed = true // 刷新失败，标记以使用短 TTL
 					} else {
-						newCredentials := p.oauthService.BuildAccountCredentials(tokenInfo)
+						newCredentials, buildErr := p.oauthService.BuildAccountCredentials(tokenInfo)
+						if buildErr != nil {
+							return "", buildErr
+						}
 						for k, v := range account.Credentials {
 							if _, exists := newCredentials[k]; !exists {
 								newCredentials[k] = v

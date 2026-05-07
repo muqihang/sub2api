@@ -193,7 +193,11 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	}
 
 	// Build new credentials from token info
-	newCredentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	newCredentials, err := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to build openai credentials")
+		return
+	}
 
 	// Preserve non-token settings from existing credentials
 	for k, v := range account.Credentials {
@@ -248,7 +252,11 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	}
 
 	// Build credentials from token info
-	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	credentials, err := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to build openai credentials")
+		return
+	}
 	extra := map[string]any{
 		"openai_pool_role":               service.OpenAIPoolRoleMain,
 		"openai_auth_state":              service.OpenAIAuthStateHealthy,

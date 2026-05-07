@@ -1313,7 +1313,10 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 		if refreshErr != nil {
 			err = refreshErr
 		} else {
-			newCredentials = s.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+			newCredentials, err = s.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+			if err != nil {
+				return nil
+			}
 			// Preserve non-token settings from existing credentials
 			for k, v := range account.Credentials {
 				if _, exists := newCredentials[k]; !exists {

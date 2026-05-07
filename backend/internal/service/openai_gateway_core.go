@@ -65,6 +65,7 @@ type OpenAIGatewayHealthSnapshot struct {
 	GatewayStatus            string                             `json:"gateway_status"`
 	OAuthStatus              string                             `json:"oauth_status"`
 	OpenAIOAuthAccountsTotal int64                              `json:"openai_oauth_accounts_total"`
+	UnsafeCredentialAccounts int64                              `json:"unsafe_credential_accounts,omitempty"`
 	RTManagedAccountsTotal   int64                              `json:"rt_managed_accounts_total"`
 	TerminalAccountsTotal    int64                              `json:"terminal_accounts_total"`
 	CoolingAccountsTotal     int64                              `json:"cooling_accounts_total"`
@@ -367,6 +368,7 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		EgressBuckets: map[string]int64{},
 		WS:            ws,
 	}
+	credentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 	if s.openAITokenProvider != nil {
 		snapshot.Refresh = s.openAITokenProvider.SnapshotRuntimeMetrics()
 	}
@@ -385,10 +387,17 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		if account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
 			snapshot.CoolingAccountsTotal++
 		}
+		if credentials.HasUnsafePlaintextCredentials(&account) {
+			snapshot.UnsafeCredentialAccounts++
+		}
 		snapshot.EgressBuckets[s.ResolveEgressBucket(&account)]++
 	}
 
 	switch {
+	case snapshot.UnsafeCredentialAccounts > 0:
+		snapshot.GatewayStatus = "degraded"
+		snapshot.OAuthStatus = "degraded"
+		snapshot.DegradedReason = "unsafe_plaintext_credentials_present"
 	case snapshot.OpenAIOAuthAccountsTotal == 0:
 		snapshot.GatewayStatus = "degraded"
 		snapshot.OAuthStatus = "degraded"

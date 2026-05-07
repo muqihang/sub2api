@@ -116,7 +116,10 @@ func (r *OpenAITokenRefresher) Refresh(ctx context.Context, account *Account) (m
 	}
 
 	// 使用服务提供的方法构建新凭证，并保留原有字段
-	newCredentials := r.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	newCredentials, err := r.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		return nil, err
+	}
 	newCredentials = MergeCredentials(account.Credentials, newCredentials)
 	capability := evaluateOpenAITokenCapability(tokenInfo)
 

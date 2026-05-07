@@ -370,23 +370,40 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
 
-	refreshToken, refreshErr := s.credentialAccessor().OpenAIRefreshToken(account)
-	if refreshErr != nil {
-		refreshToken = ""
+	credentials := s.credentialAccessor()
+	refreshToken := ""
+	if rawRefreshToken := strings.TrimSpace(account.GetCredential("refresh_token")); rawRefreshToken != "" {
+		var refreshErr error
+		refreshToken, refreshErr = credentials.OpenAIRefreshToken(account)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
 	}
 	if refreshToken == "" {
-		accessToken, accessErr := s.credentialAccessor().OpenAIAccessToken(account)
-		if accessErr != nil {
-			accessToken = ""
+		accessToken := ""
+		if rawAccessToken := strings.TrimSpace(account.GetCredential("access_token")); rawAccessToken != "" {
+			var accessErr error
+			accessToken, accessErr = credentials.OpenAIAccessToken(account)
+			if accessErr != nil {
+				return nil, accessErr
+			}
 		}
 		if accessToken != "" {
-			idToken := account.GetCredential("id_token")
-			if decryptedIDToken, idTokenErr := s.credentialAccessor().resolveValue(idToken, "id_token"); idTokenErr == nil {
-				idToken = decryptedIDToken
+			idToken := ""
+			if rawIDToken := strings.TrimSpace(account.GetCredential("id_token")); rawIDToken != "" {
+				var idTokenErr error
+				idToken, idTokenErr = credentials.resolveValue(rawIDToken, "id_token")
+				if idTokenErr != nil {
+					return nil, idTokenErr
+				}
 			}
-			clientID := account.GetCredential("client_id")
-			if decryptedClientID, clientIDErr := s.credentialAccessor().OpenAIClientID(account); clientIDErr == nil {
-				clientID = decryptedClientID
+			clientID := ""
+			if rawClientID := strings.TrimSpace(account.GetCredential("client_id")); rawClientID != "" {
+				var clientIDErr error
+				clientID, clientIDErr = credentials.OpenAIClientID(account)
+				if clientIDErr != nil {
+					return nil, clientIDErr
+				}
 			}
 			tokenInfo := &OpenAITokenInfo{
 				AccessToken:      accessToken,
@@ -425,15 +442,19 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		}
 	}
 
-	clientID := account.GetCredential("client_id")
-	if decryptedClientID, clientIDErr := s.credentialAccessor().OpenAIClientID(account); clientIDErr == nil {
-		clientID = decryptedClientID
+	clientID := ""
+	if rawClientID := strings.TrimSpace(account.GetCredential("client_id")); rawClientID != "" {
+		var clientIDErr error
+		clientID, clientIDErr = credentials.OpenAIClientID(account)
+		if clientIDErr != nil {
+			return nil, clientIDErr
+		}
 	}
 	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 }
 
 // BuildAccountCredentials builds credentials map from token info
-func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo) map[string]any {
+func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo) (map[string]any, error) {
 	expiresAt := time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)
 
 	creds := map[string]any{
@@ -477,9 +498,9 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	}
 	protected, err := s.credentialAccessor().ProtectCredentials(creds)
 	if err != nil {
-		return creds
+		return nil, err
 	}
-	return protected
+	return protected, nil
 }
 
 func (s *OpenAIOAuthService) resolveOpenAIOAuthProxyURL(ctx context.Context, proxyID *int64) (string, error) {

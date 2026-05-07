@@ -95,13 +95,14 @@ func TestOpenAIOAuthService_BuildAccountCredentials_EncryptsProtectedFields(t *t
 	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientRefreshStub{})
 	svc.SetGatewayCoreService(core)
 
-	creds := svc.BuildAccountCredentials(&OpenAITokenInfo{
+	creds, err := svc.BuildAccountCredentials(&OpenAITokenInfo{
 		AccessToken:      "new-access-token",
 		RefreshToken:     "new-refresh-token",
 		IDToken:          "new-id-token",
 		ChatGPTAccountID: "acct-1",
 		ExpiresAt:        time.Now().Add(1 * time.Hour).Unix(),
 	})
+	require.NoError(t, err)
 
 	require.True(t, strings.HasPrefix(creds["access_token"].(string), openAISecretProtectorPrefix))
 	require.True(t, strings.HasPrefix(creds["refresh_token"].(string), openAISecretProtectorPrefix))

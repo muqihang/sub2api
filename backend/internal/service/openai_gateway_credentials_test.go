@@ -97,3 +97,46 @@ func TestOpenAIGatewayCredentialAccessor_RejectsPlaintextInProduction(t *testing
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "plaintext openai credential access_token")
 }
+
+func TestOpenAIGatewayCredentialAccessor_RejectsPlaintextAPIKeyInProduction(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+
+	creds := NewOpenAIGatewayCredentials(cfg, nil)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "sk-plain",
+		},
+	}
+	_, err := creds.OpenAIAPIKey(account)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "plaintext openai credential api_key")
+}
+
+func TestOpenAIGatewayCredentialAccessor_DetectsUnsafePlaintextCredentialsInProduction(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+
+	creds := NewOpenAIGatewayCredentials(cfg, nil)
+	oauthAccount := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "plain-access",
+		},
+	}
+	apiKeyAccount := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "sk-plain",
+		},
+	}
+
+	require.True(t, creds.HasUnsafePlaintextCredentials(oauthAccount))
+	require.True(t, creds.HasUnsafePlaintextCredentials(apiKeyAccount))
+}

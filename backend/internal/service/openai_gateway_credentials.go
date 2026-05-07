@@ -80,7 +80,8 @@ func (c *OpenAIGatewayCredentials) resolveValue(raw string, key string) (string,
 		}
 		return protector.DecryptValue(raw)
 	}
-	if c.cfg != nil &&
+	if shouldProtectOpenAICredentialKey(key) &&
+		c.cfg != nil &&
 		c.cfg.Gateway.OpenAICore.ProductionMode &&
 		c.cfg.Gateway.OpenAICore.RequireEncryptedCredentials {
 		return "", fmt.Errorf("plaintext openai credential %s is not allowed in production mode", key)
@@ -107,4 +108,37 @@ func (c *OpenAIGatewayCredentials) ProtectCredentials(input map[string]any) (map
 		return cloneJSONMap(input), nil
 	}
 	return protector.ProtectCredentials(input)
+}
+
+func (c *OpenAIGatewayCredentials) HasUnsafePlaintextCredentials(account *Account) bool {
+	if c == nil || c.cfg == nil || account == nil {
+		return false
+	}
+	if !c.cfg.Gateway.OpenAICore.ProductionMode || !c.cfg.Gateway.OpenAICore.RequireEncryptedCredentials {
+		return false
+	}
+	for _, key := range openAIProtectedCredentialKeysForAccount(account) {
+		raw := strings.TrimSpace(account.GetCredential(key))
+		if raw == "" {
+			continue
+		}
+		if !strings.HasPrefix(raw, openAISecretProtectorPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIProtectedCredentialKeysForAccount(account *Account) []string {
+	if account == nil {
+		return nil
+	}
+	switch {
+	case account.IsOpenAIOAuth():
+		return []string{"access_token", "refresh_token", "id_token"}
+	case account.IsOpenAIApiKey():
+		return []string{"api_key"}
+	default:
+		return nil
+	}
 }

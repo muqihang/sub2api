@@ -843,7 +843,10 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			return nil, "", err
 		}
 
-		newCredentials = h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+		newCredentials, err = h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+		if err != nil {
+			return nil, "", err
+		}
 		for k, v := range account.Credentials {
 			if _, exists := newCredentials[k]; !exists {
 				newCredentials[k] = v

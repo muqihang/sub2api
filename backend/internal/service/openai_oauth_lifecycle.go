@@ -104,6 +104,14 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 	credentials = buildOpenAIImportLifecycleCredentials(credentials, extra)
 	normalized := normalizeOpenAIImportedCredentials(credentials)
 	now := time.Now().UTC().Format(time.RFC3339)
+	protectedNormalized := normalized
+	if openaiOAuthService != nil {
+		protected, protectErr := openaiOAuthService.CredentialAccessor().ProtectCredentials(normalized)
+		if protectErr != nil {
+			return nil, protectErr
+		}
+		protectedNormalized = protected
+	}
 
 	if strings.TrimSpace(stringValue(normalized["refresh_token"])) == "" {
 		return &OpenAIImportLifecycleDecision{
@@ -113,7 +121,7 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 			ValidationOutcome: OpenAIValidationOutcomeATOnlyQuarantined,
 			Status:            StatusDisabled,
 			Schedulable:       false,
-			Credentials:       normalized,
+			Credentials:       protectedNormalized,
 			Extra: map[string]any{
 				"openai_pool_role":               OpenAIPoolRoleQuarantine,
 				"openai_auth_state":              OpenAIAuthStateATOnly,
@@ -137,7 +145,7 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 		decision := &OpenAIImportLifecycleDecision{
 			PoolRole:         OpenAIPoolRoleQuarantine,
 			TokenSource:      OpenAITokenSourceRTManaged,
-			Credentials:      normalized,
+			Credentials:      protectedNormalized,
 			RefreshErrorCode: errorCode,
 		}
 		if isTerminalOpenAIAuthErrorCode(errorCode) {
@@ -161,7 +169,10 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 		return decision, nil
 	}
 
-	validated := openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	validated, err := openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		return nil, err
+	}
 	validated = MergeCredentials(normalized, validated)
 	capability := evaluateOpenAITokenCapability(tokenInfo)
 	decisionExtra := mergeMap(map[string]any{
@@ -317,6 +328,11 @@ func FindMatchingOpenAIOAuthAccount(accounts []Account, credentials map[string]a
 
 func FindMatchingOpenAIOAuthAccountWithAccessor(accounts []Account, credentials map[string]any, accessor *OpenAIGatewayCredentials) (*Account, string) {
 	refreshToken := strings.TrimSpace(stringValue(credentials["refresh_token"]))
+	if accessor != nil && refreshToken != "" {
+		if resolved, err := accessor.resolveValue(refreshToken, "refresh_token"); err == nil {
+			refreshToken = resolved
+		}
+	}
 	if refreshToken != "" {
 		for i := range accounts {
 			accountRefreshToken := accounts[i].GetOpenAIRefreshToken()
@@ -359,6 +375,11 @@ func FindMatchingOpenAIOAuthAccountWithAccessor(accounts []Account, credentials 
 	}
 
 	accessToken := strings.TrimSpace(stringValue(credentials["access_token"]))
+	if accessor != nil && accessToken != "" {
+		if resolved, err := accessor.resolveValue(accessToken, "access_token"); err == nil {
+			accessToken = resolved
+		}
+	}
 	if accessToken != "" {
 		for i := range accounts {
 			accountAccessToken := accounts[i].GetOpenAIAccessToken()
