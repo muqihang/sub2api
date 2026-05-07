@@ -118,6 +118,17 @@ func TestOpenAIGatewayEgressFallbacksFailWhenDisabled(t *testing.T) {
 	require.Equal(t, "direct_fallback_disabled", policyErr.Code)
 }
 
+func TestOpenAIGatewayLegacyProxyWrapperDoesNotMaskFailClosedPolicyError(t *testing.T) {
+	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_gateway_egress_bucket": "missing"}}
+
+	require.Empty(t, svc.ResolveEgressProxyURL(account, "http://account-proxy.local:8080"))
+}
+
 func TestOpenAIGatewayEgressProxyMaskAndHash(t *testing.T) {
 	first := "socks5h://user:pass@127.0.0.1:9001"
 	second := "socks5h://user:pass@127.0.0.1:9002"

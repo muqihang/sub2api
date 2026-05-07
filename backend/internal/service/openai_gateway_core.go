@@ -209,7 +209,7 @@ func (s *OpenAIGatewayCoreService) ResolveEgressBucket(account *Account) string 
 func (s *OpenAIGatewayCoreService) ResolveEgressProxyURL(account *Account, fallbackProxyURL string) string {
 	resolution, err := s.ResolveEgress(context.Background(), account, fallbackProxyURL)
 	if err != nil || resolution == nil {
-		return strings.TrimSpace(fallbackProxyURL)
+		return ""
 	}
 	return resolution.ProxyURL
 }
