@@ -211,7 +211,69 @@ func TestOpenAITokenProvider_CacheMiss_FromEncryptedCredentials(t *testing.T) {
 	require.Equal(t, "credential-token", token)
 
 	cacheKey := OpenAITokenCacheKey(account)
-	require.Equal(t, "credential-token", cache.tokens[cacheKey])
+	require.True(t, strings.HasPrefix(cache.tokens[cacheKey], openAISecretProtectorPrefix))
+}
+
+func TestOpenAITokenProvider_CacheHit_DecryptsEncryptedCache(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("45", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"access_token": "cached-token",
+	})
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:       100,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "db-token",
+		},
+	}
+	cache.tokens[OpenAITokenCacheKey(account)] = protected["access_token"].(string)
+
+	provider := NewOpenAITokenProvider(nil, cache, nil, cfg)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "cached-token", token)
+}
+
+func TestOpenAITokenProvider_ProductionIgnoresPlaintextCache(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("46", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+
+	expiresAt := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"access_token": "credential-token",
+		"expires_at":   expiresAt,
+	})
+	require.NoError(t, err)
+
+	account := &Account{
+		ID:          102,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: protected,
+	}
+	cache.tokens[OpenAITokenCacheKey(account)] = "plaintext-cache-token"
+
+	provider := NewOpenAITokenProvider(nil, cache, nil, cfg)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "credential-token", token)
+	require.True(t, strings.HasPrefix(cache.tokens[OpenAITokenCacheKey(account)], openAISecretProtectorPrefix))
+	require.NotEqual(t, "plaintext-cache-token", cache.tokens[OpenAITokenCacheKey(account)])
 }
 
 func TestOpenAITokenProvider_RejectsPlaintextCredentialInProduction(t *testing.T) {

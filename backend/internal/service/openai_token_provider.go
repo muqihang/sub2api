@@ -148,7 +148,7 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 	// 1) Try cache first.
 	if p.tokenCache != nil {
-		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
+		if token, err := p.readAccessTokenFromCache(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
 			slog.Debug("openai_token_cache_hit", "account_id", account.ID)
 			return token, nil
 		} else if err != nil {
@@ -255,7 +255,7 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 					ttl = time.Minute
 				}
 			}
-			if err := p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl); err != nil {
+			if err := p.writeAccessTokenToCache(ctx, cacheKey, accessToken, ttl); err != nil {
 				slog.Warn("openai_token_cache_set_failed", "account_id", account.ID, "error", err)
 			}
 		}
@@ -291,7 +291,7 @@ func (p *OpenAITokenProvider) waitForTokenAfterLockRace(ctx context.Context, cac
 		p.metrics.lockWaitTotalMs.Add(waitMs)
 		p.metrics.touchNow()
 
-		token, err := p.tokenCache.GetAccessToken(ctx, cacheKey)
+		token, err := p.readAccessTokenFromCache(ctx, cacheKey)
 		if err == nil && strings.TrimSpace(token) != "" {
 			p.metrics.lockWaitHit.Add(1)
 			if totalWaitMs >= openAILockWarnThresholdMs {
@@ -313,6 +313,47 @@ func (p *OpenAITokenProvider) waitForTokenAfterLockRace(ctx context.Context, cac
 		slog.Warn("openai_token_lock_wait_high", "wait_ms", totalWaitMs, "attempts", openAILockMaxAttempts)
 	}
 	return "", nil
+}
+
+func (p *OpenAITokenProvider) readAccessTokenFromCache(ctx context.Context, cacheKey string) (string, error) {
+	if p == nil || p.tokenCache == nil {
+		return "", nil
+	}
+	token, err := p.tokenCache.GetAccessToken(ctx, cacheKey)
+	if err != nil {
+		return "", err
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(token, openAISecretProtectorPrefix) {
+		return NewOpenAIGatewayCredentials(p.cfg, nil).resolveValue(token, "access_token")
+	}
+	if p.cfg != nil && p.cfg.Gateway.OpenAICore.ProductionMode && p.cfg.Gateway.OpenAICore.RequireEncryptedCredentials {
+		return "", nil
+	}
+	return token, nil
+}
+
+func (p *OpenAITokenProvider) writeAccessTokenToCache(ctx context.Context, cacheKey, accessToken string, ttl time.Duration) error {
+	if p == nil || p.tokenCache == nil {
+		return nil
+	}
+	cacheValue := strings.TrimSpace(accessToken)
+	if cacheValue == "" {
+		return nil
+	}
+	protected, err := NewOpenAIGatewayCredentials(p.cfg, nil).ProtectCredentials(map[string]any{
+		"access_token": cacheValue,
+	})
+	if err != nil {
+		return err
+	}
+	if stored, ok := protected["access_token"].(string); ok && strings.TrimSpace(stored) != "" {
+		cacheValue = stored
+	}
+	return p.tokenCache.SetAccessToken(ctx, cacheKey, cacheValue, ttl)
 }
 
 func jitterLockWait(base time.Duration) time.Duration {
