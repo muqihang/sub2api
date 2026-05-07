@@ -4,14 +4,34 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type openAIOAuthHandlerClientStub struct{}
+
+func (s *openAIOAuthHandlerClientStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
+	return &openai.TokenResponse{
+		AccessToken:  "at",
+		RefreshToken: "rt",
+		ExpiresIn:    3600,
+	}, nil
+}
+
+func (s *openAIOAuthHandlerClientStub) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*openai.TokenResponse, error) {
+	return nil, nil
+}
+
+func (s *openAIOAuthHandlerClientStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	return nil, nil
+}
 
 func TestOpenAIOAuthHandler_GatewayTemplates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -108,6 +128,48 @@ func TestOpenAIOAuthHandler_UpdateGatewayRuntime(t *testing.T) {
 	require.Len(t, adminSvc.updatedAccounts, 1)
 	require.Equal(t, "bucket-a", adminSvc.updatedAccounts[0].input.Extra["openai_gateway_egress_bucket"])
 	require.Equal(t, "frozen", adminSvc.updatedAccounts[0].input.Extra["openai_gateway_profile_mode"])
+}
+
+func TestOpenAIOAuthHandler_CreateAccountFromOAuthPersistsEgressBucket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://127.0.0.1:8080"},
+	}
+	core := service.NewOpenAIGatewayCoreService(&openAIGatewayCoreAdminRepo{}, cfg, nil)
+	oauthSvc := service.NewOpenAIOAuthService(nil, &openAIOAuthHandlerClientStub{})
+	defer oauthSvc.Stop()
+	oauthSvc.SetGatewayCoreService(core)
+
+	authResult, err := oauthSvc.GenerateAuthURLWithEgress(context.Background(), nil, "", service.PlatformOpenAI, "bucket-a")
+	require.NoError(t, err)
+	parsed, err := url.Parse(authResult.AuthURL)
+	require.NoError(t, err)
+	state := parsed.Query().Get("state")
+	require.NotEmpty(t, state)
+
+	adminSvc := newStubAdminService()
+	h := NewOpenAIOAuthHandler(oauthSvc, nil, adminSvc)
+	router.POST("/api/v1/admin/openai/create-from-oauth", h.CreateAccountFromOAuth)
+
+	body := `{"session_id":"` + authResult.SessionID + `","code":"auth-code","state":"` + state + `","name":"oauth-account"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/create-from-oauth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.Equal(t, service.PlatformOpenAI, adminSvc.createdAccounts[0].Platform)
+	require.Equal(t, service.AccountTypeOAuth, adminSvc.createdAccounts[0].Type)
+	require.Equal(t, "bucket-a", adminSvc.createdAccounts[0].Extra["openai_gateway_egress_bucket"])
 }
 
 func TestOpenAIOAuthHandler_GatewayTemplatesDownload(t *testing.T) {

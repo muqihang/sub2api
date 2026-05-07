@@ -43,8 +43,9 @@ func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, opena
 
 // OpenAIGenerateAuthURLRequest represents the request for generating OpenAI auth URL
 type OpenAIGenerateAuthURLRequest struct {
-	ProxyID     *int64 `json:"proxy_id"`
-	RedirectURI string `json:"redirect_uri"`
+	ProxyID      *int64 `json:"proxy_id"`
+	RedirectURI  string `json:"redirect_uri"`
+	EgressBucket string `json:"egress_bucket"`
 }
 
 // GenerateAuthURL generates OpenAI OAuth authorization URL
@@ -56,11 +57,12 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 		req = OpenAIGenerateAuthURLRequest{}
 	}
 
-	result, err := h.openaiOAuthService.GenerateAuthURL(
+	result, err := h.openaiOAuthService.GenerateAuthURLWithEgress(
 		c.Request.Context(),
 		req.ProxyID,
 		req.RedirectURI,
 		oauthPlatformFromPath(c),
+		req.EgressBucket,
 	)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -72,11 +74,12 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 
 // OpenAIExchangeCodeRequest represents the request for exchanging OpenAI auth code
 type OpenAIExchangeCodeRequest struct {
-	SessionID   string `json:"session_id" binding:"required"`
-	Code        string `json:"code" binding:"required"`
-	State       string `json:"state" binding:"required"`
-	RedirectURI string `json:"redirect_uri"`
-	ProxyID     *int64 `json:"proxy_id"`
+	SessionID    string `json:"session_id" binding:"required"`
+	Code         string `json:"code" binding:"required"`
+	State        string `json:"state" binding:"required"`
+	RedirectURI  string `json:"redirect_uri"`
+	ProxyID      *int64 `json:"proxy_id"`
+	EgressBucket string `json:"egress_bucket"`
 }
 
 // ExchangeCode exchanges OpenAI authorization code for tokens
@@ -89,11 +92,12 @@ func (h *OpenAIOAuthHandler) ExchangeCode(c *gin.Context) {
 	}
 
 	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
-		SessionID:   req.SessionID,
-		Code:        req.Code,
-		State:       req.State,
-		RedirectURI: req.RedirectURI,
-		ProxyID:     req.ProxyID,
+		SessionID:    req.SessionID,
+		Code:         req.Code,
+		State:        req.State,
+		RedirectURI:  req.RedirectURI,
+		ProxyID:      req.ProxyID,
+		EgressBucket: req.EgressBucket,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -212,15 +216,16 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 // POST /api/v1/admin/openai/create-from-oauth
 func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 	var req struct {
-		SessionID   string  `json:"session_id" binding:"required"`
-		Code        string  `json:"code" binding:"required"`
-		State       string  `json:"state" binding:"required"`
-		RedirectURI string  `json:"redirect_uri"`
-		ProxyID     *int64  `json:"proxy_id"`
-		Name        string  `json:"name"`
-		Concurrency int     `json:"concurrency"`
-		Priority    int     `json:"priority"`
-		GroupIDs    []int64 `json:"group_ids"`
+		SessionID    string  `json:"session_id" binding:"required"`
+		Code         string  `json:"code" binding:"required"`
+		State        string  `json:"state" binding:"required"`
+		RedirectURI  string  `json:"redirect_uri"`
+		ProxyID      *int64  `json:"proxy_id"`
+		EgressBucket string  `json:"egress_bucket"`
+		Name         string  `json:"name"`
+		Concurrency  int     `json:"concurrency"`
+		Priority     int     `json:"priority"`
+		GroupIDs     []int64 `json:"group_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -229,11 +234,12 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 
 	// Exchange code for tokens
 	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
-		SessionID:   req.SessionID,
-		Code:        req.Code,
-		State:       req.State,
-		RedirectURI: req.RedirectURI,
-		ProxyID:     req.ProxyID,
+		SessionID:    req.SessionID,
+		Code:         req.Code,
+		State:        req.State,
+		RedirectURI:  req.RedirectURI,
+		ProxyID:      req.ProxyID,
+		EgressBucket: req.EgressBucket,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -249,6 +255,9 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		"openai_validation_outcome":      service.OpenAIValidationOutcomeRTValidated,
 		"openai_last_refresh_error_code": "",
 		"openai_last_validated_at":       time.Now().UTC().Format(time.RFC3339),
+	}
+	if bucket := strings.TrimSpace(tokenInfo.EgressBucket); bucket != "" {
+		extra["openai_gateway_egress_bucket"] = bucket
 	}
 
 	platform := oauthPlatformFromPath(c)

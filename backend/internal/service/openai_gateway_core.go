@@ -206,6 +206,17 @@ func (s *OpenAIGatewayCoreService) ResolveEgressBucket(account *Account) string 
 	return "default"
 }
 
+func (s *OpenAIGatewayCoreService) ResolveOAuthSessionEgress(ctx context.Context, requestedBucket string, fallbackProxyURL string) (*OpenAIEgressResolution, error) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+	if bucket := strings.TrimSpace(requestedBucket); bucket != "" {
+		account.Extra = map[string]any{"openai_gateway_egress_bucket": bucket}
+	}
+	return s.ResolveEgress(ctx, account, fallbackProxyURL)
+}
+
 func (s *OpenAIGatewayCoreService) HasEgressBucket(name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" {
