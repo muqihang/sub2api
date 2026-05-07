@@ -323,14 +323,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		wsHost = normalizeOpenAIWSLogValue(parsedURL.Host)
 		wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
 	}
-	logOpenAIWSV2Passthrough(
-		"relay_dial_start account_id=%d ws_host=%s ws_path=%s proxy_enabled=%v",
-		account.ID,
-		wsHost,
-		wsPath,
-		s.resolveOpenAIProxyURL(account) != "",
-	)
-
 	isCodexCLI := false
 	if c != nil {
 		isCodexCLI = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
@@ -338,8 +330,22 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		isCodexCLI = true
 	}
-	headers, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, "", "", "")
-	proxyURL := s.resolveOpenAIProxyURL(account)
+	headers, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, "", "", "")
+	if headerErr != nil {
+		return headerErr
+	}
+	egress, egressErr := s.resolveOpenAIEgress(ctx, account)
+	if egressErr != nil {
+		return egressErr
+	}
+	proxyURL := egress.ProxyURL
+	logOpenAIWSV2Passthrough(
+		"relay_dial_start account_id=%d ws_host=%s ws_path=%s proxy_enabled=%v",
+		account.ID,
+		wsHost,
+		wsPath,
+		egress.ProxySelected,
+	)
 
 	dialer := s.getOpenAIWSPassthroughDialer()
 	if dialer == nil {

@@ -148,6 +148,11 @@ func MaskOpenAIProxyURL(raw string) string {
 		return "<invalid_proxy>"
 	}
 	parsed.User = nil
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
 	return parsed.String()
 }
 

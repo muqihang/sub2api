@@ -140,6 +140,19 @@ func TestOpenAIGatewayEgressProxyMaskAndHash(t *testing.T) {
 	require.Equal(t, HashOpenAIProxyURL(first), HashOpenAIProxyURL(first))
 }
 
+func TestOpenAIGatewayEgressProxyMaskAndHashStripSecretBearingURLComponents(t *testing.T) {
+	raw := "http://user:pass@proxy.local:8080/path/token?signature=secret#fragment-secret"
+
+	label := MaskOpenAIProxyURL(raw)
+	require.Equal(t, "http://proxy.local:8080", label)
+	require.NotContains(t, label, "user")
+	require.NotContains(t, label, "pass")
+	require.NotContains(t, label, "token")
+	require.NotContains(t, label, "signature")
+	require.NotContains(t, label, "fragment-secret")
+	require.Equal(t, HashOpenAIProxyURL("http://proxy.local:8080"), HashOpenAIProxyURL(raw))
+}
+
 func TestOpenAIGatewayRuntimeSnapshotDoesNotExposeRawProxyURL(t *testing.T) {
 	runtime := OpenAIGatewayAccountRuntime{
 		EgressBucket:  "bucket-a",

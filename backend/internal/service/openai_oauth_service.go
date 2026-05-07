@@ -333,7 +333,13 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		}
 	}
 	if s.gatewayCoreService != nil {
-		proxyURL = s.gatewayCoreService.ResolveEgressProxyURL(account, proxyURL)
+		egress, err := s.gatewayCoreService.ResolveEgress(ctx, account, proxyURL)
+		if err != nil {
+			return nil, err
+		}
+		if egress != nil {
+			proxyURL = egress.ProxyURL
+		}
 	}
 
 	clientID := account.GetCredential("client_id")

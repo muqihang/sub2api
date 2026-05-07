@@ -792,11 +792,19 @@ func (s *OpenAIGatewayService) GatewayCoreService() *OpenAIGatewayCoreService {
 }
 
 func (s *OpenAIGatewayService) resolveOpenAIProxyURL(account *Account) string {
+	resolution, err := s.resolveOpenAIEgress(context.Background(), account)
+	if err != nil || resolution == nil {
+		return ""
+	}
+	return resolution.ProxyURL
+}
+
+func (s *OpenAIGatewayService) resolveOpenAIEgress(ctx context.Context, account *Account) (*OpenAIEgressResolution, error) {
 	fallback := resolveOpenAIAccountProxyURL(account)
 	if s == nil || s.gatewayCoreService == nil || !s.gatewayCoreService.IsEnabled() {
-		return fallback
+		return buildOpenAIEgressResolution("", fallback, openAIEgressSourceAccountFallback), nil
 	}
-	return s.gatewayCoreService.ResolveEgressProxyURL(account, fallback)
+	return s.gatewayCoreService.ResolveEgress(ctx, account, fallback)
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）
@@ -3110,15 +3118,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, err
 		}
 
-		// Get proxy URL
-		proxyURL := ""
-		if account.ProxyID != nil && account.Proxy != nil {
-			proxyURL = account.Proxy.URL()
+		egress, err := s.resolveOpenAIEgress(ctx, account)
+		if err != nil {
+			return nil, err
 		}
 
 		// Send request
 		upstreamStart := time.Now()
-		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		resp, err := s.httpUpstream.Do(upstreamReq, egress.ProxyURL, account.ID, account.Concurrency)
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
 			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
@@ -3446,9 +3453,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	egress, err := s.resolveOpenAIEgress(ctx, account)
+	if err != nil {
+		return nil, err
 	}
 
 	setOpsUpstreamRequestBody(c, body)
@@ -3466,7 +3473,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 
 		upstreamStart := time.Now()
-		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		resp, err = s.httpUpstream.Do(upstreamReq, egress.ProxyURL, account.ID, account.Concurrency)
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())

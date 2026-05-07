@@ -129,6 +129,8 @@ func (w *failingGinWriter) Write(p []byte) (int, error) {
 type captureHTTPUpstream struct {
 	lastBody  []byte
 	allBodies [][]byte
+	lastProxy string
+	proxies   []string
 	resp      *http.Response
 	responses []*http.Response
 	err       error
@@ -214,8 +216,10 @@ func (s *captureOpenAIWSStateStore) GetSessionConn(groupID int64, sessionHash st
 
 func (s *captureOpenAIWSStateStore) DeleteSessionConn(groupID int64, sessionHash string) {}
 
-func (s *captureHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+func (s *captureHTTPUpstream) Do(req *http.Request, proxyURL string, _ int64, _ int) (*http.Response, error) {
 	s.calls++
+	s.lastProxy = proxyURL
+	s.proxies = append(s.proxies, proxyURL)
 	if req != nil && req.Body != nil {
 		body, readErr := io.ReadAll(req.Body)
 		if readErr != nil {
@@ -514,6 +518,107 @@ func TestOpenAIGatewayService_Forward_RemovesPreviousResponseIDForHTTP(t *testin
 	if _, exists := forwarded["safety_identifier"]; exists {
 		t.Fatal("expected safety_identifier to be removed")
 	}
+}
+
+func TestOpenAIGatewayService_ForwardRejectsFailClosedEgressBeforeHTTPUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+	core := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		gatewayCoreService: core,
+		httpUpstream:       upstream,
+	}
+	account := &Account{
+		ID:          19001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "missing",
+		},
+		Proxy: &Proxy{
+			Protocol: "socks5",
+			Host:     "10.0.0.2",
+			Port:     1080,
+		},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.3-codex","input":[]}`))
+	require.Nil(t, result)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.ErrorAs(t, err, &policyErr)
+	require.Equal(t, "missing_bucket", policyErr.Code)
+	require.Zero(t, upstream.calls)
+}
+
+func TestOpenAIGatewayService_ForwardAsAnthropicRejectsFailClosedEgressBeforeHTTPUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.3-codex","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("content-type", "application/json")
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+	core := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		gatewayCoreService: core,
+		httpUpstream:       upstream,
+	}
+	account := &Account{
+		ID:          19002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "missing",
+		},
+		Proxy: &Proxy{
+			Protocol: "socks5",
+			Host:     "10.0.0.2",
+			Port:     1080,
+		},
+	}
+
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "gpt-5.3-codex")
+	require.Nil(t, result)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.ErrorAs(t, err, &policyErr)
+	require.Equal(t, "missing_bucket", policyErr.Code)
+	require.Zero(t, upstream.calls)
 }
 
 func TestOpenAIGatewayService_Forward_NonStreamingResponseBindsResponseAccount(t *testing.T) {
