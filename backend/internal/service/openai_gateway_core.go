@@ -53,11 +53,14 @@ type OpenAIGatewayCanonicalProfile struct {
 }
 
 type OpenAIGatewayAccountRuntime struct {
-	Client         *OpenAIGatewayClientIdentity   `json:"client,omitempty"`
-	Profile        *OpenAIGatewayCanonicalProfile `json:"profile"`
-	EgressBucket   string                         `json:"egress_bucket"`
-	EgressProxyURL string                         `json:"egress_proxy_url,omitempty"`
-	Transport      string                         `json:"transport"`
+	Client        *OpenAIGatewayClientIdentity   `json:"client,omitempty"`
+	Profile       *OpenAIGatewayCanonicalProfile `json:"profile"`
+	EgressBucket  string                         `json:"egress_bucket"`
+	ProxySelected bool                           `json:"proxy_selected"`
+	ProxyLabel    string                         `json:"proxy_label,omitempty"`
+	ProxyHash     string                         `json:"proxy_hash,omitempty"`
+	DebugProxyURL string                         `json:"debug_proxy_url,omitempty"`
+	Transport     string                         `json:"transport"`
 }
 
 type OpenAIGatewayHealthSnapshot struct {
@@ -79,7 +82,10 @@ type OpenAIGatewayVerifySnapshot struct {
 	Client              *OpenAIGatewayClientIdentity   `json:"client,omitempty"`
 	Profile             *OpenAIGatewayCanonicalProfile `json:"profile"`
 	EgressBucket        string                         `json:"egress_bucket"`
-	EgressProxyURL      string                         `json:"egress_proxy_url,omitempty"`
+	ProxySelected       bool                           `json:"proxy_selected"`
+	ProxyLabel          string                         `json:"proxy_label,omitempty"`
+	ProxyHash           string                         `json:"proxy_hash,omitempty"`
+	DebugProxyURL       string                         `json:"debug_proxy_url,omitempty"`
 	Transport           string                         `json:"transport"`
 	RequestedUA         string                         `json:"requested_user_agent,omitempty"`
 	RequestedOriginator string                         `json:"requested_originator,omitempty"`
@@ -105,10 +111,20 @@ type OpenAIGatewayAdminAccountSnapshot struct {
 	ResponsesWriteCapable bool     `json:"responses_write_capable"`
 }
 
+type OpenAIGatewayAdminBucketSnapshot struct {
+	Name          string `json:"name"`
+	Enabled       bool   `json:"enabled"`
+	ProxySelected bool   `json:"proxy_selected"`
+	ProxyLabel    string `json:"proxy_label,omitempty"`
+	ProxyHash     string `json:"proxy_hash,omitempty"`
+	AccountCount  int64  `json:"account_count"`
+	Warning       string `json:"warning,omitempty"`
+}
+
 type OpenAIGatewayAdminStatusSnapshot struct {
-	Health   *OpenAIGatewayHealthSnapshot             `json:"health"`
-	Buckets  []config.OpenAIGatewayEgressBucketConfig `json:"buckets"`
-	Accounts []OpenAIGatewayAdminAccountSnapshot      `json:"accounts"`
+	Health   *OpenAIGatewayHealthSnapshot        `json:"health"`
+	Buckets  []OpenAIGatewayAdminBucketSnapshot  `json:"buckets"`
+	Accounts []OpenAIGatewayAdminAccountSnapshot `json:"accounts"`
 }
 
 type OpenAIGatewayCoreService struct {
@@ -191,23 +207,11 @@ func (s *OpenAIGatewayCoreService) ResolveEgressBucket(account *Account) string 
 }
 
 func (s *OpenAIGatewayCoreService) ResolveEgressProxyURL(account *Account, fallbackProxyURL string) string {
-	if s == nil || s.cfg == nil {
+	resolution, err := s.ResolveEgress(context.Background(), account, fallbackProxyURL)
+	if err != nil || resolution == nil {
 		return strings.TrimSpace(fallbackProxyURL)
 	}
-	bucketName := s.ResolveEgressBucket(account)
-	for _, bucket := range s.cfg.Gateway.OpenAICore.EgressBuckets {
-		if strings.TrimSpace(bucket.Name) != bucketName {
-			continue
-		}
-		if !bucket.Enabled {
-			return strings.TrimSpace(fallbackProxyURL)
-		}
-		if proxyURL := strings.TrimSpace(bucket.ProxyURL); proxyURL != "" {
-			return proxyURL
-		}
-		return strings.TrimSpace(fallbackProxyURL)
-	}
-	return strings.TrimSpace(fallbackProxyURL)
+	return resolution.ProxyURL
 }
 
 func (s *OpenAIGatewayCoreService) HasEgressBucket(name string) bool {
@@ -247,12 +251,21 @@ func (s *OpenAIGatewayCoreService) ResolveAccountRuntime(ctx context.Context, ac
 	}
 
 	profile, updates := s.resolveCanonicalProfile(account, headers)
+	egress, err := s.ResolveEgress(ctx, account, "")
+	if err != nil {
+		return nil, err
+	}
 	runtime := &OpenAIGatewayAccountRuntime{
-		Client:         client,
-		Profile:        profile,
-		EgressBucket:   s.ResolveEgressBucket(account),
-		EgressProxyURL: s.ResolveEgressProxyURL(account, ""),
-		Transport:      string(transport),
+		Client:        client,
+		Profile:       profile,
+		EgressBucket:  egress.BucketName,
+		ProxySelected: egress.ProxySelected,
+		ProxyLabel:    egress.ProxyLabel,
+		ProxyHash:     egress.ProxyHash,
+		Transport:     string(transport),
+	}
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAICore.ExposeRawProxyInDebug {
+		runtime.DebugProxyURL = egress.ProxyURL
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -411,7 +424,10 @@ func (s *OpenAIGatewayCoreService) BuildVerifySnapshot(ctx context.Context, acco
 		Client:              runtime.Client,
 		Profile:             runtime.Profile,
 		EgressBucket:        runtime.EgressBucket,
-		EgressProxyURL:      runtime.EgressProxyURL,
+		ProxySelected:       runtime.ProxySelected,
+		ProxyLabel:          runtime.ProxyLabel,
+		ProxyHash:           runtime.ProxyHash,
+		DebugProxyURL:       runtime.DebugProxyURL,
 		Transport:           runtime.Transport,
 		RequestedUA:         strings.TrimSpace(headers.Get("User-Agent")),
 		RequestedOriginator: strings.TrimSpace(headers.Get("originator")),
@@ -428,8 +444,19 @@ func (s *OpenAIGatewayCoreService) BuildAdminStatusSnapshot(ctx context.Context,
 		return nil, err
 	}
 	result := &OpenAIGatewayAdminStatusSnapshot{
-		Health:  health,
-		Buckets: append([]config.OpenAIGatewayEgressBucketConfig(nil), s.cfg.Gateway.OpenAICore.EgressBuckets...),
+		Health: health,
+	}
+	for _, bucket := range s.cfg.Gateway.OpenAICore.EgressBuckets {
+		proxyURL := strings.TrimSpace(bucket.ProxyURL)
+		snapshot := OpenAIGatewayAdminBucketSnapshot{
+			Name:          strings.TrimSpace(bucket.Name),
+			Enabled:       bucket.Enabled,
+			ProxySelected: proxyURL != "",
+			ProxyLabel:    MaskOpenAIProxyURL(proxyURL),
+			ProxyHash:     HashOpenAIProxyURL(proxyURL),
+			AccountCount:  health.EgressBuckets[strings.TrimSpace(bucket.Name)],
+		}
+		result.Buckets = append(result.Buckets, snapshot)
 	}
 	for _, account := range accounts {
 		if !account.IsOpenAIOAuth() {
