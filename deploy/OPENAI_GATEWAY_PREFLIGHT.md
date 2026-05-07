@@ -52,6 +52,7 @@ deploy/openai-gateway-preflight.sh
 - `oauth_status`
 - `openai_oauth_accounts_total`
 - `egress_buckets`
+- `warning_codes`（例如 `bucket_concentration_high`、`direct_egress_in_production`、`credential_storage_not_production_safe`）
 - `degraded_reason`（若存在）
 
 ### 3. `/openai/_verify`
@@ -106,3 +107,12 @@ deploy/openai-gateway-preflight.sh
 5. 确认 `/_verify` 默认输出没有暴露明文 proxy URL
 6. 确认每个 canary 账号的 bucket 绑定比例符合预期
 7. 确认日志、usage 记录、admin snapshot 均未出现 upstream secret
+
+## 典型告警码
+
+- `bucket_concentration_high`
+- `direct_egress_in_production`
+- `missing_egress_bucket`
+- `disabled_egress_bucket`
+- `credential_storage_not_production_safe`
+- `oauth_session_topology_not_production_safe`

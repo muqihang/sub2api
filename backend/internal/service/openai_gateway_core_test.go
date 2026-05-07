@@ -473,6 +473,81 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshotRedactsProxyURL(t *tes
 	require.NotContains(t, body, "q=1")
 }
 
+func TestOpenAIGatewayCoreService_BuildHealthSnapshotWarnsOnBucketConcentration(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.BucketWarnAccountThreshold = 1
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://127.0.0.1:8080"},
+	}
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+				{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.Contains(t, health.WarningCodes, "bucket_concentration_high")
+}
+
+func TestOpenAIGatewayCoreService_BuildHealthSnapshotWarnsOnDirectEgressInProduction(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.AllowDirectFallback = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true},
+	}
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.Contains(t, health.WarningCodes, "direct_egress_in_production")
+	require.Equal(t, "degraded", health.GatewayStatus)
+	require.Equal(t, "direct_egress_in_production", health.DegradedReason)
+}
+
+func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshotWarnsOnBucketConcentration(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.BucketWarnAccountThreshold = 1
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true, ProxyURL: "http://127.0.0.1:8080"},
+	}
+
+	repo := &openAIGatewayCoreRepoStub{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+				{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	snapshot, err := svc.BuildAdminStatusSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.Len(t, snapshot.Buckets, 1)
+	require.Equal(t, "bucket_concentration_high", snapshot.Buckets[0].Warning)
+}
+
 func TestOpenAIGatewayRedactSanitizeUpstreamErrorMessage(t *testing.T) {
 	raw := "proxy=http://user:pass@proxy.example.com:8080/path?access_token=tok123&refresh_token=tok456 Authorization: Bearer abcdefghij/secret+tail== api_key=sk-abcdef1234567890"
 	redacted := sanitizeUpstreamErrorMessage(raw)

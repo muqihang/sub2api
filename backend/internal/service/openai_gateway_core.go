@@ -70,6 +70,7 @@ type OpenAIGatewayHealthSnapshot struct {
 	TerminalAccountsTotal    int64                              `json:"terminal_accounts_total"`
 	CoolingAccountsTotal     int64                              `json:"cooling_accounts_total"`
 	EgressBuckets            map[string]int64                   `json:"egress_buckets"`
+	WarningCodes             []string                           `json:"warning_codes,omitempty"`
 	DegradedReason           string                             `json:"degraded_reason,omitempty"`
 	Refresh                  OpenAITokenRuntimeMetrics          `json:"refresh"`
 	WS                       OpenAIWSPerformanceMetricsSnapshot `json:"ws"`
@@ -379,6 +380,14 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		}
 		if credentials.HasUnsafePlaintextCredentials(&account) {
 			snapshot.UnsafeCredentialAccounts++
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "credential_storage_not_production_safe")
+		}
+		bucketName := s.ResolveEgressBucket(&account)
+		snapshot.EgressBuckets[bucketName]++
+		if _, ok := s.findEgressBucket(bucketName); !ok {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "missing_egress_bucket")
+		} else if bucket, ok := s.findEgressBucket(bucketName); ok && !bucket.Enabled {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "disabled_egress_bucket")
 		}
 		if !account.IsOpenAIOAuth() {
 			continue
@@ -393,10 +402,24 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		if account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
 			snapshot.CoolingAccountsTotal++
 		}
-		snapshot.EgressBuckets[s.ResolveEgressBucket(&account)]++
+		egress, err := s.ResolveEgress(ctx, &account, resolveOpenAIAccountProxyURL(&account))
+		if err == nil && egress != nil && s != nil && s.cfg != nil && s.cfg.Gateway.OpenAICore.ProductionMode && egress.Source == openAIEgressSourceDirectFallback {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "direct_egress_in_production")
+		}
+	}
+	s.applyOpenAIGatewayBucketWarnings(snapshot)
+	if s != nil && s.cfg != nil &&
+		s.cfg.Gateway.OpenAICore.ProductionMode &&
+		strings.EqualFold(strings.TrimSpace(s.cfg.Gateway.OpenAICore.OAuthSessionStore), "memory") &&
+		!s.cfg.Gateway.OpenAICore.OAuthCallbackStickySingleInstance {
+		snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "oauth_session_topology_not_production_safe")
 	}
 
 	switch {
+	case containsOpenAIGatewayWarning(snapshot.WarningCodes, "direct_egress_in_production"):
+		snapshot.GatewayStatus = "degraded"
+		snapshot.OAuthStatus = "degraded"
+		snapshot.DegradedReason = "direct_egress_in_production"
 	case snapshot.UnsafeCredentialAccounts > 0:
 		snapshot.GatewayStatus = "degraded"
 		snapshot.OAuthStatus = "degraded"
@@ -473,6 +496,11 @@ func (s *OpenAIGatewayCoreService) BuildAdminStatusSnapshot(ctx context.Context,
 			ProxyHash:     HashOpenAIProxyURL(proxyURL),
 			AccountCount:  health.EgressBuckets[strings.TrimSpace(bucket.Name)],
 		}
+		if s != nil && s.cfg != nil &&
+			s.cfg.Gateway.OpenAICore.BucketWarnAccountThreshold > 0 &&
+			snapshot.AccountCount > int64(s.cfg.Gateway.OpenAICore.BucketWarnAccountThreshold) {
+			snapshot.Warning = "bucket_concentration_high"
+		}
 		result.Buckets = append(result.Buckets, snapshot)
 	}
 	for _, account := range accounts {
@@ -500,6 +528,44 @@ func (s *OpenAIGatewayCoreService) BuildAdminStatusSnapshot(ctx context.Context,
 		})
 	}
 	return result, nil
+}
+
+func appendOpenAIGatewayWarning(existing []string, code string) []string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return existing
+	}
+	for _, item := range existing {
+		if item == code {
+			return existing
+		}
+	}
+	return append(existing, code)
+}
+
+func containsOpenAIGatewayWarning(existing []string, code string) bool {
+	for _, item := range existing {
+		if item == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *OpenAIGatewayCoreService) applyOpenAIGatewayBucketWarnings(snapshot *OpenAIGatewayHealthSnapshot) {
+	if s == nil || s.cfg == nil || snapshot == nil {
+		return
+	}
+	threshold := s.cfg.Gateway.OpenAICore.BucketWarnAccountThreshold
+	if threshold <= 0 {
+		return
+	}
+	for _, count := range snapshot.EgressBuckets {
+		if count > int64(threshold) {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "bucket_concentration_high")
+			return
+		}
+	}
 }
 
 func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, headers http.Header) (*OpenAIGatewayCanonicalProfile, map[string]any) {
