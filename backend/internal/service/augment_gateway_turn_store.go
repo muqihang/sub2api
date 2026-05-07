@@ -89,12 +89,14 @@ type AugmentGatewayReasoningTurnStore struct {
 	mu        sync.RWMutex
 	turns     map[AugmentGatewayReasoningTurnKey]AugmentGatewayReasoningTurn
 	secondary map[augmentGatewayReasoningTurnSecondaryKey]map[string]AugmentGatewayReasoningTurnKey
+	latest    map[string]AugmentGatewayReasoningTurnKey
 }
 
 func NewAugmentGatewayReasoningTurnStore() *AugmentGatewayReasoningTurnStore {
 	return &AugmentGatewayReasoningTurnStore{
 		turns:     make(map[AugmentGatewayReasoningTurnKey]AugmentGatewayReasoningTurn),
 		secondary: make(map[augmentGatewayReasoningTurnSecondaryKey]map[string]AugmentGatewayReasoningTurnKey),
+		latest:    make(map[string]AugmentGatewayReasoningTurnKey),
 	}
 }
 
@@ -114,6 +116,7 @@ func (s *AugmentGatewayReasoningTurnStore) Store(turn AugmentGatewayReasoningTur
 		s.secondary[secondaryKey] = make(map[string]AugmentGatewayReasoningTurnKey)
 	}
 	s.secondary[secondaryKey][turn.Key.RequestID] = turn.Key
+	s.latest[augmentGatewayReasoningTurnLatestKey(turn.Key.ConversationID, turn.Key.ModelID, turn.Key.ToolCallID)] = turn.Key
 }
 
 func (s *AugmentGatewayReasoningTurnStore) Lookup(key AugmentGatewayReasoningTurnKey) (AugmentGatewayReasoningTurn, AugmentGatewayReasoningTurnLookupTrace) {
@@ -173,6 +176,27 @@ func (s *AugmentGatewayReasoningTurnStore) LookupForNextRequest(key AugmentGatew
 	}
 
 	return AugmentGatewayReasoningTurn{}, augmentGatewayReasoningTurnMissTrace(AugmentGatewayReasoningTurnMissNotFound)
+}
+
+func (s *AugmentGatewayReasoningTurnStore) LookupLatestForConversationToolCall(conversationID, modelID, toolCallID string) (AugmentGatewayReasoningTurn, bool) {
+	if s == nil {
+		return AugmentGatewayReasoningTurn{}, false
+	}
+
+	key := augmentGatewayReasoningTurnLatestKey(conversationID, modelID, toolCallID)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	fullKey, ok := s.latest[key]
+	if !ok {
+		return AugmentGatewayReasoningTurn{}, false
+	}
+	turn, ok := s.turns[fullKey]
+	if !ok {
+		return AugmentGatewayReasoningTurn{}, false
+	}
+	return augmentGatewayReasoningTurnClone(turn), true
 }
 
 func BuildAugmentGatewayReasoningTurnRecords(input AugmentGatewayReasoningTurnWriteInput) ([]AugmentGatewayReasoningTurn, map[string]map[string]any, AugmentGatewayReasoningTurnLookupTrace, error) {
@@ -303,6 +327,10 @@ func augmentGatewayReasoningTurnSecondaryKeyFromKey(key AugmentGatewayReasoningT
 		ToolCallID:      key.ToolCallID,
 		ModelID:         key.ModelID,
 	}
+}
+
+func augmentGatewayReasoningTurnLatestKey(conversationID, modelID, toolCallID string) string {
+	return strings.TrimSpace(conversationID) + "\x00" + strings.TrimSpace(modelID) + "\x00" + strings.TrimSpace(toolCallID)
 }
 
 func augmentGatewayReasoningTurnClone(turn AugmentGatewayReasoningTurn) AugmentGatewayReasoningTurn {

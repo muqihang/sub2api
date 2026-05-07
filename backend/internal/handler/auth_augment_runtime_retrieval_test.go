@@ -15,7 +15,8 @@ import (
 )
 
 func TestAugmentLegacyBatchUploadCheckpointAndRetrievalReturnRealBlobRecord(t *testing.T) {
-	t.Parallel()
+	workspaceRoot := prepareAugmentContextBundleGitWorkspace(t)
+	t.Setenv("AUGMENT_LEGACY_WORKSPACE_ROOT", workspaceRoot)
 	gin.SetMode(gin.TestMode)
 
 	user := &service.User{
@@ -119,5 +120,11 @@ func TestAugmentLegacyBatchUploadCheckpointAndRetrievalReturnRealBlobRecord(t *t
 	require.Contains(t, formatted, "request: find the retrieval route")
 	require.Contains(t, formatted, "backend/internal/server/routes/gateway.go")
 	require.Contains(t, formatted, "r.POST(\"/agents/codebase-retrieval\", h.Auth.AugmentLegacyCodebaseRetrieval)")
+	require.Contains(t, formatted, "Augment context metadata:")
+	require.Contains(t, formatted, "workspace_root: "+workspaceRoot)
+	require.Contains(t, formatted, "branch: feature/context-bundle")
+	require.Contains(t, formatted, "worktree: "+workspaceRoot)
+	require.Contains(t, formatted, "checkpoint_id: "+checkpointID)
+	require.Contains(t, formatted, "active_blob_count: 1")
 	require.NotContains(t, formatted, "unknown")
 }

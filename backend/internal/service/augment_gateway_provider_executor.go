@@ -75,9 +75,12 @@ func NewAugmentGatewayProviderExecutor(
 		anthropic:     anthropic,
 		gemini:        gemini,
 		turnStore:     turnStore,
-		openAIAdapter: &augmentGatewayOpenAIAdapter{},
+		openAIAdapter: &augmentGatewayOpenAIAdapter{
+			gateway: openaiGateway,
+		},
 		deepSeekAdapter: &augmentGatewayOpenAIAdapter{
 			provider: AugmentGatewayProviderDeepSeek,
+			gateway:  openaiGateway,
 		},
 		anthropicAdapter: &augmentGatewayAnthropicAdapter{},
 		geminiAdapter:    &augmentGatewayGeminiAdapter{},

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -17,8 +18,32 @@ import (
 )
 
 func newGatewayRoutesTestRouter() *gin.Engine {
+	return newGatewayRoutesTestRouterWithAugmentGatewaySpy(nil)
+}
+
+func newGatewayRoutesTestRouterWithAugmentGatewaySpy(spy *gatewayRoutesAugmentGatewayExecutorSpy) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+
+	augmentGatewayService := (*service.AugmentGatewayService)(nil)
+	if spy != nil {
+		augmentCfg := config.GatewayAugmentConfig{
+			Enabled:       true,
+			EnabledModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash"},
+			ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+				OpenAI:   1001,
+				DeepSeek: 1002,
+			},
+		}
+		registry := service.NewAugmentGatewayModelRegistry(augmentCfg)
+		augmentGatewayService = service.NewAugmentGatewayService(
+			&config.Config{Gateway: config.GatewayConfig{Augment: augmentCfg}},
+			registry,
+			service.NewAugmentGatewayRouter(registry),
+			spy,
+			service.NewAugmentGatewayReasoningTurnStore(),
+		)
+	}
 
 	RegisterGatewayRoutes(
 		router,
@@ -32,6 +57,7 @@ func newGatewayRoutesTestRouter() *gin.Engine {
 				nil,
 				nil,
 				service.NewAugmentPluginService(nil, nil, nil, nil, nil, nil),
+				augmentGatewayService,
 			),
 			Gateway:       &handler.GatewayHandler{},
 			OpenAIGateway: &handler.OpenAIGatewayHandler{},
@@ -52,6 +78,44 @@ func newGatewayRoutesTestRouter() *gin.Engine {
 	)
 
 	return router
+}
+
+type gatewayRoutesAugmentGatewayExecutorSpy struct {
+	mu            sync.Mutex
+	completeCalls int
+	streamCalls   int
+}
+
+func (s *gatewayRoutesAugmentGatewayExecutorSpy) Complete(ctx context.Context, req service.AugmentGatewayProviderRequest) (service.AugmentGatewayProviderResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeCalls++
+	return service.AugmentGatewayProviderResult{}, nil
+}
+
+func (s *gatewayRoutesAugmentGatewayExecutorSpy) Stream(ctx context.Context, req service.AugmentGatewayProviderRequest, emit func(service.AugmentGatewayProviderChunk) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streamCalls++
+	return nil
+}
+
+func (s *gatewayRoutesAugmentGatewayExecutorSpy) CompleteCalls() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.completeCalls
+}
+
+func (s *gatewayRoutesAugmentGatewayExecutorSpy) StreamCalls() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streamCalls
 }
 
 func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
@@ -273,6 +337,40 @@ func TestGatewayRoutesLegacyAugmentEndpointsAreRegistered(t *testing.T) {
 
 			router.ServeHTTP(w, req)
 			require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should be registered", tc.path)
+		})
+	}
+}
+
+func TestGatewayRoutesOrdinaryPathsDoNotTouchAugmentGateway(t *testing.T) {
+	t.Parallel()
+
+	spy := &gatewayRoutesAugmentGatewayExecutorSpy{}
+	router := newGatewayRoutesTestRouterWithAugmentGatewaySpy(spy)
+
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPost, path: "/openai/v1/responses", body: `{"model":"gpt-5","input":"title"}`},
+		{method: http.MethodPost, path: "/openai/v1/chat/completions", body: `{"model":"gpt-5","messages":[]}`},
+		{method: http.MethodPost, path: "/v1/messages", body: `{"model":"claude-sonnet-4-5","messages":[]}`},
+		{method: http.MethodGet, path: "/v1beta/models", body: ""},
+		{method: http.MethodPost, path: "/backend-api/codex/responses", body: `{"model":"gpt-5","input":"title"}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			if tc.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			require.Zero(t, spy.CompleteCalls(), "augment gateway executor must not be used by %s", tc.path)
+			require.Zero(t, spy.StreamCalls(), "augment gateway executor must not be used by %s", tc.path)
 		})
 	}
 }

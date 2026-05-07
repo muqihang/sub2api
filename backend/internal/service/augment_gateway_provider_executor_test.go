@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/stretchr/testify/require"
 )
 
@@ -195,6 +196,28 @@ func TestAugmentGatewayProviderExecutor_DoesNotUseRouteMiddleware(t *testing.T) 
 	require.False(t, adapter.sawGinContext)
 }
 
+func TestNewAugmentGatewayProviderExecutor_WiresOpenAIAdapters(t *testing.T) {
+	openAIGateway := &OpenAIGatewayService{}
+
+	executor, ok := NewAugmentGatewayProviderExecutor(
+		&config.Config{},
+		openAIGateway,
+		nil,
+		nil,
+		NewAugmentGatewayReasoningTurnStore(),
+	).(*AugmentGatewayProviderExecutorImpl)
+	require.True(t, ok)
+
+	openAIAdapter, ok := executor.openAIAdapter.(*augmentGatewayOpenAIAdapter)
+	require.True(t, ok)
+	require.Same(t, openAIGateway, openAIAdapter.gateway)
+
+	deepSeekAdapter, ok := executor.deepSeekAdapter.(*augmentGatewayOpenAIAdapter)
+	require.True(t, ok)
+	require.Equal(t, AugmentGatewayProviderDeepSeek, deepSeekAdapter.provider)
+	require.Same(t, openAIGateway, deepSeekAdapter.gateway)
+}
+
 func TestAugmentGatewayProviderExecutor_NormalizesProviderResults(t *testing.T) {
 	selector := &augmentGatewayProviderExecutorFakeSelector{
 		account: &Account{ID: 606, Platform: PlatformOpenAI},
@@ -251,6 +274,36 @@ func TestAugmentGatewayProviderExecutor_NormalizesProviderResults(t *testing.T) 
 	require.Equal(t, "gpt-5.4-upstream", chunks[0].UpstreamModel)
 	require.Equal(t, "req-normalize", chunks[0].RequestID)
 	require.True(t, chunks[1].Done)
+}
+
+func TestAugmentGatewayProviderChunksPreserveStreamingToolCallIndex(t *testing.T) {
+	t.Parallel()
+
+	idx := 0
+	chunks := augmentGatewayProviderChunksFromChatCompletionsChunk(
+		AugmentGatewayProviderOpenAI,
+		apicompat.ChatCompletionsChunk{
+			ID:    "chatcmpl-tool-index",
+			Model: "gpt-5.4",
+			Choices: []apicompat.ChatChunkChoice{{
+				Delta: apicompat.ChatDelta{
+					ToolCalls: []apicompat.ChatToolCall{{
+						Index: &idx,
+						Function: apicompat.ChatFunctionCall{
+							Arguments: `"README.md"}`,
+						},
+					}},
+				},
+			}},
+		},
+		"upstream-tool-index",
+		[]byte(`{"id":"chatcmpl-tool-index"}`),
+	)
+
+	require.Len(t, chunks, 1)
+	require.NotNil(t, chunks[0].ToolCallDelta)
+	require.NotNil(t, chunks[0].ToolCallDelta.Index)
+	require.Equal(t, 0, *chunks[0].ToolCallDelta.Index)
 }
 
 func newAugmentGatewayProviderExecutorTestSubject(

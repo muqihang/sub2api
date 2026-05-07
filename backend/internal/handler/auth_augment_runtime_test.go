@@ -3,7 +3,9 @@ package handler
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +21,494 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAugmentLegacyChatRoutesFirstBatchModelsThroughAugmentGateway(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		modelID  string
+		provider service.AugmentGatewayProvider
+	}{
+		{modelID: "gpt-5.4", provider: service.AugmentGatewayProviderOpenAI},
+		{modelID: "gpt-5.5", provider: service.AugmentGatewayProviderOpenAI},
+		{modelID: "gpt-5.4-mini", provider: service.AugmentGatewayProviderOpenAI},
+		{modelID: "deepseek-v4-pro", provider: service.AugmentGatewayProviderDeepSeek},
+		{modelID: "deepseek-v4-flash", provider: service.AugmentGatewayProviderDeepSeek},
+	} {
+		t.Run(tc.modelID, func(t *testing.T) {
+			t.Parallel()
+
+			executor := &augmentGatewayRouteFakeExecutor{
+				completeResult: service.AugmentGatewayProviderResult{
+					Text: "gateway " + tc.modelID,
+					Usage: service.AugmentGatewayProviderUsage{
+						InputTokens:  3,
+						OutputTokens: 4,
+						TotalTokens:  7,
+					},
+				},
+			}
+			server, apiKey, loopbackCalls := newAugmentGatewayRuntimeTestServer(t, executor)
+			defer server.Close()
+
+			resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+				"model":"`+tc.modelID+`",
+				"message":"route through gateway",
+				"conversation_id":"conv-route-`+tc.modelID+`"
+			}`)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			body := decodeAugmentContractObjectFromReader(t, resp.Body)
+			require.Equal(t, "gateway "+tc.modelID, body["text"])
+
+			calls := executor.CompleteRequests()
+			require.Len(t, calls, 1)
+			require.Equal(t, tc.modelID, calls[0].Model.ID)
+			require.Equal(t, tc.provider, calls[0].Model.Provider)
+			require.Equal(t, tc.provider, calls[0].Provider)
+			require.Equal(t, "/chat", calls[0].Endpoint)
+			require.Equal(t, false, calls[0].RawBody["stream"])
+			require.Equal(t, 0, *loopbackCalls, "Augment /chat must not call the local OpenAI loopback route")
+		})
+	}
+}
+
+func TestAugmentLegacyChatUnknownModelReturnsAugmentGatewayErrorWithoutFallback(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{}
+	server, apiKey, loopbackCalls := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+		"model":"unknown-model",
+		"message":"do not fallback"
+	}`)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	body := readBody(t, resp.Body)
+	require.Contains(t, body, "AUGMENT_GATEWAY_MODEL_UNAVAILABLE")
+	require.Empty(t, executor.CompleteRequests())
+	require.Equal(t, 0, *loopbackCalls)
+}
+
+func TestAugmentLegacyChatStreamRoutesThroughAugmentGatewayAndEmitsReasoningToolAndUsageNodes(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		streamChunks: []service.AugmentGatewayProviderChunk{
+			{ReasoningContentDelta: "thinking through route"},
+			{ToolCallDelta: &service.AugmentGatewayToolCall{
+				ID:   "call-stream-1",
+				Type: "function",
+				Function: service.AugmentGatewayToolCallFunction{
+					Name:      "codebase-retrieval",
+					Arguments: `{"query":"gateway"}`,
+				},
+			}},
+			{Usage: service.AugmentGatewayProviderUsage{InputTokens: 11, OutputTokens: 13, TotalTokens: 24}},
+			{Done: true, ProviderFinishReason: "tool_calls"},
+		},
+	}
+	server, apiKey, loopbackCalls := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+		"model":"gpt-5.4",
+		"message":"stream through gateway",
+		"conversation_id":"conv-stream-route"
+	}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	require.NotEmpty(t, chunks)
+	requireAugmentGatewayStreamHasNodeType(t, chunks, float64(augmentResponseNodeThinking))
+	requireAugmentGatewayStreamHasNodeType(t, chunks, float64(augmentResponseNodeToolUse))
+	requireAugmentGatewayStreamHasNodeType(t, chunks, float64(augmentResponseNodeTokenUsage))
+
+	calls := executor.StreamRequests()
+	require.Len(t, calls, 1)
+	require.Equal(t, service.AugmentGatewayProviderOpenAI, calls[0].Provider)
+	require.Equal(t, true, calls[0].RawBody["stream"])
+	require.Equal(t, 0, *loopbackCalls, "Augment /chat-stream must not call the local OpenAI loopback route")
+}
+
+func TestAugmentLegacyChatStreamThroughGatewayBuffersIndexedToolCallArguments(t *testing.T) {
+	t.Parallel()
+
+	idx := 0
+	executor := &augmentGatewayRouteFakeExecutor{
+		streamChunks: []service.AugmentGatewayProviderChunk{
+			{ToolCallDelta: &service.AugmentGatewayToolCall{
+				Index: &idx,
+				ID:    "call-read-1",
+				Type:  "function",
+				Function: service.AugmentGatewayToolCallFunction{
+					Name:      "read-file",
+					Arguments: `{"path":`,
+				},
+			}},
+			{ToolCallDelta: &service.AugmentGatewayToolCall{
+				Index: &idx,
+				Function: service.AugmentGatewayToolCallFunction{
+					Arguments: `"README.md"}`,
+				},
+			}},
+			{Done: true, ProviderFinishReason: "tool_calls"},
+		},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+		"model":"gpt-5.4",
+		"message":"read a file",
+		"conversation_id":"conv-indexed-tool-call"
+	}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	var sawToolUse bool
+	for _, chunk := range chunks {
+		require.NotContains(t, chunk["text"], "incomplete tool arguments")
+		for _, node := range augmentGatewayContractNodes(chunk) {
+			if node["type"] != float64(augmentResponseNodeToolUse) {
+				continue
+			}
+			toolUse, ok := node["tool_use"].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "read-file", toolUse["tool_name"])
+			require.Equal(t, `{"path":"README.md"}`, toolUse["input_json"])
+			sawToolUse = true
+		}
+	}
+	require.True(t, sawToolUse)
+}
+
+func TestAugmentLegacyChatStreamThroughGatewayCoalescesReasoningDeltas(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		streamChunks: []service.AugmentGatewayProviderChunk{
+			{ReasoningContentDelta: "The "},
+			{ReasoningContentDelta: "user "},
+			{ReasoningContentDelta: "asked."},
+			{TextDelta: "answer"},
+			{Done: true, ProviderFinishReason: "stop"},
+		},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+		"model":"deepseek-v4-pro",
+		"message":"explain",
+		"conversation_id":"conv-reasoning-coalesce"
+	}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	var thinkingNodes []map[string]any
+	for _, chunk := range chunks {
+		for _, node := range augmentGatewayContractNodes(chunk) {
+			if node["type"] == float64(augmentResponseNodeThinking) {
+				thinkingNodes = append(thinkingNodes, node)
+			}
+		}
+	}
+	require.Len(t, thinkingNodes, 1)
+	thinking, ok := thinkingNodes[0]["thinking"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "The user asked.", thinking["summary"])
+}
+
+func TestAugmentGatewayDeepSeekToolCallReplayAcrossHTTPRequests(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		completeFunc: func(req service.AugmentGatewayProviderRequest, callIndex int) (service.AugmentGatewayProviderResult, error) {
+			if callIndex == 0 {
+				return service.AugmentGatewayProviderResult{
+					RequestID:               "provider-req-nonstream",
+					UpstreamRequestID:       "upstream-nonstream",
+					ReasoningContent:        "Need codebase retrieval before answering.",
+					ReasoningContentPresent: true,
+					ToolCalls:               []service.AugmentGatewayToolCall{augmentGatewayRouteCodebaseToolCall("call-nonstream")},
+				}, nil
+			}
+			return service.AugmentGatewayProviderResult{Text: "done"}, nil
+		},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	firstResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+		"model":"deepseek-v4-pro",
+		"message":"use retrieval",
+		"conversation_id":"conv-deepseek-replay",
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer firstResp.Body.Close()
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+
+	secondResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+		"model":"deepseek-v4-pro",
+		"conversation_id":"conv-deepseek-replay",
+		"requestNodes":[{
+			"id":1,
+			"type":1,
+			"toolResultNode":{"toolUseId":"call-nonstream","content":"[CODEBASE_RETRIEVAL]\nREADME.md"}
+		}],
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer secondResp.Body.Close()
+	require.Equal(t, http.StatusOK, secondResp.StatusCode)
+
+	calls := executor.CompleteRequests()
+	require.Len(t, calls, 2)
+	requireAugmentGatewayDeepSeekReplayBody(t, calls[1].RawBody, "Need codebase retrieval before answering.")
+	requireAugmentGatewayDeepSeekReplayToolArguments(t, calls[1].RawBody, "call-nonstream", `{"query":"gateway replay"}`)
+}
+
+func TestAugmentGatewayDeepSeekPairsMultipleToolResultsAcrossHTTPRequests(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		completeFunc: func(req service.AugmentGatewayProviderRequest, callIndex int) (service.AugmentGatewayProviderResult, error) {
+			if callIndex == 0 {
+				return service.AugmentGatewayProviderResult{
+					RequestID:               "provider-req-multi-tool",
+					UpstreamRequestID:       "upstream-multi-tool",
+					ReasoningContent:        "Need multiple retrievals before answering.",
+					ReasoningContentPresent: true,
+					ToolCalls: []service.AugmentGatewayToolCall{
+						augmentGatewayRouteCodebaseToolCallWithArguments("call-first", `{"query":"first query"}`),
+						augmentGatewayRouteCodebaseToolCallWithArguments("call-second", `{"query":"second query"}`),
+					},
+				}, nil
+			}
+			return service.AugmentGatewayProviderResult{Text: "done"}, nil
+		},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	firstResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+		"model":"deepseek-v4-pro",
+		"message":"use retrieval twice",
+		"conversation_id":"conv-deepseek-multi-tool-replay",
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer firstResp.Body.Close()
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+
+	secondResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+		"model":"deepseek-v4-pro",
+		"conversation_id":"conv-deepseek-multi-tool-replay",
+		"requestNodes":[
+			{
+				"id":1,
+				"type":1,
+				"toolResultNode":{"toolUseId":"call-first","content":"[CODEBASE_RETRIEVAL]\nfirst result"}
+			},
+			{
+				"id":2,
+				"type":1,
+				"toolResultNode":{"toolUseId":"call-second","content":"[CODEBASE_RETRIEVAL]\nsecond result"}
+			}
+		],
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer secondResp.Body.Close()
+	require.Equal(t, http.StatusOK, secondResp.StatusCode)
+
+	calls := executor.CompleteRequests()
+	require.Len(t, calls, 2)
+	requireAugmentGatewayDeepSeekToolCallResultPairs(t, calls[1].RawBody, []string{"call-first", "call-second"})
+	requireAugmentGatewayDeepSeekReplayToolArguments(t, calls[1].RawBody, "call-first", `{"query":"first query"}`)
+	requireAugmentGatewayDeepSeekReplayToolArguments(t, calls[1].RawBody, "call-second", `{"query":"second query"}`)
+}
+
+func TestAugmentGatewayOpenAIPairsMultipleToolResultsAcrossHTTPRequests(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		completeFunc: func(req service.AugmentGatewayProviderRequest, callIndex int) (service.AugmentGatewayProviderResult, error) {
+			if callIndex == 0 {
+				return service.AugmentGatewayProviderResult{
+					RequestID:         "provider-req-openai-multi-tool",
+					UpstreamRequestID: "upstream-openai-multi-tool",
+					ToolCalls: []service.AugmentGatewayToolCall{
+						augmentGatewayRouteCodebaseToolCallWithArguments("call-openai-first", `{"query":"first openai query"}`),
+						augmentGatewayRouteCodebaseToolCallWithArguments("call-openai-second", `{"query":"second openai query"}`),
+					},
+				}, nil
+			}
+			return service.AugmentGatewayProviderResult{Text: "done"}, nil
+		},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	firstResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+		"model":"gpt-5.4",
+		"message":"use retrieval twice",
+		"conversation_id":"conv-openai-multi-tool-replay",
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer firstResp.Body.Close()
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+
+	secondResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+		"model":"gpt-5.4",
+		"conversation_id":"conv-openai-multi-tool-replay",
+		"requestNodes":[
+			{
+				"id":1,
+				"type":1,
+				"toolResultNode":{"toolUseId":"call-openai-first","content":"[CODEBASE_RETRIEVAL]\nfirst result"}
+			},
+			{
+				"id":2,
+				"type":1,
+				"toolResultNode":{"toolUseId":"call-openai-second","content":"[CODEBASE_RETRIEVAL]\nsecond result"}
+			}
+		],
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer secondResp.Body.Close()
+	require.Equal(t, http.StatusOK, secondResp.StatusCode)
+
+	calls := executor.CompleteRequests()
+	require.Len(t, calls, 2)
+	requireAugmentGatewayDeepSeekToolCallResultPairs(t, calls[1].RawBody, []string{"call-openai-first", "call-openai-second"})
+	requireAugmentGatewayDeepSeekReplayToolArguments(t, calls[1].RawBody, "call-openai-first", `{"query":"first openai query"}`)
+	requireAugmentGatewayDeepSeekReplayToolArguments(t, calls[1].RawBody, "call-openai-second", `{"query":"second openai query"}`)
+}
+
+func TestAugmentGatewayDeepSeekToolCallReplayAcrossHTTPRequestsStreaming(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		streamFunc: func(req service.AugmentGatewayProviderRequest, callIndex int, emit func(service.AugmentGatewayProviderChunk) error) error {
+			if callIndex == 0 {
+				if err := emit(service.AugmentGatewayProviderChunk{ReasoningContentDelta: ""}); err != nil {
+					return err
+				}
+				if err := emit(service.AugmentGatewayProviderChunk{ReasoningContentDone: true}); err != nil {
+					return err
+				}
+				if err := emit(service.AugmentGatewayProviderChunk{ToolCallDelta: &service.AugmentGatewayToolCall{
+					ID:   "call-stream-empty-reasoning",
+					Type: "function",
+					Function: service.AugmentGatewayToolCallFunction{
+						Name:      "codebase-retrieval",
+						Arguments: `{"query":"stream replay"}`,
+					},
+				}}); err != nil {
+					return err
+				}
+				return emit(service.AugmentGatewayProviderChunk{
+					Done:                 true,
+					ProviderFinishReason: "tool_calls",
+					UpstreamRequestID:    "upstream-stream",
+				})
+			}
+			return emit(service.AugmentGatewayProviderChunk{TextDelta: "done", Done: true, ProviderFinishReason: "stop"})
+		},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	firstResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+		"model":"deepseek-v4-flash",
+		"message":"use retrieval in stream",
+		"conversation_id":"conv-deepseek-stream-replay",
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer firstResp.Body.Close()
+	require.Equal(t, http.StatusOK, firstResp.StatusCode)
+	require.NotEmpty(t, decodeAugmentContractNDJSON(t, firstResp.Body))
+
+	secondResp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+		"model":"deepseek-v4-flash",
+		"conversation_id":"conv-deepseek-stream-replay",
+		"requestNodes":[{
+			"id":1,
+			"type":1,
+			"toolResultNode":{"toolUseId":"call-stream-empty-reasoning","content":"[CODEBASE_RETRIEVAL]\nREADME.md"}
+		}],
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer secondResp.Body.Close()
+	require.Equal(t, http.StatusOK, secondResp.StatusCode)
+	require.NotEmpty(t, decodeAugmentContractNDJSON(t, secondResp.Body))
+
+	calls := executor.StreamRequests()
+	require.Len(t, calls, 2)
+	requireAugmentGatewayDeepSeekReplayBody(t, calls[1].RawBody, "")
+	requireAugmentGatewayDeepSeekReplayToolArguments(t, calls[1].RawBody, "call-stream-empty-reasoning", `{"query":"stream replay"}`)
+}
+
+func TestAugmentGatewayAddsCodebaseRetrievalQueryPolicy(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		streamFunc: func(req service.AugmentGatewayProviderRequest, callIndex int, emit func(service.AugmentGatewayProviderChunk) error) error {
+			return emit(service.AugmentGatewayProviderChunk{TextDelta: "ok", Done: true, ProviderFinishReason: "stop"})
+		},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+		"model":"deepseek-v4-pro",
+		"message":"找 Augment Gateway /chat-stream 链路",
+		"conversation_id":"conv-tool-policy",
+		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+	}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotEmpty(t, decodeAugmentContractNDJSON(t, resp.Body))
+
+	calls := executor.StreamRequests()
+	require.Len(t, calls, 1)
+	messages, ok := calls[0].RawBody["messages"].([]any)
+	require.True(t, ok)
+	var policy string
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok || msg["role"] != "system" {
+			continue
+		}
+		content, _ := msg["content"].(string)
+		if strings.Contains(content, "codebase-retrieval") {
+			policy = content
+			break
+		}
+	}
+	require.Contains(t, policy, "codebase-retrieval")
+	require.Contains(t, policy, "完整")
+	require.Contains(t, policy, "不要")
+	require.Contains(t, policy, "短关键词")
+
+	tools, ok := calls[0].RawBody["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	function, ok := tool["function"].(map[string]any)
+	require.True(t, ok)
+	description, ok := function["description"].(string)
+	require.True(t, ok)
+	require.Contains(t, description, "repository-specific information_request")
+	require.Contains(t, description, "routes, handlers")
+}
 
 func TestAugmentLegacyRuntimeCompatibilityEndpoints(t *testing.T) {
 	t.Parallel()
@@ -746,6 +1236,286 @@ func TestAugmentLegacyNextEditCurrentShapeContract(t *testing.T) {
 	require.Len(t, calls, 1, "next-edit-stream currently uses the legacy simple-text loopback path, not a future AugmentGatewayRouter mock")
 	require.Contains(t, calls[0].Body, "Generate the full suggested code")
 	require.Contains(t, calls[0].Body, "package main")
+}
+
+func TestAugmentGatewayAuxiliaryEndpointsRouteThroughModelPool(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		path         string
+		body         string
+		wantModel    string
+		wantResponse func(t *testing.T, chunk map[string]any)
+		wantDeepSeek bool
+	}{
+		{
+			name:      "prompt enhancer openai",
+			path:      "/prompt-enhancer",
+			wantModel: "gpt-5.5",
+			body: `{
+				"model":"gpt-5.5",
+				"nodes":[{"id":1,"type":0,"text_node":{"content":"make this request production-safe"}}],
+				"chat_history":[],
+				"workspace_file_chunks":[],
+				"incorporated_external_sources":[],
+				"conversation_id":"conv-aux-1"
+			}`,
+			wantResponse: func(t *testing.T, chunk map[string]any) {
+				t.Helper()
+				require.Equal(t, "gateway-prompt enhancer openai", chunk["text"])
+				require.Equal(t, []any{}, chunk["workspace_file_chunks"])
+				require.Equal(t, []any{}, chunk["nodes"])
+				require.NotContains(t, chunk, "incorporated_external_sources")
+			},
+		},
+		{
+			name:         "prompt enhancer deepseek",
+			path:         "/prompt-enhancer",
+			wantModel:    "deepseek-v4-pro",
+			wantDeepSeek: true,
+			body: `{
+				"model":"deepseek-v4-pro",
+				"nodes":[{"id":1,"type":0,"text_node":{"content":"make this request production-safe"}}],
+				"chat_history":[],
+				"workspace_file_chunks":[],
+				"incorporated_external_sources":[],
+				"conversation_id":"conv-aux-2"
+			}`,
+			wantResponse: func(t *testing.T, chunk map[string]any) {
+				t.Helper()
+				require.Equal(t, "gateway-prompt enhancer deepseek", chunk["text"])
+				require.Equal(t, []any{}, chunk["workspace_file_chunks"])
+				require.Equal(t, []any{}, chunk["nodes"])
+				require.NotContains(t, chunk, "incorporated_external_sources")
+			},
+		},
+		{
+			name:      "instruction stream mini",
+			path:      "/instruction-stream",
+			wantModel: "gpt-5.4-mini",
+			body: `{
+				"model":"gpt-5.4-mini",
+				"instruction":"rewrite for nil safety",
+				"selected_text":"fmt.Println(value)"
+			}`,
+			wantResponse: func(t *testing.T, chunk map[string]any) {
+				t.Helper()
+				require.Equal(t, "gateway-instruction stream mini", chunk["text"])
+				require.Equal(t, "gateway-instruction stream mini", chunk["replacement_text"])
+				require.Equal(t, "fmt.Println(value)", chunk["replacement_old_text"])
+				require.Equal(t, float64(1), chunk["replacement_start_line"])
+				require.Equal(t, float64(1), chunk["replacement_end_line"])
+				require.Equal(t, []any{}, chunk["unknown_blob_names"])
+				require.Equal(t, false, chunk["checkpoint_not_found"])
+			},
+		},
+		{
+			name:      "smart paste mini",
+			path:      "/smart-paste-stream",
+			wantModel: "gpt-5.4-mini",
+			body: `{
+				"model":"gpt-5.4-mini",
+				"instruction":"adapt pasted code to this file",
+				"selected_text":"oldCall()"
+			}`,
+			wantResponse: func(t *testing.T, chunk map[string]any) {
+				t.Helper()
+				require.Equal(t, "gateway-smart paste mini", chunk["text"])
+				require.Equal(t, "gateway-smart paste mini", chunk["replacement_text"])
+				require.Equal(t, "oldCall()", chunk["replacement_old_text"])
+				require.Equal(t, []any{}, chunk["unknown_blob_names"])
+				require.Equal(t, false, chunk["checkpoint_not_found"])
+			},
+		},
+		{
+			name:      "generate commit default",
+			path:      "/generate-commit-message-stream",
+			wantModel: "gpt-5.4",
+			body: `{
+				"changed_file_stats": {},
+				"diff": "diff --git a/main.go b/main.go\n+fmt.Println(\"safe\")",
+				"generatedCommitMessageSubrequest": {
+					"relevant_commit_messages": ["fix runtime panic"],
+					"example_commit_messages": ["test: lock contracts"]
+				}
+			}`,
+			wantResponse: func(t *testing.T, chunk map[string]any) {
+				t.Helper()
+				require.Equal(t, "gateway-generate commit default", chunk["text"])
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			executor := &augmentGatewayRouteFakeExecutor{
+				completeResult: service.AugmentGatewayProviderResult{Text: "gateway-" + tc.name},
+			}
+			server, apiKey, loopbackCalls := newAugmentGatewayRuntimeTestServer(t, executor)
+			defer server.Close()
+
+			resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, tc.path, tc.body)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			chunks := decodeAugmentContractNDJSON(t, resp.Body)
+			require.Len(t, chunks, 1)
+			tc.wantResponse(t, chunks[0])
+
+			calls := executor.CompleteRequests()
+			require.Len(t, calls, 1)
+			require.Equal(t, tc.wantModel, calls[0].Model.ID)
+			require.Equal(t, tc.wantModel, calls[0].RawBody["model"])
+			require.Equal(t, false, calls[0].RawBody["stream"])
+			if tc.wantDeepSeek {
+				require.Equal(t, map[string]any{"type": "enabled"}, calls[0].RawBody["thinking"])
+				require.Equal(t, "max", calls[0].RawBody["reasoning_effort"])
+				require.NotContains(t, calls[0].RawBody, "tool_choice")
+			}
+			require.Equal(t, 0, *loopbackCalls)
+		})
+	}
+}
+
+func TestAugmentGatewayAuxiliaryUnknownModelReturnsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{}
+	server, apiKey, loopbackCalls := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/prompt-enhancer", `{
+		"model":"unknown-model",
+		"nodes":[{"id":1,"type":0,"text_node":{"content":"make this request production-safe"}}],
+		"chat_history":[],
+		"workspace_file_chunks":[],
+		"incorporated_external_sources":[],
+		"conversation_id":"conv-aux-unknown"
+	}`)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Contains(t, resp.Header.Get("Content-Type"), "application/x-ndjson")
+	body := readBody(t, resp.Body)
+	require.Contains(t, body, "AUGMENT_GATEWAY_MODEL_UNAVAILABLE")
+	var chunk map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(body)), &chunk))
+	require.Equal(t, "AUGMENT_GATEWAY_MODEL_UNAVAILABLE", chunk["code"])
+	require.NotEmpty(t, chunk["text"])
+	require.Empty(t, executor.CompleteRequests())
+	require.Equal(t, 0, *loopbackCalls)
+}
+
+func TestAugmentGatewayClaudeAndGeminiEnabledRouteThroughProvider(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		modelID  string
+		provider service.AugmentGatewayProvider
+	}{
+		{name: "claude", modelID: "claude-sonnet-4-5", provider: service.AugmentGatewayProviderAnthropic},
+		{name: "gemini", modelID: "gemini-2.5-pro", provider: service.AugmentGatewayProviderGemini},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			executor := &augmentGatewayRouteFakeExecutor{
+				completeResult: service.AugmentGatewayProviderResult{Text: "gateway-" + tc.name},
+			}
+			server, apiKey, loopbackCalls := newAugmentGatewayRuntimeTestServerWithConfig(t, executor, config.GatewayAugmentConfig{
+				Enabled: true,
+				EnabledModels: []string{
+					"gpt-5.4",
+					"gpt-5.5",
+					"gpt-5.4-mini",
+					"deepseek-v4-pro",
+					"deepseek-v4-flash",
+					"claude-sonnet-4-5",
+					"gemini-2.5-pro",
+				},
+				ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+					OpenAI:    1001,
+					DeepSeek:  1002,
+					Anthropic: 1003,
+					Gemini:    1004,
+				},
+			})
+			defer server.Close()
+
+			resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat", `{
+				"model":"`+tc.modelID+`",
+				"message":"route through gateway",
+				"conversation_id":"conv-`+tc.name+`"
+			}`)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			body := decodeAugmentContractObjectFromReader(t, resp.Body)
+			require.Equal(t, "gateway-"+tc.name, body["text"])
+
+			calls := executor.CompleteRequests()
+			require.Len(t, calls, 1)
+			require.Equal(t, tc.modelID, calls[0].Model.ID)
+			require.Equal(t, tc.provider, calls[0].Provider)
+			require.Equal(t, 0, *loopbackCalls)
+		})
+	}
+}
+
+func TestAugmentGatewayNextEditEndpointsBypassGateway(t *testing.T) {
+	t.Parallel()
+
+	executor := &augmentGatewayRouteFakeExecutor{}
+	server, apiKey, loopbackCalls := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	nextEditLocBody := `{
+		"instruction":"change file",
+		"path":"src/main.go",
+		"blobs":{"checkpoint_id":"","added_blobs":["blob-a"],"deleted_blobs":[]},
+		"recent_changes":[],
+		"diagnostics":[],
+		"num_results":1,
+		"is_single_file":true
+	}`
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/next_edit_loc", nextEditLocBody)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Empty(t, executor.CompleteRequests())
+	require.Empty(t, executor.StreamRequests())
+
+	nextEditStreamBody := `{
+		"model":"gpt-5.4",
+		"instruction":"change file",
+		"path":"src/main.go",
+		"blob_name":"blob-a",
+		"blobs":{"checkpoint_id":"","added_blobs":["blob-a"],"deleted_blobs":[]},
+		"recent_changes":[],
+		"diagnostics":[],
+		"client_created_at":"2026-05-06T00:00:00Z"
+	}`
+	resp = postAugmentGatewayRuntimeJSON(t, server, apiKey, "/next-edit-stream", nextEditStreamBody)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	chunks := decodeAugmentContractNDJSON(t, resp.Body)
+	require.Len(t, chunks, 1)
+	nextEditChunk := chunks[0]
+	nextEdit, ok := nextEditChunk["next_edit"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "local loopback text", nextEdit["suggested_code"])
+	require.Equal(t, "src/main.go", nextEdit["path"])
+	require.Equal(t, "blob-a", nextEdit["blob_name"])
+	require.Equal(t, []any{}, nextEditChunk["unknown_blob_names"])
+	require.Equal(t, false, nextEditChunk["checkpoint_not_found"])
+	require.Empty(t, executor.CompleteRequests())
+	require.Empty(t, executor.StreamRequests())
+	require.Equal(t, 1, *loopbackCalls)
 }
 
 func TestAugmentLegacyFinalEnvelopeCaptureWritesPrePostSummaryWithoutRaw(t *testing.T) {
@@ -2796,6 +3566,360 @@ func newAugmentLegacyRuntimeTestServerWithGroups(t *testing.T, groups []service.
 
 	server := httptest.NewServer(router)
 	return server, apiKey.Key, &capturedOpenAIBody
+}
+
+type augmentGatewayRouteFakeExecutor struct {
+	mu sync.Mutex
+
+	completeResult service.AugmentGatewayProviderResult
+	completeFunc   func(req service.AugmentGatewayProviderRequest, callIndex int) (service.AugmentGatewayProviderResult, error)
+	streamChunks   []service.AugmentGatewayProviderChunk
+	streamFunc     func(req service.AugmentGatewayProviderRequest, callIndex int, emit func(service.AugmentGatewayProviderChunk) error) error
+
+	completeRequests []service.AugmentGatewayProviderRequest
+	streamRequests   []service.AugmentGatewayProviderRequest
+}
+
+func (e *augmentGatewayRouteFakeExecutor) Complete(ctx context.Context, req service.AugmentGatewayProviderRequest) (service.AugmentGatewayProviderResult, error) {
+	captured := e.captureRequest(req, false)
+	e.mu.Lock()
+	callIndex := len(e.completeRequests)
+	e.completeRequests = append(e.completeRequests, captured)
+	fn := e.completeFunc
+	result := e.completeResult
+	e.mu.Unlock()
+	if fn != nil {
+		return fn(req, callIndex)
+	}
+	return result, nil
+}
+
+func (e *augmentGatewayRouteFakeExecutor) Stream(ctx context.Context, req service.AugmentGatewayProviderRequest, emit func(service.AugmentGatewayProviderChunk) error) error {
+	captured := e.captureRequest(req, true)
+	e.mu.Lock()
+	callIndex := len(e.streamRequests)
+	e.streamRequests = append(e.streamRequests, captured)
+	fn := e.streamFunc
+	chunks := append([]service.AugmentGatewayProviderChunk(nil), e.streamChunks...)
+	e.mu.Unlock()
+	if fn != nil {
+		return fn(req, callIndex, emit)
+	}
+	for _, chunk := range chunks {
+		if err := emit(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *augmentGatewayRouteFakeExecutor) CompleteRequests() []service.AugmentGatewayProviderRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]service.AugmentGatewayProviderRequest(nil), e.completeRequests...)
+}
+
+func (e *augmentGatewayRouteFakeExecutor) StreamRequests() []service.AugmentGatewayProviderRequest {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]service.AugmentGatewayProviderRequest(nil), e.streamRequests...)
+}
+
+func (e *augmentGatewayRouteFakeExecutor) captureRequest(req service.AugmentGatewayProviderRequest, stream bool) service.AugmentGatewayProviderRequest {
+	req.Provider = req.Model.Provider
+	req.ModelID = req.Model.ID
+	req.UpstreamModel = req.Model.UpstreamModel
+	if req.RawBody != nil {
+		raw, err := json.Marshal(req.RawBody)
+		if err == nil {
+			var cloned map[string]any
+			if json.Unmarshal(raw, &cloned) == nil {
+				req.RawBody = cloned
+			}
+		}
+	}
+	if req.Provider == service.AugmentGatewayProviderDeepSeek {
+		body, err := service.SanitizeAugmentGatewayDeepSeekChatCompletionsRequest(req.Model, req.RawBody)
+		if err == nil {
+			req.RawBody = body
+		}
+	}
+	if req.RawBody != nil {
+		req.RawBody["stream"] = stream
+	}
+	return req
+}
+
+func newAugmentGatewayRuntimeTestServer(t *testing.T, executor service.AugmentGatewayProviderExecutor) (*httptest.Server, string, *int) {
+	t.Helper()
+	return newAugmentGatewayRuntimeTestServerWithConfig(t, executor, config.GatewayAugmentConfig{
+		Enabled:       true,
+		EnabledModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-flash"},
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI:   1001,
+			DeepSeek: 1002,
+		},
+	})
+}
+
+func newAugmentGatewayRuntimeTestServerWithConfig(t *testing.T, executor service.AugmentGatewayProviderExecutor, gatewayCfg config.GatewayAugmentConfig) (*httptest.Server, string, *int) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       2,
+		Email:    "compat@example.com",
+		Username: "compat",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        2,
+		UserID:    user.ID,
+		Key:       "sk-augment-gateway-runtime",
+		Name:      "augment-gateway-runtime",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	group := service.Group{
+		ID:                 101,
+		Name:               "OpenAI",
+		Platform:           service.PlatformOpenAI,
+		Status:             service.StatusActive,
+		Hydrated:           true,
+		DefaultMappedModel: "gpt-5.4",
+	}
+	apiKey.GroupID = &group.ID
+	apiKey.Group = &group
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+
+	registry := service.NewAugmentGatewayModelRegistry(gatewayCfg)
+	router := service.NewAugmentGatewayRouter(registry)
+	turnStore := service.NewAugmentGatewayReasoningTurnStore()
+	gatewayService := service.NewAugmentGatewayService(
+		&config.Config{Gateway: config.GatewayConfig{Augment: gatewayCfg}},
+		registry,
+		router,
+		executor,
+		turnStore,
+	)
+	pluginService.StoreLegacyBlobsForNamespace(buildAugmentLegacyNamespace(&service.AugmentPluginPrincipal{
+		User:   user,
+		APIKey: apiKey,
+	}, ""), []service.AugmentLegacyUploadedBlob{
+		{BlobName: "blob-a", Path: "src/main.go", Content: "package main\nfunc main(){}\n"},
+	})
+
+	authHandler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+		gatewayService,
+	)
+
+	loopbackCalls := 0
+	routerEngine := gin.New()
+	routerEngine.POST("/chat", authHandler.AugmentLegacyChat)
+	routerEngine.POST("/chat-stream", authHandler.AugmentLegacyChatStream)
+	routerEngine.POST("/prompt-enhancer", authHandler.AugmentLegacyPromptEnhancer)
+	routerEngine.POST("/instruction-stream", authHandler.AugmentLegacyInstructionStream)
+	routerEngine.POST("/smart-paste-stream", authHandler.AugmentLegacySmartPasteStream)
+	routerEngine.POST("/generate-commit-message-stream", authHandler.AugmentLegacyGenerateCommitMessageStream)
+	routerEngine.POST("/next_edit_loc", authHandler.AugmentLegacyNextEditLocation)
+	routerEngine.POST("/next-edit-stream", authHandler.AugmentLegacyNextEditStream)
+	routerEngine.POST("/openai/v1/chat/completions", func(c *gin.Context) {
+		loopbackCalls++
+		c.JSON(http.StatusOK, gin.H{
+			"id":      "chatcmpl-local-loopback",
+			"object":  "chat.completion",
+			"created": 1710000000,
+			"model":   "gpt-5.4",
+			"choices": []gin.H{
+				{
+					"index": 0,
+					"message": gin.H{
+						"role":    "assistant",
+						"content": "local loopback text",
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": gin.H{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+	})
+
+	server := httptest.NewServer(routerEngine)
+	return server, apiKey.Key, &loopbackCalls
+}
+
+func postAugmentGatewayRuntimeJSON(t *testing.T, server *httptest.Server, apiKey, path, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := server.Client().Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
+func requireAugmentGatewayStreamHasNodeType(t *testing.T, chunks []map[string]any, nodeType float64) {
+	t.Helper()
+	for _, chunk := range chunks {
+		for _, node := range augmentGatewayContractNodes(chunk) {
+			if node["type"] == nodeType {
+				return
+			}
+		}
+	}
+	require.Failf(t, "missing node type", "node type %v not found in chunks %#v", nodeType, chunks)
+}
+
+func augmentGatewayContractNodes(chunk map[string]any) []map[string]any {
+	nodes, _ := chunk["nodes"].([]any)
+	out := make([]map[string]any, 0, len(nodes))
+	for _, rawNode := range nodes {
+		node, ok := rawNode.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, node)
+	}
+	return out
+}
+
+func requireAugmentGatewayDeepSeekReplayBody(t *testing.T, body map[string]any, wantReasoning string) {
+	t.Helper()
+	require.Equal(t, "max", body["reasoning_effort"])
+	require.Equal(t, map[string]any{"type": "enabled"}, body["thinking"])
+	require.NotContains(t, body, "tool_choice")
+	require.NotEmpty(t, body["tools"])
+
+	messages, ok := body["messages"].([]any)
+	require.True(t, ok)
+	var assistant map[string]any
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok || msg["role"] != "assistant" {
+			continue
+		}
+		if toolCalls, ok := msg["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+			assistant = msg
+			break
+		}
+	}
+	require.NotNil(t, assistant, "expected assistant tool-call message")
+	require.Contains(t, assistant, "content")
+	require.Equal(t, "", assistant["content"])
+	require.Contains(t, assistant, "reasoning_content")
+	require.Equal(t, wantReasoning, assistant["reasoning_content"])
+}
+
+func requireAugmentGatewayDeepSeekReplayToolArguments(t *testing.T, body map[string]any, toolCallID, wantArguments string) {
+	t.Helper()
+	messages, ok := body["messages"].([]any)
+	require.True(t, ok)
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok || msg["role"] != "assistant" {
+			continue
+		}
+		toolCalls, _ := msg["tool_calls"].([]any)
+		for _, rawToolCall := range toolCalls {
+			toolCall, ok := rawToolCall.(map[string]any)
+			if !ok || toolCall["id"] != toolCallID {
+				continue
+			}
+			function, ok := toolCall["function"].(map[string]any)
+			require.True(t, ok)
+			require.JSONEq(t, wantArguments, fmt.Sprint(function["arguments"]))
+			return
+		}
+	}
+	require.Failf(t, "missing tool call", "tool call %s not found in %#v", toolCallID, body)
+}
+
+func requireAugmentGatewayDeepSeekToolCallResultPairs(t *testing.T, body map[string]any, toolCallIDs []string) {
+	t.Helper()
+	messages, ok := body["messages"].([]any)
+	require.True(t, ok)
+	cursor := 0
+	for _, toolCallID := range toolCallIDs {
+		assistantIndex := -1
+		for idx := cursor; idx < len(messages); idx++ {
+			msg, ok := messages[idx].(map[string]any)
+			if !ok || msg["role"] != "assistant" {
+				continue
+			}
+			if !augmentGatewayRawAssistantHasToolCallID(msg, toolCallID) {
+				continue
+			}
+			assistantIndex = idx
+			break
+		}
+		require.NotEqual(t, -1, assistantIndex, "assistant tool call %s not found in %#v", toolCallID, messages)
+		require.Less(t, assistantIndex+1, len(messages), "tool result for %s must immediately follow assistant tool call", toolCallID)
+		toolMessage, ok := messages[assistantIndex+1].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "tool", toolMessage["role"])
+		require.Equal(t, toolCallID, toolMessage["tool_call_id"])
+		cursor = assistantIndex + 2
+	}
+}
+
+func augmentGatewayRawAssistantHasToolCallID(msg map[string]any, toolCallID string) bool {
+	toolCalls, _ := msg["tool_calls"].([]any)
+	for _, rawToolCall := range toolCalls {
+		toolCall, ok := rawToolCall.(map[string]any)
+		if ok && toolCall["id"] == toolCallID {
+			return true
+		}
+	}
+	return false
+}
+
+func augmentGatewayRouteCodebaseToolCall(id string) service.AugmentGatewayToolCall {
+	return augmentGatewayRouteCodebaseToolCallWithArguments(id, `{"query":"gateway replay"}`)
+}
+
+func augmentGatewayRouteCodebaseToolCallWithArguments(id, arguments string) service.AugmentGatewayToolCall {
+	return service.AugmentGatewayToolCall{
+		ID:   id,
+		Type: "function",
+		Function: service.AugmentGatewayToolCallFunction{
+			Name:      "codebase-retrieval",
+			Arguments: arguments,
+		},
+	}
 }
 
 type augmentLegacyContractLoopbackCall struct {

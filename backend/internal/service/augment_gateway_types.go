@@ -20,6 +20,7 @@ type AugmentGatewayModel struct {
 }
 
 type AugmentGatewayToolCall struct {
+	Index    *int                           `json:"index,omitempty"`
 	ID       string                         `json:"id,omitempty"`
 	Type     string                         `json:"type,omitempty"`
 	Function AugmentGatewayToolCallFunction `json:"function"`

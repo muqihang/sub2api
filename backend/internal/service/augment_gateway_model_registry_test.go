@@ -8,7 +8,14 @@ import (
 )
 
 func TestAugmentGatewayModelRegistry_FirstBatchVisibleModels(t *testing.T) {
-	reg := NewDefaultAugmentGatewayModelRegistry()
+	reg := NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
+		Enabled:       true,
+		EnabledModels: defaultAugmentGatewayEnabledModelIDs(),
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI:   1001,
+			DeepSeek: 1002,
+		},
+	})
 
 	models := reg.VisibleModels()
 
@@ -21,10 +28,25 @@ func TestAugmentGatewayModelRegistry_FirstBatchVisibleModels(t *testing.T) {
 	}, augmentGatewayModelIDs(models))
 }
 
+func TestAugmentGatewayModelRegistry_FirstBatchHiddenWithoutProviderGroups(t *testing.T) {
+	reg := NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
+		Enabled:       true,
+		EnabledModels: defaultAugmentGatewayEnabledModelIDs(),
+	})
+
+	require.True(t, reg.IsEnabled("gpt-5.4"))
+	require.False(t, reg.IsVisible("gpt-5.4"))
+	require.True(t, reg.IsEnabled("deepseek-v4-pro"))
+	require.False(t, reg.IsVisible("deepseek-v4-pro"))
+	require.Empty(t, reg.VisibleModels())
+}
+
 func TestAugmentGatewayModelRegistry_ClaudeGeminiHiddenByDefault(t *testing.T) {
 	reg := NewDefaultAugmentGatewayModelRegistry()
 
+	require.False(t, reg.IsEnabled("claude-sonnet-4-5"))
 	require.False(t, reg.IsVisible("claude-sonnet-4-5"))
+	require.False(t, reg.IsEnabled("gemini-2.5-pro"))
 	require.False(t, reg.IsVisible("gemini-2.5-pro"))
 
 	claude, ok := reg.Resolve("claude-sonnet-4-5")
@@ -34,6 +56,51 @@ func TestAugmentGatewayModelRegistry_ClaudeGeminiHiddenByDefault(t *testing.T) {
 	gemini, ok := reg.Resolve("gemini-2.5-pro")
 	require.True(t, ok)
 	require.Equal(t, AugmentGatewayProviderGemini, gemini.Provider)
+}
+
+func TestAugmentGatewayModelRegistry_ClaudeGeminiEnabledWithoutProviderGroupRemainHidden(t *testing.T) {
+	reg := NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
+		Enabled: true,
+		EnabledModels: []string{
+			"gpt-5.4",
+			"claude-sonnet-4-5",
+			"gemini-2.5-pro",
+		},
+	})
+
+	require.True(t, reg.IsEnabled("gpt-5.4"))
+	require.False(t, reg.IsVisible("gpt-5.4"))
+	require.True(t, reg.IsEnabled("claude-sonnet-4-5"))
+	require.False(t, reg.IsVisible("claude-sonnet-4-5"))
+	require.True(t, reg.IsEnabled("gemini-2.5-pro"))
+	require.False(t, reg.IsVisible("gemini-2.5-pro"))
+	require.Empty(t, reg.VisibleModels())
+}
+
+func TestAugmentGatewayModelRegistry_ClaudeGeminiEnabledWithProviderGroupsBecomeVisible(t *testing.T) {
+	reg := NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
+		Enabled: true,
+		EnabledModels: []string{
+			"gpt-5.4",
+			"claude-sonnet-4-5",
+			"gemini-2.5-pro",
+		},
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI:    1001,
+			Anthropic: 2001,
+			Gemini:    2002,
+		},
+	})
+
+	require.True(t, reg.IsEnabled("claude-sonnet-4-5"))
+	require.True(t, reg.IsVisible("claude-sonnet-4-5"))
+	require.True(t, reg.IsEnabled("gemini-2.5-pro"))
+	require.True(t, reg.IsVisible("gemini-2.5-pro"))
+	require.Equal(t, []string{
+		"gpt-5.4",
+		"claude-sonnet-4-5",
+		"gemini-2.5-pro",
+	}, augmentGatewayModelIDs(reg.VisibleModels()))
 }
 
 func TestAugmentGatewayModelRegistry_DeepSeekDefaultsReasoningEffortMax(t *testing.T) {
@@ -59,6 +126,12 @@ func TestAugmentGatewayModelRegistry_ClaudeGeminiRequireEnabledModelAndProviderG
 	}
 
 	reg := NewAugmentGatewayModelRegistry(base)
+	require.False(t, reg.IsVisible("gpt-5.4"))
+	require.False(t, reg.IsVisible("claude-sonnet-4-5"))
+	require.False(t, reg.IsVisible("gemini-2.5-pro"))
+
+	base.ProviderGroups.OpenAI = 1001
+	reg = NewAugmentGatewayModelRegistry(base)
 	require.True(t, reg.IsVisible("gpt-5.4"))
 	require.False(t, reg.IsVisible("claude-sonnet-4-5"))
 	require.False(t, reg.IsVisible("gemini-2.5-pro"))

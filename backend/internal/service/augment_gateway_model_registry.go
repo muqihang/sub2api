@@ -7,23 +7,29 @@ import (
 )
 
 type AugmentGatewayModelRegistry struct {
-	modelsByID map[string]AugmentGatewayModel
-	orderedIDs []string
-	visibleIDs map[string]struct{}
+	modelsByID                 map[string]AugmentGatewayModel
+	orderedIDs                 []string
+	enabled                    bool
+	enabledIDs                 map[string]struct{}
+	visibleIDs                 map[string]struct{}
+	allowMissingProviderGroups bool
 }
 
 func NewDefaultAugmentGatewayModelRegistry() *AugmentGatewayModelRegistry {
-	return NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
+	registry := NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
 		Enabled:       true,
 		EnabledModels: defaultAugmentGatewayEnabledModelIDs(),
 	})
+	registry.allowMissingProviderGroups = true
+	registry.rebuildVisibleIDs()
+	return registry
 }
 
 func NewAugmentGatewayModelRegistry(cfg config.GatewayAugmentConfig) *AugmentGatewayModelRegistry {
 	modelsByID := make(map[string]AugmentGatewayModel, len(defaultAugmentGatewayModels))
 	orderedIDs := make([]string, 0, len(defaultAugmentGatewayModels))
-	visibleIDs := make(map[string]struct{}, len(cfg.EnabledModels))
 	enabledIDs := make(map[string]struct{}, len(cfg.EnabledModels))
+	visibleIDs := make(map[string]struct{}, len(cfg.EnabledModels))
 
 	for _, id := range cfg.EnabledModels {
 		id = strings.TrimSpace(id)
@@ -44,17 +50,18 @@ func NewAugmentGatewayModelRegistry(cfg config.GatewayAugmentConfig) *AugmentGat
 		if _, enabled := enabledIDs[model.ID]; !enabled {
 			continue
 		}
-		if !augmentGatewayModelProviderConfiguredForVisibility(model) {
-			continue
-		}
 		visibleIDs[model.ID] = struct{}{}
 	}
 
-	return &AugmentGatewayModelRegistry{
+	registry := &AugmentGatewayModelRegistry{
 		modelsByID: modelsByID,
 		orderedIDs: orderedIDs,
+		enabled:    cfg.Enabled,
+		enabledIDs: enabledIDs,
 		visibleIDs: visibleIDs,
 	}
+	registry.rebuildVisibleIDs()
+	return registry
 }
 
 func (r *AugmentGatewayModelRegistry) VisibleModels() []AugmentGatewayModel {
@@ -79,12 +86,41 @@ func (r *AugmentGatewayModelRegistry) IsVisible(modelID string) bool {
 	return ok
 }
 
+func (r *AugmentGatewayModelRegistry) IsEnabled(modelID string) bool {
+	if r == nil || !r.enabled {
+		return false
+	}
+	_, ok := r.enabledIDs[strings.TrimSpace(modelID)]
+	return ok
+}
+
 func (r *AugmentGatewayModelRegistry) Resolve(modelID string) (AugmentGatewayModel, bool) {
 	if r == nil {
 		return AugmentGatewayModel{}, false
 	}
 	model, ok := r.modelsByID[strings.TrimSpace(modelID)]
 	return model, ok
+}
+
+func (r *AugmentGatewayModelRegistry) rebuildVisibleIDs() {
+	if r == nil {
+		return
+	}
+	visibleIDs := make(map[string]struct{}, len(r.enabledIDs))
+	for _, id := range r.orderedIDs {
+		model := r.modelsByID[id]
+		if !r.enabled {
+			continue
+		}
+		if _, enabled := r.enabledIDs[id]; !enabled {
+			continue
+		}
+		if !r.allowMissingProviderGroups && model.ProviderGroupID == 0 {
+			continue
+		}
+		visibleIDs[id] = struct{}{}
+	}
+	r.visibleIDs = visibleIDs
 }
 
 func defaultAugmentGatewayEnabledModelIDs() []string {
@@ -109,15 +145,6 @@ func augmentGatewayProviderGroupID(groups config.GatewayAugmentProviderGroupsCon
 		return groups.Gemini
 	default:
 		return 0
-	}
-}
-
-func augmentGatewayModelProviderConfiguredForVisibility(model AugmentGatewayModel) bool {
-	switch model.Provider {
-	case AugmentGatewayProviderAnthropic, AugmentGatewayProviderGemini:
-		return model.ProviderGroupID != 0
-	default:
-		return true
 	}
 }
 

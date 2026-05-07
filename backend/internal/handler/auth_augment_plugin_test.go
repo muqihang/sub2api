@@ -1004,7 +1004,132 @@ func TestAugmentLegacyInternalGetModelsExposeDefaultAugmentGatewayRegistry(t *te
 	require.Equal(t, modelInfoRegistry, modelInfoRegistryCamel)
 }
 
+func TestAugmentLegacyModelsHideClaudeGeminiWhenEnabledWithoutProviderGroups(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	authHandler, apiKey := newAugmentModelRegistryTestHandlerWithAugmentConfig(config.GatewayAugmentConfig{
+		Enabled: true,
+		EnabledModels: []string{
+			"gpt-5.4",
+			"gpt-5.5",
+			"gpt-5.4-mini",
+			"deepseek-v4-pro",
+			"deepseek-v4-flash",
+			"claude-sonnet-4-5",
+			"gemini-2.5-pro",
+		},
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI:   1001,
+			DeepSeek: 1002,
+		},
+	})
+
+	router := gin.New()
+	router.GET("/usage/api/get-models", authHandler.AugmentLegacyModels)
+	router.POST("/get-models", authHandler.AugmentLegacyInternalGetModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage/api/get-models", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.NotContains(t, body, "claude-sonnet-4-5")
+	require.NotContains(t, body, "gemini-2.5-pro")
+
+	postReq := httptest.NewRequest(http.MethodPost, "/get-models", bytes.NewReader([]byte(`{}`)))
+	postReq.Header.Set("Authorization", "Bearer "+apiKey)
+	postRec := httptest.NewRecorder()
+	router.ServeHTTP(postRec, postReq)
+	require.Equal(t, http.StatusOK, postRec.Code)
+
+	var postBody struct {
+		Models []augmentLegacyInternalModel `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(postRec.Body.Bytes(), &postBody))
+	require.Equal(t, []string{
+		"gpt-5.4",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+	}, augmentLegacyInternalModelNames(postBody.Models))
+}
+
+func TestAugmentLegacyModelsExposeClaudeGeminiWhenEnabledAndConfigured(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	authHandler, apiKey := newAugmentModelRegistryTestHandlerWithAugmentConfig(config.GatewayAugmentConfig{
+		Enabled: true,
+		EnabledModels: []string{
+			"gpt-5.4",
+			"gpt-5.5",
+			"gpt-5.4-mini",
+			"deepseek-v4-pro",
+			"deepseek-v4-flash",
+			"claude-sonnet-4-5",
+			"gemini-2.5-pro",
+		},
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI:    1001,
+			DeepSeek:  1002,
+			Anthropic: 2001,
+			Gemini:    2002,
+		},
+	})
+
+	router := gin.New()
+	router.GET("/usage/api/get-models", authHandler.AugmentLegacyModels)
+	router.POST("/get-models", authHandler.AugmentLegacyInternalGetModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage/api/get-models", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Contains(t, body, "claude-sonnet-4-5")
+	require.Contains(t, body, "gemini-2.5-pro")
+
+	postReq := httptest.NewRequest(http.MethodPost, "/get-models", bytes.NewReader([]byte(`{}`)))
+	postReq.Header.Set("Authorization", "Bearer "+apiKey)
+	postRec := httptest.NewRecorder()
+	router.ServeHTTP(postRec, postReq)
+	require.Equal(t, http.StatusOK, postRec.Code)
+
+	var postBody struct {
+		Models []augmentLegacyInternalModel `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(postRec.Body.Bytes(), &postBody))
+	require.Equal(t, []string{
+		"gpt-5.4",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"claude-sonnet-4-5",
+		"gemini-2.5-pro",
+	}, augmentLegacyInternalModelNames(postBody.Models))
+}
+
 func newAugmentModelRegistryTestHandler() (*AuthHandler, string) {
+	return newAugmentModelRegistryTestHandlerWithAugmentConfig(config.GatewayAugmentConfig{
+		Enabled:       true,
+		EnabledModels: firstBatchAugmentModelIDs(),
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI:   1001,
+			DeepSeek: 1002,
+		},
+	})
+}
+
+func newAugmentModelRegistryTestHandlerWithAugmentConfig(augmentCfg config.GatewayAugmentConfig) (*AuthHandler, string) {
 	user := &service.User{
 		ID:       42,
 		Email:    "models@example.com",
@@ -1022,13 +1147,8 @@ func newAugmentModelRegistryTestHandler() (*AuthHandler, string) {
 		User:      user,
 	}
 	cfg := &config.Config{
-		Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
-		Gateway: config.GatewayConfig{
-			Augment: config.GatewayAugmentConfig{
-				Enabled:       true,
-				EnabledModels: firstBatchAugmentModelIDs(),
-			},
-		},
+		Server:  config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+		Gateway: config.GatewayConfig{Augment: augmentCfg},
 	}
 	pluginService := service.NewAugmentPluginService(
 		cfg,

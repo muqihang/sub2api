@@ -51,6 +51,9 @@ func SanitizeAugmentGatewayDeepSeekChatCompletionsRequest(model AugmentGatewayMo
 	}
 
 	if messages, ok := body["messages"].([]any); ok {
+		messages = augmentGatewayDeepSeekPairToolCallMessages(messages)
+		body["messages"] = messages
+		toolLoopActive := augmentGatewayDeepSeekToolLoopActive(messages)
 		for _, rawMessage := range messages {
 			message, ok := rawMessage.(map[string]any)
 			if !ok {
@@ -59,19 +62,171 @@ func SanitizeAugmentGatewayDeepSeekChatCompletionsRequest(model AugmentGatewayMo
 			if augmentGatewayDeepSeekMessageRole(message) != "assistant" {
 				continue
 			}
-			if !augmentGatewayDeepSeekHasArrayItems(message["tool_calls"]) {
-				continue
+			hasToolCalls := augmentGatewayDeepSeekHasArrayItems(message["tool_calls"])
+			if hasToolCalls {
+				if _, ok := message["content"]; !ok || message["content"] == nil {
+					message["content"] = ""
+				}
 			}
-			if _, ok := message["content"]; !ok || message["content"] == nil {
-				message["content"] = ""
-			}
-			if _, ok := message["reasoning_content"]; !ok || message["reasoning_content"] == nil {
-				message["reasoning_content"] = ""
+			if toolLoopActive {
+				if _, ok := message["reasoning_content"]; !ok || message["reasoning_content"] == nil {
+					message["reasoning_content"] = ""
+				}
+			} else if hasToolCalls {
+				if _, ok := message["reasoning_content"]; !ok || message["reasoning_content"] == nil {
+					message["reasoning_content"] = ""
+				}
 			}
 		}
 	}
 
 	return body, nil
+}
+
+func augmentGatewayDeepSeekPairToolCallMessages(messages []any) []any {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]any, 0, len(messages))
+	for idx := 0; idx < len(messages); {
+		rawMessage := messages[idx]
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			out = append(out, rawMessage)
+			idx++
+			continue
+		}
+		if augmentGatewayDeepSeekMessageRole(message) != "assistant" || !augmentGatewayDeepSeekHasArrayItems(message["tool_calls"]) {
+			out = append(out, rawMessage)
+			idx++
+			continue
+		}
+
+		assistantEnd := idx + 1
+		for assistantEnd < len(messages) && augmentGatewayDeepSeekIsAssistantToolCallMessage(messages[assistantEnd]) {
+			assistantEnd++
+		}
+		toolEnd := assistantEnd
+		for toolEnd < len(messages) && augmentGatewayDeepSeekIsToolMessage(messages[toolEnd]) {
+			toolEnd++
+		}
+		if toolEnd == assistantEnd {
+			out = append(out, rawMessage)
+			idx++
+			continue
+		}
+		paired, ok := augmentGatewayDeepSeekPairContiguousToolCallBlock(messages[idx:assistantEnd], messages[assistantEnd:toolEnd])
+		if !ok {
+			out = append(out, messages[idx:toolEnd]...)
+			idx = toolEnd
+			continue
+		}
+		out = append(out, paired...)
+		idx = toolEnd
+	}
+	return out
+}
+
+func augmentGatewayDeepSeekIsAssistantToolCallMessage(rawMessage any) bool {
+	message, ok := rawMessage.(map[string]any)
+	return ok && augmentGatewayDeepSeekMessageRole(message) == "assistant" && augmentGatewayDeepSeekHasArrayItems(message["tool_calls"])
+}
+
+func augmentGatewayDeepSeekIsToolMessage(rawMessage any) bool {
+	message, ok := rawMessage.(map[string]any)
+	return ok && augmentGatewayDeepSeekMessageRole(message) == "tool"
+}
+
+func augmentGatewayDeepSeekPairContiguousToolCallBlock(assistantMessages, toolMessages []any) ([]any, bool) {
+	if len(assistantMessages) == 0 || len(toolMessages) == 0 {
+		return nil, false
+	}
+	toolsByID := make(map[string][]any, len(toolMessages))
+	for _, rawTool := range toolMessages {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := tool["tool_call_id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		toolsByID[id] = append(toolsByID[id], rawTool)
+	}
+
+	usedToolIDs := make(map[string]struct{}, len(toolMessages))
+	paired := make([]any, 0, len(assistantMessages)+len(toolMessages))
+	for _, rawAssistant := range assistantMessages {
+		assistant, ok := rawAssistant.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		toolCallIDs := augmentGatewayDeepSeekToolCallIDs(assistant["tool_calls"])
+		if len(toolCallIDs) == 0 {
+			return nil, false
+		}
+		assistantTools := make([]any, 0, len(toolCallIDs))
+		for _, toolCallID := range toolCallIDs {
+			if _, ok := usedToolIDs[toolCallID]; ok {
+				continue
+			}
+			matches := toolsByID[toolCallID]
+			if len(matches) == 0 {
+				return nil, false
+			}
+			usedToolIDs[toolCallID] = struct{}{}
+			assistantTools = append(assistantTools, matches...)
+		}
+		if len(assistantTools) == 0 {
+			return nil, false
+		}
+		paired = append(paired, rawAssistant)
+		paired = append(paired, assistantTools...)
+	}
+	if len(usedToolIDs) != len(toolsByID) {
+		return nil, false
+	}
+	return paired, true
+}
+
+func augmentGatewayDeepSeekToolCallIDs(value any) []string {
+	toolCalls, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	ids := make([]string, 0, len(toolCalls))
+	for _, rawToolCall := range toolCalls {
+		toolCall, ok := rawToolCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := toolCall["id"].(string)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func augmentGatewayDeepSeekToolLoopActive(messages []any) bool {
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch augmentGatewayDeepSeekMessageRole(message) {
+		case "tool":
+			return true
+		case "assistant":
+			if augmentGatewayDeepSeekHasArrayItems(message["tool_calls"]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func augmentGatewayDeepSeekNormalizeBody(input map[string]any) (map[string]any, error) {

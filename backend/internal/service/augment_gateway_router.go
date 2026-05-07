@@ -102,7 +102,7 @@ func (r *AugmentGatewayRouter) Resolve(modelID string) (AugmentGatewayRoutedMode
 			Kind:    AugmentGatewayModelUnavailableUnknown,
 		}
 	}
-	if !r.registry.IsVisible(requestedModelID) {
+	if !r.registry.IsEnabled(requestedModelID) {
 		return AugmentGatewayRoutedModel{}, &AugmentGatewayModelUnavailableError{
 			ModelID: requestedModelID,
 			Kind:    AugmentGatewayModelUnavailableDisabled,

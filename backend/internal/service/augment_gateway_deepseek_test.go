@@ -140,3 +140,140 @@ func TestAugmentGatewayDeepSeekInjectsEmptyReasoningContentWhenMissing(t *testin
 	require.Equal(t, "", assistant["reasoning_content"])
 	require.NotContains(t, body, "tool_choice")
 }
+
+func TestAugmentGatewayDeepSeekAddsReasoningContentToAssistantHistoryDuringToolLoop(t *testing.T) {
+	reg := NewDefaultAugmentGatewayModelRegistry()
+	model, ok := reg.Resolve("deepseek-v4-pro")
+	require.True(t, ok)
+
+	out, err := BuildAugmentGatewayDeepSeekChatCompletionsJSON(model, map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "first question"},
+			map[string]any{"role": "assistant", "content": "plain prior answer"},
+			map[string]any{"role": "user", "content": "now use a tool"},
+			map[string]any{
+				"role":              "assistant",
+				"content":           "",
+				"reasoning_content": "must be replayed",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "codebase-retrieval",
+							"arguments": `{"query":"real query"}`,
+						},
+					},
+				},
+			},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "retrieved context"},
+		},
+		"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "codebase-retrieval"}}},
+	})
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(out, &body))
+
+	messages := body["messages"].([]any)
+	priorAssistant := messages[1].(map[string]any)
+	require.Contains(t, priorAssistant, "reasoning_content")
+	require.Equal(t, "", priorAssistant["reasoning_content"])
+
+	toolAssistant := messages[3].(map[string]any)
+	require.Equal(t, "must be replayed", toolAssistant["reasoning_content"])
+}
+
+func TestAugmentGatewayDeepSeekPairsSyntheticToolCallsWithTheirResults(t *testing.T) {
+	reg := NewDefaultAugmentGatewayModelRegistry()
+	model, ok := reg.Resolve("deepseek-v4-pro")
+	require.True(t, ok)
+
+	out, err := BuildAugmentGatewayDeepSeekChatCompletionsJSON(model, map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "continue after tools"},
+			map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "codebase-retrieval",
+							"arguments": `{"query":"first"}`,
+						},
+					},
+				},
+			},
+			map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_2",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "codebase-retrieval",
+							"arguments": `{"query":"second"}`,
+						},
+					},
+				},
+			},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "first result"},
+			map[string]any{"role": "tool", "tool_call_id": "call_2", "content": "second result"},
+		},
+		"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "codebase-retrieval"}}},
+	})
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(out, &body))
+
+	messages := body["messages"].([]any)
+	require.Len(t, messages, 5)
+	require.Equal(t, "assistant", messages[1].(map[string]any)["role"])
+	require.Equal(t, "call_1", messages[1].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["id"])
+	require.Equal(t, "tool", messages[2].(map[string]any)["role"])
+	require.Equal(t, "call_1", messages[2].(map[string]any)["tool_call_id"])
+	require.Equal(t, "assistant", messages[3].(map[string]any)["role"])
+	require.Equal(t, "call_2", messages[3].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["id"])
+	require.Equal(t, "tool", messages[4].(map[string]any)["role"])
+	require.Equal(t, "call_2", messages[4].(map[string]any)["tool_call_id"])
+}
+
+func TestAugmentGatewayDeepSeekDoesNotMoveToolResultsAcrossNonToolMessages(t *testing.T) {
+	reg := NewDefaultAugmentGatewayModelRegistry()
+	model, ok := reg.Resolve("deepseek-v4-pro")
+	require.True(t, ok)
+
+	out, err := BuildAugmentGatewayDeepSeekChatCompletionsJSON(model, map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "first"},
+			map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_late",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "codebase-retrieval",
+							"arguments": `{"query":"late"}`,
+						},
+					},
+				},
+			},
+			map[string]any{"role": "user", "content": "new user message before tool result"},
+			map[string]any{"role": "tool", "tool_call_id": "call_late", "content": "late result"},
+		},
+		"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "codebase-retrieval"}}},
+	})
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(out, &body))
+
+	messages := body["messages"].([]any)
+	require.Len(t, messages, 4)
+	require.Equal(t, "assistant", messages[1].(map[string]any)["role"])
+	require.Equal(t, "user", messages[2].(map[string]any)["role"])
+	require.Equal(t, "tool", messages[3].(map[string]any)["role"])
+}

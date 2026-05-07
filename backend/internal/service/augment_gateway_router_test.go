@@ -40,6 +40,29 @@ func TestAugmentGatewayRouter_DisabledClaudeGeminiReturnUnavailableWithoutFallba
 	}
 }
 
+func TestAugmentGatewayRouter_EnabledClaudeGeminiWithoutProviderGroupReturnProviderUnavailable(t *testing.T) {
+	router := NewAugmentGatewayRouter(newAugmentGatewayRouterRegistryWithModelsAndGroups(
+		[]string{"gpt-5.4", "claude-sonnet-4-5", "gemini-2.5-pro"},
+		0,
+		0,
+		0,
+		0,
+	))
+
+	for _, modelID := range []string{"claude-sonnet-4-5", "gemini-2.5-pro"} {
+		t.Run(modelID, func(t *testing.T) {
+			route, err := router.Resolve(modelID)
+
+			require.Error(t, err)
+			require.Empty(t, route)
+
+			var unavailable *AugmentGatewayProviderUnavailableError
+			require.True(t, errors.As(err, &unavailable))
+			require.Equal(t, modelID, unavailable.ModelID)
+		})
+	}
+}
+
 func TestAugmentGatewayRouter_OpenAIModelWithoutProviderGroupReturnsTypedProviderUnavailable(t *testing.T) {
 	router := NewAugmentGatewayRouter(NewDefaultAugmentGatewayModelRegistry())
 
@@ -101,6 +124,33 @@ func TestAugmentGatewayRouter_ConfiguredOpenAIAndDeepSeekModelsResolveToProvider
 	}
 }
 
+func TestAugmentGatewayRouter_ConfiguredClaudeGeminiModelsResolveToProvider(t *testing.T) {
+	router := NewAugmentGatewayRouter(newAugmentGatewayRouterRegistryWithModelsAndGroups(
+		[]string{"gpt-5.4", "claude-sonnet-4-5", "gemini-2.5-pro"},
+		1001,
+		0,
+		2001,
+		2002,
+	))
+
+	for _, tc := range []struct {
+		modelID  string
+		provider AugmentGatewayProvider
+	}{
+		{modelID: "claude-sonnet-4-5", provider: AugmentGatewayProviderAnthropic},
+		{modelID: "gemini-2.5-pro", provider: AugmentGatewayProviderGemini},
+	} {
+		t.Run(tc.modelID, func(t *testing.T) {
+			route, err := router.Resolve(tc.modelID)
+
+			require.NoError(t, err)
+			require.Equal(t, tc.modelID, route.Model.ID)
+			require.Equal(t, tc.provider, route.Provider)
+			require.Equal(t, tc.modelID, route.UpstreamModel)
+		})
+	}
+}
+
 func TestAugmentGatewayRouter_EmptyModelDefaultConfigFailsWithoutProviderGroup(t *testing.T) {
 	router := NewAugmentGatewayRouter(NewDefaultAugmentGatewayModelRegistry())
 
@@ -145,6 +195,19 @@ func newAugmentGatewayRouterRegistryWithProviderGroups(openAIGroupID, deepSeekGr
 		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
 			OpenAI:   openAIGroupID,
 			DeepSeek: deepSeekGroupID,
+		},
+	})
+}
+
+func newAugmentGatewayRouterRegistryWithModelsAndGroups(enabledModels []string, openAIGroupID, deepSeekGroupID, anthropicGroupID, geminiGroupID int64) *AugmentGatewayModelRegistry {
+	return NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
+		Enabled:       true,
+		EnabledModels: enabledModels,
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI:    openAIGroupID,
+			DeepSeek:  deepSeekGroupID,
+			Anthropic: anthropicGroupID,
+			Gemini:    geminiGroupID,
 		},
 	})
 }
