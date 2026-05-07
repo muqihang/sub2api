@@ -122,6 +122,35 @@ func TestEvaluateOpenAIImportLifecycle_RejectsMissingEgressBucketBeforeRefresh(t
 	require.Zero(t, client.refreshCalls)
 }
 
+func TestEvaluateOpenAIImportLifecycleWithExtra_RejectsExtraEgressBucketBeforeRefresh(t *testing.T) {
+	client := &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+		},
+	}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	cfg := testOpenAIOAuthEgressConfig()
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycleWithExtra(context.Background(), svc, "", map[string]any{
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+	}, map[string]any{
+		"openai_gateway_egress_bucket": "missing",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationRetryableFailure, decision.ValidationOutcome)
+	require.Equal(t, "missing_bucket", decision.RefreshErrorCode)
+	require.Empty(t, client.lastProxyURL)
+	require.Zero(t, client.refreshCalls)
+}
+
 func TestEvaluateOpenAIImportLifecycle_ScopeInsufficientQuarantined(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
 		refreshResp: &openai.TokenResponse{

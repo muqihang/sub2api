@@ -590,7 +590,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				proxyURL = proxy.URL()
 			}
 		}
-		decision, decisionErr := EvaluateOpenAIImportLifecycle(ctx, s.openaiOAuthService, proxyURL, credentials)
+		decision, decisionErr := EvaluateOpenAIImportLifecycleWithExtra(ctx, s.openaiOAuthService, proxyURL, credentials, extra)
 		if decisionErr != nil {
 			item.Action = "failed"
 			item.Error = decisionErr.Error()

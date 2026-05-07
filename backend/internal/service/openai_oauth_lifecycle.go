@@ -68,6 +68,14 @@ func normalizeOpenAIImportedCredentials(credentials map[string]any) map[string]a
 	return out
 }
 
+func buildOpenAIImportLifecycleCredentials(credentials map[string]any, extra map[string]any) map[string]any {
+	out := cloneJSONMap(credentials)
+	if bucket := stringValue(extra["openai_gateway_egress_bucket"]); bucket != "" {
+		out["openai_gateway_egress_bucket"] = bucket
+	}
+	return out
+}
+
 func stringValue(v any) string {
 	switch x := v.(type) {
 	case string:
@@ -83,6 +91,17 @@ func EvaluateOpenAIImportLifecycle(
 	proxyURL string,
 	credentials map[string]any,
 ) (*OpenAIImportLifecycleDecision, error) {
+	return EvaluateOpenAIImportLifecycleWithExtra(ctx, openaiOAuthService, proxyURL, credentials, nil)
+}
+
+func EvaluateOpenAIImportLifecycleWithExtra(
+	ctx context.Context,
+	openaiOAuthService *OpenAIOAuthService,
+	proxyURL string,
+	credentials map[string]any,
+	extra map[string]any,
+) (*OpenAIImportLifecycleDecision, error) {
+	credentials = buildOpenAIImportLifecycleCredentials(credentials, extra)
 	normalized := normalizeOpenAIImportedCredentials(credentials)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -145,7 +164,7 @@ func EvaluateOpenAIImportLifecycle(
 	validated := openaiOAuthService.BuildAccountCredentials(tokenInfo)
 	validated = MergeCredentials(normalized, validated)
 	capability := evaluateOpenAITokenCapability(tokenInfo)
-	extra := mergeMap(map[string]any{
+	decisionExtra := mergeMap(map[string]any{
 		"openai_pool_role":               OpenAIPoolRoleMain,
 		"openai_auth_state":              OpenAIAuthStateHealthy,
 		"openai_token_source":            OpenAITokenSourceRTManaged,
@@ -154,7 +173,7 @@ func EvaluateOpenAIImportLifecycle(
 		"openai_last_validated_at":       now,
 	}, buildOpenAITokenCapabilityExtra(capability))
 	if bucket := strings.TrimSpace(tokenInfo.EgressBucket); bucket != "" {
-		extra["openai_gateway_egress_bucket"] = bucket
+		decisionExtra["openai_gateway_egress_bucket"] = bucket
 	}
 
 	if capability.Known && !capability.ResponsesWriteCapable {
@@ -167,7 +186,7 @@ func EvaluateOpenAIImportLifecycle(
 			Schedulable:       false,
 			Credentials:       validated,
 			RefreshErrorCode:  openAIAuthErrorCodeResponsesWriteMissing,
-			Extra: mergeMap(extra, map[string]any{
+			Extra: mergeMap(decisionExtra, map[string]any{
 				"openai_pool_role":               OpenAIPoolRoleQuarantine,
 				"openai_auth_state":              OpenAIAuthStateTerminal,
 				"openai_validation_outcome":      OpenAIValidationOutcomeRTValidationScopeInsufficient,
@@ -185,7 +204,7 @@ func EvaluateOpenAIImportLifecycle(
 		Schedulable:       true,
 		Credentials:       validated,
 		RefreshErrorCode:  "",
-		Extra:             extra,
+		Extra:             decisionExtra,
 	}, nil
 }
 
