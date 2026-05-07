@@ -13,8 +13,10 @@ import (
 )
 
 type openaiLifecycleClientStub struct {
-	refreshResp *openai.TokenResponse
-	refreshErr  error
+	refreshResp  *openai.TokenResponse
+	refreshErr   error
+	lastProxyURL string
+	refreshCalls int
 }
 
 func (s *openaiLifecycleClientStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
@@ -26,6 +28,8 @@ func (s *openaiLifecycleClientStub) RefreshToken(ctx context.Context, refreshTok
 }
 
 func (s *openaiLifecycleClientStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	s.refreshCalls++
+	s.lastProxyURL = proxyURL
 	if s.refreshErr != nil {
 		return nil, s.refreshErr
 	}
@@ -62,6 +66,60 @@ func TestEvaluateOpenAIImportLifecycle_RTValidated(t *testing.T) {
 	require.NotEmpty(t, decision.Extra["openai_last_validated_at"])
 	require.Equal(t, true, decision.Extra["openai_responses_write_capable"])
 	require.Equal(t, "openid email profile api.responses.write", decision.Extra["openai_last_granted_scope"])
+}
+
+func TestEvaluateOpenAIImportLifecycle_UsesEgressBucketAndPersistsIt(t *testing.T) {
+	client := &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+			Scope:        "openid email profile api.responses.write",
+		},
+	}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	cfg := testOpenAIOAuthEgressConfig()
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"refresh_token":                "old-rt",
+		"client_id":                    "client-1",
+		"openai_gateway_egress_bucket": "bucket-a",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, StatusActive, decision.Status)
+	require.Equal(t, "socks5h://127.0.0.1:9001", MaskOpenAIProxyURL(client.lastProxyURL))
+	require.Equal(t, "bucket-a", decision.Extra["openai_gateway_egress_bucket"])
+}
+
+func TestEvaluateOpenAIImportLifecycle_RejectsMissingEgressBucketBeforeRefresh(t *testing.T) {
+	client := &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+		},
+	}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	cfg := testOpenAIOAuthEgressConfig()
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "missing"
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationRetryableFailure, decision.ValidationOutcome)
+	require.Equal(t, "missing_bucket", decision.RefreshErrorCode)
+	require.Empty(t, client.lastProxyURL)
+	require.Zero(t, client.refreshCalls)
 }
 
 func TestEvaluateOpenAIImportLifecycle_ScopeInsufficientQuarantined(t *testing.T) {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -110,7 +111,8 @@ func EvaluateOpenAIImportLifecycle(
 	}
 
 	clientID := stringValue(normalized["client_id"])
-	tokenInfo, err := openaiOAuthService.RefreshTokenWithClientID(ctx, stringValue(normalized["refresh_token"]), proxyURL, clientID)
+	egressBucket := stringValue(normalized["openai_gateway_egress_bucket"])
+	tokenInfo, err := openaiOAuthService.RefreshTokenWithClientIDAndEgress(ctx, stringValue(normalized["refresh_token"]), proxyURL, clientID, egressBucket)
 	if err != nil {
 		errorCode := classifyOpenAIRefreshError(err)
 		decision := &OpenAIImportLifecycleDecision{
@@ -151,6 +153,9 @@ func EvaluateOpenAIImportLifecycle(
 		"openai_last_refresh_error_code": "",
 		"openai_last_validated_at":       now,
 	}, buildOpenAITokenCapabilityExtra(capability))
+	if bucket := strings.TrimSpace(tokenInfo.EgressBucket); bucket != "" {
+		extra["openai_gateway_egress_bucket"] = bucket
+	}
 
 	if capability.Known && !capability.ResponsesWriteCapable {
 		return &OpenAIImportLifecycleDecision{
@@ -187,6 +192,10 @@ func EvaluateOpenAIImportLifecycle(
 func classifyOpenAIRefreshError(err error) string {
 	if err == nil {
 		return ""
+	}
+	var egressErr *OpenAIEgressPolicyError
+	if errors.As(err, &egressErr) && strings.TrimSpace(egressErr.Code) != "" {
+		return strings.TrimSpace(egressErr.Code)
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
