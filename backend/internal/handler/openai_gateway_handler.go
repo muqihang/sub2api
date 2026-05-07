@@ -262,6 +262,13 @@ func (h *OpenAIGatewayHandler) enforceOptionalGatewayClientAuth(c *gin.Context, 
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid OpenAI gateway client token")
 		return false
 	}
+	if core.HasClientTokens() && (client == nil || !client.Authenticated) {
+		if reqLog != nil {
+			reqLog.Warn("openai.gateway_client_auth_missing")
+		}
+		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "OpenAI gateway client token required")
+		return false
+	}
 	if client != nil {
 		c.Set("openai_gateway_client_family", client.Family)
 		if client.Name != "" {
@@ -276,6 +283,18 @@ func (h *OpenAIGatewayHandler) enforceOptionalGatewayClientAuth(c *gin.Context, 
 		}
 	}
 	return true
+}
+
+func (h *OpenAIGatewayHandler) enforceOpenAIGatewayCoreEnabled(c *gin.Context, reqLog *zap.Logger) bool {
+	core := h.gatewayCore()
+	if core != nil && core.IsEnabled() {
+		return true
+	}
+	if reqLog != nil {
+		reqLog.Warn("openai.gateway_core_disabled")
+	}
+	h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "OpenAI gateway core disabled")
+	return false
 }
 
 // Responses handles OpenAI Responses API endpoint
@@ -309,6 +328,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 	)
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
@@ -1304,6 +1329,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.Any("group_id", apiKey.GroupID),
 		zap.Bool("openai_ws_mode", true),
 	)
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}

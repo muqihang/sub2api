@@ -44,6 +44,12 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 	)
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}

@@ -182,6 +182,10 @@ func (s *OpenAIGatewayCoreService) ProbeRequiresClientToken() bool {
 	return s.cfg.Gateway.OpenAICore.ProbeRequireClientToken
 }
 
+func (s *OpenAIGatewayCoreService) HasClientTokens() bool {
+	return s != nil && s.cfg != nil && len(s.cfg.Gateway.OpenAICore.ClientTokens) > 0
+}
+
 func (s *OpenAIGatewayCoreService) ResolveEgressBucket(account *Account) string {
 	if s == nil || s.cfg == nil {
 		if account != nil {

@@ -100,6 +100,28 @@ func TestOpenAIGatewayHandler_EnforceOptionalGatewayClientAuthRejectsInvalidToke
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+func TestOpenAIGatewayHandler_EnforceOptionalGatewayClientAuthRequiresConfiguredToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.ClientTokens = []config.OpenAIGatewayClientTokenConfig{
+		{Name: "probe", Token: "tok-123"},
+	}
+
+	core := service.NewOpenAIGatewayCoreService(&serviceMockAccountRepo{}, cfg, nil)
+	h := NewOpenAIGatewayHandler(nil, core, nil, nil, nil, nil, nil, cfg)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	ok := h.enforceOptionalGatewayClientAuth(c, nil)
+	require.False(t, ok)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Contains(t, rec.Body.String(), "OpenAI gateway client token required")
+}
+
 type serviceMockAccountRepo struct {
 	service.AccountRepository
 	accountsByID map[int64]*service.Account

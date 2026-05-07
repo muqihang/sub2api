@@ -45,10 +45,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		zap.Any("group_id", apiKey.GroupID),
 	)
 
-	if !h.ensureResponsesDependencies(c, reqLog) {
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
 		return
 	}
 	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
+	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
 
