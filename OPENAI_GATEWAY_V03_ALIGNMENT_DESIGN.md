@@ -156,6 +156,13 @@ Required consequence:
 - token values must never appear in health, verify, preflight, request logs, error logs, usage logs, or client responses;
 - admin APIs must show token state, not token value.
 
+Additional hard requirements:
+
+- Store OAuth credentials with at-rest protection that is appropriate for a production secret.
+- Treat backups, exports, admin snapshots, and support tooling as secret-bearing surfaces.
+- Do not rely on application-layer omission alone if the underlying credential store is plaintext JSON.
+- If the current account schema cannot guarantee secret protection, the implementation must add an explicit secret storage/encryption layer before production expansion.
+
 ### 4.3 Account identity is explicit
 
 Every OpenAI OAuth account should have a durable gateway profile:
@@ -184,6 +191,14 @@ Every OpenAI OAuth account must resolve to exactly one effective egress bucket:
 
 Unknown or disabled buckets should fail closed in production gateway paths unless an explicit compatibility flag is set. Silent fallback to a direct/account proxy is useful during migration but dangerous for production because it can accidentally collapse multiple accounts onto one exit IP.
 
+Required production controls:
+
+- Add an explicit fail-closed mode for OpenAI egress resolution.
+- In fail-closed mode, missing, disabled, or invalid buckets must reject the request instead of falling back.
+- Make the default production posture fail-closed unless migration mode is explicitly enabled.
+- Keep one-account-per-bucket as the preferred operating rule.
+- If multiple accounts share a bucket, the ratio and reason must be visible in health or admin snapshots.
+
 ### 4.5 Route behavior must be boring
 
 The same client request should resolve the same way across aliases:
@@ -193,6 +208,12 @@ The same client request should resolve the same way across aliases:
 - Compatibility entries must not bypass OpenAI Gateway when the API key group platform is OpenAI.
 - Non-OpenAI groups must not accidentally reach OpenAI Gateway.
 - WebSocket upgrade paths must apply the same auth, account, egress, and logging rules as HTTP.
+
+The route contract also needs a stricter header boundary:
+
+- Maintain an explicit allowlist / denylist for upstream headers.
+- Strip hop-by-hop, forwarding, and gateway-internal control headers before upstream dispatch.
+- Never forward gateway probe tokens, internal account markers, or client-only auth headers upstream.
 
 ### 4.6 Fail closed on identity and credential ambiguity
 
@@ -249,6 +270,15 @@ flowchart LR
 `OpenAITokenProvider`
 
 - Owns access token lookup, refresh coordination, Redis cache, lock handling, and refresh metrics.
+
+It must also define how refresh state is protected across process restarts and multiple replicas. A pure in-memory session model is not sufficient for production OAuth callback handling or multi-instance deployments.
+
+OpenAI OAuth callback/session state itself must also be deployable across replicas. If the current flow uses in-memory session storage for `state`, `code_verifier`, and related OAuth metadata, the implementation must either:
+
+- move that session state into a shared store; or
+- explicitly constrain the deployment to a single sticky instance for OAuth callback handling.
+
+Do not leave the callback path dependent on best-effort in-memory state in production.
 
 `TokenRefreshService`
 
@@ -319,6 +349,12 @@ Never return or log:
 - OAuth authorization code
 - PKCE verifier
 
+The secret rule is stronger than "don't log it":
+
+- Do not store any upstream secret in plaintext JSON unless the implementation has an explicit encryption or secret store layer.
+- Do not echo secret-bearing account fields in admin endpoints.
+- Do not include secret-bearing fields in verification payloads or preflight output.
+
 Allowed operational output:
 
 - account ID
@@ -379,6 +415,8 @@ Add or enforce a production-safe mode:
 gateway:
   openai_core:
     egress_fail_closed: true
+    allow_account_proxy_fallback: false
+    allow_direct_fallback: false
 ```
 
 When enabled:
@@ -389,6 +427,19 @@ When enabled:
 - account proxy fallback is disabled unless explicitly allowed;
 - direct fallback is disabled unless explicitly allowed.
 
+The implementation must use one resolver contract for every OpenAI upstream path. The resolver should return either a selected bucket/proxy pair or a typed policy error.
+
+It must be used by Responses HTTP, Chat Completions, Messages bridge, Images, WS, token refresh, privacy calls, OAuth exchange/callback flows, and any passthrough path. No request path should manually read `account.Proxy.URL()` once production egress controls are enabled.
+
+### 7.4 Egress visibility policy
+
+For production-facing verify and admin endpoints:
+
+- return bucket name by default;
+- return proxy labels or masked proxy identifiers by default;
+- return raw proxy URLs only in explicit operator/debug mode;
+- never treat raw proxy URL exposure as the default behavior.
+
 This aligns with the v0.3 lesson: multi-account shared exit must not be accidental.
 
 ## 8. Canonical Client Profile
@@ -397,7 +448,7 @@ This aligns with the v0.3 lesson: multi-account shared exit must not be accident
 
 Canonical profile makes account behavior stable and inspectable. It also prevents the gateway from blindly reflecting every client header upstream.
 
-Current defaults:
+Design candidate profile:
 
 - `User-Agent: codex_cli_rs/0.104.0`
 - `X-Stainless-Lang: js`
@@ -406,6 +457,8 @@ Current defaults:
 - `X-Stainless-Arch: arm64`
 - `X-Stainless-Runtime: node`
 - `X-Stainless-Runtime-Version: v24.13.0`
+
+This is not yet a verified source of truth. The current code also contains OpenAI-visible values such as `codex_cli_rs/0.125.0` and `version: 0.125.0`. Implementation must first audit every OpenAI-visible identity value, then converge them into one canonical profile artifact before claiming a fixed production profile.
 
 ### 8.2 Required refinement
 
@@ -416,6 +469,25 @@ Modes:
 - `fixed`: always use configured default or account-pinned values. Recommended for production.
 - `observe`: accept real incoming client profile and persist it. Use only during onboarding.
 - `frozen`: use previously persisted values, do not learn new values. Use after controlled observation.
+
+Canonical profile must also describe the camouflage boundary explicitly:
+
+- Profile covers HTTP request headers that OpenAI visibly uses for client attribution.
+- Profile does not imply we can or should spoof every transport-layer characteristic.
+- If there is uncertainty about a signal, classify it as "observe only" until live verification proves that it is safe and beneficial to pin.
+- Any transition from observe to fixed or frozen should be deliberate and reviewable.
+
+The canonical profile must be represented as a single explicit artifact, not scattered constants. It should enumerate every OpenAI-visible identity field that the gateway intends to control, including route-specific fields where applicable:
+
+- `User-Agent`;
+- `X-Stainless-*`;
+- `OpenAI-Beta`;
+- `originator`;
+- client `version` fields;
+- WS beta/session headers;
+- metadata identity fields rewritten by the gateway.
+
+Fields outside this artifact should be denied, passed through by explicit rule, or classified as observe-only.
 
 ### 8.3 Version policy
 
@@ -502,6 +574,9 @@ Must return:
 
 It should not perform a real upstream call by default. A separate live verify mode can be added for controlled environments.
 
+The default verify response must not expose raw proxy URLs or other secret-bearing connectivity details.
+If a raw proxy URL is ever needed, it should require an explicit operator/debug mode and must never be the default response shape.
+
 ## 10. Scheduler And Account Selection
 
 ### 10.1 Selection inputs
@@ -525,7 +600,18 @@ The scheduler should consider:
 - TTFT metrics where available;
 - egress bucket health.
 
-### 10.2 Sticky behavior
+### 10.2 Bucket ratio policy
+
+The scheduler and admin snapshot should make account-to-bucket concentration visible.
+
+Required behavior:
+
+- surface how many accounts are mapped to each bucket;
+- warn if a bucket is carrying too many active accounts for the intended isolation model;
+- treat unexpected concentration as an operational risk, not only a capacity concern;
+- make the preferred ratio one account per bucket for production canaries.
+
+### 10.3 Sticky behavior
 
 Keep sticky session and response ID mapping for Responses and WS.
 
@@ -535,7 +621,7 @@ Required rule:
 - expired sticky mapping should fall back to normal scheduler.
 - a sticky account that is terminal or cooling must not be selected.
 
-### 10.3 OAuth vs API-key selection
+### 10.4 OAuth vs API-key selection
 
 The scheduler must know whether a route can use:
 
@@ -581,6 +667,16 @@ For WS upstream calls:
 - use same canonical profile and metadata identity rules as HTTP;
 - record WS usage;
 - close client connection with policy/error code on validation failure.
+
+The WS path must also match HTTP in these areas:
+
+- same canonical profile boundary;
+- same egress bucket policy;
+- same token secrecy;
+- same route/platform gating;
+- same header stripping;
+- same fail-closed behavior on unknown or disabled buckets;
+- same refusal to silently change credential type.
 
 ### 11.3 Fallback
 
@@ -628,11 +724,44 @@ Before production expansion:
 - confirm local `.env` / config examples never include real tokens;
 - confirm live preflight output is safe to paste into issue trackers.
 
-### 12.3 Recommended future improvement
+### 12.3 Secret storage production gate
 
 If not already present for account credentials, add envelope encryption or a dedicated secret storage layer for OAuth refresh tokens and upstream API keys.
 
 The repository has a `security_secrets` table and some encrypted fields elsewhere, but OpenAI account credential storage should be verified directly before production rollout. If account credentials remain plaintext JSON in the database, that is acceptable only for limited internal testing, not high-confidence production.
+
+Production expansion is blocked until one of these is true:
+
+- OpenAI account secrets are encrypted at rest through an explicit secret store or envelope encryption layer; or
+- the deployment is formally scoped as internal testing and not production.
+
+This gate covers database credentials, Redis token cache, backups, exports, admin snapshots, support bundles, and logs.
+
+### 12.4 Environment camouflage policy
+
+The term "environment camouflage" should be used narrowly and defensibly.
+
+For this design it means:
+
+- canonicalizing the OpenAI-visible client headers and identity fields that the upstream service actually inspects;
+- keeping the same profile behavior across HTTP and WebSocket where the protocol is the same;
+- avoiding accidental disclosure of the internal gateway topology;
+- making the account appear consistent across requests when the same account is reused;
+- not leaking client-side Sub2API or gateway control metadata upstream.
+
+It does not mean:
+
+- spoofing arbitrary transport-layer fingerprint details without proof;
+- trying to emulate every possible client quirk;
+- hiding operational truth from internal operators.
+
+Only signals with proven upstream relevance should be pinned. Unknown signals remain observe-only until live verification proves the benefit and the risk is understood.
+
+TLS and transport-layer behavior must be explicitly classified before production:
+
+- If out of scope, the runbook must say OpenAI Gateway makes no TLS/JA3/JA4/ALPN camouflage claim.
+- If in scope, preflight must collect evidence for the actual OpenAI HTTP, WS, OAuth refresh, and OAuth exchange paths.
+- Do not imply transport-layer camouflage from header canonicalization alone.
 
 ## 13. Observability
 
@@ -691,7 +820,11 @@ The existing `deploy/OPENAI_GATEWAY_PREFLIGHT.md` and `deploy/openai-gateway-pre
 7. Egress confirmation for each canary bucket.
 8. Log scan for token leakage.
 9. Usage/billing record confirmation.
-10. Rollback flag confirmation.
+10. Raw proxy URL redaction confirmation.
+11. Secret-storage gate confirmation.
+12. OAuth callback/session deployment mode confirmation.
+13. Route alias matrix confirmation.
+14. Rollback flag confirmation.
 
 ### 14.2 Canary recommendation
 
@@ -704,6 +837,7 @@ Start with:
 - direct fallback disabled in production;
 - WS enabled only after HTTP is stable;
 - live traffic limited to one internal API key group first.
+- stop canary if any account unexpectedly resolves to direct egress or an unassigned bucket.
 
 ### 14.3 Rollback controls
 
@@ -744,6 +878,17 @@ Add or verify tests for:
 - `/openai/v1/responses` WS first-message validation;
 - compatibility aliases cannot bypass OpenAI group requirement;
 - non-OpenAI groups do not reach OpenAI Gateway.
+
+The route matrix must cover all public aliases:
+
+- `/openai/v1/*`;
+- `/v1/*`;
+- root `/responses` and `/chat/completions`;
+- `/backend-api/codex/*`;
+- HTTP and WS;
+- Responses, Chat, Images, and Messages bridge where applicable;
+- valid, missing, and invalid gateway probe token;
+- OpenAI and non-OpenAI API key groups.
 
 ### 15.3 Integration tests
 
@@ -790,10 +935,13 @@ No code behavior changes.
 Deliverables:
 
 - fail-closed egress mode;
+- config fields for `egress_fail_closed`, `allow_account_proxy_fallback`, and `allow_direct_fallback`;
+- a single OpenAI egress resolver used by every upstream path;
 - route-level core enablement checks;
 - token redaction tests;
 - probe auth tests;
-- alias route consistency tests.
+- alias route consistency tests;
+- route matrix tests across canonical and compatibility aliases.
 
 ### Phase C: Account runtime and egress verification
 
@@ -802,8 +950,18 @@ Deliverables:
 - stricter bucket validation;
 - account-level bucket audit;
 - `_verify` hardening;
+- admin and verify proxy URL masking;
 - canary account runbook;
-- masked proxy output if needed.
+- bucket concentration thresholds and stop conditions.
+
+### Phase C2: Secret and OAuth session hardening
+
+Deliverables:
+
+- OpenAI account secret storage/encryption decision implemented or explicitly constrained to internal testing;
+- Redis/database-backed OAuth session state, or an enforced single sticky callback instance;
+- backup/export/support-bundle treatment documented for OpenAI account secrets;
+- verification that admin, health, verify, preflight, logs, and usage records do not expose upstream secrets.
 
 ### Phase D: HTTP/WS parity
 
@@ -812,7 +970,9 @@ Deliverables:
 - confirm HTTP and WS apply same account runtime;
 - confirm WS uses same egress bucket;
 - confirm scheduler does not silently cross credential type;
-- confirm fallback behavior is explicit.
+- confirm fallback behavior is explicit;
+- confirm gateway client-token behavior is consistent across Responses, Chat, Images, and WS routes;
+- confirm canonical profile artifact is applied consistently across HTTP and WS where applicable.
 
 ### Phase E: Live OAuth canary
 
@@ -825,14 +985,22 @@ Deliverables:
 - log redaction check;
 - SOR update.
 
+Entry criteria:
+
+- Phase B, C, C2, and D are complete;
+- secret-storage gate is resolved;
+- OAuth callback/session deployment mode is resolved;
+- direct fallback is disabled for production canary unless explicitly approved as migration mode;
+- route matrix tests pass.
+
 ## 17. Open Questions
 
-1. Are OpenAI account credentials currently encrypted at rest, or only stored in account credential JSON?
+1. Which exact secret-store/encryption mechanism will protect OpenAI OAuth and API-key credentials before production expansion?
 2. Should production enforce `egress_fail_closed=true` immediately, or allow a short migration window?
-3. Should `_verify` expose raw proxy URL to operators, or only bucket name plus masked proxy label?
-4. Should API-key upstream accounts be schedulable by default, or opt-in per group/route?
-5. What exact canonical profile should we pin after live GPT OAuth login?
-6. Should OpenAI Gateway keep `gateway.openai_core.enabled=true` by default, or switch to default-off for safer deployments?
+3. Should API-key upstream accounts be schedulable by default, or opt-in per group/route?
+4. What exact canonical profile artifact should we pin after live GPT OAuth login?
+5. Should OpenAI Gateway keep `gateway.openai_core.enabled=true` by default, or switch to default-off for safer deployments?
+6. Is TLS/transport fingerprint camouflage explicitly out of scope, or must live canary collect JA3/JA4/ALPN/HTTP2/WS evidence?
 
 ## 18. Recommendation
 
