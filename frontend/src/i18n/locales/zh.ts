@@ -6628,6 +6628,21 @@ export default {
     augment: {
       accountTitle: 'Augment 账户',
       billingTitle: 'Augment 计费',
+      billing: {
+        summaryTitle: '查看逐梦 Augment 的官方 Session 状态、缓存命中与模型请求计费。',
+        estimatedCost: '预估费用',
+        settledCost: '已结算费用',
+        cacheReadTokens: '缓存读取 Tokens',
+        cacheCreationTokens: '缓存创建 Tokens',
+        cacheHitRatio: '缓存命中率',
+        requestsTitle: '最近请求',
+        errorsTitle: '最近错误',
+        model: '模型',
+        endpoint: '端点',
+        tokens: 'Tokens',
+        requestId: '请求 ID',
+        loadFailed: '加载 Augment 计费数据失败',
+      },
       quickLogin: {
         title: 'Augment Quick Login',
         subtitle: '使用官方 / Wukong Quick Login 接管官方云能力，同时保留逐梦网关的模型路由。',

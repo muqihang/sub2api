@@ -6444,6 +6444,21 @@ export default {
     augment: {
       accountTitle: 'Augment Account',
       billingTitle: 'Augment Billing',
+      billing: {
+        summaryTitle: 'Inspect official session state, cache efficiency, and request billing for Zhumeng Augment.',
+        estimatedCost: 'Estimated Cost',
+        settledCost: 'Settled Cost',
+        cacheReadTokens: 'Cache Read Tokens',
+        cacheCreationTokens: 'Cache Creation Tokens',
+        cacheHitRatio: 'Cache Hit Ratio',
+        requestsTitle: 'Recent Requests',
+        errorsTitle: 'Recent Errors',
+        model: 'Model',
+        endpoint: 'Endpoint',
+        tokens: 'Tokens',
+        requestId: 'Request ID',
+        loadFailed: 'Failed to load Augment billing data',
+      },
       quickLogin: {
         title: 'Augment Quick Login',
         subtitle: 'Use official / Wukong Quick Login for official cloud capabilities while keeping model routing on the Zhumeng gateway.',
