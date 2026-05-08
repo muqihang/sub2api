@@ -1,12 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import QuickLoginView from '@/views/plugin/augment/QuickLoginView.vue'
 
 const mockRequestGrant = vi.fn()
 const mockCreateBindIntent = vi.fn()
 const mockBindOfficialSession = vi.fn()
-const mockGetOfficialSession = vi.fn()
-const mockRevokeOfficialSession = vi.fn()
+const mockCreatePoolBindIntent = vi.fn()
+const mockBindPoolSession = vi.fn()
 const mockCopyToClipboard = vi.fn()
 const mockShowError = vi.fn()
 let mockRouteQuery: Record<string, unknown> = {}
@@ -29,9 +29,16 @@ vi.mock('vue-i18n', async (importOriginal) => {
 vi.mock('@/api/augment', () => ({
   createAugmentOfficialSessionBindIntent: (...args: any[]) => mockCreateBindIntent(...args),
   bindAugmentOfficialSession: (...args: any[]) => mockBindOfficialSession(...args),
-  getAugmentOfficialSession: (...args: any[]) => mockGetOfficialSession(...args),
-  revokeAugmentOfficialSession: (...args: any[]) => mockRevokeOfficialSession(...args),
   requestAugmentQuickLoginGrant: (...args: any[]) => mockRequestGrant(...args),
+}))
+
+vi.mock('@/api/admin/augmentGateway', () => ({
+  createAugmentPoolSessionBindIntent: (...args: any[]) => mockCreatePoolBindIntent(...args),
+  bindAugmentPoolSession: (...args: any[]) => mockBindPoolSession(...args),
+  default: {
+    createAugmentPoolSessionBindIntent: (...args: any[]) => mockCreatePoolBindIntent(...args),
+    bindAugmentPoolSession: (...args: any[]) => mockBindPoolSession(...args),
+  },
 }))
 
 vi.mock('@/composables/useClipboard', () => ({
@@ -54,80 +61,60 @@ describe('QuickLoginView', () => {
     vi.clearAllMocks()
     mockRouteQuery = {}
     mockIsAdmin = false
-    mockGetOfficialSession.mockResolvedValue(null)
-    mockBindOfficialSession.mockResolvedValue(null)
-    mockRevokeOfficialSession.mockResolvedValue(null)
   })
 
-  it('creates bind intent before opening deeplink', async () => {
-    mockGetOfficialSession.mockResolvedValue({
-      mode: 'official_passthrough',
-      source: 'official_quick_login',
-      tenant_origin: 'https://official.augment.local',
-      expires_at: '2026-05-08T16:00:00Z',
-      status: 'active',
-      last_error_code: 'NONE',
-    })
-    mockCreateBindIntent.mockResolvedValue({
-      bind_intent_id: 'bind-intent-1',
-      state: 'bind-state-1',
-      expires_at: '2026-05-08T15:30:00Z',
-      bind_token: 'bind-token-secret',
-    })
+  it('requests a platform-pool official passthrough grant for normal users without binding a user session', async () => {
     mockRequestGrant.mockResolvedValue({
-      vscode_deeplink: 'vscode://Augment.vscode-augment/autoAuth?grant=g1&state=s1'
+      vscode_deeplink: 'vscode://Augment.vscode-augment/autoAuth?grant=g1&state=s1',
     })
 
     const wrapper = mount(QuickLoginView, {
       global: {
         stubs: {
           AppLayout: {
-            template: '<div><slot /></div>'
-          }
-        }
-      }
+            template: '<div><slot /></div>',
+          },
+        },
+      },
     })
 
     await flushPromises()
     await wrapper.get('input[type="checkbox"]').setValue(true)
-
-    const buttons = wrapper.findAll('button')
-    await buttons[0].trigger('click')
+    await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
-    expect(mockCreateBindIntent).toHaveBeenCalledWith({
+    expect(mockRequestGrant).toHaveBeenCalledWith({
       mode: 'official_passthrough',
       source: 'official_quick_login',
-      tenant_allowlist: ['https://official.augment.local'],
     })
-    expect(mockRequestGrant).toHaveBeenCalledWith({ mode: 'official_passthrough' })
-    expect(mockCreateBindIntent.mock.invocationCallOrder[0]).toBeLessThan(
-      mockRequestGrant.mock.invocationCallOrder[0]
-    )
-    const deeplinkInput = wrapper.find('input[readonly]')
-    expect(deeplinkInput.exists()).toBe(true)
+    expect(mockCreateBindIntent).not.toHaveBeenCalled()
+    expect(mockBindOfficialSession).not.toHaveBeenCalled()
+    expect(mockCreatePoolBindIntent).not.toHaveBeenCalled()
+    expect(mockBindPoolSession).not.toHaveBeenCalled()
+
+    const deeplinkInput = wrapper.get('input[readonly]')
     expect((deeplinkInput.element as HTMLInputElement).value).toBe(
-      'vscode://Augment.vscode-augment/autoAuth?grant=g1&state=s1'
+      'vscode://Augment.vscode-augment/autoAuth?grant=g1&state=s1',
     )
     expect(mockCopyToClipboard).toHaveBeenCalledWith(
       'vscode://Augment.vscode-augment/autoAuth?grant=g1&state=s1',
-      'plugin.augment.quickLogin.copySuccess'
+      'plugin.augment.quickLogin.copySuccess',
     )
     expect(mockShowError).not.toHaveBeenCalled()
   })
 
-  it('does not render local compat unless emergency/admin gate is enabled', async () => {
+  it('does not render internal capture controls unless the emergency admin gate is enabled', async () => {
     const wrapper = mount(QuickLoginView, {
       global: {
         stubs: {
           AppLayout: {
-            template: '<div><slot /></div>'
-          }
-        }
-      }
+            template: '<div><slot /></div>',
+          },
+        },
+      },
     })
 
-    expect(wrapper.text()).not.toContain('plugin.augment.quickLogin.modes.localCompat.title')
+    expect(wrapper.text()).not.toContain('plugin.augment.quickLogin.internalCapture.title')
 
     mockIsAdmin = true
     mockRouteQuery = {
@@ -138,13 +125,14 @@ describe('QuickLoginView', () => {
       global: {
         stubs: {
           AppLayout: {
-            template: '<div><slot /></div>'
-          }
-        }
-      }
+            template: '<div><slot /></div>',
+          },
+        },
+      },
     })
 
     await flushPromises()
+    expect(adminWrapper.text()).toContain('plugin.augment.quickLogin.internalCapture.title')
     expect(adminWrapper.text()).toContain('plugin.augment.quickLogin.modes.localCompat.title')
   })
 
@@ -164,10 +152,10 @@ describe('QuickLoginView', () => {
       global: {
         stubs: {
           AppLayout: {
-            template: '<div><slot /></div>'
-          }
-        }
-      }
+            template: '<div><slot /></div>',
+          },
+        },
+      },
     })
 
     const pageText = wrapper.text()
@@ -183,24 +171,15 @@ describe('QuickLoginView', () => {
     expect(pageText).not.toContain('raw-official-access-token')
   })
 
-  it('shows consent copy before official and wukong bind', async () => {
-    mockGetOfficialSession.mockResolvedValue({
-      mode: 'official_passthrough',
-      source: 'official_quick_login',
-      tenant_origin: 'https://official.augment.local',
-      expires_at: '2026-05-08T16:00:00Z',
-      status: 'active',
-      last_error_code: null,
-    })
-
+  it('shows source-specific consent copy before official and wukong quick login', async () => {
     const wrapper = mount(QuickLoginView, {
       global: {
         stubs: {
           AppLayout: {
-            template: '<div><slot /></div>'
-          }
-        }
-      }
+            template: '<div><slot /></div>',
+          },
+        },
+      },
     })
 
     await flushPromises()
@@ -208,61 +187,62 @@ describe('QuickLoginView', () => {
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.title')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.official')
 
-    const sourceButtons = wrapper
-      .findAll('button')
-      .filter((button) => button.text().includes('plugin.augment.quickLogin.sources.wukong'))
-    await sourceButtons[0].trigger('click')
+    await wrapper.get('[data-test="source-wukong_quick_login"]').trigger('click')
 
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.wukong')
   })
 
-  it('binds official session from callback payload before requesting grant', async () => {
+  it('binds callback payload into a pool session before requesting grant in admin capture mode', async () => {
+    mockIsAdmin = true
     mockRouteQuery = {
+      emergency_local_compat: '1',
+      capture_target: 'pool_session',
       official_tenant_url: 'https://official.augment.local',
       official_access_token: 'official-access-from-query',
       official_refresh_token: 'official-refresh-from-query',
       official_expires_at: '2026-05-08T16:00:00Z',
       official_scopes: 'augment:session,augment:summary',
     }
-    mockCreateBindIntent.mockResolvedValue({
-      bind_intent_id: 'bind-intent-cold-start',
-      state: 'bind-state-cold-start',
+    mockCreatePoolBindIntent.mockResolvedValue({
+      bind_intent_id: 'pool-bind-intent-1',
+      state: 'pool-bind-state-1',
       expires_at: '2026-05-08T15:30:00Z',
-      bind_token: 'bind-token-cold-start',
+      bind_token: 'pool-bind-token-secret',
     })
-    mockBindOfficialSession.mockResolvedValue({
+    mockBindPoolSession.mockResolvedValue({
+      id: 42,
       source: 'official_quick_login',
       tenant_origin: 'https://official.augment.local',
       status: 'active',
     })
     mockRequestGrant.mockResolvedValue({
-      vscode_deeplink: 'vscode://Augment.vscode-augment/autoAuth?grant=g2&state=s2'
+      vscode_deeplink: 'vscode://Augment.vscode-augment/autoAuth?grant=g2&state=s2',
     })
 
     const wrapper = mount(QuickLoginView, {
       global: {
         stubs: {
           AppLayout: {
-            template: '<div><slot /></div>'
-          }
-        }
-      }
+            template: '<div><slot /></div>',
+          },
+        },
+      },
     })
 
     await flushPromises()
     await wrapper.get('input[type="checkbox"]').setValue(true)
-    await wrapper.findAll('button')[0].trigger('click')
+    await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
-    expect(mockCreateBindIntent).toHaveBeenCalledWith({
+    expect(mockCreatePoolBindIntent).toHaveBeenCalledWith({
       mode: 'official_passthrough',
       source: 'official_quick_login',
       tenant_allowlist: ['https://official.augment.local'],
     })
-    expect(mockBindOfficialSession).toHaveBeenCalledWith({
-      bind_token: 'bind-token-cold-start',
-      bind_intent_id: 'bind-intent-cold-start',
-      state: 'bind-state-cold-start',
+    expect(mockBindPoolSession).toHaveBeenCalledWith({
+      bind_token: 'pool-bind-token-secret',
+      bind_intent_id: 'pool-bind-intent-1',
+      state: 'pool-bind-state-1',
       mode: 'official_passthrough',
       source: 'official_quick_login',
       payload: {
@@ -273,6 +253,17 @@ describe('QuickLoginView', () => {
         scopes: ['augment:session', 'augment:summary'],
       },
     })
-    expect(mockRequestGrant).toHaveBeenCalledWith({ mode: 'official_passthrough' })
+    expect(mockCreateBindIntent).not.toHaveBeenCalled()
+    expect(mockBindOfficialSession).not.toHaveBeenCalled()
+    expect(mockCreatePoolBindIntent.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRequestGrant.mock.invocationCallOrder[0],
+    )
+    expect(mockBindPoolSession.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRequestGrant.mock.invocationCallOrder[0],
+    )
+    expect(mockRequestGrant).toHaveBeenCalledWith({
+      mode: 'official_passthrough',
+      source: 'official_quick_login',
+    })
   })
 })

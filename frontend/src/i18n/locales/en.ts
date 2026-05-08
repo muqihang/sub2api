@@ -1358,11 +1358,16 @@ export default {
       cacheHitRatio: 'Cache Hit Ratio',
       estimatedCost: 'Estimated Cost',
       settledCost: 'Settled Cost',
+      sourcePriority: 'Source Priority',
       providerGroups: 'Provider Groups',
       models: 'Models',
       visible: 'Visible',
       hidden: 'Hidden',
       officialSessions: 'Official Sessions',
+      capture: 'Platform Session Capture',
+      captureDescription: 'Use callback parameters from official / Wukong login to capture a session directly into the platform pool.',
+      captureNow: 'Capture Into Pool',
+      captureMissing: 'This page does not contain callback parameters that can be captured into the platform pool.',
       revoke: 'Revoke',
       diagnostics: 'Diagnostics',
       usage: 'Usage',
@@ -6510,6 +6515,10 @@ export default {
           official: 'Before continuing, confirm that official cloud capabilities will directly own Context Engine and adjacent official product capabilities.',
           wukong: 'Before continuing, confirm that Wukong Quick Login is a third-party source used to bridge the official cloud capability flow.',
           confirm: 'I understand and accept the authorization and session custody implications above.'
+        },
+        internalCapture: {
+          title: 'Internal Capture Mode',
+          description: 'Admin-only path for writing official/Wukong callback credentials into the platform session pool during local validation or emergency handling.'
         },
         session: {
           title: 'Current Official Session',

@@ -4,6 +4,9 @@ export interface AugmentGatewaySummary {
   provider_groups?: Array<Record<string, unknown>>
   models?: Array<Record<string, unknown>>
   official_session_count?: number
+  active_session_count?: number
+  healthy_session_count?: number
+  source_priority?: string[]
   cache_hit_ratio?: number
   estimated_cost?: number
   settled_cost?: number
@@ -32,13 +35,15 @@ export interface AugmentGatewayModelRow {
   settings_namespace: string
 }
 
-export interface AugmentOfficialSessionAdminRow {
-  user_id: number
+export interface AugmentPoolSessionAdminRow {
+  id: number
   source: string
   tenant_origin: string
   status: string
   fingerprint_prefix?: string
   has_credential_payload?: boolean
+  health_score?: number
+  created_by_admin_id?: number
 }
 
 export interface AugmentGatewayAdminUsageRow {
@@ -70,6 +75,20 @@ export async function updateAugmentProviderGroups(payload: {
   return data as Record<string, unknown>
 }
 
+export async function getAugmentGatewaySourcePriority(): Promise<{ sources: string[] }> {
+  const { data } = await apiClient.get<{ sources: string[] }>('/admin/augment-gateway/source-priority')
+  return data
+}
+
+export async function updateAugmentGatewaySourcePriority(payload: {
+  sources: string[]
+  expected_version?: number
+  request_id?: string
+}): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.put('/admin/augment-gateway/source-priority', payload)
+  return data as Record<string, unknown>
+}
+
 export async function getAugmentGatewayModels(): Promise<{ rows: AugmentGatewayModelRow[] }> {
   const { data } = await apiClient.get<{ rows: AugmentGatewayModelRow[] }>('/admin/augment-gateway/models')
   return data
@@ -85,28 +104,50 @@ export async function updateAugmentGatewayModel(modelId: string, payload: {
   return data as Record<string, unknown>
 }
 
-export async function listAugmentOfficialSessions(): Promise<{ rows: AugmentOfficialSessionAdminRow[] }> {
-  const { data } = await apiClient.get<{ rows: AugmentOfficialSessionAdminRow[] }>('/admin/augment-gateway/official-sessions')
+export async function listAugmentPoolSessions(): Promise<{ rows: AugmentPoolSessionAdminRow[] }> {
+  const { data } = await apiClient.get<{ rows: AugmentPoolSessionAdminRow[] }>('/admin/augment-gateway/pool-sessions')
   return data
 }
 
-export async function revokeAugmentOfficialSessionAdmin(userId: number): Promise<Record<string, unknown>> {
-  const { data } = await apiClient.post(`/admin/augment-gateway/official-sessions/${userId}/revoke`, {})
+export async function createAugmentPoolSessionBindIntent(payload: {
+  mode: string
+  source: string
+  tenant_allowlist: string[]
+}): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post('/admin/augment-gateway/pool-sessions/bind-intents', payload)
   return data as Record<string, unknown>
 }
 
-export async function disableAugmentOfficialSessionAdmin(userId: number): Promise<Record<string, unknown>> {
-  const { data } = await apiClient.post(`/admin/augment-gateway/official-sessions/${userId}/disable`, {})
+export async function bindAugmentPoolSession(payload: {
+  bind_token: string
+  bind_intent_id: string
+  state: string
+  mode: string
+  source: string
+  payload: Record<string, unknown>
+  request_id?: string
+}): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post('/admin/augment-gateway/pool-sessions/bind', payload)
   return data as Record<string, unknown>
 }
 
-export async function requireAugmentOfficialSessionReloginAdmin(userId: number): Promise<Record<string, unknown>> {
-  const { data } = await apiClient.post(`/admin/augment-gateway/official-sessions/${userId}/require-relogin`, {})
+export async function revokeAugmentPoolSessionAdmin(sessionId: number): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post(`/admin/augment-gateway/pool-sessions/${sessionId}/revoke`, {})
   return data as Record<string, unknown>
 }
 
-export async function getAugmentOfficialSessionDiagnosticsAdmin(userId: number): Promise<Record<string, unknown>> {
-  const { data } = await apiClient.get(`/admin/augment-gateway/official-sessions/${userId}/diagnostics`)
+export async function disableAugmentPoolSessionAdmin(sessionId: number): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post(`/admin/augment-gateway/pool-sessions/${sessionId}/disable`, {})
+  return data as Record<string, unknown>
+}
+
+export async function requireAugmentPoolSessionReloginAdmin(sessionId: number): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.post(`/admin/augment-gateway/pool-sessions/${sessionId}/require-relogin`, {})
+  return data as Record<string, unknown>
+}
+
+export async function getAugmentPoolSessionDiagnosticsAdmin(sessionId: number): Promise<Record<string, unknown>> {
+  const { data } = await apiClient.get(`/admin/augment-gateway/pool-sessions/${sessionId}/diagnostics`)
   return data as Record<string, unknown>
 }
 
@@ -122,13 +163,17 @@ export const augmentGatewayAPI = {
   getAugmentGatewaySummary,
   getAugmentProviderGroups,
   updateAugmentProviderGroups,
+  getAugmentGatewaySourcePriority,
+  updateAugmentGatewaySourcePriority,
   getAugmentGatewayModels,
   updateAugmentGatewayModel,
-  listAugmentOfficialSessions,
-  revokeAugmentOfficialSessionAdmin,
-  disableAugmentOfficialSessionAdmin,
-  requireAugmentOfficialSessionReloginAdmin,
-  getAugmentOfficialSessionDiagnosticsAdmin,
+  listAugmentPoolSessions,
+  createAugmentPoolSessionBindIntent,
+  bindAugmentPoolSession,
+  revokeAugmentPoolSessionAdmin,
+  disableAugmentPoolSessionAdmin,
+  requireAugmentPoolSessionReloginAdmin,
+  getAugmentPoolSessionDiagnosticsAdmin,
   getAugmentGatewayAdminUsage,
 }
 

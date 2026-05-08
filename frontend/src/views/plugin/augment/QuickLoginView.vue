@@ -14,6 +14,7 @@
         <div class="mt-6 space-y-6">
           <div class="flex flex-wrap gap-3">
             <button
+              data-test="quick-login-continue"
               type="button"
               class="btn btn-primary"
               :disabled="isGranting || (selectedMode === 'official_passthrough' && !consentChecked)"
@@ -44,6 +45,18 @@
             v-model:source="selectedSource"
             :show-local-compat="showLocalCompat"
           />
+
+          <section
+            v-if="showLocalCompat"
+            class="rounded-xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-900/40 dark:bg-amber-950/30"
+          >
+            <h2 class="text-sm font-semibold text-amber-900 dark:text-amber-100">
+              {{ t('plugin.augment.quickLogin.internalCapture.title') }}
+            </h2>
+            <p class="mt-2 text-sm text-amber-800 dark:text-amber-200">
+              {{ t('plugin.augment.quickLogin.internalCapture.description') }}
+            </p>
+          </section>
 
           <section class="rounded-xl border border-gray-200 bg-gray-50 p-5 dark:border-dark-700 dark:bg-dark-950/50">
             <div class="space-y-2">
@@ -110,37 +123,24 @@
           </div>
         </div>
       </section>
-
-      <OfficialSessionStatusCard
-        :session="officialSession"
-        :revoking="isRevoking"
-        @revoke="handleRevokeSession"
-      />
     </div>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import OfficialSessionStatusCard from '@/components/plugin/augment/OfficialSessionStatusCard.vue'
 import QuickLoginModeSelector from '@/components/plugin/augment/QuickLoginModeSelector.vue'
 import { useClipboard } from '@/composables/useClipboard'
-import {
-  bindAugmentOfficialSession,
-  createAugmentOfficialSessionBindIntent,
-  getAugmentOfficialSession,
-  requestAugmentQuickLoginGrant,
-  revokeAugmentOfficialSession,
-  type AugmentOfficialSessionView,
-} from '@/api/augment'
+import { requestAugmentQuickLoginGrant } from '@/api/augment'
+import { bindAugmentPoolSession, createAugmentPoolSessionBindIntent } from '@/api/admin/augmentGateway'
 import { useAppStore, useAuthStore } from '@/stores'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import {
-  buildAugmentQuickLoginGrantPayload,
   buildAugmentOfficialBindPayload,
+  buildAugmentQuickLoginGrantPayload,
   extractAugmentOfficialTenantAllowlist,
   isAugmentLocalCompatGateEnabled,
   resolveAugmentQuickLoginDeeplink,
@@ -154,13 +154,13 @@ const { copyToClipboard } = useClipboard()
 const { t } = useI18n()
 
 const isGranting = ref(false)
-const isRevoking = ref(false)
 const grantError = ref('')
 const deeplinkUrl = ref('')
-const officialSession = ref<AugmentOfficialSessionView | null>(null)
 const consentChecked = ref(false)
 const selectedMode = ref<'official_passthrough' | 'local_compat'>('official_passthrough')
-const selectedSource = ref<'official_quick_login' | 'wukong_quick_login'>('official_quick_login')
+const selectedSource = ref<'official_quick_login' | 'wukong_quick_login'>(
+  route.query.source === 'wukong_quick_login' ? 'wukong_quick_login' : 'official_quick_login',
+)
 
 const showLocalCompat = computed(() =>
   isAugmentLocalCompatGateEnabled({
@@ -169,13 +169,15 @@ const showLocalCompat = computed(() =>
   })
 )
 
+const isPoolCaptureMode = computed(() =>
+  showLocalCompat.value && String(route.query.capture_target ?? '') === 'pool_session'
+)
+
 const grantPayload = computed(() => buildAugmentQuickLoginGrantPayload(route.query))
 const grantPayloadDiagnostics = computed(() =>
   summarizeAugmentQuickLoginDiagnostics({
     ...grantPayload.value,
-    tenant_origin: officialSession.value?.tenant_origin ?? '',
     source: selectedSource.value,
-    status: officialSession.value?.status ?? '',
   })
 )
 
@@ -185,52 +187,34 @@ const consentBody = computed(() =>
     : t('plugin.augment.quickLogin.consent.official')
 )
 
-onMounted(async () => {
-  await refreshOfficialSession()
-  selectedMode.value = 'official_passthrough'
-})
-
-async function refreshOfficialSession(): Promise<void> {
-  try {
-    officialSession.value = await getAugmentOfficialSession()
-    if (officialSession.value?.source === 'wukong_quick_login') {
-      selectedSource.value = 'wukong_quick_login'
-    }
-  } catch {
-    officialSession.value = null
-  }
-}
-
 async function handleRequestGrant(): Promise<void> {
   isGranting.value = true
   grantError.value = ''
 
   try {
-    if (selectedMode.value === 'official_passthrough') {
-      const tenantAllowlist = officialSession.value?.tenant_origin
-        ? [officialSession.value.tenant_origin]
-        : extractAugmentOfficialTenantAllowlist(route.query)
-      const bindIntent = await createAugmentOfficialSessionBindIntent({
-        mode: selectedMode.value,
-        source: selectedSource.value,
-        tenant_allowlist: tenantAllowlist,
-      })
+    if (isPoolCaptureMode.value && selectedMode.value === 'official_passthrough') {
       const bindPayload = buildAugmentOfficialBindPayload(route.query)
       if (bindPayload) {
-        await bindAugmentOfficialSession({
-          bind_token: bindIntent.bind_token,
-          bind_intent_id: bindIntent.bind_intent_id,
-          state: bindIntent.state,
+        const bindIntent = await createAugmentPoolSessionBindIntent({
+          mode: selectedMode.value,
+          source: selectedSource.value,
+          tenant_allowlist: extractAugmentOfficialTenantAllowlist(route.query),
+        })
+
+        await bindAugmentPoolSession({
+          bind_token: String(bindIntent.bind_token ?? ''),
+          bind_intent_id: String(bindIntent.bind_intent_id ?? ''),
+          state: String(bindIntent.state ?? ''),
           mode: selectedMode.value,
           source: selectedSource.value,
           payload: bindPayload,
         })
-        await refreshOfficialSession()
       }
     }
 
     const response = await requestAugmentQuickLoginGrant({
       mode: selectedMode.value,
+      source: selectedSource.value,
     })
     const deeplink = resolveAugmentQuickLoginDeeplink(response)
 
@@ -265,16 +249,5 @@ async function copyDeeplink(): Promise<void> {
     return
   }
   await copyToClipboard(deeplinkUrl.value, t('plugin.augment.quickLogin.copySuccess'))
-}
-
-async function handleRevokeSession(): Promise<void> {
-  isRevoking.value = true
-  try {
-    officialSession.value = await revokeAugmentOfficialSession()
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('plugin.augment.quickLogin.requestFailed')))
-  } finally {
-    isRevoking.value = false
-  }
 }
 </script>

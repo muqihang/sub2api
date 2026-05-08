@@ -1379,11 +1379,16 @@ export default {
       cacheHitRatio: '缓存命中率',
       estimatedCost: '预估费用',
       settledCost: '已结算费用',
+      sourcePriority: '来源优先级',
       providerGroups: 'Provider 绑定',
       models: '模型',
       visible: '已显示',
       hidden: '已隐藏',
       officialSessions: '官方 Session',
+      capture: '平台会话采集',
+      captureDescription: '在管理端使用 official / Wukong 登录返回的回调参数，将会话直接采集进平台池。',
+      captureNow: '采集到平台池',
+      captureMissing: '当前页面没有可用于采集的平台会话回调参数',
       revoke: '撤销',
       diagnostics: '诊断',
       usage: '使用记录',
@@ -6694,6 +6699,10 @@ export default {
           official: '继续前请确认：官方云能力会直接接管 Context Engine 与相关官方能力，请仅在你理解并同意后继续。',
           wukong: '继续前请确认：Wukong Quick Login 属于第三方来源，你理解其会代表官方云能力承接授权链路后再继续。',
           confirm: '我已知晓并同意上述授权与托管说明。'
+        },
+        internalCapture: {
+          title: '内部采集模式',
+          description: '仅供管理员在本机或应急场景下，把 official/Wukong 登录回调参数写入平台 session pool。'
         },
         session: {
           title: '当前官方 Session',

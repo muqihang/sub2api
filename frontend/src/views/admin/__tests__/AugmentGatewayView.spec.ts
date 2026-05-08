@@ -4,41 +4,59 @@ import AugmentGatewayView from '../AugmentGatewayView.vue'
 
 const mockGetSummary = vi.fn()
 const mockGetProviderGroups = vi.fn()
-const mockUpdateProviderGroups = vi.fn()
+const mockGetSourcePriority = vi.fn()
+const mockUpdateSourcePriority = vi.fn()
 const mockGetModels = vi.fn()
 const mockUpdateModel = vi.fn()
-const mockListOfficialSessions = vi.fn()
-const mockRevokeOfficialSessionAdmin = vi.fn()
-const mockDisableOfficialSessionAdmin = vi.fn()
+const mockListPoolSessions = vi.fn()
+const mockCreatePoolBindIntent = vi.fn()
+const mockBindPoolSession = vi.fn()
+const mockRevokePoolSessionAdmin = vi.fn()
+const mockDisablePoolSessionAdmin = vi.fn()
 const mockRequireReloginAdmin = vi.fn()
 const mockGetDiagnostics = vi.fn()
 const mockGetUsage = vi.fn()
 const mockShowError = vi.fn()
 const mockShowSuccess = vi.fn()
+let mockRouteQuery: Record<string, unknown> = {}
+
+vi.mock('vue-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vue-router')>()
+  return {
+    ...actual,
+    useRoute: () => ({ query: mockRouteQuery }),
+  }
+})
 
 vi.mock('@/api/admin/augmentGateway', () => ({
   getAugmentGatewaySummary: (...args: any[]) => mockGetSummary(...args),
   getAugmentProviderGroups: (...args: any[]) => mockGetProviderGroups(...args),
-  updateAugmentProviderGroups: (...args: any[]) => mockUpdateProviderGroups(...args),
+  getAugmentGatewaySourcePriority: (...args: any[]) => mockGetSourcePriority(...args),
+  updateAugmentGatewaySourcePriority: (...args: any[]) => mockUpdateSourcePriority(...args),
   getAugmentGatewayModels: (...args: any[]) => mockGetModels(...args),
   updateAugmentGatewayModel: (...args: any[]) => mockUpdateModel(...args),
-  listAugmentOfficialSessions: (...args: any[]) => mockListOfficialSessions(...args),
-  revokeAugmentOfficialSessionAdmin: (...args: any[]) => mockRevokeOfficialSessionAdmin(...args),
-  disableAugmentOfficialSessionAdmin: (...args: any[]) => mockDisableOfficialSessionAdmin(...args),
-  requireAugmentOfficialSessionReloginAdmin: (...args: any[]) => mockRequireReloginAdmin(...args),
-  getAugmentOfficialSessionDiagnosticsAdmin: (...args: any[]) => mockGetDiagnostics(...args),
+  listAugmentPoolSessions: (...args: any[]) => mockListPoolSessions(...args),
+  createAugmentPoolSessionBindIntent: (...args: any[]) => mockCreatePoolBindIntent(...args),
+  bindAugmentPoolSession: (...args: any[]) => mockBindPoolSession(...args),
+  revokeAugmentPoolSessionAdmin: (...args: any[]) => mockRevokePoolSessionAdmin(...args),
+  disableAugmentPoolSessionAdmin: (...args: any[]) => mockDisablePoolSessionAdmin(...args),
+  requireAugmentPoolSessionReloginAdmin: (...args: any[]) => mockRequireReloginAdmin(...args),
+  getAugmentPoolSessionDiagnosticsAdmin: (...args: any[]) => mockGetDiagnostics(...args),
   getAugmentGatewayAdminUsage: (...args: any[]) => mockGetUsage(...args),
   default: {
     getAugmentGatewaySummary: (...args: any[]) => mockGetSummary(...args),
     getAugmentProviderGroups: (...args: any[]) => mockGetProviderGroups(...args),
-    updateAugmentProviderGroups: (...args: any[]) => mockUpdateProviderGroups(...args),
+    getAugmentGatewaySourcePriority: (...args: any[]) => mockGetSourcePriority(...args),
+    updateAugmentGatewaySourcePriority: (...args: any[]) => mockUpdateSourcePriority(...args),
     getAugmentGatewayModels: (...args: any[]) => mockGetModels(...args),
     updateAugmentGatewayModel: (...args: any[]) => mockUpdateModel(...args),
-    listAugmentOfficialSessions: (...args: any[]) => mockListOfficialSessions(...args),
-    revokeAugmentOfficialSessionAdmin: (...args: any[]) => mockRevokeOfficialSessionAdmin(...args),
-    disableAugmentOfficialSessionAdmin: (...args: any[]) => mockDisableOfficialSessionAdmin(...args),
-    requireAugmentOfficialSessionReloginAdmin: (...args: any[]) => mockRequireReloginAdmin(...args),
-    getAugmentOfficialSessionDiagnosticsAdmin: (...args: any[]) => mockGetDiagnostics(...args),
+    listAugmentPoolSessions: (...args: any[]) => mockListPoolSessions(...args),
+    createAugmentPoolSessionBindIntent: (...args: any[]) => mockCreatePoolBindIntent(...args),
+    bindAugmentPoolSession: (...args: any[]) => mockBindPoolSession(...args),
+    revokeAugmentPoolSessionAdmin: (...args: any[]) => mockRevokePoolSessionAdmin(...args),
+    disableAugmentPoolSessionAdmin: (...args: any[]) => mockDisablePoolSessionAdmin(...args),
+    requireAugmentPoolSessionReloginAdmin: (...args: any[]) => mockRequireReloginAdmin(...args),
+    getAugmentPoolSessionDiagnosticsAdmin: (...args: any[]) => mockGetDiagnostics(...args),
     getAugmentGatewayAdminUsage: (...args: any[]) => mockGetUsage(...args),
   },
 }))
@@ -63,15 +81,22 @@ vi.mock('vue-i18n', async () => {
 describe('AugmentGateway admin', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockRouteQuery = {}
     mockGetSummary.mockResolvedValue({
       provider_groups: [],
       models: [],
       official_session_count: 1,
+      active_session_count: 1,
+      healthy_session_count: 1,
+      source_priority: ['official_quick_login', 'wukong_quick_login'],
     })
     mockGetProviderGroups.mockResolvedValue({
       rows: [
         { provider: 'openai', group_id: 1001, healthy: true, active_accounts: 2, total_accounts: 2, version: 1 },
       ],
+    })
+    mockGetSourcePriority.mockResolvedValue({
+      sources: ['official_quick_login', 'wukong_quick_login'],
     })
     mockGetModels.mockResolvedValue({
       rows: [
@@ -95,15 +120,17 @@ describe('AugmentGateway admin', () => {
         },
       ],
     })
-    mockListOfficialSessions.mockResolvedValue({
+    mockListPoolSessions.mockResolvedValue({
       rows: [
         {
-          user_id: 42,
+          id: 42,
           source: 'official_quick_login',
           tenant_origin: 'https://tenant.example.com',
           status: 'active',
           fingerprint_prefix: 'fp-1',
           has_credential_payload: true,
+          health_score: 100,
+          created_by_admin_id: 7,
           access_token: 'should-not-render',
         },
       ],
@@ -115,22 +142,49 @@ describe('AugmentGateway admin', () => {
       page: { page: 1, page_size: 20, pages: 1, total: 1 },
     })
     mockGetDiagnostics.mockResolvedValue({
-      user_id: 42,
+      id: 42,
       tenant_host: 'tenant.example.com',
       fingerprint_prefix: 'fp-1',
       access_token: 'should-not-render',
     })
   })
 
-  it('renders provider group bindings', async () => {
+  it('renders source priority, provider groups, and pool sessions without secrets', async () => {
     const wrapper = mount(AugmentGatewayView, {
       global: {
         stubs: { AppLayout: { template: '<div><slot /></div>' } },
       },
     })
     await flushPromises()
-    expect(wrapper.text()).toContain('openai')
-    expect(wrapper.text()).toContain('1001')
+
+    const text = wrapper.text()
+    expect(text).toContain('openai')
+    expect(text).toContain('1001')
+    expect(text).toContain('official_quick_login')
+    expect(text).toContain('wukong_quick_login')
+    expect(text).toContain('tenant.example.com')
+    expect(text).not.toContain('access_token')
+    expect(text).not.toContain('should-not-render')
+  })
+
+  it('updates source priority order', async () => {
+    mockUpdateSourcePriority.mockResolvedValue({})
+
+    const wrapper = mount(AugmentGatewayView, {
+      global: {
+        stubs: { AppLayout: { template: '<div><slot /></div>' } },
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-test="source-priority-down-official_quick_login"]').trigger('click')
+    await wrapper.get('[data-test="save-source-priority"]').trigger('click')
+    await flushPromises()
+
+    expect(mockUpdateSourcePriority).toHaveBeenCalledWith({
+      sources: ['wukong_quick_login', 'official_quick_login'],
+    })
+    expect(mockShowSuccess).toHaveBeenCalledWith('admin.augmentGateway.saved')
   })
 
   it('prevents model visible toggle when smoke status is not ok', async () => {
@@ -145,22 +199,9 @@ describe('AugmentGateway admin', () => {
     expect(blocked.attributes('disabled')).toBeDefined()
   })
 
-  it('renders official sessions without secrets', async () => {
-    const wrapper = mount(AugmentGatewayView, {
-      global: {
-        stubs: { AppLayout: { template: '<div><slot /></div>' } },
-      },
-    })
-    await flushPromises()
+  it('calls pool revoke endpoint and refreshes session list', async () => {
+    mockRevokePoolSessionAdmin.mockResolvedValue({})
 
-    const text = wrapper.text()
-    expect(text).toContain('tenant.example.com')
-    expect(text).not.toContain('access_token')
-    expect(text).not.toContain('should-not-render')
-  })
-
-  it('calls revoke endpoint and refreshes session list', async () => {
-    mockRevokeOfficialSessionAdmin.mockResolvedValue({})
     const wrapper = mount(AugmentGatewayView, {
       global: {
         stubs: { AppLayout: { template: '<div><slot /></div>' } },
@@ -171,8 +212,61 @@ describe('AugmentGateway admin', () => {
     await wrapper.get('[data-test="revoke-session-42"]').trigger('click')
     await flushPromises()
 
-    expect(mockRevokeOfficialSessionAdmin).toHaveBeenCalledWith(42)
-    expect(mockListOfficialSessions).toHaveBeenCalledTimes(2)
+    expect(mockRevokePoolSessionAdmin).toHaveBeenCalledWith(42)
+    expect(mockListPoolSessions).toHaveBeenCalledTimes(2)
+  })
+
+  it('captures callback payload into a pool session using admin pool bind APIs', async () => {
+    mockRouteQuery = {
+      official_tenant_url: 'https://capture.augment.local',
+      official_access_token: 'capture-access-token',
+      official_refresh_token: 'capture-refresh-token',
+      official_expires_at: '2026-05-08T16:00:00Z',
+      official_scopes: 'augment:session',
+    }
+    mockCreatePoolBindIntent.mockResolvedValue({
+      bind_intent_id: 'pool-bind-intent-2',
+      state: 'pool-bind-state-2',
+      expires_at: '2026-05-08T15:30:00Z',
+      bind_token: 'pool-bind-token-2',
+    })
+    mockBindPoolSession.mockResolvedValue({
+      id: 77,
+      source: 'official_quick_login',
+      tenant_origin: 'https://capture.augment.local',
+      status: 'active',
+    })
+
+    const wrapper = mount(AugmentGatewayView, {
+      global: {
+        stubs: { AppLayout: { template: '<div><slot /></div>' } },
+      },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-test="capture-pool-session"]').trigger('click')
+    await flushPromises()
+
+    expect(mockCreatePoolBindIntent).toHaveBeenCalledWith({
+      mode: 'official_passthrough',
+      source: 'official_quick_login',
+      tenant_allowlist: ['https://capture.augment.local'],
+    })
+    expect(mockBindPoolSession).toHaveBeenCalledWith({
+      bind_token: 'pool-bind-token-2',
+      bind_intent_id: 'pool-bind-intent-2',
+      state: 'pool-bind-state-2',
+      mode: 'official_passthrough',
+      source: 'official_quick_login',
+      payload: {
+        tenant_url: 'https://capture.augment.local',
+        access_token: 'capture-access-token',
+        refresh_token: 'capture-refresh-token',
+        expires_at: '2026-05-08T16:00:00Z',
+        scopes: ['augment:session'],
+      },
+    })
+    expect(mockListPoolSessions).toHaveBeenCalledTimes(2)
   })
 
   it('renders cache hit ratio and cost summary', async () => {
@@ -180,10 +274,14 @@ describe('AugmentGateway admin', () => {
       provider_groups: [],
       models: [],
       official_session_count: 1,
+      active_session_count: 1,
+      healthy_session_count: 1,
       cache_hit_ratio: 0.42,
       estimated_cost: 12.3,
       settled_cost: 10.1,
+      source_priority: ['official_quick_login', 'wukong_quick_login'],
     })
+
     const wrapper = mount(AugmentGatewayView, {
       global: {
         stubs: { AppLayout: { template: '<div><slot /></div>' } },

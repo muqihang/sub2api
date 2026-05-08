@@ -47,6 +47,7 @@
       <div class="flex flex-wrap gap-3">
         <button
           type="button"
+          data-test="source-official_quick_login"
           class="rounded-lg border px-4 py-2 text-sm transition"
           :class="source === 'official_quick_login'
             ? 'border-primary-500 bg-primary-50 text-primary-700 dark:border-primary-400 dark:bg-primary-900/20 dark:text-primary-200'
@@ -57,6 +58,7 @@
         </button>
         <button
           type="button"
+          data-test="source-wukong_quick_login"
           class="rounded-lg border px-4 py-2 text-sm transition"
           :class="source === 'wukong_quick_login'
             ? 'border-primary-500 bg-primary-50 text-primary-700 dark:border-primary-400 dark:bg-primary-900/20 dark:text-primary-200'
