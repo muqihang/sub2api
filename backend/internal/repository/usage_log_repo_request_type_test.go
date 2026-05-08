@@ -638,7 +638,7 @@ func (s usageLogScannerStub) Scan(dest ...any) error {
 func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 	t.Run("request_type_ws_v2_overrides_legacy", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		values := []any{
 			int64(1),  // id
 			int64(10), // user_id
 			int64(20), // api_key_id
@@ -685,8 +685,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
-			now,
-		}})
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "priority", *log.ServiceTier)
@@ -697,7 +698,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("request_type_unknown_falls_back_to_legacy", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		values := []any{
 			int64(2),
 			int64(11),
 			int64(21),
@@ -733,8 +734,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
-			now,
-		}})
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "flex", *log.ServiceTier)
@@ -745,7 +747,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("service_tier_is_scanned", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		values := []any{
 			int64(3),
 			int64(12),
 			int64(22),
@@ -781,11 +783,38 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
-			now,
-		}})
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "priority", *log.ServiceTier)
 	})
 
+}
+
+func usageLogAugmentScanTail(now time.Time) []any {
+	return []any{
+		sql.NullString{},  // client_product
+		sql.NullString{},  // request_scope
+		sql.NullString{},  // feature_scope
+		sql.NullString{},  // augment_session_id
+		sql.NullString{},  // route_policy_version
+		sql.NullString{},  // pricing_version
+		sql.NullBool{},    // billable
+		sql.NullString{},  // cost_source
+		sql.NullString{},  // currency
+		sql.NullString{},  // upstream_attempt_id
+		sql.NullString{},  // settlement_status
+		sql.NullFloat64{}, // input_unit_price
+		sql.NullFloat64{}, // output_unit_price
+		sql.NullFloat64{}, // cache_read_unit_price
+		sql.NullFloat64{}, // cache_creation_unit_price
+		sql.NullFloat64{}, // reasoning_unit_price
+		sql.NullFloat64{}, // estimated_cost
+		sql.NullFloat64{}, // settled_cost
+		sql.NullFloat64{}, // free_quota_applied
+		sql.NullFloat64{}, // paid_balance_applied
+		now,
+	}
 }

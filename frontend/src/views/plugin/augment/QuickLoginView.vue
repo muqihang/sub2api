@@ -129,6 +129,7 @@ import OfficialSessionStatusCard from '@/components/plugin/augment/OfficialSessi
 import QuickLoginModeSelector from '@/components/plugin/augment/QuickLoginModeSelector.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import {
+  bindAugmentOfficialSession,
   createAugmentOfficialSessionBindIntent,
   getAugmentOfficialSession,
   requestAugmentQuickLoginGrant,
@@ -139,6 +140,8 @@ import { useAppStore, useAuthStore } from '@/stores'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import {
   buildAugmentQuickLoginGrantPayload,
+  buildAugmentOfficialBindPayload,
+  extractAugmentOfficialTenantAllowlist,
   isAugmentLocalCompatGateEnabled,
   resolveAugmentQuickLoginDeeplink,
   summarizeAugmentQuickLoginDiagnostics,
@@ -206,12 +209,24 @@ async function handleRequestGrant(): Promise<void> {
     if (selectedMode.value === 'official_passthrough') {
       const tenantAllowlist = officialSession.value?.tenant_origin
         ? [officialSession.value.tenant_origin]
-        : []
-      await createAugmentOfficialSessionBindIntent({
+        : extractAugmentOfficialTenantAllowlist(route.query)
+      const bindIntent = await createAugmentOfficialSessionBindIntent({
         mode: selectedMode.value,
         source: selectedSource.value,
         tenant_allowlist: tenantAllowlist,
       })
+      const bindPayload = buildAugmentOfficialBindPayload(route.query)
+      if (bindPayload) {
+        await bindAugmentOfficialSession({
+          bind_token: bindIntent.bind_token,
+          bind_intent_id: bindIntent.bind_intent_id,
+          state: bindIntent.state,
+          mode: selectedMode.value,
+          source: selectedSource.value,
+          payload: bindPayload,
+        })
+        await refreshOfficialSession()
+      }
     }
 
     const response = await requestAugmentQuickLoginGrant({

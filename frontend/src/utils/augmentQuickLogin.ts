@@ -30,13 +30,6 @@ export function buildAugmentQuickLoginGrantPayload(query: LocationQuery): Record
   return payload
 }
 
-function payloadHasOfficialSessionContext(payload: Record<string, string>): boolean {
-  return Boolean(
-    payload.official_session_bundle ||
-      payload.official_access_token
-  )
-}
-
 export function resolveAugmentQuickLoginDeeplink(
   response: AugmentQuickLoginGrantResponseLike
 ): string {
@@ -81,4 +74,59 @@ export function isAugmentLocalCompatGateEnabled(input: {
     return false
   }
   return toSingleQueryValue(input.query.emergency_local_compat) === '1'
+}
+
+export function extractAugmentOfficialTenantAllowlist(query: LocationQuery): string[] {
+  const tenant = toSingleQueryValue(query.official_tenant_url) || extractTenantURLFromBundle(query)
+  return tenant ? [tenant] : []
+}
+
+export function buildAugmentOfficialBindPayload(query: LocationQuery): Record<string, unknown> | null {
+  const bundled = parseBundleQuery(query)
+  if (bundled) {
+    return bundled
+  }
+
+  const tenantURL = toSingleQueryValue(query.official_tenant_url)
+  const accessToken = toSingleQueryValue(query.official_access_token)
+  if (!tenantURL || !accessToken) {
+    return null
+  }
+
+  return {
+    tenant_url: tenantURL,
+    access_token: accessToken,
+    refresh_token: toSingleQueryValue(query.official_refresh_token) || '',
+    expires_at: toSingleQueryValue(query.official_expires_at) || '',
+    scopes: splitScopes(toSingleQueryValue(query.official_scopes)),
+  }
+}
+
+function parseBundleQuery(query: LocationQuery): Record<string, unknown> | null {
+  const raw = toSingleQueryValue(query.official_session_bundle)
+  if (!raw) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function extractTenantURLFromBundle(query: LocationQuery): string | undefined {
+  const bundled = parseBundleQuery(query)
+  const tenant = bundled?.tenant_url
+  return typeof tenant === 'string' && tenant.length > 0 ? tenant : undefined
+}
+
+function splitScopes(raw: string | undefined): string[] {
+  if (!raw) {
+    return []
+  }
+  return raw
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
 }

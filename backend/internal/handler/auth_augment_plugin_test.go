@@ -140,7 +140,7 @@ func TestAugmentCallbackExchangeAcceptsGrantAndCode(t *testing.T) {
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
-		augmentPluginAuthStub{},
+		augmentPluginJWTAuthStub{token: "jwt-official", userID: user.ID},
 		augmentPluginUserStub{user: user},
 		nil,
 		nil,
@@ -630,7 +630,7 @@ func TestAugmentSessionRefreshOfficialPassthroughUsesBoundOfficialSessionFromBea
 				TenantOrigin:               "https://official.augment.local",
 				PortalOrigin:               handlerStringPtr("https://portal.augment.local"),
 				Scopes:                     []string{"augment:session"},
-				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 8, 13, 0, 0, 0, time.UTC)),
+				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 8, 18, 0, 0, 0, time.UTC)),
 				Status:                     "active",
 				EncryptedCredentialPayload: encryptedPayload,
 				CredentialSchemaVersion:    1,
