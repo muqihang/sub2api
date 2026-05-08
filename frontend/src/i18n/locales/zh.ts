@@ -1373,6 +1373,25 @@ export default {
       failedToLoad: '加载仪表盘数据失败'
     },
 
+    augmentGateway: {
+      title: 'Augment Gateway',
+      description: '统一管理 provider 绑定、模型可见性、官方 Session 和 Augment 专属使用记录。',
+      cacheHitRatio: '缓存命中率',
+      estimatedCost: '预估费用',
+      settledCost: '已结算费用',
+      providerGroups: 'Provider 绑定',
+      models: '模型',
+      visible: '已显示',
+      hidden: '已隐藏',
+      officialSessions: '官方 Session',
+      revoke: '撤销',
+      diagnostics: '诊断',
+      usage: '使用记录',
+      loadFailed: '加载 Augment Gateway 管理数据失败',
+      saveFailed: '保存 Augment Gateway 设置失败',
+      saved: 'Augment Gateway 设置已更新'
+    },
+
     backup: {
       title: '数据库备份',
       description: '全量数据库备份到 S3 兼容存储，支持定时备份与恢复',

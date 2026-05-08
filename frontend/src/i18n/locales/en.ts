@@ -1352,6 +1352,25 @@ export default {
       failedToLoad: 'Failed to load dashboard statistics'
     },
 
+    augmentGateway: {
+      title: 'Augment Gateway',
+      description: 'Manage provider bindings, model visibility, official sessions, and Augment-specific usage from one place.',
+      cacheHitRatio: 'Cache Hit Ratio',
+      estimatedCost: 'Estimated Cost',
+      settledCost: 'Settled Cost',
+      providerGroups: 'Provider Groups',
+      models: 'Models',
+      visible: 'Visible',
+      hidden: 'Hidden',
+      officialSessions: 'Official Sessions',
+      revoke: 'Revoke',
+      diagnostics: 'Diagnostics',
+      usage: 'Usage',
+      loadFailed: 'Failed to load Augment Gateway admin data',
+      saveFailed: 'Failed to save Augment Gateway settings',
+      saved: 'Augment Gateway settings updated'
+    },
+
     backup: {
       title: 'Database Backup',
       description: 'Full database backup to S3-compatible storage with scheduled backup and restore',

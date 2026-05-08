@@ -383,6 +383,18 @@ export const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/augment-gateway',
+    name: 'AdminAugmentGateway',
+    component: () => import('@/views/admin/AugmentGatewayView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Augment Gateway',
+      titleKey: 'admin.augmentGateway.title',
+      descriptionKey: 'admin.augmentGateway.description'
+    }
+  },
+  {
     path: '/admin/ops',
     name: 'AdminOps',
     component: () => import('@/views/admin/ops/OpsDashboard.vue'),
