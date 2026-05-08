@@ -153,7 +153,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		return nil, err
 	}
 	augmentOfficialSessionService := service.ProvideAugmentOfficialSessionService(augmentOfficialSessionStore, augmentSessionVaultCipher, configConfig)
-	authHandler := handler.ProvideAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, augmentPluginService, augmentGatewayService, augmentOfficialSessionService)
+	augmentGatewayUsageService := service.ProvideAugmentGatewayUsageService(usageLogRepository)
+	authHandler := handler.ProvideAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentGatewayUsageService)
 	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)

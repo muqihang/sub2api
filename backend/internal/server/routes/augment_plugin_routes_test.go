@@ -173,6 +173,24 @@ func TestAugmentPluginRoutesAreRegistered(t *testing.T) {
 			want:   http.StatusUnauthorized,
 		},
 		{
+			name:   "augment billing summary requires jwt auth",
+			method: http.MethodGet,
+			path:   "/api/v1/plugin/augment/billing/summary",
+			want:   http.StatusUnauthorized,
+		},
+		{
+			name:   "augment billing usage requires jwt auth",
+			method: http.MethodGet,
+			path:   "/api/v1/plugin/augment/billing/usage",
+			want:   http.StatusUnauthorized,
+		},
+		{
+			name:   "augment billing recent errors requires jwt auth",
+			method: http.MethodGet,
+			path:   "/api/v1/plugin/augment/billing/recent-errors",
+			want:   http.StatusUnauthorized,
+		},
+		{
 			name:   "exchange route exists",
 			method: http.MethodPost,
 			path:   "/api/v1/plugin/augment/callback/exchange",

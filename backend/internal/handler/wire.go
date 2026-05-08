@@ -96,6 +96,7 @@ func ProvideAuthHandler(
 	augmentPluginService *service.AugmentPluginService,
 	augmentGatewayService *service.AugmentGatewayService,
 	augmentOfficialSessionService *service.AugmentOfficialSessionService,
+	augmentGatewayUsageService *service.AugmentGatewayUsageService,
 ) *AuthHandler {
 	return NewAuthHandler(
 		cfg,
@@ -108,6 +109,7 @@ func ProvideAuthHandler(
 		augmentPluginService,
 		augmentGatewayService,
 		augmentOfficialSessionService,
+		augmentGatewayUsageService,
 	)
 }
 

@@ -502,6 +502,10 @@ func ProvideAugmentOfficialSessionService(
 	return NewAugmentOfficialSessionService(store, cipher, secret)
 }
 
+func ProvideAugmentGatewayUsageService(usageRepo UsageLogRepository) *AugmentGatewayUsageService {
+	return NewAugmentGatewayUsageService(usageRepo)
+}
+
 func ProvideAugmentGatewayModelRegistry(cfg *config.Config) *AugmentGatewayModelRegistry {
 	if cfg == nil {
 		return NewDefaultAugmentGatewayModelRegistry()
@@ -579,6 +583,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAugmentPluginService,
 	ProvideAugmentSessionVaultCipher,
 	ProvideAugmentOfficialSessionService,
+	ProvideAugmentGatewayUsageService,
 	ProvideAugmentGatewayModelRegistry,
 	ProvideAugmentGatewayRouter,
 	NewAugmentGatewayReasoningTurnStore,

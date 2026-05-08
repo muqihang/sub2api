@@ -204,5 +204,8 @@ func RegisterAuthRoutes(
 		pluginAuthenticated.POST("/official-session/bind", h.Auth.AugmentOfficialSessionBind)
 		pluginAuthenticated.GET("/official-session", h.Auth.AugmentOfficialSessionStatus)
 		pluginAuthenticated.POST("/official-session/revoke", h.Auth.AugmentOfficialSessionRevoke)
+		pluginAuthenticated.GET("/billing/summary", h.Auth.AugmentBillingSummary)
+		pluginAuthenticated.GET("/billing/usage", h.Auth.AugmentBillingUsage)
+		pluginAuthenticated.GET("/billing/recent-errors", h.Auth.AugmentBillingRecentErrors)
 	}
 }
