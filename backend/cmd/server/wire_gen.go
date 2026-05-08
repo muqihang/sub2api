@@ -155,8 +155,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		return nil, err
 	}
 	augmentOfficialSessionService := service.ProvideAugmentOfficialSessionService(augmentOfficialSessionStore, augmentSessionVaultCipher, configConfig)
+	augmentOfficialPoolSessionStore := repository.ProvideAugmentOfficialPoolSessionStore(db)
+	augmentOfficialPoolSessionService := service.ProvideAugmentOfficialPoolSessionService(augmentOfficialPoolSessionStore, augmentSessionVaultCipher, augmentGatewayAdminService, configConfig)
 	augmentGatewayUsageService := service.ProvideAugmentGatewayUsageService(usageLogRepository)
-	authHandler := handler.ProvideAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentGatewayUsageService)
+	authHandler := handler.ProvideAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentOfficialPoolSessionService, augmentGatewayUsageService)
 	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)
@@ -248,7 +250,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	channelMonitorRequestTemplateHandler := admin.NewChannelMonitorRequestTemplateHandler(channelMonitorRequestTemplateService)
 	paymentHandler := admin.NewPaymentHandler(paymentService, paymentConfigService)
 	affiliateHandler := admin.NewAffiliateHandler(affiliateService, adminService)
-	augmentGatewayHandler := handler.ProvideAugmentGatewayHandler(augmentGatewayAdminService, augmentOfficialSessionService, augmentGatewayUsageService)
+	augmentGatewayHandler := handler.ProvideAugmentGatewayHandler(augmentGatewayAdminService, augmentOfficialPoolSessionService, augmentGatewayUsageService)
 	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, paymentHandler, affiliateHandler, augmentGatewayHandler)
 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)

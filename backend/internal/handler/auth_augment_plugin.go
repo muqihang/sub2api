@@ -28,6 +28,7 @@ type augmentQuickLoginGrantResponse struct {
 
 type augmentQuickLoginGrantRequest struct {
 	Mode                  string `json:"mode"`
+	Source                string `json:"source"`
 	OfficialTenantURL     string `json:"official_tenant_url"`
 	OfficialAccessToken   string `json:"official_access_token"`
 	OfficialRefreshToken  string `json:"official_refresh_token"`
@@ -88,11 +89,35 @@ func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
 		return
 	}
 
+	options := buildAugmentQuickLoginGrantOptions(req, h.augmentTenantURL(c))
+	var poolLease *service.AugmentOfficialPoolSessionLease
+	if options.Mode == service.AugmentQuickLoginModeOfficialPassthrough && options.OfficialSessionBundle == nil && h != nil && h.augmentOfficialPoolService != nil {
+		var err error
+		poolLease, err = h.augmentOfficialPoolService.AcquireSessionBundle(c.Request.Context(), requestedAugmentPoolSources(req.Source))
+		if err == nil && poolLease != nil {
+			options.OfficialSessionBundle = poolLease.Bundle
+		}
+	}
+	if options.Mode == service.AugmentQuickLoginModeOfficialPassthrough && options.OfficialSessionBundle == nil {
+		options = h.buildAugmentQuickLoginGrantOptions(c, subject.UserID, req)
+	}
+	if options.Mode == service.AugmentQuickLoginModeOfficialPassthrough && options.OfficialSessionBundle == nil {
+		if h != nil && h.augmentOfficialPoolService != nil {
+			response.ErrorFrom(c, service.ErrAugmentOfficialPoolSessionUnavailable)
+		} else {
+			response.ErrorFrom(c, service.ErrAugmentPluginOfficialAuth)
+		}
+		return
+	}
+
 	grant, err := h.augmentPluginService.CreateQuickLoginGrant(
 		c.Request.Context(),
 		subject.UserID,
-		h.buildAugmentQuickLoginGrantOptions(c, subject.UserID, req),
+		options,
 	)
+	if poolLease != nil {
+		_ = poolLease.Release(c.Request.Context(), err == nil, "grant_failed")
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -155,11 +180,38 @@ func (h *AuthHandler) AugmentSessionRefresh(c *gin.Context) {
 		return
 	}
 
+	options := buildAugmentSessionRefreshOptions(req, h.augmentTenantURL(c))
+	var poolLease *service.AugmentOfficialPoolSessionLease
+	if options.Mode == service.AugmentQuickLoginModeOfficialPassthrough && options.OfficialSessionBundle == nil && h != nil && h.augmentOfficialPoolService != nil {
+		if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+			return
+		}
+		var err error
+		poolLease, err = h.augmentOfficialPoolService.AcquireSessionBundle(c.Request.Context(), nil)
+		if err == nil && poolLease != nil {
+			options.OfficialSessionBundle = poolLease.Bundle
+		}
+	}
+	if options.Mode == service.AugmentQuickLoginModeOfficialPassthrough && options.OfficialSessionBundle == nil {
+		options = h.buildAugmentSessionRefreshOptions(c, req)
+	}
+	if options.Mode == service.AugmentQuickLoginModeOfficialPassthrough && options.OfficialSessionBundle == nil {
+		if h != nil && h.augmentOfficialPoolService != nil {
+			response.ErrorFrom(c, service.ErrAugmentOfficialPoolSessionUnavailable)
+		} else {
+			response.ErrorFrom(c, service.ErrAugmentPluginOfficialAuth)
+		}
+		return
+	}
+
 	bundle, err := h.augmentPluginService.RefreshSessionWithOptions(
 		c.Request.Context(),
 		req.RefreshToken,
-		h.buildAugmentSessionRefreshOptions(c, req),
+		options,
 	)
+	if poolLease != nil {
+		_ = poolLease.Release(c.Request.Context(), err == nil, "refresh_failed")
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -439,6 +491,16 @@ func buildAugmentSessionRefreshOptions(req augmentSessionRefreshRequest, tenantU
 		Scopes:       splitAugmentScopes(req.OfficialScopes),
 	}
 	return options
+}
+
+func requestedAugmentPoolSources(source string) []string {
+	source = strings.TrimSpace(source)
+	switch source {
+	case "official_quick_login", "wukong_quick_login":
+		return []string{source}
+	default:
+		return nil
+	}
 }
 
 func (h *AuthHandler) buildAugmentSessionRefreshOptions(c *gin.Context, req augmentSessionRefreshRequest) service.AugmentSessionRefreshOptions {

@@ -18,6 +18,7 @@ const (
 	AugmentGatewayProviderGroupGeminiNamespace         = "gateway.augment.provider_groups.gemini"
 	AugmentGatewayEnabledModelsNamespace               = "gateway.augment.enabled_models"
 	AugmentGatewaySourcePolicyWukongEnabledNamespace   = "gateway.augment.source_policy.wukong_enabled"
+	AugmentGatewaySourcePriorityNamespace              = "gateway.augment.source_policy.priority"
 	AugmentGatewayRoutePolicyVersionNamespace          = "gateway.augment.route_policy_version"
 	AugmentGatewayDefaultRoutePolicyVersion            = "v1"
 	AugmentGatewaySettingsActionUpdate                 = "update"
@@ -114,6 +115,10 @@ type AugmentGatewaySourcePolicySetting struct {
 	WukongEnabled bool `json:"wukong_enabled"`
 }
 
+type AugmentGatewaySourcePrioritySetting struct {
+	Sources []string `json:"sources"`
+}
+
 type AugmentGatewayRoutePolicySetting struct {
 	Version string `json:"version"`
 }
@@ -134,11 +139,12 @@ type AugmentGatewayProviderRuntime struct {
 }
 
 type AugmentGatewayRegistryState struct {
-	GatewayEnabled    bool                                            `json:"gateway_enabled"`
-	ProviderGroups    map[AugmentGatewayProvider]AugmentGatewayProviderRuntime `json:"provider_groups"`
-	Models            map[string]AugmentGatewayModelSetting           `json:"models"`
-	SourcePolicy      AugmentGatewaySourcePolicySetting               `json:"source_policy"`
-	RoutePolicyVersion string                                         `json:"route_policy_version"`
+	GatewayEnabled     bool                                              `json:"gateway_enabled"`
+	ProviderGroups     map[AugmentGatewayProvider]AugmentGatewayProviderRuntime `json:"provider_groups"`
+	Models             map[string]AugmentGatewayModelSetting             `json:"models"`
+	SourcePolicy       AugmentGatewaySourcePolicySetting                 `json:"source_policy"`
+	SourcePriority     []string                                          `json:"source_priority"`
+	RoutePolicyVersion string                                            `json:"route_policy_version"`
 }
 
 type AugmentGatewayAdminService struct {
@@ -164,10 +170,11 @@ func NewAugmentGatewayAdminService(
 
 func (s *AugmentGatewayAdminService) LoadAugmentGatewayRegistryState(ctx context.Context) (*AugmentGatewayRegistryState, error) {
 	state := &AugmentGatewayRegistryState{
-		GatewayEnabled:    s.fallback.Enabled,
-		ProviderGroups:    buildFallbackAugmentGatewayProviderGroups(s.fallback),
-		Models:            buildFallbackAugmentGatewayModelSettings(s.fallback),
-		SourcePolicy:      AugmentGatewaySourcePolicySetting{WukongEnabled: true},
+		GatewayEnabled:     s.fallback.Enabled,
+		ProviderGroups:     buildFallbackAugmentGatewayProviderGroups(s.fallback),
+		Models:             buildFallbackAugmentGatewayModelSettings(s.fallback),
+		SourcePolicy:       AugmentGatewaySourcePolicySetting{WukongEnabled: true},
+		SourcePriority:     normalizePoolSourcePriority(nil),
 		RoutePolicyVersion: AugmentGatewayDefaultRoutePolicyVersion,
 	}
 	if s == nil || s.store == nil {
@@ -212,6 +219,12 @@ func (s *AugmentGatewayAdminService) LoadAugmentGatewayRegistryState(ctx context
 				return nil, err
 			}
 			state.SourcePolicy = setting
+		case AugmentGatewaySourcePriorityNamespace:
+			var setting AugmentGatewaySourcePrioritySetting
+			if err := json.Unmarshal(record.SettingsJSON, &setting); err != nil {
+				return nil, err
+			}
+			state.SourcePriority = normalizePoolSourcePriority(setting.Sources)
 		case AugmentGatewayRoutePolicyVersionNamespace:
 			var setting AugmentGatewayRoutePolicySetting
 			if err := json.Unmarshal(record.SettingsJSON, &setting); err != nil {
@@ -245,6 +258,31 @@ func (s *AugmentGatewayAdminService) LoadAugmentGatewayRegistryState(ctx context
 	}
 
 	return state, nil
+}
+
+func (s *AugmentGatewayAdminService) GetSourcePriority(ctx context.Context) ([]string, error) {
+	state, err := s.LoadAugmentGatewayRegistryState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), state.SourcePriority...), nil
+}
+
+func (s *AugmentGatewayAdminService) UpdateSourcePriority(ctx context.Context, sources []string, meta AugmentGatewaySettingsMutationMeta) (*AugmentGatewaySettingsVersion, error) {
+	payload, err := json.Marshal(AugmentGatewaySourcePrioritySetting{
+		Sources: normalizePoolSourcePriority(sources),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.store.Put(ctx, AugmentGatewaySettingsWriteInput{
+		Namespace:       AugmentGatewaySourcePriorityNamespace,
+		SettingsJSON:    payload,
+		ExpectedVersion: meta.ExpectedVersion,
+		ActorAdminID:    meta.ActorAdminID,
+		RequestID:       strings.TrimSpace(meta.RequestID),
+		Action:          AugmentGatewaySettingsActionUpdate,
+	})
 }
 
 func (s *AugmentGatewayAdminService) UpdateProviderGroup(

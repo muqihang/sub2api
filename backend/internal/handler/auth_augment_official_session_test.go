@@ -179,7 +179,7 @@ func TestAugmentQuickLoginGrantOfficialPassthroughUsesBoundOfficialSession(t *te
 			TenantOrigin:               "https://official.augment.local",
 			PortalOrigin:               handlerStringPtr("https://portal.augment.local"),
 			Scopes:                     []string{"augment:session"},
-			ExpiresAt:                  handlerTimePtr(now.Add(45 * time.Minute)),
+			ExpiresAt:                  handlerTimePtr(now.Add(24 * time.Hour)),
 			Status:                     "active",
 			EncryptedCredentialPayload: encryptedPayload,
 			CredentialSchemaVersion:    1,

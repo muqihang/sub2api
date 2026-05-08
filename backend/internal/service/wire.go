@@ -502,6 +502,27 @@ func ProvideAugmentOfficialSessionService(
 	return NewAugmentOfficialSessionService(store, cipher, secret)
 }
 
+func ProvideAugmentOfficialPoolSessionService(
+	store AugmentOfficialPoolSessionStore,
+	cipher *AugmentSessionVaultCipher,
+	adminService *AugmentGatewayAdminService,
+	cfg *config.Config,
+) *AugmentOfficialPoolSessionService {
+	if store == nil || cipher == nil {
+		return nil
+	}
+	secret := strings.TrimSpace(os.Getenv("AUGMENT_SESSION_BIND_TOKEN_SECRET"))
+	if secret == "" && cfg != nil {
+		secret = strings.TrimSpace(cfg.JWT.Secret)
+	}
+	if secret == "" {
+		return nil
+	}
+	svc := NewAugmentOfficialPoolSessionService(store, cipher, secret)
+	svc.SetSourcePriorityProvider(adminService)
+	return svc
+}
+
 func ProvideAugmentGatewayUsageService(usageRepo UsageLogRepository) *AugmentGatewayUsageService {
 	return NewAugmentGatewayUsageService(usageRepo)
 }
@@ -597,6 +618,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAugmentPluginService,
 	ProvideAugmentSessionVaultCipher,
 	ProvideAugmentOfficialSessionService,
+	ProvideAugmentOfficialPoolSessionService,
 	ProvideAugmentGatewayUsageService,
 	ProvideAugmentGatewayAdminService,
 	ProvideAugmentGatewayModelRegistry,

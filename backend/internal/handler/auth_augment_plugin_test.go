@@ -56,6 +56,44 @@ func (s augmentPluginJWTAuthStub) ValidateToken(token string) (*service.JWTClaim
 	return nil, service.ErrInvalidToken
 }
 
+type handlerOfficialPoolSessionStoreStub struct {
+	credentialRow *service.AugmentOfficialPoolStoredCredentialRow
+	acquiredSources []string
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) CreateBindIntent(ctx context.Context, input service.AugmentOfficialPoolBindIntentStoreCreateInput) (*service.AugmentOfficialPoolBindIntentStoreRecord, error) {
+	return nil, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) ConsumeBindIntent(ctx context.Context, bindIntentID string, adminUserID int64) (*service.AugmentOfficialPoolBindIntentStoreRecord, error) {
+	return nil, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) UpsertPoolSession(ctx context.Context, input service.AugmentOfficialPoolStoredSessionInput) (*service.AugmentOfficialPoolStoredAdminView, error) {
+	return nil, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialPoolStoredAdminView, error) {
+	return nil, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) GetAdminSession(ctx context.Context, sessionID int64) (*service.AugmentOfficialPoolStoredAdminView, error) {
+	return nil, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) AcquireUsableSession(ctx context.Context, source string, now, leaseUntil time.Time) (*service.AugmentOfficialPoolStoredCredentialRow, error) {
+	s.acquiredSources = append(s.acquiredSources, source)
+	return s.credentialRow, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) ReleaseLease(ctx context.Context, sessionID int64, input service.AugmentOfficialPoolLeaseReleaseInput) (*service.AugmentOfficialPoolStoredAdminView, error) {
+	return nil, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) RevokePoolSession(ctx context.Context, sessionID int64, status string, now time.Time) (*service.AugmentOfficialPoolStoredAdminView, error) {
+	return nil, nil
+}
+
 type augmentPluginUserStub struct {
 	user  *service.User
 	users map[int64]*service.User
@@ -438,6 +476,63 @@ func TestAugmentQuickLoginGrantDefaultsToLocalCompatWithoutOfficialInputs(t *tes
 	require.Contains(t, exchangeRec.Body.String(), `"session_source":"local_compat"`)
 }
 
+func TestAugmentQuickLoginGrantOfficialPassthroughWithoutPoolReturnsUnavailable(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		nil,
+		nil,
+		nil,
+	)
+
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{},
+		newHandlerTestAugmentSessionVaultCipher(t),
+		"bind-secret",
+	)
+
+	handler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+		poolService,
+	)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{"mode":"official_passthrough"}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_OFFICIAL_POOL_SESSION_UNAVAILABLE")
+}
+
 func TestAugmentQuickLoginGrantIncludesPortalInVSCodeDeeplink(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -587,6 +682,126 @@ func TestAugmentSessionRefreshAcceptsOfficialPassthroughBundle(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"session_source":"official"`)
 }
 
+func TestAugmentQuickLoginGrantOfficialPassthroughUsesPoolSession(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+	apiKey := service.APIKey{
+		ID:        11,
+		UserID:    user.ID,
+		Key:       "sk-plugin-generated",
+		Name:      "plugin-generated",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			keysByUser: map[int64][]service.APIKey{
+				user.ID: {apiKey},
+			},
+		},
+		nil,
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	encryptedPayload := mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{
+		"access_token":       "pool-access",
+		"refresh_token":      "pool-refresh",
+		"official_session_id": "sess-pool",
+	})
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{
+			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+				ID:                        101,
+				Source:                    "official_quick_login",
+				TenantOrigin:              "https://official.augment.local",
+				Scopes:                    []string{"augment:session"},
+				ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+				Status:                    service.AugmentOfficialPoolSessionStatusActive,
+				EncryptedCredentialPayload: encryptedPayload,
+				CredentialSchemaVersion:   1,
+				KeyVersion:                "key-active",
+				Fingerprint:               "poolfingerprint012345",
+				HealthScore:               100,
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	handler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+		poolService,
+	)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+	router.POST("/api/v1/plugin/augment/callback/exchange", handler.AugmentCallbackExchange)
+
+	grantReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{"mode":"official_passthrough"}`)),
+	)
+	grantReq.Header.Set("Content-Type", "application/json")
+	grantReq.Header.Set("Origin", "http://127.0.0.1:18082")
+	grantRec := httptest.NewRecorder()
+	router.ServeHTTP(grantRec, grantReq)
+	require.Equal(t, http.StatusOK, grantRec.Code)
+
+	var grantBody struct {
+		Data struct {
+			Grant string `json:"grant"`
+			State string `json:"state"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(grantRec.Body.Bytes(), &grantBody))
+
+	exchangePayload, err := json.Marshal(map[string]string{
+		"grant": grantBody.Data.Grant,
+		"state": grantBody.Data.State,
+	})
+	require.NoError(t, err)
+
+	exchangeReq := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/augment/callback/exchange", bytes.NewReader(exchangePayload))
+	exchangeReq.Header.Set("Content-Type", "application/json")
+	exchangeReq.Header.Set("Origin", "http://127.0.0.1:18082")
+	exchangeRec := httptest.NewRecorder()
+	router.ServeHTTP(exchangeRec, exchangeReq)
+
+	require.Equal(t, http.StatusOK, exchangeRec.Code)
+	require.Contains(t, exchangeRec.Body.String(), `"access_token":"pool-access"`)
+	require.Contains(t, exchangeRec.Body.String(), `"refresh_token":"pool-refresh"`)
+	require.Contains(t, exchangeRec.Body.String(), `"session_source":"official"`)
+}
+
 func TestAugmentSessionRefreshOfficialPassthroughUsesBoundOfficialSessionFromBearer(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -666,6 +881,213 @@ func TestAugmentSessionRefreshOfficialPassthroughUsesBoundOfficialSessionFromBea
 	require.Contains(t, rec.Body.String(), `"access_token":"official-access-next"`)
 	require.Contains(t, rec.Body.String(), `"tenant_url":"https://official.augment.local"`)
 	require.Contains(t, rec.Body.String(), `"session_source":"official"`)
+}
+
+func TestAugmentSessionRefreshOfficialPassthroughUsesPoolSession(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginJWTAuthStub{token: "jwt-pool-refresh", userID: user.ID},
+		augmentPluginUserStub{user: user},
+		nil,
+		nil,
+		nil,
+	)
+
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	encryptedPayload := mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{
+		"access_token":       "pool-access-next",
+		"refresh_token":      "pool-refresh-next",
+		"official_session_id": "sess-pool-refresh",
+	})
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{
+			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+				ID:                        202,
+				Source:                    "official_quick_login",
+				TenantOrigin:              "https://official.augment.local",
+				Scopes:                    []string{"augment:session"},
+				ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+				Status:                    service.AugmentOfficialPoolSessionStatusActive,
+				EncryptedCredentialPayload: encryptedPayload,
+				CredentialSchemaVersion:   1,
+				KeyVersion:                "key-active",
+				Fingerprint:               "poolrefreshfingerprint",
+				HealthScore:               100,
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService, poolService)
+	router := gin.New()
+	router.POST("/api/v1/plugin/augment/session/refresh", handler.AugmentSessionRefresh)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/session/refresh",
+		bytes.NewReader([]byte(`{
+			"refresh_token":"pool-refresh-next",
+			"mode":"official_passthrough"
+		}`)),
+	)
+	req.Header.Set("Authorization", "Bearer jwt-pool-refresh")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"access_token":"pool-access-next"`)
+	require.Contains(t, rec.Body.String(), `"tenant_url":"https://official.augment.local"`)
+}
+
+func TestAugmentQuickLoginGrantOfficialPassthroughRespectsRequestedPoolSource(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+	apiKey := service.APIKey{
+		ID:        11,
+		UserID:    user.ID,
+		Key:       "sk-plugin-generated",
+		Name:      "plugin-generated",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			keysByUser: map[int64][]service.APIKey{
+				user.ID: {apiKey},
+			},
+		},
+		nil,
+		nil,
+	)
+
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	encryptedPayload := mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{
+		"access_token":  "pool-access",
+		"refresh_token": "pool-refresh",
+	})
+	store := &handlerOfficialPoolSessionStoreStub{
+		credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+			ID:                        301,
+			Source:                    "wukong_quick_login",
+			TenantOrigin:              "https://official.augment.local",
+			Scopes:                    []string{"augment:session"},
+			ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+			Status:                    service.AugmentOfficialPoolSessionStatusActive,
+			EncryptedCredentialPayload: encryptedPayload,
+			CredentialSchemaVersion:   1,
+			KeyVersion:                "key-active",
+			Fingerprint:               "poolfingerprint-source",
+			HealthScore:               100,
+		},
+	}
+	poolService := service.NewAugmentOfficialPoolSessionService(store, cipher, "bind-secret")
+
+	handler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil, nil, nil, nil, nil, nil,
+		pluginService,
+		poolService,
+	)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{"mode":"official_passthrough","source":"wukong_quick_login"}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, []string{"wukong_quick_login"}, store.acquiredSources)
+}
+
+func TestAugmentSessionRefreshOfficialPassthroughPoolRequiresBearer(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{},
+		nil,
+		nil,
+		nil,
+	)
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	encryptedPayload := mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{
+		"access_token":  "pool-access-next",
+		"refresh_token": "pool-refresh-next",
+	})
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{
+			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+				ID:                        303,
+				Source:                    "official_quick_login",
+				TenantOrigin:              "https://official.augment.local",
+				Scopes:                    []string{"augment:session"},
+				ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+				Status:                    service.AugmentOfficialPoolSessionStatusActive,
+				EncryptedCredentialPayload: encryptedPayload,
+				CredentialSchemaVersion:   1,
+				KeyVersion:                "key-active",
+				Fingerprint:               "poolrefreshfingerprint",
+				HealthScore:               100,
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService, poolService)
+	router := gin.New()
+	router.POST("/api/v1/plugin/augment/session/refresh", handler.AugmentSessionRefresh)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/session/refresh",
+		bytes.NewReader([]byte(`{
+			"refresh_token":"pool-refresh-next",
+			"mode":"official_passthrough"
+		}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
 func TestAugmentSessionRefreshOfficialPassthroughRejectsAPIKeyBearerForBoundSession(t *testing.T) {

@@ -104,9 +104,9 @@ func TestAdminAugmentGatewayOfficialSessionsNeverReturnSecrets(t *testing.T) {
 	router, _ := setupAugmentGatewayAdminHandlerRouter(
 		&augmentGatewayAdminSettingsStub{},
 		&augmentGatewayOfficialSessionAdminStub{
-			listResult: []service.AugmentOfficialSessionAdminView{
+			listResult: []service.AugmentOfficialPoolSessionAdminView{
 				{
-					UserID:               42,
+					ID:                   42,
 					Source:               "wukong_quick_login",
 					TenantOrigin:         "https://tenant.example.com",
 					FingerprintPrefix:    "fp-prefix",
@@ -146,8 +146,8 @@ func TestAdminAugmentGatewayRevokeRequiresSessionVaultPermission(t *testing.T) {
 
 func TestAdminAugmentGatewayDisableSessionRequiresPermissionAndClearsCredential(t *testing.T) {
 	sessionSvc := &augmentGatewayOfficialSessionAdminStub{
-		disableResult: &service.AugmentOfficialSessionAdminView{
-			UserID:               42,
+		disableResult: &service.AugmentOfficialPoolSessionAdminView{
+			ID:                   42,
 			Status:               "revoked",
 			HasCredentialPayload: false,
 		},
@@ -171,8 +171,8 @@ func TestAdminAugmentGatewayDisableSessionRequiresPermissionAndClearsCredential(
 
 func TestAdminAugmentGatewayRequireReloginRequiresPermissionAndClearsCredential(t *testing.T) {
 	sessionSvc := &augmentGatewayOfficialSessionAdminStub{
-		requireReloginResult: &service.AugmentOfficialSessionAdminView{
-			UserID:               42,
+		requireReloginResult: &service.AugmentOfficialPoolSessionAdminView{
+			ID:                   42,
 			Status:               "revoked",
 			HasCredentialPayload: false,
 		},
@@ -198,8 +198,8 @@ func TestAdminAugmentGatewayDiagnosticsAreAllowlistedAndSecretFree(t *testing.T)
 	router, _ := setupAugmentGatewayAdminHandlerRouter(
 		&augmentGatewayAdminSettingsStub{},
 		&augmentGatewayOfficialSessionAdminStub{
-			diagnosticsResult: &service.AugmentOfficialSessionAdminDiagnostics{
-				UserID:               42,
+			diagnosticsResult: &service.AugmentOfficialPoolSessionDiagnostics{
+				ID:                   42,
 				Source:               "official_quick_login",
 				TenantHost:           "tenant.example.com",
 				FingerprintPrefix:    "fp-prefix",
@@ -247,8 +247,10 @@ type augmentGatewayAdminSettingsStub struct {
 	updateProviderGroupErr    error
 	updateModelResult         *service.AugmentGatewaySettingsVersion
 	updateModelErr            error
+	updateSourcePriorityResult *service.AugmentGatewaySettingsVersion
 	providerGroups            []service.AugmentGatewayProviderRuntime
 	models                    []service.AugmentGatewayManagedModel
+	sourcePriority            []string
 }
 
 func (s *augmentGatewayAdminSettingsStub) ListProviderGroups(ctx context.Context) ([]service.AugmentGatewayProviderRuntime, error) {
@@ -279,38 +281,60 @@ func (s *augmentGatewayAdminSettingsStub) UpdateModel(ctx context.Context, model
 	return &service.AugmentGatewaySettingsVersion{Namespace: service.AugmentGatewayEnabledModelsNamespace, Version: 1}, nil
 }
 
+func (s *augmentGatewayAdminSettingsStub) GetSourcePriority(ctx context.Context) ([]string, error) {
+	if len(s.sourcePriority) == 0 {
+		return []string{"official_quick_login", "wukong_quick_login"}, nil
+	}
+	return s.sourcePriority, nil
+}
+
+func (s *augmentGatewayAdminSettingsStub) UpdateSourcePriority(ctx context.Context, sources []string, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error) {
+	if s.updateSourcePriorityResult != nil {
+		return s.updateSourcePriorityResult, nil
+	}
+	return &service.AugmentGatewaySettingsVersion{Namespace: service.AugmentGatewaySourcePriorityNamespace, Version: 1}, nil
+}
+
 type augmentGatewayOfficialSessionAdminStub struct {
-	listResult            []service.AugmentOfficialSessionAdminView
-	diagnosticsResult     *service.AugmentOfficialSessionAdminDiagnostics
-	revokeResult          *service.AugmentOfficialSessionAdminView
-	disableResult         *service.AugmentOfficialSessionAdminView
-	requireReloginResult  *service.AugmentOfficialSessionAdminView
+	listResult            []service.AugmentOfficialPoolSessionAdminView
+	diagnosticsResult     *service.AugmentOfficialPoolSessionDiagnostics
+	revokeResult          *service.AugmentOfficialPoolSessionAdminView
+	disableResult         *service.AugmentOfficialPoolSessionAdminView
+	requireReloginResult  *service.AugmentOfficialPoolSessionAdminView
 	revokeCalled          bool
 	disableCalled         bool
 	requireReloginCalled  bool
 }
 
-func (s *augmentGatewayOfficialSessionAdminStub) ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialSessionAdminView, error) {
+func (s *augmentGatewayOfficialSessionAdminStub) ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialPoolSessionAdminView, error) {
 	return s.listResult, nil
 }
 
-func (s *augmentGatewayOfficialSessionAdminStub) GetAdminSessionDiagnostics(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminDiagnostics, error) {
+func (s *augmentGatewayOfficialSessionAdminStub) GetAdminSessionDiagnostics(ctx context.Context, userID int64) (*service.AugmentOfficialPoolSessionDiagnostics, error) {
 	return s.diagnosticsResult, nil
 }
 
-func (s *augmentGatewayOfficialSessionAdminStub) RevokeOfficialSessionForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminView, error) {
+func (s *augmentGatewayOfficialSessionAdminStub) RevokeSessionForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialPoolSessionAdminView, error) {
 	s.revokeCalled = true
 	return s.revokeResult, nil
 }
 
-func (s *augmentGatewayOfficialSessionAdminStub) DisableOfficialSessionForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminView, error) {
+func (s *augmentGatewayOfficialSessionAdminStub) DisableSessionForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialPoolSessionAdminView, error) {
 	s.disableCalled = true
 	return s.disableResult, nil
 }
 
-func (s *augmentGatewayOfficialSessionAdminStub) RequireOfficialSessionReloginForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminView, error) {
+func (s *augmentGatewayOfficialSessionAdminStub) RequireSessionReloginForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialPoolSessionAdminView, error) {
 	s.requireReloginCalled = true
 	return s.requireReloginResult, nil
+}
+
+func (s *augmentGatewayOfficialSessionAdminStub) CreateBindIntent(ctx context.Context, adminUserID int64, input service.AugmentOfficialPoolBindIntentRequest) (*service.AugmentOfficialPoolBindIntentResponse, error) {
+	return &service.AugmentOfficialPoolBindIntentResponse{}, nil
+}
+
+func (s *augmentGatewayOfficialSessionAdminStub) BindSession(ctx context.Context, adminUserID int64, bindToken string, input service.AugmentOfficialPoolBindRequest) (*service.AugmentOfficialPoolSessionAdminView, error) {
+	return &service.AugmentOfficialPoolSessionAdminView{}, nil
 }
 
 type augmentGatewayUsageAdminStub struct {

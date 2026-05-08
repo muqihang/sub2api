@@ -28,6 +28,7 @@ type AuthHandler struct {
 	augmentPluginService          *service.AugmentPluginService
 	augmentGatewayService         *service.AugmentGatewayService
 	augmentOfficialSessionService *service.AugmentOfficialSessionService
+	augmentOfficialPoolService    *service.AugmentOfficialPoolSessionService
 	augmentGatewayUsageService    *service.AugmentGatewayUsageService
 }
 
@@ -42,7 +43,7 @@ func NewAuthHandler(
 	totpService *service.TotpService,
 	augmentDeps ...any,
 ) *AuthHandler {
-	augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentGatewayUsageService := resolveAuthHandlerAugmentDeps(augmentDeps...)
+	augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentOfficialPoolService, augmentGatewayUsageService := resolveAuthHandlerAugmentDeps(augmentDeps...)
 	return &AuthHandler{
 		cfg:                           cfg,
 		authService:                   authService,
@@ -54,14 +55,16 @@ func NewAuthHandler(
 		augmentPluginService:          augmentPluginService,
 		augmentGatewayService:         augmentGatewayService,
 		augmentOfficialSessionService: augmentOfficialSessionService,
+		augmentOfficialPoolService:    augmentOfficialPoolService,
 		augmentGatewayUsageService:    augmentGatewayUsageService,
 	}
 }
 
-func resolveAuthHandlerAugmentDeps(augmentDeps ...any) (*service.AugmentPluginService, *service.AugmentGatewayService, *service.AugmentOfficialSessionService, *service.AugmentGatewayUsageService) {
+func resolveAuthHandlerAugmentDeps(augmentDeps ...any) (*service.AugmentPluginService, *service.AugmentGatewayService, *service.AugmentOfficialSessionService, *service.AugmentOfficialPoolSessionService, *service.AugmentGatewayUsageService) {
 	var augmentPluginService *service.AugmentPluginService
 	var augmentGatewayService *service.AugmentGatewayService
 	var augmentOfficialSessionService *service.AugmentOfficialSessionService
+	var augmentOfficialPoolService *service.AugmentOfficialPoolSessionService
 	var augmentGatewayUsageService *service.AugmentGatewayUsageService
 	for _, dep := range augmentDeps {
 		switch typed := dep.(type) {
@@ -71,11 +74,13 @@ func resolveAuthHandlerAugmentDeps(augmentDeps ...any) (*service.AugmentPluginSe
 			augmentGatewayService = typed
 		case *service.AugmentOfficialSessionService:
 			augmentOfficialSessionService = typed
+		case *service.AugmentOfficialPoolSessionService:
+			augmentOfficialPoolService = typed
 		case *service.AugmentGatewayUsageService:
 			augmentGatewayUsageService = typed
 		}
 	}
-	return augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentGatewayUsageService
+	return augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentOfficialPoolService, augmentGatewayUsageService
 }
 
 // RegisterRequest represents the registration request payload

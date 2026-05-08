@@ -117,6 +117,7 @@ var ProviderSet = wire.NewSet(
 	NewGeminiTokenCache,
 	ProvideSchedulerCache,
 	ProvideAugmentOfficialSessionStore,
+	ProvideAugmentOfficialPoolSessionStore,
 	ProvideAugmentGatewaySettingsStore,
 	NewSchedulerOutboxRepository,
 	NewProxyLatencyCache,
@@ -208,6 +209,10 @@ func ProvideAugmentOfficialSessionStore(client *ent.Client, sqlDB *sql.DB) servi
 	return &augmentOfficialSessionStoreAdapter{
 		repo: NewAugmentOfficialSessionRepository(client, sqlDB),
 	}
+}
+
+func ProvideAugmentOfficialPoolSessionStore(sqlDB *sql.DB) service.AugmentOfficialPoolSessionStore {
+	return NewAugmentOfficialPoolSessionRepository(sqlDB)
 }
 
 func ProvideAugmentGatewaySettingsStore(sqlDB *sql.DB) service.AugmentGatewaySettingsStore {

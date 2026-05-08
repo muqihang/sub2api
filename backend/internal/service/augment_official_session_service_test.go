@@ -552,7 +552,7 @@ func TestAugmentOfficialSessionServiceGetCredentialForRouteRequiresActiveSession
 				Source:                     "official_quick_login",
 				TenantOrigin:               "https://official.augment.local",
 				Scopes:                     []string{"augment:session"},
-				ExpiresAt:                  timePtr(now.Add(20 * time.Minute)),
+				ExpiresAt:                  timePtr(now.Add(24 * time.Hour)),
 				Status:                     "active",
 				EncryptedCredentialPayload: payload,
 				CredentialSchemaVersion:    1,

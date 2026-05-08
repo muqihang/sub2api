@@ -82,7 +82,7 @@ func ProvideSystemHandler(updateService *service.UpdateService, lockService *ser
 
 func ProvideAugmentGatewayHandler(
 	settingsSvc *service.AugmentGatewayAdminService,
-	sessionSvc *service.AugmentOfficialSessionService,
+	sessionSvc *service.AugmentOfficialPoolSessionService,
 	usageSvc *service.AugmentGatewayUsageService,
 ) *admin.AugmentGatewayHandler {
 	return admin.NewAugmentGatewayHandler(settingsSvc, sessionSvc, usageSvc)
@@ -106,6 +106,7 @@ func ProvideAuthHandler(
 	augmentPluginService *service.AugmentPluginService,
 	augmentGatewayService *service.AugmentGatewayService,
 	augmentOfficialSessionService *service.AugmentOfficialSessionService,
+	augmentOfficialPoolService *service.AugmentOfficialPoolSessionService,
 	augmentGatewayUsageService *service.AugmentGatewayUsageService,
 ) *AuthHandler {
 	return NewAuthHandler(
@@ -119,6 +120,7 @@ func ProvideAuthHandler(
 		augmentPluginService,
 		augmentGatewayService,
 		augmentOfficialSessionService,
+		augmentOfficialPoolService,
 		augmentGatewayUsageService,
 	)
 }
