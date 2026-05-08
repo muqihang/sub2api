@@ -21,6 +21,14 @@ func TestAuthHandlerConstructsWithAugmentGatewayService(t *testing.T) {
 	require.Same(t, augmentGatewayService, authHandler.augmentGatewayService)
 }
 
+func TestAuthHandlerConstructsWithAugmentOfficialSessionService(t *testing.T) {
+	officialSessionService := service.NewAugmentOfficialSessionService(nil, nil, "test-secret")
+
+	authHandler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, officialSessionService)
+
+	require.Same(t, officialSessionService, authHandler.augmentOfficialSessionService)
+}
+
 func TestAuthHandlerConstructorKeepsLegacyDirectCallShape(t *testing.T) {
 	authHandler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil)
 

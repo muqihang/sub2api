@@ -200,5 +200,9 @@ func RegisterAuthRoutes(
 	pluginAuthenticated.Use(gin.HandlerFunc(jwtAuth))
 	{
 		pluginAuthenticated.POST("/quick-login/grant", h.Auth.AugmentQuickLoginGrant)
+		pluginAuthenticated.POST("/official-session/bind-intents", h.Auth.AugmentOfficialSessionBindIntent)
+		pluginAuthenticated.POST("/official-session/bind", h.Auth.AugmentOfficialSessionBind)
+		pluginAuthenticated.GET("/official-session", h.Auth.AugmentOfficialSessionStatus)
+		pluginAuthenticated.POST("/official-session/revoke", h.Auth.AugmentOfficialSessionRevoke)
 	}
 }

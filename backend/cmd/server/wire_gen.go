@@ -147,7 +147,13 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	augmentGatewayReasoningTurnStore := service.NewAugmentGatewayReasoningTurnStore()
 	augmentGatewayProviderExecutor := service.NewAugmentGatewayProviderExecutor(configConfig, openAIGatewayService, gatewayService, geminiMessagesCompatService, augmentGatewayReasoningTurnStore)
 	augmentGatewayService := service.NewAugmentGatewayService(configConfig, augmentGatewayModelRegistry, augmentGatewayRouter, augmentGatewayProviderExecutor, augmentGatewayReasoningTurnStore)
-	authHandler := handler.ProvideAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, augmentPluginService, augmentGatewayService)
+	augmentOfficialSessionStore := repository.ProvideAugmentOfficialSessionStore(client, db)
+	augmentSessionVaultCipher, err := service.ProvideAugmentSessionVaultCipher(configConfig)
+	if err != nil {
+		return nil, err
+	}
+	augmentOfficialSessionService := service.ProvideAugmentOfficialSessionService(augmentOfficialSessionStore, augmentSessionVaultCipher, configConfig)
+	authHandler := handler.ProvideAuthHandler(configConfig, authService, userService, settingService, promoService, redeemService, totpService, augmentPluginService, augmentGatewayService, augmentOfficialSessionService)
 	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)

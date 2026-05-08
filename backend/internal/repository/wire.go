@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -113,6 +115,7 @@ var ProviderSet = wire.NewSet(
 	NewUpdateCache,
 	NewGeminiTokenCache,
 	ProvideSchedulerCache,
+	ProvideAugmentOfficialSessionStore,
 	NewSchedulerOutboxRepository,
 	NewProxyLatencyCache,
 	NewTotpCache,
@@ -193,4 +196,188 @@ func ProvideSQLDB(client *ent.Client) (*sql.DB, error) {
 // 提供：*redis.Client
 func ProvideRedis(cfg *config.Config) *redis.Client {
 	return InitRedis(cfg)
+}
+
+type augmentOfficialSessionStoreAdapter struct {
+	repo *augmentOfficialSessionRepository
+}
+
+func ProvideAugmentOfficialSessionStore(client *ent.Client, sqlDB *sql.DB) service.AugmentOfficialSessionStore {
+	return &augmentOfficialSessionStoreAdapter{
+		repo: NewAugmentOfficialSessionRepository(client, sqlDB),
+	}
+}
+
+func (a *augmentOfficialSessionStoreAdapter) CreateBindIntent(ctx context.Context, input service.AugmentOfficialSessionBindIntentStoreCreateInput) (*service.AugmentOfficialSessionBindIntentStoreRecord, error) {
+	record, err := a.repo.CreateBindIntent(ctx, AugmentOfficialSessionBindIntentCreateInput{
+		UserID:          input.UserID,
+		StateHash:       input.StateHash,
+		Mode:            input.Mode,
+		Source:          input.Source,
+		TenantAllowlist: append([]string(nil), input.TenantAllowlist...),
+	})
+	if err != nil || record == nil {
+		return nil, err
+	}
+	return &service.AugmentOfficialSessionBindIntentStoreRecord{
+		ID:              record.ID,
+		UserID:          record.UserID,
+		BindIntentID:    record.BindIntentID,
+		StateHash:       record.StateHash,
+		Mode:            record.Mode,
+		Source:          record.Source,
+		TenantAllowlist: append([]string(nil), record.TenantAllowlist...),
+		ExpiresAt:       record.ExpiresAt.UTC(),
+		ConsumedAt:      cloneTimePtrForAdapter(record.ConsumedAt),
+		CreatedAt:       record.CreatedAt.UTC(),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) ConsumeBindIntent(ctx context.Context, bindIntentID string, userID int64) (*service.AugmentOfficialSessionBindIntentStoreRecord, error) {
+	record, err := a.repo.ConsumeBindIntent(ctx, bindIntentID, userID)
+	if err != nil || record == nil {
+		return nil, err
+	}
+	return &service.AugmentOfficialSessionBindIntentStoreRecord{
+		ID:              record.ID,
+		UserID:          record.UserID,
+		BindIntentID:    record.BindIntentID,
+		StateHash:       record.StateHash,
+		Mode:            record.Mode,
+		Source:          record.Source,
+		TenantAllowlist: append([]string(nil), record.TenantAllowlist...),
+		ExpiresAt:       record.ExpiresAt.UTC(),
+		ConsumedAt:      cloneTimePtrForAdapter(record.ConsumedAt),
+		CreatedAt:       record.CreatedAt.UTC(),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) UpsertActiveSession(ctx context.Context, input service.AugmentOfficialSessionStoredSessionInput) (*service.AugmentOfficialSessionStoredPublicView, error) {
+	view, err := a.repo.UpsertActiveSession(ctx, AugmentOfficialSessionUpsertInput{
+		UserID:                     input.UserID,
+		Mode:                       input.Mode,
+		Source:                     input.Source,
+		TenantOrigin:               input.TenantOrigin,
+		PortalOrigin:               cloneStringPtrForAdapter(input.PortalOrigin),
+		Scopes:                     append([]string(nil), input.Scopes...),
+		ExpiresAt:                  cloneTimePtrForAdapter(input.ExpiresAt),
+		LastRefreshAt:              cloneTimePtrForAdapter(input.LastRefreshAt),
+		LastSuccessAt:              cloneTimePtrForAdapter(input.LastSuccessAt),
+		LastErrorAt:                cloneTimePtrForAdapter(input.LastErrorAt),
+		LastErrorCode:              cloneStringPtrForAdapter(input.LastErrorCode),
+		Status:                     input.Status,
+		EncryptedCredentialPayload: append([]byte(nil), input.EncryptedCredentialPayload...),
+		CredentialSchemaVersion:    input.CredentialSchemaVersion,
+		KeyVersion:                 input.KeyVersion,
+		Fingerprint:                input.Fingerprint,
+	})
+	if err != nil || view == nil {
+		return nil, err
+	}
+	return adminViewToStoredPublicView(view), nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionPublicView(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredPublicView, error) {
+	view, err := a.repo.GetActiveSessionPublicView(ctx, userID)
+	if err != nil || view == nil {
+		return nil, err
+	}
+	return &service.AugmentOfficialSessionStoredPublicView{
+		UserID:                  view.UserID,
+		Mode:                    view.Mode,
+		Source:                  view.Source,
+		TenantOrigin:            view.TenantOrigin,
+		PortalOrigin:            cloneStringPtrForAdapter(view.PortalOrigin),
+		Scopes:                  append([]string(nil), view.Scopes...),
+		ExpiresAt:               cloneTimePtrForAdapter(view.ExpiresAt),
+		LastRefreshAt:           cloneTimePtrForAdapter(view.LastRefreshAt),
+		LastSuccessAt:           cloneTimePtrForAdapter(view.LastSuccessAt),
+		LastErrorAt:             cloneTimePtrForAdapter(view.LastErrorAt),
+		LastErrorCode:           cloneStringPtrForAdapter(view.LastErrorCode),
+		Status:                  view.Status,
+		CredentialSchemaVersion: view.CredentialSchemaVersion,
+		KeyVersion:              view.KeyVersion,
+		Fingerprint:             view.Fingerprint,
+		CreatedAt:               view.CreatedAt.UTC(),
+		UpdatedAt:               view.UpdatedAt.UTC(),
+		RevokedAt:               cloneTimePtrForAdapter(view.RevokedAt),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionCredentialRow(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredCredentialRow, error) {
+	row, err := a.repo.GetActiveSessionCredentialRow(ctx, userID)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	return &service.AugmentOfficialSessionStoredCredentialRow{
+		UserID:                     row.UserID,
+		Mode:                       row.Mode,
+		Source:                     row.Source,
+		TenantOrigin:               row.TenantOrigin,
+		PortalOrigin:               cloneStringPtrForAdapter(row.PortalOrigin),
+		Scopes:                     append([]string(nil), row.Scopes...),
+		ExpiresAt:                  cloneTimePtrForAdapter(row.ExpiresAt),
+		LastRefreshAt:              cloneTimePtrForAdapter(row.LastRefreshAt),
+		LastSuccessAt:              cloneTimePtrForAdapter(row.LastSuccessAt),
+		LastErrorAt:                cloneTimePtrForAdapter(row.LastErrorAt),
+		LastErrorCode:              cloneStringPtrForAdapter(row.LastErrorCode),
+		Status:                     row.Status,
+		EncryptedCredentialPayload: append([]byte(nil), row.EncryptedCredentialPayload...),
+		CredentialSchemaVersion:    row.CredentialSchemaVersion,
+		KeyVersion:                 row.KeyVersion,
+		Fingerprint:                row.Fingerprint,
+		CreatedAt:                  row.CreatedAt.UTC(),
+		UpdatedAt:                  row.UpdatedAt.UTC(),
+		RevokedAt:                  cloneTimePtrForAdapter(row.RevokedAt),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) RevokeActiveSession(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredPublicView, error) {
+	view, err := a.repo.RevokeActiveSession(ctx, userID)
+	if err != nil || view == nil {
+		return nil, err
+	}
+	return adminViewToStoredPublicView(view), nil
+}
+
+func adminViewToStoredPublicView(view *AugmentOfficialSessionAdminView) *service.AugmentOfficialSessionStoredPublicView {
+	if view == nil {
+		return nil
+	}
+	return &service.AugmentOfficialSessionStoredPublicView{
+		UserID:                  view.UserID,
+		Mode:                    view.Mode,
+		Source:                  view.Source,
+		TenantOrigin:            view.TenantOrigin,
+		PortalOrigin:            cloneStringPtrForAdapter(view.PortalOrigin),
+		Scopes:                  append([]string(nil), view.Scopes...),
+		ExpiresAt:               cloneTimePtrForAdapter(view.ExpiresAt),
+		LastRefreshAt:           cloneTimePtrForAdapter(view.LastRefreshAt),
+		LastSuccessAt:           cloneTimePtrForAdapter(view.LastSuccessAt),
+		LastErrorAt:             cloneTimePtrForAdapter(view.LastErrorAt),
+		LastErrorCode:           cloneStringPtrForAdapter(view.LastErrorCode),
+		Status:                  view.Status,
+		CredentialSchemaVersion: view.CredentialSchemaVersion,
+		KeyVersion:              view.KeyVersion,
+		Fingerprint:             view.Fingerprint,
+		CreatedAt:               view.CreatedAt.UTC(),
+		UpdatedAt:               view.UpdatedAt.UTC(),
+		RevokedAt:               cloneTimePtrForAdapter(view.RevokedAt),
+	}
+}
+
+func cloneTimePtrForAdapter(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
+}
+
+func cloneStringPtrForAdapter(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }

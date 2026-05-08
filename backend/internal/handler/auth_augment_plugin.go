@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -90,7 +91,7 @@ func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
 	grant, err := h.augmentPluginService.CreateQuickLoginGrant(
 		c.Request.Context(),
 		subject.UserID,
-		buildAugmentQuickLoginGrantOptions(req, h.augmentTenantURL(c)),
+		h.buildAugmentQuickLoginGrantOptions(c, subject.UserID, req),
 	)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -157,7 +158,7 @@ func (h *AuthHandler) AugmentSessionRefresh(c *gin.Context) {
 	bundle, err := h.augmentPluginService.RefreshSessionWithOptions(
 		c.Request.Context(),
 		req.RefreshToken,
-		buildAugmentSessionRefreshOptions(req, h.augmentTenantURL(c)),
+		h.buildAugmentSessionRefreshOptions(c, req),
 	)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -400,6 +401,19 @@ func buildAugmentQuickLoginGrantOptions(req augmentQuickLoginGrantRequest, tenan
 	return options
 }
 
+func (h *AuthHandler) buildAugmentQuickLoginGrantOptions(c *gin.Context, userID int64, req augmentQuickLoginGrantRequest) service.AugmentQuickLoginGrantOptions {
+	options := buildAugmentQuickLoginGrantOptions(req, h.augmentTenantURL(c))
+	if options.Mode != service.AugmentQuickLoginModeOfficialPassthrough || options.OfficialSessionBundle != nil || h == nil || h.augmentOfficialSessionService == nil {
+		return options
+	}
+	credential, err := h.augmentOfficialSessionService.GetCredentialForRoute(c.Request.Context(), userID)
+	if err != nil || credential == nil {
+		return options
+	}
+	options.OfficialSessionBundle = augmentOfficialSessionBundleFromCredential(credential)
+	return options
+}
+
 func buildAugmentSessionRefreshOptions(req augmentSessionRefreshRequest, tenantURL string) service.AugmentSessionRefreshOptions {
 	options := service.AugmentSessionRefreshOptions{
 		TenantURL: tenantURL,
@@ -425,6 +439,43 @@ func buildAugmentSessionRefreshOptions(req augmentSessionRefreshRequest, tenantU
 		Scopes:       splitAugmentScopes(req.OfficialScopes),
 	}
 	return options
+}
+
+func (h *AuthHandler) buildAugmentSessionRefreshOptions(c *gin.Context, req augmentSessionRefreshRequest) service.AugmentSessionRefreshOptions {
+	options := buildAugmentSessionRefreshOptions(req, h.augmentTenantURL(c))
+	if options.Mode != service.AugmentQuickLoginModeOfficialPassthrough || options.OfficialSessionBundle != nil || h == nil || h.augmentOfficialSessionService == nil {
+		return options
+	}
+	subject, ok := servermiddleware.GetAuthSubjectFromContext(c)
+	if !ok {
+		return options
+	}
+	credential, err := h.augmentOfficialSessionService.GetCredentialForRoute(c.Request.Context(), subject.UserID)
+	if err != nil || credential == nil {
+		return options
+	}
+	options.OfficialSessionBundle = augmentOfficialSessionBundleFromCredential(credential)
+	return options
+}
+
+func augmentOfficialSessionBundleFromCredential(credential *service.AugmentOfficialSessionCredential) *service.AugmentSessionBundle {
+	if credential == nil {
+		return nil
+	}
+	bundle := &service.AugmentSessionBundle{
+		AccessToken:   credential.AccessToken,
+		RefreshToken:  credential.RefreshToken,
+		TenantURL:     credential.TenantOrigin,
+		Scopes:        append([]string(nil), credential.Scopes...),
+		SessionSource: service.AugmentSessionSourceOfficial,
+	}
+	if credential.PortalOrigin != nil {
+		bundle.PortalURL = *credential.PortalOrigin
+	}
+	if credential.ExpiresAt != nil {
+		bundle.ExpiresAt = credential.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return bundle
 }
 
 func parseAugmentSessionBundleString(raw string) *service.AugmentSessionBundle {

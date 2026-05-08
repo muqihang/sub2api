@@ -146,6 +146,33 @@ func TestAugmentPluginRoutesAreRegistered(t *testing.T) {
 			want:   http.StatusUnauthorized,
 		},
 		{
+			name:   "official session bind intent requires jwt auth",
+			method: http.MethodPost,
+			path:   "/api/v1/plugin/augment/official-session/bind-intents",
+			body:   `{}`,
+			want:   http.StatusUnauthorized,
+		},
+		{
+			name:   "official session bind requires jwt auth",
+			method: http.MethodPost,
+			path:   "/api/v1/plugin/augment/official-session/bind",
+			body:   `{}`,
+			want:   http.StatusUnauthorized,
+		},
+		{
+			name:   "official session status requires jwt auth",
+			method: http.MethodGet,
+			path:   "/api/v1/plugin/augment/official-session",
+			want:   http.StatusUnauthorized,
+		},
+		{
+			name:   "official session revoke requires jwt auth",
+			method: http.MethodPost,
+			path:   "/api/v1/plugin/augment/official-session/revoke",
+			body:   `{}`,
+			want:   http.StatusUnauthorized,
+		},
+		{
 			name:   "exchange route exists",
 			method: http.MethodPost,
 			path:   "/api/v1/plugin/augment/callback/exchange",

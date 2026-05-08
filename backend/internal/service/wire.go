@@ -3,6 +3,11 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -441,6 +446,56 @@ func ProvideAugmentPluginService(
 	return NewAugmentPluginService(cfg, authService, userService, apiKeyService, subscriptionService, settingService)
 }
 
+func ProvideAugmentSessionVaultCipher(cfg *config.Config) (*AugmentSessionVaultCipher, error) {
+	if keysetJSON := strings.TrimSpace(os.Getenv("AUGMENT_SESSION_VAULT_KEYSET")); keysetJSON != "" {
+		var raw struct {
+			ActiveKeyID string            `json:"active_key_id"`
+			Keys        map[string]string `json:"keys"`
+		}
+		if err := json.Unmarshal([]byte(keysetJSON), &raw); err != nil {
+			return nil, fmt.Errorf("parse AUGMENT_SESSION_VAULT_KEYSET: %w", err)
+		}
+		keyset := AugmentSessionVaultKeyset{
+			ActiveKeyID: strings.TrimSpace(raw.ActiveKeyID),
+			Keys:        make(map[string][]byte, len(raw.Keys)),
+		}
+		for keyID, keyHex := range raw.Keys {
+			keyBytes, err := hex.DecodeString(strings.TrimSpace(keyHex))
+			if err != nil {
+				return nil, fmt.Errorf("decode augment session vault key %q: %w", keyID, err)
+			}
+			keyset.Keys[keyID] = keyBytes
+		}
+		return NewAugmentSessionVaultCipher(keyset)
+	}
+
+	if cfg == nil || strings.TrimSpace(cfg.Totp.EncryptionKey) == "" || !cfg.Totp.EncryptionKeyConfigured {
+		return nil, fmt.Errorf("augment session vault keyset is not configured")
+	}
+	keyBytes, err := hex.DecodeString(strings.TrimSpace(cfg.Totp.EncryptionKey))
+	if err != nil {
+		return nil, fmt.Errorf("decode fallback augment session vault key: %w", err)
+	}
+	return NewAugmentSessionVaultCipher(AugmentSessionVaultKeyset{
+		ActiveKeyID: "fallback",
+		Keys: map[string][]byte{
+			"fallback": keyBytes,
+		},
+	})
+}
+
+func ProvideAugmentOfficialSessionService(
+	store AugmentOfficialSessionStore,
+	cipher *AugmentSessionVaultCipher,
+	cfg *config.Config,
+) *AugmentOfficialSessionService {
+	secret := strings.TrimSpace(os.Getenv("AUGMENT_SESSION_BIND_TOKEN_SECRET"))
+	if secret == "" && cfg != nil {
+		secret = strings.TrimSpace(cfg.JWT.Secret)
+	}
+	return NewAugmentOfficialSessionService(store, cipher, secret)
+}
+
 func ProvideAugmentGatewayModelRegistry(cfg *config.Config) *AugmentGatewayModelRegistry {
 	if cfg == nil {
 		return NewDefaultAugmentGatewayModelRegistry()
@@ -516,6 +571,8 @@ var ProviderSet = wire.NewSet(
 	// Core services
 	NewAuthService,
 	ProvideAugmentPluginService,
+	ProvideAugmentSessionVaultCipher,
+	ProvideAugmentOfficialSessionService,
 	ProvideAugmentGatewayModelRegistry,
 	ProvideAugmentGatewayRouter,
 	NewAugmentGatewayReasoningTurnStore,
