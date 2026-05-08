@@ -9,6 +9,7 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -217,7 +218,7 @@ func (a *augmentOfficialSessionStoreAdapter) CreateBindIntent(ctx context.Contex
 		TenantAllowlist: append([]string(nil), input.TenantAllowlist...),
 	})
 	if err != nil || record == nil {
-		return nil, err
+		return nil, translateAugmentOfficialSessionStoreError(err)
 	}
 	return &service.AugmentOfficialSessionBindIntentStoreRecord{
 		ID:              record.ID,
@@ -236,7 +237,7 @@ func (a *augmentOfficialSessionStoreAdapter) CreateBindIntent(ctx context.Contex
 func (a *augmentOfficialSessionStoreAdapter) ConsumeBindIntent(ctx context.Context, bindIntentID string, userID int64) (*service.AugmentOfficialSessionBindIntentStoreRecord, error) {
 	record, err := a.repo.ConsumeBindIntent(ctx, bindIntentID, userID)
 	if err != nil || record == nil {
-		return nil, err
+		return nil, translateAugmentOfficialSessionStoreError(err)
 	}
 	return &service.AugmentOfficialSessionBindIntentStoreRecord{
 		ID:              record.ID,
@@ -272,7 +273,7 @@ func (a *augmentOfficialSessionStoreAdapter) UpsertActiveSession(ctx context.Con
 		Fingerprint:                input.Fingerprint,
 	})
 	if err != nil || view == nil {
-		return nil, err
+		return nil, translateAugmentOfficialSessionStoreError(err)
 	}
 	return adminViewToStoredPublicView(view), nil
 }
@@ -280,7 +281,7 @@ func (a *augmentOfficialSessionStoreAdapter) UpsertActiveSession(ctx context.Con
 func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionPublicView(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredPublicView, error) {
 	view, err := a.repo.GetActiveSessionPublicView(ctx, userID)
 	if err != nil || view == nil {
-		return nil, err
+		return nil, translateAugmentOfficialSessionStoreError(err)
 	}
 	return &service.AugmentOfficialSessionStoredPublicView{
 		UserID:                  view.UserID,
@@ -307,7 +308,7 @@ func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionPublicView(ctx cont
 func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionCredentialRow(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredCredentialRow, error) {
 	row, err := a.repo.GetActiveSessionCredentialRow(ctx, userID)
 	if err != nil || row == nil {
-		return nil, err
+		return nil, translateAugmentOfficialSessionStoreError(err)
 	}
 	return &service.AugmentOfficialSessionStoredCredentialRow{
 		UserID:                     row.UserID,
@@ -335,7 +336,7 @@ func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionCredentialRow(ctx c
 func (a *augmentOfficialSessionStoreAdapter) RevokeActiveSession(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredPublicView, error) {
 	view, err := a.repo.RevokeActiveSession(ctx, userID)
 	if err != nil || view == nil {
-		return nil, err
+		return nil, translateAugmentOfficialSessionStoreError(err)
 	}
 	return adminViewToStoredPublicView(view), nil
 }
@@ -380,4 +381,27 @@ func cloneStringPtrForAdapter(value *string) *string {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func translateAugmentOfficialSessionStoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentNotFound):
+		return infraerrors.NotFound("AUGMENT_OFFICIAL_BIND_INTENT_NOT_FOUND", "augment official bind intent was not found")
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentExpired):
+		return infraerrors.Unauthorized("AUGMENT_OFFICIAL_BIND_INTENT_EXPIRED", "augment official bind intent has expired")
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentCrossUser):
+		return infraerrors.Forbidden("AUGMENT_OFFICIAL_BIND_INTENT_FORBIDDEN", "augment official bind intent does not belong to this user")
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentConsumed):
+		return infraerrors.Conflict("AUGMENT_OFFICIAL_BIND_INTENT_CONSUMED", "augment official bind intent has already been consumed")
+	case errors.Is(err, ErrAugmentOfficialSessionSourceInvalid),
+		errors.Is(err, ErrAugmentOfficialSessionModeInvalid),
+		errors.Is(err, ErrAugmentOfficialSessionStatusInvalid),
+		errors.Is(err, ErrAugmentOfficialSessionCredentialPayloadEmpty):
+		return infraerrors.BadRequest("AUGMENT_OFFICIAL_SESSION_INVALID", err.Error())
+	default:
+		return err
+	}
 }

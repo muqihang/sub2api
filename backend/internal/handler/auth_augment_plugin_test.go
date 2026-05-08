@@ -36,6 +36,26 @@ func (augmentPluginAuthStub) ValidateToken(token string) (*service.JWTClaims, er
 	return nil, service.ErrInvalidToken
 }
 
+type augmentPluginJWTAuthStub struct {
+	token  string
+	userID int64
+}
+
+func (s augmentPluginJWTAuthStub) GenerateTokenPair(ctx context.Context, user *service.User, familyID string) (*service.TokenPair, error) {
+	return augmentPluginAuthStub{}.GenerateTokenPair(ctx, user, familyID)
+}
+
+func (s augmentPluginJWTAuthStub) RefreshTokenPair(ctx context.Context, refreshToken string) (*service.TokenPairWithUser, error) {
+	return nil, nil
+}
+
+func (s augmentPluginJWTAuthStub) ValidateToken(token string) (*service.JWTClaims, error) {
+	if token == s.token {
+		return &service.JWTClaims{UserID: s.userID}, nil
+	}
+	return nil, service.ErrInvalidToken
+}
+
 type augmentPluginUserStub struct {
 	user  *service.User
 	users map[int64]*service.User
@@ -565,6 +585,178 @@ func TestAugmentSessionRefreshAcceptsOfficialPassthroughBundle(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"access_token":"official-access-next"`)
 	require.Contains(t, rec.Body.String(), `"tenant_url":"https://official.augment.local"`)
 	require.Contains(t, rec.Body.String(), `"session_source":"official"`)
+}
+
+func TestAugmentSessionRefreshOfficialPassthroughUsesBoundOfficialSessionFromBearer(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginJWTAuthStub{token: "jwt-official", userID: user.ID},
+		augmentPluginUserStub{user: user},
+		nil,
+		nil,
+		nil,
+	)
+	cipher, err := service.NewAugmentSessionVaultCipher(service.AugmentSessionVaultKeyset{
+		ActiveKeyID: "key-active",
+		Keys: map[string][]byte{
+			"key-active": []byte("0123456789abcdef0123456789abcdef"),
+		},
+	})
+	require.NoError(t, err)
+	payload, err := json.Marshal(map[string]string{
+		"access_token":        "official-access-next",
+		"refresh_token":       "official-refresh-next",
+		"official_session_id": "sess_123",
+	})
+	require.NoError(t, err)
+	encryptedPayload, err := cipher.Encrypt(payload)
+	require.NoError(t, err)
+
+	officialService := service.NewAugmentOfficialSessionService(
+		&handlerOfficialSessionStoreStub{
+			credentialRow: &service.AugmentOfficialSessionStoredCredentialRow{
+				UserID:                     user.ID,
+				Mode:                       "official_passthrough",
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://official.augment.local",
+				PortalOrigin:               handlerStringPtr("https://portal.augment.local"),
+				Scopes:                     []string{"augment:session"},
+				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 8, 13, 0, 0, 0, time.UTC)),
+				Status:                     "active",
+				EncryptedCredentialPayload: encryptedPayload,
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "key-active",
+				Fingerprint:                "abcdef0123456789",
+				CreatedAt:                  time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+				UpdatedAt:                  time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService, officialService)
+	router := gin.New()
+	router.POST("/api/v1/plugin/augment/session/refresh", handler.AugmentSessionRefresh)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/session/refresh",
+		bytes.NewReader([]byte(`{
+			"refresh_token":"official-refresh-next",
+			"mode":"official_passthrough"
+		}`)),
+	)
+	req.Header.Set("Authorization", "Bearer jwt-official")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"access_token":"official-access-next"`)
+	require.Contains(t, rec.Body.String(), `"tenant_url":"https://official.augment.local"`)
+	require.Contains(t, rec.Body.String(), `"session_source":"official"`)
+}
+
+func TestAugmentSessionRefreshOfficialPassthroughRejectsAPIKeyBearerForBoundSession(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        11,
+		UserID:    user.ID,
+		Key:       "sk-bound-refresh",
+		Name:      "bound-refresh",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{
+				apiKey.Key: apiKey,
+			},
+		},
+		nil,
+		nil,
+	)
+	cipher, err := service.NewAugmentSessionVaultCipher(service.AugmentSessionVaultKeyset{
+		ActiveKeyID: "key-active",
+		Keys: map[string][]byte{
+			"key-active": []byte("0123456789abcdef0123456789abcdef"),
+		},
+	})
+	require.NoError(t, err)
+	payload, err := json.Marshal(map[string]string{
+		"access_token":        "official-access-next",
+		"refresh_token":       "official-refresh-next",
+		"official_session_id": "sess_123",
+	})
+	require.NoError(t, err)
+	encryptedPayload, err := cipher.Encrypt(payload)
+	require.NoError(t, err)
+
+	officialService := service.NewAugmentOfficialSessionService(
+		&handlerOfficialSessionStoreStub{
+			credentialRow: &service.AugmentOfficialSessionStoredCredentialRow{
+				UserID:                     user.ID,
+				Mode:                       "official_passthrough",
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://official.augment.local",
+				Scopes:                     []string{"augment:session"},
+				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 8, 13, 0, 0, 0, time.UTC)),
+				Status:                     "active",
+				EncryptedCredentialPayload: encryptedPayload,
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "key-active",
+				Fingerprint:                "abcdef0123456789",
+				CreatedAt:                  time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+				UpdatedAt:                  time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService, officialService)
+	router := gin.New()
+	router.POST("/api/v1/plugin/augment/session/refresh", handler.AugmentSessionRefresh)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/session/refresh",
+		bytes.NewReader([]byte(`{
+			"refresh_token":"official-refresh-next",
+			"mode":"official_passthrough"
+		}`)),
+	)
+	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_PLUGIN_OFFICIAL_SESSION_REQUIRED")
 }
 
 func TestAugmentSummaryAPIKeyPrincipalDoesNotLeakSiblingActiveKey(t *testing.T) {

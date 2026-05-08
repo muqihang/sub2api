@@ -446,16 +446,34 @@ func (h *AuthHandler) buildAugmentSessionRefreshOptions(c *gin.Context, req augm
 	if options.Mode != service.AugmentQuickLoginModeOfficialPassthrough || options.OfficialSessionBundle != nil || h == nil || h.augmentOfficialSessionService == nil {
 		return options
 	}
-	subject, ok := servermiddleware.GetAuthSubjectFromContext(c)
+	userID, ok := h.augmentOfficialSessionUserID(c)
 	if !ok {
 		return options
 	}
-	credential, err := h.augmentOfficialSessionService.GetCredentialForRoute(c.Request.Context(), subject.UserID)
+	credential, err := h.augmentOfficialSessionService.GetCredentialForRoute(c.Request.Context(), userID)
 	if err != nil || credential == nil {
 		return options
 	}
 	options.OfficialSessionBundle = augmentOfficialSessionBundleFromCredential(credential)
 	return options
+}
+
+func (h *AuthHandler) augmentOfficialSessionUserID(c *gin.Context) (int64, bool) {
+	if subject, ok := servermiddleware.GetAuthSubjectFromContext(c); ok && subject.UserID > 0 {
+		return subject.UserID, true
+	}
+	if h == nil || h.augmentPluginService == nil {
+		return 0, false
+	}
+	token := extractBearerToken(c.GetHeader("Authorization"))
+	if token == "" {
+		return 0, false
+	}
+	principal, err := h.augmentPluginService.ResolvePrincipalFromBearer(c.Request.Context(), token)
+	if err != nil || principal == nil || principal.User == nil || principal.User.ID <= 0 || principal.Kind != "jwt" {
+		return 0, false
+	}
+	return principal.User.ID, true
 }
 
 func augmentOfficialSessionBundleFromCredential(credential *service.AugmentOfficialSessionCredential) *service.AugmentSessionBundle {

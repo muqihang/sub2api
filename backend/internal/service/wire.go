@@ -470,7 +470,7 @@ func ProvideAugmentSessionVaultCipher(cfg *config.Config) (*AugmentSessionVaultC
 	}
 
 	if cfg == nil || strings.TrimSpace(cfg.Totp.EncryptionKey) == "" || !cfg.Totp.EncryptionKeyConfigured {
-		return nil, fmt.Errorf("augment session vault keyset is not configured")
+		return nil, nil
 	}
 	keyBytes, err := hex.DecodeString(strings.TrimSpace(cfg.Totp.EncryptionKey))
 	if err != nil {
@@ -489,9 +489,15 @@ func ProvideAugmentOfficialSessionService(
 	cipher *AugmentSessionVaultCipher,
 	cfg *config.Config,
 ) *AugmentOfficialSessionService {
+	if store == nil || cipher == nil {
+		return nil
+	}
 	secret := strings.TrimSpace(os.Getenv("AUGMENT_SESSION_BIND_TOKEN_SECRET"))
 	if secret == "" && cfg != nil {
 		secret = strings.TrimSpace(cfg.JWT.Secret)
+	}
+	if secret == "" {
+		return nil
 	}
 	return NewAugmentOfficialSessionService(store, cipher, secret)
 }

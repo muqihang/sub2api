@@ -325,101 +325,65 @@ func (r *augmentOfficialSessionRepository) UpsertActiveSession(ctx context.Conte
 	}
 
 	query := `
-		WITH updated AS (
-			UPDATE augment_official_sessions AS sessions
-			SET mode = $2,
-				source = $3,
-				tenant_origin = $4,
-				portal_origin = $5,
-				scopes = $6,
-				expires_at = $7,
-				last_refresh_at = $8,
-				last_success_at = $9,
-				last_error_at = $10,
-				last_error_code = $11,
-				status = $12,
-				encrypted_credential_payload = $13,
-				credential_schema_version = $14,
-				key_version = $15,
-				fingerprint = $16,
-				updated_at = $17,
-				revoked_at = NULL
-			WHERE sessions.id = (
-				SELECT id
-				FROM augment_official_sessions
-				WHERE user_id = $1
-				ORDER BY updated_at DESC, id DESC
-				LIMIT 1
-				FOR UPDATE
-			)
-			RETURNING
-				sessions.user_id,
-				sessions.mode,
-				sessions.source,
-				sessions.tenant_origin,
-				sessions.portal_origin,
-				sessions.scopes,
-				sessions.expires_at,
-				sessions.last_refresh_at,
-				sessions.last_success_at,
-				sessions.last_error_at,
-				sessions.last_error_code,
-				sessions.status,
-				sessions.credential_schema_version,
-				sessions.key_version,
-				sessions.fingerprint,
-				sessions.created_at,
-				sessions.updated_at,
-				sessions.revoked_at,
-				(sessions.encrypted_credential_payload IS NOT NULL) AS has_credential_payload
-		),
-		inserted AS (
-			INSERT INTO augment_official_sessions (
-				user_id,
-				mode,
-				source,
-				tenant_origin,
-				portal_origin,
-				scopes,
-				expires_at,
-				last_refresh_at,
-				last_success_at,
-				last_error_at,
-				last_error_code,
-				status,
-				encrypted_credential_payload,
-				credential_schema_version,
-				key_version,
-				fingerprint,
-				updated_at
-			)
-			SELECT
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-			WHERE NOT EXISTS (SELECT 1 FROM updated)
-			RETURNING
-				user_id,
-				mode,
-				source,
-				tenant_origin,
-				portal_origin,
-				scopes,
-				expires_at,
-				last_refresh_at,
-				last_success_at,
-				last_error_at,
-				last_error_code,
-				status,
-				credential_schema_version,
-				key_version,
-				fingerprint,
-				created_at,
-				updated_at,
-				revoked_at,
-				(encrypted_credential_payload IS NOT NULL) AS has_credential_payload
+		INSERT INTO augment_official_sessions (
+			user_id,
+			mode,
+			source,
+			tenant_origin,
+			portal_origin,
+			scopes,
+			expires_at,
+			last_refresh_at,
+			last_success_at,
+			last_error_at,
+			last_error_code,
+			status,
+			encrypted_credential_payload,
+			credential_schema_version,
+			key_version,
+			fingerprint,
+			updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 		)
-		SELECT * FROM updated
-		UNION ALL
-		SELECT * FROM inserted
+		ON CONFLICT (user_id) DO UPDATE
+		SET mode = EXCLUDED.mode,
+			source = EXCLUDED.source,
+			tenant_origin = EXCLUDED.tenant_origin,
+			portal_origin = EXCLUDED.portal_origin,
+			scopes = EXCLUDED.scopes,
+			expires_at = EXCLUDED.expires_at,
+			last_refresh_at = EXCLUDED.last_refresh_at,
+			last_success_at = EXCLUDED.last_success_at,
+			last_error_at = EXCLUDED.last_error_at,
+			last_error_code = EXCLUDED.last_error_code,
+			status = EXCLUDED.status,
+			encrypted_credential_payload = EXCLUDED.encrypted_credential_payload,
+			credential_schema_version = EXCLUDED.credential_schema_version,
+			key_version = EXCLUDED.key_version,
+			fingerprint = EXCLUDED.fingerprint,
+			updated_at = EXCLUDED.updated_at,
+			revoked_at = NULL
+		RETURNING
+			user_id,
+			mode,
+			source,
+			tenant_origin,
+			portal_origin,
+			scopes,
+			expires_at,
+			last_refresh_at,
+			last_success_at,
+			last_error_at,
+			last_error_code,
+			status,
+			credential_schema_version,
+			key_version,
+			fingerprint,
+			created_at,
+			updated_at,
+			revoked_at,
+			(encrypted_credential_payload IS NOT NULL) AS has_credential_payload
 	`
 
 	args := []any{
@@ -591,15 +555,8 @@ func (r *augmentOfficialSessionRepository) RevokeActiveSession(ctx context.Conte
 	query := `
 		UPDATE augment_official_sessions
 		SET encrypted_credential_payload = NULL, status = $2, revoked_at = $3, updated_at = $3
-		WHERE id = (
-			SELECT id
-			FROM augment_official_sessions
-			WHERE user_id = $1
-				AND status <> $2
-			ORDER BY updated_at DESC, id DESC
-			LIMIT 1
-			FOR UPDATE
-		)
+		WHERE user_id = $1
+			AND status <> $2
 		RETURNING
 			user_id,
 			mode,
