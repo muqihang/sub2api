@@ -105,6 +105,11 @@ func TestAugmentGatewayProviderExecutor_DeepSeekSelectsConfiguredGroupAndSanitiz
 	require.Equal(t, map[string]any{"type": "enabled"}, body["thinking"])
 	require.Equal(t, "max", body["reasoning_effort"])
 	require.NotContains(t, body, "tool_choice")
+	userID, ok := body["user_id"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, userID)
+	require.Contains(t, userID, "sub2api_")
+	require.NotContains(t, userID, "session-deepseek")
 
 	messages := body["messages"].([]any)
 	firstAssistant := messages[0].(map[string]any)

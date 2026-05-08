@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/sjson"
 )
 
@@ -168,6 +171,9 @@ func (a *augmentGatewayOpenAIAdapter) doRawChatCompletions(ctx context.Context, 
 			return nil, fmt.Errorf("enable augment gateway %s stream usage: %w", provider, err)
 		}
 	}
+	if provider == AugmentGatewayProviderDeepSeek {
+		augmentGatewayTraceDeepSeekUpstreamShape(req, rawBody, stream)
+	}
 
 	apiKey := req.Account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -204,6 +210,96 @@ func (a *augmentGatewayOpenAIAdapter) doRawChatCompletions(ctx context.Context, 
 		proxyURL = req.Account.Proxy.URL()
 	}
 	return a.gateway.httpUpstream.Do(upstreamReq, proxyURL, req.Account.ID, req.Account.Concurrency)
+}
+
+func augmentGatewayTraceDeepSeekUpstreamShape(req AugmentGatewayProviderRequest, rawBody []byte, stream bool) {
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		logger.LegacyPrintf(
+			"service.augment_gateway",
+			"deepseek_request_shape endpoint=%s model=%s stream=%t raw_bytes=%d full_hash=%s decode_error=%v",
+			req.Endpoint,
+			req.ModelID,
+			stream,
+			len(rawBody),
+			augmentGatewayShortHash(rawBody),
+			err,
+		)
+		return
+	}
+
+	messages, _ := body["messages"].([]any)
+	roles := make([]string, 0, len(messages))
+	firstSystemBytes := 0
+	firstSystemHash := ""
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			roles = append(roles, "?")
+			continue
+		}
+		role, _ := message["role"].(string)
+		role = strings.TrimSpace(role)
+		if role == "" {
+			role = "?"
+		}
+		roles = append(roles, role)
+		if role == "system" && firstSystemHash == "" {
+			contentBytes, _ := json.Marshal(message["content"])
+			firstSystemBytes = len(contentBytes)
+			firstSystemHash = augmentGatewayShortHash(contentBytes)
+		}
+	}
+
+	tools, _ := body["tools"].([]any)
+	prefixHash, prefixBytes := augmentGatewayDeepSeekPrefixBeforeLastMessageHash(body, messages)
+	userIDPresent := false
+	if userID, ok := body["user_id"].(string); ok && strings.TrimSpace(userID) != "" {
+		userIDPresent = true
+	}
+	cacheKeyPresent := false
+	if cacheKey, ok := body["prompt_cache_key"].(string); ok && strings.TrimSpace(cacheKey) != "" {
+		cacheKeyPresent = true
+	}
+
+	logger.LegacyPrintf(
+		"service.augment_gateway",
+		"deepseek_request_shape endpoint=%s model=%s upstream_model=%s stream=%t raw_bytes=%d full_hash=%s messages=%d roles=%s tools=%d prefix_before_last_bytes=%d prefix_before_last_hash=%s first_system_bytes=%d first_system_hash=%s user_id_present=%t prompt_cache_key_present=%t",
+		req.Endpoint,
+		req.ModelID,
+		req.UpstreamModel,
+		stream,
+		len(rawBody),
+		augmentGatewayShortHash(rawBody),
+		len(messages),
+		strings.Join(roles, ","),
+		len(tools),
+		prefixBytes,
+		prefixHash,
+		firstSystemBytes,
+		firstSystemHash,
+		userIDPresent,
+		cacheKeyPresent,
+	)
+}
+
+func augmentGatewayDeepSeekPrefixBeforeLastMessageHash(body map[string]any, messages []any) (string, int) {
+	if len(messages) == 0 {
+		raw, _ := json.Marshal(body)
+		return augmentGatewayShortHash(raw), len(raw)
+	}
+	prefix := make(map[string]any, len(body))
+	for key, value := range body {
+		prefix[key] = value
+	}
+	prefix["messages"] = append([]any(nil), messages[:len(messages)-1]...)
+	raw, _ := json.Marshal(prefix)
+	return augmentGatewayShortHash(raw), len(raw)
+}
+
+func augmentGatewayShortHash(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
 }
 
 func augmentGatewayEnsureChatStreamUsage(body []byte) ([]byte, error) {

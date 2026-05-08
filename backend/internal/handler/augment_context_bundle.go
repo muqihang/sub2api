@@ -217,6 +217,25 @@ func (b augmentContextBundle) Format() string {
 	return strings.Join(lines, "\n")
 }
 
+func (b augmentContextBundle) DeepSeekCacheStableFormat() string {
+	lines := []string{"Augment stable workspace context:"}
+	appendLine := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			lines = append(lines, fmt.Sprintf("%s: %s", key, value))
+		}
+	}
+
+	appendLine("workspace_root", b.Workspace.WorkspaceRoot)
+	appendLine("branch", b.Workspace.Branch)
+	appendLine("worktree", b.Workspace.Worktree)
+
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (b augmentContextBundle) RetrievalMetadata() string {
 	lines := []string{"Augment context metadata:"}
 	appendLine := func(key, value string) {
@@ -279,6 +298,10 @@ func (b augmentContextBundle) TraceFields() []any {
 
 func augmentLegacyTextWithContextBundle(text string, bundle augmentContextBundle) string {
 	return augmentLegacyCompactTextParts(text, bundle.Format())
+}
+
+func augmentLegacyTextWithDeepSeekCacheStableContextBundle(text string, bundle augmentContextBundle) string {
+	return augmentLegacyCompactTextParts(text, bundle.DeepSeekCacheStableFormat())
 }
 
 func augmentLegacyAppendContextBundleRetrievalMetadata(text string, bundle augmentContextBundle, maxOutputLength int) string {

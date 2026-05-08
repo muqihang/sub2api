@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -81,6 +83,30 @@ func SanitizeAugmentGatewayDeepSeekChatCompletionsRequest(model AugmentGatewayMo
 	}
 
 	return body, nil
+}
+
+func ApplyAugmentGatewayDeepSeekStableUserID(req *AugmentGatewayProviderRequest) {
+	if req == nil || req.RawBody == nil {
+		return
+	}
+	if existing, ok := req.RawBody["user_id"].(string); ok && strings.TrimSpace(existing) != "" {
+		return
+	}
+	parts := []string{"augment_gateway_deepseek"}
+	switch {
+	case req.User != nil && req.User.ID > 0:
+		parts = append(parts, fmt.Sprintf("user=%d", req.User.ID))
+	case req.APIKey != nil && req.APIKey.UserID > 0:
+		parts = append(parts, fmt.Sprintf("user=%d", req.APIKey.UserID))
+	case strings.TrimSpace(req.SessionHash) != "":
+		parts = append(parts, "session="+strings.TrimSpace(req.SessionHash))
+	case req.Account != nil && req.Account.ID > 0:
+		parts = append(parts, fmt.Sprintf("account=%d", req.Account.ID))
+	default:
+		return
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	req.RawBody["user_id"] = "sub2api_" + hex.EncodeToString(sum[:8])
 }
 
 func augmentGatewayDeepSeekPairToolCallMessages(messages []any) []any {

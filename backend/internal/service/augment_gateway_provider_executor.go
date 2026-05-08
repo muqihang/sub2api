@@ -180,6 +180,7 @@ func (e *AugmentGatewayProviderExecutorImpl) prepareProviderRequest(ctx context.
 			return AugmentGatewayProviderRequest{}, nil, err
 		}
 		req.RawBody = body
+		ApplyAugmentGatewayDeepSeekStableUserID(&req)
 	}
 
 	return req, adapter, nil
