@@ -149,16 +149,17 @@ func TestAugmentGatewayCodebaseRetrievalGuidanceIncludesWorkspaceContext(t *test
 	calls := executor.StreamRequests()
 	require.Len(t, calls, 1)
 	bodyText := augmentContextBundleProviderBodyText(t, calls[0].RawBody)
-	require.Contains(t, bodyText, "Augment context bundle")
-	require.Contains(t, bodyText, "conversation_id: conv-codebase-context")
+	require.Contains(t, bodyText, "Augment stable workspace context")
 	require.Contains(t, bodyText, "workspace_root: "+workspaceRoot)
 	require.Contains(t, bodyText, "branch: feature/context-bundle")
 	require.Contains(t, bodyText, "worktree: "+workspaceRoot)
-	require.Contains(t, bodyText, "checkpoint_id: checkpoint-codebase")
-	require.Contains(t, bodyText, "added_blobs: blob-a")
-	require.Contains(t, bodyText, "chat_history_count: 1")
-	require.Contains(t, bodyText, "turn 1 request: Earlier retrieval task")
+	require.Contains(t, bodyText, "Earlier retrieval task")
+	require.Contains(t, bodyText, "Earlier answer")
 	require.Contains(t, bodyText, "codebase-retrieval")
+	require.NotContains(t, bodyText, "conversation_id: conv-codebase-context")
+	require.NotContains(t, bodyText, "checkpoint_id: checkpoint-codebase")
+	require.NotContains(t, bodyText, "added_blobs: blob-a")
+	require.NotContains(t, bodyText, "chat_history_count: 1")
 }
 
 func prepareAugmentContextBundleGitWorkspace(t *testing.T) string {

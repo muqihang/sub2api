@@ -2481,7 +2481,8 @@ func (h *AuthHandler) augmentLegacyBuildGatewayRequest(c *gin.Context, principal
 	contextBundle := augmentContextBundleFromChatRequest(req)
 	if augmentLegacyHasToolDefinition(req.ToolDefinitions, "codebase-retrieval") {
 		policy := augmentLegacyTextWithContextBundle(augmentLegacyGatewayCodebaseRetrievalPolicy, contextBundle)
-		if routed.Model.Provider == service.AugmentGatewayProviderDeepSeek {
+		switch routed.Model.Provider {
+		case service.AugmentGatewayProviderOpenAI, service.AugmentGatewayProviderDeepSeek, service.AugmentGatewayProviderAnthropic:
 			policy = augmentLegacyTextWithDeepSeekCacheStableContextBundle(augmentLegacyGatewayCodebaseRetrievalPolicy, contextBundle)
 		}
 		messages = append([]apicompat.ChatMessage{augmentLegacyMakeMessage("system", policy)}, messages...)

@@ -109,6 +109,65 @@ func ApplyAugmentGatewayDeepSeekStableUserID(req *AugmentGatewayProviderRequest)
 	req.RawBody["user_id"] = "sub2api_" + hex.EncodeToString(sum[:8])
 }
 
+func ApplyAugmentGatewayOpenAICacheHints(req *AugmentGatewayProviderRequest) {
+	if req == nil || req.RawBody == nil {
+		return
+	}
+	if existing, ok := req.RawBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
+		if key := augmentGatewayStablePromptCacheKey(req, "openai"); key != "" {
+			req.RawBody["prompt_cache_key"] = key
+		}
+	}
+	if _, exists := req.RawBody["prompt_cache_retention"]; !exists && augmentGatewayOpenAISupportsExtendedPromptCache(req.UpstreamModel) {
+		req.RawBody["prompt_cache_retention"] = "24h"
+	}
+}
+
+func ApplyAugmentGatewayAnthropicCacheControl(req *AugmentGatewayProviderRequest) {
+	if req == nil || req.RawBody == nil {
+		return
+	}
+	if _, exists := req.RawBody["cache_control"]; exists {
+		return
+	}
+	req.RawBody["cache_control"] = map[string]any{"type": "ephemeral"}
+}
+
+func augmentGatewayStablePromptCacheKey(req *AugmentGatewayProviderRequest, provider string) string {
+	parts := []string{"augment_gateway_cache", strings.TrimSpace(provider)}
+	model := firstNonBlankAugmentGatewayString(req.UpstreamModel, req.Model.UpstreamModel, req.Model.ID, req.ModelID)
+	if model != "" {
+		parts = append(parts, "model="+model)
+	}
+	switch {
+	case req.User != nil && req.User.ID > 0:
+		parts = append(parts, fmt.Sprintf("user=%d", req.User.ID))
+	case req.APIKey != nil && req.APIKey.UserID > 0:
+		parts = append(parts, fmt.Sprintf("user=%d", req.APIKey.UserID))
+	case strings.TrimSpace(req.SessionHash) != "":
+		parts = append(parts, "session="+strings.TrimSpace(req.SessionHash))
+	case req.Account != nil && req.Account.ID > 0:
+		parts = append(parts, fmt.Sprintf("account=%d", req.Account.ID))
+	default:
+		return ""
+	}
+	if workspace, ok := req.Metadata["context_workspace_root"].(string); ok && strings.TrimSpace(workspace) != "" {
+		parts = append(parts, "workspace="+strings.TrimSpace(workspace))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return "sub2api_" + hex.EncodeToString(sum[:10])
+}
+
+func augmentGatewayOpenAISupportsExtendedPromptCache(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	switch normalized {
+	case "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5.1-chat-latest", "gpt-5", "gpt-5-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.1-codex-max", "gpt-4.1":
+		return true
+	default:
+		return false
+	}
+}
+
 func augmentGatewayDeepSeekPairToolCallMessages(messages []any) []any {
 	if len(messages) == 0 {
 		return messages

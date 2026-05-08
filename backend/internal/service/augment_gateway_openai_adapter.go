@@ -174,6 +174,9 @@ func (a *augmentGatewayOpenAIAdapter) doRawChatCompletions(ctx context.Context, 
 	if provider == AugmentGatewayProviderDeepSeek {
 		augmentGatewayTraceDeepSeekUpstreamShape(req, rawBody, stream)
 	}
+	if provider == AugmentGatewayProviderOpenAI {
+		augmentGatewayTraceOpenAIUpstreamShape(req, rawBody, stream)
+	}
 
 	apiKey := req.Account.GetOpenAIApiKey()
 	if apiKey == "" {
@@ -213,11 +216,20 @@ func (a *augmentGatewayOpenAIAdapter) doRawChatCompletions(ctx context.Context, 
 }
 
 func augmentGatewayTraceDeepSeekUpstreamShape(req AugmentGatewayProviderRequest, rawBody []byte, stream bool) {
+	augmentGatewayTraceOpenAICompatibleRequestShape("deepseek_request_shape", req, rawBody, stream)
+}
+
+func augmentGatewayTraceOpenAIUpstreamShape(req AugmentGatewayProviderRequest, rawBody []byte, stream bool) {
+	augmentGatewayTraceOpenAICompatibleRequestShape("openai_request_shape", req, rawBody, stream)
+}
+
+func augmentGatewayTraceOpenAICompatibleRequestShape(event string, req AugmentGatewayProviderRequest, rawBody []byte, stream bool) {
 	var body map[string]any
 	if err := json.Unmarshal(rawBody, &body); err != nil {
 		logger.LegacyPrintf(
 			"service.augment_gateway",
-			"deepseek_request_shape endpoint=%s model=%s stream=%t raw_bytes=%d full_hash=%s decode_error=%v",
+			"%s endpoint=%s model=%s stream=%t raw_bytes=%d full_hash=%s decode_error=%v",
+			event,
 			req.Endpoint,
 			req.ModelID,
 			stream,
@@ -261,10 +273,15 @@ func augmentGatewayTraceDeepSeekUpstreamShape(req AugmentGatewayProviderRequest,
 	if cacheKey, ok := body["prompt_cache_key"].(string); ok && strings.TrimSpace(cacheKey) != "" {
 		cacheKeyPresent = true
 	}
+	retentionPresent := false
+	if retention, ok := body["prompt_cache_retention"].(string); ok && strings.TrimSpace(retention) != "" {
+		retentionPresent = true
+	}
 
 	logger.LegacyPrintf(
 		"service.augment_gateway",
-		"deepseek_request_shape endpoint=%s model=%s upstream_model=%s stream=%t raw_bytes=%d full_hash=%s messages=%d roles=%s tools=%d prefix_before_last_bytes=%d prefix_before_last_hash=%s first_system_bytes=%d first_system_hash=%s user_id_present=%t prompt_cache_key_present=%t",
+		"%s endpoint=%s model=%s upstream_model=%s stream=%t raw_bytes=%d full_hash=%s messages=%d roles=%s tools=%d prefix_before_last_bytes=%d prefix_before_last_hash=%s first_system_bytes=%d first_system_hash=%s user_id_present=%t prompt_cache_key_present=%t prompt_cache_retention_present=%t",
+		event,
 		req.Endpoint,
 		req.ModelID,
 		req.UpstreamModel,
@@ -280,6 +297,7 @@ func augmentGatewayTraceDeepSeekUpstreamShape(req AugmentGatewayProviderRequest,
 		firstSystemHash,
 		userIDPresent,
 		cacheKeyPresent,
+		retentionPresent,
 	)
 }
 

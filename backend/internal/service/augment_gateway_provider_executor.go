@@ -182,6 +182,12 @@ func (e *AugmentGatewayProviderExecutorImpl) prepareProviderRequest(ctx context.
 		req.RawBody = body
 		ApplyAugmentGatewayDeepSeekStableUserID(&req)
 	}
+	if req.Provider == AugmentGatewayProviderOpenAI {
+		ApplyAugmentGatewayOpenAICacheHints(&req)
+	}
+	if req.Provider == AugmentGatewayProviderAnthropic {
+		ApplyAugmentGatewayAnthropicCacheControl(&req)
+	}
 
 	return req, adapter, nil
 }

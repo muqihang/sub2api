@@ -510,53 +510,66 @@ func TestAugmentGatewayAddsCodebaseRetrievalQueryPolicy(t *testing.T) {
 	require.Contains(t, description, "routes, handlers")
 }
 
-func TestAugmentGatewayDeepSeekCodebasePolicyKeepsVolatileContextOutOfFirstSystemMessage(t *testing.T) {
+func TestAugmentGatewayCacheableProvidersKeepVolatileContextOutOfFirstSystemMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	workspaceRoot := prepareAugmentContextBundleGitWorkspace(t)
 	t.Setenv("AUGMENT_LEGACY_WORKSPACE_ROOT", workspaceRoot)
 
-	executor := &augmentGatewayRouteFakeExecutor{
-		streamFunc: func(req service.AugmentGatewayProviderRequest, callIndex int, emit func(service.AugmentGatewayProviderChunk) error) error {
-			return emit(service.AugmentGatewayProviderChunk{TextDelta: "ok", Done: true, ProviderFinishReason: "stop"})
-		},
+	for _, model := range []string{"gpt-5.4", "deepseek-v4-pro", "claude-sonnet-4-5"} {
+		model := model
+		t.Run(model, func(t *testing.T) {
+			executor := &augmentGatewayRouteFakeExecutor{
+				streamFunc: func(req service.AugmentGatewayProviderRequest, callIndex int, emit func(service.AugmentGatewayProviderChunk) error) error {
+					return emit(service.AugmentGatewayProviderChunk{TextDelta: "ok", Done: true, ProviderFinishReason: "stop"})
+				},
+			}
+			server, apiKey, _ := newAugmentGatewayRuntimeTestServerWithConfig(t, executor, config.GatewayAugmentConfig{
+				Enabled:       true,
+				EnabledModels: []string{"gpt-5.4", "deepseek-v4-pro", "claude-sonnet-4-5"},
+				ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+					OpenAI:    1001,
+					DeepSeek:  1002,
+					Anthropic: 1003,
+				},
+			})
+			defer server.Close()
+
+			resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+				"model":"`+model+`",
+				"message":"找 Augment Gateway /chat-stream 链路",
+				"conversation_id":"conv-volatile-context",
+				"path":"backend/internal/handler/auth_augment_runtime.go",
+				"lang":"go",
+				"selected_text":"volatile selected text",
+				"blobs":{"checkpoint_id":"ckpt-volatile","added_blobs":["blob-a","blob-b"],"deleted_blobs":[]},
+				"chat_history":[{"request_message":"old question","response_text":"old answer"}],
+				"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
+			}`)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			require.NotEmpty(t, decodeAugmentContractNDJSON(t, resp.Body))
+
+			calls := executor.StreamRequests()
+			require.Len(t, calls, 1)
+			messages, ok := calls[0].RawBody["messages"].([]any)
+			require.True(t, ok)
+			require.NotEmpty(t, messages)
+			first, ok := messages[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "system", first["role"])
+			content, _ := first["content"].(string)
+			require.Contains(t, content, "codebase-retrieval")
+			require.Contains(t, content, "Augment stable workspace context")
+			require.Contains(t, content, "workspace_root: "+workspaceRoot)
+			require.Contains(t, content, "branch: feature/context-bundle")
+			require.NotContains(t, content, "conversation_id")
+			require.NotContains(t, content, "chat_history_count")
+			require.NotContains(t, content, "checkpoint_id")
+			require.NotContains(t, content, "selected_text")
+			require.NotContains(t, content, "old question")
+			require.NotContains(t, content, "blob-a")
+		})
 	}
-	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
-	defer server.Close()
-
-	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
-		"model":"deepseek-v4-pro",
-		"message":"找 Augment Gateway /chat-stream 链路",
-		"conversation_id":"conv-volatile-context",
-		"path":"backend/internal/handler/auth_augment_runtime.go",
-		"lang":"go",
-		"selected_text":"volatile selected text",
-		"blobs":{"checkpoint_id":"ckpt-volatile","added_blobs":["blob-a","blob-b"],"deleted_blobs":[]},
-		"chat_history":[{"request_message":"old question","response_text":"old answer"}],
-		"tool_definitions":[{"name":"codebase-retrieval","description":"repo search","input_schema":{"type":"object"}}]
-	}`)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.NotEmpty(t, decodeAugmentContractNDJSON(t, resp.Body))
-
-	calls := executor.StreamRequests()
-	require.Len(t, calls, 1)
-	messages, ok := calls[0].RawBody["messages"].([]any)
-	require.True(t, ok)
-	require.NotEmpty(t, messages)
-	first, ok := messages[0].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "system", first["role"])
-	content, _ := first["content"].(string)
-	require.Contains(t, content, "codebase-retrieval")
-	require.Contains(t, content, "Augment stable workspace context")
-	require.Contains(t, content, "workspace_root: "+workspaceRoot)
-	require.Contains(t, content, "branch: feature/context-bundle")
-	require.NotContains(t, content, "conversation_id")
-	require.NotContains(t, content, "chat_history_count")
-	require.NotContains(t, content, "checkpoint_id")
-	require.NotContains(t, content, "selected_text")
-	require.NotContains(t, content, "old question")
-	require.NotContains(t, content, "blob-a")
 }
 
 func TestAugmentLegacyRuntimeCompatibilityEndpoints(t *testing.T) {

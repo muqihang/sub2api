@@ -29,6 +29,10 @@ func TestAugmentGatewayProviderExecutor_OpenAISelectsConfiguredGroup(t *testing.
 			Provider:      AugmentGatewayProviderOpenAI,
 			UpstreamModel: "gpt-5.4",
 		},
+		User: &User{ID: 42},
+		Metadata: map[string]any{
+			"context_workspace_root": "/repo/sub2api",
+		},
 		RawBody: map[string]any{"messages": []any{}},
 	})
 
@@ -39,6 +43,13 @@ func TestAugmentGatewayProviderExecutor_OpenAISelectsConfiguredGroup(t *testing.
 	require.Same(t, selector.account, adapter.completeRequests[0].Account)
 	require.Equal(t, AugmentGatewayProviderOpenAI, result.Provider)
 	require.Equal(t, "gpt-5.4", result.ModelID)
+	body := adapter.completeRequests[0].RawBody
+	cacheKey, ok := body["prompt_cache_key"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, cacheKey)
+	require.Contains(t, cacheKey, "sub2api_")
+	require.NotContains(t, cacheKey, "/repo/sub2api")
+	require.Equal(t, "24h", body["prompt_cache_retention"])
 }
 
 func TestAugmentGatewayProviderExecutor_DeepSeekSelectsConfiguredGroupAndSanitizes(t *testing.T) {
@@ -163,6 +174,7 @@ func TestAugmentGatewayProviderExecutor_ClaudeSelectsConfiguredAnthropicGroup(t 
 	require.Equal(t, int64(1003), selector.calls[0].groupID)
 	require.Equal(t, "claude-sonnet-4-5", selector.calls[0].modelID)
 	require.Same(t, selector.account, adapter.completeRequests[0].Account)
+	require.Equal(t, map[string]any{"type": "ephemeral"}, adapter.completeRequests[0].RawBody["cache_control"])
 }
 
 func TestAugmentGatewayProviderExecutor_GeminiSelectsConfiguredGeminiGroup(t *testing.T) {
