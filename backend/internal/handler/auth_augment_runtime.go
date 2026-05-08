@@ -2498,8 +2498,13 @@ func (h *AuthHandler) augmentLegacyBuildGatewayRequest(c *gin.Context, principal
 	return service.AugmentGatewayProviderRequest{
 		Endpoint:       strings.TrimSpace(c.FullPath()),
 		ConversationID: conversationID,
+		RequestID:      strings.TrimSpace(c.GetHeader("X-Request-ID")),
 		SessionHash:    sessionHash,
 		Model:          routed.Model,
+		APIKey:         principal.APIKey,
+		User:           principal.User,
+		UserAgent:      c.GetHeader("User-Agent"),
+		IPAddress:      c.ClientIP(),
 		Messages:       rawMessages,
 		RawBody:        body,
 		Metadata:       augmentLegacyContextBundleMetadata(contextBundle),
@@ -2957,8 +2962,13 @@ func (h *AuthHandler) augmentLegacySimpleTextPromptCompletionThroughGateway(
 	rawMessages := augmentLegacyChatMessagesToRawMaps(messages)
 	req := service.AugmentGatewayProviderRequest{
 		Endpoint:    strings.TrimSpace(c.FullPath()),
+		RequestID:   strings.TrimSpace(c.GetHeader("X-Request-ID")),
 		SessionHash: h.augmentLegacyNamespace(c, principal),
 		Model:       routed.Model,
+		APIKey:      principal.APIKey,
+		User:        principal.User,
+		UserAgent:   c.GetHeader("User-Agent"),
+		IPAddress:   c.ClientIP(),
 		Messages:    rawMessages,
 		RawBody: map[string]any{
 			"model":    routed.UpstreamModel,

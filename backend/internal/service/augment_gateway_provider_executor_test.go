@@ -116,6 +116,23 @@ func TestAugmentGatewayProviderExecutor_DeepSeekSelectsConfiguredGroupAndSanitiz
 	require.Equal(t, "", secondAssistant["reasoning_content"])
 }
 
+func TestAugmentGatewayProviderUsageMapsDeepSeekPromptCacheHitTokens(t *testing.T) {
+	usage := augmentGatewayProviderUsageFromChatUsage(&apicompat.ChatUsage{
+		PromptTokens:          128,
+		CompletionTokens:      16,
+		TotalTokens:           144,
+		PromptCacheHitTokens:  96,
+		PromptCacheMissTokens: 32,
+	})
+
+	require.Equal(t, 128, usage.InputTokens)
+	require.Equal(t, 16, usage.OutputTokens)
+	require.Equal(t, 144, usage.TotalTokens)
+	require.Equal(t, 96, usage.CachedInputTokens)
+	require.Equal(t, 96, usage.ProviderUsageExtra["prompt_cache_hit_tokens"])
+	require.Equal(t, 32, usage.ProviderUsageExtra["prompt_cache_miss_tokens"])
+}
+
 func TestAugmentGatewayProviderExecutor_ClaudeSelectsConfiguredAnthropicGroup(t *testing.T) {
 	selector := &augmentGatewayProviderExecutorFakeSelector{
 		account: &Account{ID: 303, Platform: PlatformAnthropic},
@@ -276,6 +293,123 @@ func TestAugmentGatewayProviderExecutor_NormalizesProviderResults(t *testing.T) 
 	require.True(t, chunks[1].Done)
 }
 
+func TestAugmentGatewayProviderExecutor_RecordsCompleteUsageBestEffort(t *testing.T) {
+	selector := &augmentGatewayProviderExecutorFakeSelector{
+		account: &Account{ID: 707, Platform: PlatformOpenAI},
+	}
+	adapter := &augmentGatewayProviderExecutorFakeAdapter{
+		result: AugmentGatewayProviderResult{
+			RequestID:         "local-result-id",
+			UpstreamRequestID: "upstream-result-id",
+			Usage: AugmentGatewayProviderUsage{
+				InputTokens:       12,
+				OutputTokens:      5,
+				TotalTokens:       17,
+				CachedInputTokens: 3,
+			},
+		},
+	}
+	recorder := &augmentGatewayProviderExecutorFakeUsageRecorder{}
+	executor := newAugmentGatewayProviderExecutorTestSubject(selector, nil, nil, adapter, nil, nil)
+	executor.usageRecorder = recorder
+
+	user := &User{ID: 808}
+	apiKey := &APIKey{ID: 909, UserID: user.ID, User: user}
+	result, err := executor.Complete(context.Background(), AugmentGatewayProviderRequest{
+		Endpoint:  " /chat ",
+		RequestID: "req-complete-usage",
+		Model: AugmentGatewayModel{
+			ID:              "gpt-5.4",
+			Provider:        AugmentGatewayProviderOpenAI,
+			UpstreamModel:   "gpt-5.4-upstream",
+			ReasoningEffort: "high",
+		},
+		APIKey:    apiKey,
+		User:      user,
+		UserAgent: "Cursor/Test",
+		IPAddress: "127.0.0.1",
+		RawBody: map[string]any{
+			"model": "gpt-5.4-upstream",
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hello"},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "local-result-id", result.RequestID)
+	require.Len(t, recorder.calls, 1)
+
+	call := recorder.calls[0]
+	require.Same(t, apiKey, call.APIKey)
+	require.Same(t, user, call.User)
+	require.Same(t, selector.account, call.Account)
+	require.Equal(t, "/chat", call.InboundEndpoint)
+	require.Equal(t, "/v1/chat/completions", call.UpstreamEndpoint)
+	require.Equal(t, "Cursor/Test", call.UserAgent)
+	require.Equal(t, "127.0.0.1", call.IPAddress)
+	require.NotEmpty(t, call.RequestPayloadHash)
+	require.Equal(t, "upstream-result-id", call.Result.RequestID)
+	require.Equal(t, "gpt-5.4", call.Result.Model)
+	require.Equal(t, "gpt-5.4-upstream", call.Result.UpstreamModel)
+	require.Equal(t, 12, call.Result.Usage.InputTokens)
+	require.Equal(t, 5, call.Result.Usage.OutputTokens)
+	require.Equal(t, 3, call.Result.Usage.CacheReadInputTokens)
+	require.False(t, call.Result.Stream)
+	require.NotNil(t, call.Result.ReasoningEffort)
+	require.Equal(t, "high", *call.Result.ReasoningEffort)
+}
+
+func TestAugmentGatewayProviderExecutor_RecordsStreamUsageBestEffort(t *testing.T) {
+	selector := &augmentGatewayProviderExecutorFakeSelector{
+		account: &Account{ID: 808, Platform: PlatformOpenAI},
+	}
+	adapter := &augmentGatewayProviderExecutorFakeAdapter{
+		streamChunks: []AugmentGatewayProviderChunk{
+			{TextDelta: "hello"},
+			{
+				RequestID:         "local-stream-id",
+				UpstreamRequestID: "upstream-stream-id",
+				Usage: AugmentGatewayProviderUsage{
+					InputTokens:  21,
+					OutputTokens: 8,
+					TotalTokens:  29,
+				},
+			},
+			{Done: true},
+		},
+	}
+	recorder := &augmentGatewayProviderExecutorFakeUsageRecorder{err: errors.New("usage write failed")}
+	executor := newAugmentGatewayProviderExecutorTestSubject(selector, nil, nil, adapter, nil, nil)
+	executor.usageRecorder = recorder
+
+	user := &User{ID: 818}
+	apiKey := &APIKey{ID: 919, UserID: user.ID, User: user}
+	err := executor.Stream(context.Background(), AugmentGatewayProviderRequest{
+		Endpoint:  "/chat-stream",
+		RequestID: "req-stream-usage",
+		Model: AugmentGatewayModel{
+			ID:            "deepseek-v4-pro",
+			Provider:      AugmentGatewayProviderOpenAI,
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		APIKey: apiKey,
+		User:   user,
+		RawBody: map[string]any{
+			"model": "deepseek-v4-pro",
+		},
+	}, func(chunk AugmentGatewayProviderChunk) error {
+		return nil
+	})
+
+	require.NoError(t, err, "usage recorder errors must not break the Augment stream")
+	require.Len(t, recorder.calls, 1)
+	require.Equal(t, "upstream-stream-id", recorder.calls[0].Result.RequestID)
+	require.Equal(t, 21, recorder.calls[0].Result.Usage.InputTokens)
+	require.Equal(t, 8, recorder.calls[0].Result.Usage.OutputTokens)
+	require.True(t, recorder.calls[0].Result.Stream)
+}
+
 func TestAugmentGatewayProviderChunksPreserveStreamingToolCallIndex(t *testing.T) {
 	t.Parallel()
 
@@ -398,4 +532,14 @@ func (a *augmentGatewayProviderExecutorFakeAdapter) Stream(ctx context.Context, 
 		}
 	}
 	return nil
+}
+
+type augmentGatewayProviderExecutorFakeUsageRecorder struct {
+	calls []*OpenAIRecordUsageInput
+	err   error
+}
+
+func (r *augmentGatewayProviderExecutorFakeUsageRecorder) RecordUsage(ctx context.Context, input *OpenAIRecordUsageInput) error {
+	r.calls = append(r.calls, input)
+	return r.err
 }

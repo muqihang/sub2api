@@ -360,6 +360,15 @@ func augmentGatewayProviderUsageFromChatUsage(usage *apicompat.ChatUsage) Augmen
 	if usage.PromptTokensDetails != nil {
 		out.CachedInputTokens = usage.PromptTokensDetails.CachedTokens
 	}
+	if out.CachedInputTokens == 0 && usage.PromptCacheHitTokens > 0 {
+		out.CachedInputTokens = usage.PromptCacheHitTokens
+	}
+	if usage.PromptCacheHitTokens > 0 || usage.PromptCacheMissTokens > 0 {
+		out.ProviderUsageExtra = map[string]any{
+			"prompt_cache_hit_tokens":  usage.PromptCacheHitTokens,
+			"prompt_cache_miss_tokens": usage.PromptCacheMissTokens,
+		}
+	}
 	return out
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -21,6 +22,7 @@ type AugmentGatewayProviderExecutorImpl struct {
 	anthropic     *GatewayService
 	gemini        *GeminiMessagesCompatService
 	turnStore     *AugmentGatewayReasoningTurnStore
+	usageRecorder augmentGatewayUsageRecorder
 
 	openAISelector    augmentGatewayAccountSelector
 	deepSeekSelector  augmentGatewayAccountSelector
@@ -31,6 +33,10 @@ type AugmentGatewayProviderExecutorImpl struct {
 	deepSeekAdapter  augmentGatewayProviderAdapter
 	anthropicAdapter augmentGatewayProviderAdapter
 	geminiAdapter    augmentGatewayProviderAdapter
+}
+
+type augmentGatewayUsageRecorder interface {
+	RecordUsage(ctx context.Context, input *OpenAIRecordUsageInput) error
 }
 
 type AugmentGatewayProviderNotImplementedError struct {
@@ -75,6 +81,7 @@ func NewAugmentGatewayProviderExecutor(
 		anthropic:     anthropic,
 		gemini:        gemini,
 		turnStore:     turnStore,
+		usageRecorder: openaiGateway,
 		openAIAdapter: &augmentGatewayOpenAIAdapter{
 			gateway: openaiGateway,
 		},
@@ -97,11 +104,14 @@ func (e *AugmentGatewayProviderExecutorImpl) Complete(ctx context.Context, req A
 	if err != nil {
 		return AugmentGatewayProviderResult{}, err
 	}
+	startedAt := time.Now()
 	result, err := adapter.Complete(ctx, prepared)
 	if err != nil {
 		return AugmentGatewayProviderResult{}, err
 	}
-	return e.normalizeProviderResult(prepared, result), nil
+	result = e.normalizeProviderResult(prepared, result)
+	e.recordUsageBestEffort(ctx, prepared, result.Usage, result.RequestID, result.UpstreamRequestID, time.Since(startedAt), false)
+	return result, nil
 }
 
 func (e *AugmentGatewayProviderExecutorImpl) Stream(ctx context.Context, req AugmentGatewayProviderRequest, emit func(AugmentGatewayProviderChunk) error) error {
@@ -112,9 +122,28 @@ func (e *AugmentGatewayProviderExecutorImpl) Stream(ctx context.Context, req Aug
 	if err != nil {
 		return err
 	}
-	return adapter.Stream(ctx, prepared, func(chunk AugmentGatewayProviderChunk) error {
-		return emit(e.normalizeProviderChunk(prepared, chunk))
+	startedAt := time.Now()
+	var streamUsage AugmentGatewayProviderUsage
+	var requestID string
+	var upstreamRequestID string
+	err = adapter.Stream(ctx, prepared, func(chunk AugmentGatewayProviderChunk) error {
+		chunk = e.normalizeProviderChunk(prepared, chunk)
+		if augmentGatewayProviderUsagePresent(chunk.Usage) {
+			streamUsage = chunk.Usage
+		}
+		if strings.TrimSpace(chunk.RequestID) != "" {
+			requestID = strings.TrimSpace(chunk.RequestID)
+		}
+		if strings.TrimSpace(chunk.UpstreamRequestID) != "" {
+			upstreamRequestID = strings.TrimSpace(chunk.UpstreamRequestID)
+		}
+		return emit(chunk)
 	})
+	if err != nil {
+		return err
+	}
+	e.recordUsageBestEffort(ctx, prepared, streamUsage, requestID, upstreamRequestID, time.Since(startedAt), true)
+	return nil
 }
 
 func (e *AugmentGatewayProviderExecutorImpl) prepareProviderRequest(ctx context.Context, req AugmentGatewayProviderRequest) (AugmentGatewayProviderRequest, augmentGatewayProviderAdapter, error) {
@@ -188,6 +217,8 @@ func normalizeAugmentGatewayProviderRequest(req AugmentGatewayProviderRequest) A
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	req.AssistantTurnID = strings.TrimSpace(req.AssistantTurnID)
 	req.SessionHash = strings.TrimSpace(req.SessionHash)
+	req.UserAgent = strings.TrimSpace(req.UserAgent)
+	req.IPAddress = strings.TrimSpace(req.IPAddress)
 
 	req.Model.ID = strings.TrimSpace(req.Model.ID)
 	req.Model.UpstreamModel = strings.TrimSpace(req.Model.UpstreamModel)
@@ -294,4 +325,98 @@ func (e *AugmentGatewayProviderExecutorImpl) normalizeProviderChunk(req AugmentG
 	chunk.Metadata["augment_endpoint"] = req.Endpoint
 	chunk.Metadata["augment_provider_group_id"] = req.ProviderGroupID
 	return chunk
+}
+
+func (e *AugmentGatewayProviderExecutorImpl) recordUsageBestEffort(
+	ctx context.Context,
+	req AugmentGatewayProviderRequest,
+	usage AugmentGatewayProviderUsage,
+	requestID string,
+	upstreamRequestID string,
+	duration time.Duration,
+	stream bool,
+) {
+	if e == nil || e.usageRecorder == nil {
+		return
+	}
+	if !augmentGatewayProviderUsagePresent(usage) {
+		return
+	}
+	apiKey := req.APIKey
+	if apiKey == nil {
+		return
+	}
+	user := req.User
+	if user == nil {
+		user = apiKey.User
+	}
+	if user == nil {
+		return
+	}
+	account := req.Account
+	if account == nil {
+		return
+	}
+
+	rawBody, _ := json.Marshal(req.RawBody)
+	modelID := firstNonBlankAugmentGatewayString(req.ModelID, req.Model.ID)
+	upstreamModel := firstNonBlankAugmentGatewayString(req.UpstreamModel, req.Model.UpstreamModel, modelID)
+	resultRequestID := firstNonBlankAugmentGatewayString(upstreamRequestID, requestID, req.RequestID)
+	var reasoningEffort *string
+	if effort := strings.TrimSpace(req.Model.ReasoningEffort); effort != "" {
+		reasoningEffort = &effort
+	}
+
+	_ = e.usageRecorder.RecordUsage(ctx, &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: resultRequestID,
+			Usage: OpenAIUsage{
+				InputTokens:          usage.InputTokens,
+				OutputTokens:         usage.OutputTokens,
+				CacheReadInputTokens: usage.CachedInputTokens,
+			},
+			Model:           modelID,
+			UpstreamModel:   upstreamModel,
+			ReasoningEffort: reasoningEffort,
+			Stream:          stream,
+			Duration:        duration,
+		},
+		APIKey:             apiKey,
+		User:               user,
+		Account:            account,
+		Subscription:       req.Subscription,
+		InboundEndpoint:    req.Endpoint,
+		UpstreamEndpoint:   augmentGatewayUsageUpstreamEndpoint(req.Provider),
+		UserAgent:          req.UserAgent,
+		IPAddress:          req.IPAddress,
+		RequestPayloadHash: HashUsageRequestPayload(rawBody),
+	})
+}
+
+func augmentGatewayProviderUsagePresent(usage AugmentGatewayProviderUsage) bool {
+	return usage.InputTokens > 0 ||
+		usage.OutputTokens > 0 ||
+		usage.TotalTokens > 0 ||
+		usage.CachedInputTokens > 0 ||
+		usage.ReasoningTokens > 0
+}
+
+func augmentGatewayUsageUpstreamEndpoint(provider AugmentGatewayProvider) string {
+	switch provider {
+	case AugmentGatewayProviderAnthropic:
+		return "/v1/messages"
+	case AugmentGatewayProviderGemini:
+		return "/v1beta/models:generateContent"
+	default:
+		return "/v1/chat/completions"
+	}
+}
+
+func firstNonBlankAugmentGatewayString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

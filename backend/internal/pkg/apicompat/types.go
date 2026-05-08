@@ -462,10 +462,12 @@ type ChatChoice struct {
 
 // ChatUsage holds token counts in Chat Completions format.
 type ChatUsage struct {
-	PromptTokens        int               `json:"prompt_tokens"`
-	CompletionTokens    int               `json:"completion_tokens"`
-	TotalTokens         int               `json:"total_tokens"`
-	PromptTokensDetails *ChatTokenDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens          int               `json:"prompt_tokens"`
+	CompletionTokens      int               `json:"completion_tokens"`
+	TotalTokens           int               `json:"total_tokens"`
+	PromptTokensDetails   *ChatTokenDetails `json:"prompt_tokens_details,omitempty"`
+	PromptCacheHitTokens  int               `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens int               `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 // ChatTokenDetails provides a breakdown of token usage.

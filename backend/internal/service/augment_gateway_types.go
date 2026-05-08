@@ -40,6 +40,12 @@ type AugmentGatewayProviderRequest struct {
 
 	Model AugmentGatewayModel
 
+	APIKey       *APIKey
+	User         *User
+	Subscription *UserSubscription
+	UserAgent    string
+	IPAddress    string
+
 	Account         *Account
 	ProviderGroupID int64
 	Provider        AugmentGatewayProvider
