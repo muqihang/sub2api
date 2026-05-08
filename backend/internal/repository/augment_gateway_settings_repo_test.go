@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -202,6 +203,56 @@ func TestAugmentGatewaySettingsAuditStoresBeforeAfterDiff(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), record.Version)
 	require.JSONEq(t, string(afterJSON), string(record.SettingsJSON))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAugmentGatewaySettingsInsertUniqueViolationMapsToVersionConflict(t *testing.T) {
+	db, mock := newSQLMock(t)
+	now := time.Date(2026, 5, 8, 14, 30, 0, 0, time.UTC)
+	repo := newAugmentGatewaySettingsRepositoryWithSQL(db)
+	repo.now = func() time.Time { return now }
+
+	namespace := "gateway.augment.provider_groups.openai"
+	settingsJSON := mustMarshalJSON(t, AugmentGatewayProviderGroupRecord{GroupID: 1001})
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT namespace, settings_json, version, previous_version, rollback_snapshot_json, actor_admin_id, request_id, before_json, after_json, action, result, created_at, updated_at FROM augment_gateway_settings_versions").
+		WithArgs(namespace).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"namespace", "settings_json", "version", "previous_version", "rollback_snapshot_json",
+			"actor_admin_id", "request_id", "before_json", "after_json", "action", "result",
+			"created_at", "updated_at",
+		}).AddRow(
+			namespace, settingsJSON, int64(1), nil, settingsJSON, int64(7), "req-prev", settingsJSON, settingsJSON, "update", "success", now.Add(-time.Minute), now.Add(-time.Minute),
+		))
+	mock.ExpectQuery("INSERT INTO augment_gateway_settings_versions").
+		WithArgs(
+			namespace,
+			settingsJSON,
+			int64(2),
+			int64(1),
+			settingsJSON,
+			int64(9),
+			"req-race",
+			settingsJSON,
+			settingsJSON,
+			service.AugmentGatewaySettingsActionUpdate,
+			service.AugmentGatewaySettingsResultSuccess,
+			now,
+			now,
+		).
+		WillReturnError(&pq.Error{Code: "23505"})
+	mock.ExpectRollback()
+
+	_, err := repo.Put(context.Background(), service.AugmentGatewaySettingsWriteInput{
+		Namespace:       namespace,
+		SettingsJSON:    settingsJSON,
+		ExpectedVersion: 1,
+		ActorAdminID:    9,
+		RequestID:       "req-race",
+		Action:          service.AugmentGatewaySettingsActionUpdate,
+	})
+	require.ErrorIs(t, err, service.ErrAugmentGatewaySettingsVersionConflict)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

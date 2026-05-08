@@ -39,6 +39,7 @@ func ProvideAdminHandlers(
 	channelMonitorTemplateHandler *admin.ChannelMonitorRequestTemplateHandler,
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
+	augmentGatewayHandler *admin.AugmentGatewayHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -70,12 +71,21 @@ func ProvideAdminHandlers(
 		ChannelMonitorTemplate: channelMonitorTemplateHandler,
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
+		AugmentGateway:         augmentGatewayHandler,
 	}
 }
 
 // ProvideSystemHandler creates admin.SystemHandler with UpdateService
 func ProvideSystemHandler(updateService *service.UpdateService, lockService *service.SystemOperationLockService) *admin.SystemHandler {
 	return admin.NewSystemHandler(updateService, lockService)
+}
+
+func ProvideAugmentGatewayHandler(
+	settingsSvc *service.AugmentGatewayAdminService,
+	sessionSvc *service.AugmentOfficialSessionService,
+	usageSvc *service.AugmentGatewayUsageService,
+) *admin.AugmentGatewayHandler {
+	return admin.NewAugmentGatewayHandler(settingsSvc, sessionSvc, usageSvc)
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
@@ -223,6 +233,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewChannelMonitorRequestTemplateHandler,
 	admin.NewPaymentHandler,
 	admin.NewAffiliateHandler,
+	ProvideAugmentGatewayHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

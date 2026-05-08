@@ -1,0 +1,232 @@
+package admin
+
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
+)
+
+type augmentGatewayAdminSettingsAPI interface {
+	ListProviderGroups(ctx context.Context) ([]service.AugmentGatewayProviderRuntime, error)
+	UpdateProviderGroup(ctx context.Context, provider service.AugmentGatewayProvider, setting service.AugmentGatewayProviderGroupSetting, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error)
+	ListModels(ctx context.Context) ([]service.AugmentGatewayManagedModel, error)
+	UpdateModel(ctx context.Context, modelID string, setting service.AugmentGatewayModelSetting, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error)
+}
+
+type augmentGatewayOfficialSessionAdminAPI interface {
+	ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialSessionAdminView, error)
+	GetAdminSessionDiagnostics(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminDiagnostics, error)
+	RevokeOfficialSessionForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminView, error)
+	DisableOfficialSessionForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminView, error)
+	RequireOfficialSessionReloginForAdmin(ctx context.Context, userID int64) (*service.AugmentOfficialSessionAdminView, error)
+}
+
+type augmentGatewayUsageAdminAPI interface {
+	ListUsageAdmin(ctx context.Context, params pagination.PaginationParams) ([]service.AugmentGatewayBillingUsageRow, *pagination.PaginationResult, error)
+}
+
+type AugmentGatewayHandler struct {
+	settingsSvc      augmentGatewayAdminSettingsAPI
+	sessionSvc       augmentGatewayOfficialSessionAdminAPI
+	usageSvc         augmentGatewayUsageAdminAPI
+	vaultPermission  func(*gin.Context) bool
+}
+
+func NewAugmentGatewayHandler(
+	settingsSvc augmentGatewayAdminSettingsAPI,
+	sessionSvc augmentGatewayOfficialSessionAdminAPI,
+	usageSvc augmentGatewayUsageAdminAPI,
+) *AugmentGatewayHandler {
+	return &AugmentGatewayHandler{
+		settingsSvc: settingsSvc,
+		sessionSvc:  sessionSvc,
+		usageSvc:    usageSvc,
+		vaultPermission: func(c *gin.Context) bool {
+			authMethod, _ := c.Get("auth_method")
+			return authMethod == "admin_api_key" || authMethod == "jwt"
+		},
+	}
+}
+
+func (h *AugmentGatewayHandler) SetSessionVaultPermissionChecker(checker func(*gin.Context) bool) {
+	if checker != nil {
+		h.vaultPermission = checker
+	}
+}
+
+func (h *AugmentGatewayHandler) Summary(c *gin.Context) {
+	providerGroups, err := h.settingsSvc.ListProviderGroups(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	models, err := h.settingsSvc.ListModels(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	sessions, err := h.sessionSvc.ListAdminSessions(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"provider_groups":       providerGroups,
+		"models":                models,
+		"official_session_count": len(sessions),
+	})
+}
+
+func (h *AugmentGatewayHandler) ProviderGroups(c *gin.Context) {
+	rows, err := h.settingsSvc.ListProviderGroups(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"rows": rows})
+}
+
+func (h *AugmentGatewayHandler) UpdateProviderGroups(c *gin.Context) {
+	var req struct {
+		Provider        service.AugmentGatewayProvider `json:"provider"`
+		GroupID         int64                          `json:"group_id"`
+		ExpectedVersion int64                          `json:"expected_version"`
+		RequestID       string                         `json:"request_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	record, err := h.settingsSvc.UpdateProviderGroup(c.Request.Context(), req.Provider, service.AugmentGatewayProviderGroupSetting{
+		GroupID: req.GroupID,
+	}, service.AugmentGatewaySettingsMutationMeta{
+		ExpectedVersion: req.ExpectedVersion,
+		ActorAdminID:    getAdminIDFromContext(c),
+		RequestID:       strings.TrimSpace(req.RequestID),
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, record)
+}
+
+func (h *AugmentGatewayHandler) Models(c *gin.Context) {
+	rows, err := h.settingsSvc.ListModels(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"rows": rows})
+}
+
+func (h *AugmentGatewayHandler) UpdateModel(c *gin.Context) {
+	var req struct {
+		Enabled         bool   `json:"enabled"`
+		SmokeStatus     string `json:"smoke_status"`
+		ExpectedVersion int64  `json:"expected_version"`
+		RequestID       string `json:"request_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	record, err := h.settingsSvc.UpdateModel(c.Request.Context(), c.Param("id"), service.AugmentGatewayModelSetting{
+		Enabled:     req.Enabled,
+		SmokeStatus: service.AugmentGatewaySmokeStatus(strings.TrimSpace(req.SmokeStatus)),
+	}, service.AugmentGatewaySettingsMutationMeta{
+		ExpectedVersion: req.ExpectedVersion,
+		ActorAdminID:    getAdminIDFromContext(c),
+		RequestID:       strings.TrimSpace(req.RequestID),
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, record)
+}
+
+func (h *AugmentGatewayHandler) OfficialSessions(c *gin.Context) {
+	rows, err := h.sessionSvc.ListAdminSessions(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"rows": rows})
+}
+
+func (h *AugmentGatewayHandler) RevokeOfficialSession(c *gin.Context) {
+	h.mutateOfficialSession(c, h.sessionSvc.RevokeOfficialSessionForAdmin)
+}
+
+func (h *AugmentGatewayHandler) DisableOfficialSession(c *gin.Context) {
+	h.mutateOfficialSession(c, h.sessionSvc.DisableOfficialSessionForAdmin)
+}
+
+func (h *AugmentGatewayHandler) RequireOfficialSessionRelogin(c *gin.Context) {
+	h.mutateOfficialSession(c, h.sessionSvc.RequireOfficialSessionReloginForAdmin)
+}
+
+func (h *AugmentGatewayHandler) OfficialSessionDiagnostics(c *gin.Context) {
+	userID, ok := parseAdminAugmentUserID(c)
+	if !ok {
+		return
+	}
+	diagnostics, err := h.sessionSvc.GetAdminSessionDiagnostics(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, diagnostics)
+}
+
+func (h *AugmentGatewayHandler) Usage(c *gin.Context) {
+	rows, page, err := h.usageSvc.ListUsageAdmin(c.Request.Context(), pagination.PaginationParams{
+		Page:     parsePositiveInt(c.Query("page"), 1),
+		PageSize: parsePositiveInt(c.Query("page_size"), 20),
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"rows": rows, "page": page})
+}
+
+func (h *AugmentGatewayHandler) mutateOfficialSession(c *gin.Context, action func(context.Context, int64) (*service.AugmentOfficialSessionAdminView, error)) {
+	if h.vaultPermission != nil && !h.vaultPermission(c) {
+		response.Forbidden(c, "Augment session vault permission required")
+		return
+	}
+	userID, ok := parseAdminAugmentUserID(c)
+	if !ok {
+		return
+	}
+	view, err := action(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, view)
+}
+
+func parseAdminAugmentUserID(c *gin.Context) (int64, bool) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || userID <= 0 {
+		response.BadRequest(c, "Invalid user ID")
+		return 0, false
+	}
+	return userID, true
+}
+
+func parsePositiveInt(raw string, fallback int) int {
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}

@@ -612,6 +612,7 @@ type augmentOfficialSessionStoreStub struct {
 	upsertSessionErr        error
 	publicView              *AugmentOfficialSessionStoredPublicView
 	publicViewErr           error
+	adminView               *AugmentOfficialSessionStoredAdminView
 	credentialRow           *AugmentOfficialSessionStoredCredentialRow
 	credentialRowErr        error
 	revokeView              *AugmentOfficialSessionStoredPublicView
@@ -646,6 +647,20 @@ func (s *augmentOfficialSessionStoreStub) GetActiveSessionPublicView(ctx context
 		return nil, s.publicViewErr
 	}
 	return s.publicView, nil
+}
+
+func (s *augmentOfficialSessionStoreStub) GetActiveSessionAdminView(ctx context.Context, userID int64) (*AugmentOfficialSessionStoredAdminView, error) {
+	if s.publicViewErr != nil {
+		return nil, s.publicViewErr
+	}
+	return s.adminView, nil
+}
+
+func (s *augmentOfficialSessionStoreStub) ListAdminSessions(ctx context.Context) ([]AugmentOfficialSessionStoredAdminView, error) {
+	if s.adminView == nil {
+		return nil, nil
+	}
+	return []AugmentOfficialSessionStoredAdminView{*s.adminView}, nil
 }
 
 func (s *augmentOfficialSessionStoreStub) GetActiveSessionCredentialRow(ctx context.Context, userID int64) (*AugmentOfficialSessionStoredCredentialRow, error) {

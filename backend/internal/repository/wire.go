@@ -310,6 +310,26 @@ func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionPublicView(ctx cont
 	}, nil
 }
 
+func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionAdminView(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredAdminView, error) {
+	view, err := a.repo.GetActiveSessionAdminView(ctx, userID)
+	if err != nil || view == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return adminViewToStoredAdminView(view), nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialSessionStoredAdminView, error) {
+	views, err := a.repo.ListAdminViews(ctx)
+	if err != nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	out := make([]service.AugmentOfficialSessionStoredAdminView, 0, len(views))
+	for i := range views {
+		out = append(out, *adminViewToStoredAdminView(&views[i]))
+	}
+	return out, nil
+}
+
 func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionCredentialRow(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredCredentialRow, error) {
 	row, err := a.repo.GetActiveSessionCredentialRow(ctx, userID)
 	if err != nil || row == nil {
@@ -369,6 +389,33 @@ func adminViewToStoredPublicView(view *AugmentOfficialSessionAdminView) *service
 		CreatedAt:               view.CreatedAt.UTC(),
 		UpdatedAt:               view.UpdatedAt.UTC(),
 		RevokedAt:               cloneTimePtrForAdapter(view.RevokedAt),
+	}
+}
+
+func adminViewToStoredAdminView(view *AugmentOfficialSessionAdminView) *service.AugmentOfficialSessionStoredAdminView {
+	if view == nil {
+		return nil
+	}
+	return &service.AugmentOfficialSessionStoredAdminView{
+		UserID:                  view.UserID,
+		Mode:                    view.Mode,
+		Source:                  view.Source,
+		TenantOrigin:            view.TenantOrigin,
+		PortalOrigin:            cloneStringPtrForAdapter(view.PortalOrigin),
+		Scopes:                  append([]string(nil), view.Scopes...),
+		ExpiresAt:               cloneTimePtrForAdapter(view.ExpiresAt),
+		LastRefreshAt:           cloneTimePtrForAdapter(view.LastRefreshAt),
+		LastSuccessAt:           cloneTimePtrForAdapter(view.LastSuccessAt),
+		LastErrorAt:             cloneTimePtrForAdapter(view.LastErrorAt),
+		LastErrorCode:           cloneStringPtrForAdapter(view.LastErrorCode),
+		Status:                  view.Status,
+		CredentialSchemaVersion: view.CredentialSchemaVersion,
+		KeyVersion:              view.KeyVersion,
+		Fingerprint:             view.Fingerprint,
+		CreatedAt:               view.CreatedAt.UTC(),
+		UpdatedAt:               view.UpdatedAt.UTC(),
+		RevokedAt:               cloneTimePtrForAdapter(view.RevokedAt),
+		HasCredentialPayload:    view.HasCredentialPayload,
 	}
 }
 

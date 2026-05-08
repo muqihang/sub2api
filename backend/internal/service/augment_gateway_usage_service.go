@@ -148,6 +148,24 @@ func (s *AugmentGatewayUsageService) ListRecentErrors(ctx context.Context, userI
 	return out, nil
 }
 
+func (s *AugmentGatewayUsageService) ListUsageAdmin(ctx context.Context, params pagination.PaginationParams) ([]AugmentGatewayBillingUsageRow, *pagination.PaginationResult, error) {
+	if s == nil || s.usageRepo == nil {
+		return nil, nil, infraerrors.ServiceUnavailable("AUGMENT_BILLING_UNAVAILABLE", "augment gateway usage service is unavailable")
+	}
+	logs, page, err := s.usageRepo.ListWithFilters(ctx, params, usagestats.UsageLogFilters{
+		ClientProduct: AugmentUsageClientProduct,
+		ExactTotal:    true,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	rows := make([]AugmentGatewayBillingUsageRow, 0, len(logs))
+	for _, log := range logs {
+		rows = append(rows, augmentUsageLogToRow(log))
+	}
+	return rows, page, nil
+}
+
 func (s *AugmentGatewayUsageService) loadAllRows(ctx context.Context, userID int64) ([]UsageLog, error) {
 	if s == nil || s.usageRepo == nil {
 		return nil, infraerrors.ServiceUnavailable("AUGMENT_BILLING_UNAVAILABLE", "augment gateway usage service is unavailable")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 type AugmentGatewayProviderGroupRecord = service.AugmentGatewayProviderGroupSetting
@@ -129,6 +130,9 @@ func (r *augmentGatewaySettingsRepository) Put(ctx context.Context, input servic
 		UpdatedAt:            now,
 	})
 	if err != nil {
+		if isAugmentGatewaySettingsUniqueViolation(err) {
+			return nil, service.ErrAugmentGatewaySettingsVersionConflict
+		}
 		return nil, err
 	}
 	if err := r.insertAudit(ctx, tx, *record); err != nil {
@@ -181,6 +185,9 @@ func (r *augmentGatewaySettingsRepository) Rollback(ctx context.Context, input s
 		UpdatedAt:            now,
 	})
 	if err != nil {
+		if isAugmentGatewaySettingsUniqueViolation(err) {
+			return nil, service.ErrAugmentGatewaySettingsVersionConflict
+		}
 		return nil, err
 	}
 	if err := r.insertAudit(ctx, tx, *record); err != nil {
@@ -364,4 +371,9 @@ func cloneJSON(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), raw...)
+}
+
+func isAugmentGatewaySettingsUniqueViolation(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && string(pqErr.Code) == "23505"
 }

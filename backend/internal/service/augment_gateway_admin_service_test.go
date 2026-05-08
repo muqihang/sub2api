@@ -112,6 +112,66 @@ func TestAugmentGatewaySettingsVersionConflict(t *testing.T) {
 	require.ErrorIs(t, err, ErrAugmentGatewaySettingsVersionConflict)
 }
 
+func TestAugmentGatewaySettingsRejectsUnknownProvider(t *testing.T) {
+	t.Parallel()
+
+	store := &augmentGatewaySettingsStoreStub{}
+	svc := NewAugmentGatewayAdminService(store, &augmentGatewayGroupReaderStub{}, config.GatewayAugmentConfig{Enabled: true})
+
+	_, err := svc.UpdateProviderGroup(context.Background(), AugmentGatewayProvider("unknown"), AugmentGatewayProviderGroupSetting{
+		GroupID: 1,
+	}, AugmentGatewaySettingsMutationMeta{})
+	require.ErrorIs(t, err, ErrAugmentGatewayProviderUnknown)
+}
+
+func TestAugmentGatewaySettingsUpdateModelUsesFallbackConfigBaseline(t *testing.T) {
+	t.Parallel()
+
+	store := &augmentGatewaySettingsStoreStub{}
+	svc := NewAugmentGatewayAdminService(store, &augmentGatewayGroupReaderStub{}, config.GatewayAugmentConfig{
+		Enabled: true,
+		EnabledModels: []string{
+			"claude-sonnet-4-5",
+		},
+	})
+
+	_, err := svc.UpdateModel(context.Background(), "gpt-5.4", AugmentGatewayModelSetting{
+		Enabled:     true,
+		SmokeStatus: AugmentGatewaySmokeStatusPassed,
+	}, AugmentGatewaySettingsMutationMeta{})
+	require.NoError(t, err)
+
+	var saved map[string]AugmentGatewayModelSetting
+	require.NoError(t, json.Unmarshal(store.putInput.SettingsJSON, &saved))
+	require.True(t, saved["claude-sonnet-4-5"].Enabled)
+}
+
+func TestAugmentGatewaySettingsListModelsExposeSettingsVersion(t *testing.T) {
+	t.Parallel()
+
+	store := &augmentGatewaySettingsStoreStub{
+		latest: map[string]*AugmentGatewaySettingsVersion{
+			AugmentGatewayEnabledModelsNamespace: {
+				Namespace: AugmentGatewayEnabledModelsNamespace,
+				Version:   7,
+				SettingsJSON: mustServiceJSON(t, map[string]AugmentGatewayModelSetting{
+					"gpt-5.4": {Enabled: true, SmokeStatus: AugmentGatewaySmokeStatusPassed},
+				}),
+			},
+		},
+	}
+	svc := NewAugmentGatewayAdminService(store, &augmentGatewayGroupReaderStub{}, config.GatewayAugmentConfig{
+		Enabled:       true,
+		EnabledModels: []string{"gpt-5.4"},
+	})
+
+	rows, err := svc.ListModels(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, rows)
+	require.Equal(t, int64(7), rows[0].SettingsVersion)
+	require.Equal(t, AugmentGatewayEnabledModelsNamespace, rows[0].SettingsNamespace)
+}
+
 func TestAugmentGatewaySettingsRollback(t *testing.T) {
 	t.Parallel()
 

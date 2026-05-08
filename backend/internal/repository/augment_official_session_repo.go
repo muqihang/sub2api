@@ -486,6 +486,70 @@ func (r *augmentOfficialSessionRepository) GetActiveSessionAdminView(ctx context
 	return view, nil
 }
 
+func (r *augmentOfficialSessionRepository) ListAdminViews(ctx context.Context) ([]AugmentOfficialSessionAdminView, error) {
+	query := `
+		SELECT user_id, mode, source, tenant_origin, portal_origin, scopes, expires_at, last_refresh_at, last_success_at, last_error_at, last_error_code, status, credential_schema_version, key_version, fingerprint, created_at, updated_at, revoked_at, (encrypted_credential_payload IS NOT NULL) AS has_credential_payload
+		FROM augment_official_sessions
+		ORDER BY updated_at DESC, id DESC
+	`
+	rows, err := r.sql.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]AugmentOfficialSessionAdminView, 0)
+	for rows.Next() {
+		view := AugmentOfficialSessionAdminView{}
+		var scopesJSON []byte
+		var portalOrigin sql.NullString
+		var expiresAt sql.NullTime
+		var lastRefreshAt sql.NullTime
+		var lastSuccessAt sql.NullTime
+		var lastErrorAt sql.NullTime
+		var lastErrorCode sql.NullString
+		var revokedAt sql.NullTime
+		if err := rows.Scan(
+			&view.UserID,
+			&view.Mode,
+			&view.Source,
+			&view.TenantOrigin,
+			&portalOrigin,
+			&scopesJSON,
+			&expiresAt,
+			&lastRefreshAt,
+			&lastSuccessAt,
+			&lastErrorAt,
+			&lastErrorCode,
+			&view.Status,
+			&view.CredentialSchemaVersion,
+			&view.KeyVersion,
+			&view.Fingerprint,
+			&view.CreatedAt,
+			&view.UpdatedAt,
+			&revokedAt,
+			&view.HasCredentialPayload,
+		); err != nil {
+			return nil, err
+		}
+		if err := unmarshalStringSlice(scopesJSON, &view.Scopes); err != nil {
+			return nil, err
+		}
+		applyNullString(&view.PortalOrigin, portalOrigin)
+		applyNullTime(&view.ExpiresAt, expiresAt)
+		applyNullTime(&view.LastRefreshAt, lastRefreshAt)
+		applyNullTime(&view.LastSuccessAt, lastSuccessAt)
+		applyNullTime(&view.LastErrorAt, lastErrorAt)
+		applyNullString(&view.LastErrorCode, lastErrorCode)
+		applyNullTime(&view.RevokedAt, revokedAt)
+		out = append(out, view)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *augmentOfficialSessionRepository) GetActiveSessionCredentialRow(ctx context.Context, userID int64) (*AugmentOfficialSessionCredentialRow, error) {
 	query := `
 		SELECT user_id, mode, source, tenant_origin, portal_origin, scopes, expires_at, last_refresh_at, last_success_at, last_error_at, last_error_code, status, encrypted_credential_payload, credential_schema_version, key_version, fingerprint, created_at, updated_at, revoked_at

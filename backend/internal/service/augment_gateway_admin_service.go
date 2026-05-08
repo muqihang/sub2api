@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +49,10 @@ var (
 	ErrAugmentGatewayModelUnknown = infraerrors.BadRequest(
 		"AUGMENT_GATEWAY_MODEL_UNKNOWN",
 		"augment gateway model is unknown",
+	)
+	ErrAugmentGatewayProviderUnknown = infraerrors.BadRequest(
+		"AUGMENT_GATEWAY_PROVIDER_UNKNOWN",
+		"augment gateway provider is unknown",
 	)
 )
 
@@ -250,6 +253,10 @@ func (s *AugmentGatewayAdminService) UpdateProviderGroup(
 	setting AugmentGatewayProviderGroupSetting,
 	meta AugmentGatewaySettingsMutationMeta,
 ) (*AugmentGatewaySettingsVersion, error) {
+	namespace := augmentGatewayNamespaceForProvider(provider)
+	if namespace == "" {
+		return nil, ErrAugmentGatewayProviderUnknown
+	}
 	if setting.GroupID > 0 && s.groupReader != nil {
 		total, _, err := s.groupReader.GetAccountCount(ctx, setting.GroupID)
 		if err != nil {
@@ -265,7 +272,7 @@ func (s *AugmentGatewayAdminService) UpdateProviderGroup(
 		return nil, err
 	}
 	return s.store.Put(ctx, AugmentGatewaySettingsWriteInput{
-		Namespace:       augmentGatewayNamespaceForProvider(provider),
+		Namespace:       namespace,
 		SettingsJSON:    payload,
 		ExpectedVersion: meta.ExpectedVersion,
 		ActorAdminID:    meta.ActorAdminID,
@@ -289,7 +296,7 @@ func (s *AugmentGatewayAdminService) UpdateModel(
 		return nil, ErrAugmentGatewayModelSmokeRequired
 	}
 
-	models := buildFallbackAugmentGatewayModelSettings(config.GatewayAugmentConfig{})
+	models := buildFallbackAugmentGatewayModelSettings(s.fallback)
 	if s != nil && s.store != nil {
 		record, err := s.store.GetLatest(ctx, AugmentGatewayEnabledModelsNamespace)
 		if err != nil {
@@ -351,6 +358,16 @@ func (s *AugmentGatewayAdminService) ListModels(ctx context.Context) ([]AugmentG
 		return nil, err
 	}
 	registry := NewAugmentGatewayModelRegistry(s.fallback, WithAugmentGatewayRegistryStateSource(s))
+	version := int64(0)
+	if s != nil && s.store != nil {
+		record, err := s.store.GetLatest(ctx, AugmentGatewayEnabledModelsNamespace)
+		if err != nil {
+			return nil, err
+		}
+		if record != nil {
+			version = record.Version
+		}
+	}
 	out := make([]AugmentGatewayManagedModel, 0, len(defaultAugmentGatewayModels))
 	for _, model := range defaultAugmentGatewayModels {
 		setting := state.Models[model.ID]
@@ -362,17 +379,21 @@ func (s *AugmentGatewayAdminService) ListModels(ctx context.Context) ([]AugmentG
 			Visible:         registry.IsVisible(model.ID),
 			SmokeStatus:     setting.SmokeStatus,
 			ProviderHealthy: providerState.Healthy,
+			SettingsNamespace: AugmentGatewayEnabledModelsNamespace,
+			SettingsVersion:   version,
 		})
 	}
 	return out, nil
 }
 
 type AugmentGatewayManagedModel struct {
-	Model           AugmentGatewayModel       `json:"model"`
-	Enabled         bool                      `json:"enabled"`
-	Visible         bool                      `json:"visible"`
-	SmokeStatus     AugmentGatewaySmokeStatus `json:"smoke_status"`
-	ProviderHealthy bool                      `json:"provider_healthy"`
+	Model             AugmentGatewayModel       `json:"model"`
+	Enabled           bool                      `json:"enabled"`
+	Visible           bool                      `json:"visible"`
+	SmokeStatus       AugmentGatewaySmokeStatus `json:"smoke_status"`
+	ProviderHealthy   bool                      `json:"provider_healthy"`
+	SettingsNamespace string                    `json:"settings_namespace"`
+	SettingsVersion   int64                     `json:"settings_version"`
 }
 
 func augmentGatewayNamespaceForProvider(provider AugmentGatewayProvider) string {
@@ -461,11 +482,7 @@ func normalizeAugmentGatewayModelSetting(setting AugmentGatewayModelSetting) Aug
 	case AugmentGatewaySmokeStatusPending:
 		return setting
 	default:
-		if setting.Enabled {
-			setting.SmokeStatus = AugmentGatewaySmokeStatusPassed
-		} else {
-			setting.SmokeStatus = AugmentGatewaySmokeStatusPending
-		}
+		setting.SmokeStatus = AugmentGatewaySmokeStatusPending
 		return setting
 	}
 }
@@ -480,12 +497,10 @@ func defaultAugmentGatewayModelByID(modelID string) (AugmentGatewayModel, bool) 
 }
 
 func augmentGatewayProviderOrder() []AugmentGatewayProvider {
-	providers := []AugmentGatewayProvider{
+	return []AugmentGatewayProvider{
 		AugmentGatewayProviderOpenAI,
 		AugmentGatewayProviderDeepSeek,
 		AugmentGatewayProviderAnthropic,
 		AugmentGatewayProviderGemini,
 	}
-	sort.SliceStable(providers, func(i, j int) bool { return providers[i] < providers[j] })
-	return providers
 }

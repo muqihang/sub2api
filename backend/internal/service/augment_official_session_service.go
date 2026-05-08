@@ -55,6 +55,8 @@ type AugmentOfficialSessionStore interface {
 	ConsumeBindIntent(ctx context.Context, bindIntentID string, userID int64) (*AugmentOfficialSessionBindIntentStoreRecord, error)
 	UpsertActiveSession(ctx context.Context, input AugmentOfficialSessionStoredSessionInput) (*AugmentOfficialSessionStoredPublicView, error)
 	GetActiveSessionPublicView(ctx context.Context, userID int64) (*AugmentOfficialSessionStoredPublicView, error)
+	GetActiveSessionAdminView(ctx context.Context, userID int64) (*AugmentOfficialSessionStoredAdminView, error)
+	ListAdminSessions(ctx context.Context) ([]AugmentOfficialSessionStoredAdminView, error)
 	GetActiveSessionCredentialRow(ctx context.Context, userID int64) (*AugmentOfficialSessionStoredCredentialRow, error)
 	RevokeActiveSession(ctx context.Context, userID int64) (*AugmentOfficialSessionStoredPublicView, error)
 }
@@ -148,6 +150,28 @@ type AugmentOfficialSessionStoredCredentialRow struct {
 	RevokedAt                  *time.Time
 }
 
+type AugmentOfficialSessionStoredAdminView struct {
+	UserID                  int64
+	Mode                    string
+	Source                  string
+	TenantOrigin            string
+	PortalOrigin            *string
+	Scopes                  []string
+	ExpiresAt               *time.Time
+	LastRefreshAt           *time.Time
+	LastSuccessAt           *time.Time
+	LastErrorAt             *time.Time
+	LastErrorCode           *string
+	Status                  string
+	CredentialSchemaVersion int
+	KeyVersion              string
+	Fingerprint             string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	RevokedAt               *time.Time
+	HasCredentialPayload    bool
+}
+
 type AugmentOfficialBindIntentRequest struct {
 	Mode            string
 	Source          string
@@ -187,6 +211,43 @@ type AugmentOfficialSessionPublicView struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
+}
+
+type AugmentOfficialSessionAdminView struct {
+	UserID               int64      `json:"user_id"`
+	Mode                 string     `json:"mode"`
+	Source               string     `json:"source"`
+	TenantOrigin         string     `json:"tenant_origin"`
+	PortalOrigin         *string    `json:"portal_origin,omitempty"`
+	Scopes               []string   `json:"scopes"`
+	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
+	LastRefreshAt        *time.Time `json:"last_refresh_at,omitempty"`
+	LastSuccessAt        *time.Time `json:"last_success_at,omitempty"`
+	LastErrorAt          *time.Time `json:"last_error_at,omitempty"`
+	LastErrorCode        *string    `json:"last_error_code,omitempty"`
+	Status               string     `json:"status"`
+	FingerprintPrefix    string     `json:"fingerprint_prefix"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	RevokedAt            *time.Time `json:"revoked_at,omitempty"`
+	HasCredentialPayload bool       `json:"has_credential_payload"`
+}
+
+type AugmentOfficialSessionAdminDiagnostics struct {
+	UserID               int64      `json:"user_id"`
+	Mode                 string     `json:"mode"`
+	Source               string     `json:"source"`
+	TenantHost           string     `json:"tenant_host"`
+	Status               string     `json:"status"`
+	FingerprintPrefix    string     `json:"fingerprint_prefix"`
+	HasCredentialPayload bool       `json:"has_credential_payload"`
+	LastErrorCode        *string    `json:"last_error_code,omitempty"`
+	LastRefreshAt        *time.Time `json:"last_refresh_at,omitempty"`
+	LastSuccessAt        *time.Time `json:"last_success_at,omitempty"`
+	LastErrorAt          *time.Time `json:"last_error_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	RevokedAt            *time.Time `json:"revoked_at,omitempty"`
 }
 
 type AugmentOfficialSessionCredential struct {
@@ -567,6 +628,70 @@ func (s *AugmentOfficialSessionService) RevokeOfficialSession(ctx context.Contex
 	return view, nil
 }
 
+func (s *AugmentOfficialSessionService) ListAdminSessions(ctx context.Context) ([]AugmentOfficialSessionAdminView, error) {
+	if s == nil || s.store == nil {
+		return nil, infraerrors.ServiceUnavailable("AUGMENT_OFFICIAL_SESSION_UNAVAILABLE", "augment official session service is unavailable")
+	}
+	stored, err := s.store.ListAdminSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AugmentOfficialSessionAdminView, 0, len(stored))
+	for _, item := range stored {
+		out = append(out, storedAdminViewToAdminView(&item))
+	}
+	return out, nil
+}
+
+func (s *AugmentOfficialSessionService) GetAdminSessionDiagnostics(ctx context.Context, userID int64) (*AugmentOfficialSessionAdminDiagnostics, error) {
+	if s == nil || s.store == nil {
+		return nil, infraerrors.ServiceUnavailable("AUGMENT_OFFICIAL_SESSION_UNAVAILABLE", "augment official session service is unavailable")
+	}
+	stored, err := s.store.GetActiveSessionAdminView(ctx, userID)
+	if err != nil || stored == nil {
+		return nil, err
+	}
+	return &AugmentOfficialSessionAdminDiagnostics{
+		UserID:               stored.UserID,
+		Mode:                 stored.Mode,
+		Source:               stored.Source,
+		TenantHost:           hostFromOrigin(stored.TenantOrigin),
+		Status:               stored.Status,
+		FingerprintPrefix:    fingerprintPrefix(stored.Fingerprint),
+		HasCredentialPayload: stored.HasCredentialPayload,
+		LastErrorCode:        cloneAdminString(stored.LastErrorCode),
+		LastRefreshAt:        cloneAdminTime(stored.LastRefreshAt),
+		LastSuccessAt:        cloneAdminTime(stored.LastSuccessAt),
+		LastErrorAt:          cloneAdminTime(stored.LastErrorAt),
+		CreatedAt:            stored.CreatedAt,
+		UpdatedAt:            stored.UpdatedAt,
+		RevokedAt:            cloneAdminTime(stored.RevokedAt),
+	}, nil
+}
+
+func (s *AugmentOfficialSessionService) RevokeOfficialSessionForAdmin(ctx context.Context, userID int64) (*AugmentOfficialSessionAdminView, error) {
+	if s == nil || s.store == nil {
+		return nil, infraerrors.ServiceUnavailable("AUGMENT_OFFICIAL_SESSION_UNAVAILABLE", "augment official session service is unavailable")
+	}
+	if _, err := s.store.RevokeActiveSession(ctx, userID); err != nil {
+		return nil, err
+	}
+	stored, err := s.store.GetActiveSessionAdminView(ctx, userID)
+	if err != nil || stored == nil {
+		return nil, err
+	}
+	view := storedAdminViewToAdminView(stored)
+	return &view, nil
+}
+
+func (s *AugmentOfficialSessionService) DisableOfficialSessionForAdmin(ctx context.Context, userID int64) (*AugmentOfficialSessionAdminView, error) {
+	return s.RevokeOfficialSessionForAdmin(ctx, userID)
+}
+
+func (s *AugmentOfficialSessionService) RequireOfficialSessionReloginForAdmin(ctx context.Context, userID int64) (*AugmentOfficialSessionAdminView, error) {
+	return s.RevokeOfficialSessionForAdmin(ctx, userID)
+}
+
 func (s *AugmentOfficialSessionService) AuditEvents() []AugmentOfficialSessionAuditEvent {
 	if s == nil {
 		return nil
@@ -652,6 +777,44 @@ func storedPublicViewToPublicView(stored *AugmentOfficialSessionStoredPublicView
 		UpdatedAt:         stored.UpdatedAt.UTC(),
 		RevokedAt:         cloneTimePtr(stored.RevokedAt),
 	}
+}
+
+func storedAdminViewToAdminView(stored *AugmentOfficialSessionStoredAdminView) AugmentOfficialSessionAdminView {
+	return AugmentOfficialSessionAdminView{
+		UserID:               stored.UserID,
+		Mode:                 stored.Mode,
+		Source:               stored.Source,
+		TenantOrigin:         stored.TenantOrigin,
+		PortalOrigin:         cloneAdminString(stored.PortalOrigin),
+		Scopes:               append([]string(nil), stored.Scopes...),
+		ExpiresAt:            cloneAdminTime(stored.ExpiresAt),
+		LastRefreshAt:        cloneAdminTime(stored.LastRefreshAt),
+		LastSuccessAt:        cloneAdminTime(stored.LastSuccessAt),
+		LastErrorAt:          cloneAdminTime(stored.LastErrorAt),
+		LastErrorCode:        cloneAdminString(stored.LastErrorCode),
+		Status:               stored.Status,
+		FingerprintPrefix:    fingerprintPrefix(stored.Fingerprint),
+		CreatedAt:            stored.CreatedAt,
+		UpdatedAt:            stored.UpdatedAt,
+		RevokedAt:            cloneAdminTime(stored.RevokedAt),
+		HasCredentialPayload: stored.HasCredentialPayload,
+	}
+}
+
+func cloneAdminTime(in *time.Time) *time.Time {
+	if in == nil {
+		return nil
+	}
+	t := in.UTC()
+	return &t
+}
+
+func cloneAdminString(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
 }
 
 func normalizeAugmentOfficialSessionMode(mode string) (string, error) {
