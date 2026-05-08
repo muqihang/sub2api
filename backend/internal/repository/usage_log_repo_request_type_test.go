@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,56 +39,10 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 		OpenAIWSMode:   false,
 		CreatedAt:      createdAt,
 	}
+	prepared := prepareUsageLogInsert(log)
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
-		WithArgs(
-			log.UserID,
-			log.APIKeyID,
-			log.AccountID,
-			log.RequestID,
-			log.Model,
-			log.RequestedModel,
-			sqlmock.AnyArg(), // upstream_model
-			sqlmock.AnyArg(), // group_id
-			sqlmock.AnyArg(), // subscription_id
-			log.InputTokens,
-			log.OutputTokens,
-			log.CacheCreationTokens,
-			log.CacheReadTokens,
-			log.CacheCreation5mTokens,
-			log.CacheCreation1hTokens,
-			log.ImageOutputTokens,
-			log.ImageOutputCost,
-			log.InputCost,
-			log.OutputCost,
-			log.CacheCreationCost,
-			log.CacheReadCost,
-			log.TotalCost,
-			log.ActualCost,
-			log.RateMultiplier,
-			log.AccountRateMultiplier,
-			log.BillingType,
-			int16(service.RequestTypeWSV2),
-			true,
-			true,
-			sqlmock.AnyArg(), // duration_ms
-			sqlmock.AnyArg(), // first_token_ms
-			sqlmock.AnyArg(), // user_agent
-			sqlmock.AnyArg(), // ip_address
-			log.ImageCount,
-			sqlmock.AnyArg(), // image_size
-			sqlmock.AnyArg(), // service_tier
-			sqlmock.AnyArg(), // reasoning_effort
-			sqlmock.AnyArg(), // inbound_endpoint
-			sqlmock.AnyArg(), // upstream_endpoint
-			log.CacheTTLOverridden,
-			sqlmock.AnyArg(), // channel_id
-			sqlmock.AnyArg(), // model_mapping_chain
-			sqlmock.AnyArg(), // billing_tier
-			sqlmock.AnyArg(), // billing_mode
-			sqlmock.AnyArg(), // account_stats_cost
-			createdAt,
-		).
+		WithArgs(anySliceToDriverValues(prepared.args)...).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
 
 	inserted, err := repo.Create(context.Background(), log)
@@ -117,56 +72,10 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 		ServiceTier:    &serviceTier,
 		CreatedAt:      createdAt,
 	}
+	prepared := prepareUsageLogInsert(log)
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
-		WithArgs(
-			log.UserID,
-			log.APIKeyID,
-			log.AccountID,
-			log.RequestID,
-			log.Model,
-			log.RequestedModel,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			log.InputTokens,
-			log.OutputTokens,
-			log.CacheCreationTokens,
-			log.CacheReadTokens,
-			log.CacheCreation5mTokens,
-			log.CacheCreation1hTokens,
-			log.ImageOutputTokens,
-			log.ImageOutputCost,
-			log.InputCost,
-			log.OutputCost,
-			log.CacheCreationCost,
-			log.CacheReadCost,
-			log.TotalCost,
-			log.ActualCost,
-			log.RateMultiplier,
-			log.AccountRateMultiplier,
-			log.BillingType,
-			int16(service.RequestTypeSync),
-			false,
-			false,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			log.ImageCount,
-			sqlmock.AnyArg(),
-			serviceTier,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			log.CacheTTLOverridden,
-			sqlmock.AnyArg(), // channel_id
-			sqlmock.AnyArg(), // model_mapping_chain
-			sqlmock.AnyArg(), // billing_tier
-			sqlmock.AnyArg(), // billing_mode
-			sqlmock.AnyArg(), // account_stats_cost
-			createdAt,
-		).
+		WithArgs(anySliceToDriverValues(prepared.args)...).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
 
 	inserted, err := repo.Create(context.Background(), log)
@@ -236,12 +145,211 @@ func TestCoalesceTrimmedString(t *testing.T) {
 	require.Equal(t, "value", coalesceTrimmedString(sql.NullString{Valid: true, String: "value"}, "fallback"))
 }
 
+func TestUsageLogInsertStoresAugmentScopeFields(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	createdAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	clientProduct := service.AugmentUsageClientProduct
+	requestScope := service.AugmentUsageRequestScopeGateway
+	featureScope := service.AugmentUsageFeatureScopeChat
+	routePolicyVersion := service.AugmentOfficialRoutePolicyVersion
+	pricingVersion := service.AugmentUsagePricingVersionV1
+	costSource := service.AugmentUsageCostSourceProviderUsage
+	currency := service.AugmentUsageCurrencyUSD
+	upstreamAttemptID := "upstream-attempt-1"
+	settlementStatus := service.AugmentUsageSettlementSettled
+	augmentSessionID := "conv-123"
+	billable := true
+	estimatedCost := 1.25
+	settledCost := 1.10
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-augment-scope",
+		Model:          "gpt-5.4",
+		RequestedModel: "gpt-5.4",
+		CreatedAt:      createdAt,
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:      &clientProduct,
+			RequestScope:       &requestScope,
+			FeatureScope:       &featureScope,
+			AugmentSessionID:   &augmentSessionID,
+			RoutePolicyVersion: &routePolicyVersion,
+			PricingVersion:     &pricingVersion,
+			Billable:           &billable,
+			CostSource:         &costSource,
+			Currency:           &currency,
+			UpstreamAttemptID:  &upstreamAttemptID,
+			SettlementStatus:   &settlementStatus,
+			EstimatedCost:      &estimatedCost,
+			SettledCost:        &settledCost,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+
+	require.Equal(t, clientProduct, prepared.args[45].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[46].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[47].(sql.NullString).String)
+	require.Equal(t, augmentSessionID, prepared.args[48].(sql.NullString).String)
+	require.Equal(t, routePolicyVersion, prepared.args[49].(sql.NullString).String)
+	require.Equal(t, pricingVersion, prepared.args[50].(sql.NullString).String)
+	require.Equal(t, billable, prepared.args[51].(sql.NullBool).Bool)
+	require.Equal(t, upstreamAttemptID, prepared.args[54].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[61].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[62].(sql.NullFloat64).Float64)
+
+	mock.ExpectQuery("INSERT INTO usage_logs").
+		WithArgs(anySliceToDriverValues(prepared.args)...).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(101), createdAt))
+
+	inserted, err := repo.Create(context.Background(), log)
+	require.NoError(t, err)
+	require.True(t, inserted)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogListFiltersClientProductZhumengAugment(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM usage_logs WHERE client_product = \\$1").
+		WithArgs(service.AugmentUsageClientProduct).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE client_product = \\$1 ORDER BY id DESC LIMIT \\$2 OFFSET \\$3").
+		WithArgs(service.AugmentUsageClientProduct, 20, 0).
+		WillReturnRows(sqlmock.NewRows(splitUsageLogSelectColumns()))
+
+	logs, page, err := repo.ListWithFilters(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 20}, usagestats.UsageLogFilters{
+		ClientProduct: service.AugmentUsageClientProduct,
+		ExactTotal:    true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, logs)
+	require.NotNil(t, page)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogPricingVersionDoesNotChangeHistoricalCost(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	pricingVersion := service.AugmentUsagePricingVersionV1
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-pricing-version",
+		Model:          "gpt-5.4",
+		RequestedModel: "gpt-5.4",
+		TotalCost:      2.5,
+		ActualCost:     2.0,
+		CreatedAt:      time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:  &clientProduct,
+			PricingVersion: &pricingVersion,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, 2.5, prepared.args[21])
+	require.Equal(t, 2.0, prepared.args[22])
+	require.Equal(t, pricingVersion, prepared.args[50].(sql.NullString).String)
+}
+
+func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	upstreamAttemptID := "upstream-attempt-2"
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-provider-retry",
+		Model:          "gpt-5.5",
+		RequestedModel: "gpt-5.5",
+		CreatedAt:      time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:     &clientProduct,
+			UpstreamAttemptID: &upstreamAttemptID,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, "req-provider-retry", prepared.requestID)
+	require.Equal(t, upstreamAttemptID, prepared.args[54].(sql.NullString).String)
+}
+
+func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	inputUnitPrice := 0.01
+	outputUnitPrice := 0.02
+	cacheReadUnitPrice := 0.003
+	cacheCreationUnitPrice := 0.004
+	reasoningUnitPrice := 0.005
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-price-snapshot",
+		Model:          "gpt-5.5",
+		RequestedModel: "gpt-5.5",
+		CreatedAt:      time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:          &clientProduct,
+			InputUnitPrice:         &inputUnitPrice,
+			OutputUnitPrice:        &outputUnitPrice,
+			CacheReadUnitPrice:     &cacheReadUnitPrice,
+			CacheCreationUnitPrice: &cacheCreationUnitPrice,
+			ReasoningUnitPrice:     &reasoningUnitPrice,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, inputUnitPrice, prepared.args[56].(sql.NullFloat64).Float64)
+	require.Equal(t, outputUnitPrice, prepared.args[57].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheReadUnitPrice, prepared.args[58].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheCreationUnitPrice, prepared.args[59].(sql.NullFloat64).Float64)
+	require.Equal(t, reasoningUnitPrice, prepared.args[60].(sql.NullFloat64).Float64)
+}
+
+func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	billable := false
+	settlementStatus := service.AugmentUsageSettlementSkipped
+	estimatedCost := 0.42
+	settledCost := 0.0
+	log := &service.UsageLog{
+		UserID:              1,
+		APIKeyID:            2,
+		AccountID:           3,
+		RequestID:           "req-billing-rules",
+		Model:               "gpt-5.4-mini",
+		RequestedModel:      "gpt-5.4-mini",
+		CacheReadTokens:     12,
+		CacheCreationTokens: 4,
+		CreatedAt:           time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:    &clientProduct,
+			Billable:         &billable,
+			SettlementStatus: &settlementStatus,
+			EstimatedCost:    &estimatedCost,
+			SettledCost:      &settledCost,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, false, prepared.args[51].(sql.NullBool).Bool)
+	require.Equal(t, settlementStatus, prepared.args[55].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[61].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[62].(sql.NullFloat64).Float64)
+}
+
 func anySliceToDriverValues(values []any) []driver.Value {
 	out := make([]driver.Value, 0, len(values))
 	for _, value := range values {
 		out = append(out, value)
 	}
 	return out
+}
+
+func splitUsageLogSelectColumns() []string {
+	return strings.Split(usageLogSelectColumns, ", ")
 }
 
 func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {

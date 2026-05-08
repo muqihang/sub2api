@@ -28,7 +28,7 @@ import (
 	gocache "github.com/patrickmn/go-cache"
 )
 
-const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, created_at"
+const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, client_product, request_scope, feature_scope, augment_session_id, route_policy_version, pricing_version, billable, cost_source, currency, upstream_attempt_id, settlement_status, input_unit_price, output_unit_price, cache_read_unit_price, cache_creation_unit_price, reasoning_unit_price, estimated_cost, settled_cost, free_quota_applied, paid_balance_applied, created_at"
 
 // usageLogInsertArgTypes must stay in the same order as:
 //  1. prepareUsageLogInsert().args
@@ -83,6 +83,26 @@ var usageLogInsertArgTypes = [...]string{
 	"text",        // billing_tier
 	"text",        // billing_mode
 	"numeric",     // account_stats_cost
+	"text",        // client_product
+	"text",        // request_scope
+	"text",        // feature_scope
+	"text",        // augment_session_id
+	"text",        // route_policy_version
+	"text",        // pricing_version
+	"boolean",     // billable
+	"text",        // cost_source
+	"text",        // currency
+	"text",        // upstream_attempt_id
+	"text",        // settlement_status
+	"numeric",     // input_unit_price
+	"numeric",     // output_unit_price
+	"numeric",     // cache_read_unit_price
+	"numeric",     // cache_creation_unit_price
+	"numeric",     // reasoning_unit_price
+	"numeric",     // estimated_cost
+	"numeric",     // settled_cost
+	"numeric",     // free_quota_applied
+	"numeric",     // paid_balance_applied
 	"timestamptz", // created_at
 }
 
@@ -362,6 +382,26 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			billing_tier,
 			billing_mode,
 			account_stats_cost,
+			client_product,
+			request_scope,
+			feature_scope,
+			augment_session_id,
+			route_policy_version,
+			pricing_version,
+			billable,
+			cost_source,
+			currency,
+			upstream_attempt_id,
+			settlement_status,
+			input_unit_price,
+			output_unit_price,
+			cache_read_unit_price,
+			cache_creation_unit_price,
+			reasoning_unit_price,
+			estimated_cost,
+			settled_cost,
+			free_quota_applied,
+			paid_balance_applied,
 			created_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
@@ -369,7 +409,7 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			$10, $11, $12, $13,
 			$14, $15, $16, $17,
 			$18, $19, $20, $21, $22, $23,
-			$24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46
+			$24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -797,13 +837,33 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 			cache_ttl_overridden,
 			channel_id,
 			model_mapping_chain,
-			billing_tier,
-			billing_mode,
-			account_stats_cost,
-			created_at
-		) AS (VALUES `)
+				billing_tier,
+				billing_mode,
+				account_stats_cost,
+				client_product,
+				request_scope,
+				feature_scope,
+				augment_session_id,
+				route_policy_version,
+				pricing_version,
+				billable,
+				cost_source,
+				currency,
+				upstream_attempt_id,
+				settlement_status,
+				input_unit_price,
+				output_unit_price,
+				cache_read_unit_price,
+				cache_creation_unit_price,
+				reasoning_unit_price,
+				estimated_cost,
+				settled_cost,
+				free_quota_applied,
+				paid_balance_applied,
+				created_at
+			) AS (VALUES `)
 
-	args := make([]any, 0, len(keys)*46)
+	args := make([]any, 0, len(keys)*(len(usageLogInsertArgTypes)+1))
 	argPos := 1
 	for idx, key := range keys {
 		if idx > 0 {
@@ -874,12 +934,32 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				cache_ttl_overridden,
 				channel_id,
 				model_mapping_chain,
-				billing_tier,
-				billing_mode,
-				account_stats_cost,
-				created_at
-			)
-			SELECT
+					billing_tier,
+					billing_mode,
+					account_stats_cost,
+					client_product,
+					request_scope,
+					feature_scope,
+					augment_session_id,
+					route_policy_version,
+					pricing_version,
+					billable,
+					cost_source,
+					currency,
+					upstream_attempt_id,
+					settlement_status,
+					input_unit_price,
+					output_unit_price,
+					cache_read_unit_price,
+					cache_creation_unit_price,
+					reasoning_unit_price,
+					estimated_cost,
+					settled_cost,
+					free_quota_applied,
+					paid_balance_applied,
+					created_at
+				)
+				SELECT
 				user_id,
 				api_key_id,
 				account_id,
@@ -922,11 +1002,31 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				cache_ttl_overridden,
 				channel_id,
 				model_mapping_chain,
-				billing_tier,
-				billing_mode,
-				account_stats_cost,
-				created_at
-			FROM input
+					billing_tier,
+					billing_mode,
+					account_stats_cost,
+					client_product,
+					request_scope,
+					feature_scope,
+					augment_session_id,
+					route_policy_version,
+					pricing_version,
+					billable,
+					cost_source,
+					currency,
+					upstream_attempt_id,
+					settlement_status,
+					input_unit_price,
+					output_unit_price,
+					cache_read_unit_price,
+					cache_creation_unit_price,
+					reasoning_unit_price,
+					estimated_cost,
+					settled_cost,
+					free_quota_applied,
+					paid_balance_applied,
+					created_at
+				FROM input
 			ON CONFLICT (request_id, api_key_id) DO NOTHING
 			RETURNING request_id, api_key_id, id, created_at
 		),
@@ -1010,13 +1110,33 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			cache_ttl_overridden,
 			channel_id,
 			model_mapping_chain,
-			billing_tier,
-			billing_mode,
-			account_stats_cost,
-			created_at
-		) AS (VALUES `)
+				billing_tier,
+				billing_mode,
+				account_stats_cost,
+				client_product,
+				request_scope,
+				feature_scope,
+				augment_session_id,
+				route_policy_version,
+				pricing_version,
+				billable,
+				cost_source,
+				currency,
+				upstream_attempt_id,
+				settlement_status,
+				input_unit_price,
+				output_unit_price,
+				cache_read_unit_price,
+				cache_creation_unit_price,
+				reasoning_unit_price,
+				estimated_cost,
+				settled_cost,
+				free_quota_applied,
+				paid_balance_applied,
+				created_at
+			) AS (VALUES `)
 
-	args := make([]any, 0, len(preparedList)*46)
+	args := make([]any, 0, len(preparedList)*len(usageLogInsertArgTypes))
 	argPos := 1
 	for idx, prepared := range preparedList {
 		if idx > 0 {
@@ -1084,12 +1204,32 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			cache_ttl_overridden,
 			channel_id,
 			model_mapping_chain,
-			billing_tier,
-			billing_mode,
-			account_stats_cost,
-			created_at
-		)
-		SELECT
+				billing_tier,
+				billing_mode,
+				account_stats_cost,
+				client_product,
+				request_scope,
+				feature_scope,
+				augment_session_id,
+				route_policy_version,
+				pricing_version,
+				billable,
+				cost_source,
+				currency,
+				upstream_attempt_id,
+				settlement_status,
+				input_unit_price,
+				output_unit_price,
+				cache_read_unit_price,
+				cache_creation_unit_price,
+				reasoning_unit_price,
+				estimated_cost,
+				settled_cost,
+				free_quota_applied,
+				paid_balance_applied,
+				created_at
+			)
+			SELECT
 			user_id,
 			api_key_id,
 			account_id,
@@ -1132,11 +1272,31 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			cache_ttl_overridden,
 			channel_id,
 			model_mapping_chain,
-			billing_tier,
-			billing_mode,
-			account_stats_cost,
-			created_at
-		FROM input
+				billing_tier,
+				billing_mode,
+				account_stats_cost,
+				client_product,
+				request_scope,
+				feature_scope,
+				augment_session_id,
+				route_policy_version,
+				pricing_version,
+				billable,
+				cost_source,
+				currency,
+				upstream_attempt_id,
+				settlement_status,
+				input_unit_price,
+				output_unit_price,
+				cache_read_unit_price,
+				cache_creation_unit_price,
+				reasoning_unit_price,
+				estimated_cost,
+				settled_cost,
+				free_quota_applied,
+				paid_balance_applied,
+				created_at
+			FROM input
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`)
 
@@ -1188,18 +1348,38 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			cache_ttl_overridden,
 			channel_id,
 			model_mapping_chain,
-			billing_tier,
-			billing_mode,
-			account_stats_cost,
-			created_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7,
-			$8, $9,
-			$10, $11, $12, $13,
-			$14, $15, $16, $17,
-			$18, $19, $20, $21, $22, $23,
-			$24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46
-		)
+				billing_tier,
+				billing_mode,
+				account_stats_cost,
+				client_product,
+				request_scope,
+				feature_scope,
+				augment_session_id,
+				route_policy_version,
+				pricing_version,
+				billable,
+				cost_source,
+				currency,
+				upstream_attempt_id,
+				settlement_status,
+				input_unit_price,
+				output_unit_price,
+				cache_read_unit_price,
+				cache_creation_unit_price,
+				reasoning_unit_price,
+				estimated_cost,
+				settled_cost,
+				free_quota_applied,
+				paid_balance_applied,
+				created_at
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7,
+				$8, $9,
+				$10, $11, $12, $13,
+				$14, $15, $16, $17,
+				$18, $19, $20, $21, $22, $23,
+				$24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66
+			)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`, prepared.args...)
 	return err
@@ -1233,6 +1413,26 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 	modelMappingChain := nullString(log.ModelMappingChain)
 	billingTier := nullString(log.BillingTier)
 	billingMode := nullString(log.BillingMode)
+	clientProduct := nullString(log.ClientProduct)
+	requestScope := nullString(log.RequestScope)
+	featureScope := nullString(log.FeatureScope)
+	augmentSessionID := nullString(log.AugmentSessionID)
+	routePolicyVersion := nullString(log.RoutePolicyVersion)
+	pricingVersion := nullString(log.PricingVersion)
+	billable := nullUsageBool(log.Billable)
+	costSource := nullString(log.CostSource)
+	currency := nullString(log.Currency)
+	upstreamAttemptID := nullString(log.UpstreamAttemptID)
+	settlementStatus := nullString(log.SettlementStatus)
+	inputUnitPrice := nullFloat64(log.InputUnitPrice)
+	outputUnitPrice := nullFloat64(log.OutputUnitPrice)
+	cacheReadUnitPrice := nullFloat64(log.CacheReadUnitPrice)
+	cacheCreationUnitPrice := nullFloat64(log.CacheCreationUnitPrice)
+	reasoningUnitPrice := nullFloat64(log.ReasoningUnitPrice)
+	estimatedCost := nullFloat64(log.EstimatedCost)
+	settledCost := nullFloat64(log.SettledCost)
+	freeQuotaApplied := nullFloat64(log.FreeQuotaApplied)
+	paidBalanceApplied := nullFloat64(log.PaidBalanceApplied)
 	requestedModel := strings.TrimSpace(log.RequestedModel)
 	if requestedModel == "" {
 		requestedModel = strings.TrimSpace(log.Model)
@@ -1295,6 +1495,26 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			billingTier,
 			billingMode,
 			log.AccountStatsCost, // account_stats_cost
+			clientProduct,
+			requestScope,
+			featureScope,
+			augmentSessionID,
+			routePolicyVersion,
+			pricingVersion,
+			billable,
+			costSource,
+			currency,
+			upstreamAttemptID,
+			settlementStatus,
+			inputUnitPrice,
+			outputUnitPrice,
+			cacheReadUnitPrice,
+			cacheCreationUnitPrice,
+			reasoningUnitPrice,
+			estimatedCost,
+			settledCost,
+			freeQuotaApplied,
+			paidBalanceApplied,
 			createdAt,
 		},
 	}
@@ -2640,6 +2860,10 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 	conditions := make([]string, 0, 9)
 	args := make([]any, 0, 9)
 
+	if strings.TrimSpace(filters.ClientProduct) != "" {
+		conditions = append(conditions, fmt.Sprintf("client_product = $%d", len(args)+1))
+		args = append(args, strings.TrimSpace(filters.ClientProduct))
+	}
 	if filters.UserID > 0 {
 		conditions = append(conditions, fmt.Sprintf("user_id = $%d", len(args)+1))
 		args = append(args, filters.UserID)
@@ -4048,53 +4272,73 @@ func (r *usageLogRepository) loadSubscriptions(ctx context.Context, ids []int64)
 
 func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, error) {
 	var (
-		id                    int64
-		userID                int64
-		apiKeyID              int64
-		accountID             int64
-		requestID             sql.NullString
-		model                 string
-		requestedModel        sql.NullString
-		upstreamModel         sql.NullString
-		groupID               sql.NullInt64
-		subscriptionID        sql.NullInt64
-		inputTokens           int
-		outputTokens          int
-		cacheCreationTokens   int
-		cacheReadTokens       int
-		cacheCreation5m       int
-		cacheCreation1h       int
-		imageOutputTokens     int
-		imageOutputCost       float64
-		inputCost             float64
-		outputCost            float64
-		cacheCreationCost     float64
-		cacheReadCost         float64
-		totalCost             float64
-		actualCost            float64
-		rateMultiplier        float64
-		accountRateMultiplier sql.NullFloat64
-		billingType           int16
-		requestTypeRaw        int16
-		stream                bool
-		openaiWSMode          bool
-		durationMs            sql.NullInt64
-		firstTokenMs          sql.NullInt64
-		userAgent             sql.NullString
-		ipAddress             sql.NullString
-		imageCount            int
-		imageSize             sql.NullString
-		serviceTier           sql.NullString
-		reasoningEffort       sql.NullString
-		inboundEndpoint       sql.NullString
-		upstreamEndpoint      sql.NullString
-		cacheTTLOverridden    bool
-		channelID             sql.NullInt64
-		modelMappingChain     sql.NullString
-		billingTier           sql.NullString
-		billingMode           sql.NullString
-		accountStatsCost      sql.NullFloat64
-		createdAt             time.Time
+		id                     int64
+		userID                 int64
+		apiKeyID               int64
+		accountID              int64
+		requestID              sql.NullString
+		model                  string
+		requestedModel         sql.NullString
+		upstreamModel          sql.NullString
+		groupID                sql.NullInt64
+		subscriptionID         sql.NullInt64
+		inputTokens            int
+		outputTokens           int
+		cacheCreationTokens    int
+		cacheReadTokens        int
+		cacheCreation5m        int
+		cacheCreation1h        int
+		imageOutputTokens      int
+		imageOutputCost        float64
+		inputCost              float64
+		outputCost             float64
+		cacheCreationCost      float64
+		cacheReadCost          float64
+		totalCost              float64
+		actualCost             float64
+		rateMultiplier         float64
+		accountRateMultiplier  sql.NullFloat64
+		billingType            int16
+		requestTypeRaw         int16
+		stream                 bool
+		openaiWSMode           bool
+		durationMs             sql.NullInt64
+		firstTokenMs           sql.NullInt64
+		userAgent              sql.NullString
+		ipAddress              sql.NullString
+		imageCount             int
+		imageSize              sql.NullString
+		serviceTier            sql.NullString
+		reasoningEffort        sql.NullString
+		inboundEndpoint        sql.NullString
+		upstreamEndpoint       sql.NullString
+		cacheTTLOverridden     bool
+		channelID              sql.NullInt64
+		modelMappingChain      sql.NullString
+		billingTier            sql.NullString
+		billingMode            sql.NullString
+		accountStatsCost       sql.NullFloat64
+		clientProduct          sql.NullString
+		requestScope           sql.NullString
+		featureScope           sql.NullString
+		augmentSessionID       sql.NullString
+		routePolicyVersion     sql.NullString
+		pricingVersion         sql.NullString
+		billable               sql.NullBool
+		costSource             sql.NullString
+		currency               sql.NullString
+		upstreamAttemptID      sql.NullString
+		settlementStatus       sql.NullString
+		inputUnitPrice         sql.NullFloat64
+		outputUnitPrice        sql.NullFloat64
+		cacheReadUnitPrice     sql.NullFloat64
+		cacheCreationUnitPrice sql.NullFloat64
+		reasoningUnitPrice     sql.NullFloat64
+		estimatedCost          sql.NullFloat64
+		settledCost            sql.NullFloat64
+		freeQuotaApplied       sql.NullFloat64
+		paidBalanceApplied     sql.NullFloat64
+		createdAt              time.Time
 	)
 
 	if err := scanner.Scan(
@@ -4144,6 +4388,26 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&billingTier,
 		&billingMode,
 		&accountStatsCost,
+		&clientProduct,
+		&requestScope,
+		&featureScope,
+		&augmentSessionID,
+		&routePolicyVersion,
+		&pricingVersion,
+		&billable,
+		&costSource,
+		&currency,
+		&upstreamAttemptID,
+		&settlementStatus,
+		&inputUnitPrice,
+		&outputUnitPrice,
+		&cacheReadUnitPrice,
+		&cacheCreationUnitPrice,
+		&reasoningUnitPrice,
+		&estimatedCost,
+		&settledCost,
+		&freeQuotaApplied,
+		&paidBalanceApplied,
 		&createdAt,
 	); err != nil {
 		return nil, err
@@ -4243,6 +4507,48 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	if accountStatsCost.Valid {
 		log.AccountStatsCost = &accountStatsCost.Float64
 	}
+	if clientProduct.Valid {
+		log.ClientProduct = &clientProduct.String
+	}
+	if requestScope.Valid {
+		log.RequestScope = &requestScope.String
+	}
+	if featureScope.Valid {
+		log.FeatureScope = &featureScope.String
+	}
+	if augmentSessionID.Valid {
+		log.AugmentSessionID = &augmentSessionID.String
+	}
+	if routePolicyVersion.Valid {
+		log.RoutePolicyVersion = &routePolicyVersion.String
+	}
+	if pricingVersion.Valid {
+		log.PricingVersion = &pricingVersion.String
+	}
+	if billable.Valid {
+		log.Billable = &billable.Bool
+	}
+	if costSource.Valid {
+		log.CostSource = &costSource.String
+	}
+	if currency.Valid {
+		log.Currency = &currency.String
+	}
+	if upstreamAttemptID.Valid {
+		log.UpstreamAttemptID = &upstreamAttemptID.String
+	}
+	if settlementStatus.Valid {
+		log.SettlementStatus = &settlementStatus.String
+	}
+	log.InputUnitPrice = nullFloat64Ptr(inputUnitPrice)
+	log.OutputUnitPrice = nullFloat64Ptr(outputUnitPrice)
+	log.CacheReadUnitPrice = nullFloat64Ptr(cacheReadUnitPrice)
+	log.CacheCreationUnitPrice = nullFloat64Ptr(cacheCreationUnitPrice)
+	log.ReasoningUnitPrice = nullFloat64Ptr(reasoningUnitPrice)
+	log.EstimatedCost = nullFloat64Ptr(estimatedCost)
+	log.SettledCost = nullFloat64Ptr(settledCost)
+	log.FreeQuotaApplied = nullFloat64Ptr(freeQuotaApplied)
+	log.PaidBalanceApplied = nullFloat64Ptr(paidBalanceApplied)
 
 	return log, nil
 }
@@ -4369,6 +4675,20 @@ func nullFloat64Ptr(v sql.NullFloat64) *float64 {
 	}
 	out := v.Float64
 	return &out
+}
+
+func nullFloat64(v *float64) sql.NullFloat64 {
+	if v == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: *v, Valid: true}
+}
+
+func nullUsageBool(v *bool) sql.NullBool {
+	if v == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: *v, Valid: true}
 }
 
 func nullString(v *string) sql.NullString {

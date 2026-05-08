@@ -5773,6 +5773,7 @@ type OpenAIRecordUsageInput struct {
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
 	ChannelUsageFields
+	AugmentUsageFields
 }
 
 // RecordUsage records usage and deducts balance
@@ -5889,6 +5890,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		ImageOutputTokens:   result.Usage.ImageOutputTokens,
 		ImageCount:          result.ImageCount,
 		ImageSize:           optionalTrimmedStringPtr(result.ImageSize),
+		AugmentUsageFields:  input.AugmentUsageFields,
 	}
 	if cost != nil {
 		usageLog.InputCost = cost.InputCost
@@ -5898,6 +5900,55 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		usageLog.CacheReadCost = cost.CacheReadCost
 		usageLog.TotalCost = cost.TotalCost
 		usageLog.ActualCost = cost.ActualCost
+	}
+	if input.ClientProduct != nil {
+		pricingVersion := AugmentUsagePricingVersionV1
+		currency := AugmentUsageCurrencyUSD
+		upstreamAttemptID := strings.TrimSpace(result.RequestID)
+		if input.UpstreamAttemptID != nil && strings.TrimSpace(*input.UpstreamAttemptID) != "" {
+			upstreamAttemptID = strings.TrimSpace(*input.UpstreamAttemptID)
+		}
+		settlementStatus := AugmentUsageSettlementSettled
+		estimatedCost := usageLog.TotalCost
+		settledCost := usageLog.ActualCost
+		if input.PricingVersion == nil {
+			usageLog.PricingVersion = &pricingVersion
+		}
+		if input.Currency == nil {
+			usageLog.Currency = &currency
+		}
+		if input.UpstreamAttemptID == nil && upstreamAttemptID != "" {
+			usageLog.UpstreamAttemptID = &upstreamAttemptID
+		}
+		if input.SettlementStatus == nil {
+			usageLog.SettlementStatus = &settlementStatus
+		}
+		if input.EstimatedCost == nil {
+			usageLog.EstimatedCost = &estimatedCost
+		}
+		if input.SettledCost == nil {
+			usageLog.SettledCost = &settledCost
+		}
+		if actualInputTokens > 0 && usageLog.InputCost > 0 && usageLog.InputUnitPrice == nil {
+			v := usageLog.InputCost / float64(actualInputTokens)
+			usageLog.InputUnitPrice = &v
+		}
+		if usageLog.OutputTokens > 0 && usageLog.OutputCost > 0 && usageLog.OutputUnitPrice == nil {
+			v := usageLog.OutputCost / float64(usageLog.OutputTokens)
+			usageLog.OutputUnitPrice = &v
+		}
+		if usageLog.CacheReadTokens > 0 && usageLog.CacheReadCost > 0 && usageLog.CacheReadUnitPrice == nil {
+			v := usageLog.CacheReadCost / float64(usageLog.CacheReadTokens)
+			usageLog.CacheReadUnitPrice = &v
+		}
+		if usageLog.CacheCreationTokens > 0 && usageLog.CacheCreationCost > 0 && usageLog.CacheCreationUnitPrice == nil {
+			v := usageLog.CacheCreationCost / float64(usageLog.CacheCreationTokens)
+			usageLog.CacheCreationUnitPrice = &v
+		}
+		if usageLog.ReasoningUnitPrice == nil {
+			v := 0.0
+			usageLog.ReasoningUnitPrice = &v
+		}
 	}
 	if result.ImageCount > 0 {
 		usageLog.RateMultiplier = imageMultiplier
@@ -5955,6 +6006,38 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		logger.LegacyPrintf("service.openai_gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
 		return nil
+	}
+
+	billable := input.Billable == nil || *input.Billable
+	if !billable {
+		settlementStatus := AugmentUsageSettlementSkipped
+		zero := 0.0
+		usageLog.BillingType = BillingTypeBalance
+		usageLog.InputCost = 0
+		usageLog.OutputCost = 0
+		usageLog.ImageOutputCost = 0
+		usageLog.CacheCreationCost = 0
+		usageLog.CacheReadCost = 0
+		usageLog.TotalCost = 0
+		usageLog.ActualCost = 0
+		usageLog.SettlementStatus = &settlementStatus
+		usageLog.SettledCost = &zero
+		usageLog.FreeQuotaApplied = &zero
+		usageLog.PaidBalanceApplied = &zero
+		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
+		return nil
+	}
+
+	if usageLog.FreeQuotaApplied == nil {
+		zero := 0.0
+		usageLog.FreeQuotaApplied = &zero
+		usageLog.PaidBalanceApplied = &zero
+	}
+	if isSubscriptionBilling && usageLog.FreeQuotaApplied != nil {
+		*usageLog.FreeQuotaApplied = usageLog.ActualCost
+	}
+	if !isSubscriptionBilling && usageLog.PaidBalanceApplied != nil {
+		*usageLog.PaidBalanceApplied = usageLog.ActualCost
 	}
 
 	billingErr := func() error {

@@ -91,6 +91,47 @@ func ApplyLegacyRequestFields(requestType RequestType, fallbackStream bool, fall
 	}
 }
 
+const (
+	AugmentUsageClientProduct              = "zhumeng_augment"
+	AugmentUsageRequestScopeGateway        = "augment_gateway"
+	AugmentUsageRequestScopeOfficial       = "official_capability"
+	AugmentUsageFeatureScopeChat           = "chat"
+	AugmentUsageFeatureScopeContextEngine  = "context_engine"
+	AugmentUsageFeatureScopePromptEnhancer = "prompt_enhancer"
+	AugmentUsageFeatureScopeInstruction    = "instruction"
+	AugmentUsageFeatureScopeSmartPaste     = "smart_paste"
+	AugmentUsageFeatureScopeCommitMessage  = "commit_message"
+	AugmentUsageFeatureScopeNextEdit       = "next_edit"
+	AugmentUsagePricingVersionV1           = "augment_gateway_v1"
+	AugmentUsageCostSourceProviderUsage    = "provider_usage"
+	AugmentUsageCurrencyUSD                = "USD"
+	AugmentUsageSettlementSettled          = "settled"
+	AugmentUsageSettlementSkipped          = "skipped"
+)
+
+type AugmentUsageFields struct {
+	ClientProduct          *string
+	RequestScope           *string
+	FeatureScope           *string
+	AugmentSessionID       *string
+	RoutePolicyVersion     *string
+	PricingVersion         *string
+	Billable               *bool
+	CostSource             *string
+	Currency               *string
+	UpstreamAttemptID      *string
+	SettlementStatus       *string
+	InputUnitPrice         *float64
+	OutputUnitPrice        *float64
+	CacheReadUnitPrice     *float64
+	CacheCreationUnitPrice *float64
+	ReasoningUnitPrice     *float64
+	EstimatedCost          *float64
+	SettledCost            *float64
+	FreeQuotaApplied       *float64
+	PaidBalanceApplied     *float64
+}
+
 type UsageLog struct {
 	ID        int64
 	UserID    int64
@@ -160,6 +201,8 @@ type UsageLog struct {
 
 	// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 	CacheTTLOverridden bool
+
+	AugmentUsageFields
 
 	// 图片生成字段
 	ImageCount int

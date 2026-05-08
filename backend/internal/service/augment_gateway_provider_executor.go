@@ -398,6 +398,7 @@ func (e *AugmentGatewayProviderExecutorImpl) recordUsageBestEffort(
 		UserAgent:          req.UserAgent,
 		IPAddress:          req.IPAddress,
 		RequestPayloadHash: HashUsageRequestPayload(rawBody),
+		AugmentUsageFields: augmentGatewayUsageFields(req, resultRequestID),
 	}); err != nil {
 		logger.LegacyPrintf(
 			"service.augment_gateway",
@@ -412,6 +413,55 @@ func (e *AugmentGatewayProviderExecutorImpl) recordUsageBestEffort(
 			usage.CachedInputTokens,
 			err,
 		)
+	}
+}
+
+func augmentGatewayUsageFields(req AugmentGatewayProviderRequest, upstreamAttemptID string) AugmentUsageFields {
+	clientProduct := AugmentUsageClientProduct
+	requestScope := AugmentUsageRequestScopeGateway
+	featureScope := augmentGatewayFeatureScope(req.Endpoint)
+	routePolicyVersion := AugmentOfficialRoutePolicyVersion
+	billable := true
+	if ClassifyAugmentOfficialRoute(req.Endpoint) == AugmentOfficialRouteOwnerOfficialCloud {
+		requestScope = AugmentUsageRequestScopeOfficial
+		billable = false
+	}
+
+	fields := AugmentUsageFields{
+		ClientProduct:      &clientProduct,
+		RequestScope:       &requestScope,
+		FeatureScope:       &featureScope,
+		RoutePolicyVersion: &routePolicyVersion,
+		Billable:           &billable,
+		CostSource:         optionalTrimmedStringPtr(AugmentUsageCostSourceProviderUsage),
+		Currency:           optionalTrimmedStringPtr(AugmentUsageCurrencyUSD),
+		UpstreamAttemptID:  optionalTrimmedStringPtr(strings.TrimSpace(upstreamAttemptID)),
+	}
+
+	if sessionID := firstNonBlankAugmentGatewayString(req.ConversationID, req.SessionHash); sessionID != "" {
+		fields.AugmentSessionID = &sessionID
+	}
+	return fields
+}
+
+func augmentGatewayFeatureScope(endpoint string) string {
+	switch normalizeAugmentOfficialRoutePath(endpoint) {
+	case "/chat", "/chat-stream":
+		return AugmentUsageFeatureScopeChat
+	case "/agents/codebase-retrieval":
+		return AugmentUsageFeatureScopeContextEngine
+	case "/prompt-enhancer":
+		return AugmentUsageFeatureScopePromptEnhancer
+	case "/instruction-stream":
+		return AugmentUsageFeatureScopeInstruction
+	case "/smart-paste-stream":
+		return AugmentUsageFeatureScopeSmartPaste
+	case "/generate-commit-message-stream":
+		return AugmentUsageFeatureScopeCommitMessage
+	case "/next_edit_loc", "/next-edit-stream":
+		return AugmentUsageFeatureScopeNextEdit
+	default:
+		return "unknown"
 	}
 }
 

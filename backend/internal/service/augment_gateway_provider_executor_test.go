@@ -427,6 +427,104 @@ func TestAugmentGatewayProviderExecutor_RecordsStreamUsageBestEffort(t *testing.
 	require.True(t, recorder.calls[0].Result.Stream)
 }
 
+func TestAugmentGatewayProviderExecutor_RecordsAugmentChatUsageScope(t *testing.T) {
+	selector := &augmentGatewayProviderExecutorFakeSelector{
+		account: &Account{ID: 901, Platform: PlatformOpenAI},
+	}
+	adapter := &augmentGatewayProviderExecutorFakeAdapter{
+		result: AugmentGatewayProviderResult{
+			RequestID:         "local-chat-id",
+			UpstreamRequestID: "upstream-chat-id",
+			Usage: AugmentGatewayProviderUsage{
+				InputTokens:  10,
+				OutputTokens: 5,
+				TotalTokens:  15,
+			},
+		},
+	}
+	recorder := &augmentGatewayProviderExecutorFakeUsageRecorder{}
+	executor := newAugmentGatewayProviderExecutorTestSubject(selector, nil, nil, adapter, nil, nil)
+	executor.usageRecorder = recorder
+
+	user := &User{ID: 111}
+	apiKey := &APIKey{ID: 222, UserID: user.ID, User: user}
+	_, err := executor.Complete(context.Background(), AugmentGatewayProviderRequest{
+		Endpoint:       "/chat",
+		ConversationID: "conv-usage-scope",
+		RequestID:      "req-chat-usage-scope",
+		Model: AugmentGatewayModel{
+			ID:            "gpt-5.4",
+			Provider:      AugmentGatewayProviderOpenAI,
+			UpstreamModel: "gpt-5.4",
+		},
+		APIKey: apiKey,
+		User:   user,
+		RawBody: map[string]any{
+			"model": "gpt-5.4",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, recorder.calls, 1)
+	call := recorder.calls[0]
+	require.NotNil(t, call.ClientProduct)
+	require.Equal(t, AugmentUsageClientProduct, *call.ClientProduct)
+	require.NotNil(t, call.RequestScope)
+	require.Equal(t, AugmentUsageRequestScopeGateway, *call.RequestScope)
+	require.NotNil(t, call.FeatureScope)
+	require.Equal(t, AugmentUsageFeatureScopeChat, *call.FeatureScope)
+	require.NotNil(t, call.Billable)
+	require.True(t, *call.Billable)
+	require.NotNil(t, call.AugmentSessionID)
+	require.Equal(t, "conv-usage-scope", *call.AugmentSessionID)
+}
+
+func TestAugmentGatewayProviderExecutor_RecordsOfficialCapabilityAsNonBillable(t *testing.T) {
+	selector := &augmentGatewayProviderExecutorFakeSelector{
+		account: &Account{ID: 902, Platform: PlatformOpenAI},
+	}
+	adapter := &augmentGatewayProviderExecutorFakeAdapter{
+		result: AugmentGatewayProviderResult{
+			RequestID:         "local-prompt-id",
+			UpstreamRequestID: "upstream-prompt-id",
+			Usage: AugmentGatewayProviderUsage{
+				InputTokens:  10,
+				OutputTokens: 2,
+				TotalTokens:  12,
+			},
+		},
+	}
+	recorder := &augmentGatewayProviderExecutorFakeUsageRecorder{}
+	executor := newAugmentGatewayProviderExecutorTestSubject(selector, nil, nil, adapter, nil, nil)
+	executor.usageRecorder = recorder
+
+	user := &User{ID: 112}
+	apiKey := &APIKey{ID: 223, UserID: user.ID, User: user}
+	_, err := executor.Complete(context.Background(), AugmentGatewayProviderRequest{
+		Endpoint:    "/prompt-enhancer",
+		RequestID:   "req-prompt-usage-scope",
+		SessionHash: "session-prompt",
+		Model: AugmentGatewayModel{
+			ID:            "gpt-5.4",
+			Provider:      AugmentGatewayProviderOpenAI,
+			UpstreamModel: "gpt-5.4",
+		},
+		APIKey: apiKey,
+		User:   user,
+		RawBody: map[string]any{
+			"model": "gpt-5.4",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, recorder.calls, 1)
+	call := recorder.calls[0]
+	require.NotNil(t, call.RequestScope)
+	require.Equal(t, AugmentUsageRequestScopeOfficial, *call.RequestScope)
+	require.NotNil(t, call.FeatureScope)
+	require.Equal(t, AugmentUsageFeatureScopePromptEnhancer, *call.FeatureScope)
+	require.NotNil(t, call.Billable)
+	require.False(t, *call.Billable)
+}
+
 func TestAugmentGatewayProviderChunksPreserveStreamingToolCallIndex(t *testing.T) {
 	t.Parallel()
 
