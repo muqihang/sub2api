@@ -47,7 +47,7 @@ func (h *AuthHandler) AugmentLegacyBalance(c *gin.Context) {
 		return
 	}
 
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/checkpoint-blobs")
 	if !ok {
 		return
 	}

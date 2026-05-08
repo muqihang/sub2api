@@ -1043,6 +1043,111 @@ func TestAugmentLegacyPromptEnhancerUsesNodeText(t *testing.T) {
 	require.Contains(t, content, "保留中文")
 }
 
+func TestAugmentLegacyOfficialRequiredRoutesFailClosedWithoutOfficialSession(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       2,
+		Email:    "compat@example.com",
+		Username: "compat",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        2,
+		UserID:    user.ID,
+		Key:       "sk-compat-runtime",
+		Name:      "compat-runtime",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	group := service.Group{
+		ID:                 101,
+		Name:               "OpenAI",
+		Platform:           service.PlatformOpenAI,
+		Status:             service.StatusActive,
+		Hydrated:           true,
+		DefaultMappedModel: "gpt-5.4",
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{
+			Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{
+				Augment: config.GatewayAugmentConfig{
+					Enabled: true,
+				},
+			},
+		},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+	authHandler := NewAuthHandler(
+		&config.Config{
+			Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{
+				Augment: config.GatewayAugmentConfig{
+					Enabled: true,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+	)
+
+	router := gin.New()
+	router.POST("/prompt-enhancer", authHandler.AugmentLegacyPromptEnhancer)
+	router.POST("/agents/codebase-retrieval", authHandler.AugmentLegacyCodebaseRetrieval)
+
+	tests := []struct {
+		path string
+		body string
+	}{
+		{
+			path: "/prompt-enhancer",
+			body: `{"model":"gpt-5.4","nodes":[{"id":1,"type":0,"text_node":{"content":"改写这个 Prompt"}}]}`,
+		},
+		{
+			path: "/agents/codebase-retrieval",
+			body: `{"information_request":"查找 chat-stream 链路","blobs":{"checkpoint_id":"","added_blobs":[],"deleted_blobs":[]}}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+apiKey.Key)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusUnauthorized, rec.Code)
+			require.Contains(t, rec.Body.String(), "AUGMENT_OFFICIAL_ROUTE_REQUIRED")
+		})
+	}
+}
+
 func TestAugmentLegacyPromptEnhancerCurrentShapeContract(t *testing.T) {
 	t.Parallel()
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
@@ -169,10 +170,14 @@ func (s gatewayRoutesAugmentUserStub) GetByID(ctx context.Context, id int64) (*s
 }
 
 type gatewayRoutesAugmentAPIKeyStub struct {
-	keysByUser map[int64][]service.APIKey
+	apiKeyByValue map[string]*service.APIKey
+	keysByUser    map[int64][]service.APIKey
 }
 
 func (s gatewayRoutesAugmentAPIKeyStub) GetByKey(ctx context.Context, key string) (*service.APIKey, error) {
+	if apiKey, ok := s.apiKeyByValue[key]; ok {
+		return apiKey, nil
+	}
 	return nil, service.ErrAPIKeyNotFound
 }
 
@@ -271,6 +276,84 @@ func TestGatewayRoutesResponsesAcceptsAugmentSessionBearer(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, w.Code)
 	require.Equal(t, "Bearer "+gatewayKey.Key, observedAuthorization)
+}
+
+func TestAugmentOfficialRoutePolicyGatewayRoutesFailClosedWhenPolicyEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	user := &service.User{
+		ID:     42,
+		Email:  "augment@example.com",
+		Role:   service.RoleUser,
+		Status: service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        10,
+		UserID:    user.ID,
+		Key:       "sk-gateway-for-augment",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{
+			Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{
+				Augment: config.GatewayAugmentConfig{Enabled: true},
+			},
+		},
+		gatewayRoutesAugmentAuthStub{userID: user.ID},
+		gatewayRoutesAugmentUserStub{user: user},
+		gatewayRoutesAugmentAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{
+				apiKey.Key: apiKey,
+			},
+			keysByUser: map[int64][]service.APIKey{user.ID: []service.APIKey{*apiKey}},
+		},
+		gatewayRoutesAugmentSubscriptionStub{},
+		gatewayRoutesAugmentSettingStub{},
+	)
+	authHandler := handler.NewAuthHandler(
+		&config.Config{
+			Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{
+				Augment: config.GatewayAugmentConfig{Enabled: true},
+			},
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+	)
+
+	RegisterGatewayRoutes(
+		router,
+		&handler.Handlers{
+			Auth:          authHandler,
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) { c.Next() }),
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/prompt-enhancer", strings.NewReader(`{"model":"gpt-5.4","nodes":[{"id":1,"type":0,"text_node":{"content":"rewrite this prompt"}}]}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_OFFICIAL_ROUTE_REQUIRED")
 }
 
 func TestGatewayRoutesOpenAIChatCompletionsLoopbackPathIsRegistered(t *testing.T) {

@@ -11,10 +11,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -548,14 +550,14 @@ func (h *AuthHandler) AugmentLegacySubscriptionBanner(c *gin.Context) {
 }
 
 func (h *AuthHandler) AugmentLegacyListRemoteTools(c *gin.Context) {
-	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+	if _, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/agents/list-remote-tools"); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"tools": []augmentLegacyToolSummary{}})
 }
 
 func (h *AuthHandler) AugmentLegacyListRemoteAgents(c *gin.Context) {
-	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+	if _, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/remote-agents/list"); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -570,7 +572,7 @@ func (h *AuthHandler) AugmentLegacyBatchUpload(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
 		return
 	}
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/batch-upload")
 	if !ok {
 		return
 	}
@@ -599,7 +601,7 @@ func (h *AuthHandler) AugmentLegacyFindMissing(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
 		return
 	}
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/find-missing")
 	if !ok {
 		return
 	}
@@ -623,7 +625,7 @@ func (h *AuthHandler) AugmentLegacySaveChat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
 		return
 	}
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/save-chat")
 	if !ok {
 		return
 	}
@@ -652,21 +654,21 @@ func (h *AuthHandler) AugmentLegacySaveChat(c *gin.Context) {
 }
 
 func (h *AuthHandler) AugmentLegacyGetImplicitExternalSources(c *gin.Context) {
-	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+	if _, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/get-implicit-external-sources"); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"external_source_ids": []string{}})
 }
 
 func (h *AuthHandler) AugmentLegacySearchExternalSources(c *gin.Context) {
-	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+	if _, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/search-external-sources"); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"results": []any{}})
 }
 
 func (h *AuthHandler) AugmentLegacyContextCanvasList(c *gin.Context) {
-	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+	if _, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/context-canvas/list"); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"canvases": []any{}, "next_page_token": ""})
@@ -677,7 +679,7 @@ func (h *AuthHandler) AugmentLegacyCodebaseRetrieval(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
 		return
 	}
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/agents/codebase-retrieval")
 	if !ok {
 		return
 	}
@@ -1553,6 +1555,89 @@ func augmentLegacyTrace(c *gin.Context, event string, attrs ...any) {
 	}
 	fields = append(fields, attrs...)
 	slog.Info("augment_compat_trace", fields...)
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRoutePrincipal(c *gin.Context, path string) (*service.AugmentPluginPrincipal, bool) {
+	principal, ok := h.augmentPrincipalFromBearer(c)
+	if !ok {
+		return nil, false
+	}
+	if h == nil || h.cfg == nil || !h.cfg.Gateway.Augment.Enabled {
+		return principal, true
+	}
+
+	decision := h.augmentLegacyOfficialRouteDecision(c, principal, path)
+	traceFields := []any{"path", path}
+	traceFields = append(traceFields, decision.TraceFields()...)
+	augmentLegacyTrace(c, "official_route_policy", traceFields...)
+
+	if decision.AllowLocalHandler {
+		return principal, true
+	}
+
+	h.augmentLegacyWriteOfficialRoutePolicyError(c, decision)
+	return nil, false
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRouteDecision(c *gin.Context, principal *service.AugmentPluginPrincipal, path string) service.AugmentOfficialRouteDecision {
+	input := service.AugmentOfficialRouteCheckInput{
+		Path:                  path,
+		SessionStatus:         service.AugmentOfficialSessionStatusMissing,
+		PresentedSource:       strings.TrimSpace(c.GetHeader("x-augment-official-session-source")),
+		PresentedTenantOrigin: strings.TrimSpace(c.GetHeader("x-augment-official-tenant-origin")),
+		PresentedFingerprint:  strings.TrimSpace(c.GetHeader("x-augment-official-fingerprint")),
+		EmergencyOff:          h.augmentLegacyOfficialRouteEmergencyOff(),
+	}
+	if h == nil || h.augmentOfficialSessionService == nil || principal == nil || principal.User == nil {
+		return service.EvaluateAugmentOfficialRoute(input)
+	}
+
+	view, err := h.augmentOfficialSessionService.GetOfficialSession(c.Request.Context(), principal.User.ID)
+	if err != nil || view == nil {
+		return service.EvaluateAugmentOfficialRoute(input)
+	}
+
+	input.SessionStatus = h.augmentLegacyOfficialRouteStatusFromView(view)
+	input.SessionScopes = append([]string(nil), view.Scopes...)
+	input.SessionSource = view.Source
+	input.SessionTenantOrigin = view.TenantOrigin
+	input.SessionFingerprintPrefix = view.FingerprintPrefix
+	return service.EvaluateAugmentOfficialRoute(input)
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRouteStatusFromView(view *service.AugmentOfficialSessionPublicView) service.AugmentOfficialSessionStatus {
+	if view == nil {
+		return service.AugmentOfficialSessionStatusMissing
+	}
+	if view.ExpiresAt != nil && !view.ExpiresAt.After(time.Now().UTC()) {
+		return service.AugmentOfficialSessionStatusExpired
+	}
+	switch strings.TrimSpace(view.Status) {
+	case "", "active":
+		return service.AugmentOfficialSessionStatusActive
+	case "refresh_failed":
+		return service.AugmentOfficialSessionStatusRefreshFailed
+	default:
+		return service.AugmentOfficialSessionStatusMissing
+	}
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRouteEmergencyOff() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("AUGMENT_CONTEXT_ENGINE_ROUTE_MODE")), "emergency-off")
+}
+
+func (h *AuthHandler) augmentLegacyWriteOfficialRoutePolicyError(c *gin.Context, decision service.AugmentOfficialRouteDecision) {
+	message := "official augment capability requires an active official session"
+	if decision.OfficialSessionStatus == service.AugmentOfficialSessionStatusTenantMismatch ||
+		decision.OfficialSessionStatus == service.AugmentOfficialSessionStatusSourceMismatch ||
+		decision.OfficialSessionStatus == service.AugmentOfficialSessionStatusFingerprintMismatch {
+		message = "official augment capability rejected the presented official session context"
+	}
+	responseErr := infraerrors.Unauthorized("AUGMENT_OFFICIAL_ROUTE_REQUIRED", message)
+	c.AbortWithStatusJSON(int(responseErr.Code), gin.H{
+		"code":    responseErr.Reason,
+		"message": responseErr.Message,
+	})
 }
 
 func augmentLegacyToolDefinitionNames(defs []augmentLegacyToolDefinition) []string {
@@ -2989,7 +3074,7 @@ func (h *AuthHandler) augmentLegacySimpleTextPromptCompletionThroughGateway(
 }
 
 func (h *AuthHandler) AugmentLegacyPromptEnhancer(c *gin.Context) {
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/prompt-enhancer")
 	if !ok {
 		return
 	}
@@ -3033,7 +3118,7 @@ func (h *AuthHandler) AugmentLegacyPromptEnhancer(c *gin.Context) {
 }
 
 func (h *AuthHandler) AugmentLegacyInstructionStream(c *gin.Context) {
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/instruction-stream")
 	if !ok {
 		return
 	}
@@ -3081,7 +3166,7 @@ func (h *AuthHandler) AugmentLegacySmartPasteStream(c *gin.Context) {
 }
 
 func (h *AuthHandler) AugmentLegacyGenerateCommitMessageStream(c *gin.Context) {
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/generate-commit-message-stream")
 	if !ok {
 		return
 	}
@@ -3112,7 +3197,7 @@ func (h *AuthHandler) AugmentLegacyNextEditLocation(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
 		return
 	}
-	if _, ok := h.augmentPrincipalFromBearer(c); !ok {
+	if _, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/next_edit_loc"); !ok {
 		return
 	}
 	var req augmentLegacyNextEditLocationRequest
@@ -3152,7 +3237,7 @@ func (h *AuthHandler) AugmentLegacyNextEditStream(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "augment plugin service is unavailable"})
 		return
 	}
-	principal, ok := h.augmentPrincipalFromBearer(c)
+	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/next-edit-stream")
 	if !ok {
 		return
 	}
