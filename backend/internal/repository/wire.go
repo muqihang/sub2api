@@ -117,6 +117,7 @@ var ProviderSet = wire.NewSet(
 	NewGeminiTokenCache,
 	ProvideSchedulerCache,
 	ProvideAugmentOfficialSessionStore,
+	ProvideAugmentGatewaySettingsStore,
 	NewSchedulerOutboxRepository,
 	NewProxyLatencyCache,
 	NewTotpCache,
@@ -207,6 +208,10 @@ func ProvideAugmentOfficialSessionStore(client *ent.Client, sqlDB *sql.DB) servi
 	return &augmentOfficialSessionStoreAdapter{
 		repo: NewAugmentOfficialSessionRepository(client, sqlDB),
 	}
+}
+
+func ProvideAugmentGatewaySettingsStore(sqlDB *sql.DB) service.AugmentGatewaySettingsStore {
+	return NewAugmentGatewaySettingsRepository(sqlDB)
 }
 
 func (a *augmentOfficialSessionStoreAdapter) CreateBindIntent(ctx context.Context, input service.AugmentOfficialSessionBindIntentStoreCreateInput) (*service.AugmentOfficialSessionBindIntentStoreRecord, error) {

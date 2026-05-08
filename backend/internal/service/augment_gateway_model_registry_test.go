@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -152,10 +153,54 @@ func TestAugmentGatewayModelRegistry_ClaudeGeminiRequireEnabledModelAndProviderG
 	}, augmentGatewayModelIDs(reg.VisibleModels()))
 }
 
+func TestAugmentGatewayModelRegistryHidesProviderMissingModels(t *testing.T) {
+	reg := NewAugmentGatewayModelRegistry(
+		config.GatewayAugmentConfig{
+			Enabled: true,
+			EnabledModels: []string{
+				"gpt-5.4",
+			},
+			ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+				OpenAI: 1001,
+			},
+		},
+		WithAugmentGatewayRegistryStateSource(&augmentGatewayRegistryStateSourceStub{
+			state: &AugmentGatewayRegistryState{
+				GatewayEnabled: true,
+				ProviderGroups: map[AugmentGatewayProvider]AugmentGatewayProviderRuntime{
+					AugmentGatewayProviderOpenAI: {
+						GroupID: 1001,
+						Healthy: false,
+					},
+				},
+				Models: map[string]AugmentGatewayModelSetting{
+					"gpt-5.4": {
+						Enabled:     true,
+						SmokeStatus: AugmentGatewaySmokeStatusPassed,
+					},
+				},
+			},
+		}),
+	)
+
+	require.True(t, reg.IsEnabled("gpt-5.4"))
+	require.False(t, reg.IsVisible("gpt-5.4"))
+	require.Empty(t, reg.VisibleModels())
+}
+
 func augmentGatewayModelIDs(models []AugmentGatewayModel) []string {
 	ids := make([]string, 0, len(models))
 	for _, model := range models {
 		ids = append(ids, model.ID)
 	}
 	return ids
+}
+
+type augmentGatewayRegistryStateSourceStub struct {
+	state *AugmentGatewayRegistryState
+	err   error
+}
+
+func (s *augmentGatewayRegistryStateSourceStub) LoadAugmentGatewayRegistryState(_ context.Context) (*AugmentGatewayRegistryState, error) {
+	return s.state, s.err
 }

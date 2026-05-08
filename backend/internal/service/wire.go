@@ -506,11 +506,25 @@ func ProvideAugmentGatewayUsageService(usageRepo UsageLogRepository) *AugmentGat
 	return NewAugmentGatewayUsageService(usageRepo)
 }
 
-func ProvideAugmentGatewayModelRegistry(cfg *config.Config) *AugmentGatewayModelRegistry {
+func ProvideAugmentGatewayAdminService(
+	store AugmentGatewaySettingsStore,
+	groupRepo GroupRepository,
+	cfg *config.Config,
+) *AugmentGatewayAdminService {
+	if cfg == nil {
+		return NewAugmentGatewayAdminService(store, groupRepo, config.GatewayAugmentConfig{
+			Enabled:       true,
+			EnabledModels: defaultAugmentGatewayEnabledModelIDs(),
+		})
+	}
+	return NewAugmentGatewayAdminService(store, groupRepo, cfg.Gateway.Augment)
+}
+
+func ProvideAugmentGatewayModelRegistry(cfg *config.Config, adminService *AugmentGatewayAdminService) *AugmentGatewayModelRegistry {
 	if cfg == nil {
 		return NewDefaultAugmentGatewayModelRegistry()
 	}
-	return NewAugmentGatewayModelRegistry(cfg.Gateway.Augment)
+	return NewAugmentGatewayModelRegistry(cfg.Gateway.Augment, WithAugmentGatewayRegistryStateSource(adminService))
 }
 
 func ProvideAugmentGatewayRouter(registry *AugmentGatewayModelRegistry) *AugmentGatewayRouter {
@@ -584,6 +598,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAugmentSessionVaultCipher,
 	ProvideAugmentOfficialSessionService,
 	ProvideAugmentGatewayUsageService,
+	ProvideAugmentGatewayAdminService,
 	ProvideAugmentGatewayModelRegistry,
 	ProvideAugmentGatewayRouter,
 	NewAugmentGatewayReasoningTurnStore,
