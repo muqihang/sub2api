@@ -6624,4 +6624,57 @@ export default {
     },
   },
 
+  plugin: {
+    augment: {
+      accountTitle: 'Augment 账户',
+      billingTitle: 'Augment 计费',
+      quickLogin: {
+        title: 'Augment Quick Login',
+        subtitle: '使用官方 / Wukong Quick Login 接管官方云能力，同时保留逐梦网关的模型路由。',
+        modeLabel: '授权模式',
+        sourceLabel: '授权来源',
+        continue: '继续授权',
+        requesting: '正在请求',
+        launch: '打开扩展',
+        copy: '复制 Deeplink',
+        copySuccess: '已复制 Deeplink',
+        requestFailed: '授权请求失败',
+        missingDeeplink: '后端未返回 Deeplink',
+        ready: 'Deeplink 已就绪',
+        modes: {
+          officialPassthrough: {
+            title: '官方能力接管',
+            description: '默认生产链路，使用官方 / Wukong Quick Login 承接官方云能力。'
+          },
+          localCompat: {
+            title: '本地兼容',
+            description: '仅用于应急或管理场景，默认隐藏。'
+          }
+        },
+        sources: {
+          official: '官方 Quick Login',
+          wukong: 'Wukong Quick Login'
+        },
+        consent: {
+          title: '授权说明',
+          official: '继续前请确认：官方云能力会直接接管 Context Engine 与相关官方能力，请仅在你理解并同意后继续。',
+          wukong: '继续前请确认：Wukong Quick Login 属于第三方来源，你理解其会代表官方云能力承接授权链路后再继续。',
+          confirm: '我已知晓并同意上述授权与托管说明。'
+        },
+        session: {
+          title: '当前官方 Session',
+          ready: '已检测到当前用户的官方 Session 状态。',
+          empty: '当前用户尚未绑定官方 Session。',
+          revoke: '撤销 Session',
+          revoking: '正在撤销',
+          source: '来源',
+          tenant: '租户',
+          status: '状态',
+          expiresAt: '到期时间',
+          lastError: '最后错误'
+        }
+      }
+    }
+  },
+
 }

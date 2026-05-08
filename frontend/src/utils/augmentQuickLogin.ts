@@ -1,6 +1,7 @@
 import type { LocationQuery, LocationQueryValue } from 'vue-router'
 
 type AugmentQuickLoginGrantResponseLike = Record<string, unknown>
+type AugmentQuickLoginDiagnosticsPayload = Record<string, string>
 
 function toSingleQueryValue(
   value: LocationQueryValue | LocationQueryValue[] | undefined
@@ -23,9 +24,7 @@ export function buildAugmentQuickLoginGrantPayload(query: LocationQuery): Record
   })
 
   if (!payload.mode) {
-    payload.mode = payloadHasOfficialSessionContext(payload)
-      ? 'official_passthrough'
-      : 'local_compat'
+    payload.mode = 'official_passthrough'
   }
 
   return payload
@@ -53,4 +52,33 @@ export function resolveAugmentQuickLoginDeeplink(
   )
 
   return deeplink?.trim() || ''
+}
+
+export function summarizeAugmentQuickLoginDiagnostics(
+  payload: AugmentQuickLoginDiagnosticsPayload
+): Array<[string, string]> {
+  const safeDiagnosticKeys = new Set([
+    'mode',
+    'source',
+    'tenant_url',
+    'official_tenant_url',
+    'tenant_origin',
+    'expires_at',
+    'official_expires_at',
+    'status',
+  ])
+
+  return Object.entries(payload)
+    .filter(([key, value]) => safeDiagnosticKeys.has(key) && typeof value === 'string' && value.length > 0)
+    .slice(0, 8)
+}
+
+export function isAugmentLocalCompatGateEnabled(input: {
+  isAdmin: boolean
+  query: LocationQuery
+}): boolean {
+  if (!input.isAdmin) {
+    return false
+  }
+  return toSingleQueryValue(input.query.emergency_local_compat) === '1'
 }

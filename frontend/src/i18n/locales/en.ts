@@ -6440,4 +6440,57 @@ export default {
     },
   },
 
+  plugin: {
+    augment: {
+      accountTitle: 'Augment Account',
+      billingTitle: 'Augment Billing',
+      quickLogin: {
+        title: 'Augment Quick Login',
+        subtitle: 'Use official / Wukong Quick Login for official cloud capabilities while keeping model routing on the Zhumeng gateway.',
+        modeLabel: 'Authorization Mode',
+        sourceLabel: 'Authorization Source',
+        continue: 'Continue',
+        requesting: 'Requesting',
+        launch: 'Open Extension',
+        copy: 'Copy Deeplink',
+        copySuccess: 'Deeplink copied',
+        requestFailed: 'Failed to request quick login',
+        missingDeeplink: 'Backend did not return a deeplink',
+        ready: 'Deeplink is ready',
+        modes: {
+          officialPassthrough: {
+            title: 'Official Passthrough',
+            description: 'Default production route. Official / Wukong Quick Login keeps official cloud capabilities in charge.'
+          },
+          localCompat: {
+            title: 'Local Compat',
+            description: 'Emergency or admin-only fallback. Hidden by default.'
+          }
+        },
+        sources: {
+          official: 'Official Quick Login',
+          wukong: 'Wukong Quick Login'
+        },
+        consent: {
+          title: 'Consent',
+          official: 'Before continuing, confirm that official cloud capabilities will directly own Context Engine and adjacent official product capabilities.',
+          wukong: 'Before continuing, confirm that Wukong Quick Login is a third-party source used to bridge the official cloud capability flow.',
+          confirm: 'I understand and accept the authorization and session custody implications above.'
+        },
+        session: {
+          title: 'Current Official Session',
+          ready: 'An official session is currently available for this user.',
+          empty: 'No official session is currently bound for this user.',
+          revoke: 'Revoke Session',
+          revoking: 'Revoking',
+          source: 'Source',
+          tenant: 'Tenant',
+          status: 'Status',
+          expiresAt: 'Expires At',
+          lastError: 'Last Error'
+        }
+      }
+    }
+  },
+
 }
