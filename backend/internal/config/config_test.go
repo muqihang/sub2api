@@ -1761,6 +1761,7 @@ func TestOpenAICoreProductionRequiresOAuthSessionMode(t *testing.T) {
 	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
 	cfg.Gateway.OpenAICore.AllowDirectFallback = false
 	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
 	cfg.Gateway.OpenAICore.OAuthSessionStore = "memory"
 	cfg.Gateway.OpenAICore.OAuthCallbackStickySingleInstance = false
 

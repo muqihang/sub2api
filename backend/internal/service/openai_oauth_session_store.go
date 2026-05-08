@@ -18,6 +18,7 @@ const openAIOAuthSessionStoreKeyPrefix = "openai:oauth:session:"
 type openAIOAuthSessionKV interface {
 	Set(ctx context.Context, key string, value string, ttl time.Duration) error
 	Get(ctx context.Context, key string) (string, error)
+	GetDel(ctx context.Context, key string) (string, error)
 	Del(ctx context.Context, key string) error
 	Close() error
 }
@@ -32,6 +33,10 @@ func (k *openAIOAuthRedisKV) Set(ctx context.Context, key string, value string, 
 
 func (k *openAIOAuthRedisKV) Get(ctx context.Context, key string) (string, error) {
 	return k.client.Get(ctx, key).Result()
+}
+
+func (k *openAIOAuthRedisKV) GetDel(ctx context.Context, key string) (string, error) {
+	return k.client.GetDel(ctx, key).Result()
 }
 
 func (k *openAIOAuthRedisKV) Del(ctx context.Context, key string) error {
@@ -94,6 +99,27 @@ func (s *OpenAIOAuthRedisSessionStore) Get(sessionID string) (*openai.OAuthSessi
 	}
 	if time.Since(session.CreatedAt) > openai.SessionTTL {
 		_ = s.kv.Del(context.Background(), s.key(sessionID))
+		return nil, false, nil
+	}
+	return &session, true, nil
+}
+
+func (s *OpenAIOAuthRedisSessionStore) Consume(sessionID string) (*openai.OAuthSession, bool, error) {
+	if s == nil || s.kv == nil {
+		return nil, false, errors.New("oauth session store unavailable")
+	}
+	payload, err := s.kv.GetDel(context.Background(), s.key(sessionID))
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var session openai.OAuthSession
+	if err := json.Unmarshal([]byte(payload), &session); err != nil {
+		return nil, false, nil
+	}
+	if time.Since(session.CreatedAt) > openai.SessionTTL {
 		return nil, false, nil
 	}
 	return &session, true, nil

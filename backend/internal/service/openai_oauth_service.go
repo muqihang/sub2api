@@ -193,7 +193,7 @@ type OpenAITokenInfo struct {
 // ExchangeCode exchanges authorization code for tokens
 func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
 	// Get session
-	session, ok, err := s.sessionStore.Get(input.SessionID)
+	session, ok, err := s.sessionStore.Consume(input.SessionID)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_LOOKUP_FAILED", "failed to load oauth session: %v", err)
 	}
@@ -205,10 +205,6 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	}
 	if subtle.ConstantTimeCompare([]byte(input.State), []byte(session.State)) != 1 {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_STATE", "invalid oauth state")
-	}
-
-	if err := s.sessionStore.Delete(input.SessionID); err != nil {
-		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_DELETE_FAILED", "failed to consume oauth session: %v", err)
 	}
 
 	proxyURL := session.ProxyURL

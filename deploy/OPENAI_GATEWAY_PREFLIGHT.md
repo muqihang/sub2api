@@ -52,7 +52,7 @@ deploy/openai-gateway-preflight.sh
 - `oauth_status`
 - `openai_oauth_accounts_total`
 - `egress_buckets`
-- `warning_codes`（例如 `bucket_concentration_high`、`direct_egress_in_production`、`credential_storage_not_production_safe`）
+- `warning_codes`（出现告警时返回，例如 `bucket_concentration_high`、`direct_egress_in_production`、`direct_fallback_disabled`、`credential_storage_not_production_safe`）
 - `degraded_reason`（若存在）
 
 ### 3. `/openai/_verify`
@@ -112,6 +112,8 @@ deploy/openai-gateway-preflight.sh
 
 - `bucket_concentration_high`
 - `direct_egress_in_production`
+- `direct_fallback_disabled`
+- `account_proxy_fallback_disabled`
 - `missing_egress_bucket`
 - `disabled_egress_bucket`
 - `credential_storage_not_production_safe`

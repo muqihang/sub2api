@@ -389,6 +389,15 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		} else if bucket, ok := s.findEgressBucket(bucketName); ok && !bucket.Enabled {
 			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "disabled_egress_bucket")
 		}
+		egress, err := s.ResolveEgress(ctx, &account, resolveOpenAIAccountProxyURL(&account))
+		if err != nil {
+			var policyErr *OpenAIEgressPolicyError
+			if errors.As(err, &policyErr) && strings.TrimSpace(policyErr.Code) != "" {
+				snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, strings.TrimSpace(policyErr.Code))
+			}
+		} else if egress != nil && s != nil && s.cfg != nil && s.cfg.Gateway.OpenAICore.ProductionMode && egress.Source == openAIEgressSourceDirectFallback {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "direct_egress_in_production")
+		}
 		if !account.IsOpenAIOAuth() {
 			continue
 		}
@@ -402,10 +411,6 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		if account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
 			snapshot.CoolingAccountsTotal++
 		}
-		egress, err := s.ResolveEgress(ctx, &account, resolveOpenAIAccountProxyURL(&account))
-		if err == nil && egress != nil && s != nil && s.cfg != nil && s.cfg.Gateway.OpenAICore.ProductionMode && egress.Source == openAIEgressSourceDirectFallback {
-			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "direct_egress_in_production")
-		}
 	}
 	s.applyOpenAIGatewayBucketWarnings(snapshot)
 	if s != nil && s.cfg != nil &&
@@ -416,6 +421,10 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 	}
 
 	switch {
+	case hasCriticalOpenAIGatewayWarning(snapshot.WarningCodes):
+		snapshot.GatewayStatus = "degraded"
+		snapshot.OAuthStatus = "degraded"
+		snapshot.DegradedReason = firstCriticalOpenAIGatewayWarning(snapshot.WarningCodes)
 	case containsOpenAIGatewayWarning(snapshot.WarningCodes, "direct_egress_in_production"):
 		snapshot.GatewayStatus = "degraded"
 		snapshot.OAuthStatus = "degraded"
@@ -550,6 +559,28 @@ func containsOpenAIGatewayWarning(existing []string, code string) bool {
 		}
 	}
 	return false
+}
+
+func hasCriticalOpenAIGatewayWarning(existing []string) bool {
+	return firstCriticalOpenAIGatewayWarning(existing) != ""
+}
+
+func firstCriticalOpenAIGatewayWarning(existing []string) string {
+	critical := []string{
+		"direct_egress_in_production",
+		"missing_egress_bucket",
+		"disabled_egress_bucket",
+		"direct_fallback_disabled",
+		"account_proxy_fallback_disabled",
+		"credential_storage_not_production_safe",
+		"oauth_session_topology_not_production_safe",
+	}
+	for _, code := range critical {
+		if containsOpenAIGatewayWarning(existing, code) {
+			return code
+		}
+	}
+	return ""
 }
 
 func (s *OpenAIGatewayCoreService) applyOpenAIGatewayBucketWarnings(snapshot *OpenAIGatewayHealthSnapshot) {

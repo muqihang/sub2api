@@ -53,6 +53,7 @@ type OAuthSession struct {
 type OAuthSessionStore interface {
 	Set(sessionID string, session *OAuthSession) error
 	Get(sessionID string) (*OAuthSession, bool, error)
+	Consume(sessionID string) (*OAuthSession, bool, error)
 	Delete(sessionID string) error
 	Stop() error
 }
@@ -96,6 +97,21 @@ func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool, error) {
 	if time.Since(session.CreatedAt) > SessionTTL {
 		return nil, false, nil
 	}
+	return session, true, nil
+}
+
+func (s *SessionStore) Consume(sessionID string) (*OAuthSession, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return nil, false, nil
+	}
+	if time.Since(session.CreatedAt) > SessionTTL {
+		delete(s.sessions, sessionID)
+		return nil, false, nil
+	}
+	delete(s.sessions, sessionID)
 	return session, true, nil
 }
 

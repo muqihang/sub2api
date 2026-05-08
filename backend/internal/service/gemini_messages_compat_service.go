@@ -1706,10 +1706,10 @@ func sanitizeUpstreamErrorMessage(msg string) string {
 	out = bearerTokenRegex.ReplaceAllString(out, `${1}***`)
 	out = openAIKeyRegex.ReplaceAllString(out, "sk-***")
 	out = urlLikeRegex.ReplaceAllStringFunc(out, func(raw string) string {
-		if !strings.Contains(raw, "@") && !sensitiveQueryParamRegex.MatchString(raw) {
-			return raw
+		if strings.Contains(raw, "@") {
+			return MaskOpenAIProxyURL(raw)
 		}
-		return MaskOpenAIProxyURL(raw)
+		return raw
 	})
 	return out
 }

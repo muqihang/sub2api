@@ -440,14 +440,6 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		}
 
 		credentials := sanitizeCredentialsMap(src.Credentials)
-		credentials, err = NewOpenAIGatewayCredentials(s.cfg, nil).ProtectCredentials(credentials)
-		if err != nil {
-			item.Action = "failed"
-			item.Error = "credential protection failed: " + err.Error()
-			result.Failed++
-			result.Items = append(result.Items, item)
-			continue
-		}
 		priority := clampPriority(src.Priority)
 		concurrency := 3
 		if src.MaxConcurrentTasks > 0 {

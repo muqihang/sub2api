@@ -29,6 +29,8 @@
 ## Canary Stop Conditions
 
 - `direct_egress_in_production`
+- `direct_fallback_disabled`
+- `account_proxy_fallback_disabled`
 - `missing_egress_bucket`
 - `disabled_egress_bucket`
 - `credential_storage_not_production_safe`

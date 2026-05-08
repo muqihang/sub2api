@@ -42,6 +42,15 @@ func (s *openAIOAuthSessionKVStub) Get(ctx context.Context, key string) (string,
 	return value, nil
 }
 
+func (s *openAIOAuthSessionKVStub) GetDel(ctx context.Context, key string) (string, error) {
+	value, err := s.Get(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	delete(s.values, key)
+	return value, nil
+}
+
 func (s *openAIOAuthSessionKVStub) Del(ctx context.Context, key string) error {
 	if s.delErr != nil {
 		return s.delErr
@@ -85,6 +94,25 @@ func TestOpenAIOAuthSessionStore_RedisMalformedPayloadBehavesAsNotFound(t *testi
 	require.False(t, ok)
 	_, exists := kv.values[store.key("sid")]
 	require.False(t, exists)
+}
+
+func TestOpenAIOAuthSessionStore_RedisConsumeDeletesSession(t *testing.T) {
+	kv := newOpenAIOAuthSessionKVStub()
+	store := NewOpenAIOAuthRedisSessionStoreWithKV(kv)
+	require.NoError(t, store.Set("sid", &openai.OAuthSession{
+		State:        "expected-state",
+		CodeVerifier: "verifier",
+		RedirectURI:  openai.DefaultRedirectURI,
+		CreatedAt:    time.Now(),
+	}))
+
+	session, ok, err := store.Consume("sid")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "expected-state", session.State)
+	_, ok, err = store.Get("sid")
+	require.NoError(t, err)
+	require.False(t, ok)
 }
 
 func TestOpenAIOAuthSessionStore_ProviderRejectsProductionMemoryWithoutSticky(t *testing.T) {
