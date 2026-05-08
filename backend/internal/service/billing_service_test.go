@@ -166,6 +166,31 @@ func TestGetModelPricing_OpenAICompactAliasesFallback(t *testing.T) {
 	}
 }
 
+func TestGetModelPricing_DeepSeekV4Fallbacks(t *testing.T) {
+	svc := newTestBillingService()
+
+	tests := []struct {
+		model       string
+		inputPrice  float64
+		outputPrice float64
+		cacheRead   float64
+	}{
+		{model: "deepseek-v4-flash", inputPrice: 0.14e-6, outputPrice: 0.28e-6, cacheRead: 0.028e-6},
+		{model: "deepseek-v4-pro", inputPrice: 1.74e-6, outputPrice: 3.48e-6, cacheRead: 0.145e-6},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			pricing, err := svc.GetModelPricing(tt.model)
+			require.NoError(t, err)
+			require.NotNil(t, pricing)
+			require.InDelta(t, tt.inputPrice, pricing.InputPricePerToken, 1e-12)
+			require.InDelta(t, tt.outputPrice, pricing.OutputPricePerToken, 1e-12)
+			require.InDelta(t, tt.cacheRead, pricing.CacheReadPricePerToken, 1e-12)
+		})
+	}
+}
+
 func TestGetModelPricing_OpenAIGPT54MiniFallback(t *testing.T) {
 	svc := newTestBillingService()
 

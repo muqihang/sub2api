@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
 type AugmentGatewayProviderExecutor interface {
@@ -367,7 +368,7 @@ func (e *AugmentGatewayProviderExecutorImpl) recordUsageBestEffort(
 		reasoningEffort = &effort
 	}
 
-	_ = e.usageRecorder.RecordUsage(ctx, &OpenAIRecordUsageInput{
+	if err := e.usageRecorder.RecordUsage(ctx, &OpenAIRecordUsageInput{
 		Result: &OpenAIForwardResult{
 			RequestID: resultRequestID,
 			Usage: OpenAIUsage{
@@ -390,7 +391,21 @@ func (e *AugmentGatewayProviderExecutorImpl) recordUsageBestEffort(
 		UserAgent:          req.UserAgent,
 		IPAddress:          req.IPAddress,
 		RequestPayloadHash: HashUsageRequestPayload(rawBody),
-	})
+	}); err != nil {
+		logger.LegacyPrintf(
+			"service.augment_gateway",
+			"usage_record_failed provider=%s model=%s upstream_model=%s endpoint=%s stream=%t input_tokens=%d output_tokens=%d cache_read_tokens=%d err=%v",
+			req.Provider,
+			modelID,
+			upstreamModel,
+			req.Endpoint,
+			stream,
+			usage.InputTokens,
+			usage.OutputTokens,
+			usage.CachedInputTokens,
+			err,
+		)
+	}
 }
 
 func augmentGatewayProviderUsagePresent(usage AugmentGatewayProviderUsage) bool {
