@@ -26,53 +26,60 @@ type augmentContextBundleBlobReference struct {
 }
 
 type augmentContextBundle struct {
-	ConversationID      string
-	ChatHistoryCount    int
-	ChatHistory         []augmentContextBundleChatTurn
-	CheckpointID        string
-	AddedBlobCount      int
-	DeletedBlobCount    int
-	AddedBlobNames      []string
-	DeletedBlobNames    []string
-	ActiveBlobCount     int
-	ActiveBlobRefs      []augmentContextBundleBlobReference
-	UnknownBlobCount    int
-	UserGuidedBlobs     []string
-	ExternalSourceIDs   []string
-	UserGuidelines      string
-	WorkspaceGuidelines string
-	RulesText           string
-	Path                string
-	Lang                string
-	SelectedText        string
-	SelectedTextPresent bool
-	DialogCount         int
-	Workspace           service.AugmentGatewayWorkspaceMetadata
+	ConversationID            string
+	ChatHistoryCount          int
+	ChatHistory               []augmentContextBundleChatTurn
+	CheckpointID              string
+	AddedBlobCount            int
+	DeletedBlobCount          int
+	AddedBlobNames            []string
+	DeletedBlobNames          []string
+	ActiveBlobCount           int
+	ActiveBlobRefs            []augmentContextBundleBlobReference
+	UnknownBlobCount          int
+	UserGuidedBlobs           []string
+	ExternalSourceIDs         []string
+	UserGuidelines            string
+	WorkspaceGuidelines       string
+	RulesText                 string
+	Path                      string
+	Lang                      string
+	SelectedText              string
+	SelectedTextPresent       bool
+	DialogCount               int
+	WorkspaceFolders          []string
+	CurrentTerminalCWD        string
+	FileToolWorkspaceMismatch bool
+	Workspace                 service.AugmentGatewayWorkspaceMetadata
 }
 
 func augmentContextBundleFromChatRequest(req augmentLegacyChatRequest) augmentContextBundle {
 	addedBlobNames := dedupeAugmentContextBundleStrings(req.Blobs.AddedBlobs)
 	deletedBlobNames := dedupeAugmentContextBundleStrings(req.Blobs.DeletedBlobs)
 	selectedText := augmentContextBundleCompactText(augmentLegacyFirstNonBlank(req.SelectedCode, req.SelectedText), augmentContextBundleMaxTurnRunes)
+	workspace := augmentContextBundleResolveWorkspace(req.RequestNodes, req.Nodes, req.StructuredRequestNodes)
 	return augmentContextBundle{
-		ConversationID:      strings.TrimSpace(req.ConversationID),
-		ChatHistoryCount:    len(req.ChatHistory),
-		ChatHistory:         augmentContextBundleChatTurns(req.ChatHistory),
-		CheckpointID:        strings.TrimSpace(req.Blobs.CheckpointID),
-		AddedBlobCount:      len(addedBlobNames),
-		DeletedBlobCount:    len(deletedBlobNames),
-		AddedBlobNames:      addedBlobNames,
-		DeletedBlobNames:    deletedBlobNames,
-		UserGuidedBlobs:     dedupeAugmentContextBundleStrings(req.UserGuidedBlobs),
-		ExternalSourceIDs:   dedupeAugmentContextBundleStrings(req.ExternalSourceIDs),
-		UserGuidelines:      strings.TrimSpace(req.UserGuidelines),
-		WorkspaceGuidelines: strings.TrimSpace(req.WorkspaceGuidelines),
-		RulesText:           strings.TrimSpace(augmentLegacyJoinRuleTexts(req.Rules)),
-		Path:                strings.TrimSpace(req.Path),
-		Lang:                strings.TrimSpace(req.Lang),
-		SelectedText:        selectedText,
-		SelectedTextPresent: strings.TrimSpace(selectedText) != "",
-		Workspace:           service.ResolveAugmentGatewayWorkspaceMetadata(),
+		ConversationID:            strings.TrimSpace(req.ConversationID),
+		ChatHistoryCount:          len(req.ChatHistory),
+		ChatHistory:               augmentContextBundleChatTurns(req.ChatHistory),
+		CheckpointID:              strings.TrimSpace(req.Blobs.CheckpointID),
+		AddedBlobCount:            len(addedBlobNames),
+		DeletedBlobCount:          len(deletedBlobNames),
+		AddedBlobNames:            addedBlobNames,
+		DeletedBlobNames:          deletedBlobNames,
+		UserGuidedBlobs:           dedupeAugmentContextBundleStrings(req.UserGuidedBlobs),
+		ExternalSourceIDs:         dedupeAugmentContextBundleStrings(req.ExternalSourceIDs),
+		UserGuidelines:            strings.TrimSpace(req.UserGuidelines),
+		WorkspaceGuidelines:       strings.TrimSpace(req.WorkspaceGuidelines),
+		RulesText:                 strings.TrimSpace(augmentLegacyJoinRuleTexts(req.Rules)),
+		Path:                      strings.TrimSpace(req.Path),
+		Lang:                      strings.TrimSpace(req.Lang),
+		SelectedText:              selectedText,
+		SelectedTextPresent:       strings.TrimSpace(selectedText) != "",
+		WorkspaceFolders:          append([]string(nil), workspace.WorkspaceFolders...),
+		CurrentTerminalCWD:        strings.TrimSpace(workspace.CurrentTerminalCWD),
+		FileToolWorkspaceMismatch: workspace.FileToolWorkspaceMismatch,
+		Workspace:                 workspace,
 	}
 }
 
@@ -80,39 +87,47 @@ func augmentContextBundleFromPromptEnhancerRequest(req augmentLegacyPromptEnhanc
 	addedBlobNames := dedupeAugmentContextBundleStrings(req.Blobs.AddedBlobs)
 	deletedBlobNames := dedupeAugmentContextBundleStrings(req.Blobs.DeletedBlobs)
 	selectedText := augmentContextBundleCompactText(req.SelectedText, augmentContextBundleMaxTurnRunes)
+	workspace := augmentContextBundleResolveWorkspace(req.RequestNodesCamel, req.StructuredRequestNodesCamel, req.Nodes)
 	return augmentContextBundle{
-		ConversationID:      strings.TrimSpace(req.ConversationID),
-		ChatHistoryCount:    len(req.ChatHistory),
-		ChatHistory:         augmentContextBundleChatTurns(req.ChatHistory),
-		CheckpointID:        strings.TrimSpace(req.Blobs.CheckpointID),
-		AddedBlobCount:      len(addedBlobNames),
-		DeletedBlobCount:    len(deletedBlobNames),
-		AddedBlobNames:      addedBlobNames,
-		DeletedBlobNames:    deletedBlobNames,
-		UserGuidedBlobs:     dedupeAugmentContextBundleStrings(req.UserGuidedBlobs),
-		ExternalSourceIDs:   dedupeAugmentContextBundleStrings(req.ExternalSourceIDs),
-		UserGuidelines:      strings.TrimSpace(req.UserGuidelines),
-		WorkspaceGuidelines: strings.TrimSpace(req.WorkspaceGuidelines),
-		RulesText:           strings.TrimSpace(augmentLegacyJoinRuleTexts(req.Rules)),
-		Path:                strings.TrimSpace(req.Path),
-		Lang:                strings.TrimSpace(req.Lang),
-		SelectedText:        selectedText,
-		SelectedTextPresent: strings.TrimSpace(selectedText) != "",
-		Workspace:           service.ResolveAugmentGatewayWorkspaceMetadata(),
+		ConversationID:            strings.TrimSpace(req.ConversationID),
+		ChatHistoryCount:          len(req.ChatHistory),
+		ChatHistory:               augmentContextBundleChatTurns(req.ChatHistory),
+		CheckpointID:              strings.TrimSpace(req.Blobs.CheckpointID),
+		AddedBlobCount:            len(addedBlobNames),
+		DeletedBlobCount:          len(deletedBlobNames),
+		AddedBlobNames:            addedBlobNames,
+		DeletedBlobNames:          deletedBlobNames,
+		UserGuidedBlobs:           dedupeAugmentContextBundleStrings(req.UserGuidedBlobs),
+		ExternalSourceIDs:         dedupeAugmentContextBundleStrings(req.ExternalSourceIDs),
+		UserGuidelines:            strings.TrimSpace(req.UserGuidelines),
+		WorkspaceGuidelines:       strings.TrimSpace(req.WorkspaceGuidelines),
+		RulesText:                 strings.TrimSpace(augmentLegacyJoinRuleTexts(req.Rules)),
+		Path:                      strings.TrimSpace(req.Path),
+		Lang:                      strings.TrimSpace(req.Lang),
+		SelectedText:              selectedText,
+		SelectedTextPresent:       strings.TrimSpace(selectedText) != "",
+		WorkspaceFolders:          append([]string(nil), workspace.WorkspaceFolders...),
+		CurrentTerminalCWD:        strings.TrimSpace(workspace.CurrentTerminalCWD),
+		FileToolWorkspaceMismatch: workspace.FileToolWorkspaceMismatch,
+		Workspace:                 workspace,
 	}
 }
 
 func augmentContextBundleFromCodebaseRetrievalRequest(req augmentLegacyCodebaseRetrievalRequest) augmentContextBundle {
 	addedBlobNames := dedupeAugmentContextBundleStrings(req.Blobs.AddedBlobs)
 	deletedBlobNames := dedupeAugmentContextBundleStrings(req.Blobs.DeletedBlobs)
+	workspace := service.ResolveAugmentGatewayWorkspaceMetadata()
 	return augmentContextBundle{
-		CheckpointID:     strings.TrimSpace(req.Blobs.CheckpointID),
-		AddedBlobCount:   len(addedBlobNames),
-		DeletedBlobCount: len(deletedBlobNames),
-		AddedBlobNames:   addedBlobNames,
-		DeletedBlobNames: deletedBlobNames,
-		DialogCount:      len(req.Dialog),
-		Workspace:        service.ResolveAugmentGatewayWorkspaceMetadata(),
+		CheckpointID:              strings.TrimSpace(req.Blobs.CheckpointID),
+		AddedBlobCount:            len(addedBlobNames),
+		DeletedBlobCount:          len(deletedBlobNames),
+		AddedBlobNames:            addedBlobNames,
+		DeletedBlobNames:          deletedBlobNames,
+		DialogCount:               len(req.Dialog),
+		WorkspaceFolders:          append([]string(nil), workspace.WorkspaceFolders...),
+		CurrentTerminalCWD:        strings.TrimSpace(workspace.CurrentTerminalCWD),
+		FileToolWorkspaceMismatch: workspace.FileToolWorkspaceMismatch,
+		Workspace:                 workspace,
 	}
 }
 
@@ -140,6 +155,9 @@ func (b augmentContextBundle) HasContent() bool {
 		strings.TrimSpace(b.Lang) != "" ||
 		strings.TrimSpace(b.SelectedText) != "" ||
 		b.DialogCount > 0 ||
+		len(b.WorkspaceFolders) > 0 ||
+		strings.TrimSpace(b.CurrentTerminalCWD) != "" ||
+		b.FileToolWorkspaceMismatch ||
 		strings.TrimSpace(b.Workspace.WorkspaceRoot) != "" ||
 		strings.TrimSpace(b.Workspace.Branch) != "" ||
 		strings.TrimSpace(b.Workspace.Worktree) != ""
@@ -163,6 +181,11 @@ func (b augmentContextBundle) Format() string {
 	appendLine("workspace_root", b.Workspace.WorkspaceRoot)
 	appendLine("branch", b.Workspace.Branch)
 	appendLine("worktree", b.Workspace.Worktree)
+	appendLine("workspace_folders", strings.Join(b.WorkspaceFolders, ", "))
+	appendLine("current_terminal_cwd", b.CurrentTerminalCWD)
+	if b.FileToolWorkspaceMismatch {
+		lines = append(lines, "file_tool_workspace_mismatch: true")
+	}
 	appendCount("chat_history_count", b.ChatHistoryCount)
 	appendCount("dialog_count", b.DialogCount)
 	appendLine("checkpoint_id", b.CheckpointID)
@@ -254,6 +277,11 @@ func (b augmentContextBundle) RetrievalMetadata() string {
 	appendLine("workspace_root", b.Workspace.WorkspaceRoot)
 	appendLine("branch", b.Workspace.Branch)
 	appendLine("worktree", b.Workspace.Worktree)
+	appendLine("workspace_folders", strings.Join(b.WorkspaceFolders, ", "))
+	appendLine("current_terminal_cwd", b.CurrentTerminalCWD)
+	if b.FileToolWorkspaceMismatch {
+		lines = append(lines, "file_tool_workspace_mismatch: true")
+	}
 	appendLine("checkpoint_id", b.CheckpointID)
 	appendCount("dialog_count", b.DialogCount)
 	appendCount("active_blob_count", b.ActiveBlobCount)
@@ -289,6 +317,9 @@ func (b augmentContextBundle) TraceFields() []any {
 		"context_path_present", strings.TrimSpace(b.Path) != "",
 		"context_lang_present", strings.TrimSpace(b.Lang) != "",
 		"context_selected_text_present", b.SelectedTextPresent,
+		"context_workspace_folder_count", len(b.WorkspaceFolders),
+		"context_current_terminal_cwd_present", strings.TrimSpace(b.CurrentTerminalCWD) != "",
+		"context_file_tool_workspace_mismatch", b.FileToolWorkspaceMismatch,
 		"context_workspace_root_present", strings.TrimSpace(b.Workspace.WorkspaceRoot) != "",
 		"context_workspace_root", strings.TrimSpace(b.Workspace.WorkspaceRoot),
 		"context_git_branch", strings.TrimSpace(b.Workspace.Branch),
@@ -344,12 +375,23 @@ func augmentLegacyContextBundleMetadata(bundle augmentContextBundle) map[string]
 		"context_path_present":                 strings.TrimSpace(bundle.Path) != "",
 		"context_lang_present":                 strings.TrimSpace(bundle.Lang) != "",
 		"context_selected_text_present":        bundle.SelectedTextPresent,
+		"context_workspace_folder_count":       len(bundle.WorkspaceFolders),
+		"context_current_terminal_cwd_present": strings.TrimSpace(bundle.CurrentTerminalCWD) != "",
+		"context_file_tool_workspace_mismatch": bundle.FileToolWorkspaceMismatch,
 		"context_workspace_root_present":       strings.TrimSpace(bundle.Workspace.WorkspaceRoot) != "",
 		"context_workspace_root":               strings.TrimSpace(bundle.Workspace.WorkspaceRoot),
 		"context_git_branch":                   strings.TrimSpace(bundle.Workspace.Branch),
 		"context_git_worktree":                 strings.TrimSpace(bundle.Workspace.Worktree),
 	}
 	return metadata
+}
+
+func augmentContextBundleResolveWorkspace(nodeSets ...[]augmentLegacyChatNode) service.AugmentGatewayWorkspaceMetadata {
+	workspaceFolders, currentTerminalCWD := augmentLegacyExtractIDEWorkspaceHints(nodeSets...)
+	if len(workspaceFolders) > 0 || strings.TrimSpace(currentTerminalCWD) != "" {
+		return service.ResolveAugmentGatewayWorkspaceMetadataForIDEState(workspaceFolders, currentTerminalCWD)
+	}
+	return service.ResolveAugmentGatewayWorkspaceMetadata()
 }
 
 func augmentContextBundleChatTurns(items []augmentLegacyChatHistoryItem) []augmentContextBundleChatTurn {
@@ -418,4 +460,55 @@ func dedupeAugmentContextBundleStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func augmentLegacyExtractIDEWorkspaceHints(nodeSets ...[]augmentLegacyChatNode) ([]string, string) {
+	var latest *augmentLegacyIDEStateNode
+	for _, nodes := range nodeSets {
+		for idx := len(nodes) - 1; idx >= 0; idx-- {
+			if state := augmentLegacyNormalizeIDEStateNode(nodes[idx]); state != nil {
+				latest = state
+				break
+			}
+		}
+		if latest != nil {
+			break
+		}
+	}
+	if latest == nil {
+		return nil, ""
+	}
+
+	folders := make([]string, 0, len(latest.WorkspaceFolders)+len(latest.WorkspaceFoldersCamel))
+	for _, folder := range append(latest.WorkspaceFolders, latest.WorkspaceFoldersCamel...) {
+		root := strings.TrimSpace(augmentLegacyFirstNonBlank(folder.RepositoryRoot, folder.RepositoryRootCamel, folder.FolderRoot, folder.FolderRootCamel))
+		if root == "" {
+			continue
+		}
+		folders = append(folders, root)
+	}
+
+	var currentTerminalCWD string
+	if current := augmentLegacyNormalizeIDECurrentTerminal(latest); current != nil {
+		currentTerminalCWD = strings.TrimSpace(augmentLegacyFirstNonBlank(current.CurrentWorkingDirectory, current.CurrentWorkingDirectoryCamel))
+	}
+
+	return dedupeAugmentContextBundleStrings(folders), currentTerminalCWD
+}
+
+func augmentLegacyNormalizeIDEStateNode(node augmentLegacyChatNode) *augmentLegacyIDEStateNode {
+	if node.IDEStateNode != nil {
+		return node.IDEStateNode
+	}
+	return node.IDEStateNodeCamel
+}
+
+func augmentLegacyNormalizeIDECurrentTerminal(node *augmentLegacyIDEStateNode) *augmentLegacyIDECurrentTerminal {
+	if node == nil {
+		return nil
+	}
+	if node.CurrentTerminal != nil {
+		return node.CurrentTerminal
+	}
+	return node.CurrentTerminalCamel
 }

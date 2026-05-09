@@ -47,6 +47,11 @@ const augmentLegacyGatewayCodebaseRetrievalPolicy = `Augment Gateway tool policy
 - 不要把同一个检索意图拆成多个短关键词查询，例如只写 "DeepSeek tool replay" 或 "reasoning handling"；优先发起一个上下文充分的完整查询。
 - 如果第一次检索证据不足，最多再发起一次更聚焦的补充查询，然后基于已有证据回答并明确缺口。`
 
+const augmentLegacyGatewayWorkspaceFileToolPolicy = `Augment Gateway tool policy for workspace file access:
+- read-file、save-file、edit-file、remove-files、apply_patch 这类文件工具，只能操作当前打开的 workspace folders 内的路径。
+- 在调用文件工具前，先判断目标路径是否位于 workspace folders 内；优先使用 workspace 内的相对路径。
+- 如果 current_terminal_cwd 或目标绝对路径位于 workspace folders 之外，不要继续对那个路径调用文件工具；先改用终端工具做只读检查，或提示用户把对应 worktree/目录加入工作区后再写文件。`
+
 type augmentLegacyBatchUploadBlob struct {
 	BlobName string `json:"blob_name"`
 	Path     string `json:"path"`
@@ -101,6 +106,8 @@ type augmentLegacyChatNode struct {
 	ToolUseCamel        *augmentLegacyToolUseNode    `json:"toolUse"`
 	ToolResultNode      *augmentLegacyToolResultNode `json:"tool_result_node"`
 	ToolResultNodeCamel *augmentLegacyToolResultNode `json:"toolResultNode"`
+	IDEStateNode        *augmentLegacyIDEStateNode   `json:"ide_state_node"`
+	IDEStateNodeCamel   *augmentLegacyIDEStateNode   `json:"ideStateNode"`
 }
 
 type augmentLegacyToolUseNode struct {
@@ -126,6 +133,28 @@ type augmentLegacyToolResultContentNode struct {
 	NodeTypeCamel    *int   `json:"nodeType"`
 	TextContent      string `json:"text_content"`
 	TextContentCamel string `json:"textContent"`
+}
+
+type augmentLegacyIDEStateNode struct {
+	WorkspaceFolders          []augmentLegacyIDEWorkspaceFolder `json:"workspace_folders"`
+	WorkspaceFoldersCamel     []augmentLegacyIDEWorkspaceFolder `json:"workspaceFolders"`
+	WorkspaceFoldersUnchanged bool                              `json:"workspace_folders_unchanged"`
+	CurrentTerminal           *augmentLegacyIDECurrentTerminal  `json:"current_terminal"`
+	CurrentTerminalCamel      *augmentLegacyIDECurrentTerminal  `json:"currentTerminal"`
+}
+
+type augmentLegacyIDEWorkspaceFolder struct {
+	FolderRoot          string `json:"folder_root"`
+	FolderRootCamel     string `json:"folderRoot"`
+	RepositoryRoot      string `json:"repository_root"`
+	RepositoryRootCamel string `json:"repositoryRoot"`
+}
+
+type augmentLegacyIDECurrentTerminal struct {
+	TerminalID                   int    `json:"terminal_id"`
+	TerminalIDCamel              int    `json:"terminalId"`
+	CurrentWorkingDirectory      string `json:"current_working_directory"`
+	CurrentWorkingDirectoryCamel string `json:"currentWorkingDirectory"`
 }
 
 type augmentLegacyChatRequest struct {
@@ -2564,6 +2593,9 @@ func (h *AuthHandler) augmentLegacyBuildGatewayRequest(c *gin.Context, principal
 	conversationID := h.augmentLegacyGatewayConversationID(c, req)
 	messages := h.augmentLegacyGatewayMessages(conversationID, req, retrieval, routed)
 	contextBundle := augmentContextBundleFromChatRequest(req)
+	if policy := augmentLegacyBuildWorkspaceFileToolPolicy(req.ToolDefinitions, contextBundle); policy != "" {
+		messages = append([]apicompat.ChatMessage{augmentLegacyMakeMessage("system", policy)}, messages...)
+	}
 	if augmentLegacyHasToolDefinition(req.ToolDefinitions, "codebase-retrieval") {
 		policy := augmentLegacyTextWithContextBundle(augmentLegacyGatewayCodebaseRetrievalPolicy, contextBundle)
 		switch routed.Model.Provider {
@@ -2608,6 +2640,32 @@ func augmentLegacyHasToolDefinition(defs []augmentLegacyToolDefinition, name str
 	}
 	for _, def := range defs {
 		if strings.TrimSpace(def.Name) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func augmentLegacyBuildWorkspaceFileToolPolicy(defs []augmentLegacyToolDefinition, bundle augmentContextBundle) string {
+	if !augmentLegacyHasWorkspaceFileToolDefinition(defs) {
+		return ""
+	}
+	lines := []string{augmentLegacyGatewayWorkspaceFileToolPolicy}
+	if len(bundle.WorkspaceFolders) > 0 {
+		lines = append(lines, "workspace_folders: "+strings.Join(bundle.WorkspaceFolders, ", "))
+	}
+	if strings.TrimSpace(bundle.CurrentTerminalCWD) != "" {
+		lines = append(lines, "current_terminal_cwd: "+strings.TrimSpace(bundle.CurrentTerminalCWD))
+	}
+	if bundle.FileToolWorkspaceMismatch {
+		lines = append(lines, "The current_terminal_cwd is outside the open workspace folders. Do not use file tools on paths under current_terminal_cwd until that worktree or directory is opened as a workspace folder.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func augmentLegacyHasWorkspaceFileToolDefinition(defs []augmentLegacyToolDefinition) bool {
+	for _, name := range []string{"read-file", "save-file", "edit-file", "remove-files", "apply_patch"} {
+		if augmentLegacyHasNamedToolDefinition(defs, name) {
 			return true
 		}
 	}

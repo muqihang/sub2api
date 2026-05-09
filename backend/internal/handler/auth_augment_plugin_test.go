@@ -57,7 +57,7 @@ func (s augmentPluginJWTAuthStub) ValidateToken(token string) (*service.JWTClaim
 }
 
 type handlerOfficialPoolSessionStoreStub struct {
-	credentialRow *service.AugmentOfficialPoolStoredCredentialRow
+	credentialRow   *service.AugmentOfficialPoolStoredCredentialRow
 	acquiredSources []string
 }
 
@@ -721,24 +721,24 @@ func TestAugmentQuickLoginGrantOfficialPassthroughUsesPoolSession(t *testing.T) 
 
 	cipher := newHandlerTestAugmentSessionVaultCipher(t)
 	encryptedPayload := mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{
-		"access_token":       "pool-access",
-		"refresh_token":      "pool-refresh",
+		"access_token":        "pool-access",
+		"refresh_token":       "pool-refresh",
 		"official_session_id": "sess-pool",
 	})
 	poolService := service.NewAugmentOfficialPoolSessionService(
 		&handlerOfficialPoolSessionStoreStub{
 			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
-				ID:                        101,
-				Source:                    "official_quick_login",
-				TenantOrigin:              "https://official.augment.local",
-				Scopes:                    []string{"augment:session"},
-				ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
-				Status:                    service.AugmentOfficialPoolSessionStatusActive,
+				ID:                         101,
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://official.augment.local",
+				Scopes:                     []string{"augment:session"},
+				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+				Status:                     service.AugmentOfficialPoolSessionStatusActive,
 				EncryptedCredentialPayload: encryptedPayload,
-				CredentialSchemaVersion:   1,
-				KeyVersion:                "key-active",
-				Fingerprint:               "poolfingerprint012345",
-				HealthScore:               100,
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "key-active",
+				Fingerprint:                "poolfingerprint012345",
+				HealthScore:                100,
 			},
 		},
 		cipher,
@@ -845,7 +845,7 @@ func TestAugmentSessionRefreshOfficialPassthroughUsesBoundOfficialSessionFromBea
 				TenantOrigin:               "https://official.augment.local",
 				PortalOrigin:               handlerStringPtr("https://portal.augment.local"),
 				Scopes:                     []string{"augment:session"},
-				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 8, 18, 0, 0, 0, time.UTC)),
+				ExpiresAt:                  handlerTimePtr(time.Date(2027, 5, 8, 18, 0, 0, 0, time.UTC)),
 				Status:                     "active",
 				EncryptedCredentialPayload: encryptedPayload,
 				CredentialSchemaVersion:    1,
@@ -905,24 +905,24 @@ func TestAugmentSessionRefreshOfficialPassthroughUsesPoolSession(t *testing.T) {
 
 	cipher := newHandlerTestAugmentSessionVaultCipher(t)
 	encryptedPayload := mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{
-		"access_token":       "pool-access-next",
-		"refresh_token":      "pool-refresh-next",
+		"access_token":        "pool-access-next",
+		"refresh_token":       "pool-refresh-next",
 		"official_session_id": "sess-pool-refresh",
 	})
 	poolService := service.NewAugmentOfficialPoolSessionService(
 		&handlerOfficialPoolSessionStoreStub{
 			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
-				ID:                        202,
-				Source:                    "official_quick_login",
-				TenantOrigin:              "https://official.augment.local",
-				Scopes:                    []string{"augment:session"},
-				ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
-				Status:                    service.AugmentOfficialPoolSessionStatusActive,
+				ID:                         202,
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://official.augment.local",
+				Scopes:                     []string{"augment:session"},
+				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+				Status:                     service.AugmentOfficialPoolSessionStatusActive,
 				EncryptedCredentialPayload: encryptedPayload,
-				CredentialSchemaVersion:   1,
-				KeyVersion:                "key-active",
-				Fingerprint:               "poolrefreshfingerprint",
-				HealthScore:               100,
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "key-active",
+				Fingerprint:                "poolrefreshfingerprint",
+				HealthScore:                100,
 			},
 		},
 		cipher,
@@ -991,17 +991,17 @@ func TestAugmentQuickLoginGrantOfficialPassthroughRespectsRequestedPoolSource(t 
 	})
 	store := &handlerOfficialPoolSessionStoreStub{
 		credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
-			ID:                        301,
-			Source:                    "wukong_quick_login",
-			TenantOrigin:              "https://official.augment.local",
-			Scopes:                    []string{"augment:session"},
-			ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
-			Status:                    service.AugmentOfficialPoolSessionStatusActive,
+			ID:                         301,
+			Source:                     "wukong_quick_login",
+			TenantOrigin:               "https://official.augment.local",
+			Scopes:                     []string{"augment:session"},
+			ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+			Status:                     service.AugmentOfficialPoolSessionStatusActive,
 			EncryptedCredentialPayload: encryptedPayload,
-			CredentialSchemaVersion:   1,
-			KeyVersion:                "key-active",
-			Fingerprint:               "poolfingerprint-source",
-			HealthScore:               100,
+			CredentialSchemaVersion:    1,
+			KeyVersion:                 "key-active",
+			Fingerprint:                "poolfingerprint-source",
+			HealthScore:                100,
 		},
 	}
 	poolService := service.NewAugmentOfficialPoolSessionService(store, cipher, "bind-secret")
@@ -1053,17 +1053,17 @@ func TestAugmentSessionRefreshOfficialPassthroughPoolRequiresBearer(t *testing.T
 	poolService := service.NewAugmentOfficialPoolSessionService(
 		&handlerOfficialPoolSessionStoreStub{
 			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
-				ID:                        303,
-				Source:                    "official_quick_login",
-				TenantOrigin:              "https://official.augment.local",
-				Scopes:                    []string{"augment:session"},
-				ExpiresAt:                 handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
-				Status:                    service.AugmentOfficialPoolSessionStatusActive,
+				ID:                         303,
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://official.augment.local",
+				Scopes:                     []string{"augment:session"},
+				ExpiresAt:                  handlerTimePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+				Status:                     service.AugmentOfficialPoolSessionStatusActive,
 				EncryptedCredentialPayload: encryptedPayload,
-				CredentialSchemaVersion:   1,
-				KeyVersion:                "key-active",
-				Fingerprint:               "poolrefreshfingerprint",
-				HealthScore:               100,
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "key-active",
+				Fingerprint:                "poolrefreshfingerprint",
+				HealthScore:                100,
 			},
 		},
 		cipher,

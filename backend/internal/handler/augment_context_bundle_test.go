@@ -162,6 +162,86 @@ func TestAugmentGatewayCodebaseRetrievalGuidanceIncludesWorkspaceContext(t *test
 	require.NotContains(t, bodyText, "chat_history_count: 1")
 }
 
+func TestAugmentContextBundleFromChatRequestPrefersIDEStateWorkspaceMetadata(t *testing.T) {
+	fallbackWorkspace := t.TempDir()
+	terminalWorkspace := prepareAugmentContextBundleGitWorkspace(t)
+	t.Setenv("AUGMENT_LEGACY_WORKSPACE_ROOT", fallbackWorkspace)
+
+	req := augmentLegacyChatRequest{
+		RequestNodes: []augmentLegacyChatNode{{
+			ID:   1,
+			Type: intPtr(4),
+			IDEStateNode: &augmentLegacyIDEStateNode{
+				WorkspaceFolders: []augmentLegacyIDEWorkspaceFolder{{
+					FolderRoot:     fallbackWorkspace,
+					RepositoryRoot: fallbackWorkspace,
+				}},
+				CurrentTerminal: &augmentLegacyIDECurrentTerminal{
+					CurrentWorkingDirectory: terminalWorkspace,
+				},
+			},
+		}},
+	}
+
+	bundle := augmentContextBundleFromChatRequest(req)
+	formatted := bundle.Format()
+
+	require.Equal(t, terminalWorkspace, bundle.Workspace.WorkspaceRoot)
+	require.Equal(t, "feature/context-bundle", bundle.Workspace.Branch)
+	require.Equal(t, terminalWorkspace, bundle.Workspace.Worktree)
+	require.Equal(t, []string{fallbackWorkspace}, bundle.WorkspaceFolders)
+	require.Equal(t, terminalWorkspace, bundle.CurrentTerminalCWD)
+	require.True(t, bundle.FileToolWorkspaceMismatch)
+	require.Contains(t, formatted, "workspace_root: "+terminalWorkspace)
+	require.Contains(t, formatted, "workspace_folders: "+fallbackWorkspace)
+	require.Contains(t, formatted, "current_terminal_cwd: "+terminalWorkspace)
+	require.Contains(t, formatted, "file_tool_workspace_mismatch: true")
+}
+
+func TestAugmentGatewayAddsWorkspaceFileToolPolicyForWorktreeMismatch(t *testing.T) {
+	fallbackWorkspace := t.TempDir()
+	terminalWorkspace := prepareAugmentContextBundleGitWorkspace(t)
+	t.Setenv("AUGMENT_LEGACY_WORKSPACE_ROOT", fallbackWorkspace)
+
+	executor := &augmentGatewayRouteFakeExecutor{
+		streamChunks: []service.AugmentGatewayProviderChunk{{TextDelta: "ok", Done: true, ProviderFinishReason: "stop"}},
+	}
+	server, apiKey, _ := newAugmentGatewayRuntimeTestServer(t, executor)
+	defer server.Close()
+
+	resp := postAugmentGatewayRuntimeJSON(t, server, apiKey, "/chat-stream", `{
+		"model":"deepseek-v4-pro",
+		"message":"把方案写到目标 worktree 里",
+		"tool_definitions":[
+			{"name":"read-file","description":"read file","input_schema":{"type":"object"}},
+			{"name":"save-file","description":"save file","input_schema":{"type":"object"}},
+			{"name":"apply_patch","description":"apply patch","input_schema":{"type":"object"}}
+		],
+		"request_nodes":[
+			{
+				"id":1,
+				"type":4,
+				"ide_state_node":{
+					"workspace_folders":[{"folder_root":"`+fallbackWorkspace+`","repository_root":"`+fallbackWorkspace+`"}],
+					"current_terminal":{"terminal_id":0,"current_working_directory":"`+terminalWorkspace+`"}
+				}
+			}
+		]
+	}`)
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	require.NotEmpty(t, decodeAugmentContractNDJSON(t, resp.Body))
+
+	calls := executor.StreamRequests()
+	require.Len(t, calls, 1)
+	bodyText := augmentContextBundleProviderBodyText(t, calls[0].RawBody)
+	require.Contains(t, bodyText, "workspace file access")
+	require.Contains(t, bodyText, "workspace_folders: "+fallbackWorkspace)
+	require.Contains(t, bodyText, "current_terminal_cwd: "+terminalWorkspace)
+	require.Contains(t, bodyText, "outside the open workspace folders")
+	require.Equal(t, terminalWorkspace, calls[0].Metadata["context_workspace_root"])
+}
+
 func prepareAugmentContextBundleGitWorkspace(t *testing.T) string {
 	t.Helper()
 	workspaceRoot := t.TempDir()
@@ -184,4 +264,8 @@ func augmentContextBundleProviderBodyText(t *testing.T, body map[string]any) str
 		parts = append(parts, stringValueOrRawJSON(t, msg["content"]))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func intPtr(v int) *int {
+	return &v
 }
