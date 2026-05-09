@@ -612,6 +612,358 @@ func TestAugmentQuickLoginGrantIncludesPortalInVSCodeDeeplink(t *testing.T) {
 	require.Contains(t, portal, "token=")
 }
 
+func TestBuildAugmentIDEDeeplink(t *testing.T) {
+	t.Parallel()
+
+	t.Run("official passthrough uses requested target", func(t *testing.T) {
+		t.Parallel()
+
+		target, err := resolveAugmentQuickLoginTarget(service.AugmentQuickLoginModeOfficialPassthrough, "cursor")
+		require.NoError(t, err)
+
+		deeplink := buildAugmentIDEDeeplink(
+			target,
+			"grant-123",
+			"state-456",
+			"https://issuer.example/path",
+			"https://portal.example/login?token=abc",
+		)
+		require.Equal(t, "cursor", deeplink.EditorTarget)
+		require.Equal(t, "cursor", deeplink.TargetScheme)
+		require.False(t, deeplink.TargetVerified)
+		require.Equal(t, service.AugmentIDETargetWarningHandlerUnverified, deeplink.TargetWarning)
+
+		parsed, err := url.Parse(deeplink.URL)
+		require.NoError(t, err)
+		require.Equal(t, "cursor", parsed.Scheme)
+		require.Equal(t, "Augment.vscode-augment", parsed.Host)
+		require.Equal(t, "/autoAuth", parsed.Path)
+		require.Equal(t, "grant-123", parsed.Query().Get("grant"))
+		require.Equal(t, "state-456", parsed.Query().Get("state"))
+		require.Equal(t, "quick_login", parsed.Query().Get("source"))
+		require.Equal(t, "https://issuer.example", parsed.Query().Get("issuer"))
+		require.Equal(t, "https://portal.example/login?token=abc", parsed.Query().Get("portal"))
+	})
+
+	t.Run("omitted target falls back to vscode", func(t *testing.T) {
+		t.Parallel()
+
+		target, err := resolveAugmentQuickLoginTarget(service.AugmentQuickLoginModeOfficialPassthrough, "")
+		require.NoError(t, err)
+
+		deeplink := buildAugmentIDEDeeplink(
+			target,
+			"grant-123",
+			"state-456",
+			"https://issuer.example/path",
+			"",
+		)
+		require.Equal(t, "vscode", deeplink.EditorTarget)
+		require.Equal(t, "vscode", deeplink.TargetScheme)
+		require.True(t, deeplink.TargetVerified)
+		require.Empty(t, deeplink.TargetWarning)
+
+		parsed, err := url.Parse(deeplink.URL)
+		require.NoError(t, err)
+		require.Equal(t, "vscode", parsed.Scheme)
+	})
+
+	t.Run("local compat ignores requested target", func(t *testing.T) {
+		t.Parallel()
+
+		target, err := resolveAugmentQuickLoginTarget(service.AugmentQuickLoginModeLocalCompat, "cursor")
+		require.NoError(t, err)
+
+		deeplink := buildAugmentIDEDeeplink(
+			target,
+			"grant-123",
+			"state-456",
+			"https://issuer.example/path",
+			"",
+		)
+		require.Equal(t, "vscode", deeplink.EditorTarget)
+		require.Equal(t, "vscode", deeplink.TargetScheme)
+		require.True(t, deeplink.TargetVerified)
+		require.Empty(t, deeplink.TargetWarning)
+
+		parsed, err := url.Parse(deeplink.URL)
+		require.NoError(t, err)
+		require.Equal(t, "vscode", parsed.Scheme)
+	})
+
+	t.Run("unknown target is rejected for official passthrough", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := resolveAugmentQuickLoginTarget(service.AugmentQuickLoginModeOfficialPassthrough, "unknown-editor")
+		require.ErrorIs(t, err, service.ErrAugmentIDETargetInvalid)
+	})
+}
+
+func TestAugmentQuickLoginGrantEditorTargetOfficialPassthrough(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		nil,
+		nil,
+		nil,
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{
+			"mode":"official_passthrough",
+			"editor_target":"cursor",
+			"official_session_bundle":"{\"tenant_url\":\"https://official.augment.local\",\"access_token\":\"official-access\",\"refresh_token\":\"official-refresh\",\"expires_at\":\"2026-04-21T12:30:00Z\",\"scopes\":[\"augment:session\"]}"
+		}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Equal(t, "cursor", body.Data["editor_target"])
+	require.Equal(t, "cursor", body.Data["target_scheme"])
+	require.Equal(t, false, body.Data["target_verified"])
+	require.Equal(t, service.AugmentIDETargetWarningHandlerUnverified, body.Data["target_warning"])
+	require.Equal(t, body.Data["deeplink_url"], body.Data["vscode_deeplink"])
+
+	deeplink, _ := body.Data["deeplink_url"].(string)
+	parsed, err := url.Parse(deeplink)
+	require.NoError(t, err)
+	require.Equal(t, "cursor", parsed.Scheme)
+}
+
+func TestAugmentQuickLoginGrantEditorTargetOfficialPassthroughVariants(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	testCases := []struct {
+		name           string
+		editorTarget   string
+		expectedScheme string
+		expectedID     string
+		expectedVerify bool
+		expectedWarn   string
+	}{
+		{
+			name:           "vscode stays launch eligible",
+			editorTarget:   "vscode",
+			expectedScheme: "vscode",
+			expectedID:     "vscode",
+			expectedVerify: true,
+			expectedWarn:   "",
+		},
+		{
+			name:           "trae stays visible with handler warning",
+			editorTarget:   "trae",
+			expectedScheme: "trae",
+			expectedID:     "trae",
+			expectedVerify: false,
+			expectedWarn:   service.AugmentIDETargetWarningHandlerUnverified,
+		},
+		{
+			name:           "kiro returns scheme warning",
+			editorTarget:   "kiro",
+			expectedScheme: "kiro",
+			expectedID:     "kiro",
+			expectedVerify: false,
+			expectedWarn:   service.AugmentIDETargetWarningSchemeUnverified,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			user := &service.User{
+				ID:     1,
+				Email:  "admin@sub2api.local",
+				Role:   service.RoleAdmin,
+				Status: service.StatusActive,
+			}
+
+			pluginService := service.NewAugmentPluginService(
+				&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+				augmentPluginAuthStub{},
+				augmentPluginUserStub{user: user},
+				nil,
+				nil,
+				nil,
+			)
+
+			handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService)
+
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+				c.Next()
+			})
+			router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/plugin/augment/quick-login/grant",
+				bytes.NewReader([]byte(`{
+					"mode":"official_passthrough",
+					"editor_target":"`+tc.editorTarget+`",
+					"official_session_bundle":"{\"tenant_url\":\"https://official.augment.local\",\"access_token\":\"official-access\",\"refresh_token\":\"official-refresh\",\"expires_at\":\"2026-04-21T12:30:00Z\",\"scopes\":[\"augment:session\"]}"
+				}`)),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", "http://127.0.0.1:18082")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			var body struct {
+				Data map[string]any `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			require.Equal(t, tc.expectedID, body.Data["editor_target"])
+			require.Equal(t, tc.expectedScheme, body.Data["target_scheme"])
+			require.Equal(t, tc.expectedVerify, body.Data["target_verified"])
+			require.Equal(t, tc.expectedWarn, body.Data["target_warning"])
+
+			deeplink, _ := body.Data["deeplink_url"].(string)
+			parsed, err := url.Parse(deeplink)
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedScheme, parsed.Scheme)
+		})
+	}
+}
+
+func TestAugmentQuickLoginGrantEditorTargetUnknownReturnsValidationError(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		nil,
+		nil,
+		nil,
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{
+			"mode":"official_passthrough",
+			"editor_target":"unknown-editor",
+			"official_session_bundle":"{\"tenant_url\":\"https://official.augment.local\",\"access_token\":\"official-access\"}"
+		}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_IDE_TARGET_INVALID")
+}
+
+func TestAugmentQuickLoginGrantEditorTargetIgnoredInLocalCompat(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		nil,
+		nil,
+		nil,
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{
+			"mode":"local_compat",
+			"editor_target":"cursor"
+		}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Equal(t, "vscode", body.Data["editor_target"])
+	require.Equal(t, "vscode", body.Data["target_scheme"])
+	require.Equal(t, true, body.Data["target_verified"])
+	require.Equal(t, "", body.Data["target_warning"])
+
+	deeplink, _ := body.Data["deeplink_url"].(string)
+	parsed, err := url.Parse(deeplink)
+	require.NoError(t, err)
+	require.Equal(t, "vscode", parsed.Scheme)
+}
+
 func TestBuildAugmentQuickLoginGrantOptionsKeepsGenericSessionInputsInLocalCompatMode(t *testing.T) {
 	t.Parallel()
 
@@ -1031,6 +1383,70 @@ func TestAugmentQuickLoginGrantOfficialPassthroughRespectsRequestedPoolSource(t 
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, []string{"wukong_quick_login"}, store.acquiredSources)
+}
+
+func TestAugmentQuickLoginGrantInvalidEditorTargetDoesNotAcquirePoolLease(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		nil,
+		nil,
+		nil,
+	)
+
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	store := &handlerOfficialPoolSessionStoreStub{
+		credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+			ID:                         401,
+			Source:                     "official_quick_login",
+			TenantOrigin:               "https://official.augment.local",
+			Status:                     service.AugmentOfficialPoolSessionStatusActive,
+			EncryptedCredentialPayload: mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{"access_token": "pool-access"}),
+			CredentialSchemaVersion:    1,
+			KeyVersion:                 "key-active",
+			Fingerprint:                "poolfingerprint-invalid-target",
+			HealthScore:                100,
+		},
+	}
+	poolService := service.NewAugmentOfficialPoolSessionService(store, cipher, "bind-secret")
+
+	handler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil, nil, nil, nil, nil, nil,
+		pluginService,
+		poolService,
+	)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/plugin/augment/quick-login/grant",
+		bytes.NewReader([]byte(`{"mode":"official_passthrough","source":"official_quick_login","editor_target":"unknown-editor"}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_IDE_TARGET_INVALID")
+	require.Empty(t, store.acquiredSources)
 }
 
 func TestAugmentSessionRefreshOfficialPassthroughPoolRequiresBearer(t *testing.T) {

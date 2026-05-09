@@ -24,11 +24,17 @@ type augmentQuickLoginGrantResponse struct {
 	PortalURL      string   `json:"portal_url,omitempty"`
 	Scopes         []string `json:"scopes"`
 	VSCodeDeeplink string   `json:"vscode_deeplink,omitempty"`
+	DeeplinkURL    string   `json:"deeplink_url"`
+	EditorTarget   string   `json:"editor_target"`
+	TargetScheme   string   `json:"target_scheme"`
+	TargetVerified bool     `json:"target_verified"`
+	TargetWarning  string   `json:"target_warning"`
 }
 
 type augmentQuickLoginGrantRequest struct {
 	Mode                  string `json:"mode"`
 	Source                string `json:"source"`
+	EditorTarget          string `json:"editor_target"`
 	OfficialTenantURL     string `json:"official_tenant_url"`
 	OfficialAccessToken   string `json:"official_access_token"`
 	OfficialRefreshToken  string `json:"official_refresh_token"`
@@ -69,6 +75,14 @@ type augmentAPIKeyVerifyRequest struct {
 	APIKey string `json:"api_key" binding:"required"`
 }
 
+type augmentQuickLoginDeeplink struct {
+	URL            string
+	EditorTarget   string
+	TargetScheme   string
+	TargetVerified bool
+	TargetWarning  string
+}
+
 // AugmentQuickLoginGrant issues a short-lived single-use grant for the local Augment quick-login flow.
 // POST /api/v1/plugin/augment/quick-login/grant
 func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
@@ -90,6 +104,11 @@ func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
 	}
 
 	options := buildAugmentQuickLoginGrantOptions(req, h.augmentTenantURL(c))
+	target, err := resolveAugmentQuickLoginTarget(options.Mode, req.EditorTarget)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	var poolLease *service.AugmentOfficialPoolSessionLease
 	if options.Mode == service.AugmentQuickLoginModeOfficialPassthrough && options.OfficialSessionBundle == nil && h != nil && h.augmentOfficialPoolService != nil {
 		var err error
@@ -123,6 +142,8 @@ func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
 		return
 	}
 
+	deeplink := buildAugmentIDEDeeplink(target, grant.Grant, grant.State, h.augmentTenantURL(c), grant.PortalURL)
+
 	response.Success(c, augmentQuickLoginGrantResponse{
 		Grant:          grant.Grant,
 		State:          grant.State,
@@ -130,7 +151,12 @@ func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
 		TenantURL:      grant.TenantURL,
 		PortalURL:      grant.PortalURL,
 		Scopes:         grant.Scopes,
-		VSCodeDeeplink: buildAugmentVSCodeDeeplink(grant.Grant, grant.State, h.augmentTenantURL(c), grant.PortalURL),
+		VSCodeDeeplink: deeplink.URL,
+		DeeplinkURL:    deeplink.URL,
+		EditorTarget:   deeplink.EditorTarget,
+		TargetScheme:   deeplink.TargetScheme,
+		TargetVerified: deeplink.TargetVerified,
+		TargetWarning:  deeplink.TargetWarning,
 	})
 }
 
@@ -412,18 +438,21 @@ func normalizeAbsoluteURL(raw string, originOnly bool) string {
 	return strings.TrimRight(parsed.String(), "/")
 }
 
-func buildAugmentVSCodeDeeplink(grant, state, issuer, portal string) string {
-	values := url.Values{}
-	values.Set("grant", strings.TrimSpace(grant))
-	values.Set("state", strings.TrimSpace(state))
-	values.Set("source", "quick_login")
-	if normalizedIssuer := normalizeAbsoluteURL(issuer, true); normalizedIssuer != "" {
-		values.Set("issuer", normalizedIssuer)
+func buildAugmentIDEDeeplink(target service.AugmentIDETarget, grant, state, issuer, portal string) augmentQuickLoginDeeplink {
+	return augmentQuickLoginDeeplink{
+		URL:            service.FormatAugmentIDEQuickLoginDeeplink(target, grant, state, issuer, portal),
+		EditorTarget:   target.ID,
+		TargetScheme:   target.Scheme,
+		TargetVerified: target.LaunchEligible,
+		TargetWarning:  target.Warning,
 	}
-	if normalizedPortal := normalizeAbsoluteURL(portal, false); normalizedPortal != "" {
-		values.Set("portal", normalizedPortal)
+}
+
+func resolveAugmentQuickLoginTarget(mode, editorTarget string) (service.AugmentIDETarget, error) {
+	if mode != service.AugmentQuickLoginModeOfficialPassthrough {
+		return service.ResolveAugmentIDETarget("")
 	}
-	return "vscode://Augment.vscode-augment/autoAuth?" + values.Encode()
+	return service.ResolveAugmentIDETarget(editorTarget)
 }
 
 func buildAugmentQuickLoginGrantOptions(req augmentQuickLoginGrantRequest, tenantURL string) service.AugmentQuickLoginGrantOptions {
