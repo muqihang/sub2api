@@ -125,8 +125,15 @@ type LogSamplingConfig struct {
 }
 
 type GeminiConfig struct {
-	OAuth GeminiOAuthConfig `mapstructure:"oauth"`
-	Quota GeminiQuotaConfig `mapstructure:"quota"`
+	OAuth                                GeminiOAuthConfig `mapstructure:"oauth"`
+	Quota                                GeminiQuotaConfig `mapstructure:"quota"`
+	ProductionMode                       bool              `mapstructure:"production_mode"`
+	RequireSafeOAuthSessionStore         bool              `mapstructure:"require_safe_oauth_session_store"`
+	AllowProjectIDFallbackToAIStudio     bool              `mapstructure:"allow_project_id_fallback_to_ai_studio"`
+	AllowUnauthorizedClientRetryFallback bool              `mapstructure:"allow_unauthorized_client_retry_fallback"`
+	AllowGoogleOneDefaultTierFallback    bool              `mapstructure:"allow_google_one_default_tier_fallback"`
+	TokenCacheMode                       string            `mapstructure:"token_cache_mode"`
+	RequireThoughtSignatureSessionSafety bool              `mapstructure:"require_thought_signature_session_safety"`
 }
 
 type GeminiOAuthConfig struct {
@@ -1895,6 +1902,13 @@ func setDefaults() {
 	viper.SetDefault("gemini.oauth.client_secret", "")
 	viper.SetDefault("gemini.oauth.scopes", "")
 	viper.SetDefault("gemini.quota.policy", "")
+	viper.SetDefault("gemini.production_mode", false)
+	viper.SetDefault("gemini.require_safe_oauth_session_store", false)
+	viper.SetDefault("gemini.allow_project_id_fallback_to_ai_studio", true)
+	viper.SetDefault("gemini.allow_unauthorized_client_retry_fallback", true)
+	viper.SetDefault("gemini.allow_google_one_default_tier_fallback", true)
+	viper.SetDefault("gemini.token_cache_mode", "plaintext")
+	viper.SetDefault("gemini.require_thought_signature_session_safety", false)
 
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
@@ -1974,6 +1988,26 @@ func (c *Config) Validate() error {
 	geminiClientSecret := strings.TrimSpace(c.Gemini.OAuth.ClientSecret)
 	if (geminiClientID == "") != (geminiClientSecret == "") {
 		return fmt.Errorf("gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty")
+	}
+	geminiTokenCacheMode := strings.ToLower(strings.TrimSpace(c.Gemini.TokenCacheMode))
+	switch geminiTokenCacheMode {
+	case "plaintext", "disabled", "encrypted":
+	default:
+		return fmt.Errorf("gemini.token_cache_mode must be one of: plaintext/disabled/encrypted")
+	}
+	if c.Gemini.ProductionMode {
+		if geminiTokenCacheMode == "plaintext" {
+			return fmt.Errorf("gemini.production_mode rejects token_cache_mode=plaintext")
+		}
+		if !c.Gemini.RequireSafeOAuthSessionStore || !c.Gemini.RequireThoughtSignatureSessionSafety {
+			return fmt.Errorf("gemini.production_mode requires safe OAuth session topology")
+		}
+		if c.Gemini.AllowProjectIDFallbackToAIStudio {
+			return fmt.Errorf("gemini.production_mode requires allow_project_id_fallback_to_ai_studio=false")
+		}
+		if c.Gemini.AllowUnauthorizedClientRetryFallback {
+			return fmt.Errorf("gemini.production_mode requires allow_unauthorized_client_retry_fallback=false")
+		}
 	}
 
 	if strings.TrimSpace(c.Server.FrontendURL) != "" {

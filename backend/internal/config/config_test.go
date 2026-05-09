@@ -1770,6 +1770,76 @@ func TestOpenAICoreProductionRequiresOAuthSessionMode(t *testing.T) {
 	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires oauth_session_store!=memory or oauth_callback_sticky_single_instance=true")
 }
 
+func TestGeminiProductionRejectsPlaintextTokenCache(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "plaintext"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode rejects token_cache_mode=plaintext")
+}
+
+func TestGeminiProductionRequiresSafeSessionTopology(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = false
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "encrypted"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires safe OAuth session topology")
+}
+
+func TestGeminiProductionRejectsCompatFallbacks(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = true
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "encrypted"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires allow_project_id_fallback_to_ai_studio=false")
+
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = true
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires allow_unauthorized_client_retry_fallback=false")
+}
+
+func TestGeminiConfigRejectsInvalidTokenCacheMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.TokenCacheMode = "legacy"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.token_cache_mode must be one of: plaintext/disabled/encrypted")
+}
+
 func TestOpenAICoreProductionRequiresCredentialEncryptionKey(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

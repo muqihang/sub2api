@@ -1081,6 +1081,39 @@ turnstile:
 # Default: Uses Gemini CLI's public OAuth credentials (same as Google's official CLI tool)
 # 默认：使用 Gemini CLI 的公开 OAuth 凭证（与 Google 官方 CLI 工具相同）
 gemini:
+  # Gemini v0.3 hardening gates.
+  # Gemini v0.3 硬化门禁。
+  #
+  # Local compatibility profile (default):
+  # 本地兼容 profile（默认）：
+  # - 保留当前明文 token cache 的读写行为，便于本地迁移和兼容测试
+  # - 允许 project_id / OAuth client 的兼容回退
+  production_mode: false
+  require_safe_oauth_session_store: false
+  require_thought_signature_session_safety: false
+  allow_project_id_fallback_to_ai_studio: true
+  allow_unauthorized_client_retry_fallback: true
+  allow_google_one_default_tier_fallback: true
+  #
+  # Token cache read/write policy:
+  # Token cache 读写策略：
+  # - plaintext: read + write plaintext Gemini token cache entries. Local compatibility only.
+  # - plaintext: 读写明文 Gemini token cache，仅限本地兼容/迁移环境。
+  # - disabled: do not read or write Gemini token cache entries.
+  # - disabled: 不读取也不写入 Gemini token cache。
+  # - encrypted: reserved for a future encrypted cache implementation; do not assume active runtime support yet.
+  # - encrypted: 预留给后续加密缓存实现；当前不要假定运行时已经启用该能力。
+  token_cache_mode: "plaintext"
+  #
+  # Production hardening profile:
+  # 生产硬化 profile：
+  # production_mode: true
+  # require_safe_oauth_session_store: true
+  # require_thought_signature_session_safety: true
+  # allow_project_id_fallback_to_ai_studio: false
+  # allow_unauthorized_client_retry_fallback: false
+  # allow_google_one_default_tier_fallback: false
+  # token_cache_mode: "disabled"
   oauth:
     # OAuth 客户端配置说明：
     # 1) 留空 client_id/client_secret：使用 Gemini CLI 内置 OAuth Client（其 client_secret 需通过环境变量注入）
