@@ -58,6 +58,17 @@ type GeminiOAuthService struct {
 	cfg          *config.Config
 }
 
+func (s *GeminiOAuthService) credentialAccessor() *GeminiCredentialsAccessor {
+	if s == nil {
+		return NewGeminiCredentialsAccessor(nil, nil)
+	}
+	return NewGeminiCredentialsAccessor(s.cfg, nil)
+}
+
+func (s *GeminiOAuthService) CredentialAccessor() *GeminiCredentialsAccessor {
+	return s.credentialAccessor()
+}
+
 type GeminiOAuthCapabilities struct {
 	AIStudioOAuthEnabled bool     `json:"ai_studio_oauth_enabled"`
 	RequiredRedirectURIs []string `json:"required_redirect_uris"`
@@ -403,10 +414,9 @@ func (s *GeminiOAuthService) RefreshAccountGoogleOneTier(
 		return "", nil, nil, fmt.Errorf("not a google_one OAuth account")
 	}
 
-	// 获取 access_token
-	accessToken, ok := account.Credentials["access_token"].(string)
-	if !ok || accessToken == "" {
-		return "", nil, nil, fmt.Errorf("missing access_token")
+	accessToken, err := s.credentialAccessor().GeminiAccessToken(account)
+	if err != nil {
+		return "", nil, nil, err
 	}
 
 	// 获取 proxy URL
@@ -735,7 +745,15 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		return nil, fmt.Errorf("account is not a Gemini OAuth account")
 	}
 
-	refreshToken := account.GetCredential("refresh_token")
+	credentials := s.credentialAccessor()
+	refreshToken := ""
+	var err error
+	if rawRefreshToken := strings.TrimSpace(account.GetCredential("refresh_token")); rawRefreshToken != "" {
+		refreshToken, err = credentials.GeminiRefreshToken(account)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, fmt.Errorf("no refresh token available")
 	}
@@ -787,8 +805,8 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	tokenInfo.OAuthType = oauthType
 
 	// Preserve account's project_id when present.
-	existingProjectID := strings.TrimSpace(account.GetCredential("project_id"))
-	if existingProjectID != "" {
+	existingProjectID, err := credentials.GeminiProjectID(account)
+	if err == nil && strings.TrimSpace(existingProjectID) != "" {
 		tokenInfo.ProjectID = existingProjectID
 	}
 
@@ -913,6 +931,11 @@ func (s *GeminiOAuthService) BuildAccountCredentials(tokenInfo *GeminiTokenInfo)
 		}
 	}
 	return creds
+}
+
+func (s *GeminiOAuthService) BuildProtectedAccountCredentials(tokenInfo *GeminiTokenInfo) (map[string]any, error) {
+	creds := s.BuildAccountCredentials(tokenInfo)
+	return s.credentialAccessor().ProtectCredentials(creds)
 }
 
 func (s *GeminiOAuthService) Stop() {

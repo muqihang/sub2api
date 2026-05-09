@@ -56,13 +56,22 @@ func (a *Account) IsVertexServiceAccount() bool {
 }
 
 func (a *Account) VertexProjectID() string {
+	return a.VertexProjectIDWithAccessor(nil)
+}
+
+func (a *Account) VertexProjectIDWithAccessor(accessor *GeminiCredentialsAccessor) string {
 	if a == nil {
 		return ""
+	}
+	if accessor != nil {
+		if v, err := accessor.GeminiProjectID(a); err == nil && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
 	}
 	if v := strings.TrimSpace(a.GetCredential("project_id")); v != "" {
 		return v
 	}
-	key, err := parseVertexServiceAccountKey(a)
+	key, err := parseVertexServiceAccountKeyWithAccessor(a, accessor)
 	if err == nil {
 		return strings.TrimSpace(key.ProjectID)
 	}
@@ -90,8 +99,20 @@ func (a *Account) VertexLocation(model string) string {
 }
 
 func parseVertexServiceAccountKey(account *Account) (*vertexServiceAccountKey, error) {
+	return parseVertexServiceAccountKeyWithAccessor(account, nil)
+}
+
+func parseVertexServiceAccountKeyWithAccessor(account *Account, accessor *GeminiCredentialsAccessor) (*vertexServiceAccountKey, error) {
 	if account == nil || account.Credentials == nil {
 		return nil, errors.New("service account credentials not configured")
+	}
+
+	if accessor != nil {
+		raw, err := accessor.VertexServiceAccountJSON(account)
+		if err != nil {
+			return nil, err
+		}
+		return parseVertexServiceAccountJSON([]byte(raw))
 	}
 
 	if raw := strings.TrimSpace(account.GetCredential("service_account_json")); raw != "" {
