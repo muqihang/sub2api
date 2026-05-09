@@ -135,7 +135,9 @@ func (h *AuthHandler) AugmentQuickLoginGrant(c *gin.Context) {
 		options,
 	)
 	if poolLease != nil {
-		_ = poolLease.Release(c.Request.Context(), err == nil, "grant_failed")
+		releaseCtx, cancel := augmentPoolLeaseReleaseContext()
+		_ = poolLease.Release(releaseCtx, err == nil, "grant_failed")
+		cancel()
 	}
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -236,7 +238,9 @@ func (h *AuthHandler) AugmentSessionRefresh(c *gin.Context) {
 		options,
 	)
 	if poolLease != nil {
-		_ = poolLease.Release(c.Request.Context(), err == nil, "refresh_failed")
+		releaseCtx, cancel := augmentPoolLeaseReleaseContext()
+		_ = poolLease.Release(releaseCtx, err == nil, "refresh_failed")
+		cancel()
 	}
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -417,6 +421,10 @@ func requestOrigin(c *gin.Context) string {
 	}
 
 	return scheme + "://" + host
+}
+
+func augmentPoolLeaseReleaseContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
 }
 
 func normalizeAbsoluteURL(raw string, originOnly bool) string {

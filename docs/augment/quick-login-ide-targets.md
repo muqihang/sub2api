@@ -47,3 +47,31 @@ Without an override on an unverified target, the backend still returns a determi
 2. If the scheme is not yet verified in this repo, capture fresh evidence first. Do not enable the override based on guesswork.
 3. If you opt into an override for a non-default target, verify both deeplink open and Augment `autoAuth` completion before exposing that target to users as auto-launch-ready.
 4. If any target remains warning-only, keep copy-link/manual-open available in the UI and do not treat it as production-ready.
+
+## Manual Validation Results
+
+Validation run date: 2026-05-09 (local development machine).
+
+### Runtime notes
+
+- Sequential `official_passthrough` grant requests for `vscode`, `cursor`, and `trae` all succeeded after fixing pool lease release.
+- The single local pool session was confirmed to release correctly after each grant:
+  - `leased_at` / `leased_until` returned to `NULL`
+  - `last_used_at` / `last_success_at` advanced as expected
+- Parallel grant requests against a single pool session can still race, and the losing requests may correctly receive `AUGMENT_OFFICIAL_POOL_SESSION_UNAVAILABLE`.
+
+### Verified results
+
+| Target | Grant response | Deep link opened app | Frontmost app observed | Backend callback / autoAuth completion observed in this pass | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `vscode` | success, `target_verified=true`, no warning | yes | yes (`Code`) | not directly observed from backend logs during this pass | Existing production target remains the only auto-launch-ready default. |
+| `cursor` | success, `target_verified=false`, `target_warning=handler_unverified` | yes | yes (`Cursor`) | not directly observed from backend logs during this pass | Scheme/host/path can launch Cursor, but handler verification status stays unchanged. |
+| `trae` | success, `target_verified=false`, `target_warning=handler_unverified` | yes | yes (`Trae`) | not directly observed from backend logs during this pass | Scheme/host/path can launch Trae, but handler verification status stays unchanged. |
+
+### Not manually validated in this pass
+
+- `kiro`
+- `windsurf`
+- `qodo`
+- `codebuddy`
+- `antigravity`

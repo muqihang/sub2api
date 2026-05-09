@@ -348,8 +348,8 @@ func (r *augmentOfficialPoolSessionRepository) ReleaseLease(ctx context.Context,
 			last_used_at = CASE WHEN $2 THEN $1 ELSE last_used_at END,
 			last_success_at = CASE WHEN $2 THEN $1 ELSE last_success_at END,
 			last_error_at = CASE WHEN $2 THEN last_error_at ELSE $1 END,
-			last_error_code = CASE WHEN $2 THEN NULL ELSE $3 END,
-			cooldown_until = CASE WHEN $2 THEN NULL ELSE $4 END,
+			last_error_code = CASE WHEN $2 THEN NULL::text ELSE $3::text END,
+			cooldown_until = CASE WHEN $2 THEN NULL::timestamptz ELSE $4::timestamptz END,
 			updated_at = $1
 		WHERE id = $5
 		RETURNING
