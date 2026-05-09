@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import QuickLoginView from '@/views/plugin/augment/QuickLoginView.vue'
+import { AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY } from '@/utils/augmentIdeTargets'
 
 const mockRequestGrant = vi.fn()
 const mockCreateBindIntent = vi.fn()
@@ -9,11 +11,11 @@ const mockCreatePoolBindIntent = vi.fn()
 const mockBindPoolSession = vi.fn()
 const mockCopyToClipboard = vi.fn()
 const mockShowError = vi.fn()
-let mockRouteQuery: Record<string, unknown> = {}
+const mockRoute = reactive<{ query: Record<string, unknown> }>({ query: {} })
 let mockIsAdmin = false
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: mockRouteQuery }),
+  useRoute: () => mockRoute,
 }))
 
 vi.mock('vue-i18n', async (importOriginal) => {
@@ -59,7 +61,8 @@ vi.mock('@/stores', () => ({
 describe('QuickLoginView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockRouteQuery = {}
+    window.localStorage.clear()
+    mockRoute.query = {}
     mockIsAdmin = false
   })
 
@@ -86,6 +89,7 @@ describe('QuickLoginView', () => {
     expect(mockRequestGrant).toHaveBeenCalledWith({
       mode: 'official_passthrough',
       source: 'official_quick_login',
+      editor_target: 'vscode',
     })
     expect(mockCreateBindIntent).not.toHaveBeenCalled()
     expect(mockBindOfficialSession).not.toHaveBeenCalled()
@@ -103,6 +107,49 @@ describe('QuickLoginView', () => {
     expect(mockShowError).not.toHaveBeenCalled()
   })
 
+  it('prefers the query editor target over localStorage when official passthrough is active', async () => {
+    window.localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, 'cursor')
+    mockRoute.query = {
+      editor_target: 'trae',
+    }
+
+    const wrapper = mount(QuickLoginView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="editor-target-trae"]').attributes('aria-pressed')).toBe('true')
+    expect(window.localStorage.getItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY)).toBe('cursor')
+  })
+
+  it('falls back to localStorage when the route query does not include a valid editor target', async () => {
+    window.localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, 'cursor')
+    mockRoute.query = {
+      editor_target: 'unknown-target',
+    }
+
+    const wrapper = mount(QuickLoginView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="editor-target-cursor"]').attributes('aria-pressed')).toBe('true')
+  })
+
   it('does not render internal capture controls unless the emergency admin gate is enabled', async () => {
     const wrapper = mount(QuickLoginView, {
       global: {
@@ -117,7 +164,7 @@ describe('QuickLoginView', () => {
     expect(wrapper.text()).not.toContain('plugin.augment.quickLogin.internalCapture.title')
 
     mockIsAdmin = true
-    mockRouteQuery = {
+    mockRoute.query = {
       emergency_local_compat: '1',
     }
 
@@ -136,8 +183,41 @@ describe('QuickLoginView', () => {
     expect(adminWrapper.text()).toContain('plugin.augment.quickLogin.modes.localCompat.title')
   })
 
+  it('ignores stale editor target query and localStorage values in local compat mode', async () => {
+    window.localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, 'cursor')
+    mockIsAdmin = true
+    mockRoute.query = {
+      emergency_local_compat: '1',
+      editor_target: 'trae',
+    }
+    mockRequestGrant.mockResolvedValue({
+      vscode_deeplink: 'vscode://Augment.vscode-augment/autoAuth?grant=g-local&state=s-local',
+    })
+
+    const wrapper = mount(QuickLoginView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+        },
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-test="mode-local_compat"]').trigger('click')
+    await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="editor-target-trae"]').exists()).toBe(false)
+    expect(mockRequestGrant).toHaveBeenCalledWith({
+      mode: 'local_compat',
+      source: 'official_quick_login',
+    })
+  })
+
   it('never renders secret field names in diagnostics', () => {
-    mockRouteQuery = {
+    mockRoute.query = {
       access_token: 'raw-access-token',
       refresh_token: 'raw-refresh-token',
       session_bundle: '{"access_token":"bundle-access"}',
@@ -192,9 +272,55 @@ describe('QuickLoginView', () => {
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.wukong')
   })
 
+  it('shows a manual open path and suppresses auto-launch when the backend warns about the target', async () => {
+    const hrefSetter = vi.fn()
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        get href() {
+          return ''
+        },
+        set href(value: string) {
+          hrefSetter(value)
+        },
+      },
+    })
+
+    mockRequestGrant.mockResolvedValue({
+      deeplink_url: 'cursor://Augment.vscode-augment/autoAuth?grant=g3&state=s3',
+      editor_target: 'cursor',
+      target_verified: false,
+      target_warning: 'Cursor handler is not verified for auto-launch.',
+    })
+
+    const wrapper = mount(QuickLoginView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+        },
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-test="editor-target-cursor"]').trigger('click')
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(hrefSetter).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Cursor handler is not verified for auto-launch.')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.manualOpen')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.copyHint')
+    expect((wrapper.get('input[readonly]').element as HTMLInputElement).value).toBe(
+      'cursor://Augment.vscode-augment/autoAuth?grant=g3&state=s3',
+    )
+  })
+
   it('binds callback payload into a pool session before requesting grant in admin capture mode', async () => {
     mockIsAdmin = true
-    mockRouteQuery = {
+    mockRoute.query = {
       emergency_local_compat: '1',
       capture_target: 'pool_session',
       official_tenant_url: 'https://official.augment.local',
@@ -264,6 +390,97 @@ describe('QuickLoginView', () => {
     expect(mockRequestGrant).toHaveBeenCalledWith({
       mode: 'official_passthrough',
       source: 'official_quick_login',
+      editor_target: 'vscode',
     })
+  })
+
+  it('reacts to same-view editor target query changes and updates the selected target', async () => {
+    window.localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, 'cursor')
+
+    const wrapper = mount(QuickLoginView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+        },
+      },
+    })
+
+    await flushPromises()
+    expect(wrapper.get('[data-test="editor-target-cursor"]').attributes('aria-pressed')).toBe('true')
+
+    mockRoute.query = {
+      editor_target: 'trae',
+    }
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="editor-target-trae"]').attributes('aria-pressed')).toBe('true')
+    expect(window.localStorage.getItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY)).toBe('cursor')
+  })
+
+  it('clears a stale manual-open deeplink when a follow-up request fails', async () => {
+    mockRequestGrant
+      .mockResolvedValueOnce({
+        deeplink_url: 'cursor://Augment.vscode-augment/autoAuth?grant=g4&state=s4',
+        editor_target: 'cursor',
+        target_verified: false,
+        target_warning: 'Cursor handler is not verified for auto-launch.',
+      })
+      .mockRejectedValueOnce(new Error('network failed'))
+
+    const wrapper = mount(QuickLoginView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+        },
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('[data-test="editor-target-cursor"]').trigger('click')
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Cursor handler is not verified for auto-launch.')
+    expect(wrapper.find('input[readonly]').exists()).toBe(true)
+
+    await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('input[readonly]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Cursor handler is not verified for auto-launch.')
+    expect(wrapper.text()).not.toContain('plugin.augment.quickLogin.copyHint')
+  })
+
+  it('clears the old deeplink when the user changes the selected IDE after a successful grant', async () => {
+    mockRequestGrant.mockResolvedValue({
+      vscode_deeplink: 'vscode://Augment.vscode-augment/autoAuth?grant=g5&state=s5',
+    })
+
+    const wrapper = mount(QuickLoginView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+        },
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('input[readonly]').exists()).toBe(true)
+
+    await wrapper.get('[data-test="editor-target-cursor"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('input[readonly]').exists()).toBe(false)
   })
 })

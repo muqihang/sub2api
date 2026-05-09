@@ -6491,11 +6491,40 @@ export default {
         continue: 'Continue',
         requesting: 'Requesting',
         launch: 'Open Extension',
+        manualOpen: 'Open IDE Manually',
         copy: 'Copy Deeplink',
+        copyHint: 'If the IDE did not open automatically, copy the deeplink above and open it manually.',
         copySuccess: 'Deeplink copied',
         requestFailed: 'Failed to request quick login',
         missingDeeplink: 'Backend did not return a deeplink',
         ready: 'Deeplink is ready',
+        editorTargetTitle: 'Target IDE',
+        editorTargetDescription: 'Choose which IDE should receive the Augment auth deeplink. Unverified targets stay on the manual-open path.',
+        editorStatus: {
+          verified: 'Verified',
+          needsVerification: 'Needs Verification',
+          requiresOverride: 'Requires Override'
+        },
+        editors: {
+          vscode: 'VS Code',
+          cursor: 'Cursor',
+          kiro: 'Kiro',
+          trae: 'Trae',
+          windsurf: 'Windsurf',
+          qodo: 'Qodo',
+          codebuddy: 'CodeBuddy',
+          antigravity: 'Antigravity'
+        },
+        editorDescriptions: {
+          vscode: 'Current default target that can auto-launch.',
+          cursor: 'Scheme is known, but the Augment handler still needs verification.',
+          kiro: 'Visible for selection and manual open only until verified.',
+          trae: 'Scheme is known, but the Augment handler still needs verification.',
+          windsurf: 'Visible for selection and manual open only until verified.',
+          qodo: 'Visible for selection and manual open only until verified.',
+          codebuddy: 'Visible for selection and manual open only until verified.',
+          antigravity: 'Visible for selection and manual open only until verified.'
+        },
         modes: {
           officialPassthrough: {
             title: 'Official Passthrough',

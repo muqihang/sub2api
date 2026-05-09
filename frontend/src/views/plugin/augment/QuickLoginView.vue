@@ -28,7 +28,7 @@
               :disabled="!deeplinkUrl"
               @click="launchDeeplink"
             >
-              {{ t('plugin.augment.quickLogin.launch') }}
+              {{ needsManualOpen ? t('plugin.augment.quickLogin.manualOpen') : t('plugin.augment.quickLogin.launch') }}
             </button>
             <button
               type="button"
@@ -44,6 +44,12 @@
             v-model="selectedMode"
             v-model:source="selectedSource"
             :show-local-compat="showLocalCompat"
+          />
+
+          <QuickLoginEditorSelector
+            v-if="selectedMode === 'official_passthrough'"
+            :model-value="selectedEditorTarget"
+            @update:model-value="handleEditorTargetChange"
           />
 
           <section
@@ -115,11 +121,29 @@
             <p class="text-sm font-medium text-emerald-800 dark:text-emerald-200">
               {{ t('plugin.augment.quickLogin.ready') }}
             </p>
+            <p
+              v-if="targetWarning"
+              class="text-sm text-amber-700 dark:text-amber-200"
+            >
+              {{ targetWarning }}
+            </p>
             <input
               class="input w-full font-mono text-xs"
               :value="deeplinkUrl"
               readonly
             />
+            <p
+              v-if="needsManualOpen"
+              class="text-sm text-emerald-800 dark:text-emerald-200"
+            >
+              {{ t('plugin.augment.quickLogin.manualOpen') }}
+            </p>
+            <p
+              v-if="needsManualOpen"
+              class="text-xs text-emerald-700/80 dark:text-emerald-200/80"
+            >
+              {{ t('plugin.augment.quickLogin.copyHint') }}
+            </p>
           </div>
         </div>
       </section>
@@ -128,10 +152,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import QuickLoginEditorSelector from '@/components/plugin/augment/QuickLoginEditorSelector.vue'
 import QuickLoginModeSelector from '@/components/plugin/augment/QuickLoginModeSelector.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { requestAugmentQuickLoginGrant } from '@/api/augment'
@@ -141,11 +166,16 @@ import { extractApiErrorMessage } from '@/utils/apiError'
 import {
   buildAugmentOfficialBindPayload,
   buildAugmentQuickLoginGrantPayload,
+  extractAugmentQuickLoginTargetWarning,
   extractAugmentOfficialTenantAllowlist,
+  persistAugmentQuickLoginEditorTarget,
   isAugmentLocalCompatGateEnabled,
   resolveAugmentQuickLoginDeeplink,
+  resolveAugmentQuickLoginEditorTarget,
+  shouldAutoLaunchAugmentQuickLogin,
   summarizeAugmentQuickLoginDiagnostics,
 } from '@/utils/augmentQuickLogin'
+import type { AugmentQuickLoginEditorTarget } from '@/utils/augmentIdeTargets'
 
 const route = useRoute()
 const appStore = useAppStore()
@@ -156,10 +186,18 @@ const { t } = useI18n()
 const isGranting = ref(false)
 const grantError = ref('')
 const deeplinkUrl = ref('')
+const targetWarning = ref('')
+const targetVerified = ref(true)
 const consentChecked = ref(false)
 const selectedMode = ref<'official_passthrough' | 'local_compat'>('official_passthrough')
 const selectedSource = ref<'official_quick_login' | 'wukong_quick_login'>(
   route.query.source === 'wukong_quick_login' ? 'wukong_quick_login' : 'official_quick_login',
+)
+const selectedEditorTarget = ref<AugmentQuickLoginEditorTarget>(
+  resolveAugmentQuickLoginEditorTarget({
+    mode: selectedMode.value,
+    query: route.query,
+  }),
 )
 
 const showLocalCompat = computed(() =>
@@ -178,8 +216,10 @@ const grantPayloadDiagnostics = computed(() =>
   summarizeAugmentQuickLoginDiagnostics({
     ...grantPayload.value,
     source: selectedSource.value,
+    editor_target: selectedMode.value === 'official_passthrough' ? selectedEditorTarget.value : '',
   })
 )
+const needsManualOpen = computed(() => targetWarning.value.length > 0 || !targetVerified.value)
 
 const consentBody = computed(() =>
   selectedSource.value === 'wukong_quick_login'
@@ -187,9 +227,42 @@ const consentBody = computed(() =>
     : t('plugin.augment.quickLogin.consent.official')
 )
 
+watch(
+  () => route.query.editor_target,
+  () => {
+    if (selectedMode.value !== 'official_passthrough') {
+      return
+    }
+    selectedEditorTarget.value = resolveAugmentQuickLoginEditorTarget({
+      mode: selectedMode.value,
+      query: route.query,
+    })
+    resetGrantState()
+  }
+)
+
+watch(
+  () => selectedMode.value,
+  (mode) => {
+    selectedEditorTarget.value = resolveAugmentQuickLoginEditorTarget({
+      mode,
+      query: route.query,
+    })
+    resetGrantState()
+  }
+)
+
+watch(
+  () => selectedSource.value,
+  () => {
+    resetGrantState()
+  }
+)
+
 async function handleRequestGrant(): Promise<void> {
   isGranting.value = true
   grantError.value = ''
+  resetGrantState()
 
   try {
     if (isPoolCaptureMode.value && selectedMode.value === 'official_passthrough') {
@@ -212,10 +285,18 @@ async function handleRequestGrant(): Promise<void> {
       }
     }
 
-    const response = await requestAugmentQuickLoginGrant({
-      mode: selectedMode.value,
-      source: selectedSource.value,
-    })
+    const response = await requestAugmentQuickLoginGrant(
+      selectedMode.value === 'official_passthrough'
+        ? {
+            mode: selectedMode.value,
+            source: selectedSource.value,
+            editor_target: selectedEditorTarget.value,
+          }
+        : {
+            mode: selectedMode.value,
+            source: selectedSource.value,
+          }
+    )
     const deeplink = resolveAugmentQuickLoginDeeplink(response)
 
     if (!deeplink) {
@@ -223,8 +304,12 @@ async function handleRequestGrant(): Promise<void> {
     }
 
     deeplinkUrl.value = deeplink
+    targetWarning.value = extractAugmentQuickLoginTargetWarning(response)
+    targetVerified.value = typeof response.target_verified === 'boolean' ? response.target_verified : true
     await copyToClipboard(deeplink, t('plugin.augment.quickLogin.copySuccess'))
-    launchDeeplink()
+    if (shouldAutoLaunchAugmentQuickLogin(response)) {
+      launchDeeplink()
+    }
   } catch (error: unknown) {
     const message = extractApiErrorMessage(error, t('plugin.augment.quickLogin.requestFailed'))
     grantError.value = message
@@ -232,6 +317,21 @@ async function handleRequestGrant(): Promise<void> {
   } finally {
     isGranting.value = false
   }
+}
+
+function handleEditorTargetChange(value: AugmentQuickLoginEditorTarget): void {
+  if (selectedEditorTarget.value === value) {
+    return
+  }
+  selectedEditorTarget.value = value
+  persistAugmentQuickLoginEditorTarget(value)
+  resetGrantState()
+}
+
+function resetGrantState(): void {
+  deeplinkUrl.value = ''
+  targetWarning.value = ''
+  targetVerified.value = true
 }
 
 function launchDeeplink(): void {

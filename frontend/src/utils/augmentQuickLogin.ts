@@ -1,4 +1,9 @@
 import type { LocationQuery, LocationQueryValue } from 'vue-router'
+import {
+  AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY,
+  isAugmentQuickLoginEditorTarget,
+  type AugmentQuickLoginEditorTarget,
+} from '@/utils/augmentIdeTargets'
 
 type AugmentQuickLoginGrantResponseLike = Record<string, unknown>
 type AugmentQuickLoginDiagnosticsPayload = Record<string, string>
@@ -30,6 +35,43 @@ export function buildAugmentQuickLoginGrantPayload(query: LocationQuery): Record
   return payload
 }
 
+export function resolveAugmentQuickLoginEditorTarget(input: {
+  mode: string
+  query: LocationQuery
+  backendDefaultTarget?: AugmentQuickLoginEditorTarget
+}): AugmentQuickLoginEditorTarget {
+  if (input.mode !== 'official_passthrough') {
+    return 'vscode'
+  }
+
+  const queryTarget = toSingleQueryValue(input.query.editor_target)
+  if (isAugmentQuickLoginEditorTarget(queryTarget)) {
+    return queryTarget
+  }
+
+  const persistedTarget = getPersistedAugmentQuickLoginEditorTarget()
+  if (persistedTarget) {
+    return persistedTarget
+  }
+
+  return input.backendDefaultTarget ?? 'vscode'
+}
+
+export function persistAugmentQuickLoginEditorTarget(target: AugmentQuickLoginEditorTarget): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, target)
+}
+
+export function getPersistedAugmentQuickLoginEditorTarget(): AugmentQuickLoginEditorTarget | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const value = window.localStorage.getItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY)
+  return isAugmentQuickLoginEditorTarget(value) ? value : null
+}
+
 export function resolveAugmentQuickLoginDeeplink(
   response: AugmentQuickLoginGrantResponseLike
 ): string {
@@ -47,12 +89,37 @@ export function resolveAugmentQuickLoginDeeplink(
   return deeplink?.trim() || ''
 }
 
+export function shouldAutoLaunchAugmentQuickLogin(
+  response: AugmentQuickLoginGrantResponseLike
+): boolean {
+  if (!resolveAugmentQuickLoginDeeplink(response)) {
+    return false
+  }
+  if (extractAugmentQuickLoginTargetWarning(response)) {
+    return false
+  }
+  if (typeof response.target_verified === 'boolean') {
+    return response.target_verified
+  }
+  return true
+}
+
+export function extractAugmentQuickLoginTargetWarning(
+  response: AugmentQuickLoginGrantResponseLike
+): string {
+  const warning = response.target_warning
+  return typeof warning === 'string' ? warning.trim() : ''
+}
+
 export function summarizeAugmentQuickLoginDiagnostics(
   payload: AugmentQuickLoginDiagnosticsPayload
 ): Array<[string, string]> {
   const safeDiagnosticKeys = new Set([
     'mode',
     'source',
+    'editor_target',
+    'target_scheme',
+    'target_warning',
     'tenant_url',
     'official_tenant_url',
     'tenant_origin',

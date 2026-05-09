@@ -1,10 +1,71 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildAugmentQuickLoginGrantPayload,
+  extractAugmentQuickLoginTargetWarning,
+  getPersistedAugmentQuickLoginEditorTarget,
   isAugmentLocalCompatGateEnabled,
+  persistAugmentQuickLoginEditorTarget,
   resolveAugmentQuickLoginDeeplink,
+  resolveAugmentQuickLoginEditorTarget,
+  shouldAutoLaunchAugmentQuickLogin,
   summarizeAugmentQuickLoginDiagnostics,
 } from '@/utils/augmentQuickLogin'
+import { AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY } from '@/utils/augmentIdeTargets'
+
+describe('augment quick login editor target helpers', () => {
+  it('uses query first, then localStorage, then the backend default target', () => {
+    localStorage.clear()
+    localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, 'cursor')
+
+    expect(
+      resolveAugmentQuickLoginEditorTarget({
+        mode: 'official_passthrough',
+        query: {
+          editor_target: 'trae',
+        },
+      })
+    ).toBe('trae')
+
+    expect(
+      resolveAugmentQuickLoginEditorTarget({
+        mode: 'official_passthrough',
+        query: {},
+      })
+    ).toBe('cursor')
+
+    localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, 'unknown-target')
+
+    expect(
+      resolveAugmentQuickLoginEditorTarget({
+        mode: 'official_passthrough',
+        query: {},
+      })
+    ).toBe('vscode')
+  })
+
+  it('ignores editor target query and localStorage values in local compat mode', () => {
+    localStorage.clear()
+    localStorage.setItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY, 'cursor')
+
+    expect(
+      resolveAugmentQuickLoginEditorTarget({
+        mode: 'local_compat',
+        query: {
+          editor_target: 'trae',
+        },
+      })
+    ).toBe('vscode')
+  })
+
+  it('persists and restores a valid editor target selection', () => {
+    localStorage.clear()
+
+    persistAugmentQuickLoginEditorTarget('cursor')
+
+    expect(localStorage.getItem(AUGMENT_QUICK_LOGIN_EDITOR_TARGET_STORAGE_KEY)).toBe('cursor')
+    expect(getPersistedAugmentQuickLoginEditorTarget()).toBe('cursor')
+  })
+})
 
 describe('buildAugmentQuickLoginGrantPayload', () => {
   it('flattens route query values into string payload fields', () => {
@@ -111,5 +172,39 @@ describe('resolveAugmentQuickLoginDeeplink', () => {
         deeplink_url: 'vscode://augment/quick-login?token=xyz',
       })
     ).toBe('vscode://augment/quick-login?token=xyz')
+  })
+})
+
+describe('quick login launch safety helpers', () => {
+  it('keeps old response payloads launchable when no warning metadata is present', () => {
+    expect(
+      shouldAutoLaunchAugmentQuickLogin({
+        vscode_deeplink: 'vscode://augment/quick-login?token=abc',
+      })
+    ).toBe(true)
+  })
+
+  it('suppresses auto-launch when the backend reports target warnings or verification failures', () => {
+    expect(
+      shouldAutoLaunchAugmentQuickLogin({
+        deeplink_url: 'cursor://augment/quick-login?token=abc',
+        target_verified: false,
+      })
+    ).toBe(false)
+
+    expect(
+      shouldAutoLaunchAugmentQuickLogin({
+        deeplink_url: 'cursor://augment/quick-login?token=abc',
+        target_warning: 'manual open only',
+      })
+    ).toBe(false)
+  })
+
+  it('extracts a backend target warning when present', () => {
+    expect(
+      extractAugmentQuickLoginTargetWarning({
+        target_warning: 'manual open only',
+      })
+    ).toBe('manual open only')
   })
 })

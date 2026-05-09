@@ -7,6 +7,7 @@
       <div class="grid gap-3 sm:grid-cols-2">
         <button
           type="button"
+          data-test="mode-official_passthrough"
           class="rounded-lg border px-4 py-3 text-left transition"
           :class="modelValue === 'official_passthrough'
             ? 'border-primary-500 bg-primary-50 text-primary-700 dark:border-primary-400 dark:bg-primary-900/20 dark:text-primary-200'
@@ -24,6 +25,7 @@
         <button
           v-if="showLocalCompat"
           type="button"
+          data-test="mode-local_compat"
           class="rounded-lg border px-4 py-3 text-left transition"
           :class="modelValue === 'local_compat'
             ? 'border-amber-500 bg-amber-50 text-amber-700 dark:border-amber-400 dark:bg-amber-900/20 dark:text-amber-200'

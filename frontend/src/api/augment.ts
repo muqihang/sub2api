@@ -1,12 +1,21 @@
+import type { AugmentQuickLoginEditorTarget } from '@/utils/augmentIdeTargets'
 import { apiClient } from './client'
 
-export type AugmentQuickLoginGrantRequest = Record<string, string>
+export interface AugmentQuickLoginGrantRequest {
+  mode: string
+  source: string
+  editor_target?: AugmentQuickLoginEditorTarget
+}
 
 export interface AugmentQuickLoginGrantResponse {
   vscode_deeplink?: string
   deeplink?: string
   deeplink_url?: string
   url?: string
+  editor_target?: string
+  target_scheme?: string
+  target_verified?: boolean
+  target_warning?: string
   [key: string]: unknown
 }
 

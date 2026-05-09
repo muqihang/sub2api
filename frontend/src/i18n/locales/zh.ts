@@ -6675,11 +6675,40 @@ export default {
         continue: '继续授权',
         requesting: '正在请求',
         launch: '打开扩展',
+        manualOpen: '手动打开 IDE',
         copy: '复制 Deeplink',
+        copyHint: '如果 IDE 没有自动打开，请复制上面的 Deeplink 手动打开。',
         copySuccess: '已复制 Deeplink',
         requestFailed: '授权请求失败',
         missingDeeplink: '后端未返回 Deeplink',
         ready: 'Deeplink 已就绪',
+        editorTargetTitle: '目标 IDE',
+        editorTargetDescription: '选择要接收 Augment 授权 Deeplink 的 IDE。未验证目标会保留手动打开路径。',
+        editorStatus: {
+          verified: '已验证',
+          needsVerification: '待验证',
+          requiresOverride: '需显式启用'
+        },
+        editors: {
+          vscode: 'VS Code',
+          cursor: 'Cursor',
+          kiro: 'Kiro',
+          trae: 'Trae',
+          windsurf: 'Windsurf',
+          qodo: 'Qodo',
+          codebuddy: 'CodeBuddy',
+          antigravity: 'Antigravity'
+        },
+        editorDescriptions: {
+          vscode: '当前默认可自动拉起的目标。',
+          cursor: 'Scheme 已知，但 Augment handler 仍需额外验证。',
+          kiro: '仅保留展示与手动打开路径，等待进一步验证。',
+          trae: 'Scheme 已知，但 Augment handler 仍需额外验证。',
+          windsurf: '仅保留展示与手动打开路径，等待进一步验证。',
+          qodo: '仅保留展示与手动打开路径，等待进一步验证。',
+          codebuddy: '仅保留展示与手动打开路径，等待进一步验证。',
+          antigravity: '仅保留展示与手动打开路径，等待进一步验证。'
+        },
         modes: {
           officialPassthrough: {
             title: '官方能力接管',
