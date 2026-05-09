@@ -21,17 +21,17 @@ func TestAugmentOfficialPoolSessionServiceAcquireSessionBundleUsesSourcePriority
 	store := &augmentOfficialPoolSessionStoreStub{
 		acquireBySource: map[string]*AugmentOfficialPoolStoredCredentialRow{
 			augmentOfficialSessionSourceWukongQuickLogin: {
-				ID:                        9,
-				Source:                    augmentOfficialSessionSourceWukongQuickLogin,
-				TenantOrigin:              "https://official.augment.local",
-				Scopes:                    []string{"augment:session"},
-				ExpiresAt:                 timePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
-				Status:                    AugmentOfficialPoolSessionStatusActive,
+				ID:                         9,
+				Source:                     augmentOfficialSessionSourceWukongQuickLogin,
+				TenantOrigin:               "https://official.augment.local",
+				Scopes:                     []string{"augment:session"},
+				ExpiresAt:                  timePtr(time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)),
+				Status:                     AugmentOfficialPoolSessionStatusActive,
 				EncryptedCredentialPayload: payload,
-				CredentialSchemaVersion:   1,
-				KeyVersion:                "key-active",
-				Fingerprint:               "poolfingerprint",
-				HealthScore:               100,
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "key-active",
+				Fingerprint:                "poolfingerprint",
+				HealthScore:                100,
 			},
 		},
 	}
@@ -144,6 +144,48 @@ func TestAugmentOfficialPoolSessionServiceRevokeSessionClearsCredential(t *testi
 	require.NoError(t, err)
 	require.Equal(t, AugmentOfficialPoolSessionStatusRevoked, view.Status)
 	require.False(t, view.HasCredentialPayload)
+}
+
+func TestAugmentOfficialPoolSessionServiceImportCursorSessionStoresPoolCredential(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 9, 8, 0, 0, 0, time.UTC)
+	store := &augmentOfficialPoolSessionStoreStub{
+		upsertView: &AugmentOfficialPoolStoredAdminView{
+			ID:                   31,
+			Source:               augmentOfficialSessionSourceOfficialQuickLogin,
+			TenantOrigin:         "https://d12.api.augmentcode.com",
+			Status:               AugmentOfficialPoolSessionStatusActive,
+			Fingerprint:          "abcdef0123456789",
+			CreatedAt:            now,
+			UpdatedAt:            now,
+			HealthScore:          100,
+			CreatedByAdminID:     1,
+			HasCredentialPayload: true,
+		},
+	}
+	cipher := newTestAugmentSessionVaultCipher(t)
+	svc := NewAugmentOfficialPoolSessionService(store, cipher, "bind-secret")
+	svc.now = func() time.Time { return now }
+	svc.SetLocalCursorSessionReader(augmentLocalCursorSessionReaderFunc(func(context.Context, AugmentOfficialPoolLocalCursorImportRequest) (*augmentLocalCursorImportedSession, error) {
+		return &augmentLocalCursorImportedSession{
+			AccessToken:   "official-access-token",
+			TenantURL:     "https://d12.api.augmentcode.com/",
+			Scopes:        []string{"email"},
+			SessionSource: "official",
+		}, nil
+	}))
+
+	view, err := svc.ImportLocalCursorSessionForAdmin(context.Background(), 1, AugmentOfficialPoolLocalCursorImportRequest{
+		Source: augmentOfficialSessionSourceOfficialQuickLogin,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(31), view.ID)
+	require.NotNil(t, store.upsertInput)
+	require.Equal(t, augmentOfficialSessionSourceOfficialQuickLogin, store.upsertInput.Source)
+	require.Equal(t, "https://d12.api.augmentcode.com", store.upsertInput.TenantOrigin)
+	require.Nil(t, store.upsertInput.ExpiresAt)
+	require.NotEmpty(t, store.upsertInput.EncryptedCredentialPayload)
 }
 
 type augmentOfficialPoolSessionStoreStub struct {

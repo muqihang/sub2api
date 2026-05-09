@@ -115,18 +115,18 @@ type AugmentOfficialPoolStoredAdminView struct {
 }
 
 type AugmentOfficialPoolStoredCredentialRow struct {
-	ID                        int64
-	Source                    string
-	TenantOrigin              string
-	PortalOrigin              *string
-	Scopes                    []string
-	ExpiresAt                 *time.Time
-	Status                    string
+	ID                         int64
+	Source                     string
+	TenantOrigin               string
+	PortalOrigin               *string
+	Scopes                     []string
+	ExpiresAt                  *time.Time
+	Status                     string
 	EncryptedCredentialPayload []byte
-	CredentialSchemaVersion   int
-	KeyVersion                string
-	Fingerprint               string
-	HealthScore               int
+	CredentialSchemaVersion    int
+	KeyVersion                 string
+	Fingerprint                string
+	HealthScore                int
 }
 
 type AugmentOfficialPoolLeaseReleaseInput struct {
@@ -219,11 +219,12 @@ func (l *AugmentOfficialPoolSessionLease) Release(ctx context.Context, success b
 }
 
 type AugmentOfficialPoolSessionService struct {
-	store           AugmentOfficialPoolSessionStore
-	cipher          AugmentOfficialSessionCipher
-	bindTokenSecret []byte
-	now             func() time.Time
+	store                  AugmentOfficialPoolSessionStore
+	cipher                 AugmentOfficialSessionCipher
+	bindTokenSecret        []byte
+	now                    func() time.Time
 	sourcePriorityProvider augmentOfficialPoolSourcePriorityProvider
+	localCursorReader      augmentLocalCursorSessionReader
 }
 
 func NewAugmentOfficialPoolSessionService(store AugmentOfficialPoolSessionStore, cipher AugmentOfficialSessionCipher, bindTokenSecret string) *AugmentOfficialPoolSessionService {

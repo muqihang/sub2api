@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -35,6 +35,7 @@ func setupAugmentGatewayAdminHandlerRouter(
 	router.POST("/official-sessions/:id/require-relogin", h.RequireOfficialSessionRelogin)
 	router.GET("/official-sessions/:id/diagnostics", h.OfficialSessionDiagnostics)
 	router.GET("/usage", h.Usage)
+	router.POST("/pool-sessions/import-local-cursor", h.ImportLocalCursorSession)
 	return router, h
 }
 
@@ -242,15 +243,43 @@ func TestAdminAugmentGatewayUsageFiltersClientProduct(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"req-usage"`)
 }
 
+func TestAdminAugmentGatewayImportLocalCursorSessionRequiresPermissionAndReturnsImportedRow(t *testing.T) {
+	sessionSvc := &augmentGatewayOfficialSessionAdminStub{
+		importLocalCursorResult: &service.AugmentOfficialPoolSessionAdminView{
+			ID:                   88,
+			Source:               "official_quick_login",
+			TenantOrigin:         "https://d12.api.augmentcode.com",
+			Status:               "active",
+			HasCredentialPayload: true,
+		},
+	}
+	router, handler := setupAugmentGatewayAdminHandlerRouter(
+		&augmentGatewayAdminSettingsStub{},
+		sessionSvc,
+		&augmentGatewayUsageAdminStub{},
+	)
+	handler.SetSessionVaultPermissionChecker(func(*gin.Context) bool { return true })
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/pool-sessions/import-local-cursor", bytes.NewBufferString(`{"source":"official_quick_login"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.True(t, sessionSvc.importLocalCursorCalled)
+	require.Equal(t, "official_quick_login", sessionSvc.importLocalCursorInput.Source)
+	require.Contains(t, rec.Body.String(), `"id":88`)
+}
+
 type augmentGatewayAdminSettingsStub struct {
-	updateProviderGroupResult *service.AugmentGatewaySettingsVersion
-	updateProviderGroupErr    error
-	updateModelResult         *service.AugmentGatewaySettingsVersion
-	updateModelErr            error
+	updateProviderGroupResult  *service.AugmentGatewaySettingsVersion
+	updateProviderGroupErr     error
+	updateModelResult          *service.AugmentGatewaySettingsVersion
+	updateModelErr             error
 	updateSourcePriorityResult *service.AugmentGatewaySettingsVersion
-	providerGroups            []service.AugmentGatewayProviderRuntime
-	models                    []service.AugmentGatewayManagedModel
-	sourcePriority            []string
+	providerGroups             []service.AugmentGatewayProviderRuntime
+	models                     []service.AugmentGatewayManagedModel
+	sourcePriority             []string
 }
 
 func (s *augmentGatewayAdminSettingsStub) ListProviderGroups(ctx context.Context) ([]service.AugmentGatewayProviderRuntime, error) {
@@ -296,14 +325,17 @@ func (s *augmentGatewayAdminSettingsStub) UpdateSourcePriority(ctx context.Conte
 }
 
 type augmentGatewayOfficialSessionAdminStub struct {
-	listResult            []service.AugmentOfficialPoolSessionAdminView
-	diagnosticsResult     *service.AugmentOfficialPoolSessionDiagnostics
-	revokeResult          *service.AugmentOfficialPoolSessionAdminView
-	disableResult         *service.AugmentOfficialPoolSessionAdminView
-	requireReloginResult  *service.AugmentOfficialPoolSessionAdminView
-	revokeCalled          bool
-	disableCalled         bool
-	requireReloginCalled  bool
+	listResult              []service.AugmentOfficialPoolSessionAdminView
+	diagnosticsResult       *service.AugmentOfficialPoolSessionDiagnostics
+	revokeResult            *service.AugmentOfficialPoolSessionAdminView
+	disableResult           *service.AugmentOfficialPoolSessionAdminView
+	requireReloginResult    *service.AugmentOfficialPoolSessionAdminView
+	importLocalCursorResult *service.AugmentOfficialPoolSessionAdminView
+	revokeCalled            bool
+	disableCalled           bool
+	requireReloginCalled    bool
+	importLocalCursorCalled bool
+	importLocalCursorInput  service.AugmentOfficialPoolLocalCursorImportRequest
 }
 
 func (s *augmentGatewayOfficialSessionAdminStub) ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialPoolSessionAdminView, error) {
@@ -335,6 +367,12 @@ func (s *augmentGatewayOfficialSessionAdminStub) CreateBindIntent(ctx context.Co
 
 func (s *augmentGatewayOfficialSessionAdminStub) BindSession(ctx context.Context, adminUserID int64, bindToken string, input service.AugmentOfficialPoolBindRequest) (*service.AugmentOfficialPoolSessionAdminView, error) {
 	return &service.AugmentOfficialPoolSessionAdminView{}, nil
+}
+
+func (s *augmentGatewayOfficialSessionAdminStub) ImportLocalCursorSessionForAdmin(ctx context.Context, adminUserID int64, input service.AugmentOfficialPoolLocalCursorImportRequest) (*service.AugmentOfficialPoolSessionAdminView, error) {
+	s.importLocalCursorCalled = true
+	s.importLocalCursorInput = input
+	return s.importLocalCursorResult, nil
 }
 
 type augmentGatewayUsageAdminStub struct {

@@ -28,6 +28,7 @@ type augmentGatewayOfficialSessionAdminAPI interface {
 	RequireSessionReloginForAdmin(ctx context.Context, sessionID int64) (*service.AugmentOfficialPoolSessionAdminView, error)
 	CreateBindIntent(ctx context.Context, adminUserID int64, input service.AugmentOfficialPoolBindIntentRequest) (*service.AugmentOfficialPoolBindIntentResponse, error)
 	BindSession(ctx context.Context, adminUserID int64, bindToken string, input service.AugmentOfficialPoolBindRequest) (*service.AugmentOfficialPoolSessionAdminView, error)
+	ImportLocalCursorSessionForAdmin(ctx context.Context, adminUserID int64, input service.AugmentOfficialPoolLocalCursorImportRequest) (*service.AugmentOfficialPoolSessionAdminView, error)
 }
 
 type augmentGatewayUsageAdminAPI interface {
@@ -35,10 +36,10 @@ type augmentGatewayUsageAdminAPI interface {
 }
 
 type AugmentGatewayHandler struct {
-	settingsSvc      augmentGatewayAdminSettingsAPI
-	sessionSvc       augmentGatewayOfficialSessionAdminAPI
-	usageSvc         augmentGatewayUsageAdminAPI
-	vaultPermission  func(*gin.Context) bool
+	settingsSvc     augmentGatewayAdminSettingsAPI
+	sessionSvc      augmentGatewayOfficialSessionAdminAPI
+	usageSvc        augmentGatewayUsageAdminAPI
+	vaultPermission func(*gin.Context) bool
 }
 
 func NewAugmentGatewayHandler(
@@ -264,6 +265,34 @@ func (h *AugmentGatewayHandler) PoolSessionBind(c *gin.Context) {
 		Source:       strings.TrimSpace(req.Source),
 		Payload:      req.Payload,
 		RequestID:    strings.TrimSpace(req.RequestID),
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, view)
+}
+
+func (h *AugmentGatewayHandler) ImportLocalCursorSession(c *gin.Context) {
+	if h.vaultPermission != nil && !h.vaultPermission(c) {
+		response.Forbidden(c, "Augment session vault permission required")
+		return
+	}
+	var req struct {
+		Source           string `json:"source"`
+		StateDBPath      string `json:"state_db_path"`
+		KeychainService  string `json:"keychain_service"`
+		SecretStorageKey string `json:"secret_storage_key"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	view, err := h.sessionSvc.ImportLocalCursorSessionForAdmin(c.Request.Context(), getAdminIDFromContext(c), service.AugmentOfficialPoolLocalCursorImportRequest{
+		Source:           strings.TrimSpace(req.Source),
+		StateDBPath:      strings.TrimSpace(req.StateDBPath),
+		KeychainService:  strings.TrimSpace(req.KeychainService),
+		SecretStorageKey: strings.TrimSpace(req.SecretStorageKey),
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

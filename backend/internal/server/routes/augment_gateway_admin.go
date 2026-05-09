@@ -17,6 +17,7 @@ func registerAugmentGatewayAdminRoutes(admin *gin.RouterGroup, h *handler.Handle
 		augmentGateway.PUT("/models/:id", h.Admin.AugmentGateway.UpdateModel)
 		augmentGateway.POST("/pool-sessions/bind-intents", h.Admin.AugmentGateway.PoolSessionBindIntent)
 		augmentGateway.POST("/pool-sessions/bind", h.Admin.AugmentGateway.PoolSessionBind)
+		augmentGateway.POST("/pool-sessions/import-local-cursor", h.Admin.AugmentGateway.ImportLocalCursorSession)
 		augmentGateway.GET("/pool-sessions", h.Admin.AugmentGateway.OfficialSessions)
 		augmentGateway.POST("/pool-sessions/:id/revoke", h.Admin.AugmentGateway.RevokeOfficialSession)
 		augmentGateway.POST("/pool-sessions/:id/disable", h.Admin.AugmentGateway.DisableOfficialSession)
