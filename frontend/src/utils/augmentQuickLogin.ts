@@ -92,16 +92,7 @@ export function resolveAugmentQuickLoginDeeplink(
 export function shouldAutoLaunchAugmentQuickLogin(
   response: AugmentQuickLoginGrantResponseLike
 ): boolean {
-  if (!resolveAugmentQuickLoginDeeplink(response)) {
-    return false
-  }
-  if (extractAugmentQuickLoginTargetWarning(response)) {
-    return false
-  }
-  if (typeof response.target_verified === 'boolean') {
-    return response.target_verified
-  }
-  return true
+  return resolveAugmentQuickLoginDeeplink(response).length > 0
 }
 
 export function extractAugmentQuickLoginTargetWarning(

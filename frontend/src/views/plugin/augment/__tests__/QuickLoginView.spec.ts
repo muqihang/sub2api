@@ -272,8 +272,9 @@ describe('QuickLoginView', () => {
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.wukong')
   })
 
-  it('shows a manual open path and suppresses auto-launch when the backend warns about the target', async () => {
+  it('still triggers deeplink launch when the backend warns about the target', async () => {
     const hrefSetter = vi.fn()
+    const originalNavigator = window.navigator
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: {
@@ -283,6 +284,13 @@ describe('QuickLoginView', () => {
         set href(value: string) {
           hrefSetter(value)
         },
+      },
+    })
+    Object.defineProperty(window, 'navigator', {
+      configurable: true,
+      value: {
+        ...originalNavigator,
+        userAgent: 'Mozilla/5.0',
       },
     })
 
@@ -309,13 +317,20 @@ describe('QuickLoginView', () => {
     await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
-    expect(hrefSetter).not.toHaveBeenCalled()
+    expect(hrefSetter).toHaveBeenCalledWith(
+      'cursor://Augment.vscode-augment/autoAuth?grant=g3&state=s3',
+    )
     expect(wrapper.text()).toContain('Cursor handler is not verified for auto-launch.')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.manualOpen')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.copyHint')
     expect((wrapper.get('input[readonly]').element as HTMLInputElement).value).toBe(
       'cursor://Augment.vscode-augment/autoAuth?grant=g3&state=s3',
     )
+
+    Object.defineProperty(window, 'navigator', {
+      configurable: true,
+      value: originalNavigator,
+    })
   })
 
   it('binds callback payload into a pool session before requesting grant in admin capture mode', async () => {

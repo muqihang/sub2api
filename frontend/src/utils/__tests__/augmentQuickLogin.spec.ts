@@ -184,20 +184,20 @@ describe('quick login launch safety helpers', () => {
     ).toBe(true)
   })
 
-  it('suppresses auto-launch when the backend reports target warnings or verification failures', () => {
+  it('keeps explicit quick-login launches enabled even when the backend reports warnings or verification failures', () => {
     expect(
       shouldAutoLaunchAugmentQuickLogin({
         deeplink_url: 'cursor://augment/quick-login?token=abc',
         target_verified: false,
       })
-    ).toBe(false)
+    ).toBe(true)
 
     expect(
       shouldAutoLaunchAugmentQuickLogin({
         deeplink_url: 'cursor://augment/quick-login?token=abc',
         target_warning: 'manual open only',
       })
-    ).toBe(false)
+    ).toBe(true)
   })
 
   it('extracts a backend target warning when present', () => {
