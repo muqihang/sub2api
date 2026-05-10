@@ -101,6 +101,112 @@ func TestAdminAugmentGatewayModelsRejectVisibleWithoutExplicitSmokeStatus(t *tes
 	require.Contains(t, rec.Body.String(), "AUGMENT_GATEWAY_MODEL_SMOKE_REQUIRED")
 }
 
+func TestAdminAugmentGatewaySummaryReturnsTypedSections(t *testing.T) {
+	router, _ := setupAugmentGatewayAdminHandlerRouter(
+		&augmentGatewayAdminSettingsStub{
+			providerGroups: []service.AugmentGatewayProviderRuntime{
+				{
+					Provider:       service.AugmentGatewayProviderOpenAI,
+					GroupID:        1001,
+					Healthy:        true,
+					TotalAccounts:  2,
+					ActiveAccounts: 2,
+				},
+			},
+			entitlementGroups: []service.AugmentGatewayEntitlementGroup{
+				{
+					ID:             201,
+					Name:           "Augment Users",
+					Status:         service.StatusActive,
+					TotalAccounts:  3,
+					ActiveAccounts: 2,
+				},
+			},
+			models: []service.AugmentGatewayManagedModel{
+				{
+					Model: service.AugmentGatewayModel{
+						ID:       "gpt-5.4",
+						Provider: service.AugmentGatewayProviderOpenAI,
+					},
+					Enabled:         true,
+					Visible:         true,
+					SmokeStatus:     service.AugmentGatewaySmokeStatusPassed,
+					ProviderHealthy: true,
+				},
+			},
+			sourcePriority:     []string{"official_quick_login", "wukong_quick_login"},
+			routePolicyVersion: "2026-05-08",
+		},
+		&augmentGatewayOfficialSessionAdminStub{
+			listResult: []service.AugmentOfficialPoolSessionAdminView{
+				{ID: 42, Source: "official_quick_login", Status: "active", HasCredentialPayload: true},
+				{ID: 43, Source: "wukong_quick_login", Status: "disabled", HasCredentialPayload: false},
+			},
+		},
+		&augmentGatewayUsageAdminStub{
+			summary: &service.AugmentGatewayBillingSummary{
+				EstimatedCost: 12.3,
+				SettledCost:   10.1,
+				CacheHitRatio: 0.42,
+				Currency:      service.AugmentUsageCurrencyUSD,
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/summary", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	require.Contains(t, body, `"entitlement_groups"`)
+	require.Contains(t, body, `"provider_routing_groups"`)
+	require.Contains(t, body, `"official_session_pool"`)
+	require.Contains(t, body, `"usage"`)
+	require.Contains(t, body, `"configured_route_policy_version":"2026-05-08"`)
+	require.Contains(t, body, `"route_policy_version":"2026-05-08"`)
+	require.Contains(t, body, `"provider_groups"`)
+	require.Contains(t, body, `"official_session_count":2`)
+	require.Contains(t, body, `"active_session_count":1`)
+	require.Contains(t, body, `"healthy_session_count":1`)
+	require.Contains(t, body, `"estimated_cost":12.3`)
+	require.Contains(t, body, `"settled_cost":10.1`)
+	require.Contains(t, body, `"source_priority":["official_quick_login","wukong_quick_login"]`)
+	require.Contains(t, body, `"name":"Augment Users"`)
+	require.Contains(t, body, `"active_count":1`)
+	require.Contains(t, body, `"healthy_count":1`)
+	require.Contains(t, body, `"cache_hit_ratio":0.42`)
+	require.NotContains(t, body, "access_token")
+	require.NotContains(t, body, "refresh_token")
+}
+
+func TestAdminAugmentGatewaySummaryCompatibilityAliasesRemainPresentWhenZero(t *testing.T) {
+	router, _ := setupAugmentGatewayAdminHandlerRouter(
+		&augmentGatewayAdminSettingsStub{
+			sourcePriority: []string{},
+		},
+		&augmentGatewayOfficialSessionAdminStub{},
+		&augmentGatewayUsageAdminStub{
+			summary: &service.AugmentGatewayBillingSummary{},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/summary", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	require.Contains(t, body, `"provider_groups":[]`)
+	require.Contains(t, body, `"official_session_count":0`)
+	require.Contains(t, body, `"active_session_count":0`)
+	require.Contains(t, body, `"healthy_session_count":0`)
+	require.Contains(t, body, `"estimated_cost":0`)
+	require.Contains(t, body, `"settled_cost":0`)
+	require.Contains(t, body, `"cache_hit_ratio":0`)
+	require.Contains(t, body, `"source_priority":`)
+}
+
 func TestAdminAugmentGatewayOfficialSessionsNeverReturnSecrets(t *testing.T) {
 	router, _ := setupAugmentGatewayAdminHandlerRouter(
 		&augmentGatewayAdminSettingsStub{},
@@ -278,8 +384,10 @@ type augmentGatewayAdminSettingsStub struct {
 	updateModelErr             error
 	updateSourcePriorityResult *service.AugmentGatewaySettingsVersion
 	providerGroups             []service.AugmentGatewayProviderRuntime
+	entitlementGroups          []service.AugmentGatewayEntitlementGroup
 	models                     []service.AugmentGatewayManagedModel
 	sourcePriority             []string
+	routePolicyVersion         string
 }
 
 func (s *augmentGatewayAdminSettingsStub) ListProviderGroups(ctx context.Context) ([]service.AugmentGatewayProviderRuntime, error) {
@@ -300,6 +408,10 @@ func (s *augmentGatewayAdminSettingsStub) ListModels(ctx context.Context) ([]ser
 	return s.models, nil
 }
 
+func (s *augmentGatewayAdminSettingsStub) ListEntitlementGroups(ctx context.Context) ([]service.AugmentGatewayEntitlementGroup, error) {
+	return s.entitlementGroups, nil
+}
+
 func (s *augmentGatewayAdminSettingsStub) UpdateModel(ctx context.Context, modelID string, setting service.AugmentGatewayModelSetting, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error) {
 	if s.updateModelErr != nil {
 		return nil, s.updateModelErr
@@ -315,6 +427,13 @@ func (s *augmentGatewayAdminSettingsStub) GetSourcePriority(ctx context.Context)
 		return []string{"official_quick_login", "wukong_quick_login"}, nil
 	}
 	return s.sourcePriority, nil
+}
+
+func (s *augmentGatewayAdminSettingsStub) GetRoutePolicyVersion(ctx context.Context) (string, error) {
+	if s.routePolicyVersion == "" {
+		return service.AugmentGatewayDefaultRoutePolicyVersion, nil
+	}
+	return s.routePolicyVersion, nil
 }
 
 func (s *augmentGatewayAdminSettingsStub) UpdateSourcePriority(ctx context.Context, sources []string, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error) {
@@ -376,14 +495,22 @@ func (s *augmentGatewayOfficialSessionAdminStub) ImportLocalCursorSessionForAdmi
 }
 
 type augmentGatewayUsageAdminStub struct {
-	called bool
-	rows   []service.AugmentGatewayBillingUsageRow
-	page   *pagination.PaginationResult
+	called  bool
+	rows    []service.AugmentGatewayBillingUsageRow
+	page    *pagination.PaginationResult
+	summary *service.AugmentGatewayBillingSummary
 }
 
 func (s *augmentGatewayUsageAdminStub) ListUsageAdmin(ctx context.Context, params pagination.PaginationParams) ([]service.AugmentGatewayBillingUsageRow, *pagination.PaginationResult, error) {
 	s.called = true
 	return s.rows, s.page, nil
+}
+
+func (s *augmentGatewayUsageAdminStub) GetSummaryAdmin(ctx context.Context) (*service.AugmentGatewayBillingSummary, error) {
+	if s.summary == nil {
+		return &service.AugmentGatewayBillingSummary{}, nil
+	}
+	return s.summary, nil
 }
 
 func mustAdminJSON(t *testing.T, value any) json.RawMessage {

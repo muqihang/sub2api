@@ -83,21 +83,68 @@ describe('AugmentGateway admin', () => {
     vi.clearAllMocks()
     mockRouteQuery = {}
     mockGetSummary.mockResolvedValue({
-      provider_groups: [],
-      models: [],
-      official_session_count: 1,
-      active_session_count: 1,
-      healthy_session_count: 1,
-      source_priority: ['official_quick_login', 'wukong_quick_login'],
+      entitlement_groups: {
+        total_count: 1,
+        rows: [
+          {
+            id: 201,
+            name: 'Augment Users',
+            status: 'active',
+            total_accounts: 3,
+            active_accounts: 2,
+          },
+        ],
+      },
+      provider_routing_groups: {
+        total_count: 1,
+        configured_route_policy_version: '2026-05-08',
+        route_policy_version: '2026-05-08',
+        source_priority: ['official_quick_login', 'wukong_quick_login'],
+        rows: [
+          { provider: 'openai', group_id: 1001, healthy: true, active_accounts: 2, total_accounts: 2, version: 1 },
+        ],
+      },
+      official_session_pool: {
+        total_count: 1,
+        active_count: 1,
+        healthy_count: 1,
+        source_counts: {
+          official_quick_login: 1,
+        },
+      },
+      usage: {
+        estimated_cost: 12.3,
+        settled_cost: 10.1,
+        cache_hit_ratio: 0.42,
+        currency: 'USD',
+      },
+      models: [
+        {
+          model: { id: 'gpt-5.4', provider: 'openai', upstream_model: 'gpt-5.4' },
+          enabled: true,
+          visible: true,
+          smoke_status: 'passed',
+          provider_healthy: true,
+          settings_version: 4,
+          settings_namespace: 'gateway.augment.enabled_models',
+        },
+        {
+          model: { id: 'claude-sonnet-4-5', provider: 'anthropic', upstream_model: 'claude-sonnet-4-5' },
+          enabled: false,
+          visible: false,
+          smoke_status: 'pending',
+          provider_healthy: false,
+          settings_version: 4,
+          settings_namespace: 'gateway.augment.enabled_models',
+        },
+      ],
     })
     mockGetProviderGroups.mockResolvedValue({
       rows: [
         { provider: 'openai', group_id: 1001, healthy: true, active_accounts: 2, total_accounts: 2, version: 1 },
       ],
     })
-    mockGetSourcePriority.mockResolvedValue({
-      sources: ['official_quick_login', 'wukong_quick_login'],
-    })
+    mockGetSourcePriority.mockResolvedValue({ sources: ['official_quick_login', 'wukong_quick_login'] })
     mockGetModels.mockResolvedValue({
       rows: [
         {
@@ -137,7 +184,20 @@ describe('AugmentGateway admin', () => {
     })
     mockGetUsage.mockResolvedValue({
       rows: [
-        { model: 'gpt-5.4', request_id: 'req-1', estimated_cost: 1.2, settled_cost: 1.1, cache_read_tokens: 10, cache_creation_tokens: 5 },
+        {
+          model: 'gpt-5.4',
+          upstream_model: 'gpt-5.4-mini',
+          request_scope: 'augment_gateway',
+          feature_scope: 'context_engine',
+          group_id: 201,
+          route_policy_version: '2026-05-08',
+          augment_session_id: 'augment-session-1',
+          request_id: 'req-1',
+          estimated_cost: 1.2,
+          settled_cost: 1.1,
+          cache_read_tokens: 10,
+          cache_creation_tokens: 5,
+        },
       ],
       page: { page: 1, page_size: 20, pages: 1, total: 1 },
     })
@@ -149,17 +209,26 @@ describe('AugmentGateway admin', () => {
     })
   })
 
-  it('renders source priority, provider groups, and pool sessions without secrets', async () => {
-    const wrapper = mount(AugmentGatewayView, {
+  function mountView() {
+    return mount(AugmentGatewayView, {
       global: {
-        stubs: { AppLayout: { template: '<div><slot /></div>' } },
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          RouterLink: { props: ['to'], template: '<a :href="typeof to === \'string\' ? to : to.path"><slot /></a>' },
+        },
       },
     })
+  }
+
+  it('renders entitlement groups, routing groups, and pool sessions without secrets', async () => {
+    const wrapper = mountView()
     await flushPromises()
 
     const text = wrapper.text()
+    expect(text).toContain('Augment Users')
     expect(text).toContain('openai')
     expect(text).toContain('1001')
+    expect(text).toContain('2026-05-08')
     expect(text).toContain('official_quick_login')
     expect(text).toContain('wukong_quick_login')
     expect(text).toContain('tenant.example.com')
@@ -170,11 +239,7 @@ describe('AugmentGateway admin', () => {
   it('updates source priority order', async () => {
     mockUpdateSourcePriority.mockResolvedValue({})
 
-    const wrapper = mount(AugmentGatewayView, {
-      global: {
-        stubs: { AppLayout: { template: '<div><slot /></div>' } },
-      },
-    })
+    const wrapper = mountView()
     await flushPromises()
 
     await wrapper.get('[data-test="source-priority-down-official_quick_login"]').trigger('click')
@@ -185,28 +250,100 @@ describe('AugmentGateway admin', () => {
       sources: ['wukong_quick_login', 'official_quick_login'],
     })
     expect(mockShowSuccess).toHaveBeenCalledWith('admin.augmentGateway.saved')
+    expect(mockGetSummary).toHaveBeenCalledTimes(1)
+    expect(mockGetUsage).toHaveBeenCalledTimes(1)
   })
 
   it('prevents model visible toggle when smoke status is not ok', async () => {
-    const wrapper = mount(AugmentGatewayView, {
-      global: {
-        stubs: { AppLayout: { template: '<div><slot /></div>' } },
-      },
-    })
+    const wrapper = mountView()
     await flushPromises()
 
     const blocked = wrapper.get('[data-test="model-toggle-claude-sonnet-4-5"]')
     expect(blocked.attributes('disabled')).toBeDefined()
   })
 
+  it('refreshes only model data after a model toggle', async () => {
+    mockUpdateModel.mockResolvedValue({})
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-test="model-toggle-gpt-5.4"]').trigger('click')
+    await flushPromises()
+
+    expect(mockUpdateModel).toHaveBeenCalledWith('gpt-5.4', {
+      enabled: false,
+      smoke_status: 'passed',
+      expected_version: 4,
+    })
+    expect(mockGetSummary).toHaveBeenCalledTimes(1)
+    expect(mockGetUsage).toHaveBeenCalledTimes(1)
+    expect(mockGetModels).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses enabled state for model action semantics and shows visible as a separate derived state', async () => {
+    mockGetSummary.mockResolvedValueOnce({
+      entitlement_groups: { total_count: 0, rows: [] },
+      provider_routing_groups: {
+        total_count: 1,
+        configured_route_policy_version: '2026-05-08',
+        route_policy_version: '2026-05-08',
+        source_priority: ['official_quick_login'],
+        rows: [
+          { provider: 'openai', group_id: 1001, healthy: true, active_accounts: 2, total_accounts: 2, version: 1 },
+        ],
+      },
+      official_session_pool: {
+        total_count: 1,
+        active_count: 1,
+        healthy_count: 1,
+        source_counts: { official_quick_login: 1 },
+      },
+      usage: {
+        estimated_cost: 0,
+        settled_cost: 0,
+        cache_hit_ratio: 0,
+        currency: 'USD',
+      },
+      models: [
+        {
+          model: { id: 'gpt-5.4', provider: 'openai', upstream_model: 'gpt-5.4' },
+          enabled: true,
+          visible: false,
+          smoke_status: 'passed',
+          provider_healthy: true,
+          settings_version: 4,
+          settings_namespace: 'gateway.augment.enabled_models',
+        },
+      ],
+    })
+    mockGetModels.mockResolvedValueOnce({
+      rows: [
+        {
+          model: { id: 'gpt-5.4', provider: 'openai', upstream_model: 'gpt-5.4' },
+          enabled: true,
+          visible: false,
+          smoke_status: 'passed',
+          provider_healthy: true,
+          settings_version: 4,
+          settings_namespace: 'gateway.augment.enabled_models',
+        },
+      ],
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const button = wrapper.get('[data-test="model-toggle-gpt-5.4"]')
+    expect(button.text()).toBe('admin.augmentGateway.disableModel')
+    expect(wrapper.text()).toContain('admin.augmentGateway.enabledState')
+    expect(wrapper.text()).toContain('admin.augmentGateway.notVisibleState')
+  })
+
   it('calls pool revoke endpoint and refreshes session list', async () => {
     mockRevokePoolSessionAdmin.mockResolvedValue({})
 
-    const wrapper = mount(AugmentGatewayView, {
-      global: {
-        stubs: { AppLayout: { template: '<div><slot /></div>' } },
-      },
-    })
+    const wrapper = mountView()
     await flushPromises()
 
     await wrapper.get('[data-test="revoke-session-42"]').trigger('click')
@@ -214,6 +351,25 @@ describe('AugmentGateway admin', () => {
 
     expect(mockRevokePoolSessionAdmin).toHaveBeenCalledWith(42)
     expect(mockListPoolSessions).toHaveBeenCalledTimes(2)
+    expect(mockGetSummary).toHaveBeenCalledTimes(1)
+    expect(mockGetUsage).toHaveBeenCalledTimes(1)
+  })
+
+  it('calls pool disable and require-relogin actions', async () => {
+    mockDisablePoolSessionAdmin.mockResolvedValue({})
+    mockRequireReloginAdmin.mockResolvedValue({})
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-test="disable-session-42"]').trigger('click')
+    await wrapper.get('[data-test="require-relogin-session-42"]').trigger('click')
+    await flushPromises()
+
+    expect(mockDisablePoolSessionAdmin).toHaveBeenCalledWith(42)
+    expect(mockRequireReloginAdmin).toHaveBeenCalledWith(42)
+    expect(mockGetSummary).toHaveBeenCalledTimes(1)
+    expect(mockGetUsage).toHaveBeenCalledTimes(1)
   })
 
   it('captures callback payload into a pool session using admin pool bind APIs', async () => {
@@ -237,11 +393,7 @@ describe('AugmentGateway admin', () => {
       status: 'active',
     })
 
-    const wrapper = mount(AugmentGatewayView, {
-      global: {
-        stubs: { AppLayout: { template: '<div><slot /></div>' } },
-      },
-    })
+    const wrapper = mountView()
     await flushPromises()
 
     await wrapper.get('[data-test="capture-pool-session"]').trigger('click')
@@ -267,32 +419,57 @@ describe('AugmentGateway admin', () => {
       },
     })
     expect(mockListPoolSessions).toHaveBeenCalledTimes(2)
+    expect(mockGetSummary).toHaveBeenCalledTimes(1)
+    expect(mockGetUsage).toHaveBeenCalledTimes(1)
   })
 
   it('renders cache hit ratio and cost summary', async () => {
     mockGetSummary.mockResolvedValue({
-      provider_groups: [],
+      entitlement_groups: { total_count: 0, rows: [] },
+      provider_routing_groups: {
+        total_count: 0,
+        configured_route_policy_version: '2026-05-08',
+        route_policy_version: '2026-05-08',
+        source_priority: ['official_quick_login', 'wukong_quick_login'],
+        rows: [],
+      },
+      official_session_pool: {
+        total_count: 1,
+        active_count: 1,
+        healthy_count: 1,
+        source_counts: { official_quick_login: 1 },
+      },
+      usage: {
+        cache_hit_ratio: 0.42,
+        estimated_cost: 12.3,
+        settled_cost: 10.1,
+        currency: 'USD',
+      },
       models: [],
-      official_session_count: 1,
-      active_session_count: 1,
-      healthy_session_count: 1,
-      cache_hit_ratio: 0.42,
-      estimated_cost: 12.3,
-      settled_cost: 10.1,
-      source_priority: ['official_quick_login', 'wukong_quick_login'],
     })
 
-    const wrapper = mount(AugmentGatewayView, {
-      global: {
-        stubs: { AppLayout: { template: '<div><slot /></div>' } },
-      },
-    })
+    const wrapper = mountView()
     await flushPromises()
 
     const text = wrapper.text()
-    expect(text).toContain('0.42')
-    expect(text).toContain('12.3')
-    expect(text).toContain('10.1')
+    expect(text).toContain('42.0%')
+    expect(text).toContain('12.30')
+    expect(text).toContain('10.10')
+  })
+
+  it('renders usage routing metadata and admin surface links', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('context_engine')
+    expect(text).toContain('augment_gateway')
+    expect(text).toContain('augment-session-1')
+    expect(text).toContain('admin.augmentGateway.configuredRoutePolicyVersion')
+    expect(text).toContain('admin.augmentGateway.executedRoutePolicyVersion')
+    expect(wrapper.html()).toContain('/admin/groups')
+    expect(wrapper.html()).toContain('/admin/accounts')
+    expect(wrapper.html()).toContain('/plugin/augment/quick-login')
   })
 })
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,19 +12,19 @@ import (
 )
 
 const (
-	augmentGatewaySettingsNamespacePrefix               = "gateway.augment."
-	AugmentGatewayProviderGroupOpenAINamespace         = "gateway.augment.provider_groups.openai"
-	AugmentGatewayProviderGroupDeepSeekNamespace       = "gateway.augment.provider_groups.deepseek"
-	AugmentGatewayProviderGroupAnthropicNamespace      = "gateway.augment.provider_groups.anthropic"
-	AugmentGatewayProviderGroupGeminiNamespace         = "gateway.augment.provider_groups.gemini"
-	AugmentGatewayEnabledModelsNamespace               = "gateway.augment.enabled_models"
-	AugmentGatewaySourcePolicyWukongEnabledNamespace   = "gateway.augment.source_policy.wukong_enabled"
-	AugmentGatewaySourcePriorityNamespace              = "gateway.augment.source_policy.priority"
-	AugmentGatewayRoutePolicyVersionNamespace          = "gateway.augment.route_policy_version"
-	AugmentGatewayDefaultRoutePolicyVersion            = "v1"
-	AugmentGatewaySettingsActionUpdate                 = "update"
-	AugmentGatewaySettingsActionRollback               = "rollback"
-	AugmentGatewaySettingsResultSuccess                = "success"
+	augmentGatewaySettingsNamespacePrefix            = "gateway.augment."
+	AugmentGatewayProviderGroupOpenAINamespace       = "gateway.augment.provider_groups.openai"
+	AugmentGatewayProviderGroupDeepSeekNamespace     = "gateway.augment.provider_groups.deepseek"
+	AugmentGatewayProviderGroupAnthropicNamespace    = "gateway.augment.provider_groups.anthropic"
+	AugmentGatewayProviderGroupGeminiNamespace       = "gateway.augment.provider_groups.gemini"
+	AugmentGatewayEnabledModelsNamespace             = "gateway.augment.enabled_models"
+	AugmentGatewaySourcePolicyWukongEnabledNamespace = "gateway.augment.source_policy.wukong_enabled"
+	AugmentGatewaySourcePriorityNamespace            = "gateway.augment.source_policy.priority"
+	AugmentGatewayRoutePolicyVersionNamespace        = "gateway.augment.route_policy_version"
+	AugmentGatewayDefaultRoutePolicyVersion          = "v1"
+	AugmentGatewaySettingsActionUpdate               = "update"
+	AugmentGatewaySettingsActionRollback             = "rollback"
+	AugmentGatewaySettingsResultSuccess              = "success"
 )
 
 type AugmentGatewaySmokeStatus string
@@ -66,6 +67,7 @@ type AugmentGatewaySettingsStore interface {
 
 type AugmentGatewayGroupReader interface {
 	GetAccountCount(ctx context.Context, groupID int64) (total int64, active int64, err error)
+	ListActive(ctx context.Context) ([]Group, error)
 }
 
 type AugmentGatewaySettingsVersion struct {
@@ -138,19 +140,27 @@ type AugmentGatewayProviderRuntime struct {
 	ActiveAccounts int64                  `json:"active_accounts"`
 }
 
+type AugmentGatewayEntitlementGroup struct {
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	TotalAccounts  int64  `json:"total_accounts"`
+	ActiveAccounts int64  `json:"active_accounts"`
+}
+
 type AugmentGatewayRegistryState struct {
-	GatewayEnabled     bool                                              `json:"gateway_enabled"`
+	GatewayEnabled     bool                                                     `json:"gateway_enabled"`
 	ProviderGroups     map[AugmentGatewayProvider]AugmentGatewayProviderRuntime `json:"provider_groups"`
-	Models             map[string]AugmentGatewayModelSetting             `json:"models"`
-	SourcePolicy       AugmentGatewaySourcePolicySetting                 `json:"source_policy"`
-	SourcePriority     []string                                          `json:"source_priority"`
-	RoutePolicyVersion string                                            `json:"route_policy_version"`
+	Models             map[string]AugmentGatewayModelSetting                    `json:"models"`
+	SourcePolicy       AugmentGatewaySourcePolicySetting                        `json:"source_policy"`
+	SourcePriority     []string                                                 `json:"source_priority"`
+	RoutePolicyVersion string                                                   `json:"route_policy_version"`
 }
 
 type AugmentGatewayAdminService struct {
-	store      AugmentGatewaySettingsStore
+	store       AugmentGatewaySettingsStore
 	groupReader AugmentGatewayGroupReader
-	fallback   config.GatewayAugmentConfig
+	fallback    config.GatewayAugmentConfig
 }
 
 func NewAugmentGatewayAdminService(
@@ -390,6 +400,60 @@ func (s *AugmentGatewayAdminService) ListProviderGroups(ctx context.Context) ([]
 	return out, nil
 }
 
+func (s *AugmentGatewayAdminService) ListEntitlementGroups(ctx context.Context) ([]AugmentGatewayEntitlementGroup, error) {
+	if s == nil || s.groupReader == nil {
+		return []AugmentGatewayEntitlementGroup{}, nil
+	}
+
+	groups, err := s.groupReader.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]AugmentGatewayEntitlementGroup, 0, len(groups))
+	for _, group := range groups {
+		if !group.AugmentGatewayEntitled {
+			continue
+		}
+
+		total := group.AccountCount
+		active := group.ActiveAccountCount
+		if group.ID > 0 {
+			countTotal, countActive, err := s.groupReader.GetAccountCount(ctx, group.ID)
+			if err != nil {
+				return nil, err
+			}
+			total = countTotal
+			active = countActive
+		}
+
+		out = append(out, AugmentGatewayEntitlementGroup{
+			ID:             group.ID,
+			Name:           group.Name,
+			Status:         group.Status,
+			TotalAccounts:  total,
+			ActiveAccounts: active,
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name == out[j].Name {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Name < out[j].Name
+	})
+
+	return out, nil
+}
+
+func (s *AugmentGatewayAdminService) GetRoutePolicyVersion(ctx context.Context) (string, error) {
+	state, err := s.LoadAugmentGatewayRegistryState(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(state.RoutePolicyVersion), nil
+}
+
 func (s *AugmentGatewayAdminService) ListModels(ctx context.Context) ([]AugmentGatewayManagedModel, error) {
 	state, err := s.LoadAugmentGatewayRegistryState(ctx)
 	if err != nil {
@@ -412,11 +476,11 @@ func (s *AugmentGatewayAdminService) ListModels(ctx context.Context) ([]AugmentG
 		providerState := state.ProviderGroups[model.Provider]
 		model.ProviderGroupID = providerState.GroupID
 		out = append(out, AugmentGatewayManagedModel{
-			Model:           model,
-			Enabled:         setting.Enabled,
-			Visible:         registry.IsVisible(model.ID),
-			SmokeStatus:     setting.SmokeStatus,
-			ProviderHealthy: providerState.Healthy,
+			Model:             model,
+			Enabled:           setting.Enabled,
+			Visible:           registry.IsVisible(model.ID),
+			SmokeStatus:       setting.SmokeStatus,
+			ProviderHealthy:   providerState.Healthy,
 			SettingsNamespace: AugmentGatewayEnabledModelsNamespace,
 			SettingsVersion:   version,
 		})

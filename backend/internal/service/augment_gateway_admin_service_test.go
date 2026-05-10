@@ -172,6 +172,31 @@ func TestAugmentGatewaySettingsListModelsExposeSettingsVersion(t *testing.T) {
 	require.Equal(t, AugmentGatewayEnabledModelsNamespace, rows[0].SettingsNamespace)
 }
 
+func TestAugmentGatewaySettingsListEntitlementGroupsFiltersAugmentEntitledActiveGroups(t *testing.T) {
+	t.Parallel()
+
+	store := &augmentGatewaySettingsStoreStub{}
+	groupReader := &augmentGatewayGroupReaderStub{
+		counts: map[int64]augmentGatewayGroupCount{
+			201: {total: 4, active: 3},
+		},
+		groups: []Group{
+			{ID: 201, Name: "Augment Users", Status: StatusActive, AugmentGatewayEntitled: true, AccountCount: 4, ActiveAccountCount: 3},
+			{ID: 202, Name: "Plain Users", Status: StatusActive, AugmentGatewayEntitled: false, AccountCount: 6, ActiveAccountCount: 6},
+			{ID: 203, Name: "Paused Augment", Status: StatusDisabled, AugmentGatewayEntitled: true, AccountCount: 1, ActiveAccountCount: 0},
+		},
+	}
+	svc := NewAugmentGatewayAdminService(store, groupReader, config.GatewayAugmentConfig{Enabled: true})
+
+	rows, err := svc.ListEntitlementGroups(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, int64(201), rows[0].ID)
+	require.Equal(t, "Augment Users", rows[0].Name)
+	require.Equal(t, int64(4), rows[0].TotalAccounts)
+	require.Equal(t, int64(3), rows[0].ActiveAccounts)
+}
+
 func TestAugmentGatewaySettingsRollback(t *testing.T) {
 	t.Parallel()
 
@@ -288,6 +313,7 @@ func (s *augmentGatewaySettingsStoreStub) Rollback(ctx context.Context, input Au
 
 type augmentGatewayGroupReaderStub struct {
 	counts map[int64]augmentGatewayGroupCount
+	groups []Group
 }
 
 type augmentGatewayGroupCount struct {
@@ -300,6 +326,16 @@ func (s *augmentGatewayGroupReaderStub) GetAccountCount(ctx context.Context, gro
 		return count.total, count.active, nil
 	}
 	return 0, 0, nil
+}
+
+func (s *augmentGatewayGroupReaderStub) ListActive(ctx context.Context) ([]Group, error) {
+	out := make([]Group, 0, len(s.groups))
+	for _, group := range s.groups {
+		if group.Status == StatusActive {
+			out = append(out, group)
+		}
+	}
+	return out, nil
 }
 
 func mustServiceJSON(t *testing.T, value any) json.RawMessage {

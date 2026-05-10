@@ -14,9 +14,11 @@ import (
 type augmentGatewayAdminSettingsAPI interface {
 	ListProviderGroups(ctx context.Context) ([]service.AugmentGatewayProviderRuntime, error)
 	UpdateProviderGroup(ctx context.Context, provider service.AugmentGatewayProvider, setting service.AugmentGatewayProviderGroupSetting, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error)
+	ListEntitlementGroups(ctx context.Context) ([]service.AugmentGatewayEntitlementGroup, error)
 	ListModels(ctx context.Context) ([]service.AugmentGatewayManagedModel, error)
 	UpdateModel(ctx context.Context, modelID string, setting service.AugmentGatewayModelSetting, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error)
 	GetSourcePriority(ctx context.Context) ([]string, error)
+	GetRoutePolicyVersion(ctx context.Context) (string, error)
 	UpdateSourcePriority(ctx context.Context, sources []string, meta service.AugmentGatewaySettingsMutationMeta) (*service.AugmentGatewaySettingsVersion, error)
 }
 
@@ -32,7 +34,46 @@ type augmentGatewayOfficialSessionAdminAPI interface {
 }
 
 type augmentGatewayUsageAdminAPI interface {
+	GetSummaryAdmin(ctx context.Context) (*service.AugmentGatewayBillingSummary, error)
 	ListUsageAdmin(ctx context.Context, params pagination.PaginationParams) ([]service.AugmentGatewayBillingUsageRow, *pagination.PaginationResult, error)
+}
+
+type augmentGatewaySummaryResponse struct {
+	EntitlementGroups            augmentGatewayEntitlementGroupSection   `json:"entitlement_groups"`
+	ProviderRouting              augmentGatewayProviderRoutingSection    `json:"provider_routing_groups"`
+	OfficialSessionPool          augmentGatewayOfficialSessionPoolReport `json:"official_session_pool"`
+	Usage                        service.AugmentGatewayBillingSummary    `json:"usage"`
+	Models                       []service.AugmentGatewayManagedModel    `json:"models"`
+	ProviderGroups               []service.AugmentGatewayProviderRuntime `json:"provider_groups"`
+	OfficialSessionCount         int                                     `json:"official_session_count"`
+	ActiveSessionCount           int                                     `json:"active_session_count"`
+	HealthySessionCount          int                                     `json:"healthy_session_count"`
+	SourcePriority               []string                                `json:"source_priority"`
+	ConfiguredRoutePolicyVersion string                                  `json:"configured_route_policy_version,omitempty"`
+	RoutePolicyVersion           string                                  `json:"route_policy_version,omitempty"`
+	EstimatedCost                float64                                 `json:"estimated_cost"`
+	SettledCost                  float64                                 `json:"settled_cost"`
+	CacheHitRatio                float64                                 `json:"cache_hit_ratio"`
+}
+
+type augmentGatewayEntitlementGroupSection struct {
+	TotalCount int                                      `json:"total_count"`
+	Rows       []service.AugmentGatewayEntitlementGroup `json:"rows"`
+}
+
+type augmentGatewayProviderRoutingSection struct {
+	TotalCount                   int                                     `json:"total_count"`
+	ConfiguredRoutePolicyVersion string                                  `json:"configured_route_policy_version,omitempty"`
+	RoutePolicyVersion           string                                  `json:"route_policy_version,omitempty"`
+	SourcePriority               []string                                `json:"source_priority"`
+	Rows                         []service.AugmentGatewayProviderRuntime `json:"rows"`
+}
+
+type augmentGatewayOfficialSessionPoolReport struct {
+	TotalCount   int            `json:"total_count"`
+	ActiveCount  int            `json:"active_count"`
+	HealthyCount int            `json:"healthy_count"`
+	SourceCounts map[string]int `json:"source_counts,omitempty"`
 }
 
 type AugmentGatewayHandler struct {
@@ -70,6 +111,11 @@ func (h *AugmentGatewayHandler) Summary(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	entitlementGroups, err := h.settingsSvc.ListEntitlementGroups(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	models, err := h.settingsSvc.ListModels(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -85,9 +131,21 @@ func (h *AugmentGatewayHandler) Summary(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	routePolicyVersion, err := h.settingsSvc.GetRoutePolicyVersion(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	usageSummary, err := h.usageSvc.GetSummaryAdmin(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	activeCount := 0
 	healthyCount := 0
+	sourceCounts := make(map[string]int)
 	for _, session := range sessions {
+		sourceCounts[session.Source]++
 		if session.Status == "active" {
 			activeCount++
 		}
@@ -95,13 +153,51 @@ func (h *AugmentGatewayHandler) Summary(c *gin.Context) {
 			healthyCount++
 		}
 	}
-	response.Success(c, gin.H{
-		"provider_groups":        providerGroups,
-		"models":                 models,
-		"official_session_count": len(sessions),
-		"active_session_count":   activeCount,
-		"healthy_session_count":  healthyCount,
-		"source_priority":        sourcePriority,
+	if usageSummary == nil {
+		usageSummary = &service.AugmentGatewayBillingSummary{}
+	}
+	if entitlementGroups == nil {
+		entitlementGroups = []service.AugmentGatewayEntitlementGroup{}
+	}
+	if providerGroups == nil {
+		providerGroups = []service.AugmentGatewayProviderRuntime{}
+	}
+	if sourcePriority == nil {
+		sourcePriority = []string{}
+	}
+	if models == nil {
+		models = []service.AugmentGatewayManagedModel{}
+	}
+	response.Success(c, augmentGatewaySummaryResponse{
+		EntitlementGroups: augmentGatewayEntitlementGroupSection{
+			TotalCount: len(entitlementGroups),
+			Rows:       entitlementGroups,
+		},
+		ProviderRouting: augmentGatewayProviderRoutingSection{
+			TotalCount:                   len(providerGroups),
+			ConfiguredRoutePolicyVersion: routePolicyVersion,
+			RoutePolicyVersion:           routePolicyVersion,
+			SourcePriority:               append([]string(nil), sourcePriority...),
+			Rows:                         providerGroups,
+		},
+		OfficialSessionPool: augmentGatewayOfficialSessionPoolReport{
+			TotalCount:   len(sessions),
+			ActiveCount:  activeCount,
+			HealthyCount: healthyCount,
+			SourceCounts: sourceCounts,
+		},
+		Usage:                        *usageSummary,
+		Models:                       models,
+		ProviderGroups:               providerGroups,
+		OfficialSessionCount:         len(sessions),
+		ActiveSessionCount:           activeCount,
+		HealthySessionCount:          healthyCount,
+		SourcePriority:               append([]string(nil), sourcePriority...),
+		ConfiguredRoutePolicyVersion: routePolicyVersion,
+		RoutePolicyVersion:           routePolicyVersion,
+		EstimatedCost:                usageSummary.EstimatedCost,
+		SettledCost:                  usageSummary.SettledCost,
+		CacheHitRatio:                usageSummary.CacheHitRatio,
 	})
 }
 

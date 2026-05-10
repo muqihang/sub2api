@@ -30,3 +30,10 @@ describe('AppSidebar header styles', () => {
     expect(sidebarBrandBlockMatch?.[0]).not.toContain('overflow: hidden;')
   })
 })
+
+describe('AppSidebar Augment Gateway admin navigation', () => {
+  it('keeps the Augment Gateway admin link visible in simple mode', () => {
+    expect(componentSource).toContain("{ path: '/admin/augment-gateway', label: t('admin.augmentGateway.title'), icon: GlobeIcon },")
+    expect(componentSource).not.toContain("{ path: '/admin/augment-gateway', label: t('admin.augmentGateway.title'), icon: GlobeIcon, hideInSimpleMode: true },")
+  })
+})

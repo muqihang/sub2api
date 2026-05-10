@@ -1,15 +1,52 @@
 import { apiClient } from '../client'
 
 export interface AugmentGatewaySummary {
-  provider_groups?: Array<Record<string, unknown>>
-  models?: Array<Record<string, unknown>>
+  entitlement_groups?: {
+    total_count?: number
+    rows?: AugmentGatewayEntitlementGroupRow[]
+  }
+  provider_routing_groups?: {
+    total_count?: number
+    configured_route_policy_version?: string
+    route_policy_version?: string
+    source_priority?: string[]
+    rows?: AugmentProviderGroupRow[]
+  }
+  official_session_pool?: {
+    total_count?: number
+    active_count?: number
+    healthy_count?: number
+    source_counts?: Record<string, number>
+  }
+  usage?: {
+    estimated_cost?: number
+    settled_cost?: number
+    free_quota?: number
+    paid_balance?: number
+    currency?: string
+    cache_hit_ratio?: number
+    total_cache_read_tokens?: number
+    total_cache_creation_tokens?: number
+  }
+  models?: AugmentGatewayModelRow[]
+  provider_groups?: AugmentProviderGroupRow[]
   official_session_count?: number
   active_session_count?: number
   healthy_session_count?: number
   source_priority?: string[]
-  cache_hit_ratio?: number
+  configured_route_policy_version?: string
+  route_policy_version?: string
   estimated_cost?: number
   settled_cost?: number
+  cache_hit_ratio?: number
+}
+
+export interface AugmentGatewayEntitlementGroupRow {
+  id: number
+  name: string
+  status: string
+  total_accounts: number
+  active_accounts: number
 }
 
 export interface AugmentProviderGroupRow {
@@ -48,11 +85,18 @@ export interface AugmentPoolSessionAdminRow {
 
 export interface AugmentGatewayAdminUsageRow {
   model: string
+  upstream_model?: string
+  request_scope?: string
+  feature_scope?: string
+  group_id?: number
+  route_policy_version?: string
+  augment_session_id?: string
   request_id: string
   estimated_cost: number
   settled_cost: number
   cache_read_tokens: number
   cache_creation_tokens: number
+  created_at?: string
 }
 
 export async function getAugmentGatewaySummary(): Promise<AugmentGatewaySummary> {

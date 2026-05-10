@@ -66,6 +66,30 @@ func TestAugmentGatewayUsageServiceSeparatesEstimatedAndSettledCost(t *testing.T
 	require.Equal(t, 1.10, summary.SettledCost)
 }
 
+func TestAugmentGatewayUsageServiceAdminSummaryAggregatesAcrossAllAugmentRows(t *testing.T) {
+	t.Parallel()
+
+	estimated1 := 1.25
+	estimated2 := 0.50
+	settled1 := 1.10
+	settled2 := 0.25
+	repo := &augmentGatewayUsageRepoStub{
+		logs: []UsageLog{
+			{AugmentUsageFields: AugmentUsageFields{EstimatedCost: &estimated1, SettledCost: &settled1}},
+			{AugmentUsageFields: AugmentUsageFields{EstimatedCost: &estimated2, SettledCost: &settled2}},
+		},
+		page: &pagination.PaginationResult{Page: 1, PageSize: 500, Pages: 1, Total: 2},
+	}
+	svc := NewAugmentGatewayUsageService(repo)
+
+	summary, err := svc.GetSummaryAdmin(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1.75, summary.EstimatedCost)
+	require.Equal(t, 1.35, summary.SettledCost)
+	require.Equal(t, AugmentUsageClientProduct, repo.lastFilters.ClientProduct)
+	require.Zero(t, repo.lastFilters.UserID)
+}
+
 func TestAugmentGatewayUsageServiceReturnsPriceSnapshotAndBalanceFields(t *testing.T) {
 	t.Parallel()
 
@@ -183,6 +207,45 @@ func TestAugmentGatewayUsageServiceHidesPromptAndRetrievalBodies(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(data), "prompt")
 	require.NotContains(t, string(data), "retrieval")
+}
+
+func TestAugmentGatewayUsageServiceAdminRowsExposePersistedAugmentRoutingFields(t *testing.T) {
+	t.Parallel()
+
+	groupID := int64(301)
+	upstreamModel := "gpt-5.4-mini"
+	requestScope := AugmentUsageRequestScopeGateway
+	featureScope := AugmentUsageFeatureScopeContextEngine
+	augmentSessionID := "augment-session-1"
+	routePolicyVersion := "2026-05-08"
+	repo := &augmentGatewayUsageRepoStub{
+		logs: []UsageLog{
+			{
+				RequestedModel: "gpt-5.4",
+				UpstreamModel:  &upstreamModel,
+				GroupID:        &groupID,
+				RequestID:      "req-routing",
+				AugmentUsageFields: AugmentUsageFields{
+					RequestScope:       &requestScope,
+					FeatureScope:       &featureScope,
+					AugmentSessionID:   &augmentSessionID,
+					RoutePolicyVersion: &routePolicyVersion,
+				},
+			},
+		},
+		page: &pagination.PaginationResult{Page: 1, PageSize: 20, Pages: 1, Total: 1},
+	}
+	svc := NewAugmentGatewayUsageService(repo)
+
+	rows, _, err := svc.ListUsageAdmin(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 20})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, &groupID, rows[0].GroupID)
+	require.Equal(t, upstreamModel, rows[0].UpstreamModel)
+	require.Equal(t, requestScope, rows[0].RequestScope)
+	require.Equal(t, featureScope, rows[0].FeatureScope)
+	require.Equal(t, augmentSessionID, rows[0].AugmentSessionID)
+	require.Equal(t, routePolicyVersion, rows[0].RoutePolicyVersion)
 }
 
 type augmentGatewayUsageRepoStub struct {

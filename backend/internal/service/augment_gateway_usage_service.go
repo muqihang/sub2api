@@ -24,8 +24,14 @@ type AugmentGatewayBillingSummary struct {
 
 type AugmentGatewayBillingUsageRow struct {
 	Model                  string    `json:"model"`
+	UpstreamModel          string    `json:"upstream_model,omitempty"`
 	Endpoint               string    `json:"endpoint"`
 	Status                 string    `json:"status"`
+	RequestScope           string    `json:"request_scope,omitempty"`
+	FeatureScope           string    `json:"feature_scope,omitempty"`
+	AugmentSessionID       string    `json:"augment_session_id,omitempty"`
+	RoutePolicyVersion     string    `json:"route_policy_version,omitempty"`
+	GroupID                *int64    `json:"group_id,omitempty"`
 	Tokens                 int       `json:"tokens"`
 	CacheReadTokens        int       `json:"cache_read_tokens"`
 	CacheCreationTokens    int       `json:"cache_creation_tokens"`
@@ -67,36 +73,15 @@ func (s *AugmentGatewayUsageService) GetSummary(ctx context.Context, userID int6
 	if err != nil {
 		return nil, err
 	}
+	return summarizeAugmentUsageRows(rows), nil
+}
 
-	summary := &AugmentGatewayBillingSummary{}
-	var totalInputLike int64
-	for _, row := range rows {
-		if row.EstimatedCost != nil {
-			summary.EstimatedCost += *row.EstimatedCost
-		}
-		if row.SettledCost != nil {
-			summary.SettledCost += *row.SettledCost
-		}
-		if row.FreeQuotaApplied != nil {
-			summary.FreeQuota += *row.FreeQuotaApplied
-		}
-		if row.PaidBalanceApplied != nil {
-			summary.PaidBalance += *row.PaidBalanceApplied
-		}
-		summary.TotalCacheReadTokens += int64(row.CacheReadTokens)
-		summary.TotalCacheCreationTokens += int64(row.CacheCreationTokens)
-		totalInputLike += int64(row.InputTokens + row.CacheReadTokens)
-		if summary.Currency == "" && row.Currency != nil {
-			summary.Currency = strings.TrimSpace(*row.Currency)
-		}
+func (s *AugmentGatewayUsageService) GetSummaryAdmin(ctx context.Context) (*AugmentGatewayBillingSummary, error) {
+	rows, err := s.loadAllRowsAdmin(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if summary.Currency == "" {
-		summary.Currency = AugmentUsageCurrencyUSD
-	}
-	if totalInputLike > 0 {
-		summary.CacheHitRatio = roundAugmentBillingFloat(float64(summary.TotalCacheReadTokens) / float64(totalInputLike))
-	}
-	return summary, nil
+	return summarizeAugmentUsageRows(rows), nil
 }
 
 func (s *AugmentGatewayUsageService) ListUsage(ctx context.Context, userID int64, params pagination.PaginationParams) ([]AugmentGatewayBillingUsageRow, *pagination.PaginationResult, error) {
@@ -191,12 +176,78 @@ func (s *AugmentGatewayUsageService) loadAllRows(ctx context.Context, userID int
 	return all, nil
 }
 
+func (s *AugmentGatewayUsageService) loadAllRowsAdmin(ctx context.Context) ([]UsageLog, error) {
+	if s == nil || s.usageRepo == nil {
+		return nil, infraerrors.ServiceUnavailable("AUGMENT_BILLING_UNAVAILABLE", "augment gateway usage service is unavailable")
+	}
+	all := make([]UsageLog, 0)
+	page := 1
+	pageSize := 500
+	for {
+		rows, pageInfo, err := s.usageRepo.ListWithFilters(ctx, pagination.PaginationParams{Page: page, PageSize: pageSize}, usagestats.UsageLogFilters{
+			ClientProduct: AugmentUsageClientProduct,
+			ExactTotal:    true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows...)
+		if pageInfo == nil || page >= pageInfo.Pages || len(rows) == 0 {
+			break
+		}
+		page++
+	}
+	return all, nil
+}
+
+func summarizeAugmentUsageRows(rows []UsageLog) *AugmentGatewayBillingSummary {
+	summary := &AugmentGatewayBillingSummary{}
+	var totalInputLike int64
+	for _, row := range rows {
+		if row.EstimatedCost != nil {
+			summary.EstimatedCost += *row.EstimatedCost
+		}
+		if row.SettledCost != nil {
+			summary.SettledCost += *row.SettledCost
+		}
+		if row.FreeQuotaApplied != nil {
+			summary.FreeQuota += *row.FreeQuotaApplied
+		}
+		if row.PaidBalanceApplied != nil {
+			summary.PaidBalance += *row.PaidBalanceApplied
+		}
+		summary.TotalCacheReadTokens += int64(row.CacheReadTokens)
+		summary.TotalCacheCreationTokens += int64(row.CacheCreationTokens)
+		totalInputLike += int64(row.InputTokens + row.CacheReadTokens)
+		if summary.Currency == "" && row.Currency != nil {
+			summary.Currency = strings.TrimSpace(*row.Currency)
+		}
+	}
+	if summary.Currency == "" {
+		summary.Currency = AugmentUsageCurrencyUSD
+	}
+	if totalInputLike > 0 {
+		summary.CacheHitRatio = roundAugmentBillingFloat(float64(summary.TotalCacheReadTokens) / float64(totalInputLike))
+	}
+	return summary
+}
+
 func augmentUsageLogToRow(log UsageLog) AugmentGatewayBillingUsageRow {
 	status := augmentUsageStatus(log)
+	model := strings.TrimSpace(log.RequestedModel)
+	if model == "" {
+		model = strings.TrimSpace(log.Model)
+	}
 	return AugmentGatewayBillingUsageRow{
-		Model:                  log.RequestedModel,
+		Model:                  model,
+		UpstreamModel:          strings.TrimSpace(derefPlainUsageString(log.UpstreamModel)),
 		Endpoint:               derefUsageString(log.InboundEndpoint),
 		Status:                 status,
+		RequestScope:           derefUsageString(log.RequestScope),
+		FeatureScope:           derefUsageString(log.FeatureScope),
+		AugmentSessionID:       derefUsageString(log.AugmentSessionID),
+		RoutePolicyVersion:     derefUsageString(log.RoutePolicyVersion),
+		GroupID:                cloneUsageInt64Ptr(log.GroupID),
 		Tokens:                 log.TotalTokens(),
 		CacheReadTokens:        log.CacheReadTokens,
 		CacheCreationTokens:    log.CacheCreationTokens,
@@ -245,6 +296,13 @@ func derefUsageString(value *string) string {
 	return strings.TrimSpace(*value)
 }
 
+func derefPlainUsageString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 func derefUsageFloat(value *float64) float64 {
 	if value == nil {
 		return 0
@@ -257,6 +315,14 @@ func derefUsageBool(value *bool) bool {
 		return false
 	}
 	return *value
+}
+
+func cloneUsageInt64Ptr(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func roundAugmentBillingFloat(value float64) float64 {
