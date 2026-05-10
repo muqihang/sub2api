@@ -1,0 +1,202 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/stretchr/testify/require"
+)
+
+func testOpenAIEgressConfig() *config.Config {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = true
+	cfg.Gateway.OpenAICore.AllowDirectFallback = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+		{Name: "bucket-a", Enabled: true, ProxyURL: "socks5h://user:pass@127.0.0.1:9001"},
+		{Name: "bucket-disabled", Enabled: false, ProxyURL: "http://127.0.0.1:8080"},
+	}
+	return cfg
+}
+
+func TestOpenAIGatewayEgressSelectsEnabledBucketProxy(t *testing.T) {
+	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets[1].TLS = config.OpenAIGatewayBucketTLSConfig{
+		Enabled:              true,
+		ProfileID:            42,
+		AllowAccountOverride: true,
+	}
+	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{"openai_gateway_egress_bucket": "bucket-a"},
+	}
+
+	resolution, err := svc.ResolveEgress(context.Background(), account, "")
+	require.NoError(t, err)
+	require.Equal(t, "bucket-a", resolution.BucketName)
+	require.Equal(t, "socks5h://user:pass@127.0.0.1:9001", resolution.ProxyURL)
+	require.True(t, resolution.ProxySelected)
+	require.NotContains(t, resolution.ProxyLabel, "user")
+	require.NotContains(t, resolution.ProxyLabel, "pass")
+	require.NotEmpty(t, resolution.ProxyHash)
+	require.True(t, resolution.TLS.Enabled)
+	require.Equal(t, int64(42), resolution.TLS.ProfileID)
+	require.True(t, resolution.TLS.AllowAccountOverride)
+}
+
+func TestOpenAIGatewayEgressAllowsDirectBucketInLocalMode(t *testing.T) {
+	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.EgressFailClosed = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = true
+	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
+
+	resolution, err := svc.ResolveEgress(context.Background(), &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, "")
+	require.NoError(t, err)
+	require.Equal(t, "default", resolution.BucketName)
+	require.False(t, resolution.ProxySelected)
+	require.Equal(t, "direct_fallback", resolution.Source)
+}
+
+func TestOpenAIGatewayEgressMissingBucketFailsClosed(t *testing.T) {
+	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_gateway_egress_bucket": "missing"}}
+
+	resolution, err := svc.ResolveEgress(context.Background(), account, "http://account-proxy.local:8080")
+	require.Nil(t, resolution)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.True(t, errors.As(err, &policyErr))
+	require.Equal(t, "missing_bucket", policyErr.Code)
+	require.Equal(t, "missing", policyErr.BucketName)
+}
+
+func TestOpenAIGatewayEgressDisabledBucketFailsClosed(t *testing.T) {
+	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-disabled"}}
+
+	resolution, err := svc.ResolveEgress(context.Background(), account, "http://account-proxy.local:8080")
+	require.Nil(t, resolution)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.True(t, errors.As(err, &policyErr))
+	require.Equal(t, "disabled_bucket", policyErr.Code)
+}
+
+func TestOpenAIGatewayEgressDisabledBucketFallbackRequiresFlag(t *testing.T) {
+	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.EgressFailClosed = false
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = true
+	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-disabled"}}
+
+	resolution, err := svc.ResolveEgress(context.Background(), account, "http://account-proxy.local:8080")
+	require.NoError(t, err)
+	require.Equal(t, "bucket-disabled", resolution.BucketName)
+	require.Equal(t, "http://account-proxy.local:8080", resolution.ProxyURL)
+	require.Equal(t, "account_fallback", resolution.Source)
+}
+
+func TestOpenAIGatewayEgressFallbacksFailWhenDisabled(t *testing.T) {
+	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
+
+	resolution, err := svc.ResolveEgress(context.Background(), &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, "http://account-proxy.local:8080")
+	require.Nil(t, resolution)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.True(t, errors.As(err, &policyErr))
+	require.Equal(t, "direct_fallback_disabled", policyErr.Code)
+}
+
+func TestOpenAIGatewayEgressProxyMaskAndHash(t *testing.T) {
+	first := "socks5h://user:pass@127.0.0.1:9001"
+	second := "socks5h://user:pass@127.0.0.1:9002"
+
+	require.NotContains(t, MaskOpenAIProxyURL(first), "user")
+	require.NotContains(t, MaskOpenAIProxyURL(first), "pass")
+	require.NotEmpty(t, HashOpenAIProxyURL(first))
+	require.NotEqual(t, HashOpenAIProxyURL(first), HashOpenAIProxyURL(second))
+	require.Equal(t, HashOpenAIProxyURL(first), HashOpenAIProxyURL(first))
+}
+
+func TestOpenAIGatewayEgressProxyMaskAndHashStripSecretBearingURLComponents(t *testing.T) {
+	raw := "http://user:pass@proxy.local:8080/path/token?signature=secret#fragment-secret"
+
+	label := MaskOpenAIProxyURL(raw)
+	require.Equal(t, "http://proxy.local:8080", label)
+	require.NotContains(t, label, "user")
+	require.NotContains(t, label, "pass")
+	require.NotContains(t, label, "token")
+	require.NotContains(t, label, "signature")
+	require.NotContains(t, label, "fragment-secret")
+	require.Equal(t, HashOpenAIProxyURL("http://proxy.local:8080"), HashOpenAIProxyURL(raw))
+}
+
+func TestOpenAIGatewayRuntimeSnapshotDoesNotExposeRawProxyURL(t *testing.T) {
+	runtime := OpenAIGatewayAccountRuntime{
+		EgressBucket:  "bucket-a",
+		ProxySelected: true,
+		ProxyLabel:    "socks5h://127.0.0.1:9001",
+		ProxyHash:     "hash",
+	}
+
+	raw, err := json.Marshal(runtime)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "egress_proxy_url")
+}
+
+func TestOpenAIGatewayRuntimeSnapshotExposesNonSensitiveTLS(t *testing.T) {
+	runtime := OpenAIGatewayAccountRuntime{
+		EgressBucket: "bucket-a",
+		TLS: &OpenAIGatewayEffectiveTLS{
+			Enabled:        true,
+			ProfileID:      42,
+			ProfileName:    "Chrome",
+			ProfileHash:    "profile-hash",
+			Source:         "bucket",
+			CacheIdentity:  "bucket=bucket-a|proxy=direct|profile=42|source=bucket",
+			HTTPApplicable: true,
+			WSApplicable:   true,
+		},
+	}
+
+	raw, err := json.Marshal(runtime)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"tls"`)
+	require.Contains(t, string(raw), `"profile_id":42`)
+	require.NotContains(t, string(raw), "proxy_url")
+}
+
+func TestOpenAIGatewayAdminBucketSnapshotDoesNotExposeRawProxyURL(t *testing.T) {
+	bucket := OpenAIGatewayAdminBucketSnapshot{
+		Name:          "bucket-a",
+		Enabled:       true,
+		ProxySelected: true,
+		ProxyLabel:    "socks5h://127.0.0.1:9001",
+		ProxyHash:     "hash",
+		AccountCount:  1,
+	}
+
+	raw, err := json.Marshal(bucket)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "proxy_url")
+}

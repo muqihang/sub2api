@@ -26,10 +26,6 @@ import (
 )
 
 const (
-	openAIWSBetaV1Value  = "responses_websockets=2026-02-04"
-	openAIWSBetaV2Value  = "responses_websockets=2026-02-06"
-	openAIWSBetaCompatV1 = "responses-websocket=v1"
-
 	openAIWSTurnStateHeader    = "x-codex-turn-state"
 	openAIWSTurnMetadataHeader = "x-codex-turn-metadata"
 
@@ -1189,7 +1185,7 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	turnState string,
 	turnMetadata string,
 	promptCacheKey string,
-) (http.Header, openAIWSSessionHeaderResolution) {
+) (http.Header, openAIWSSessionHeaderResolution, error) {
 	headers := make(http.Header)
 	headers.Set("authorization", "Bearer "+token)
 	var gatewayRuntime *OpenAIGatewayAccountRuntime
@@ -1201,19 +1197,20 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		}
 		if s != nil && s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() && account != nil && account.IsOpenAIOAuth() {
 			runtime, err := s.gatewayCoreService.ResolveAccountRuntime(c.Request.Context(), account, c.Request.Header, OpenAIClientTransportWS)
-			if err == nil {
-				gatewayRuntime = runtime
+			if err != nil {
+				return nil, openAIWSSessionHeaderResolution{}, err
 			}
+			gatewayRuntime = runtime
 		}
 	}
 	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
 	if account != nil && account.Type == AccountTypeOAuth {
 		apiKeyID := getAPIKeyIDFromContext(c)
 		if sessionResolution.SessionID != "" {
-			headers.Set("session_id", isolateOpenAISessionID(apiKeyID, sessionResolution.SessionID))
+			headers.Set("session_id", isolateOpenAISessionIDForContext(requestContext(c), apiKeyID, sessionResolution.SessionID))
 		}
 		if sessionResolution.ConversationID != "" {
-			headers.Set("conversation_id", isolateOpenAISessionID(apiKeyID, sessionResolution.ConversationID))
+			headers.Set("conversation_id", isolateOpenAISessionIDForContext(requestContext(c), apiKeyID, sessionResolution.ConversationID))
 		}
 	} else {
 		if sessionResolution.SessionID != "" {
@@ -1234,34 +1231,50 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
-
-	betaValue := openAIWSBetaV2Value
-	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
-		betaValue = openAIWSBetaV1Value
-	}
-	headers.Set("OpenAI-Beta", betaValue)
 
 	customUA := ""
 	if account != nil {
 		customUA = account.GetOpenAIUserAgent()
 	}
-	if strings.TrimSpace(customUA) != "" {
-		headers.Set("user-agent", customUA)
-	} else if c != nil {
-		if ua := strings.TrimSpace(c.GetHeader("User-Agent")); ua != "" {
-			headers.Set("user-agent", ua)
+	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
+		artifact := BuildOpenAIGatewayProfileArtifact(
+			gatewayRuntime.Profile,
+			resolveOpenAIGatewayWSProfileRouteKind(decision.Transport),
+			OpenAIGatewayProfileArtifactOptions{
+				RequestedOriginator: c.GetHeader("originator"),
+				IsOfficialClient:    isCodexCLI,
+			},
+		)
+		if customUA != "" {
+			artifact = artifact.WithUserAgentOverride(customUA)
+		}
+		if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+			artifact = artifact.ForceCodexCLI()
+		}
+		artifact.ApplyWS(headers)
+	} else {
+		if account != nil && account.Type == AccountTypeOAuth {
+			headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
+		}
+		betaValue := openAIWSBetaV2Value
+		if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
+			betaValue = openAIWSBetaV1Value
+		}
+		headers.Set("OpenAI-Beta", betaValue)
+		if strings.TrimSpace(customUA) != "" {
+			headers.Set("user-agent", customUA)
+		} else if c != nil {
+			if ua := strings.TrimSpace(c.GetHeader("User-Agent")); ua != "" {
+				headers.Set("user-agent", ua)
+			}
+		}
+		if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+			headers.Set("user-agent", codexCLIUserAgent)
 		}
 	}
-	if gatewayRuntime != nil && gatewayRuntime.Profile != nil {
-		s.gatewayCoreService.ApplyCanonicalHeaders(headers, gatewayRuntime.Profile)
-	}
-	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		headers.Set("user-agent", codexCLIUserAgent)
-	}
 
-	return headers, sessionResolution
+	return headers, sessionResolution, nil
 }
 
 func (s *OpenAIGatewayService) buildOpenAIWSCreatePayload(reqBody map[string]any, account *Account) map[string]any {
@@ -1935,7 +1948,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	sessionHash := s.GenerateSessionHash(c, nil)
 	if sessionHash == "" {
 		var legacySessionHash string
-		sessionHash, legacySessionHash = openAIWSSessionHashesFromID(promptCacheKey)
+		sessionHash, legacySessionHash = openAIWSSessionHashesFromID(EntityScopedSeedFromContext(requestContext(c), promptCacheKey))
 		attachOpenAILegacySessionHashToGin(c, legacySessionHash)
 	}
 	if turnState == "" && stateStore != nil && sessionHash != "" {
@@ -1945,7 +1958,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 	preferredConnID := ""
 	if stateStore != nil && previousResponseID != "" {
-		if connID, ok := stateStore.GetResponseConn(previousResponseID); ok {
+		if connID, ok := stateStore.GetResponseConn(EntityScopedStateKeyFromContext(requestContext(c), previousResponseID)); ok {
 			preferredConnID = connID
 		}
 	}
@@ -1958,7 +1971,18 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
-	wsHeaders, sessionResolution := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	wsHeaders, sessionResolution, headerErr := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	if headerErr != nil {
+		return nil, headerErr
+	}
+	egress, egressErr := s.resolveOpenAIEgress(ctx, account)
+	if egressErr != nil {
+		return nil, egressErr
+	}
+	effectiveTLS, tlsErr := s.resolveOpenAIWSEffectiveTLS(ctx, account, egress)
+	if tlsErr != nil {
+		return nil, tlsErr
+	}
 	logOpenAIWSModeDebug(
 		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
 		account.ID,
@@ -1988,7 +2012,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		hasOpenAIWSHeader(wsHeaders, "authorization"),
 		hasOpenAIWSHeader(wsHeaders, "session_id"),
 		hasOpenAIWSHeader(wsHeaders, "conversation_id"),
-		s.resolveOpenAIProxyURL(account) != "",
+		egress.ProxySelected,
 	)
 
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
@@ -2000,7 +2024,11 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		Headers:         wsHeaders,
 		PreferredConnID: preferredConnID,
 		ForceNewConn:    forceNewConn,
-		ProxyURL:        s.resolveOpenAIProxyURL(account),
+		ProxyURL:        egress.ProxyURL,
+		ProxyHash:       egress.ProxyHash,
+		EgressBucket:    egress.BucketName,
+		ProtocolMode:    string(decision.Transport),
+		EffectiveTLS:    effectiveTLS,
 	})
 	if err != nil {
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
@@ -2458,8 +2486,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	if responseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
-		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
-		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
+		scopedResponseID := EntityScopedStateKeyFromContext(ctx, responseID)
+		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, scopedResponseID, account.ID, ttl))
+		stateStore.BindResponseConn(scopedResponseID, lease.ConnID(), ttl)
 	}
 	if stateStore != nil && storeDisabled && sessionHash != "" {
 		stateStore.BindSessionConn(groupID, sessionHash, lease.ConnID(), s.openAIWSSessionStickyTTL())
@@ -2775,7 +2804,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				blocked,
 			)
 		}
-		normalized = policyApplied
+		scopedApplied, _, scopeErr := scopeOpenAIBodyPromptCacheKey(requestContext(c), policyApplied)
+		if scopeErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", scopeErr)
+		}
+		normalized = scopedApplied
+		promptCacheKey = strings.TrimSpace(openAIWSPayloadStringFromRaw(normalized, "prompt_cache_key"))
 
 		return openAIWSClientPayload{
 			payloadRaw:         normalized,
@@ -2806,7 +2840,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	preferredConnID := ""
 	if stateStore != nil && firstPayload.previousResponseID != "" {
-		if connID, ok := stateStore.GetResponseConn(firstPayload.previousResponseID); ok {
+		if connID, ok := stateStore.GetResponseConn(EntityScopedStateKeyFromContext(requestContext(c), firstPayload.previousResponseID)); ok {
 			preferredConnID = connID
 		}
 	}
@@ -2819,12 +2853,27 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
-	wsHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
+	wsHeaders, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
+	if headerErr != nil {
+		return headerErr
+	}
+	egress, egressErr := s.resolveOpenAIEgress(ctx, account)
+	if egressErr != nil {
+		return egressErr
+	}
+	effectiveTLS, tlsErr := s.resolveOpenAIWSEffectiveTLS(ctx, account, egress)
+	if tlsErr != nil {
+		return tlsErr
+	}
 	baseAcquireReq := openAIWSAcquireRequest{
 		Account:      account,
 		WSURL:        wsURL,
 		Headers:      wsHeaders,
-		ProxyURL:     s.resolveOpenAIProxyURL(account),
+		ProxyURL:     egress.ProxyURL,
+		ProxyHash:    egress.ProxyHash,
+		EgressBucket: egress.BucketName,
+		ProtocolMode: string(wsDecision.Transport),
+		EffectiveTLS: effectiveTLS,
 		ForceNewConn: false,
 	}
 	pool := s.getOpenAIWSConnPool()
@@ -3048,7 +3097,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			if stateStore != nil && responseID != "" && responseID != earlyBoundResponseID {
 				earlyBoundResponseID = responseID
-				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, s.openAIWSResponseStickyTTL()))
+				logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, EntityScopedStateKeyFromContext(ctx, responseID), account.ID, s.openAIWSResponseStickyTTL()))
 			}
 			if eventType != "" {
 				eventCount++
@@ -3756,8 +3805,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		if responseID != "" && stateStore != nil {
 			ttl := s.openAIWSResponseStickyTTL()
-			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
-			stateStore.BindResponseConn(responseID, connID, ttl)
+			scopedResponseID := EntityScopedStateKeyFromContext(ctx, responseID)
+			logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, scopedResponseID, account.ID, ttl))
+			stateStore.BindResponseConn(scopedResponseID, connID, ttl)
 		}
 		if stateStore != nil && storeDisabled && sessionHash != "" {
 			stateStore.BindSessionConn(groupID, sessionHash, connID, s.openAIWSSessionStickyTTL())
@@ -3789,7 +3839,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if nextPayload.promptCacheKey != "" {
 			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
 			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
-			updatedHeaders, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)
+			updatedHeaders, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)
+			if headerErr != nil {
+				return headerErr
+			}
 			baseAcquireReq.Headers = updatedHeaders
 		}
 		if nextPayload.previousResponseID != "" {
@@ -3811,7 +3864,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			)
 		}
 		if stateStore != nil && nextPayload.previousResponseID != "" {
-			if stickyConnID, ok := stateStore.GetResponseConn(nextPayload.previousResponseID); ok {
+			if stickyConnID, ok := stateStore.GetResponseConn(EntityScopedStateKeyFromContext(requestContext(c), nextPayload.previousResponseID)); ok {
 				if sessionConnID != "" && stickyConnID != "" && stickyConnID != sessionConnID {
 					logOpenAIWSModeInfo(
 						"ingress_ws_keep_session_conn account_id=%d turn=%d conn_id=%s sticky_conn_id=%s previous_response_id=%s",
@@ -3990,8 +4043,9 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	lease.MarkPrewarmed()
 	if prewarmResponseID != "" && stateStore != nil {
 		ttl := s.openAIWSResponseStickyTTL()
-		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, prewarmResponseID, stateStore.BindResponseAccount(ctx, groupID, prewarmResponseID, account.ID, ttl))
-		stateStore.BindResponseConn(prewarmResponseID, lease.ConnID(), ttl)
+		scopedPrewarmResponseID := EntityScopedStateKeyFromContext(ctx, prewarmResponseID)
+		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, prewarmResponseID, stateStore.BindResponseAccount(ctx, groupID, scopedPrewarmResponseID, account.ID, ttl))
+		stateStore.BindResponseConn(scopedPrewarmResponseID, lease.ConnID(), ttl)
 	}
 	logOpenAIWSModeInfo(
 		"prewarm_done account_id=%d conn_id=%s response_id=%s events=%d terminal_events=%d duration_ms=%d",
@@ -4132,7 +4186,8 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 		return nil, nil
 	}
 
-	accountID, err := store.GetResponseAccount(ctx, derefGroupID(groupID), responseID)
+	scopedResponseID := EntityScopedStateKeyFromContext(ctx, responseID)
+	accountID, err := store.GetResponseAccount(ctx, derefGroupID(groupID), scopedResponseID)
 	if err != nil || accountID <= 0 {
 		return nil, nil
 	}
@@ -4144,7 +4199,7 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
 	if err != nil || account == nil {
-		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), scopedResponseID)
 		return nil, nil
 	}
 	// 非 WSv2 场景（如 force_http/全局关闭）不应使用 previous_response_id 粘连，
@@ -4153,7 +4208,7 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 		return nil, nil
 	}
 	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
-		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), scopedResponseID)
 		return nil, nil
 	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
@@ -4161,12 +4216,12 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 	}
 	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact)
 	if account == nil {
-		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), scopedResponseID)
 		return nil, nil
 	}
 	// 兜底：若上游 compact 能力刚被探测为不支持，但 sticky 还在，需要主动放弃。
 	if requireCompact && openAICompactSupportTier(account) == 0 {
-		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), scopedResponseID)
 		return nil, nil
 	}
 
@@ -4176,7 +4231,7 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 			derefGroupID(groupID),
 			accountID,
 			responseID,
-			store.BindResponseAccount(ctx, derefGroupID(groupID), responseID, accountID, s.openAIWSResponseStickyTTL()),
+			store.BindResponseAccount(ctx, derefGroupID(groupID), scopedResponseID, accountID, s.openAIWSResponseStickyTTL()),
 		)
 		return &AccountSelectionResult{
 			Account:     account,

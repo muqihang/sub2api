@@ -115,9 +115,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	)
 
 	// 5. Build upstream request
-	apiKey := account.GetOpenAIApiKey()
-	if apiKey == "" {
-		return nil, fmt.Errorf("account %d missing api_key", account.ID)
+	apiKey, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
+	if err != nil {
+		return nil, fmt.Errorf("account %d api_key unavailable: %w", account.ID, err)
 	}
 	baseURL := account.GetOpenAIBaseURL()
 	if baseURL == "" {
@@ -158,12 +158,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 
 	// 6. Send request
-	proxyURL := ""
-	if account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.sendOpenAIHTTPRequest(ctx, c, upstreamReq, account)
 	if err != nil {
+		if isOpenAIEgressPolicyError(err) {
+			return nil, err
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{

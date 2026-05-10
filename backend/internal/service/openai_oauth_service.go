@@ -8,13 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore         *openai.SessionStore
+	sessionStore         openai.OAuthSessionStore
 	proxyRepo            ProxyRepository
 	oauthClient          OpenAIOAuthClient
 	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
@@ -23,8 +24,15 @@ type OpenAIOAuthService struct {
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
 func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
+	return NewOpenAIOAuthServiceWithStore(proxyRepo, oauthClient, openai.NewSessionStore())
+}
+
+func NewOpenAIOAuthServiceWithStore(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient, sessionStore openai.OAuthSessionStore) *OpenAIOAuthService {
+	if sessionStore == nil {
+		sessionStore = openai.NewSessionStore()
+	}
 	return &OpenAIOAuthService{
-		sessionStore: openai.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 	}
@@ -40,14 +48,54 @@ func (s *OpenAIOAuthService) SetGatewayCoreService(core *OpenAIGatewayCoreServic
 	s.gatewayCoreService = core
 }
 
+func (s *OpenAIOAuthService) GatewayCoreService() *OpenAIGatewayCoreService {
+	if s == nil {
+		return nil
+	}
+	return s.gatewayCoreService
+}
+
+func (s *OpenAIOAuthService) SetSessionStore(store openai.OAuthSessionStore) {
+	if s == nil {
+		return
+	}
+	if store == nil {
+		store = openai.NewSessionStore()
+	}
+	s.sessionStore = store
+}
+
+func (s *OpenAIOAuthService) gatewayConfig() *config.Config {
+	if s == nil || s.gatewayCoreService == nil {
+		return nil
+	}
+	return s.gatewayCoreService.cfg
+}
+
+func (s *OpenAIOAuthService) credentialAccessor() *OpenAIGatewayCredentials {
+	return NewOpenAIGatewayCredentials(s.gatewayConfig(), nil)
+}
+
+func (s *OpenAIOAuthService) CredentialAccessor() *OpenAIGatewayCredentials {
+	return s.credentialAccessor()
+}
+
 // OpenAIAuthURLResult contains the authorization URL and session info
 type OpenAIAuthURLResult struct {
-	AuthURL   string `json:"auth_url"`
-	SessionID string `json:"session_id"`
+	AuthURL       string `json:"auth_url"`
+	SessionID     string `json:"session_id"`
+	EgressBucket  string `json:"egress_bucket,omitempty"`
+	ProxySelected bool   `json:"proxy_selected"`
+	ProxyLabel    string `json:"proxy_label,omitempty"`
+	ProxyHash     string `json:"proxy_hash,omitempty"`
 }
 
 // GenerateAuthURL generates an OpenAI OAuth authorization URL
 func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, redirectURI, platform string) (*OpenAIAuthURLResult, error) {
+	return s.GenerateAuthURLWithEgress(ctx, proxyID, redirectURI, platform, "")
+}
+
+func (s *OpenAIOAuthService) GenerateAuthURLWithEgress(ctx context.Context, proxyID *int64, redirectURI, platform string, egressBucket string) (*OpenAIAuthURLResult, error) {
 	// Generate PKCE values
 	state, err := openai.GenerateState()
 	if err != nil {
@@ -67,16 +115,16 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_FAILED", "failed to generate session ID: %v", err)
 	}
 
-	// Get proxy URL if specified
-	var proxyURL string
-	if proxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
-		if err != nil {
-			return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_OAUTH_PROXY_NOT_FOUND", "proxy not found: %v", err)
-		}
-		if proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	proxyURL, err := s.resolveOpenAIOAuthProxyURL(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	egress, err := s.resolveOAuthSessionEgress(ctx, egressBucket, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if egress != nil {
+		proxyURL = egress.ProxyURL
 	}
 
 	// Use default redirect URI if not specified
@@ -88,31 +136,42 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 
 	// Store session
 	session := &openai.OAuthSession{
-		State:        state,
-		CodeVerifier: codeVerifier,
-		ClientID:     clientID,
-		RedirectURI:  redirectURI,
-		ProxyURL:     proxyURL,
-		CreatedAt:    time.Now(),
+		State:         state,
+		CodeVerifier:  codeVerifier,
+		ClientID:      clientID,
+		RedirectURI:   redirectURI,
+		ProxyURL:      proxyURL,
+		CreatedAt:     time.Now(),
+		EgressBucket:  openAIEgressBucketName(egress),
+		ProxySelected: openAIEgressProxySelected(egress),
+		ProxyLabel:    openAIEgressProxyLabel(egress),
+		ProxyHash:     openAIEgressProxyHash(egress),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Set(sessionID, session); err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_STORE_FAILED", "failed to store oauth session: %v", err)
+	}
 
 	// Build authorization URL
 	authURL := openai.BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, normalizedPlatform)
 
 	return &OpenAIAuthURLResult{
-		AuthURL:   authURL,
-		SessionID: sessionID,
+		AuthURL:       authURL,
+		SessionID:     sessionID,
+		EgressBucket:  session.EgressBucket,
+		ProxySelected: session.ProxySelected,
+		ProxyLabel:    session.ProxyLabel,
+		ProxyHash:     session.ProxyHash,
 	}, nil
 }
 
 // OpenAIExchangeCodeInput represents the input for code exchange
 type OpenAIExchangeCodeInput struct {
-	SessionID   string
-	Code        string
-	State       string
-	RedirectURI string
-	ProxyID     *int64
+	SessionID    string
+	Code         string
+	State        string
+	RedirectURI  string
+	ProxyID      *int64
+	EgressBucket string
 }
 
 // OpenAITokenInfo represents the token information for OpenAI
@@ -132,12 +191,19 @@ type OpenAITokenInfo struct {
 	PlanType              string   `json:"plan_type,omitempty"`
 	SubscriptionExpiresAt string   `json:"subscription_expires_at,omitempty"`
 	PrivacyMode           string   `json:"privacy_mode,omitempty"`
+	EgressBucket          string   `json:"egress_bucket,omitempty"`
+	ProxySelected         bool     `json:"proxy_selected"`
+	ProxyLabel            string   `json:"proxy_label,omitempty"`
+	ProxyHash             string   `json:"proxy_hash,omitempty"`
 }
 
 // ExchangeCode exchanges authorization code for tokens
 func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExchangeCodeInput) (*OpenAITokenInfo, error) {
 	// Get session
-	session, ok := s.sessionStore.Get(input.SessionID)
+	session, ok, err := s.sessionStore.Consume(input.SessionID)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_LOOKUP_FAILED", "failed to load oauth session: %v", err)
+	}
 	if !ok {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
 	}
@@ -148,16 +214,24 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_STATE", "invalid oauth state")
 	}
 
-	// Get proxy URL: prefer input.ProxyID, fallback to session.ProxyURL
 	proxyURL := session.ProxyURL
 	if input.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *input.ProxyID)
+		var err error
+		proxyURL, err = s.resolveOpenAIOAuthProxyURL(ctx, input.ProxyID)
 		if err != nil {
-			return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_OAUTH_PROXY_NOT_FOUND", "proxy not found: %v", err)
+			return nil, err
 		}
-		if proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	}
+	requestedBucket := strings.TrimSpace(input.EgressBucket)
+	if requestedBucket == "" {
+		requestedBucket = strings.TrimSpace(session.EgressBucket)
+	}
+	egress, err := s.resolveOAuthSessionEgress(ctx, requestedBucket, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if egress != nil {
+		proxyURL = egress.ProxyURL
 	}
 
 	// Use redirect URI from session or input
@@ -187,16 +261,17 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		}
 	}
 
-	// Delete session after successful exchange
-	s.sessionStore.Delete(input.SessionID)
-
 	tokenInfo := &OpenAITokenInfo{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		IDToken:      tokenResp.IDToken,
-		ExpiresIn:    int64(tokenResp.ExpiresIn),
-		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
-		ClientID:     clientID,
+		AccessToken:   tokenResp.AccessToken,
+		RefreshToken:  tokenResp.RefreshToken,
+		IDToken:       tokenResp.IDToken,
+		ExpiresIn:     int64(tokenResp.ExpiresIn),
+		ExpiresAt:     time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ClientID:      clientID,
+		EgressBucket:  openAIEgressBucketName(egress),
+		ProxySelected: openAIEgressProxySelected(egress),
+		ProxyLabel:    openAIEgressProxyLabel(egress),
+		ProxyHash:     openAIEgressProxyHash(egress),
 	}
 
 	if userInfo != nil {
@@ -215,6 +290,26 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 // RefreshToken refreshes an OpenAI OAuth token
 func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken string, proxyURL string) (*OpenAITokenInfo, error) {
 	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, "")
+}
+
+func (s *OpenAIOAuthService) RefreshTokenWithClientIDAndEgress(ctx context.Context, refreshToken string, fallbackProxyURL string, clientID string, egressBucket string) (*OpenAITokenInfo, error) {
+	egress, err := s.resolveOAuthSessionEgress(ctx, egressBucket, fallbackProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	proxyURL := fallbackProxyURL
+	if egress != nil {
+		proxyURL = egress.ProxyURL
+	}
+	tokenInfo, err := s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
+	if err != nil {
+		return nil, err
+	}
+	tokenInfo.EgressBucket = openAIEgressBucketName(egress)
+	tokenInfo.ProxySelected = openAIEgressProxySelected(egress)
+	tokenInfo.ProxyLabel = openAIEgressProxyLabel(egress)
+	tokenInfo.ProxyHash = openAIEgressProxyHash(egress)
+	return tokenInfo, nil
 }
 
 // RefreshTokenWithClientID refreshes an OpenAI OAuth token with optional client_id.
@@ -301,15 +396,46 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
 
-	refreshToken := account.GetCredential("refresh_token")
+	credentials := s.credentialAccessor()
+	refreshToken := ""
+	if rawRefreshToken := strings.TrimSpace(account.GetCredential("refresh_token")); rawRefreshToken != "" {
+		var refreshErr error
+		refreshToken, refreshErr = credentials.OpenAIRefreshToken(account)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+	}
 	if refreshToken == "" {
-		accessToken := account.GetCredential("access_token")
+		accessToken := ""
+		if rawAccessToken := strings.TrimSpace(account.GetCredential("access_token")); rawAccessToken != "" {
+			var accessErr error
+			accessToken, accessErr = credentials.OpenAIAccessToken(account)
+			if accessErr != nil {
+				return nil, accessErr
+			}
+		}
 		if accessToken != "" {
+			idToken := ""
+			if rawIDToken := strings.TrimSpace(account.GetCredential("id_token")); rawIDToken != "" {
+				var idTokenErr error
+				idToken, idTokenErr = credentials.resolveValue(rawIDToken, "id_token")
+				if idTokenErr != nil {
+					return nil, idTokenErr
+				}
+			}
+			clientID := ""
+			if rawClientID := strings.TrimSpace(account.GetCredential("client_id")); rawClientID != "" {
+				var clientIDErr error
+				clientID, clientIDErr = credentials.OpenAIClientID(account)
+				if clientIDErr != nil {
+					return nil, clientIDErr
+				}
+			}
 			tokenInfo := &OpenAITokenInfo{
 				AccessToken:      accessToken,
 				RefreshToken:     "",
-				IDToken:          account.GetCredential("id_token"),
-				ClientID:         account.GetCredential("client_id"),
+				IDToken:          idToken,
+				ClientID:         clientID,
 				Email:            account.GetCredential("email"),
 				ChatGPTAccountID: account.GetCredential("chatgpt_account_id"),
 				ChatGPTUserID:    account.GetCredential("chatgpt_user_id"),
@@ -333,15 +459,28 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		}
 	}
 	if s.gatewayCoreService != nil {
-		proxyURL = s.gatewayCoreService.ResolveEgressProxyURL(account, proxyURL)
+		egress, err := s.gatewayCoreService.ResolveEgress(ctx, account, proxyURL)
+		if err != nil {
+			return nil, err
+		}
+		if egress != nil {
+			proxyURL = egress.ProxyURL
+		}
 	}
 
-	clientID := account.GetCredential("client_id")
+	clientID := ""
+	if rawClientID := strings.TrimSpace(account.GetCredential("client_id")); rawClientID != "" {
+		var clientIDErr error
+		clientID, clientIDErr = credentials.OpenAIClientID(account)
+		if clientIDErr != nil {
+			return nil, clientIDErr
+		}
+	}
 	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 }
 
 // BuildAccountCredentials builds credentials map from token info
-func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo) map[string]any {
+func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo) (map[string]any, error) {
 	expiresAt := time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)
 
 	creds := map[string]any{
@@ -383,13 +522,65 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	if len(tokenInfo.Scopes) > 0 {
 		creds["scopes"] = append([]string(nil), tokenInfo.Scopes...)
 	}
+	protected, err := s.credentialAccessor().ProtectCredentials(creds)
+	if err != nil {
+		return nil, err
+	}
+	return protected, nil
+}
 
-	return creds
+func (s *OpenAIOAuthService) resolveOpenAIOAuthProxyURL(ctx context.Context, proxyID *int64) (string, error) {
+	if proxyID == nil {
+		return "", nil
+	}
+	if s == nil || s.proxyRepo == nil {
+		return "", infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_PROXY_NOT_FOUND", "proxy repository unavailable")
+	}
+	proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
+	if err != nil {
+		return "", infraerrors.Newf(http.StatusBadRequest, "OPENAI_OAUTH_PROXY_NOT_FOUND", "proxy not found: %v", err)
+	}
+	if proxy == nil {
+		return "", nil
+	}
+	return proxy.URL(), nil
+}
+
+func (s *OpenAIOAuthService) resolveOAuthSessionEgress(ctx context.Context, egressBucket string, fallbackProxyURL string) (*OpenAIEgressResolution, error) {
+	if s != nil && s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() {
+		return s.gatewayCoreService.ResolveOAuthSessionEgress(ctx, egressBucket, fallbackProxyURL)
+	}
+	return buildOpenAIEgressResolution(strings.TrimSpace(egressBucket), fallbackProxyURL, openAIEgressSourceAccountFallback), nil
+}
+
+func openAIEgressBucketName(egress *OpenAIEgressResolution) string {
+	if egress == nil {
+		return ""
+	}
+	return strings.TrimSpace(egress.BucketName)
+}
+
+func openAIEgressProxySelected(egress *OpenAIEgressResolution) bool {
+	return egress != nil && egress.ProxySelected
+}
+
+func openAIEgressProxyLabel(egress *OpenAIEgressResolution) string {
+	if egress == nil {
+		return ""
+	}
+	return egress.ProxyLabel
+}
+
+func openAIEgressProxyHash(egress *OpenAIEgressResolution) string {
+	if egress == nil {
+		return ""
+	}
+	return egress.ProxyHash
 }
 
 // Stop stops the session store cleanup goroutine
 func (s *OpenAIOAuthService) Stop() {
-	s.sessionStore.Stop()
+	_ = s.sessionStore.Stop()
 }
 
 func normalizeOpenAIOAuthPlatform(platform string) string {

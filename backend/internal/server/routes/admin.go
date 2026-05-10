@@ -83,6 +83,9 @@ func RegisterAdminRoutes(
 		// API Key 管理
 		registerAdminAPIKeyRoutes(admin, h)
 
+		// Entity registry
+		registerEntityRoutes(admin, h)
+
 		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
 
@@ -101,6 +104,19 @@ func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	apiKeys := admin.Group("/api-keys")
 	{
 		apiKeys.PUT("/:id", h.Admin.APIKey.UpdateGroup)
+	}
+}
+
+func registerEntityRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Entity == nil {
+		return
+	}
+	entities := admin.Group("/entities")
+	{
+		entities.GET("", h.Admin.Entity.List)
+		entities.POST("", h.Admin.Entity.Create)
+		entities.GET("/bindings", h.Admin.Entity.ListBindings)
+		entities.POST("/bindings", h.Admin.Entity.CreateBinding)
 	}
 }
 
@@ -336,9 +352,13 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 func registerGeminiOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	gemini := admin.Group("/gemini")
 	{
+		gemini.GET("/health", h.Admin.GeminiHealth.Health)
+		gemini.GET("/verify", h.Admin.GeminiHealth.Verify)
 		gemini.POST("/oauth/auth-url", h.Admin.GeminiOAuth.GenerateAuthURL)
 		gemini.POST("/oauth/exchange-code", h.Admin.GeminiOAuth.ExchangeCode)
 		gemini.GET("/oauth/capabilities", h.Admin.GeminiOAuth.GetCapabilities)
+		gemini.POST("/create-from-oauth", h.Admin.GeminiOAuth.CreateAccountFromOAuth)
+		gemini.POST("/accounts/:id/reauthorize-from-oauth", h.Admin.GeminiOAuth.ReauthorizeAccountFromOAuth)
 	}
 }
 

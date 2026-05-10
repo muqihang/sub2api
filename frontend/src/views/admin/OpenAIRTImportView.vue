@@ -210,6 +210,7 @@ interface TokenInfoRecord extends Record<string, unknown> {
   chatgpt_user_id?: string
   organization_id?: string
   plan_type?: string
+  egress_bucket?: string
 }
 
 const rawTokens = ref('')
@@ -271,6 +272,14 @@ const buildCredentials = (tokenInfo: TokenInfoRecord): Record<string, unknown> =
   if (tokenInfo.organization_id) credentials.organization_id = tokenInfo.organization_id
   if (tokenInfo.plan_type) credentials.plan_type = tokenInfo.plan_type
   return credentials
+}
+
+const buildAccountExtra = (tokenInfo: TokenInfoRecord): Record<string, unknown> | undefined => {
+  const extra: Record<string, unknown> = {}
+  if (typeof tokenInfo.egress_bucket === 'string' && tokenInfo.egress_bucket.trim()) {
+    extra.openai_gateway_egress_bucket = tokenInfo.egress_bucket.trim()
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined
 }
 
 const decodeJwtPayloadUnverified = (token: string): Record<string, unknown> => {
@@ -401,11 +410,13 @@ const runImport = async () => {
           }
 
           const credentials = buildCredentials(tokenInfo)
+          const extra = buildAccountExtra(tokenInfo)
           const existing = findExistingOpenAIAccountByRefreshToken(existingAccounts, refreshToken)
           if (existing?.id) {
             const updated = await adminAPI.accounts.update(existing.id, {
               name: accountName,
               credentials: mergeCredentials(existing, credentials),
+              ...(extra ? { extra: { ...(existing.extra || {}), ...extra } } : {}),
               confirm_mixed_channel_risk: true
             })
             results.value.push({
@@ -424,6 +435,7 @@ const runImport = async () => {
               platform: 'openai',
               type: 'oauth',
               credentials,
+              extra,
               concurrency: 1,
               priority: 0,
               confirm_mixed_channel_risk: true

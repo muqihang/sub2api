@@ -44,7 +44,16 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 	)
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
 	if !h.ensureResponsesDependencies(c, reqLog) {
+		return
+	}
+	if !h.resolveTrustedOpenAIEntity(c, apiKey, reqLog, false) {
 		return
 	}
 
@@ -127,6 +136,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
+	}
+	entityReleaseFunc, admitted := h.admitOpenAIEntityQuota(c, false, streamStarted, reqLog)
+	if !admitted {
+		return
+	}
+	if entityReleaseFunc != nil {
+		defer entityReleaseFunc()
 	}
 
 	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, body)
@@ -249,6 +265,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, false) {
+					reqLog.Warn("openai.images.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 				fields := []zap.Field{
 					zap.Int64("account_id", account.ID),
@@ -280,13 +300,15 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+		requestCtx := c.Request.Context()
 
 		upstreamModel := ""
 		if result != nil {
 			upstreamModel = result.UpstreamModel
 		}
 		h.submitMandatoryUsageRecordTask(func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+			usageCtx := service.ContextWithEntityMetadataFrom(ctx, requestCtx)
+			if err := h.gatewayService.RecordUsage(usageCtx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
 				User:               apiKey.User,

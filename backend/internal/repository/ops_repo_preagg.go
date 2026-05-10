@@ -31,13 +31,14 @@ func (r *opsRepository) UpsertHourlyMetrics(ctx context.Context, startTime, endT
 WITH usage_base AS (
   SELECT
     date_trunc('hour', ul.created_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_start,
-    g.platform AS platform,
+    COALESCE(NULLIF(g.platform, ''), NULLIF(a.platform, ''), 'unknown') AS platform,
     ul.group_id AS group_id,
     ul.duration_ms AS duration_ms,
     ul.first_token_ms AS first_token_ms,
     (ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens) AS tokens
   FROM usage_logs ul
-  JOIN groups g ON g.id = ul.group_id
+  LEFT JOIN groups g ON g.id = ul.group_id
+  LEFT JOIN accounts a ON a.id = ul.account_id
   WHERE ul.created_at >= $1 AND ul.created_at < $2
 ),
 usage_agg AS (

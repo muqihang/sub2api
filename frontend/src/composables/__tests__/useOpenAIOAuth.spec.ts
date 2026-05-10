@@ -78,3 +78,20 @@ describe('useOpenAIOAuth.exchangeAuthCode', () => {
     )
   })
 })
+
+describe('useOpenAIOAuth.buildExtraInfo', () => {
+  it('persists resolved OpenAI Gateway egress bucket into account extra', () => {
+    const oauth = useOpenAIOAuth()
+
+    const extra = oauth.buildExtraInfo({
+      email: 'user@example.com',
+      egress_bucket: 'bucket-a',
+      proxy_label: 'http://127.0.0.1:8080'
+    })
+
+    expect(extra).toEqual({
+      email: 'user@example.com',
+      openai_gateway_egress_bucket: 'bucket-a'
+    })
+  })
+})

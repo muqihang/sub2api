@@ -129,6 +129,8 @@ func (w *failingGinWriter) Write(p []byte) (int, error) {
 type captureHTTPUpstream struct {
 	lastBody  []byte
 	allBodies [][]byte
+	lastProxy string
+	proxies   []string
 	resp      *http.Response
 	responses []*http.Response
 	err       error
@@ -214,8 +216,10 @@ func (s *captureOpenAIWSStateStore) GetSessionConn(groupID int64, sessionHash st
 
 func (s *captureOpenAIWSStateStore) DeleteSessionConn(groupID int64, sessionHash string) {}
 
-func (s *captureHTTPUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+func (s *captureHTTPUpstream) Do(req *http.Request, proxyURL string, _ int64, _ int) (*http.Response, error) {
 	s.calls++
+	s.lastProxy = proxyURL
+	s.proxies = append(s.proxies, proxyURL)
 	if req != nil && req.Body != nil {
 		body, readErr := io.ReadAll(req.Body)
 		if readErr != nil {
@@ -356,6 +360,31 @@ func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {
 	got := svc.GenerateSessionHash(c, nil)
 	want := fmt.Sprintf("%016x", xxhash.Sum64String("sess-fixed-value"))
 	require.Equal(t, want, got)
+}
+
+func TestOpenAIGatewayService_GenerateSessionHash_IsEntityScoped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	newContext := func(entityKey string) *gin.Context {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+		c.Request.Header.Set("session_id", "shared-session")
+		c.Request = c.Request.WithContext(WithResolvedEntity(c.Request.Context(), &ResolvedEntity{
+			Entity: Entity{ID: 10, EntityKey: entityKey, Status: EntityStatusActive},
+			Source: EntityResolutionSourceClaimedBinding,
+		}))
+		return c
+	}
+
+	alphaHash := svc.GenerateSessionHash(newContext("team-alpha"), nil)
+	betaHash := svc.GenerateSessionHash(newContext("team-beta"), nil)
+
+	require.NotEmpty(t, alphaHash)
+	require.NotEmpty(t, betaHash)
+	require.NotEqual(t, alphaHash, betaHash, "same raw session signal must not bleed across entities")
+	require.Equal(t, DeriveEntityScopedSessionHash("team-alpha", "shared-session"), alphaHash)
 }
 
 func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t *testing.T) {
@@ -514,6 +543,176 @@ func TestOpenAIGatewayService_Forward_RemovesPreviousResponseIDForHTTP(t *testin
 	if _, exists := forwarded["safety_identifier"]; exists {
 		t.Fatal("expected safety_identifier to be removed")
 	}
+}
+
+func TestOpenAIGatewayService_ForwardScopesBodyPromptCacheKeyByEntity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+	c.Set("api_key", &APIKey{ID: 77})
+	c.Request = c.Request.WithContext(WithResolvedEntity(c.Request.Context(), &ResolvedEntity{
+		Entity: Entity{ID: 1, EntityKey: "team-alpha", Status: EntityStatusActive},
+		Source: EntityResolutionSourceClaimedBinding,
+	}))
+
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.1","input":[],"prompt_cache_key":"shared-cache"}`))
+
+	require.NoError(t, err)
+	require.Equal(t, EntityScopedSeed("team-alpha", "shared-cache"), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+}
+
+func TestOpenAIGatewayService_PassthroughScopesBodyPromptCacheKeyByEntity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+	c.Set("api_key", &APIKey{ID: 77})
+	c.Request = c.Request.WithContext(WithResolvedEntity(c.Request.Context(), &ResolvedEntity{
+		Entity: Entity{ID: 2, EntityKey: "team-beta", Status: EntityStatusActive},
+		Source: EntityResolutionSourceClaimedBinding,
+	}))
+
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+		Extra: map[string]any{
+			"openai_passthrough": true,
+		},
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.1","input":[],"prompt_cache_key":"shared-cache"}`))
+
+	require.NoError(t, err)
+	require.Equal(t, EntityScopedSeed("team-beta", "shared-cache"), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+}
+
+func TestOpenAIGatewayService_ForwardRejectsFailClosedEgressBeforeHTTPUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+	core := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		gatewayCoreService: core,
+		httpUpstream:       upstream,
+	}
+	account := &Account{
+		ID:          19001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "missing",
+		},
+		Proxy: &Proxy{
+			Protocol: "socks5",
+			Host:     "10.0.0.2",
+			Port:     1080,
+		},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.3-codex","input":[]}`))
+	require.Nil(t, result)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.ErrorAs(t, err, &policyErr)
+	require.Equal(t, "missing_bucket", policyErr.Code)
+	require.Zero(t, upstream.calls)
+}
+
+func TestOpenAIGatewayService_ForwardAsAnthropicRejectsFailClosedEgressBeforeHTTPUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.3-codex","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("content-type", "application/json")
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+	core := NewOpenAIGatewayCoreService(nil, cfg, nil)
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		gatewayCoreService: core,
+		httpUpstream:       upstream,
+	}
+	account := &Account{
+		ID:          19002,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+		Extra: map[string]any{
+			"openai_gateway_egress_bucket": "missing",
+		},
+		Proxy: &Proxy{
+			Protocol: "socks5",
+			Host:     "10.0.0.2",
+			Port:     1080,
+		},
+	}
+
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "gpt-5.3-codex")
+	require.Nil(t, result)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.ErrorAs(t, err, &policyErr)
+	require.Equal(t, "missing_bucket", policyErr.Code)
+	require.Zero(t, upstream.calls)
 }
 
 func TestOpenAIGatewayService_Forward_NonStreamingResponseBindsResponseAccount(t *testing.T) {
@@ -2765,6 +2964,7 @@ func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader([]byte(`{"model":"gpt-5"}`)))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.104.0")
 
 	svc := &OpenAIGatewayService{}
 	account := &Account{
@@ -2776,7 +2976,7 @@ func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T)
 	require.NoError(t, err)
 	require.Equal(t, chatgptCodexURL+"/compact", req.URL.String())
 	require.Equal(t, "application/json", req.Header.Get("Accept"))
-	require.Equal(t, codexCLIVersion, req.Header.Get("Version"))
+	require.Equal(t, "0.104.0", req.Header.Get("Version"))
 	require.NotEmpty(t, req.Header.Get("Session_Id"))
 }
 
@@ -2935,10 +3135,47 @@ func TestOpenAIBuildUpstreamRequestOAuthAppliesGatewayCanonicalProfile(t *testin
 	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5","metadata":{"user_id":"{\"device_id\":\"old-device\",\"account_uuid\":\"acct-1\",\"session_id\":\"123e4567-e89b-12d3-a456-426614174000\"}"}}`), "token", false, "", false)
 	require.NoError(t, err)
 	require.Equal(t, "codex_cli_rs/0.104.0", req.Header.Get("User-Agent"))
+	require.Empty(t, req.Header.Get("Version"))
 	require.Equal(t, "js", req.Header.Get("X-Stainless-Lang"))
 	body, readErr := io.ReadAll(req.Body)
 	require.NoError(t, readErr)
 	require.NotContains(t, string(body), "old-device")
+}
+
+func TestOpenAIGatewayService_GetAccessTokenDecryptsEncryptedCredentials(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("33", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+
+	oauthProtected, err := protector.ProtectCredentials(map[string]any{
+		"access_token": "oauth-secret",
+	})
+	require.NoError(t, err)
+	apiKeyProtected, err := protector.ProtectCredentials(map[string]any{
+		"api_key": "sk-secret-1234567890",
+	})
+	require.NoError(t, err)
+
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	oauthToken, oauthKind, err := svc.GetAccessToken(context.Background(), &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: oauthProtected,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "oauth-secret", oauthToken)
+	require.Equal(t, "oauth", oauthKind)
+
+	apiKeyToken, apiKeyKind, err := svc.GetAccessToken(context.Background(), &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: apiKeyProtected,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "sk-secret-1234567890", apiKeyToken)
+	require.Equal(t, "apikey", apiKeyKind)
 }
 
 // ==================== P1-08 修复：model 替换性能优化测试 ====================

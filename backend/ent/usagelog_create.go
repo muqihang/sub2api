@@ -85,6 +85,48 @@ func (_c *UsageLogCreate) SetNillableUpstreamModel(v *string) *UsageLogCreate {
 	return _c
 }
 
+// SetEntityID sets the "entity_id" field.
+func (_c *UsageLogCreate) SetEntityID(v int64) *UsageLogCreate {
+	_c.mutation.SetEntityID(v)
+	return _c
+}
+
+// SetNillableEntityID sets the "entity_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableEntityID(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetEntityID(*v)
+	}
+	return _c
+}
+
+// SetEntityType sets the "entity_type" field.
+func (_c *UsageLogCreate) SetEntityType(v string) *UsageLogCreate {
+	_c.mutation.SetEntityType(v)
+	return _c
+}
+
+// SetNillableEntityType sets the "entity_type" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableEntityType(v *string) *UsageLogCreate {
+	if v != nil {
+		_c.SetEntityType(*v)
+	}
+	return _c
+}
+
+// SetClaimedEntityID sets the "claimed_entity_id" field.
+func (_c *UsageLogCreate) SetClaimedEntityID(v string) *UsageLogCreate {
+	_c.mutation.SetClaimedEntityID(v)
+	return _c
+}
+
+// SetNillableClaimedEntityID sets the "claimed_entity_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableClaimedEntityID(v *string) *UsageLogCreate {
+	if v != nil {
+		_c.SetClaimedEntityID(*v)
+	}
+	return _c
+}
+
 // SetChannelID sets the "channel_id" field.
 func (_c *UsageLogCreate) SetChannelID(v int64) *UsageLogCreate {
 	_c.mutation.SetChannelID(v)
@@ -676,6 +718,16 @@ func (_c *UsageLogCreate) check() error {
 			return &ValidationError{Name: "upstream_model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.upstream_model": %w`, err)}
 		}
 	}
+	if v, ok := _c.mutation.EntityType(); ok {
+		if err := usagelog.EntityTypeValidator(v); err != nil {
+			return &ValidationError{Name: "entity_type", err: fmt.Errorf(`ent: validator failed for field "UsageLog.entity_type": %w`, err)}
+		}
+	}
+	if v, ok := _c.mutation.ClaimedEntityID(); ok {
+		if err := usagelog.ClaimedEntityIDValidator(v); err != nil {
+			return &ValidationError{Name: "claimed_entity_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.claimed_entity_id": %w`, err)}
+		}
+	}
 	if v, ok := _c.mutation.ModelMappingChain(); ok {
 		if err := usagelog.ModelMappingChainValidator(v); err != nil {
 			return &ValidationError{Name: "model_mapping_chain", err: fmt.Errorf(`ent: validator failed for field "UsageLog.model_mapping_chain": %w`, err)}
@@ -811,6 +863,18 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.UpstreamModel(); ok {
 		_spec.SetField(usagelog.FieldUpstreamModel, field.TypeString, value)
 		_node.UpstreamModel = &value
+	}
+	if value, ok := _c.mutation.EntityID(); ok {
+		_spec.SetField(usagelog.FieldEntityID, field.TypeInt64, value)
+		_node.EntityID = &value
+	}
+	if value, ok := _c.mutation.EntityType(); ok {
+		_spec.SetField(usagelog.FieldEntityType, field.TypeString, value)
+		_node.EntityType = &value
+	}
+	if value, ok := _c.mutation.ClaimedEntityID(); ok {
+		_spec.SetField(usagelog.FieldClaimedEntityID, field.TypeString, value)
+		_node.ClaimedEntityID = &value
 	}
 	if value, ok := _c.mutation.ChannelID(); ok {
 		_spec.SetField(usagelog.FieldChannelID, field.TypeInt64, value)
@@ -1154,6 +1218,66 @@ func (u *UsageLogUpsert) UpdateUpstreamModel() *UsageLogUpsert {
 // ClearUpstreamModel clears the value of the "upstream_model" field.
 func (u *UsageLogUpsert) ClearUpstreamModel() *UsageLogUpsert {
 	u.SetNull(usagelog.FieldUpstreamModel)
+	return u
+}
+
+// SetEntityID sets the "entity_id" field.
+func (u *UsageLogUpsert) SetEntityID(v int64) *UsageLogUpsert {
+	u.Set(usagelog.FieldEntityID, v)
+	return u
+}
+
+// UpdateEntityID sets the "entity_id" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateEntityID() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldEntityID)
+	return u
+}
+
+// AddEntityID adds v to the "entity_id" field.
+func (u *UsageLogUpsert) AddEntityID(v int64) *UsageLogUpsert {
+	u.Add(usagelog.FieldEntityID, v)
+	return u
+}
+
+// ClearEntityID clears the value of the "entity_id" field.
+func (u *UsageLogUpsert) ClearEntityID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldEntityID)
+	return u
+}
+
+// SetEntityType sets the "entity_type" field.
+func (u *UsageLogUpsert) SetEntityType(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldEntityType, v)
+	return u
+}
+
+// UpdateEntityType sets the "entity_type" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateEntityType() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldEntityType)
+	return u
+}
+
+// ClearEntityType clears the value of the "entity_type" field.
+func (u *UsageLogUpsert) ClearEntityType() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldEntityType)
+	return u
+}
+
+// SetClaimedEntityID sets the "claimed_entity_id" field.
+func (u *UsageLogUpsert) SetClaimedEntityID(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldClaimedEntityID, v)
+	return u
+}
+
+// UpdateClaimedEntityID sets the "claimed_entity_id" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateClaimedEntityID() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldClaimedEntityID)
+	return u
+}
+
+// ClearClaimedEntityID clears the value of the "claimed_entity_id" field.
+func (u *UsageLogUpsert) ClearClaimedEntityID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldClaimedEntityID)
 	return u
 }
 
@@ -1845,6 +1969,76 @@ func (u *UsageLogUpsertOne) UpdateUpstreamModel() *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) ClearUpstreamModel() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearUpstreamModel()
+	})
+}
+
+// SetEntityID sets the "entity_id" field.
+func (u *UsageLogUpsertOne) SetEntityID(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetEntityID(v)
+	})
+}
+
+// AddEntityID adds v to the "entity_id" field.
+func (u *UsageLogUpsertOne) AddEntityID(v int64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddEntityID(v)
+	})
+}
+
+// UpdateEntityID sets the "entity_id" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateEntityID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateEntityID()
+	})
+}
+
+// ClearEntityID clears the value of the "entity_id" field.
+func (u *UsageLogUpsertOne) ClearEntityID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearEntityID()
+	})
+}
+
+// SetEntityType sets the "entity_type" field.
+func (u *UsageLogUpsertOne) SetEntityType(v string) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetEntityType(v)
+	})
+}
+
+// UpdateEntityType sets the "entity_type" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateEntityType() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateEntityType()
+	})
+}
+
+// ClearEntityType clears the value of the "entity_type" field.
+func (u *UsageLogUpsertOne) ClearEntityType() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearEntityType()
+	})
+}
+
+// SetClaimedEntityID sets the "claimed_entity_id" field.
+func (u *UsageLogUpsertOne) SetClaimedEntityID(v string) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetClaimedEntityID(v)
+	})
+}
+
+// UpdateClaimedEntityID sets the "claimed_entity_id" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateClaimedEntityID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateClaimedEntityID()
+	})
+}
+
+// ClearClaimedEntityID clears the value of the "claimed_entity_id" field.
+func (u *UsageLogUpsertOne) ClearClaimedEntityID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearClaimedEntityID()
 	})
 }
 
@@ -2791,6 +2985,76 @@ func (u *UsageLogUpsertBulk) UpdateUpstreamModel() *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) ClearUpstreamModel() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearUpstreamModel()
+	})
+}
+
+// SetEntityID sets the "entity_id" field.
+func (u *UsageLogUpsertBulk) SetEntityID(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetEntityID(v)
+	})
+}
+
+// AddEntityID adds v to the "entity_id" field.
+func (u *UsageLogUpsertBulk) AddEntityID(v int64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddEntityID(v)
+	})
+}
+
+// UpdateEntityID sets the "entity_id" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateEntityID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateEntityID()
+	})
+}
+
+// ClearEntityID clears the value of the "entity_id" field.
+func (u *UsageLogUpsertBulk) ClearEntityID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearEntityID()
+	})
+}
+
+// SetEntityType sets the "entity_type" field.
+func (u *UsageLogUpsertBulk) SetEntityType(v string) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetEntityType(v)
+	})
+}
+
+// UpdateEntityType sets the "entity_type" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateEntityType() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateEntityType()
+	})
+}
+
+// ClearEntityType clears the value of the "entity_type" field.
+func (u *UsageLogUpsertBulk) ClearEntityType() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearEntityType()
+	})
+}
+
+// SetClaimedEntityID sets the "claimed_entity_id" field.
+func (u *UsageLogUpsertBulk) SetClaimedEntityID(v string) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetClaimedEntityID(v)
+	})
+}
+
+// UpdateClaimedEntityID sets the "claimed_entity_id" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateClaimedEntityID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateClaimedEntityID()
+	})
+}
+
+// ClearClaimedEntityID clears the value of the "claimed_entity_id" field.
+func (u *UsageLogUpsertBulk) ClearClaimedEntityID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearClaimedEntityID()
 	})
 }
 

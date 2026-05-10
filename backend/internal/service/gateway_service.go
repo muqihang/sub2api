@@ -8684,6 +8684,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		SubscriptionID:        optionalSubscriptionID(subscription),
 		CreatedAt:             time.Now(),
 	}
+	usageLog.ApplyEntityAuditFromContext(ctx)
 	if result.ImageCount > 0 {
 		usageLog.RateMultiplier = imageMultiplier
 	}

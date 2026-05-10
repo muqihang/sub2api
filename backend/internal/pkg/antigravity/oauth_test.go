@@ -177,6 +177,71 @@ func TestEffectiveV1InternalUserAgent_UsesUserAgentVersionEnvAsFallback(t *testi
 	}
 }
 
+func TestEffectiveIDEVersion_PrefersDedicatedV1InternalUserAgentEnv(t *testing.T) {
+	t.Setenv(AntigravityV1InternalUserAgentEnv, "antigravity/9.9.9")
+	t.Setenv(AntigravityVersionEnv, "1.2.3")
+	t.Setenv(AntigravityUserAgentEnv, "antigravity/8.8.8 windows/amd64")
+	t.Setenv(AntigravityUserAgentVersionEnv, "1.7.0")
+
+	got := EffectiveIDEVersion()
+	want := "9.9.9"
+	if got != want {
+		t.Fatalf("EffectiveIDEVersion() = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveIDEVersion_PreservesDedicatedFullOverrideTokenWhenNonCanonical(t *testing.T) {
+	t.Setenv(AntigravityV1InternalUserAgentEnv, "custom-client/2.0")
+	t.Setenv(AntigravityVersionEnv, "1.2.3")
+	t.Setenv(AntigravityUserAgentEnv, "antigravity/8.8.8 windows/amd64")
+	t.Setenv(AntigravityUserAgentVersionEnv, "1.7.0")
+
+	got := EffectiveIDEVersion()
+	want := "custom-client/2.0"
+	if got != want {
+		t.Fatalf("EffectiveIDEVersion() = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveIDEVersion_UsesVersionEnvWhenNoFullOverride(t *testing.T) {
+	t.Setenv(AntigravityV1InternalUserAgentEnv, "")
+	t.Setenv(AntigravityVersionEnv, "1.15.8")
+	t.Setenv(AntigravityUserAgentEnv, "antigravity/8.8.8 windows/amd64")
+	t.Setenv(AntigravityUserAgentVersionEnv, "1.7.0")
+
+	got := EffectiveIDEVersion()
+	want := "1.15.8"
+	if got != want {
+		t.Fatalf("EffectiveIDEVersion() = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveIDEVersion_UsesFirstTokenFromUserAgentEnvWhenNonCanonical(t *testing.T) {
+	t.Setenv(AntigravityV1InternalUserAgentEnv, "")
+	t.Setenv(AntigravityVersionEnv, "")
+	t.Setenv(AntigravityUserAgentEnv, "custom-client/2.0 windows/amd64")
+	t.Setenv(AntigravityUserAgentVersionEnv, "1.7.0")
+
+	got := EffectiveIDEVersion()
+	want := "custom-client/2.0"
+	if got != want {
+		t.Fatalf("EffectiveIDEVersion() = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveIDEVersion_UsesUserAgentVersionEnvAsFallback(t *testing.T) {
+	t.Setenv(AntigravityV1InternalUserAgentEnv, "")
+	t.Setenv(AntigravityVersionEnv, "")
+	t.Setenv(AntigravityUserAgentEnv, "")
+	t.Setenv(AntigravityUserAgentVersionEnv, "3.2.1")
+
+	got := EffectiveIDEVersion()
+	want := "3.2.1"
+	if got != want {
+		t.Fatalf("EffectiveIDEVersion() = %q, want %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ForwardBaseURLs
 // ---------------------------------------------------------------------------
@@ -782,8 +847,11 @@ func TestConstants_值正确(t *testing.T) {
 	if RedirectURI != "http://localhost:8085/callback" {
 		t.Errorf("RedirectURI 不匹配: got %s", RedirectURI)
 	}
-	if GetUserAgent() != "antigravity/1.21.9 windows/amd64" {
+	if GetUserAgent() != "antigravity/1.107.0 windows/amd64" {
 		t.Errorf("UserAgent 不匹配: got %s", GetUserAgent())
+	}
+	if EffectiveIDEVersion() != "1.107.0" {
+		t.Errorf("IDEVersion 不匹配: got %s", EffectiveIDEVersion())
 	}
 	if SessionTTL != 30*time.Minute {
 		t.Errorf("SessionTTL 不匹配: got %v", SessionTTL)

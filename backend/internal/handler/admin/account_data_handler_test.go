@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -54,8 +55,9 @@ func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
 }
 
 type accountDataOpenAIClientStub struct {
-	refreshResp *openai.TokenResponse
-	refreshErr  error
+	refreshResp  *openai.TokenResponse
+	refreshErr   error
+	refreshCalls int
 }
 
 func (s *accountDataOpenAIClientStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
@@ -67,6 +69,7 @@ func (s *accountDataOpenAIClientStub) RefreshToken(ctx context.Context, refreshT
 }
 
 func (s *accountDataOpenAIClientStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	s.refreshCalls++
 	if s.refreshErr != nil {
 		return nil, s.refreshErr
 	}
@@ -74,10 +77,17 @@ func (s *accountDataOpenAIClientStub) RefreshTokenWithClientID(ctx context.Conte
 }
 
 func setupAccountDataRouterWithOpenAIClient(client service.OpenAIOAuthClient) (*gin.Engine, *stubAdminService) {
+	return setupAccountDataRouterWithOpenAIClientAndConfig(client, nil)
+}
+
+func setupAccountDataRouterWithOpenAIClientAndConfig(client service.OpenAIOAuthClient, cfg *config.Config) (*gin.Engine, *stubAdminService) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	adminSvc := newStubAdminService()
 	openaiOAuthService := service.NewOpenAIOAuthService(nil, client)
+	if cfg != nil {
+		openaiOAuthService.SetGatewayCoreService(service.NewOpenAIGatewayCoreService(nil, cfg, nil))
+	}
 
 	h := NewAccountHandler(
 		adminSvc,
@@ -98,6 +108,19 @@ func setupAccountDataRouterWithOpenAIClient(client service.OpenAIOAuthClient) (*
 	router.GET("/api/v1/admin/accounts/data", h.ExportData)
 	router.POST("/api/v1/admin/accounts/data", h.ImportData)
 	return router, adminSvc
+}
+
+func testAccountDataOpenAIEgressConfig() *config.Config {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bucket-a"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "bucket-a", Enabled: true, ProxyURL: "socks5://127.0.0.1:9001"},
+	}
+	return cfg
 }
 
 func TestExportDataIncludesSecrets(t *testing.T) {
@@ -351,6 +374,57 @@ func TestImportData_OpenAIRTValidationPromotesToMainPool(t *testing.T) {
 	require.Equal(t, service.OpenAITokenSourceRTManaged, created.Extra["openai_token_source"])
 	require.Equal(t, service.OpenAIValidationOutcomeRTValidated, created.Extra["openai_validation_outcome"])
 	require.Empty(t, adminSvc.updatedAccounts, "validated RT import should remain active and not require a follow-up downgrade")
+}
+
+func TestImportData_OpenAIUsesImportedExtraEgressBucketBeforeRefresh(t *testing.T) {
+	client := &accountDataOpenAIClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "validated-at",
+			RefreshToken: "validated-rt",
+			ExpiresIn:    3600,
+		},
+	}
+	router, adminSvc := setupAccountDataRouterWithOpenAIClientAndConfig(client, testAccountDataOpenAIEgressConfig())
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":     "openai-rt",
+					"platform": service.PlatformOpenAI,
+					"type":     service.AccountTypeOAuth,
+					"credentials": map[string]any{
+						"access_token":  "old-at",
+						"refresh_token": "old-rt",
+						"client_id":     "client-1",
+					},
+					"extra": map[string]any{
+						"openai_gateway_egress_bucket": "missing",
+					},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Zero(t, client.refreshCalls)
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.Equal(t, "missing", created.Extra["openai_gateway_egress_bucket"])
+	require.Equal(t, "missing_bucket", created.Extra["openai_last_refresh_error_code"])
+	require.Len(t, adminSvc.updatedAccounts, 1)
+	require.Equal(t, service.StatusDisabled, adminSvc.updatedAccounts[0].input.Status)
 }
 
 func TestImportData_OpenAIATOnlyQuarantinesAndDisablesScheduling(t *testing.T) {

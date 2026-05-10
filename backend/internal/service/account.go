@@ -1428,6 +1428,78 @@ func (a *Account) GetTLSFingerprintProfileID() int64 {
 	return 0
 }
 
+type OpenAIGatewayAccountTLSOverride struct {
+	Enabled   bool
+	ProfileID int64
+}
+
+type OpenAIGatewayAccountTLSPolicy struct {
+	Enabled   bool  `json:"enabled"`
+	ProfileID int64 `json:"profile_id"`
+}
+
+func (p OpenAIGatewayAccountTLSPolicy) ExtraMap() map[string]any {
+	return map[string]any{
+		"enabled":    p.Enabled,
+		"profile_id": p.ProfileID,
+	}
+}
+
+func (a *Account) GetOpenAIGatewayTLSOverride() OpenAIGatewayAccountTLSOverride {
+	if a == nil || a.Extra == nil {
+		return OpenAIGatewayAccountTLSOverride{}
+	}
+	raw, ok := a.Extra[OpenAIGatewayTLSExtraKey]
+	if !ok || raw == nil {
+		return OpenAIGatewayAccountTLSOverride{}
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		if nested, ok := raw.(map[string]interface{}); ok {
+			values = nested
+		} else {
+			return OpenAIGatewayAccountTLSOverride{}
+		}
+	}
+	return OpenAIGatewayAccountTLSOverride{
+		Enabled:   boolFromAny(values["enabled"]),
+		ProfileID: int64FromAny(values["profile_id"]),
+	}
+}
+
+func boolFromAny(v any) bool {
+	switch value := v.(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(strings.TrimSpace(value), "true")
+	default:
+		return false
+	}
+}
+
+func int64FromAny(v any) int64 {
+	switch value := v.(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case int32:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		if i, err := value.Int64(); err == nil {
+			return i
+		}
+	case string:
+		if i, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
 // GetUserMsgQueueMode 获取用户消息队列模式
 // "serialize" = 串行队列, "throttle" = 软性限速, "" = 未设置（使用全局配置）
 func (a *Account) GetUserMsgQueueMode() string {

@@ -235,6 +235,15 @@ gateway:
   # health/verify 探针与可选 client token。
   openai_core:
     enabled: true
+    # 灰度门禁默认关闭；关闭后对应新路径必须保持旧行为。
+    tls_binding:
+      enabled: false
+    entity_orchestration:
+      enabled: false
+    entity_profile_override:
+      enabled: false
+    # 本地/迁移默认配置偏兼容；生产建议见下方 production profile 注释块。
+    production_mode: false
     # 默认 profile 模式：
     # - fixed: 固定 canonical profile（推荐，稳定）
     # - observe: 初始/后续可从客户端头观察更新
@@ -242,6 +251,25 @@ gateway:
     default_profile_mode: fixed
     # 默认出口桶（当前单住宅 IP 建议保持 default；后续多出口时可扩展）
     default_egress_bucket: default
+    # 本地兼容：允许 egress 异常时按旧行为回退。生产应全部反向配置为 fail-closed。
+    egress_fail_closed: false
+    allow_account_proxy_fallback: true
+    allow_direct_fallback: true
+    require_encrypted_credentials: false
+    credential_encryption_key: ""
+    oauth_session_store: memory
+    oauth_callback_sticky_single_instance: false
+    expose_raw_proxy_in_debug: false
+    bucket_warn_account_threshold: 2
+    # 生产安全 profile 示例：
+    # production_mode: true
+    # egress_fail_closed: true
+    # allow_account_proxy_fallback: false
+    # allow_direct_fallback: false
+    # require_encrypted_credentials: true
+    # credential_encryption_key: "${OPENAI_GATEWAY_CREDENTIAL_ENCRYPTION_KEY}"
+    # oauth_session_store: redis
+    # oauth_callback_sticky_single_instance: false
     # /openai/_health 与 /openai/_verify 是否要求 X-OpenAI-Gateway-Token
     probe_require_client_token: true
     # 固定模式下默认 canonical profile
@@ -255,13 +283,27 @@ gateway:
     # 出口桶：
     # - 当前单住宅 IP 可只保留 default 且 proxy_url 为空（表示直接走宿主机出口）
     # - 后续多出口时，可为不同 bucket 配不同 proxy_url，然后按账号 extra.openai_gateway_egress_bucket 绑定
+    # - tls_binding.enabled=true 后，生产环境每个启用 bucket 都必须配置 tls 策略；
+    #   profile_id 只做静态形状校验，实际存在性由服务预检使用 TLS profile 服务校验。
     egress_buckets:
       - name: "default"
         enabled: true
         proxy_url: ""
+        tls:
+          enabled: false
+          profile_id: 0
+          allow_default_fallback: false
+          allow_plain_fallback: true
+          allow_account_override: false
       # - name: "bucket-a"
       #   enabled: true
       #   proxy_url: "socks5://127.0.0.1:9001"
+      #   tls:
+      #     enabled: true
+      #     profile_id: 123
+      #     allow_default_fallback: false
+      #     allow_plain_fallback: false
+      #     allow_account_override: false
     # 可选：Gateway probe/client tokens
     # 配置后：
     # - /openai/_health 与 /openai/_verify 默认要求 token
@@ -1060,6 +1102,39 @@ turnstile:
 # Default: Uses Gemini CLI's public OAuth credentials (same as Google's official CLI tool)
 # 默认：使用 Gemini CLI 的公开 OAuth 凭证（与 Google 官方 CLI 工具相同）
 gemini:
+  # Gemini v0.3 hardening gates.
+  # Gemini v0.3 硬化门禁。
+  #
+  # Local compatibility profile (default):
+  # 本地兼容 profile（默认）：
+  # - 保留当前明文 token cache 的读写行为，便于本地迁移和兼容测试
+  # - 允许 project_id / OAuth client 的兼容回退
+  production_mode: false
+  require_safe_oauth_session_store: false
+  require_thought_signature_session_safety: false
+  allow_project_id_fallback_to_ai_studio: true
+  allow_unauthorized_client_retry_fallback: true
+  allow_google_one_default_tier_fallback: true
+  #
+  # Token cache read/write policy:
+  # Token cache 读写策略：
+  # - plaintext: read + write plaintext Gemini token cache entries. Local compatibility only.
+  # - plaintext: 读写明文 Gemini token cache，仅限本地兼容/迁移环境。
+  # - disabled: do not read or write Gemini token cache entries.
+  # - disabled: 不读取也不写入 Gemini token cache。
+  # - encrypted: reserved for a future encrypted cache implementation; do not assume active runtime support yet.
+  # - encrypted: 预留给后续加密缓存实现；当前不要假定运行时已经启用该能力。
+  token_cache_mode: "plaintext"
+  #
+  # Production hardening profile:
+  # 生产硬化 profile：
+  # production_mode: true
+  # require_safe_oauth_session_store: true
+  # require_thought_signature_session_safety: true
+  # allow_project_id_fallback_to_ai_studio: false
+  # allow_unauthorized_client_retry_fallback: false
+  # allow_google_one_default_tier_fallback: false
+  # token_cache_mode: "disabled"
   oauth:
     # OAuth 客户端配置说明：
     # 1) 留空 client_id/client_secret：使用 Gemini CLI 内置 OAuth Client（其 client_secret 需通过环境变量注入）

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/spf13/viper"
 )
 
@@ -124,8 +125,15 @@ type LogSamplingConfig struct {
 }
 
 type GeminiConfig struct {
-	OAuth GeminiOAuthConfig `mapstructure:"oauth"`
-	Quota GeminiQuotaConfig `mapstructure:"quota"`
+	OAuth                                GeminiOAuthConfig `mapstructure:"oauth"`
+	Quota                                GeminiQuotaConfig `mapstructure:"quota"`
+	ProductionMode                       bool              `mapstructure:"production_mode"`
+	RequireSafeOAuthSessionStore         bool              `mapstructure:"require_safe_oauth_session_store"`
+	AllowProjectIDFallbackToAIStudio     bool              `mapstructure:"allow_project_id_fallback_to_ai_studio"`
+	AllowUnauthorizedClientRetryFallback bool              `mapstructure:"allow_unauthorized_client_retry_fallback"`
+	AllowGoogleOneDefaultTierFallback    bool              `mapstructure:"allow_google_one_default_tier_fallback"`
+	TokenCacheMode                       string            `mapstructure:"token_cache_mode"`
+	RequireThoughtSignatureSessionSafety bool              `mapstructure:"require_thought_signature_session_safety"`
 }
 
 type GeminiOAuthConfig struct {
@@ -842,10 +850,36 @@ type GatewayOpenAIWSConfig struct {
 type GatewayOpenAICoreConfig struct {
 	// Enabled: 是否启用 OpenAI Gateway Core（默认 true）
 	Enabled bool `mapstructure:"enabled"`
+	// TLSBinding: OpenAI 上游 TLS 指纹绑定灰度门禁（默认关闭）
+	TLSBinding OpenAIGatewayFeatureFlagConfig `mapstructure:"tls_binding"`
+	// EntityOrchestration: OpenAI 多实体编排灰度门禁（默认关闭）
+	EntityOrchestration OpenAIGatewayFeatureFlagConfig `mapstructure:"entity_orchestration"`
+	// EntityProfileOverride: OpenAI 实体 profile override 灰度门禁（默认关闭）
+	EntityProfileOverride OpenAIGatewayFeatureFlagConfig `mapstructure:"entity_profile_override"`
+	// ProductionMode: 生产安全模式，启用后要求出口与凭证相关门禁 fail-closed
+	ProductionMode bool `mapstructure:"production_mode"`
 	// DefaultProfileMode: 默认 profile 模式（fixed/observe/frozen）
 	DefaultProfileMode string `mapstructure:"default_profile_mode"`
 	// DefaultEgressBucket: 默认出口桶名称
 	DefaultEgressBucket string `mapstructure:"default_egress_bucket"`
+	// EgressFailClosed: 出口桶异常时是否拒绝而非回退
+	EgressFailClosed bool `mapstructure:"egress_fail_closed"`
+	// AllowAccountProxyFallback: 是否允许出口桶异常时回退到账户代理
+	AllowAccountProxyFallback bool `mapstructure:"allow_account_proxy_fallback"`
+	// AllowDirectFallback: 是否允许出口桶异常时回退直连
+	AllowDirectFallback bool `mapstructure:"allow_direct_fallback"`
+	// RequireEncryptedCredentials: 生产模式是否要求 OpenAI 上游凭证加密/受保护
+	RequireEncryptedCredentials bool `mapstructure:"require_encrypted_credentials"`
+	// CredentialEncryptionKey: OpenAI 上游凭证加密密钥（后续 secret gate 使用）
+	CredentialEncryptionKey string `mapstructure:"credential_encryption_key"`
+	// OAuthSessionStore: OpenAI OAuth callback session 存储模式（memory/redis）
+	OAuthSessionStore string `mapstructure:"oauth_session_store"`
+	// OAuthCallbackStickySingleInstance: memory session 模式下是否已强制 sticky 单实例 callback
+	OAuthCallbackStickySingleInstance bool `mapstructure:"oauth_callback_sticky_single_instance"`
+	// ExposeRawProxyInDebug: 显式 debug/operator 模式下是否允许暴露明文 proxy URL
+	ExposeRawProxyInDebug bool `mapstructure:"expose_raw_proxy_in_debug"`
+	// BucketWarnAccountThreshold: 单 bucket 账号数超过该阈值时发出集中度告警
+	BucketWarnAccountThreshold int `mapstructure:"bucket_warn_account_threshold"`
 	// ProbeRequireClientToken: /openai/_health 和 /openai/_verify 是否要求 client token
 	ProbeRequireClientToken bool `mapstructure:"probe_require_client_token"`
 	// CanonicalUserAgent: 固定模式下默认 User-Agent
@@ -873,10 +907,23 @@ type OpenAIGatewayClientTokenConfig struct {
 	Token string `mapstructure:"token"`
 }
 
+type OpenAIGatewayFeatureFlagConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 type OpenAIGatewayEgressBucketConfig struct {
-	Name     string `mapstructure:"name"`
-	Enabled  bool   `mapstructure:"enabled"`
-	ProxyURL string `mapstructure:"proxy_url"`
+	Name     string                       `mapstructure:"name"`
+	Enabled  bool                         `mapstructure:"enabled"`
+	ProxyURL string                       `mapstructure:"proxy_url"`
+	TLS      OpenAIGatewayBucketTLSConfig `mapstructure:"tls"`
+}
+
+type OpenAIGatewayBucketTLSConfig struct {
+	Enabled              bool  `mapstructure:"enabled"`
+	ProfileID            int64 `mapstructure:"profile_id"`
+	AllowDefaultFallback bool  `mapstructure:"allow_default_fallback"`
+	AllowPlainFallback   bool  `mapstructure:"allow_plain_fallback"`
+	AllowAccountOverride bool  `mapstructure:"allow_account_override"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1708,8 +1755,21 @@ func setDefaults() {
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_core.enabled", true)
+	viper.SetDefault("gateway.openai_core.tls_binding.enabled", false)
+	viper.SetDefault("gateway.openai_core.entity_orchestration.enabled", false)
+	viper.SetDefault("gateway.openai_core.entity_profile_override.enabled", false)
+	viper.SetDefault("gateway.openai_core.production_mode", false)
 	viper.SetDefault("gateway.openai_core.default_profile_mode", "fixed")
 	viper.SetDefault("gateway.openai_core.default_egress_bucket", "default")
+	viper.SetDefault("gateway.openai_core.egress_fail_closed", false)
+	viper.SetDefault("gateway.openai_core.allow_account_proxy_fallback", true)
+	viper.SetDefault("gateway.openai_core.allow_direct_fallback", true)
+	viper.SetDefault("gateway.openai_core.require_encrypted_credentials", false)
+	viper.SetDefault("gateway.openai_core.credential_encryption_key", "")
+	viper.SetDefault("gateway.openai_core.oauth_session_store", "memory")
+	viper.SetDefault("gateway.openai_core.oauth_callback_sticky_single_instance", false)
+	viper.SetDefault("gateway.openai_core.expose_raw_proxy_in_debug", false)
+	viper.SetDefault("gateway.openai_core.bucket_warn_account_threshold", 2)
 	viper.SetDefault("gateway.openai_core.probe_require_client_token", true)
 	viper.SetDefault("gateway.openai_core.canonical_user_agent", "codex_cli_rs/0.104.0")
 	viper.SetDefault("gateway.openai_core.canonical_stainless_lang", "js")
@@ -1864,6 +1924,13 @@ func setDefaults() {
 	viper.SetDefault("gemini.oauth.client_secret", "")
 	viper.SetDefault("gemini.oauth.scopes", "")
 	viper.SetDefault("gemini.quota.policy", "")
+	viper.SetDefault("gemini.production_mode", false)
+	viper.SetDefault("gemini.require_safe_oauth_session_store", false)
+	viper.SetDefault("gemini.allow_project_id_fallback_to_ai_studio", true)
+	viper.SetDefault("gemini.allow_unauthorized_client_retry_fallback", true)
+	viper.SetDefault("gemini.allow_google_one_default_tier_fallback", true)
+	viper.SetDefault("gemini.token_cache_mode", "plaintext")
+	viper.SetDefault("gemini.require_thought_signature_session_safety", false)
 
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
@@ -1943,6 +2010,30 @@ func (c *Config) Validate() error {
 	geminiClientSecret := strings.TrimSpace(c.Gemini.OAuth.ClientSecret)
 	if (geminiClientID == "") != (geminiClientSecret == "") {
 		return fmt.Errorf("gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty")
+	}
+	geminiTokenCacheMode := strings.ToLower(strings.TrimSpace(c.Gemini.TokenCacheMode))
+	geminiCredentialKey := strings.TrimSpace(c.Gateway.OpenAICore.CredentialEncryptionKey)
+	switch geminiTokenCacheMode {
+	case "plaintext", "disabled", "encrypted":
+	default:
+		return fmt.Errorf("gemini.token_cache_mode must be one of: plaintext/disabled/encrypted")
+	}
+	if c.Gemini.ProductionMode {
+		if geminiTokenCacheMode == "plaintext" {
+			return fmt.Errorf("gemini.production_mode rejects token_cache_mode=plaintext")
+		}
+		if geminiCredentialKey == "" {
+			return fmt.Errorf("gemini.production_mode requires gateway.openai_core.credential_encryption_key to be configured")
+		}
+		if !c.Gemini.RequireSafeOAuthSessionStore || !c.Gemini.RequireThoughtSignatureSessionSafety {
+			return fmt.Errorf("gemini.production_mode requires safe OAuth session topology")
+		}
+		if c.Gemini.AllowProjectIDFallbackToAIStudio {
+			return fmt.Errorf("gemini.production_mode requires allow_project_id_fallback_to_ai_studio=false")
+		}
+		if c.Gemini.AllowUnauthorizedClientRetryFallback {
+			return fmt.Errorf("gemini.production_mode requires allow_unauthorized_client_retry_fallback=false")
+		}
 	}
 
 	if strings.TrimSpace(c.Server.FrontendURL) != "" {
@@ -2434,9 +2525,78 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Gateway.OpenAICore.DefaultEgressBucket) == "" {
 		return fmt.Errorf("gateway.openai_core.default_egress_bucket is required")
 	}
-	for _, bucket := range c.Gateway.OpenAICore.EgressBuckets {
-		if strings.TrimSpace(bucket.Name) == "" {
+	defaultBucket := strings.TrimSpace(c.Gateway.OpenAICore.DefaultEgressBucket)
+	bucketNames := make(map[string]bool, len(c.Gateway.OpenAICore.EgressBuckets))
+	defaultBucketEnabled := false
+	for i := range c.Gateway.OpenAICore.EgressBuckets {
+		bucket := &c.Gateway.OpenAICore.EgressBuckets[i]
+		name := strings.TrimSpace(bucket.Name)
+		if name == "" {
 			return fmt.Errorf("gateway.openai_core.egress_buckets[].name is required")
+		}
+		if bucketNames[name] {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[].name duplicate: %s", name)
+		}
+		bucketNames[name] = true
+		if normalizedProxyURL, _, err := proxyurl.Parse(bucket.ProxyURL); err != nil {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[%s].proxy_url is invalid: %w", name, err)
+		} else {
+			bucket.ProxyURL = normalizedProxyURL
+		}
+		if bucket.Enabled && c.Gateway.OpenAICore.TLSBinding.Enabled {
+			if err := validateOpenAIGatewayBucketTLSConfig(name, bucket.TLS, c.Gateway.OpenAICore.ProductionMode); err != nil {
+				return err
+			}
+		}
+		if name == defaultBucket {
+			defaultBucketEnabled = bucket.Enabled
+		}
+	}
+	if !bucketNames[defaultBucket] {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket must reference an existing egress bucket")
+	}
+	if c.Gateway.OpenAICore.EgressFailClosed && !defaultBucketEnabled {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket cannot reference a disabled bucket when egress_fail_closed=true")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.OpenAICore.OAuthSessionStore)) {
+	case "memory", "redis":
+	case "":
+		return fmt.Errorf("gateway.openai_core.oauth_session_store is required")
+	default:
+		return fmt.Errorf("gateway.openai_core.oauth_session_store must be one of: memory/redis")
+	}
+	if c.Gateway.OpenAICore.BucketWarnAccountThreshold < 0 {
+		return fmt.Errorf("gateway.openai_core.bucket_warn_account_threshold must be non-negative")
+	}
+	keyHex := strings.TrimSpace(c.Gateway.OpenAICore.CredentialEncryptionKey)
+	if keyHex != "" {
+		key, err := hex.DecodeString(keyHex)
+		if err != nil {
+			return fmt.Errorf("gateway.openai_core.credential_encryption_key must be valid hex")
+		}
+		if len(key) != 32 {
+			return fmt.Errorf("gateway.openai_core.credential_encryption_key must decode to 32 bytes")
+		}
+	}
+	if c.Gateway.OpenAICore.ProductionMode {
+		if !c.Gateway.OpenAICore.EgressFailClosed {
+			return fmt.Errorf("gateway.openai_core.production_mode requires egress_fail_closed=true")
+		}
+		if c.Gateway.OpenAICore.AllowAccountProxyFallback {
+			return fmt.Errorf("gateway.openai_core.production_mode requires allow_account_proxy_fallback=false")
+		}
+		if c.Gateway.OpenAICore.AllowDirectFallback {
+			return fmt.Errorf("gateway.openai_core.production_mode requires allow_direct_fallback=false")
+		}
+		if !c.Gateway.OpenAICore.RequireEncryptedCredentials {
+			return fmt.Errorf("gateway.openai_core.production_mode requires require_encrypted_credentials=true")
+		}
+		if keyHex == "" {
+			return fmt.Errorf("gateway.openai_core.production_mode requires credential_encryption_key to be configured")
+		}
+		if strings.EqualFold(strings.TrimSpace(c.Gateway.OpenAICore.OAuthSessionStore), "memory") &&
+			!c.Gateway.OpenAICore.OAuthCallbackStickySingleInstance {
+			return fmt.Errorf("gateway.openai_core.production_mode requires oauth_session_store!=memory or oauth_callback_sticky_single_instance=true")
 		}
 	}
 	for _, item := range c.Gateway.OpenAICore.ClientTokens {
@@ -2712,6 +2872,25 @@ func (c *Config) Validate() error {
 	}
 	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
 		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
+	}
+	return nil
+}
+
+func validateOpenAIGatewayBucketTLSConfig(bucketName string, tls OpenAIGatewayBucketTLSConfig, productionMode bool) error {
+	if !tls.Enabled {
+		if productionMode {
+			return fmt.Errorf("gateway.openai_core.production_mode requires tls policy for egress bucket %s when tls_binding.enabled=true", bucketName)
+		}
+		return nil
+	}
+	if tls.ProfileID < 0 {
+		return fmt.Errorf("gateway.openai_core.egress_buckets[%s].tls.profile_id must be positive", bucketName)
+	}
+	if tls.ProfileID == 0 && !tls.AllowDefaultFallback && !tls.AllowPlainFallback {
+		return fmt.Errorf("gateway.openai_core.egress_buckets[%s].tls requires profile_id or allow_default_fallback or allow_plain_fallback", bucketName)
+	}
+	if productionMode && tls.AllowPlainFallback {
+		return fmt.Errorf("gateway.openai_core.production_mode rejects tls.allow_plain_fallback for egress bucket %s", bucketName)
 	}
 	return nil
 }

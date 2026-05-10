@@ -60,6 +60,34 @@ func TestAdminUsageListRequestTypePriority(t *testing.T) {
 	require.Nil(t, repo.listFilters.Stream)
 }
 
+func TestAdminUsageListEntityFilters(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/usage?entity_id=123&entity_type=workspace&claimed_entity_id=workspace-alpha", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(123), repo.listFilters.EntityID)
+	require.Equal(t, "workspace", repo.listFilters.EntityType)
+	require.Equal(t, "workspace-alpha", repo.listFilters.ClaimedEntityID)
+}
+
+func TestAdminUsageStatsEntityFilters(t *testing.T) {
+	repo := &adminUsageRepoCapture{}
+	router := newAdminUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/usage/stats?entity_id=123&entity_type=workspace&claimed_entity_id=workspace-alpha", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(123), repo.statsFilters.EntityID)
+	require.Equal(t, "workspace", repo.statsFilters.EntityType)
+	require.Equal(t, "workspace-alpha", repo.statsFilters.ClaimedEntityID)
+}
+
 func TestAdminUsageListInvalidRequestType(t *testing.T) {
 	repo := &adminUsageRepoCapture{}
 	router := newAdminUsageRequestTypeTestRouter(repo)

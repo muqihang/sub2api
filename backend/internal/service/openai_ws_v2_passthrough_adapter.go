@@ -296,7 +296,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
 	}
-	firstClientMessage = updatedFirst
+	if strings.TrimSpace(gjson.GetBytes(updatedFirst, "type").String()) == "response.create" {
+		scopedFirst, _, scopeErr := scopeOpenAIBodyPromptCacheKey(requestContext(c), updatedFirst)
+		if scopeErr != nil {
+			return fmt.Errorf("scope prompt_cache_key on first ws frame: %w", scopeErr)
+		}
+		firstClientMessage = scopedFirst
+	} else {
+		firstClientMessage = updatedFirst
+	}
 
 	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
 	// usage 上报：filter
@@ -323,14 +331,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		wsHost = normalizeOpenAIWSLogValue(parsedURL.Host)
 		wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
 	}
-	logOpenAIWSV2Passthrough(
-		"relay_dial_start account_id=%d ws_host=%s ws_path=%s proxy_enabled=%v",
-		account.ID,
-		wsHost,
-		wsPath,
-		s.resolveOpenAIProxyURL(account) != "",
-	)
-
 	isCodexCLI := false
 	if c != nil {
 		isCodexCLI = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
@@ -338,8 +338,26 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		isCodexCLI = true
 	}
-	headers, _ := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, "", "", "")
-	proxyURL := s.resolveOpenAIProxyURL(account)
+	headers, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, "", "", "")
+	if headerErr != nil {
+		return headerErr
+	}
+	egress, egressErr := s.resolveOpenAIEgress(ctx, account)
+	if egressErr != nil {
+		return egressErr
+	}
+	proxyURL := egress.ProxyURL
+	effectiveTLS, tlsErr := s.resolveOpenAIWSEffectiveTLS(ctx, account, egress)
+	if tlsErr != nil {
+		return tlsErr
+	}
+	logOpenAIWSV2Passthrough(
+		"relay_dial_start account_id=%d ws_host=%s ws_path=%s proxy_enabled=%v",
+		account.ID,
+		wsHost,
+		wsPath,
+		egress.ProxySelected,
+	)
 
 	dialer := s.getOpenAIWSPassthroughDialer()
 	if dialer == nil {
@@ -348,7 +366,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 
 	dialCtx, cancelDial := context.WithTimeout(ctx, s.openAIWSDialTimeout())
 	defer cancelDial()
-	upstreamConn, statusCode, handshakeHeaders, err := dialer.Dial(dialCtx, wsURL, headers, proxyURL)
+	upstreamConn, statusCode, handshakeHeaders, err := dialer.Dial(dialCtx, wsURL, headers, proxyURL, effectiveTLS)
 	if err != nil {
 		logOpenAIWSV2Passthrough(
 			"relay_dial_failed account_id=%d status_code=%d err=%s",
@@ -406,6 +424,14 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				model = capturedSessionModel
 			}
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
+			if policyErr == nil && blocked == nil &&
+				strings.TrimSpace(gjson.GetBytes(out, "type").String()) == "response.create" {
+				var scopeErr error
+				out, _, scopeErr = scopeOpenAIBodyPromptCacheKey(requestContext(c), out)
+				if scopeErr != nil {
+					return payload, nil, scopeErr
+				}
+			}
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
 			// 的 response.create 帧上更新 usageMeta，使用
 			// filter 处理后的 payload，与首帧 policy-after-extract 语义

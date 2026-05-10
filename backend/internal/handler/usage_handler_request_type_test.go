@@ -59,6 +59,21 @@ func TestUserUsageListRequestTypePriority(t *testing.T) {
 	require.Nil(t, repo.listFilters.Stream)
 }
 
+func TestUserUsageListEntityFilters(t *testing.T) {
+	repo := &userUsageRepoCapture{}
+	router := newUserUsageRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage?entity_id=123&entity_type=workspace&claimed_entity_id=workspace-alpha", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(42), repo.listFilters.UserID)
+	require.Equal(t, int64(123), repo.listFilters.EntityID)
+	require.Equal(t, "workspace", repo.listFilters.EntityType)
+	require.Equal(t, "workspace-alpha", repo.listFilters.ClaimedEntityID)
+}
+
 func TestUserUsageListInvalidRequestType(t *testing.T) {
 	repo := &userUsageRepoCapture{}
 	router := newUserUsageRequestTypeTestRouter(repo)
