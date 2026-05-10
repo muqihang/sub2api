@@ -115,21 +115,22 @@ type CreateAccountRequest struct {
 // UpdateAccountRequest represents update account request
 // 使用指针类型来区分"未提供"和"设置为0"
 type UpdateAccountRequest struct {
-	Name                    string         `json:"name"`
-	Notes                   *string        `json:"notes"`
-	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account"`
-	Credentials             map[string]any `json:"credentials"`
-	Extra                   map[string]any `json:"extra"`
-	ProxyID                 *int64         `json:"proxy_id"`
-	Concurrency             *int           `json:"concurrency"`
-	Priority                *int           `json:"priority"`
-	RateMultiplier          *float64       `json:"rate_multiplier"`
-	LoadFactor              *int           `json:"load_factor"`
-	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
-	GroupIDs                *[]int64       `json:"group_ids"`
-	ExpiresAt               *int64         `json:"expires_at"`
-	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
-	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	Name                    string                                 `json:"name"`
+	Notes                   *string                                `json:"notes"`
+	Type                    string                                 `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account"`
+	Credentials             map[string]any                         `json:"credentials"`
+	Extra                   map[string]any                         `json:"extra"`
+	OpenAIGatewayTLS        *service.OpenAIGatewayAccountTLSPolicy `json:"openai_gateway_tls"`
+	ProxyID                 *int64                                 `json:"proxy_id"`
+	Concurrency             *int                                   `json:"concurrency"`
+	Priority                *int                                   `json:"priority"`
+	RateMultiplier          *float64                               `json:"rate_multiplier"`
+	LoadFactor              *int                                   `json:"load_factor"`
+	Status                  string                                 `json:"status" binding:"omitempty,oneof=active inactive error"`
+	GroupIDs                *[]int64                               `json:"group_ids"`
+	ExpiresAt               *int64                                 `json:"expires_at"`
+	AutoPauseOnExpired      *bool                                  `json:"auto_pause_on_expired"`
+	ConfirmMixedChannelRisk *bool                                  `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
 // BulkUpdateAccountsRequest represents the payload for bulk editing accounts
@@ -524,6 +525,20 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	}
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
+	if req.Extra != nil {
+		if _, ok := req.Extra[service.OpenAIGatewayTLSExtraKey]; ok {
+			response.BadRequest(c, "extra.openai_gateway_tls is reserved; use openai_gateway_tls")
+			return
+		}
+	}
+	if req.Platform == service.PlatformGemini && len(req.Credentials) > 0 && h.geminiOAuthService != nil {
+		protected, protectErr := h.geminiOAuthService.CredentialAccessor().ProtectCredentials(req.Credentials)
+		if protectErr != nil {
+			response.ErrorFrom(c, protectErr)
+			return
+		}
+		req.Credentials = protected
+	}
 
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
@@ -609,6 +624,41 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	// base_rpm 输入校验：负值归零，超过 10000 截断
 	sanitizeExtraBaseRPM(req.Extra)
 
+	extra := req.Extra
+	var existingAccount *service.Account
+	if len(req.Credentials) > 0 || req.OpenAIGatewayTLS != nil {
+		existing, getErr := h.adminService.GetAccount(c.Request.Context(), accountID)
+		if getErr != nil {
+			response.ErrorFrom(c, getErr)
+			return
+		}
+		existingAccount = existing
+	}
+	if req.OpenAIGatewayTLS == nil && extra != nil {
+		if _, ok := extra[service.OpenAIGatewayTLSExtraKey]; ok {
+			response.BadRequest(c, "extra.openai_gateway_tls is reserved; use openai_gateway_tls")
+			return
+		}
+	}
+	if req.OpenAIGatewayTLS != nil {
+		if extra == nil {
+			extra = cloneAccountExtraForAdminUpdate(existingAccount.Extra)
+		}
+		if err := h.validateOpenAIGatewayTLSUpdate(c.Request.Context(), existingAccount, extra, req.OpenAIGatewayTLS); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		extra[service.OpenAIGatewayTLSExtraKey] = req.OpenAIGatewayTLS.ExtraMap()
+	}
+	if existingAccount != nil && existingAccount.Platform == service.PlatformGemini && len(req.Credentials) > 0 && h.geminiOAuthService != nil {
+		protected, protectErr := h.geminiOAuthService.CredentialAccessor().ProtectCredentials(req.Credentials)
+		if protectErr != nil {
+			response.ErrorFrom(c, protectErr)
+			return
+		}
+		req.Credentials = protected
+	}
+
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
@@ -617,7 +667,8 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		Notes:                 req.Notes,
 		Type:                  req.Type,
 		Credentials:           req.Credentials,
-		Extra:                 req.Extra,
+		Extra:                 extra,
+		OpenAIGatewayTLS:      req.OpenAIGatewayTLS,
 		ProxyID:               req.ProxyID,
 		Concurrency:           req.Concurrency, // 指针类型，nil 表示未提供
 		Priority:              req.Priority,    // 指针类型，nil 表示未提供
@@ -843,11 +894,13 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			return nil, "", err
 		}
 
-		newCredentials = h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-		for k, v := range account.Credentials {
-			if _, exists := newCredentials[k]; !exists {
-				newCredentials[k] = v
-			}
+		newCredentials, err = h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+		if err != nil {
+			return nil, "", err
+		}
+		newCredentials, err = service.MergeProtectedOpenAICredentials(account.Credentials, newCredentials, h.openaiOAuthService.CredentialAccessor())
+		if err != nil {
+			return nil, "", err
 		}
 	} else if account.Platform == service.PlatformGemini {
 		tokenInfo, err := h.geminiOAuthService.RefreshAccountToken(ctx, account)
@@ -855,11 +908,13 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			return nil, "", fmt.Errorf("failed to refresh credentials: %w", err)
 		}
 
-		newCredentials = h.geminiOAuthService.BuildAccountCredentials(tokenInfo)
-		for k, v := range account.Credentials {
-			if _, exists := newCredentials[k]; !exists {
-				newCredentials[k] = v
-			}
+		newCredentials, err = h.geminiOAuthService.BuildProtectedAccountCredentials(tokenInfo)
+		if err != nil {
+			return nil, "", err
+		}
+		newCredentials, err = service.MergeProtectedGeminiCredentials(account.Credentials, newCredentials, h.geminiOAuthService.CredentialAccessor())
+		if err != nil {
+			return nil, "", err
 		}
 	} else if account.Platform == service.PlatformAntigravity {
 		tokenInfo, err := h.antigravityOAuthService.RefreshAccountToken(ctx, account)
@@ -2223,4 +2278,29 @@ func sanitizeExtraBaseRPM(extra map[string]any) {
 		v = 10000
 	}
 	extra["base_rpm"] = v
+}
+
+func (h *AccountHandler) validateOpenAIGatewayTLSUpdate(ctx context.Context, account *service.Account, extra map[string]any, policy *service.OpenAIGatewayAccountTLSPolicy) error {
+	if err := service.ValidateOpenAIGatewayAccountTLSPolicyShape(policy); err != nil {
+		return err
+	}
+	if h == nil || h.openaiOAuthService == nil {
+		return infraerrors.BadRequest("INVALID_OPENAI_GATEWAY_TLS", "openai_gateway_tls validation context is unavailable")
+	}
+	core := h.openaiOAuthService.GatewayCoreService()
+	if core == nil {
+		return infraerrors.BadRequest("INVALID_OPENAI_GATEWAY_TLS", "openai_gateway_tls validation context is unavailable")
+	}
+	return core.ValidateAccountTLSPolicyUpdate(ctx, account, extra, policy)
+}
+
+func cloneAccountExtraForAdminUpdate(extra map[string]any) map[string]any {
+	if extra == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(extra))
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
 }

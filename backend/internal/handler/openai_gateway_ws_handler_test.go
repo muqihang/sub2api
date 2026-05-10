@@ -370,6 +370,7 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 	cfg.Security.URLAllowlist.Enabled = false
 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAICore.Enabled = true
 	cfg.Gateway.OpenAIWS.OAuthEnabled = true
 	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
 	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
@@ -425,6 +426,7 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 
 	h := &OpenAIGatewayHandler{
 		gatewayService:        gatewayService,
+		gatewayCoreService:    service.NewOpenAIGatewayCoreService(accountRepo, cfg, nil),
 		billingCacheService:   billingCacheService,
 		apiKeyService:         &service.APIKeyService{},
 		usageRecordWorkerPool: &service.UsageRecordWorkerPool{},

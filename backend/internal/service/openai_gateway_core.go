@@ -2,13 +2,10 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +41,7 @@ type OpenAIGatewayCanonicalProfile struct {
 	ProfileID               string `json:"profile_id"`
 	Mode                    string `json:"mode"`
 	UserAgent               string `json:"user_agent"`
+	Version                 string `json:"version,omitempty"`
 	StainlessLang           string `json:"stainless_lang"`
 	StainlessPackageVersion string `json:"stainless_package_version"`
 	StainlessOS             string `json:"stainless_os"`
@@ -53,24 +51,47 @@ type OpenAIGatewayCanonicalProfile struct {
 }
 
 type OpenAIGatewayAccountRuntime struct {
-	Client         *OpenAIGatewayClientIdentity   `json:"client,omitempty"`
-	Profile        *OpenAIGatewayCanonicalProfile `json:"profile"`
-	EgressBucket   string                         `json:"egress_bucket"`
-	EgressProxyURL string                         `json:"egress_proxy_url,omitempty"`
-	Transport      string                         `json:"transport"`
+	Client        *OpenAIGatewayClientIdentity   `json:"client,omitempty"`
+	Profile       *OpenAIGatewayCanonicalProfile `json:"profile"`
+	EgressBucket  string                         `json:"egress_bucket"`
+	ProxySelected bool                           `json:"proxy_selected"`
+	ProxyLabel    string                         `json:"proxy_label,omitempty"`
+	ProxyHash     string                         `json:"proxy_hash,omitempty"`
+	DebugProxyURL string                         `json:"debug_proxy_url,omitempty"`
+	TLS           *OpenAIGatewayEffectiveTLS     `json:"tls,omitempty"`
+	Transport     string                         `json:"transport"`
 }
 
 type OpenAIGatewayHealthSnapshot struct {
 	GatewayStatus            string                             `json:"gateway_status"`
 	OAuthStatus              string                             `json:"oauth_status"`
 	OpenAIOAuthAccountsTotal int64                              `json:"openai_oauth_accounts_total"`
+	UnsafeCredentialAccounts int64                              `json:"unsafe_credential_accounts,omitempty"`
 	RTManagedAccountsTotal   int64                              `json:"rt_managed_accounts_total"`
 	TerminalAccountsTotal    int64                              `json:"terminal_accounts_total"`
 	CoolingAccountsTotal     int64                              `json:"cooling_accounts_total"`
 	EgressBuckets            map[string]int64                   `json:"egress_buckets"`
+	WarningCodes             []string                           `json:"warning_codes,omitempty"`
 	DegradedReason           string                             `json:"degraded_reason,omitempty"`
 	Refresh                  OpenAITokenRuntimeMetrics          `json:"refresh"`
 	WS                       OpenAIWSPerformanceMetricsSnapshot `json:"ws"`
+	TLSBinding               *OpenAIGatewayTLSBindingSnapshot   `json:"tls_binding,omitempty"`
+}
+
+type OpenAIGatewayTLSBindingSnapshot struct {
+	Enabled bool                                    `json:"enabled"`
+	Buckets map[string]*OpenAIGatewayEffectiveTLS   `json:"buckets,omitempty"`
+	Summary *OpenAIGatewayTLSBindingSummarySnapshot `json:"summary,omitempty"`
+}
+
+type OpenAIGatewayTLSBindingSummarySnapshot struct {
+	AccountsTotal           int64            `json:"accounts_total"`
+	BoundAccounts           int64            `json:"bound_accounts"`
+	DefaultFallbackAccounts int64            `json:"default_fallback_accounts"`
+	PlainFallbackAccounts   int64            `json:"plain_fallback_accounts"`
+	FailClosedAccounts      int64            `json:"fail_closed_accounts"`
+	DisabledAccounts        int64            `json:"disabled_accounts"`
+	ProfileUsage            map[string]int64 `json:"profile_usage,omitempty"`
 }
 
 type OpenAIGatewayVerifySnapshot struct {
@@ -79,10 +100,47 @@ type OpenAIGatewayVerifySnapshot struct {
 	Client              *OpenAIGatewayClientIdentity   `json:"client,omitempty"`
 	Profile             *OpenAIGatewayCanonicalProfile `json:"profile"`
 	EgressBucket        string                         `json:"egress_bucket"`
-	EgressProxyURL      string                         `json:"egress_proxy_url,omitempty"`
+	ProxySelected       bool                           `json:"proxy_selected"`
+	ProxyLabel          string                         `json:"proxy_label,omitempty"`
+	ProxyHash           string                         `json:"proxy_hash,omitempty"`
+	DebugProxyURL       string                         `json:"debug_proxy_url,omitempty"`
+	TLS                 *OpenAIGatewayEffectiveTLS     `json:"tls,omitempty"`
 	Transport           string                         `json:"transport"`
 	RequestedUA         string                         `json:"requested_user_agent,omitempty"`
 	RequestedOriginator string                         `json:"requested_originator,omitempty"`
+}
+
+type OpenAIGatewayTLSCanarySnapshot struct {
+	AccountID           int64                          `json:"account_id"`
+	AccountName         string                         `json:"account_name"`
+	Bucket              string                         `json:"bucket"`
+	EgressBucket        string                         `json:"egress_bucket"`
+	Route               string                         `json:"route"`
+	ProxySelected       bool                           `json:"proxy_selected"`
+	ProxyLabel          string                         `json:"proxy_label,omitempty"`
+	ProxyHash           string                         `json:"proxy_hash,omitempty"`
+	DebugProxyURL       string                         `json:"debug_proxy_url,omitempty"`
+	Transport           string                         `json:"transport"`
+	TLS                 *OpenAIGatewayEffectiveTLS     `json:"tls,omitempty"`
+	EffectiveSendMethod string                         `json:"effective_send_method"`
+	Success             bool                           `json:"success"`
+	FailureReason       string                         `json:"failure_reason,omitempty"`
+	Probe               *OpenAIGatewayTLSCanaryProbe   `json:"probe,omitempty"`
+	Diagnostics         map[string]string              `json:"diagnostics,omitempty"`
+	Client              *OpenAIGatewayClientIdentity   `json:"client,omitempty"`
+	Profile             *OpenAIGatewayCanonicalProfile `json:"profile,omitempty"`
+}
+
+type OpenAIGatewayTLSCanaryProbe struct {
+	Mode              string `json:"mode,omitempty"`
+	Transport         string `json:"transport"`
+	Route             string `json:"route"`
+	HandshakeMS       int64  `json:"handshake_ms"`
+	HTTPStatus        int    `json:"http_status,omitempty"`
+	WSHandshakeStatus int    `json:"ws_handshake_status,omitempty"`
+	WSDialerStrategy  string `json:"ws_dialer_strategy,omitempty"`
+	FailureReason     string `json:"failure_reason,omitempty"`
+	Error             string `json:"error,omitempty"`
 }
 
 type OpenAIGatewayAdminAccountSnapshot struct {
@@ -105,24 +163,40 @@ type OpenAIGatewayAdminAccountSnapshot struct {
 	ResponsesWriteCapable bool     `json:"responses_write_capable"`
 }
 
+type OpenAIGatewayAdminBucketSnapshot struct {
+	Name          string `json:"name"`
+	Enabled       bool   `json:"enabled"`
+	ProxySelected bool   `json:"proxy_selected"`
+	ProxyLabel    string `json:"proxy_label,omitempty"`
+	ProxyHash     string `json:"proxy_hash,omitempty"`
+	AccountCount  int64  `json:"account_count"`
+	Warning       string `json:"warning,omitempty"`
+}
+
 type OpenAIGatewayAdminStatusSnapshot struct {
-	Health   *OpenAIGatewayHealthSnapshot             `json:"health"`
-	Buckets  []config.OpenAIGatewayEgressBucketConfig `json:"buckets"`
-	Accounts []OpenAIGatewayAdminAccountSnapshot      `json:"accounts"`
+	Health   *OpenAIGatewayHealthSnapshot        `json:"health"`
+	Buckets  []OpenAIGatewayAdminBucketSnapshot  `json:"buckets"`
+	Accounts []OpenAIGatewayAdminAccountSnapshot `json:"accounts"`
 }
 
 type OpenAIGatewayCoreService struct {
 	accountRepo          AccountRepository
 	cfg                  *config.Config
 	openAITokenProvider  *OpenAITokenProvider
+	tlsProfileService    *TLSFingerprintProfileService
 	accountWriteThrottle *accountWriteThrottle
 }
 
-func NewOpenAIGatewayCoreService(accountRepo AccountRepository, cfg *config.Config, openAITokenProvider *OpenAITokenProvider) *OpenAIGatewayCoreService {
+func NewOpenAIGatewayCoreService(accountRepo AccountRepository, cfg *config.Config, openAITokenProvider *OpenAITokenProvider, tlsProfileService ...*TLSFingerprintProfileService) *OpenAIGatewayCoreService {
+	var tlsSvc *TLSFingerprintProfileService
+	if len(tlsProfileService) > 0 {
+		tlsSvc = tlsProfileService[0]
+	}
 	return &OpenAIGatewayCoreService{
 		accountRepo:          accountRepo,
 		cfg:                  cfg,
 		openAITokenProvider:  openAITokenProvider,
+		tlsProfileService:    tlsSvc,
 		accountWriteThrottle: newAccountWriteThrottle(15 * time.Minute),
 	}
 }
@@ -166,6 +240,10 @@ func (s *OpenAIGatewayCoreService) ProbeRequiresClientToken() bool {
 	return s.cfg.Gateway.OpenAICore.ProbeRequireClientToken
 }
 
+func (s *OpenAIGatewayCoreService) HasClientTokens() bool {
+	return s != nil && s.cfg != nil && len(s.cfg.Gateway.OpenAICore.ClientTokens) > 0
+}
+
 func (s *OpenAIGatewayCoreService) ResolveEgressBucket(account *Account) string {
 	if s == nil || s.cfg == nil {
 		if account != nil {
@@ -190,24 +268,15 @@ func (s *OpenAIGatewayCoreService) ResolveEgressBucket(account *Account) string 
 	return "default"
 }
 
-func (s *OpenAIGatewayCoreService) ResolveEgressProxyURL(account *Account, fallbackProxyURL string) string {
-	if s == nil || s.cfg == nil {
-		return strings.TrimSpace(fallbackProxyURL)
+func (s *OpenAIGatewayCoreService) ResolveOAuthSessionEgress(ctx context.Context, requestedBucket string, fallbackProxyURL string) (*OpenAIEgressResolution, error) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
 	}
-	bucketName := s.ResolveEgressBucket(account)
-	for _, bucket := range s.cfg.Gateway.OpenAICore.EgressBuckets {
-		if strings.TrimSpace(bucket.Name) != bucketName {
-			continue
-		}
-		if !bucket.Enabled {
-			return strings.TrimSpace(fallbackProxyURL)
-		}
-		if proxyURL := strings.TrimSpace(bucket.ProxyURL); proxyURL != "" {
-			return proxyURL
-		}
-		return strings.TrimSpace(fallbackProxyURL)
+	if bucket := strings.TrimSpace(requestedBucket); bucket != "" {
+		account.Extra = map[string]any{"openai_gateway_egress_bucket": bucket}
 	}
-	return strings.TrimSpace(fallbackProxyURL)
+	return s.ResolveEgress(ctx, account, fallbackProxyURL)
 }
 
 func (s *OpenAIGatewayCoreService) HasEgressBucket(name string) bool {
@@ -247,12 +316,30 @@ func (s *OpenAIGatewayCoreService) ResolveAccountRuntime(ctx context.Context, ac
 	}
 
 	profile, updates := s.resolveCanonicalProfile(account, headers)
+	egress, err := s.ResolveEgress(ctx, account, resolveOpenAIAccountProxyURL(account))
+	if err != nil {
+		return nil, err
+	}
 	runtime := &OpenAIGatewayAccountRuntime{
-		Client:         client,
-		Profile:        profile,
-		EgressBucket:   s.ResolveEgressBucket(account),
-		EgressProxyURL: s.ResolveEgressProxyURL(account, ""),
-		Transport:      string(transport),
+		Client:        client,
+		Profile:       profile,
+		EgressBucket:  egress.BucketName,
+		ProxySelected: egress.ProxySelected,
+		ProxyLabel:    egress.ProxyLabel,
+		ProxyHash:     egress.ProxyHash,
+		Transport:     string(transport),
+	}
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAICore.ExposeRawProxyInDebug {
+		runtime.DebugProxyURL = egress.ProxyURL
+	}
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAICore.TLSBinding.Enabled {
+		tls, err := s.ResolveEffectiveTLS(ctx, account, egress, transport)
+		if err != nil {
+			return nil, err
+		}
+		if tls != nil {
+			runtime.TLS = tls
+		}
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -349,11 +436,64 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		EgressBuckets: map[string]int64{},
 		WS:            ws,
 	}
+	snapshot.TLSBinding = s.BuildTLSBindingSnapshot()
+	if err := s.ValidateConfiguredTLSProfiles(ctx); err != nil {
+		var tlsValidationErr *OpenAIGatewayTLSProfileValidationError
+		if errors.As(err, &tlsValidationErr) && strings.TrimSpace(tlsValidationErr.Code) != "" {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, strings.TrimSpace(tlsValidationErr.Code))
+		} else {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "tls_profile_validation_failed")
+		}
+	}
+	credentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 	if s.openAITokenProvider != nil {
 		snapshot.Refresh = s.openAITokenProvider.SnapshotRuntimeMetrics()
 	}
 
 	for _, account := range accounts {
+		if !account.IsOpenAI() {
+			continue
+		}
+		if credentials.HasUnsafePlaintextCredentials(&account) {
+			snapshot.UnsafeCredentialAccounts++
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "credential_storage_not_production_safe")
+		}
+		bucketName := s.ResolveEgressBucket(&account)
+		snapshot.EgressBuckets[bucketName]++
+		if snapshot.TLSBinding != nil {
+			snapshot.TLSBinding.recordAccountStart()
+		}
+		if _, ok := s.findEgressBucket(bucketName); !ok {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "missing_egress_bucket")
+		} else if bucket, ok := s.findEgressBucket(bucketName); ok && !bucket.Enabled {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "disabled_egress_bucket")
+		}
+		egress, err := s.ResolveEgress(ctx, &account, resolveOpenAIAccountProxyURL(&account))
+		if err != nil {
+			var policyErr *OpenAIEgressPolicyError
+			if errors.As(err, &policyErr) && strings.TrimSpace(policyErr.Code) != "" {
+				snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, strings.TrimSpace(policyErr.Code))
+				if snapshot.TLSBinding != nil && s.cfg.Gateway.OpenAICore.TLSBinding.Enabled {
+					snapshot.TLSBinding.recordFailClosed()
+				}
+			}
+		} else if egress != nil && s != nil && s.cfg != nil && s.cfg.Gateway.OpenAICore.ProductionMode && egress.Source == openAIEgressSourceDirectFallback {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "direct_egress_in_production")
+		}
+		if err == nil && egress != nil && snapshot.TLSBinding != nil && s.cfg.Gateway.OpenAICore.TLSBinding.Enabled {
+			effectiveTLS, tlsErr := s.ResolveEffectiveTLS(ctx, &account, egress, OpenAIClientTransportHTTP)
+			if tlsErr != nil {
+				var policyErr *OpenAIEgressPolicyError
+				if errors.As(tlsErr, &policyErr) && strings.TrimSpace(policyErr.Code) != "" {
+					snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, strings.TrimSpace(policyErr.Code))
+				} else {
+					snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "tls_policy_resolution_failed")
+				}
+				snapshot.TLSBinding.recordFailClosed()
+			} else {
+				snapshot.TLSBinding.recordEffectiveTLS(effectiveTLS)
+			}
+		}
 		if !account.IsOpenAIOAuth() {
 			continue
 		}
@@ -367,10 +507,28 @@ func (s *OpenAIGatewayCoreService) BuildHealthSnapshot(ctx context.Context, ws O
 		if account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
 			snapshot.CoolingAccountsTotal++
 		}
-		snapshot.EgressBuckets[s.ResolveEgressBucket(&account)]++
+	}
+	s.applyOpenAIGatewayBucketWarnings(snapshot)
+	if s != nil && s.cfg != nil &&
+		s.cfg.Gateway.OpenAICore.ProductionMode &&
+		strings.EqualFold(strings.TrimSpace(s.cfg.Gateway.OpenAICore.OAuthSessionStore), "memory") &&
+		!s.cfg.Gateway.OpenAICore.OAuthCallbackStickySingleInstance {
+		snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "oauth_session_topology_not_production_safe")
 	}
 
 	switch {
+	case hasCriticalOpenAIGatewayWarning(snapshot.WarningCodes):
+		snapshot.GatewayStatus = "degraded"
+		snapshot.OAuthStatus = "degraded"
+		snapshot.DegradedReason = firstCriticalOpenAIGatewayWarning(snapshot.WarningCodes)
+	case containsOpenAIGatewayWarning(snapshot.WarningCodes, "direct_egress_in_production"):
+		snapshot.GatewayStatus = "degraded"
+		snapshot.OAuthStatus = "degraded"
+		snapshot.DegradedReason = "direct_egress_in_production"
+	case snapshot.UnsafeCredentialAccounts > 0:
+		snapshot.GatewayStatus = "degraded"
+		snapshot.OAuthStatus = "degraded"
+		snapshot.DegradedReason = "unsafe_plaintext_credentials_present"
 	case snapshot.OpenAIOAuthAccountsTotal == 0:
 		snapshot.GatewayStatus = "degraded"
 		snapshot.OAuthStatus = "degraded"
@@ -411,7 +569,11 @@ func (s *OpenAIGatewayCoreService) BuildVerifySnapshot(ctx context.Context, acco
 		Client:              runtime.Client,
 		Profile:             runtime.Profile,
 		EgressBucket:        runtime.EgressBucket,
-		EgressProxyURL:      runtime.EgressProxyURL,
+		ProxySelected:       runtime.ProxySelected,
+		ProxyLabel:          runtime.ProxyLabel,
+		ProxyHash:           runtime.ProxyHash,
+		DebugProxyURL:       runtime.DebugProxyURL,
+		TLS:                 runtime.TLS,
 		Transport:           runtime.Transport,
 		RequestedUA:         strings.TrimSpace(headers.Get("User-Agent")),
 		RequestedOriginator: strings.TrimSpace(headers.Get("originator")),
@@ -428,8 +590,24 @@ func (s *OpenAIGatewayCoreService) BuildAdminStatusSnapshot(ctx context.Context,
 		return nil, err
 	}
 	result := &OpenAIGatewayAdminStatusSnapshot{
-		Health:  health,
-		Buckets: append([]config.OpenAIGatewayEgressBucketConfig(nil), s.cfg.Gateway.OpenAICore.EgressBuckets...),
+		Health: health,
+	}
+	for _, bucket := range s.cfg.Gateway.OpenAICore.EgressBuckets {
+		proxyURL := strings.TrimSpace(bucket.ProxyURL)
+		snapshot := OpenAIGatewayAdminBucketSnapshot{
+			Name:          strings.TrimSpace(bucket.Name),
+			Enabled:       bucket.Enabled,
+			ProxySelected: proxyURL != "",
+			ProxyLabel:    MaskOpenAIProxyURL(proxyURL),
+			ProxyHash:     HashOpenAIProxyURL(proxyURL),
+			AccountCount:  health.EgressBuckets[strings.TrimSpace(bucket.Name)],
+		}
+		if s != nil && s.cfg != nil &&
+			s.cfg.Gateway.OpenAICore.BucketWarnAccountThreshold > 0 &&
+			snapshot.AccountCount > int64(s.cfg.Gateway.OpenAICore.BucketWarnAccountThreshold) {
+			snapshot.Warning = "bucket_concentration_high"
+		}
+		result.Buckets = append(result.Buckets, snapshot)
 	}
 	for _, account := range accounts {
 		if !account.IsOpenAIOAuth() {
@@ -458,6 +636,75 @@ func (s *OpenAIGatewayCoreService) BuildAdminStatusSnapshot(ctx context.Context,
 	return result, nil
 }
 
+func appendOpenAIGatewayWarning(existing []string, code string) []string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return existing
+	}
+	for _, item := range existing {
+		if item == code {
+			return existing
+		}
+	}
+	return append(existing, code)
+}
+
+func containsOpenAIGatewayWarning(existing []string, code string) bool {
+	for _, item := range existing {
+		if item == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCriticalOpenAIGatewayWarning(existing []string) bool {
+	return firstCriticalOpenAIGatewayWarning(existing) != ""
+}
+
+func firstCriticalOpenAIGatewayWarning(existing []string) string {
+	critical := []string{
+		"direct_egress_in_production",
+		"missing_egress_bucket",
+		"disabled_egress_bucket",
+		"direct_fallback_disabled",
+		"account_proxy_fallback_disabled",
+		"tls_profile_service_not_configured",
+		"tls_profile_not_found",
+		"tls_profile_invalid",
+		"tls_profile_validation_failed",
+		"tls_policy_missing",
+		"tls_policy_no_effective_profile",
+		"tls_policy_resolution_failed",
+		"tls_bucket_missing",
+		"tls_egress_missing",
+		"credential_storage_not_production_safe",
+		"oauth_session_topology_not_production_safe",
+	}
+	for _, code := range critical {
+		if containsOpenAIGatewayWarning(existing, code) {
+			return code
+		}
+	}
+	return ""
+}
+
+func (s *OpenAIGatewayCoreService) applyOpenAIGatewayBucketWarnings(snapshot *OpenAIGatewayHealthSnapshot) {
+	if s == nil || s.cfg == nil || snapshot == nil {
+		return
+	}
+	threshold := s.cfg.Gateway.OpenAICore.BucketWarnAccountThreshold
+	if threshold <= 0 {
+		return
+	}
+	for _, count := range snapshot.EgressBuckets {
+		if count > int64(threshold) {
+			snapshot.WarningCodes = appendOpenAIGatewayWarning(snapshot.WarningCodes, "bucket_concentration_high")
+			return
+		}
+	}
+}
+
 func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, headers http.Header) (*OpenAIGatewayCanonicalProfile, map[string]any) {
 	mode := strings.TrimSpace(account.GetExtraString("openai_gateway_profile_mode"))
 	if mode == "" && s.cfg != nil {
@@ -473,6 +720,7 @@ func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, hea
 		ProfileID:               strings.TrimSpace(account.GetExtraString("openai_gateway_profile_id")),
 		Mode:                    mode,
 		UserAgent:               strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_user_agent")),
+		Version:                 strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_version")),
 		StainlessLang:           strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_stainless_lang")),
 		StainlessPackageVersion: strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_stainless_package_version")),
 		StainlessOS:             strings.TrimSpace(account.GetExtraString("openai_gateway_canonical_stainless_os")),
@@ -509,14 +757,17 @@ func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, hea
 	}
 
 	applyValue(&profile.UserAgent, "User-Agent", defaults.UserAgent)
+	applyValue(&profile.Version, "version", defaults.Version)
 	applyValue(&profile.StainlessLang, "X-Stainless-Lang", defaults.StainlessLang)
 	applyValue(&profile.StainlessPackageVersion, "X-Stainless-Package-Version", defaults.StainlessPackageVersion)
 	applyValue(&profile.StainlessOS, "X-Stainless-OS", defaults.StainlessOS)
 	applyValue(&profile.StainlessArch, "X-Stainless-Arch", defaults.StainlessArch)
 	applyValue(&profile.StainlessRuntime, "X-Stainless-Runtime", defaults.StainlessRuntime)
 	applyValue(&profile.StainlessRuntimeVersion, "X-Stainless-Runtime-Version", defaults.StainlessRuntimeVersion)
+	profile.Version = alignOpenAIGatewayProfileVersion(profile.UserAgent, profile.Version, defaults.Version)
 
 	updates["openai_gateway_canonical_user_agent"] = profile.UserAgent
+	updates["openai_gateway_canonical_version"] = profile.Version
 	updates["openai_gateway_canonical_stainless_lang"] = profile.StainlessLang
 	updates["openai_gateway_canonical_stainless_package_version"] = profile.StainlessPackageVersion
 	updates["openai_gateway_canonical_stainless_os"] = profile.StainlessOS
@@ -528,32 +779,10 @@ func (s *OpenAIGatewayCoreService) resolveCanonicalProfile(account *Account, hea
 }
 
 func (s *OpenAIGatewayCoreService) defaultCanonicalProfile() *OpenAIGatewayCanonicalProfile {
-	if s == nil || s.cfg == nil {
-		return &OpenAIGatewayCanonicalProfile{
-			UserAgent:               codexCLIUserAgent,
-			StainlessLang:           "js",
-			StainlessPackageVersion: "0.70.0",
-			StainlessOS:             "Linux",
-			StainlessArch:           "arm64",
-			StainlessRuntime:        "node",
-			StainlessRuntimeVersion: "v24.13.0",
-		}
+	if s == nil {
+		return defaultOpenAIGatewayCanonicalProfile(nil)
 	}
-	cfg := s.cfg.Gateway.OpenAICore
-	return &OpenAIGatewayCanonicalProfile{
-		UserAgent:               strings.TrimSpace(cfg.CanonicalUserAgent),
-		StainlessLang:           strings.TrimSpace(cfg.CanonicalStainlessLang),
-		StainlessPackageVersion: strings.TrimSpace(cfg.CanonicalStainlessPackageVersion),
-		StainlessOS:             strings.TrimSpace(cfg.CanonicalStainlessOS),
-		StainlessArch:           strings.TrimSpace(cfg.CanonicalStainlessArch),
-		StainlessRuntime:        strings.TrimSpace(cfg.CanonicalStainlessRuntime),
-		StainlessRuntimeVersion: strings.TrimSpace(cfg.CanonicalStainlessRuntimeVersion),
-	}
-}
-
-func buildOpenAIGatewayProfileID(accountID int64) string {
-	sum := sha256.Sum256([]byte("openai-gateway-profile:" + strconv.FormatInt(accountID, 10)))
-	return hex.EncodeToString(sum[:])
+	return defaultOpenAIGatewayCanonicalProfile(s.cfg)
 }
 
 func (s *OpenAIGatewayCoreService) applyRuntimeUpdates(ctx context.Context, account *Account, updates map[string]any) {

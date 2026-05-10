@@ -109,6 +109,17 @@ func (h *UsageHandler) List(c *gin.Context) {
 		groupID = id
 	}
 
+	var entityID int64
+	if entityIDStr := strings.TrimSpace(c.Query("entity_id")); entityIDStr != "" {
+		id, err := strconv.ParseInt(entityIDStr, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid entity_id")
+			return
+		}
+		entityID = id
+	}
+	entityType := strings.TrimSpace(c.Query("entity_type"))
+	claimedEntityID := strings.TrimSpace(c.Query("claimed_entity_id"))
 	model := c.Query("model")
 	billingMode := strings.TrimSpace(c.Query("billing_mode"))
 
@@ -172,18 +183,21 @@ func (h *UsageHandler) List(c *gin.Context) {
 		SortOrder: c.DefaultQuery("sort_order", "desc"),
 	}
 	filters := usagestats.UsageLogFilters{
-		UserID:      userID,
-		APIKeyID:    apiKeyID,
-		AccountID:   accountID,
-		GroupID:     groupID,
-		Model:       model,
-		RequestType: requestType,
-		Stream:      stream,
-		BillingType: billingType,
-		BillingMode: billingMode,
-		StartTime:   startTime,
-		EndTime:     endTime,
-		ExactTotal:  exactTotal,
+		UserID:          userID,
+		APIKeyID:        apiKeyID,
+		AccountID:       accountID,
+		EntityID:        entityID,
+		EntityType:      entityType,
+		ClaimedEntityID: claimedEntityID,
+		GroupID:         groupID,
+		Model:           model,
+		RequestType:     requestType,
+		Stream:          stream,
+		BillingType:     billingType,
+		BillingMode:     billingMode,
+		StartTime:       startTime,
+		EndTime:         endTime,
+		ExactTotal:      exactTotal,
 	}
 
 	records, result, err := h.usageService.ListWithFilters(c.Request.Context(), params, filters)
@@ -240,6 +254,17 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		groupID = id
 	}
 
+	var entityID int64
+	if entityIDStr := strings.TrimSpace(c.Query("entity_id")); entityIDStr != "" {
+		id, err := strconv.ParseInt(entityIDStr, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid entity_id")
+			return
+		}
+		entityID = id
+	}
+	entityType := strings.TrimSpace(c.Query("entity_type"))
+	claimedEntityID := strings.TrimSpace(c.Query("claimed_entity_id"))
 	model := c.Query("model")
 	billingMode := strings.TrimSpace(c.Query("billing_mode"))
 
@@ -312,17 +337,20 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 
 	// Build filters and call GetStatsWithFilters
 	filters := usagestats.UsageLogFilters{
-		UserID:      userID,
-		APIKeyID:    apiKeyID,
-		AccountID:   accountID,
-		GroupID:     groupID,
-		Model:       model,
-		RequestType: requestType,
-		Stream:      stream,
-		BillingType: billingType,
-		BillingMode: billingMode,
-		StartTime:   &startTime,
-		EndTime:     &endTime,
+		UserID:          userID,
+		APIKeyID:        apiKeyID,
+		AccountID:       accountID,
+		EntityID:        entityID,
+		EntityType:      entityType,
+		ClaimedEntityID: claimedEntityID,
+		GroupID:         groupID,
+		Model:           model,
+		RequestType:     requestType,
+		Stream:          stream,
+		BillingType:     billingType,
+		BillingMode:     billingMode,
+		StartTime:       &startTime,
+		EndTime:         &endTime,
 	}
 
 	stats, err := h.usageService.GetStatsWithFilters(c.Request.Context(), filters)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -38,6 +39,14 @@ type OpenAIGatewayHandler struct {
 	maxAccountSwitches      int
 	wsFirstMessageTimeout   time.Duration
 	cfg                     *config.Config
+}
+
+type openAITLSCanaryRequest struct {
+	AccountID    int64  `json:"account_id"`
+	Bucket       string `json:"bucket"`
+	TLSProfileID int64  `json:"tls_profile_id"`
+	Transport    string `json:"transport"`
+	Route        string `json:"route"`
 }
 
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
@@ -231,6 +240,177 @@ func (h *OpenAIGatewayHandler) Verify(c *gin.Context) {
 	})
 }
 
+// TLSCanary returns the HTTP-side TLS decision for a specific OpenAI account.
+// POST /openai/_tls/canary
+// GET /openai/_tls_canary?account_id=123&bucket=default&transport=http remains a compatibility alias.
+func (h *OpenAIGatewayHandler) TLSCanary(c *gin.Context) {
+	core := h.gatewayCore()
+	if core == nil || !core.IsEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "openai gateway core disabled"})
+		return
+	}
+	client, ok := h.authenticateGatewayProbe(c)
+	if !ok {
+		return
+	}
+
+	body, ok := h.parseTLSCanaryRequest(c, core)
+	if !ok {
+		return
+	}
+	if body.AccountID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account_id is required"})
+		return
+	}
+	transport := service.OpenAIClientTransport(strings.ToLower(strings.TrimSpace(body.Transport)))
+	switch transport {
+	case service.OpenAIClientTransportHTTP, service.OpenAIClientTransportWS:
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "transport must be http or ws"})
+		return
+	}
+	if strings.TrimSpace(body.Bucket) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bucket is required"})
+		return
+	}
+	if !core.HasEgressBucket(body.Bucket) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bucket not found"})
+		return
+	}
+	route := strings.TrimSpace(body.Route)
+	if route == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "route is required"})
+		return
+	}
+	if c.Request != nil && c.Request.Method == http.MethodPost && h.gatewayService != nil {
+		data, err := h.gatewayService.RunOpenAITLSCanaryProbe(c.Request.Context(), service.OpenAIGatewayTLSCanaryProbeInput{
+			AccountID:    body.AccountID,
+			Bucket:       body.Bucket,
+			TLSProfileID: body.TLSProfileID,
+			Transport:    transport,
+			Route:        route,
+			Headers:      c.Request.Header,
+		})
+		if err != nil {
+			if errors.Is(err, service.ErrAccountNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"client": client,
+			"data":   data,
+		})
+		return
+	}
+	if transport == service.OpenAIClientTransportHTTP && !isSupportedOpenAIHTTPCanaryRoute(route) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported route"})
+		return
+	}
+	if transport == service.OpenAIClientTransportWS && !isSupportedOpenAIWSCanaryRoute(route) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported route"})
+		return
+	}
+	data, err := core.BuildTLSCanarySnapshotWithProfileOverride(c.Request.Context(), body.AccountID, body.Bucket, route, c.Request.Header, transport, body.TLSProfileID)
+	if err != nil {
+		if errors.Is(err, service.ErrAccountNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "account not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"client": client,
+		"data":   data,
+	})
+}
+
+func (h *OpenAIGatewayHandler) parseTLSCanaryRequest(c *gin.Context, core *service.OpenAIGatewayCoreService) (openAITLSCanaryRequest, bool) {
+	if c.Request != nil && c.Request.Method == http.MethodPost {
+		var body openAITLSCanaryRequest
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
+			return openAITLSCanaryRequest{}, false
+		}
+		body.Bucket = strings.TrimSpace(body.Bucket)
+		body.Transport = strings.TrimSpace(body.Transport)
+		body.Route = strings.TrimSpace(body.Route)
+		return body, true
+	}
+
+	accountID, err := strconv.ParseInt(strings.TrimSpace(c.Query("account_id")), 10, 64)
+	if err != nil {
+		accountID = 0
+	}
+	bucket := strings.TrimSpace(c.Query("bucket"))
+	if bucket == "" && core != nil {
+		bucket = strings.TrimSpace(core.ResolveEgressBucket(nil))
+	}
+	transport := strings.TrimSpace(c.Query("transport"))
+	if transport == "" {
+		transport = string(service.OpenAIClientTransportHTTP)
+	}
+	route := strings.TrimSpace(c.Query("route"))
+	if route == "" {
+		route = "/v1/responses"
+	}
+	return openAITLSCanaryRequest{
+		AccountID: accountID,
+		Bucket:    bucket,
+		Transport: transport,
+		Route:     route,
+	}, true
+}
+
+func isSupportedOpenAIHTTPCanaryRoute(route string) bool {
+	route = "/" + strings.Trim(strings.TrimSpace(route), "/")
+	switch route {
+	case "/v1/responses",
+		"/responses",
+		"/backend-api/codex/responses",
+		"/openai/v1/responses",
+		"/v1/chat/completions",
+		"/chat/completions",
+		"/openai/v1/chat/completions",
+		"/v1/images/generations",
+		"/images/generations",
+		"/openai/v1/images/generations",
+		"/v1/images/edits",
+		"/images/edits",
+		"/openai/v1/images/edits":
+		return true
+	}
+	for _, prefix := range []string{"/v1/responses/", "/responses/", "/backend-api/codex/responses/", "/openai/v1/responses/"} {
+		if strings.HasPrefix(route, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSupportedOpenAIWSCanaryRoute(route string) bool {
+	route = "/" + strings.Trim(strings.TrimSpace(route), "/")
+	switch route {
+	case "/v1/realtime",
+		"/realtime",
+		"/openai/v1/realtime",
+		"/v1/responses",
+		"/responses",
+		"/backend-api/codex/responses",
+		"/openai/v1/responses":
+		return true
+	}
+	for _, prefix := range []string{"/v1/realtime/", "/realtime/", "/openai/v1/realtime/", "/v1/responses/", "/responses/", "/backend-api/codex/responses/", "/openai/v1/responses/"} {
+		if strings.HasPrefix(route, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *OpenAIGatewayHandler) authenticateGatewayProbe(c *gin.Context) (*service.OpenAIGatewayClientIdentity, bool) {
 	core := h.gatewayCore()
 	if core == nil {
@@ -262,6 +442,13 @@ func (h *OpenAIGatewayHandler) enforceOptionalGatewayClientAuth(c *gin.Context, 
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid OpenAI gateway client token")
 		return false
 	}
+	if core.HasClientTokens() && (client == nil || !client.Authenticated) {
+		if reqLog != nil {
+			reqLog.Warn("openai.gateway_client_auth_missing")
+		}
+		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "OpenAI gateway client token required")
+		return false
+	}
 	if client != nil {
 		c.Set("openai_gateway_client_family", client.Family)
 		if client.Name != "" {
@@ -274,6 +461,49 @@ func (h *OpenAIGatewayHandler) enforceOptionalGatewayClientAuth(c *gin.Context, 
 				zap.String("client_family", client.Family),
 			)
 		}
+	}
+	return true
+}
+
+func (h *OpenAIGatewayHandler) enforceOpenAIGatewayCoreEnabled(c *gin.Context, reqLog *zap.Logger) bool {
+	core := h.gatewayCore()
+	if core != nil && core.IsEnabled() {
+		return true
+	}
+	if reqLog != nil {
+		reqLog.Warn("openai.gateway_core_disabled")
+	}
+	h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "OpenAI gateway core disabled")
+	return false
+}
+
+func (h *OpenAIGatewayHandler) resolveTrustedOpenAIEntity(c *gin.Context, apiKey *service.APIKey, reqLog *zap.Logger, anthropic bool) bool {
+	if h == nil || h.gatewayService == nil {
+		return true
+	}
+	claimed := strings.TrimSpace(c.GetHeader(service.EntityHeader))
+	resolved, err := h.gatewayService.ResolveTrustedEntityForRequest(c, apiKey, claimed)
+	if err != nil {
+		status, code, message, ok := service.EntityResolutionHTTPStatus(err)
+		if !ok {
+			status, code, message = http.StatusInternalServerError, "api_error", "failed to resolve entity"
+		}
+		if reqLog != nil {
+			reqLog.Warn("openai.entity_resolution_failed", zap.Error(err), zap.Bool("claimed_entity", claimed != ""))
+		}
+		if anthropic {
+			h.anthropicErrorResponse(c, status, code, message)
+		} else {
+			h.errorResponse(c, status, code, message)
+		}
+		return false
+	}
+	if resolved != nil && reqLog != nil {
+		reqLog.Debug("openai.entity_resolved",
+			zap.Int64("entity_id", resolved.Entity.ID),
+			zap.String("entity_key", resolved.Entity.EntityKey),
+			zap.String("entity_source", resolved.Source),
+		)
 	}
 	return true
 }
@@ -309,7 +539,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
 	)
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
 	if !h.ensureResponsesDependencies(c, reqLog) {
+		return
+	}
+	if !h.resolveTrustedOpenAIEntity(c, apiKey, reqLog, false) {
 		return
 	}
 
@@ -445,6 +684,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
+	}
+	entityReleaseFunc, admitted := h.admitOpenAIEntityQuota(c, false, streamStarted, reqLog)
+	if !admitted {
+		return
+	}
+	if entityReleaseFunc != nil {
+		defer entityReleaseFunc()
 	}
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
@@ -585,6 +831,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, false) {
+					reqLog.Warn("openai.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 				fields := []zap.Field{
 					zap.Int64("account_id", account.ID),
@@ -614,10 +864,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+		requestCtx := c.Request.Context()
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		h.submitOpenAIUsageRecordTask(result, func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+			usageCtx := service.ContextWithEntityMetadataFrom(ctx, requestCtx)
+			if err := h.gatewayService.RecordUsage(usageCtx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
 				User:               apiKey.User,
@@ -766,6 +1018,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
+	if !h.resolveTrustedOpenAIEntity(c, apiKey, reqLog, true) {
+		return
+	}
 
 	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
@@ -830,6 +1085,13 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		h.anthropicStreamingAwareError(c, status, code, message, streamStarted)
 		return
+	}
+	entityReleaseFunc, admitted := h.admitOpenAIEntityQuota(c, true, streamStarted, reqLog)
+	if !admitted {
+		return
+	}
+	if entityReleaseFunc != nil {
+		defer entityReleaseFunc()
 	}
 
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
@@ -964,6 +1226,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, true) {
+					reqLog.Warn("openai_messages.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
 				reqLog.Warn("openai_messages.forward_failed",
 					zap.Int64("account_id", account.ID),
@@ -984,9 +1250,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+		requestCtx := c.Request.Context()
 
 		h.submitOpenAIUsageRecordTask(result, func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+			usageCtx := service.ContextWithEntityMetadataFrom(ctx, requestCtx)
+			if err := h.gatewayService.RecordUsage(usageCtx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
 				User:               apiKey.User,
@@ -1076,6 +1344,19 @@ func (h *OpenAIGatewayHandler) ensureAnthropicErrorResponse(c *gin.Context, stre
 		return false
 	}
 	h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)
+	return true
+}
+
+func (h *OpenAIGatewayHandler) handleOpenAIEgressPolicyError(c *gin.Context, err error, streamStarted bool, anthropic bool) bool {
+	var policyErr *service.OpenAIEgressPolicyError
+	if !errors.As(err, &policyErr) {
+		return false
+	}
+	if anthropic {
+		h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", service.OpenAIEgressPolicyClientMessage, streamStarted)
+	} else {
+		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", service.OpenAIEgressPolicyClientMessage, streamStarted)
+	}
 	return true
 }
 
@@ -1255,6 +1536,52 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
 }
 
+func (h *OpenAIGatewayHandler) admitOpenAIEntityQuota(c *gin.Context, anthropic bool, streamStarted bool, reqLog *zap.Logger) (func(), bool) {
+	if h == nil || h.gatewayService == nil || c == nil || c.Request == nil {
+		return nil, true
+	}
+	ctx, release, err := h.gatewayService.AdmitEntityQuotaForRequest(c.Request.Context())
+	if err != nil {
+		if reqLog != nil {
+			reqLog.Warn("openai.entity_quota_rejected", zap.Error(err))
+		}
+		status, code, message := entityQuotaErrorDetails(err)
+		if anthropic {
+			h.anthropicStreamingAwareError(c, status, code, message, streamStarted)
+		} else {
+			h.handleStreamingAwareError(c, status, code, message, streamStarted)
+		}
+		return nil, false
+	}
+	if ctx != c.Request.Context() {
+		c.Request = c.Request.WithContext(ctx)
+	}
+	if decision, ok := service.EntityRateLimitDecisionFromContext(ctx); ok && reqLog != nil {
+		reqLog.Debug("openai.entity_quota_admitted",
+			zap.Int64("entity_id", decision.EntityID),
+			zap.Int64("entity_rate_limit_policy_id", decision.PolicyID),
+			zap.String("entity_rate_limit_decision_id", decision.DecisionID),
+			zap.Bool("entity_rate_limit_redis_fail_open", decision.RedisFailureFailOpen),
+			zap.String("entity_rate_limit_redis_failure_reason", decision.RedisFailureReason),
+		)
+	}
+	return release, true
+}
+
+func entityQuotaErrorDetails(err error) (int, string, string) {
+	if errors.Is(err, service.ErrEntityRPMExceeded) ||
+		errors.Is(err, service.ErrEntityConcurrencyExceeded) ||
+		errors.Is(err, service.ErrEntityTPMExceeded) ||
+		errors.Is(err, service.ErrEntityCostExceeded) {
+		msg := pkgerrors.Message(err)
+		if strings.TrimSpace(msg) == "" {
+			msg = "Entity rate limit exceeded, please retry later"
+		}
+		return http.StatusTooManyRequests, "rate_limit_error", msg
+	}
+	return http.StatusTooManyRequests, "rate_limit_error", "Entity rate limit exceeded, please retry later"
+}
+
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
 // GET /openai/v1/responses (Upgrade: websocket)
 func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
@@ -1283,7 +1610,16 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		zap.Any("group_id", apiKey.GroupID),
 		zap.Bool("openai_ws_mode", true),
 	)
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
+		return
+	}
+	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
 	if !h.ensureResponsesDependencies(c, reqLog) {
+		return
+	}
+	if !h.resolveTrustedOpenAIEntity(c, apiKey, reqLog, false) {
 		return
 	}
 	reqLog.Info("openai.websocket_ingress_started")
@@ -1399,6 +1735,27 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		reqLog.Info("openai.websocket_billing_eligibility_check_failed", zap.Error(err))
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "billing check failed")
 		return
+	}
+	entityCtx, entityReleaseFunc, err := h.gatewayService.AdmitEntityQuotaForRequest(ctx)
+	if err != nil {
+		reqLog.Warn("openai.websocket_entity_quota_rejected", zap.Error(err))
+		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "entity rate limit exceeded")
+		return
+	}
+	if entityCtx != ctx {
+		c.Request = c.Request.WithContext(entityCtx)
+		ctx = entityCtx
+	}
+	if decision, ok := service.EntityRateLimitDecisionFromContext(ctx); ok {
+		reqLog.Debug("openai.websocket_entity_quota_admitted",
+			zap.Int64("entity_id", decision.EntityID),
+			zap.Int64("entity_rate_limit_policy_id", decision.PolicyID),
+			zap.String("entity_rate_limit_decision_id", decision.DecisionID),
+			zap.Bool("entity_rate_limit_redis_fail_open", decision.RedisFailureFailOpen),
+		)
+	}
+	if entityReleaseFunc != nil {
+		defer entityReleaseFunc()
 	}
 
 	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(
@@ -1534,8 +1891,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+				requestCtx := c.Request.Context()
 				h.submitOpenAIUsageRecordTask(result, func(taskCtx context.Context) {
-					if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
+					usageCtx := service.ContextWithEntityMetadataFrom(taskCtx, requestCtx)
+					if err := h.gatewayService.RecordUsage(usageCtx, &service.OpenAIRecordUsageInput{
 						Result:             result,
 						APIKey:             apiKey,
 						User:               apiKey.User,

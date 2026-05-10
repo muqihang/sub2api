@@ -18,10 +18,40 @@ import (
 )
 
 type geminiCompatHTTPUpstreamStub struct {
-	response *http.Response
-	err      error
-	calls    int
-	lastReq  *http.Request
+	response  *http.Response
+	responses []*http.Response
+	err       error
+	calls     int
+	lastReq   *http.Request
+}
+
+type geminiCompatTokenCacheStub struct {
+	tokens map[string]string
+}
+
+func (s *geminiCompatTokenCacheStub) GetAccessToken(ctx context.Context, cacheKey string) (string, error) {
+	return s.tokens[cacheKey], nil
+}
+
+func (s *geminiCompatTokenCacheStub) SetAccessToken(ctx context.Context, cacheKey string, token string, ttl time.Duration) error {
+	if s.tokens == nil {
+		s.tokens = map[string]string{}
+	}
+	s.tokens[cacheKey] = token
+	return nil
+}
+
+func (s *geminiCompatTokenCacheStub) DeleteAccessToken(ctx context.Context, cacheKey string) error {
+	delete(s.tokens, cacheKey)
+	return nil
+}
+
+func (s *geminiCompatTokenCacheStub) AcquireRefreshLock(ctx context.Context, cacheKey string, ttl time.Duration) (bool, error) {
+	return true, nil
+}
+
+func (s *geminiCompatTokenCacheStub) ReleaseRefreshLock(ctx context.Context, cacheKey string) error {
+	return nil
 }
 
 func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -29,6 +59,11 @@ func (s *geminiCompatHTTPUpstreamStub) Do(req *http.Request, proxyURL string, ac
 	s.lastReq = req
 	if s.err != nil {
 		return nil, s.err
+	}
+	if len(s.responses) > 0 {
+		resp := *s.responses[0]
+		s.responses = s.responses[1:]
+		return &resp, nil
 	}
 	if s.response == nil {
 		return nil, fmt.Errorf("missing stub response")
@@ -259,6 +294,224 @@ func TestGeminiMessagesCompatServiceForward_PreservesRequestedModelAndMappedUpst
 	require.Equal(t, 1, httpStub.calls)
 	require.NotNil(t, httpStub.lastReq)
 	require.Contains(t, httpStub.lastReq.URL.String(), "/models/claude-sonnet-4-20250514:")
+}
+
+func TestGeminiMessagesCompatServiceForward_EncryptedAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("58", 32)
+	protector, err := ProvideGeminiSecretProtector(cfg)
+	require.NoError(t, err)
+
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"api_key": "test-key",
+	})
+	require.NoError(t, err)
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"x-request-id": []string{"gemini-req-encrypted"}},
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)),
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: cfg}
+	account := &Account{
+		ID:          11,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeAPIKey,
+		Credentials: protected,
+	}
+	body := []byte(`{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+
+	_, err = svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.Equal(t, "test-key", getHeaderRaw(httpStub.lastReq.Header, "x-goog-api-key"))
+}
+
+func TestGeminiMessagesCompatServiceForwardNative_EncryptedAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-flash:generateContent", nil)
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("59", 32)
+	protector, err := ProvideGeminiSecretProtector(cfg)
+	require.NoError(t, err)
+
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"api_key": "native-test-key",
+	})
+	require.NoError(t, err)
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"x-request-id": []string{"gemini-native-encrypted"}},
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)),
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: cfg}
+	account := &Account{
+		ID:          12,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeAPIKey,
+		Credentials: protected,
+	}
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+
+	_, err = svc.ForwardNative(context.Background(), c, account, "gemini-2.5-flash", "generateContent", false, body)
+	require.NoError(t, err)
+	require.Equal(t, "native-test-key", getHeaderRaw(httpStub.lastReq.Header, "x-goog-api-key"))
+}
+
+func TestGeminiMessagesCompatServiceForward_SignatureRetryMarksVisibleDegradedState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		responses: []*http.Response{
+			{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"x-request-id": []string{"gemini-signature-1"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"Corrupted thought signature."}}`)),
+			},
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"x-request-id": []string{"gemini-signature-2"}},
+				Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)),
+			},
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
+	account := &Account{
+		ID:       101,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "test-key",
+		},
+	}
+	body := []byte(`{
+		"model":"claude-sonnet-4",
+		"max_tokens":32,
+		"messages":[
+			{"role":"user","content":"call the tool"},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"write_file","input":{"path":"a.txt","content":"x"}}]}
+		],
+		"tools":[
+			{"name":"write_file","description":"write file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}
+		]
+	}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 2, httpStub.calls)
+	require.Equal(t, GeminiSafetyStateThoughtSignature, w.Header().Get(GeminiSafetyResponseStateHeader))
+	require.Contains(t, w.Header().Get(GeminiSafetyResponseReasonHeader), GeminiSafetyReasonCompatSignatureRetry)
+}
+
+func TestGeminiMessagesCompatServiceForwardAIStudioGET_EncryptedAPIKey(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("5a", 32)
+	protector, err := ProvideGeminiSecretProtector(cfg)
+	require.NoError(t, err)
+
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"api_key": "get-test-key",
+	})
+	require.NoError(t, err)
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"models":[]}`)),
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: cfg}
+	account := &Account{
+		ID:          13,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeAPIKey,
+		Credentials: protected,
+	}
+
+	result, err := svc.ForwardAIStudioGET(context.Background(), account, "/v1beta/models")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "get-test-key", getHeaderRaw(httpStub.lastReq.Header, "x-goog-api-key"))
+}
+
+func TestGeminiMessagesCompatServiceForward_ServiceAccountEncryptedCredentialsBuildsVertexURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("5b", 32)
+	protector, err := ProvideGeminiSecretProtector(cfg)
+	require.NoError(t, err)
+
+	raw := `{
+		"type": "service_account",
+		"project_id": "vertex-proj",
+		"private_key_id": "kid",
+		"private_key": "not-a-real-private-key",
+		"client_email": "svc@vertex-proj.iam.gserviceaccount.com"
+	}`
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"service_account_json": raw,
+	})
+	require.NoError(t, err)
+
+	key, err := parseVertexServiceAccountJSON([]byte(raw))
+	require.NoError(t, err)
+	cache := &geminiCompatTokenCacheStub{
+		tokens: map[string]string{
+			vertexServiceAccountCacheKey(&Account{ID: 14}, key): "cached-service-account-token",
+		},
+	}
+	tokenProvider := NewGeminiTokenProvider(nil, cache, NewGeminiOAuthService(nil, nil, nil, nil, cfg))
+
+	httpStub := &geminiCompatHTTPUpstreamStub{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"x-request-id": []string{"gemini-vertex-req"}},
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)),
+		},
+	}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, tokenProvider: tokenProvider, cfg: cfg}
+	account := &Account{
+		ID:          14,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeServiceAccount,
+		Credentials: protected,
+	}
+	body := []byte(`{"model":"gemini-2.5-flash","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "Bearer cached-service-account-token", getHeaderRaw(httpStub.lastReq.Header, "Authorization"))
+	require.Contains(t, httpStub.lastReq.URL.String(), "/projects/vertex-proj/locations/us-central1/publishers/google/models/gemini-2.5-flash:")
 }
 
 func TestGeminiMessagesCompatServiceForward_NormalizesWebSearchToolForAIStudio(t *testing.T) {

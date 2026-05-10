@@ -5,16 +5,20 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
 )
 
 type openaiLifecycleClientStub struct {
-	refreshResp *openai.TokenResponse
-	refreshErr  error
+	refreshResp  *openai.TokenResponse
+	refreshErr   error
+	lastProxyURL string
+	refreshCalls int
 }
 
 func (s *openaiLifecycleClientStub) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
@@ -26,6 +30,8 @@ func (s *openaiLifecycleClientStub) RefreshToken(ctx context.Context, refreshTok
 }
 
 func (s *openaiLifecycleClientStub) RefreshTokenWithClientID(ctx context.Context, refreshToken, proxyURL string, clientID string) (*openai.TokenResponse, error) {
+	s.refreshCalls++
+	s.lastProxyURL = proxyURL
 	if s.refreshErr != nil {
 		return nil, s.refreshErr
 	}
@@ -62,6 +68,114 @@ func TestEvaluateOpenAIImportLifecycle_RTValidated(t *testing.T) {
 	require.NotEmpty(t, decision.Extra["openai_last_validated_at"])
 	require.Equal(t, true, decision.Extra["openai_responses_write_capable"])
 	require.Equal(t, "openid email profile api.responses.write", decision.Extra["openai_last_granted_scope"])
+}
+
+func TestEvaluateOpenAIImportLifecycle_RTValidatedProtectsOriginalRefreshTokenWhenRefreshResponseOmitsIt(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("ad", 32)
+	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken: "new-at",
+			ExpiresIn:   3600,
+			Scope:       "openid email profile api.responses.write",
+		},
+	})
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"access_token":  "old-at",
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+		"id_token":      "old-id",
+	})
+
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(decision.Credentials["access_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(decision.Credentials["refresh_token"].(string), openAISecretProtectorPrefix))
+	require.True(t, strings.HasPrefix(decision.Credentials["id_token"].(string), openAISecretProtectorPrefix))
+}
+
+func TestEvaluateOpenAIImportLifecycle_UsesEgressBucketAndPersistsIt(t *testing.T) {
+	client := &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+			Scope:        "openid email profile api.responses.write",
+		},
+	}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	cfg := testOpenAIOAuthEgressConfig()
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"refresh_token":                "old-rt",
+		"client_id":                    "client-1",
+		"openai_gateway_egress_bucket": "bucket-a",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, StatusActive, decision.Status)
+	require.Equal(t, "socks5h://127.0.0.1:9001", MaskOpenAIProxyURL(client.lastProxyURL))
+	require.Equal(t, "bucket-a", decision.Extra["openai_gateway_egress_bucket"])
+}
+
+func TestEvaluateOpenAIImportLifecycle_RejectsMissingEgressBucketBeforeRefresh(t *testing.T) {
+	client := &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+		},
+	}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	cfg := testOpenAIOAuthEgressConfig()
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "missing"
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationRetryableFailure, decision.ValidationOutcome)
+	require.Equal(t, "missing_bucket", decision.RefreshErrorCode)
+	require.Empty(t, client.lastProxyURL)
+	require.Zero(t, client.refreshCalls)
+}
+
+func TestEvaluateOpenAIImportLifecycleWithExtra_RejectsExtraEgressBucketBeforeRefresh(t *testing.T) {
+	client := &openaiLifecycleClientStub{
+		refreshResp: &openai.TokenResponse{
+			AccessToken:  "new-at",
+			RefreshToken: "new-rt",
+			ExpiresIn:    3600,
+		},
+	}
+	svc := NewOpenAIOAuthService(nil, client)
+	defer svc.Stop()
+	cfg := testOpenAIOAuthEgressConfig()
+	svc.SetGatewayCoreService(NewOpenAIGatewayCoreService(nil, cfg, nil))
+
+	decision, err := EvaluateOpenAIImportLifecycleWithExtra(context.Background(), svc, "", map[string]any{
+		"refresh_token": "old-rt",
+		"client_id":     "client-1",
+	}, map[string]any{
+		"openai_gateway_egress_bucket": "missing",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationRetryableFailure, decision.ValidationOutcome)
+	require.Equal(t, "missing_bucket", decision.RefreshErrorCode)
+	require.Empty(t, client.lastProxyURL)
+	require.Zero(t, client.refreshCalls)
 }
 
 func TestEvaluateOpenAIImportLifecycle_ScopeInsufficientQuarantined(t *testing.T) {
@@ -214,6 +328,42 @@ func TestFindMatchingOpenAIOAuthAccount_PrefersRefreshToken(t *testing.T) {
 		"refresh_token":      "rt-2",
 		"chatgpt_account_id": "acct-1",
 	})
+
+	require.NotNil(t, account)
+	require.Equal(t, int64(2), account.ID)
+	require.Equal(t, "refresh_token", matchKey)
+}
+
+func TestFindMatchingOpenAIOAuthAccountWithAccessor_MatchesEncryptedStoredToken(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("99", 32)
+	protector, err := ProvideOpenAISecretProtector(cfg)
+	require.NoError(t, err)
+	encrypted, err := protector.ProtectCredentials(map[string]any{
+		"refresh_token": "rt-2",
+	})
+	require.NoError(t, err)
+
+	accounts := []Account{
+		{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"refresh_token": "rt-1",
+			},
+		},
+		{
+			ID:          2,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Credentials: encrypted,
+		},
+	}
+
+	account, matchKey := FindMatchingOpenAIOAuthAccountWithAccessor(accounts, map[string]any{
+		"refresh_token": "rt-2",
+	}, NewOpenAIGatewayCredentials(cfg, protector))
 
 	require.NotNil(t, account)
 	require.Equal(t, int64(2), account.ID)

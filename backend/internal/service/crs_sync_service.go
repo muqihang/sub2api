@@ -44,6 +44,14 @@ func NewCRSSyncService(
 	}
 }
 
+func (s *CRSSyncService) geminiCredentialAccessor() *GeminiCredentialsAccessor {
+	return NewGeminiCredentialsAccessor(s.cfg, nil)
+}
+
+func (s *CRSSyncService) protectGeminiCredentials(credentials map[string]any) (map[string]any, error) {
+	return s.geminiCredentialAccessor().ProtectCredentials(credentials)
+}
+
 type SyncFromCRSInput struct {
 	BaseURL            string
 	Username           string
@@ -590,7 +598,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				proxyURL = proxy.URL()
 			}
 		}
-		decision, decisionErr := EvaluateOpenAIImportLifecycle(ctx, s.openaiOAuthService, proxyURL, credentials)
+		decision, decisionErr := EvaluateOpenAIImportLifecycleWithExtra(ctx, s.openaiOAuthService, proxyURL, credentials, extra)
 		if decisionErr != nil {
 			item.Action = "failed"
 			item.Error = decisionErr.Error()
@@ -613,7 +621,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			continue
 		}
 		if existing == nil {
-			if matched, matchKey := FindMatchingOpenAIOAuthAccount(openAIOAuthAccounts, credentials); matched != nil {
+			if matched, matchKey := FindMatchingOpenAIOAuthAccountWithAccessor(openAIOAuthAccounts, credentials, s.openaiOAuthService.CredentialAccessor()); matched != nil {
 				if !ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
 					item.Action = "failed"
 					item.Error = "sync rejected: newer RT-managed account already exists"
@@ -659,8 +667,26 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			continue
 		}
 
+		existingRefreshToken := existing.GetOpenAIRefreshToken()
+		incomingRefreshToken := stringValue(credentials["refresh_token"])
+		var accessor *OpenAIGatewayCredentials
+		if s.openaiOAuthService != nil {
+			accessor = s.openaiOAuthService.CredentialAccessor()
+		}
+		if accessor != nil {
+			if existing.IsOpenAIRTManaged() && existingRefreshToken != "" {
+				if resolved, resolveErr := accessor.OpenAIRefreshToken(existing); resolveErr == nil {
+					existingRefreshToken = resolved
+				}
+			}
+			if incomingRefreshToken != "" {
+				if resolved, resolveErr := accessor.resolveValue(incomingRefreshToken, "refresh_token"); resolveErr == nil {
+					incomingRefreshToken = resolved
+				}
+			}
+		}
 		if !ShouldOverwriteMatchedOpenAIAccount(existing, "crs_account_id", decision) &&
-			existing.GetOpenAIRefreshToken() != stringValue(credentials["refresh_token"]) &&
+			existingRefreshToken != incomingRefreshToken &&
 			existing.IsOpenAIRTManaged() {
 			item.Action = "failed"
 			item.Error = "sync rejected: stale RT cannot overwrite newer local RT"
@@ -673,7 +699,15 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Name = defaultName(src.Name, src.ID)
 		existing.Platform = PlatformOpenAI
 		existing.Type = AccountTypeOAuth
-		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		protectedMerged, protectErr := NewOpenAIGatewayCredentials(s.cfg, nil).ProtectCredentials(mergeMap(existing.Credentials, credentials))
+		if protectErr != nil {
+			item.Action = "failed"
+			item.Error = "credential protection failed: " + protectErr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+		existing.Credentials = protectedMerged
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -735,6 +769,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		}
 
 		credentials := sanitizeCredentialsMap(src.Credentials)
+		credentials, err = NewOpenAIGatewayCredentials(s.cfg, nil).ProtectCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "credential protection failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		priority := clampPriority(src.Priority)
 		concurrency := 3
 		status := mapCRSStatus(src.IsActive, src.Status)
@@ -791,7 +833,15 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Name = defaultName(src.Name, src.ID)
 		existing.Platform = PlatformOpenAI
 		existing.Type = AccountTypeAPIKey
-		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		protectedMerged, protectErr := NewOpenAIGatewayCredentials(s.cfg, nil).ProtectCredentials(mergeMap(existing.Credentials, credentials))
+		if protectErr != nil {
+			item.Action = "failed"
+			item.Error = "credential protection failed: " + protectErr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+		existing.Credentials = protectedMerged
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -848,6 +898,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			if t, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
 				credentials["expires_at"] = strconv.FormatInt(t.Unix(), 10)
 			}
+		}
+		credentials, err = s.protectGeminiCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
 		}
 
 		extra := make(map[string]any)
@@ -910,6 +968,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Platform = PlatformGemini
 		existing.Type = AccountTypeOAuth
 		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		existing.Credentials, err = s.protectGeminiCredentials(existing.Credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -964,6 +1030,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		credentials := sanitizeCredentialsMap(src.Credentials)
 		if baseURL, ok := credentials["base_url"].(string); !ok || strings.TrimSpace(baseURL) == "" {
 			credentials["base_url"] = "https://generativelanguage.googleapis.com"
+		}
+		credentials, err = s.protectGeminiCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
 		}
 
 		extra := make(map[string]any)
@@ -1023,6 +1097,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Platform = PlatformGemini
 		existing.Type = AccountTypeAPIKey
 		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		existing.Credentials, err = s.protectGeminiCredentials(existing.Credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -1313,12 +1395,13 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 		if refreshErr != nil {
 			err = refreshErr
 		} else {
-			newCredentials = s.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-			// Preserve non-token settings from existing credentials
-			for k, v := range account.Credentials {
-				if _, exists := newCredentials[k]; !exists {
-					newCredentials[k] = v
-				}
+			newCredentials, err = s.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+			if err != nil {
+				return nil
+			}
+			newCredentials, err = MergeProtectedOpenAICredentials(account.Credentials, newCredentials, s.openaiOAuthService.CredentialAccessor())
+			if err != nil {
+				return nil
 			}
 		}
 	case PlatformGemini:
@@ -1329,11 +1412,13 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 		if refreshErr != nil {
 			err = refreshErr
 		} else {
-			newCredentials = s.geminiOAuthService.BuildAccountCredentials(tokenInfo)
-			for k, v := range account.Credentials {
-				if _, exists := newCredentials[k]; !exists {
-					newCredentials[k] = v
-				}
+			newCredentials, err = s.geminiOAuthService.BuildProtectedAccountCredentials(tokenInfo)
+			if err != nil {
+				return nil
+			}
+			newCredentials, err = MergeProtectedGeminiCredentials(account.Credentials, newCredentials, s.geminiOAuthService.CredentialAccessor())
+			if err != nil {
+				return nil
 			}
 		}
 	default:

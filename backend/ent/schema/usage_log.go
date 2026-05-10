@@ -53,6 +53,20 @@ func (UsageLog) Fields() []ent.Field {
 			MaxLen(100).
 			Optional().
 			Nillable(),
+		field.Int64("entity_id").
+			Optional().
+			Nillable().
+			Comment("resolved entity_registry.id snapshot"),
+		field.String("entity_type").
+			MaxLen(64).
+			Optional().
+			Nillable().
+			Comment("resolved entity type snapshot"),
+		field.String("claimed_entity_id").
+			MaxLen(128).
+			Optional().
+			Nillable().
+			Comment("client-claimed entity identifier"),
 		field.Int64("channel_id").Optional().Nillable().Comment("渠道 ID"),
 		field.String("model_mapping_chain").MaxLen(500).Optional().Nillable().Comment("模型映射链"),
 		field.String("billing_tier").MaxLen(50).Optional().Nillable().Comment("计费层级标签"),
@@ -186,10 +200,14 @@ func (UsageLog) Indexes() []ent.Index {
 		index.Fields("created_at"),
 		index.Fields("model"),
 		index.Fields("requested_model"),
+		index.Fields("entity_id"),
+		index.Fields("entity_type"),
+		index.Fields("claimed_entity_id"),
 		index.Fields("request_id"),
 		// 复合索引用于时间范围查询
 		index.Fields("user_id", "created_at"),
 		index.Fields("api_key_id", "created_at"),
+		index.Fields("entity_id", "created_at"),
 		// 分组维度时间范围查询（线上由 SQL 迁移创建 group_id IS NOT NULL 的部分索引）
 		index.Fields("group_id", "created_at"),
 	}

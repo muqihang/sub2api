@@ -70,9 +70,9 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 
-	apiKey := account.GetOpenAIApiKey()
-	if apiKey == "" {
-		logger.LegacyPrintf("service.openai_probe", "probe_skip_no_apikey: account_id=%d", accountID)
+	apiKey, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_probe", "probe_skip_no_apikey: account_id=%d err=%v", accountID, err)
 		return
 	}
 	baseURL := account.GetOpenAIBaseURL()
@@ -99,12 +99,7 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	resp, err := s.sendOpenAIProbeHTTPRequest(probeCtx, req, account)
 	if err != nil {
 		// 网络层失败：不写标记，保持 unknown，下次重试或由网关 fallback 处理
 		logger.LegacyPrintf("service.openai_probe", "probe_request_failed: account_id=%d url=%s err=%v", accountID, probeURL, err)
@@ -146,4 +141,17 @@ func isResponsesEndpointSupportedByStatus(status int) bool {
 		return false
 	}
 	return true
+}
+
+func (s *AccountTestService) sendOpenAIProbeHTTPRequest(ctx context.Context, req *http.Request, account *Account) (*http.Response, error) {
+	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, nil, req, account)
+	if err != nil {
+		accountID := int64(0)
+		if account != nil {
+			accountID = account.ID
+		}
+		logger.LegacyPrintf("service.openai_probe", "probe_egress_or_tls_policy_rejected: account_id=%d err=%v", accountID, err)
+		return nil, err
+	}
+	return resp, nil
 }

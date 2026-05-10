@@ -3,6 +3,9 @@ package repository
 import (
 	"compress/flate"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -175,7 +178,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 	proxyInfo := "direct"
 	if proxyURL != "" {
-		proxyInfo = proxyURL
+		proxyInfo = sanitizeProxyURLForLog(proxyURL)
 	}
 	slog.Debug("tls_fingerprint_enabled", "account_id", accountID, "target", targetHost, "proxy", proxyInfo, "profile", profile.Name)
 
@@ -183,9 +186,21 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 		return nil, err
 	}
 
-	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile)
+	gatewayTLSCacheIdentity := ""
+	if req != nil {
+		gatewayTLSCacheIdentity = service.OpenAIHTTPUpstreamTLSCacheIdentity(req.Context())
+	}
+	entry, err := s.acquireClientWithTLSCacheIdentity(proxyURL, accountID, accountConcurrency, profile, gatewayTLSCacheIdentity)
 	if err != nil {
-		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
+		slog.Debug(
+			"tls_fingerprint_acquire_client_failed",
+			"account_id",
+			accountID,
+			"proxy",
+			sanitizeProxyURLForLog(proxyURL),
+			"error",
+			sanitizeProxyErrorForLog(err, proxyURL),
+		)
 		return nil, err
 	}
 
@@ -209,20 +224,32 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 // acquireClientWithTLS 获取或创建带 TLS 指纹的客户端
 func (s *httpUpstreamService) acquireClientWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*upstreamClientEntry, error) {
-	return s.getClientEntryWithTLS(proxyURL, accountID, accountConcurrency, profile, true, true)
+	return s.acquireClientWithTLSCacheIdentity(proxyURL, accountID, accountConcurrency, profile, "")
+}
+
+func (s *httpUpstreamService) acquireClientWithTLSCacheIdentity(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, gatewayTLSCacheIdentity string) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithTLSCacheIdentity(proxyURL, accountID, accountConcurrency, profile, gatewayTLSCacheIdentity, true, true)
 }
 
 // getClientEntryWithTLS 获取或创建带 TLS 指纹的客户端条目
 // TLS 指纹客户端使用独立的缓存键，与普通客户端隔离
 func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithTLSCacheIdentity(proxyURL, accountID, accountConcurrency, profile, "", markInFlight, enforceLimit)
+}
+
+func (s *httpUpstreamService) getClientEntryWithTLSCacheIdentity(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, gatewayTLSCacheIdentity string, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
 	isolation := s.getIsolationMode()
 	proxyKey, parsedProxy, err := normalizeProxyURL(proxyURL)
 	if err != nil {
 		return nil, err
 	}
-	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID)
-	poolKey := s.buildPoolKey(isolation, accountConcurrency) + ":tls"
+	// TLS 指纹客户端使用独立的缓存键，并纳入实际 ClientHello 指纹。
+	logicalCacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID)
+	gatewayIdentity := upstreamGatewayTLSCacheIdentity(gatewayTLSCacheIdentity)
+	tlsIdentity := tlsProfileCacheIdentity(profile)
+	tlsNamespaceKey := logicalCacheKey + "|gateway_tls_identity:" + gatewayIdentity
+	cacheKey := tlsNamespaceKey + "|tls_identity:" + tlsIdentity
+	poolKey := s.buildPoolKey(isolation, accountConcurrency) + ":tls:" + gatewayIdentity + ":" + tlsIdentity
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
@@ -235,13 +262,14 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 			atomic.AddInt64(&entry.inFlight, 1)
 		}
 		s.mu.RUnlock()
-		slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", cacheKey)
+		slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "proxy", sanitizeProxyURLForLog(proxyKey))
 		return entry, nil
 	}
 	s.mu.RUnlock()
 
 	// 写锁慢路径
 	s.mu.Lock()
+	s.evictStaleTLSIdentityLocked(tlsNamespaceKey, cacheKey)
 	if entry, ok := s.clients[cacheKey]; ok {
 		if s.shouldReuseEntry(entry, isolation, proxyKey, poolKey) {
 			atomic.StoreInt64(&entry.lastUsed, nowUnix)
@@ -249,12 +277,12 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 				atomic.AddInt64(&entry.inFlight, 1)
 			}
 			s.mu.Unlock()
-			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", cacheKey)
+			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "proxy", sanitizeProxyURLForLog(proxyKey))
 			return entry, nil
 		}
 		slog.Debug("tls_fingerprint_evicting_stale_client",
 			"account_id", accountID,
-			"cache_key", cacheKey,
+			"proxy", sanitizeProxyURLForLog(proxyKey),
 			"proxy_changed", entry.proxyKey != proxyKey,
 			"pool_changed", entry.poolKey != poolKey)
 		s.removeClientLocked(cacheKey, entry)
@@ -272,7 +300,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 
 	// 创建带 TLS 指纹的 Transport
-	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "cache_key", cacheKey, "proxy", proxyKey)
+	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "proxy", sanitizeProxyURLForLog(proxyKey))
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	transport, err := buildUpstreamTransportWithTLSFingerprint(settings, parsedProxy, profile)
 	if err != nil {
@@ -300,6 +328,40 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	s.evictOverLimitLocked()
 	s.mu.Unlock()
 	return entry, nil
+}
+
+func upstreamGatewayTLSCacheIdentity(identity string) string {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return "none"
+	}
+	sum := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(sum[:])
+}
+
+func tlsProfileCacheIdentity(profile *tlsfingerprint.Profile) string {
+	raw, _ := json.Marshal(tlsfingerprint.EffectiveFingerprint(profile))
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *httpUpstreamService) evictStaleTLSIdentityLocked(logicalCacheKey, currentCacheKey string) {
+	if logicalCacheKey == "" {
+		return
+	}
+	identityPrefix := logicalCacheKey + "|tls_identity:"
+	for key, entry := range s.clients {
+		if key == currentCacheKey {
+			continue
+		}
+		if key != logicalCacheKey && !strings.HasPrefix(key, identityPrefix) {
+			continue
+		}
+		if atomic.LoadInt64(&entry.inFlight) != 0 {
+			continue
+		}
+		s.removeClientLocked(key, entry)
+	}
 }
 
 func (s *httpUpstreamService) shouldValidateResolvedIP() bool {
@@ -698,6 +760,36 @@ func normalizeProxyURL(raw string) (string, *url.URL, error) {
 		}
 	}
 	return parsed.String(), parsed, nil
+}
+
+func sanitizeProxyURLForLog(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == directProxyKey {
+		return directProxyKey
+	}
+	_, parsed, err := proxyurl.Parse(raw)
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return "<invalid_proxy>"
+	}
+	parsed.User = nil
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
+}
+
+func sanitizeProxyErrorForLog(err error, rawProxyURL string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	rawProxyURL = strings.TrimSpace(rawProxyURL)
+	if rawProxyURL == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, rawProxyURL, sanitizeProxyURLForLog(rawProxyURL))
 }
 
 // defaultPoolSettings 获取默认连接池配置

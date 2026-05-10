@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -56,13 +57,22 @@ func (a *Account) IsVertexServiceAccount() bool {
 }
 
 func (a *Account) VertexProjectID() string {
+	return a.VertexProjectIDWithAccessor(nil)
+}
+
+func (a *Account) VertexProjectIDWithAccessor(accessor *GeminiCredentialsAccessor) string {
 	if a == nil {
 		return ""
+	}
+	if accessor != nil {
+		if v, err := accessor.GeminiProjectID(a); err == nil && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
 	}
 	if v := strings.TrimSpace(a.GetCredential("project_id")); v != "" {
 		return v
 	}
-	key, err := parseVertexServiceAccountKey(a)
+	key, err := parseVertexServiceAccountKeyWithAccessor(a, accessor)
 	if err == nil {
 		return strings.TrimSpace(key.ProjectID)
 	}
@@ -90,8 +100,20 @@ func (a *Account) VertexLocation(model string) string {
 }
 
 func parseVertexServiceAccountKey(account *Account) (*vertexServiceAccountKey, error) {
+	return parseVertexServiceAccountKeyWithAccessor(account, nil)
+}
+
+func parseVertexServiceAccountKeyWithAccessor(account *Account, accessor *GeminiCredentialsAccessor) (*vertexServiceAccountKey, error) {
 	if account == nil || account.Credentials == nil {
 		return nil, errors.New("service account credentials not configured")
+	}
+
+	if accessor != nil {
+		raw, err := accessor.VertexServiceAccountJSON(account)
+		if err != nil {
+			return nil, err
+		}
+		return parseVertexServiceAccountJSON([]byte(raw))
 	}
 
 	if raw := strings.TrimSpace(account.GetCredential("service_account_json")); raw != "" {
@@ -145,7 +167,11 @@ func vertexServiceAccountCacheKey(account *Account, key *vertexServiceAccountKey
 // getVertexServiceAccountAccessToken obtains an access token for a Vertex service account,
 // using the shared cache and distributed lock to avoid redundant exchanges.
 func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCache, account *Account) (string, error) {
-	key, err := parseVertexServiceAccountKey(account)
+	return getVertexServiceAccountAccessTokenWithAccessor(ctx, cache, account, nil, nil, nil)
+}
+
+func getVertexServiceAccountAccessTokenWithAccessor(ctx context.Context, cache GeminiTokenCache, account *Account, accessor *GeminiCredentialsAccessor, cfg *config.Config, accountRepo AccountRepository) (string, error) {
+	key, err := parseVertexServiceAccountKeyWithAccessor(account, accessor)
 	if err != nil {
 		return "", err
 	}
@@ -153,7 +179,14 @@ func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCa
 
 	if cache != nil {
 		if token, err := cache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
-			return token, nil
+			if geminiAllowsPlaintextTokenCache(cfg) {
+				return token, nil
+			}
+			if geminiProductionModeEnabled(cfg) {
+				if err := geminiPersistPlaintextTokenCacheDetected(ctx, accountRepo, account); err != nil {
+					slog.Warn("vertex_service_account_cache_degraded_update_failed", "account_id", account.ID, "error", err)
+				}
+			}
 		}
 	}
 
@@ -168,7 +201,14 @@ func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCa
 		} else {
 			time.Sleep(vertexLockWaitTime)
 			if token, err := cache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
-				return token, nil
+				if geminiAllowsPlaintextTokenCache(cfg) {
+					return token, nil
+				}
+				if geminiProductionModeEnabled(cfg) {
+					if err := geminiPersistPlaintextTokenCacheDetected(ctx, accountRepo, account); err != nil {
+						slog.Warn("vertex_service_account_cache_degraded_update_failed", "account_id", account.ID, "error", err)
+					}
+				}
 			}
 		}
 	}
@@ -177,7 +217,7 @@ func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCa
 	if err != nil {
 		return "", err
 	}
-	if cache != nil {
+	if cache != nil && geminiAllowsPlaintextTokenCache(cfg) {
 		_ = cache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
 	}
 	return accessToken, nil

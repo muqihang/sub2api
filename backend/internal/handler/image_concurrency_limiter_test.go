@@ -159,8 +159,11 @@ func TestOpenAIGatewayHandlerResponses_ImageIntentRejectedByImageConcurrency(t *
 	})
 	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 20, Concurrency: 1})
 
+	coreCfg := &config.Config{}
+	coreCfg.Gateway.OpenAICore.Enabled = true
 	h := &OpenAIGatewayHandler{
 		gatewayService:          &service.OpenAIGatewayService{},
+		gatewayCoreService:      service.NewOpenAIGatewayCoreService(nil, coreCfg, nil),
 		billingCacheService:     &service.BillingCacheService{},
 		apiKeyService:           &service.APIKeyService{},
 		concurrencyHelper:       &ConcurrencyHelper{concurrencyService: service.NewConcurrencyService(&helperConcurrencyCacheStub{userSeq: []bool{true}})},
@@ -204,8 +207,11 @@ func TestOpenAIGatewayHandlerResponses_TextOnlyNotRejectedByImageConcurrency(t *
 	})
 	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 20, Concurrency: 1})
 
+	coreCfg := &config.Config{}
+	coreCfg.Gateway.OpenAICore.Enabled = true
 	h := &OpenAIGatewayHandler{
 		gatewayService:      &service.OpenAIGatewayService{},
+		gatewayCoreService:  service.NewOpenAIGatewayCoreService(nil, coreCfg, nil),
 		billingCacheService: service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}),
 		apiKeyService:       &service.APIKeyService{},
 		concurrencyHelper:   &ConcurrencyHelper{concurrencyService: service.NewConcurrencyService(&helperConcurrencyCacheStub{userSeq: []bool{true}})},

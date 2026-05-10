@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -255,10 +254,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	//  1) Explicit session headers from clients that support them (OpenCode/Sub2API gateway headers)
 	//  2) Gemini CLI session identifier (privileged-user-id + tmp dir hash)
 	//  3) Fallback: generic session hash derived from request content
-	sessionHash := service.GenerateGeminiStickySessionHash(c, body)
-	if sessionHash == "" {
-		sessionHash = extractGeminiCLISessionHash(c, body)
-	}
+	sessionHash, sessionSource := resolveGeminiStickySessionHashAndSource(c, body)
 	if sessionHash == "" {
 		parsedReq, _ := service.ParseGatewayRequest(body, domain.PlatformGemini)
 		if parsedReq != nil {
@@ -269,24 +265,43 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			}
 		}
 		sessionHash = h.gatewayService.GenerateSessionHash(parsedReq)
+		if sessionHash != "" {
+			sessionSource = service.GeminiStickySessionSourceGatewayFallback
+		}
 	}
 	sessionKey := sessionHash
 	if sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
 	}
+	signaturePresent := service.GeminiRequestHasThoughtSignature(body)
 
 	// 查询粘性会话绑定的账号 ID（用于检测账号切换）
 	var sessionBoundAccountID int64
 	if sessionKey != "" {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
-		if sessionBoundAccountID > 0 {
-			prefetchedGroupID := int64(0)
-			if apiKey.GroupID != nil {
-				prefetchedGroupID = *apiKey.GroupID
-			}
-			ctx := service.WithPrefetchedStickySession(c.Request.Context(), sessionBoundAccountID, prefetchedGroupID, h.metadataBridgeEnabled())
-			c.Request = c.Request.WithContext(ctx)
+	}
+	sessionPolicy := service.EvaluateGeminiThoughtSignatureSessionPolicy(h.cfg, sessionSource, signaturePresent, sessionBoundAccountID)
+	stickySessionDisabledByPolicy := sessionPolicy.DisableStickySession
+	if sessionPolicy.DisableStickySession {
+		sessionKey = ""
+		sessionBoundAccountID = 0
+		c.Request = c.Request.WithContext(service.WithPrefetchedStickySession(c.Request.Context(), 0, 0, h.metadataBridgeEnabled()))
+	}
+	if sessionPolicy.RequiresScrub {
+		var scrubErr error
+		body, scrubErr = h.scrubGeminiThoughtSignaturesOrBlock(c, body, sessionPolicy.Reason)
+		if scrubErr != nil {
+			googleError(c, http.StatusBadRequest, scrubErr.Error())
+			return
 		}
+	}
+	if sessionBoundAccountID > 0 && !stickySessionDisabledByPolicy {
+		prefetchedGroupID := int64(0)
+		if apiKey.GroupID != nil {
+			prefetchedGroupID = *apiKey.GroupID
+		}
+		ctx := service.WithPrefetchedStickySession(c.Request.Context(), sessionBoundAccountID, prefetchedGroupID, h.metadataBridgeEnabled())
+		c.Request = c.Request.WithContext(ctx)
 	}
 
 	// === Gemini 内容摘要会话 Fallback 逻辑 ===
@@ -295,7 +310,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	var geminiPrefixHash string
 	var geminiSessionUUID string
 	var matchedDigestChain string
-	useDigestFallback := sessionBoundAccountID == 0
+	useDigestFallback := sessionBoundAccountID == 0 && !stickySessionDisabledByPolicy
 
 	if useDigestFallback {
 		// 解析 Gemini 请求体
@@ -357,8 +372,6 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
-	cleanedForUnknownBinding := false
-
 	fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
 
 	// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
@@ -368,6 +381,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		c.Request = c.Request.WithContext(ctx)
 	}
 
+	var pendingStickyRebindAccountID int64
 	for {
 		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, modelName, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
 		if err != nil {
@@ -393,23 +407,21 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 
 		// 检测账号切换：如果粘性会话绑定的账号与当前选择的账号不同，清除 thoughtSignature
 		// 注意：Gemini 原生 API 的 thoughtSignature 与具体上游账号强相关；跨账号透传会导致 400。
-		if sessionBoundAccountID > 0 && sessionBoundAccountID != account.ID {
+		switchDecision := service.EvaluateGeminiThoughtSignatureAccountSwitchPolicy(h.cfg, signaturePresent, sessionBoundAccountID, account.ID)
+		if switchDecision.RequiresScrub {
 			reqLog.Info("gemini.sticky_session_account_switched",
 				zap.Int64("from_account_id", sessionBoundAccountID),
 				zap.Int64("to_account_id", account.ID),
 				zap.Bool("clean_thought_signature", true),
 			)
-			body = service.CleanGeminiNativeThoughtSignatures(body)
+			var scrubErr error
+			body, scrubErr = h.scrubGeminiThoughtSignaturesOrBlock(c, body, switchDecision.Reason)
+			if scrubErr != nil {
+				googleError(c, http.StatusBadRequest, scrubErr.Error())
+				return
+			}
 			sessionBoundAccountID = account.ID
-		} else if sessionKey != "" && sessionBoundAccountID == 0 && !cleanedForUnknownBinding && bytes.Contains(body, []byte(`"thoughtSignature"`)) {
-			// 无缓存绑定但请求里已有 thoughtSignature：常见于缓存丢失/TTL 过期后，客户端继续携带旧签名。
-			// 为避免第一次转发就 400，这里做一次确定性清理，让新账号重新生成签名链路。
-			reqLog.Info("gemini.sticky_session_binding_missing",
-				zap.Bool("clean_thought_signature", true),
-			)
-			body = service.CleanGeminiNativeThoughtSignatures(body)
-			cleanedForUnknownBinding = true
-			sessionBoundAccountID = account.ID
+			noteGeminiStickyRebindTarget(&pendingStickyRebindAccountID, sessionKey, account.ID)
 		} else if sessionBoundAccountID == 0 {
 			// 记录本次请求中首次选择到的账号，便于同一请求内 failover 时检测切换。
 			sessionBoundAccountID = account.ID
@@ -462,6 +474,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			}
 			if err := h.gatewayService.BindStickySession(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID); err != nil {
 				reqLog.Warn("gemini.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			} else if pendingStickyRebindAccountID == account.ID {
+				pendingStickyRebindAccountID = 0
 			}
 		}
 		// 账号槽位/等待计数需要在超时或断开时安全回收
@@ -498,6 +512,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			// ForwardNative already wrote the response
 			reqLog.Error("gemini.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			return
+		}
+		if err := persistPendingGeminiStickyRebind(c.Request.Context(), apiKey.GroupID, sessionKey, account.ID, &pendingStickyRebindAccountID, h.gatewayService.BindStickySession); err != nil {
+			reqLog.Warn("gemini.rebind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
@@ -557,6 +574,54 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func (h *GatewayHandler) scrubGeminiThoughtSignaturesOrBlock(c *gin.Context, body []byte, reason string) ([]byte, error) {
+	if len(body) == 0 {
+		return body, nil
+	}
+	cleaned := service.CleanGeminiNativeThoughtSignaturesDetailed(body)
+	if cleaned.ReplacedCount > 0 {
+		service.MarkGeminiSafetyDegraded(c, reason)
+		return cleaned.Body, nil
+	}
+
+	service.MarkGeminiSafetyDegraded(c, reason)
+	service.MarkGeminiSafetyDegraded(c, service.GeminiSafetyReasonThoughtSignatureScrubFailed)
+	if h != nil && h.cfg != nil && h.cfg.Gemini.ProductionMode {
+		return nil, errors.New("thoughtSignature safety guard could not rewrite request")
+	}
+	return body, nil
+}
+
+func resolveGeminiStickySessionHashAndSource(c *gin.Context, body []byte) (string, service.GeminiStickySessionSource) {
+	sessionHash, sessionSource := service.GenerateGeminiStickySessionHashWithSource(c, nil)
+	if sessionHash != "" {
+		return sessionHash, sessionSource
+	}
+	sessionHash = extractGeminiCLISessionHash(c, body)
+	if sessionHash != "" {
+		return sessionHash, service.GeminiStickySessionSourceGeminiCLI
+	}
+	return service.GenerateGeminiStickySessionHashWithSource(c, body)
+}
+
+func noteGeminiStickyRebindTarget(pending *int64, sessionKey string, accountID int64) {
+	if pending == nil || sessionKey == "" || accountID <= 0 {
+		return
+	}
+	*pending = accountID
+}
+
+func persistPendingGeminiStickyRebind(ctx context.Context, groupID *int64, sessionKey string, accountID int64, pending *int64, bind func(context.Context, *int64, string, int64) error) error {
+	if pending == nil || *pending <= 0 || *pending != accountID || sessionKey == "" || bind == nil {
+		return nil
+	}
+	if err := bind(ctx, groupID, sessionKey, accountID); err != nil {
+		return err
+	}
+	*pending = 0
+	return nil
 }
 
 func parseGeminiModelAction(rest string) (model string, action string, err error) {
@@ -723,17 +788,15 @@ func extractGeminiCLISessionHash(c *gin.Context, body []byte) string {
 
 	// 2. 提取 privileged-user-id
 	privilegedUserID := strings.TrimSpace(c.GetHeader("x-gemini-api-privileged-user-id"))
-
-	// 3. 组合生成最终的 session hash
-	if privilegedUserID != "" {
-		// 组合两个标识符：privileged-user-id + tmp 目录哈希
-		combined := privilegedUserID + ":" + tmpDirHash
-		hash := sha256.Sum256([]byte(combined))
-		return hex.EncodeToString(hash[:])
+	if privilegedUserID == "" {
+		return ""
 	}
 
-	// 如果没有 privileged-user-id，直接使用 tmp 目录哈希
-	return tmpDirHash
+	// 3. 组合生成最终的 session hash
+	// 组合两个标识符：privileged-user-id + tmp 目录哈希
+	combined := privilegedUserID + ":" + tmpDirHash
+	hash := sha256.Sum256([]byte(combined))
+	return hex.EncodeToString(hash[:])
 }
 
 // truncateDigestChain 截断摘要链用于日志显示

@@ -6,6 +6,11 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 )
 
+type GeminiNativeThoughtSignatureCleanResult struct {
+	Body          []byte
+	ReplacedCount int
+}
+
 // CleanGeminiNativeThoughtSignatures 从 Gemini 原生 API 请求中替换 thoughtSignature 字段为 dummy 签名，
 // 以避免跨账号签名验证错误。
 //
@@ -19,57 +24,69 @@ import (
 // thoughtSignatures from the old account will cause validation failures on the new account.
 // By replacing with dummy signature, we skip signature validation.
 func CleanGeminiNativeThoughtSignatures(body []byte) []byte {
+	return CleanGeminiNativeThoughtSignaturesDetailed(body).Body
+}
+
+func CleanGeminiNativeThoughtSignaturesDetailed(body []byte) GeminiNativeThoughtSignatureCleanResult {
 	if len(body) == 0 {
-		return body
+		return GeminiNativeThoughtSignatureCleanResult{Body: body}
 	}
 
 	// 解析 JSON
-	var data any
+	var data map[string]any
 	if err := json.Unmarshal(body, &data); err != nil {
 		// 如果解析失败，返回原始 body（可能不是 JSON 或格式不正确）
-		return body
+		return GeminiNativeThoughtSignatureCleanResult{Body: body}
 	}
 
-	// 递归替换 thoughtSignature 为 dummy 签名
-	replaced := replaceThoughtSignaturesRecursive(data)
+	// 仅替换 Gemini contents[*].parts[*].thoughtSignature，避免误伤任意同名业务字段。
+	replaced, replacedCount := replaceThoughtSignaturesInGeminiContents(data)
 
 	// 重新序列化
 	result, err := json.Marshal(replaced)
 	if err != nil {
 		// 如果序列化失败，返回原始 body
-		return body
+		return GeminiNativeThoughtSignatureCleanResult{Body: body}
 	}
 
-	return result
+	return GeminiNativeThoughtSignatureCleanResult{
+		Body:          result,
+		ReplacedCount: replacedCount,
+	}
 }
 
-// replaceThoughtSignaturesRecursive 递归遍历数据结构，将所有 thoughtSignature 字段替换为 dummy 签名
-func replaceThoughtSignaturesRecursive(data any) any {
-	switch v := data.(type) {
-	case map[string]any:
-		// 创建新的 map，替换 thoughtSignature 为 dummy 签名
-		result := make(map[string]any, len(v))
-		for key, value := range v {
-			// 替换 thoughtSignature 字段为 dummy 签名
-			if key == "thoughtSignature" {
-				result[key] = antigravity.DummyThoughtSignature
+func replaceThoughtSignaturesInGeminiContents(root map[string]any) (map[string]any, int) {
+	if root == nil {
+		return nil, 0
+	}
+	contents, ok := root["contents"].([]any)
+	if !ok {
+		return root, 0
+	}
+	replacedCount := 0
+	for i, content := range contents {
+		contentMap, ok := content.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := contentMap["parts"].([]any)
+		if !ok {
+			continue
+		}
+		for j, part := range parts {
+			partMap, ok := part.(map[string]any)
+			if !ok {
 				continue
 			}
-			// 递归处理嵌套结构
-			result[key] = replaceThoughtSignaturesRecursive(value)
+			if _, exists := partMap["thoughtSignature"]; exists {
+				partMap["thoughtSignature"] = antigravity.DummyThoughtSignature
+				replacedCount++
+			}
+			parts[j] = partMap
 		}
-		return result
-
-	case []any:
-		// 递归处理数组中的每个元素
-		result := make([]any, len(v))
-		for i, item := range v {
-			result[i] = replaceThoughtSignaturesRecursive(item)
-		}
-		return result
-
-	default:
-		// 基本类型（string, number, bool, null）直接返回
-		return v
+		contentMap["parts"] = parts
+		contents[i] = contentMap
 	}
+	root["contents"] = contents
+	return root, replacedCount
 }

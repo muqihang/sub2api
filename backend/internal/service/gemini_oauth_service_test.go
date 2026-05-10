@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/stretchr/testify/require"
 )
 
 // =====================
@@ -1254,6 +1255,61 @@ func TestGeminiOAuthService_RefreshAccountToken_GoogleOne_FreshCache(t *testing.
 	}
 }
 
+func TestGeminiOAuthService_RefreshAccountToken_GoogleOneFreshCacheRestoresStoredDegradedMetadataFromCredentials(t *testing.T) {
+	t.Parallel()
+
+	client := &mockGeminiOAuthClient{
+		refreshTokenFunc: func(ctx context.Context, oauthType, refreshToken, proxyURL string) (*geminicli.TokenResponse, error) {
+			return &geminicli.TokenResponse{
+				AccessToken: "at",
+				ExpiresIn:   3600,
+			}, nil
+		},
+	}
+	driveCalled := false
+	drive := &mockDriveClient{
+		getStorageQuotaFunc: func(ctx context.Context, accessToken, proxyURL string) (*geminicli.DriveStorageInfo, error) {
+			driveCalled = true
+			return nil, fmt.Errorf("should not be called")
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gemini.ProductionMode = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("5f", 32)
+
+	svc := NewGeminiOAuthService(&mockGeminiProxyRepo{}, client, nil, drive, cfg)
+	defer svc.Stop()
+
+	protector, err := ProvideGeminiSecretProtector(cfg)
+	require.NoError(t, err)
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"refresh_token":            "rt",
+		"oauth_type":               "google_one",
+		"project_id":               "proj",
+		"tier_id":                  GeminiTierGoogleOneFree,
+		geminiDriveTierUpdatedAtKey: time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+		geminiOAuthStateKey:         geminiOAuthStateDegraded,
+		geminiOAuthReasonKey:        geminiOAuthReasonGoogleOneDefaultTierFallback,
+		geminiOAuthTierSource:       geminiTierSourceDefaultFallback,
+	})
+	require.NoError(t, err)
+
+	account := &Account{
+		Platform:    PlatformGemini,
+		Type:        AccountTypeOAuth,
+		Credentials: protected,
+	}
+
+	info, err := svc.RefreshAccountToken(context.Background(), account)
+	require.NoError(t, err)
+	require.False(t, driveCalled)
+	require.Equal(t, GeminiTierGoogleOneFree, info.TierID)
+	require.Equal(t, geminiOAuthStateDegraded, info.Extra[geminiOAuthStateKey])
+	require.Equal(t, geminiOAuthReasonGoogleOneDefaultTierFallback, info.Extra[geminiOAuthReasonKey])
+	require.Equal(t, geminiTierSourceDefaultFallback, info.Extra[geminiOAuthTierSource])
+	require.Equal(t, account.Credentials[geminiDriveTierUpdatedAtKey], info.Extra[geminiDriveTierUpdatedAtKey])
+}
+
 func TestGeminiOAuthService_RefreshAccountToken_GoogleOne_NoTierID_DefaultsFree(t *testing.T) {
 	t.Parallel()
 
@@ -1375,6 +1431,52 @@ func TestGeminiOAuthService_RefreshAccountToken_UnauthorizedClient_NoFallback(t 
 	}
 }
 
+func TestGeminiOAuthService_RefreshAccountToken_UnauthorizedClient_ProductionRejectsCrossClientRetry(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	client := &mockGeminiOAuthClient{
+		refreshTokenFunc: func(ctx context.Context, oauthType, refreshToken, proxyURL string) (*geminicli.TokenResponse, error) {
+			callCount++
+			return nil, fmt.Errorf("unauthorized_client: client mismatch")
+		},
+	}
+
+	cfg := &config.Config{
+		Gemini: config.GeminiConfig{
+			ProductionMode: true,
+			OAuth: config.GeminiOAuthConfig{
+				ClientID:     "custom-id",
+				ClientSecret: "custom-secret",
+			},
+		},
+	}
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("59", 32)
+
+	svc := NewGeminiOAuthService(&mockGeminiProxyRepo{}, client, nil, nil, cfg)
+	defer svc.Stop()
+	protector, err := ProvideGeminiSecretProtector(cfg)
+	require.NoError(t, err)
+
+	protected, err := protector.ProtectCredentials(map[string]any{
+		"refresh_token": "rt",
+		"oauth_type":    "code_assist",
+		"project_id":    "proj",
+	})
+	require.NoError(t, err)
+
+	account := &Account{
+		Platform:    PlatformGemini,
+		Type:        AccountTypeOAuth,
+		Credentials: protected,
+	}
+
+	_, err = svc.RefreshAccountToken(context.Background(), account)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "OAuth client mismatch")
+	require.Equal(t, 1, callCount)
+}
+
 // =====================
 // 新增测试：GeminiOAuthService.ExchangeCode
 // =====================
@@ -1445,6 +1547,90 @@ func TestGeminiOAuthService_ExchangeCode_EmptyState(t *testing.T) {
 	if err == nil {
 		t.Fatal("应返回错误（空 state）")
 	}
+}
+
+func TestGeminiOAuthService_ExchangeCode_ConsumesSessionOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	client := &mockGeminiOAuthClient{
+		exchangeCodeFunc: func(ctx context.Context, oauthType, code, codeVerifier, redirectURI, proxyURL string) (*geminicli.TokenResponse, error) {
+			return &geminicli.TokenResponse{
+				AccessToken:  "at",
+				RefreshToken: "rt",
+				TokenType:    "Bearer",
+				ExpiresIn:    3600,
+			}, nil
+		},
+	}
+
+	svc := NewGeminiOAuthService(nil, client, nil, nil, &config.Config{})
+	defer svc.Stop()
+
+	require.NoError(t, svc.sessionStore.Set("test-session", &geminicli.OAuthSession{
+		State:        "correct-state",
+		CodeVerifier: "verifier",
+		OAuthType:    "code_assist",
+		ProjectID:    "proj-123",
+		CreatedAt:    time.Now(),
+	}))
+
+	_, err := svc.ExchangeCode(context.Background(), &GeminiExchangeCodeInput{
+		SessionID: "test-session",
+		State:     "correct-state",
+		Code:      "code",
+	})
+	require.NoError(t, err)
+
+	_, err = svc.ExchangeCode(context.Background(), &GeminiExchangeCodeInput{
+		SessionID: "test-session",
+		State:     "correct-state",
+		Code:      "code",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "session not found")
+}
+
+func TestGeminiOAuthService_ExchangeCode_GoogleOneDefaultTierFallbackVisibleInProduction(t *testing.T) {
+	t.Parallel()
+
+	client := &mockGeminiOAuthClient{
+		exchangeCodeFunc: func(ctx context.Context, oauthType, code, codeVerifier, redirectURI, proxyURL string) (*geminicli.TokenResponse, error) {
+			return &geminicli.TokenResponse{
+				AccessToken:  "at",
+				RefreshToken: "rt",
+				TokenType:    "Bearer",
+				ExpiresIn:    3600,
+			}, nil
+		},
+	}
+	drive := &mockDriveClient{
+		getStorageQuotaFunc: func(ctx context.Context, accessToken, proxyURL string) (*geminicli.DriveStorageInfo, error) {
+			return nil, fmt.Errorf("status 403: scope missing")
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gemini.ProductionMode = true
+
+	svc := NewGeminiOAuthService(nil, client, nil, drive, cfg)
+	defer svc.Stop()
+
+	require.NoError(t, svc.sessionStore.Set("test-session", &geminicli.OAuthSession{
+		State:        "correct-state",
+		CodeVerifier: "verifier",
+		OAuthType:    "google_one",
+		ProjectID:    "auto-project",
+		CreatedAt:    time.Now(),
+	}))
+
+	info, err := svc.ExchangeCode(context.Background(), &GeminiExchangeCodeInput{
+		SessionID: "test-session",
+		State:     "correct-state",
+		Code:      "code",
+	})
+	require.NoError(t, err)
+	require.Equal(t, GeminiTierGoogleOneFree, info.TierID)
+	require.Equal(t, geminiOAuthStateDegraded, info.Extra[geminiOAuthStateKey])
+	require.Equal(t, geminiOAuthReasonGoogleOneDefaultTierFallback, info.Extra[geminiOAuthReasonKey])
 }
 
 // =====================

@@ -39,12 +39,12 @@ func TestOpenAIOAuthService_ExchangeCode_StateRequired(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, client)
 	defer svc.Stop()
 
-	svc.sessionStore.Set("sid", &openai.OAuthSession{
+	require.NoError(t, svc.sessionStore.Set("sid", &openai.OAuthSession{
 		State:        "expected-state",
 		CodeVerifier: "verifier",
 		RedirectURI:  openai.DefaultRedirectURI,
 		CreatedAt:    time.Now(),
-	})
+	}))
 
 	_, err := svc.ExchangeCode(context.Background(), &OpenAIExchangeCodeInput{
 		SessionID: "sid",
@@ -60,12 +60,12 @@ func TestOpenAIOAuthService_ExchangeCode_StateMismatch(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, client)
 	defer svc.Stop()
 
-	svc.sessionStore.Set("sid", &openai.OAuthSession{
+	require.NoError(t, svc.sessionStore.Set("sid", &openai.OAuthSession{
 		State:        "expected-state",
 		CodeVerifier: "verifier",
 		RedirectURI:  openai.DefaultRedirectURI,
 		CreatedAt:    time.Now(),
-	})
+	}))
 
 	_, err := svc.ExchangeCode(context.Background(), &OpenAIExchangeCodeInput{
 		SessionID: "sid",
@@ -82,12 +82,12 @@ func TestOpenAIOAuthService_ExchangeCode_StateMatch(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, client)
 	defer svc.Stop()
 
-	svc.sessionStore.Set("sid", &openai.OAuthSession{
+	require.NoError(t, svc.sessionStore.Set("sid", &openai.OAuthSession{
 		State:        "expected-state",
 		CodeVerifier: "verifier",
 		RedirectURI:  openai.DefaultRedirectURI,
 		CreatedAt:    time.Now(),
-	})
+	}))
 
 	info, err := svc.ExchangeCode(context.Background(), &OpenAIExchangeCodeInput{
 		SessionID: "sid",
@@ -101,6 +101,7 @@ func TestOpenAIOAuthService_ExchangeCode_StateMatch(t *testing.T) {
 	require.Equal(t, openai.ClientID, client.lastClientID)
 	require.Equal(t, int32(1), atomic.LoadInt32(&client.exchangeCalled))
 
-	_, ok := svc.sessionStore.Get("sid")
+	_, ok, err := svc.sessionStore.Get("sid")
+	require.NoError(t, err)
 	require.False(t, ok)
 }

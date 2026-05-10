@@ -1,9 +1,15 @@
 package service
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 func TestShortHash(t *testing.T) {
@@ -246,6 +252,111 @@ func TestFormatGeminiSessionValue(t *testing.T) {
 	}
 }
 
+func TestGenerateGeminiStickySessionHashWithSource_ClassifiesTrustedAndFallbackSources(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	headerCtx, _ := gin.CreateTestContext(nil)
+	headerCtx.Request = nil
+	headerCtx.Request = newTestGeminiRequestWithHeaders(map[string]string{
+		"session_id": "sticky-session-123",
+	})
+
+	hash, source := GenerateGeminiStickySessionHashWithSource(headerCtx, []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`))
+	require.NotEmpty(t, hash)
+	require.Equal(t, GeminiStickySessionSourceSessionHeader, source)
+	require.True(t, GeminiStickySessionSourceTrustedForThoughtSignatures(source))
+
+	fallbackCtx, _ := gin.CreateTestContext(nil)
+	fallbackCtx.Request = newTestGeminiRequestWithHeaders(nil)
+	hash, source = GenerateGeminiStickySessionHashWithSource(fallbackCtx, []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`))
+	require.NotEmpty(t, hash)
+	require.Equal(t, GeminiStickySessionSourceBodyFirstPartText, source)
+	require.False(t, GeminiStickySessionSourceTrustedForThoughtSignatures(source))
+}
+
+func TestGeminiThoughtSignatureSessionPolicy_RejectsUntrustedStickyFallbackInProduction(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{}
+	cfg.Gemini.ProductionMode = true
+
+	decision := EvaluateGeminiThoughtSignatureSessionPolicy(cfg, GeminiStickySessionSourceBodyFirstPartText, true, 42)
+	require.True(t, decision.VisibleDegraded)
+	require.True(t, decision.RequiresScrub)
+	require.True(t, decision.DisableStickySession)
+	require.Equal(t, GeminiSafetyReasonStickySessionUntrusted, decision.Reason)
+}
+
+func TestGeminiThoughtSignatureSessionPolicy_RequiresVisibleScrubWhenBindingMissing(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{}
+	cfg.Gemini.ProductionMode = true
+
+	decision := EvaluateGeminiThoughtSignatureSessionPolicy(cfg, GeminiStickySessionSourceGeminiCLI, true, 0)
+	require.True(t, decision.VisibleDegraded)
+	require.True(t, decision.RequiresScrub)
+	require.False(t, decision.DisableStickySession)
+	require.Equal(t, GeminiSafetyReasonStickySessionBindingMissing, decision.Reason)
+}
+
+func TestGeminiThoughtSignatureAccountSwitchPolicy_RequiresVisibleScrub(t *testing.T) {
+	t.Parallel()
+
+	decision := EvaluateGeminiThoughtSignatureAccountSwitchPolicy(&config.Config{Gemini: config.GeminiConfig{RequireThoughtSignatureSessionSafety: true}}, true, 11, 22)
+	require.True(t, decision.VisibleDegraded)
+	require.True(t, decision.RequiresScrub)
+	require.Equal(t, GeminiSafetyReasonStickySessionAccountSwitched, decision.Reason)
+}
+
+func TestGeminiRequestHasThoughtSignature_OnlyMatchesContentParts(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"tools":[{"name":"tool","input_schema":{"type":"object","properties":{"thoughtSignature":{"type":"string"}}}}]
+	}`)
+	require.False(t, GeminiRequestHasThoughtSignature(body))
+
+	body = []byte(`{
+		"contents":[{"role":"model","parts":[{"text":"hello","thoughtSignature":"sig_1"}]}]
+	}`)
+	require.True(t, GeminiRequestHasThoughtSignature(body))
+
+	body = []byte(`{
+		"contents":[{"role":"model","parts":[{"text":"hello","thought\u0053ignature":"sig_1"}]}]
+	}`)
+	require.True(t, GeminiRequestHasThoughtSignature(body))
+}
+
+func TestCleanGeminiNativeThoughtSignaturesDetailed_OnlyRewritesContentPartSignatures(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"contents":[{"role":"model","parts":[{"text":"hello","thoughtSignature":"sig_1"}]}],
+		"tools":[{"name":"tool","input_schema":{"type":"object","properties":{"thoughtSignature":{"type":"string"}}}}]
+	}`)
+	result := CleanGeminiNativeThoughtSignaturesDetailed(body)
+	require.Equal(t, 1, result.ReplacedCount)
+	require.Contains(t, string(result.Body), `"thoughtSignature":"skip_thought_signature_validator"`)
+	require.Contains(t, string(result.Body), `"thoughtSignature":{"type":"string"}`)
+	require.False(t, strings.Contains(string(result.Body), `"thoughtSignature":"sig_1"`))
+}
+
+func TestCleanGeminiNativeThoughtSignaturesDetailed_RewritesEscapedThoughtSignatureKey(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"contents":[{"role":"model","parts":[{"thought\u0053ignature":"sig_escaped","text":"thinking"}]}]
+	}`)
+	result := CleanGeminiNativeThoughtSignaturesDetailed(body)
+	require.Equal(t, 1, result.ReplacedCount)
+	require.Contains(t, string(result.Body), `"thoughtSignature":"skip_thought_signature_validator"`)
+	require.False(t, strings.Contains(string(result.Body), `sig_escaped`))
+}
+
 // splitChain 辅助函数：按 "-" 分割摘要链
 func splitChain(chain string) []string {
 	if chain == "" {
@@ -263,6 +374,14 @@ func splitChain(chain string) []string {
 		parts = append(parts, chain[start:])
 	}
 	return parts
+}
+
+func newTestGeminiRequestWithHeaders(headers map[string]string) *http.Request {
+	req := httptest.NewRequest("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	return req
 }
 
 func TestDigestChainDifferentSysInstruction(t *testing.T) {
