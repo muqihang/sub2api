@@ -1164,13 +1164,26 @@ func TestAugmentQuickLoginGrantOfficialPassthroughUsesPoolSession(t *testing.T) 
 		Role:   service.RoleAdmin,
 		Status: service.StatusActive,
 	}
+	entitledGroup := service.Group{
+		ID:                     111,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	product := service.AugmentClientProductZhumeng
 	apiKey := service.APIKey{
-		ID:        11,
-		UserID:    user.ID,
-		Key:       "sk-plugin-generated",
-		Name:      "plugin-generated",
-		Status:    service.StatusActive,
-		CreatedAt: time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		ID:                      11,
+		UserID:                  user.ID,
+		Key:                     "sk-plugin-generated",
+		Name:                    "plugin-generated",
+		Status:                  service.StatusActive,
+		RestrictedClientProduct: &product,
+		GroupID:                 &entitledGroup.ID,
+		Group:                   &entitledGroup,
+		CreatedAt:               time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
 	}
 
 	pluginService := service.NewAugmentPluginService(
@@ -1180,6 +1193,9 @@ func TestAugmentQuickLoginGrantOfficialPassthroughUsesPoolSession(t *testing.T) 
 		augmentPluginAPIKeyStub{
 			keysByUser: map[int64][]service.APIKey{
 				user.ID: {apiKey},
+			},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {entitledGroup},
 			},
 		},
 		nil,
@@ -1434,13 +1450,26 @@ func TestAugmentQuickLoginGrantOfficialPassthroughRespectsRequestedPoolSource(t 
 		Role:   service.RoleAdmin,
 		Status: service.StatusActive,
 	}
+	entitledGroup := service.Group{
+		ID:                     112,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	product := service.AugmentClientProductZhumeng
 	apiKey := service.APIKey{
-		ID:        11,
-		UserID:    user.ID,
-		Key:       "sk-plugin-generated",
-		Name:      "plugin-generated",
-		Status:    service.StatusActive,
-		CreatedAt: time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		ID:                      11,
+		UserID:                  user.ID,
+		Key:                     "sk-plugin-generated",
+		Name:                    "plugin-generated",
+		Status:                  service.StatusActive,
+		RestrictedClientProduct: &product,
+		GroupID:                 &entitledGroup.ID,
+		Group:                   &entitledGroup,
+		CreatedAt:               time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
 	}
 
 	pluginService := service.NewAugmentPluginService(
@@ -1450,6 +1479,9 @@ func TestAugmentQuickLoginGrantOfficialPassthroughRespectsRequestedPoolSource(t 
 		augmentPluginAPIKeyStub{
 			keysByUser: map[int64][]service.APIKey{
 				user.ID: {apiKey},
+			},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {entitledGroup},
 			},
 		},
 		nil,
@@ -2647,7 +2679,7 @@ func TestAugmentLegacyModelsExposeClaudeGeminiWhenEnabledAndConfigured(t *testin
 	var body map[string]map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Contains(t, body, "claude-sonnet-4-5")
-	require.Contains(t, body, "gemini-2.5-pro")
+	require.NotContains(t, body, "gemini-2.5-pro")
 
 	postReq := httptest.NewRequest(http.MethodPost, "/get-models", bytes.NewReader([]byte(`{}`)))
 	postReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -2666,7 +2698,6 @@ func TestAugmentLegacyModelsExposeClaudeGeminiWhenEnabledAndConfigured(t *testin
 		"deepseek-v4-pro",
 		"deepseek-v4-flash",
 		"claude-sonnet-4-5",
-		"gemini-2.5-pro",
 	}, augmentLegacyInternalModelNames(postBody.Models))
 }
 
