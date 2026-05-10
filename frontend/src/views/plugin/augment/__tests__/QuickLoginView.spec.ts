@@ -251,7 +251,7 @@ describe('QuickLoginView', () => {
     expect(pageText).not.toContain('raw-official-access-token')
   })
 
-  it('shows source-specific consent copy before official and wukong quick login', async () => {
+  it('shows official-only consent copy for quick login', async () => {
     const wrapper = mount(QuickLoginView, {
       global: {
         stubs: {
@@ -266,10 +266,7 @@ describe('QuickLoginView', () => {
 
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.title')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.official')
-
-    await wrapper.get('[data-test="source-wukong_quick_login"]').trigger('click')
-
-    expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.wukong')
+    expect(wrapper.find('[data-test="source-wukong_quick_login"]').exists()).toBe(false)
   })
 
   it('still triggers deeplink launch when the backend warns about the target', async () => {

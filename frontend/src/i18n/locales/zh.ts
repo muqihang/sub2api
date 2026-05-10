@@ -608,7 +608,9 @@ export default {
     viewUsage: '查看使用记录',
     checkDetailedLogs: '查看详细的使用日志',
     redeemCode: '兑换码',
-    addBalanceWithCode: '使用兑换码充值'
+    addBalanceWithCode: '使用兑换码充值',
+    augmentQuickLogin: 'Augment Quick Login',
+    authorizeAugmentIde: '为 VS Code、Cursor 等 IDE 建立逐梦 Augment 授权'
   },
 
   // Groups (shared)
@@ -6669,7 +6671,7 @@ export default {
       },
       quickLogin: {
         title: 'Augment Quick Login',
-        subtitle: '使用官方 / Wukong Quick Login 接管官方云能力，同时保留逐梦网关的模型路由。',
+        subtitle: '使用官方 Quick Login 接管官方云能力，同时保留逐梦网关的模型路由。',
         modeLabel: '授权模式',
         sourceLabel: '授权来源',
         continue: '继续授权',
@@ -6712,7 +6714,7 @@ export default {
         modes: {
           officialPassthrough: {
             title: '官方能力接管',
-            description: '默认生产链路，使用官方 / Wukong Quick Login 承接官方云能力。'
+            description: '默认生产链路，使用官方 Quick Login 承接官方云能力。'
           },
           localCompat: {
             title: '本地兼容',
@@ -6720,18 +6722,16 @@ export default {
           }
         },
         sources: {
-          official: '官方 Quick Login',
-          wukong: 'Wukong Quick Login'
+          official: '官方 Quick Login'
         },
         consent: {
           title: '授权说明',
           official: '继续前请确认：官方云能力会直接接管 Context Engine 与相关官方能力，请仅在你理解并同意后继续。',
-          wukong: '继续前请确认：Wukong Quick Login 属于第三方来源，你理解其会代表官方云能力承接授权链路后再继续。',
           confirm: '我已知晓并同意上述授权与托管说明。'
         },
         internalCapture: {
           title: '内部采集模式',
-          description: '仅供管理员在本机或应急场景下，把 official/Wukong 登录回调参数写入平台 session pool。'
+          description: '仅供管理员在本机或应急场景下，把官方登录回调参数写入平台 session pool。'
         },
         session: {
           title: '当前官方 Session',

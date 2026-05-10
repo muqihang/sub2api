@@ -609,7 +609,9 @@ export default {
     viewUsage: 'View Usage',
     checkDetailedLogs: 'Check detailed usage logs',
     redeemCode: 'Redeem Code',
-    addBalanceWithCode: 'Add balance with a code'
+    addBalanceWithCode: 'Add balance with a code',
+    augmentQuickLogin: 'Augment Quick Login',
+    authorizeAugmentIde: 'Authorize Zhumeng Augment for VS Code, Cursor, and other IDEs'
   },
 
   // Groups (shared)
@@ -6485,7 +6487,7 @@ export default {
       },
       quickLogin: {
         title: 'Augment Quick Login',
-        subtitle: 'Use official / Wukong Quick Login for official cloud capabilities while keeping model routing on the Zhumeng gateway.',
+        subtitle: 'Use Official Quick Login for official cloud capabilities while keeping model routing on the Zhumeng gateway.',
         modeLabel: 'Authorization Mode',
         sourceLabel: 'Authorization Source',
         continue: 'Continue',
@@ -6528,7 +6530,7 @@ export default {
         modes: {
           officialPassthrough: {
             title: 'Official Passthrough',
-            description: 'Default production route. Official / Wukong Quick Login keeps official cloud capabilities in charge.'
+            description: 'Default production route. Official Quick Login keeps official cloud capabilities in charge.'
           },
           localCompat: {
             title: 'Local Compat',
@@ -6536,18 +6538,16 @@ export default {
           }
         },
         sources: {
-          official: 'Official Quick Login',
-          wukong: 'Wukong Quick Login'
+          official: 'Official Quick Login'
         },
         consent: {
           title: 'Consent',
           official: 'Before continuing, confirm that official cloud capabilities will directly own Context Engine and adjacent official product capabilities.',
-          wukong: 'Before continuing, confirm that Wukong Quick Login is a third-party source used to bridge the official cloud capability flow.',
           confirm: 'I understand and accept the authorization and session custody implications above.'
         },
         internalCapture: {
           title: 'Internal Capture Mode',
-          description: 'Admin-only path for writing official/Wukong callback credentials into the platform session pool during local validation or emergency handling.'
+          description: 'Admin-only path for writing official callback credentials into the platform session pool during local validation or emergency handling.'
         },
         session: {
           title: 'Current Official Session',

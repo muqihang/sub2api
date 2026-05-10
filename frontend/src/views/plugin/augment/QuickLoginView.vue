@@ -190,9 +190,7 @@ const targetWarning = ref('')
 const targetVerified = ref(true)
 const consentChecked = ref(false)
 const selectedMode = ref<'official_passthrough' | 'local_compat'>('official_passthrough')
-const selectedSource = ref<'official_quick_login' | 'wukong_quick_login'>(
-  route.query.source === 'wukong_quick_login' ? 'wukong_quick_login' : 'official_quick_login',
-)
+const selectedSource = ref<'official_quick_login' | 'wukong_quick_login'>('official_quick_login')
 const selectedEditorTarget = ref<AugmentQuickLoginEditorTarget>(
   resolveAugmentQuickLoginEditorTarget({
     mode: selectedMode.value,
@@ -221,11 +219,7 @@ const grantPayloadDiagnostics = computed(() =>
 )
 const needsManualOpen = computed(() => targetWarning.value.length > 0 || !targetVerified.value)
 
-const consentBody = computed(() =>
-  selectedSource.value === 'wukong_quick_login'
-    ? t('plugin.augment.quickLogin.consent.wukong')
-    : t('plugin.augment.quickLogin.consent.official')
-)
+const consentBody = computed(() => t('plugin.augment.quickLogin.consent.official'))
 
 watch(
   () => route.query.editor_target,
