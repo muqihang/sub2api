@@ -362,6 +362,31 @@ func TestOpenAIGatewayService_GenerateSessionHash_UsesXXHash64(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
+func TestOpenAIGatewayService_GenerateSessionHash_IsEntityScoped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+
+	newContext := func(entityKey string) *gin.Context {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+		c.Request.Header.Set("session_id", "shared-session")
+		c.Request = c.Request.WithContext(WithResolvedEntity(c.Request.Context(), &ResolvedEntity{
+			Entity: Entity{ID: 10, EntityKey: entityKey, Status: EntityStatusActive},
+			Source: EntityResolutionSourceClaimedBinding,
+		}))
+		return c
+	}
+
+	alphaHash := svc.GenerateSessionHash(newContext("team-alpha"), nil)
+	betaHash := svc.GenerateSessionHash(newContext("team-beta"), nil)
+
+	require.NotEmpty(t, alphaHash)
+	require.NotEmpty(t, betaHash)
+	require.NotEqual(t, alphaHash, betaHash, "same raw session signal must not bleed across entities")
+	require.Equal(t, DeriveEntityScopedSessionHash("team-alpha", "shared-session"), alphaHash)
+}
+
 func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -518,6 +543,75 @@ func TestOpenAIGatewayService_Forward_RemovesPreviousResponseIDForHTTP(t *testin
 	if _, exists := forwarded["safety_identifier"]; exists {
 		t.Fatal("expected safety_identifier to be removed")
 	}
+}
+
+func TestOpenAIGatewayService_ForwardScopesBodyPromptCacheKeyByEntity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+	c.Set("api_key", &APIKey{ID: 77})
+	c.Request = c.Request.WithContext(WithResolvedEntity(c.Request.Context(), &ResolvedEntity{
+		Entity: Entity{ID: 1, EntityKey: "team-alpha", Status: EntityStatusActive},
+		Source: EntityResolutionSourceClaimedBinding,
+	}))
+
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.1","input":[],"prompt_cache_key":"shared-cache"}`))
+
+	require.NoError(t, err)
+	require.Equal(t, EntityScopedSeed("team-alpha", "shared-cache"), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+}
+
+func TestOpenAIGatewayService_PassthroughScopesBodyPromptCacheKeyByEntity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request.Header.Set("content-type", "application/json")
+	c.Set("api_key", &APIKey{ID: 77})
+	c.Request = c.Request.WithContext(WithResolvedEntity(c.Request.Context(), &ResolvedEntity{
+		Entity: Entity{ID: 2, EntityKey: "team-beta", Status: EntityStatusActive},
+		Source: EntityResolutionSourceClaimedBinding,
+	}))
+
+	upstream := &captureHTTPUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key": "test-api-key",
+		},
+		Extra: map[string]any{
+			"openai_passthrough": true,
+		},
+	}
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.1","input":[],"prompt_cache_key":"shared-cache"}`))
+
+	require.NoError(t, err)
+	require.Equal(t, EntityScopedSeed("team-beta", "shared-cache"), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
 }
 
 func TestOpenAIGatewayService_ForwardRejectsFailClosedEgressBeforeHTTPUpstream(t *testing.T) {

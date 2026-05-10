@@ -64,6 +64,19 @@ func parseTimeRange(c *gin.Context) (time.Time, time.Time) {
 	return startTime, endTime
 }
 
+func parseDashboardEntityFilters(c *gin.Context) (int64, string, string, bool) {
+	var entityID int64
+	if entityIDStr := strings.TrimSpace(c.Query("entity_id")); entityIDStr != "" {
+		id, err := strconv.ParseInt(entityIDStr, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid entity_id")
+			return 0, "", "", false
+		}
+		entityID = id
+	}
+	return entityID, strings.TrimSpace(c.Query("entity_type")), strings.TrimSpace(c.Query("claimed_entity_id")), true
+}
+
 // GetStats handles getting dashboard statistics
 // GET /api/v1/admin/dashboard/stats
 func (h *DashboardHandler) GetStats(c *gin.Context) {
@@ -249,8 +262,24 @@ func (h *DashboardHandler) GetUsageTrend(c *gin.Context) {
 			return
 		}
 	}
+	entityID, entityType, claimedEntityID, ok := parseDashboardEntityFilters(c)
+	if !ok {
+		return
+	}
 
-	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
+	trend, hit, err := h.getUsageTrendCached(c.Request.Context(), startTime, endTime, granularity, usagestats.UsageLogFilters{
+		UserID:          userID,
+		APIKeyID:        apiKeyID,
+		AccountID:       accountID,
+		GroupID:         groupID,
+		Model:           model,
+		EntityID:        entityID,
+		EntityType:      entityType,
+		ClaimedEntityID: claimedEntityID,
+		RequestType:     requestType,
+		Stream:          stream,
+		BillingType:     billingType,
+	})
 	if err != nil {
 		response.Error(c, 500, "Failed to get usage trend")
 		return
@@ -330,8 +359,23 @@ func (h *DashboardHandler) GetModelStats(c *gin.Context) {
 			return
 		}
 	}
+	entityID, entityType, claimedEntityID, ok := parseDashboardEntityFilters(c)
+	if !ok {
+		return
+	}
 
-	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, modelSource, requestType, stream, billingType)
+	stats, hit, err := h.getModelStatsCached(c.Request.Context(), startTime, endTime, usagestats.UsageLogFilters{
+		UserID:          userID,
+		APIKeyID:        apiKeyID,
+		AccountID:       accountID,
+		GroupID:         groupID,
+		EntityID:        entityID,
+		EntityType:      entityType,
+		ClaimedEntityID: claimedEntityID,
+		RequestType:     requestType,
+		Stream:          stream,
+		BillingType:     billingType,
+	}, modelSource)
 	if err != nil {
 		response.Error(c, 500, "Failed to get model statistics")
 		return
@@ -401,8 +445,23 @@ func (h *DashboardHandler) GetGroupStats(c *gin.Context) {
 			return
 		}
 	}
+	entityID, entityType, claimedEntityID, ok := parseDashboardEntityFilters(c)
+	if !ok {
+		return
+	}
 
-	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType)
+	stats, hit, err := h.getGroupStatsCached(c.Request.Context(), startTime, endTime, usagestats.UsageLogFilters{
+		UserID:          userID,
+		APIKeyID:        apiKeyID,
+		AccountID:       accountID,
+		GroupID:         groupID,
+		EntityID:        entityID,
+		EntityType:      entityType,
+		ClaimedEntityID: claimedEntityID,
+		RequestType:     requestType,
+		Stream:          stream,
+		BillingType:     billingType,
+	})
 	if err != nil {
 		response.Error(c, 500, "Failed to get group statistics")
 		return

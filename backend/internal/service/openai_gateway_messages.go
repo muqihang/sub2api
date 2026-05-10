@@ -61,15 +61,17 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		}
 		if promptCacheKey == "" {
 			anthropicDigestChain = buildOpenAICompatAnthropicDigestChain(anthropicDigestReq)
-			if reusedKey, matchedChain := s.findOpenAICompatAnthropicDigestPromptCacheKey(account, apiKeyID, anthropicDigestChain); reusedKey != "" {
+			scopedDigestChain := EntityScopedSeedFromContext(requestContext(c), anthropicDigestChain)
+			if reusedKey, matchedChain := s.findOpenAICompatAnthropicDigestPromptCacheKey(account, apiKeyID, scopedDigestChain); reusedKey != "" {
 				promptCacheKey = reusedKey
 				anthropicMatchedDigestChain = matchedChain
 			} else {
-				promptCacheKey = promptCacheKeyFromAnthropicDigest(anthropicDigestChain)
+				promptCacheKey = promptCacheKeyFromAnthropicDigest(scopedDigestChain)
 			}
 		}
 		compatPromptCacheInjected = promptCacheKey != ""
 	}
+	promptCacheKey = EntityScopedSeedFromContext(requestContext(c), promptCacheKey)
 	compatReplayTrimmed := false
 	compatReplayGuardEnabled := shouldAutoInjectPromptCacheKeyForCompat(upstreamModel)
 	compatContinuationEnabled := openAICompatContinuationEnabled(account, upstreamModel)
@@ -254,7 +256,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// Override session_id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
 	if promptCacheKey != "" {
-		isolatedSessionID := generateSessionUUID(isolateOpenAISessionID(apiKeyID, promptCacheKey))
+		isolatedSessionID := generateSessionUUID(isolateOpenAISessionIDForContext(requestContext(c), apiKeyID, promptCacheKey))
 		upstreamReq.Header.Set("session_id", isolatedSessionID)
 		if upstreamReq.Header.Get("conversation_id") != "" {
 			upstreamReq.Header.Set("conversation_id", isolatedSessionID)
@@ -276,12 +278,11 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 7. Send request
-	egress, err := s.resolveOpenAIEgress(ctx, account)
+	resp, err := s.sendOpenAIHTTPRequest(ctx, c, upstreamReq, account)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := s.httpUpstream.Do(upstreamReq, egress.ProxyURL, account.ID, account.Concurrency)
-	if err != nil {
+		if isOpenAIEgressPolicyError(err) {
+			return nil, err
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -373,7 +374,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			s.bindOpenAICompatSessionResponseID(ctx, c, account, promptCacheKey, result.ResponseID)
 		}
 		if promptCacheKey != "" && anthropicDigestChain != "" {
-			s.bindOpenAICompatAnthropicDigestPromptCacheKey(account, apiKeyID, anthropicDigestChain, promptCacheKey, anthropicMatchedDigestChain)
+			s.bindOpenAICompatAnthropicDigestPromptCacheKey(account, apiKeyID, EntityScopedSeedFromContext(requestContext(c), anthropicDigestChain), promptCacheKey, anthropicMatchedDigestChain)
 		}
 		if responsesReq.ServiceTier != "" {
 			st := responsesReq.ServiceTier

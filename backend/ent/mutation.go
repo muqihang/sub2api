@@ -34215,6 +34215,10 @@ type UsageLogMutation struct {
 	model                       *string
 	requested_model             *string
 	upstream_model              *string
+	entity_id                   *int64
+	addentity_id                *int64
+	entity_type                 *string
+	claimed_entity_id           *string
 	channel_id                  *int64
 	addchannel_id               *int64
 	model_mapping_chain         *string
@@ -34652,6 +34656,174 @@ func (m *UsageLogMutation) UpstreamModelCleared() bool {
 func (m *UsageLogMutation) ResetUpstreamModel() {
 	m.upstream_model = nil
 	delete(m.clearedFields, usagelog.FieldUpstreamModel)
+}
+
+// SetEntityID sets the "entity_id" field.
+func (m *UsageLogMutation) SetEntityID(i int64) {
+	m.entity_id = &i
+	m.addentity_id = nil
+}
+
+// EntityID returns the value of the "entity_id" field in the mutation.
+func (m *UsageLogMutation) EntityID() (r int64, exists bool) {
+	v := m.entity_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEntityID returns the old "entity_id" field's value of the UsageLog entity.
+// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageLogMutation) OldEntityID(ctx context.Context) (v *int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEntityID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEntityID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEntityID: %w", err)
+	}
+	return oldValue.EntityID, nil
+}
+
+// AddEntityID adds i to the "entity_id" field.
+func (m *UsageLogMutation) AddEntityID(i int64) {
+	if m.addentity_id != nil {
+		*m.addentity_id += i
+	} else {
+		m.addentity_id = &i
+	}
+}
+
+// AddedEntityID returns the value that was added to the "entity_id" field in this mutation.
+func (m *UsageLogMutation) AddedEntityID() (r int64, exists bool) {
+	v := m.addentity_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearEntityID clears the value of the "entity_id" field.
+func (m *UsageLogMutation) ClearEntityID() {
+	m.entity_id = nil
+	m.addentity_id = nil
+	m.clearedFields[usagelog.FieldEntityID] = struct{}{}
+}
+
+// EntityIDCleared returns if the "entity_id" field was cleared in this mutation.
+func (m *UsageLogMutation) EntityIDCleared() bool {
+	_, ok := m.clearedFields[usagelog.FieldEntityID]
+	return ok
+}
+
+// ResetEntityID resets all changes to the "entity_id" field.
+func (m *UsageLogMutation) ResetEntityID() {
+	m.entity_id = nil
+	m.addentity_id = nil
+	delete(m.clearedFields, usagelog.FieldEntityID)
+}
+
+// SetEntityType sets the "entity_type" field.
+func (m *UsageLogMutation) SetEntityType(s string) {
+	m.entity_type = &s
+}
+
+// EntityType returns the value of the "entity_type" field in the mutation.
+func (m *UsageLogMutation) EntityType() (r string, exists bool) {
+	v := m.entity_type
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEntityType returns the old "entity_type" field's value of the UsageLog entity.
+// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageLogMutation) OldEntityType(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEntityType is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEntityType requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEntityType: %w", err)
+	}
+	return oldValue.EntityType, nil
+}
+
+// ClearEntityType clears the value of the "entity_type" field.
+func (m *UsageLogMutation) ClearEntityType() {
+	m.entity_type = nil
+	m.clearedFields[usagelog.FieldEntityType] = struct{}{}
+}
+
+// EntityTypeCleared returns if the "entity_type" field was cleared in this mutation.
+func (m *UsageLogMutation) EntityTypeCleared() bool {
+	_, ok := m.clearedFields[usagelog.FieldEntityType]
+	return ok
+}
+
+// ResetEntityType resets all changes to the "entity_type" field.
+func (m *UsageLogMutation) ResetEntityType() {
+	m.entity_type = nil
+	delete(m.clearedFields, usagelog.FieldEntityType)
+}
+
+// SetClaimedEntityID sets the "claimed_entity_id" field.
+func (m *UsageLogMutation) SetClaimedEntityID(s string) {
+	m.claimed_entity_id = &s
+}
+
+// ClaimedEntityID returns the value of the "claimed_entity_id" field in the mutation.
+func (m *UsageLogMutation) ClaimedEntityID() (r string, exists bool) {
+	v := m.claimed_entity_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldClaimedEntityID returns the old "claimed_entity_id" field's value of the UsageLog entity.
+// If the UsageLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UsageLogMutation) OldClaimedEntityID(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldClaimedEntityID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldClaimedEntityID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldClaimedEntityID: %w", err)
+	}
+	return oldValue.ClaimedEntityID, nil
+}
+
+// ClearClaimedEntityID clears the value of the "claimed_entity_id" field.
+func (m *UsageLogMutation) ClearClaimedEntityID() {
+	m.claimed_entity_id = nil
+	m.clearedFields[usagelog.FieldClaimedEntityID] = struct{}{}
+}
+
+// ClaimedEntityIDCleared returns if the "claimed_entity_id" field was cleared in this mutation.
+func (m *UsageLogMutation) ClaimedEntityIDCleared() bool {
+	_, ok := m.clearedFields[usagelog.FieldClaimedEntityID]
+	return ok
+}
+
+// ResetClaimedEntityID resets all changes to the "claimed_entity_id" field.
+func (m *UsageLogMutation) ResetClaimedEntityID() {
+	m.claimed_entity_id = nil
+	delete(m.clearedFields, usagelog.FieldClaimedEntityID)
 }
 
 // SetChannelID sets the "channel_id" field.
@@ -36443,7 +36615,7 @@ func (m *UsageLogMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UsageLogMutation) Fields() []string {
-	fields := make([]string, 0, 37)
+	fields := make([]string, 0, 40)
 	if m.user != nil {
 		fields = append(fields, usagelog.FieldUserID)
 	}
@@ -36464,6 +36636,15 @@ func (m *UsageLogMutation) Fields() []string {
 	}
 	if m.upstream_model != nil {
 		fields = append(fields, usagelog.FieldUpstreamModel)
+	}
+	if m.entity_id != nil {
+		fields = append(fields, usagelog.FieldEntityID)
+	}
+	if m.entity_type != nil {
+		fields = append(fields, usagelog.FieldEntityType)
+	}
+	if m.claimed_entity_id != nil {
+		fields = append(fields, usagelog.FieldClaimedEntityID)
 	}
 	if m.channel_id != nil {
 		fields = append(fields, usagelog.FieldChannelID)
@@ -36577,6 +36758,12 @@ func (m *UsageLogMutation) Field(name string) (ent.Value, bool) {
 		return m.RequestedModel()
 	case usagelog.FieldUpstreamModel:
 		return m.UpstreamModel()
+	case usagelog.FieldEntityID:
+		return m.EntityID()
+	case usagelog.FieldEntityType:
+		return m.EntityType()
+	case usagelog.FieldClaimedEntityID:
+		return m.ClaimedEntityID()
 	case usagelog.FieldChannelID:
 		return m.ChannelID()
 	case usagelog.FieldModelMappingChain:
@@ -36660,6 +36847,12 @@ func (m *UsageLogMutation) OldField(ctx context.Context, name string) (ent.Value
 		return m.OldRequestedModel(ctx)
 	case usagelog.FieldUpstreamModel:
 		return m.OldUpstreamModel(ctx)
+	case usagelog.FieldEntityID:
+		return m.OldEntityID(ctx)
+	case usagelog.FieldEntityType:
+		return m.OldEntityType(ctx)
+	case usagelog.FieldClaimedEntityID:
+		return m.OldClaimedEntityID(ctx)
 	case usagelog.FieldChannelID:
 		return m.OldChannelID(ctx)
 	case usagelog.FieldModelMappingChain:
@@ -36777,6 +36970,27 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetUpstreamModel(v)
+		return nil
+	case usagelog.FieldEntityID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEntityID(v)
+		return nil
+	case usagelog.FieldEntityType:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEntityType(v)
+		return nil
+	case usagelog.FieldClaimedEntityID:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetClaimedEntityID(v)
 		return nil
 	case usagelog.FieldChannelID:
 		v, ok := value.(int64)
@@ -36996,6 +37210,9 @@ func (m *UsageLogMutation) SetField(name string, value ent.Value) error {
 // this mutation.
 func (m *UsageLogMutation) AddedFields() []string {
 	var fields []string
+	if m.addentity_id != nil {
+		fields = append(fields, usagelog.FieldEntityID)
+	}
 	if m.addchannel_id != nil {
 		fields = append(fields, usagelog.FieldChannelID)
 	}
@@ -37061,6 +37278,8 @@ func (m *UsageLogMutation) AddedFields() []string {
 // was not set, or was not defined in the schema.
 func (m *UsageLogMutation) AddedField(name string) (ent.Value, bool) {
 	switch name {
+	case usagelog.FieldEntityID:
+		return m.AddedEntityID()
 	case usagelog.FieldChannelID:
 		return m.AddedChannelID()
 	case usagelog.FieldInputTokens:
@@ -37108,6 +37327,13 @@ func (m *UsageLogMutation) AddedField(name string) (ent.Value, bool) {
 // type.
 func (m *UsageLogMutation) AddField(name string, value ent.Value) error {
 	switch name {
+	case usagelog.FieldEntityID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddEntityID(v)
+		return nil
 	case usagelog.FieldChannelID:
 		v, ok := value.(int64)
 		if !ok {
@@ -37255,6 +37481,15 @@ func (m *UsageLogMutation) ClearedFields() []string {
 	if m.FieldCleared(usagelog.FieldUpstreamModel) {
 		fields = append(fields, usagelog.FieldUpstreamModel)
 	}
+	if m.FieldCleared(usagelog.FieldEntityID) {
+		fields = append(fields, usagelog.FieldEntityID)
+	}
+	if m.FieldCleared(usagelog.FieldEntityType) {
+		fields = append(fields, usagelog.FieldEntityType)
+	}
+	if m.FieldCleared(usagelog.FieldClaimedEntityID) {
+		fields = append(fields, usagelog.FieldClaimedEntityID)
+	}
 	if m.FieldCleared(usagelog.FieldChannelID) {
 		fields = append(fields, usagelog.FieldChannelID)
 	}
@@ -37310,6 +37545,15 @@ func (m *UsageLogMutation) ClearField(name string) error {
 		return nil
 	case usagelog.FieldUpstreamModel:
 		m.ClearUpstreamModel()
+		return nil
+	case usagelog.FieldEntityID:
+		m.ClearEntityID()
+		return nil
+	case usagelog.FieldEntityType:
+		m.ClearEntityType()
+		return nil
+	case usagelog.FieldClaimedEntityID:
+		m.ClearClaimedEntityID()
 		return nil
 	case usagelog.FieldChannelID:
 		m.ClearChannelID()
@@ -37375,6 +37619,15 @@ func (m *UsageLogMutation) ResetField(name string) error {
 		return nil
 	case usagelog.FieldUpstreamModel:
 		m.ResetUpstreamModel()
+		return nil
+	case usagelog.FieldEntityID:
+		m.ResetEntityID()
+		return nil
+	case usagelog.FieldEntityType:
+		m.ResetEntityType()
+		return nil
+	case usagelog.FieldClaimedEntityID:
+		m.ResetClaimedEntityID()
 		return nil
 	case usagelog.FieldChannelID:
 		m.ResetChannelID()

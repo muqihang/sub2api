@@ -1299,6 +1299,106 @@ func TestOpenAIGatewayService_Forward_WSv2StoreFalseSessionConnIsolation(t *test
 	require.Equal(t, int64(2), upgradeCount.Load(), "不同 session(store=false) 应隔离连接，避免续链状态互相覆盖")
 }
 
+func TestOpenAIGatewayService_Forward_WSv2StoreFalsePromptCacheSessionConnIsEntityScoped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upgradeCount atomic.Int64
+	var sequence atomic.Int64
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgradeCount.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket failed: %v", err)
+			return
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		for {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				return
+			}
+			responseID := "resp_store_false_entity_" + strconv.FormatInt(sequence.Add(1), 10)
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id":    responseID,
+					"model": "gpt-5.1",
+					"usage": map[string]any{
+						"input_tokens":  1,
+						"output_tokens": 1,
+					},
+				},
+			}); err != nil {
+				return
+			}
+		}
+	}))
+	defer wsServer.Close()
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Gateway.OpenAIWS.Enabled = true
+	cfg.Gateway.OpenAIWS.OAuthEnabled = true
+	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
+	cfg.Gateway.OpenAIWS.ResponsesWebsocketsV2 = true
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 4
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 4
+	cfg.Gateway.OpenAIWS.StoreDisabledForceNewConn = true
+
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     &httpUpstreamRecorder{},
+		cache:            &stubGatewayCache{},
+		openaiWSResolver: NewOpenAIWSProtocolResolver(cfg),
+		toolCorrector:    NewCodexToolCorrector(),
+	}
+
+	account := &Account{
+		ID:          80,
+		Name:        "openai-store-false-entity",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 2,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": wsServer.URL,
+		},
+		Extra: map[string]any{
+			"responses_websockets_v2_enabled": true,
+		},
+	}
+
+	body := []byte(`{"model":"gpt-5.1","stream":false,"store":false,"prompt_cache_key":"shared-prompt-cache","input":[{"type":"input_text","text":"hello"}]}`)
+	newContext := func(entityKey string) *gin.Context {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+		c.Request = c.Request.WithContext(WithResolvedEntity(c.Request.Context(), &ResolvedEntity{
+			Entity: Entity{ID: 10, EntityKey: entityKey, Status: EntityStatusActive},
+			Source: EntityResolutionSourceClaimedBinding,
+		}))
+		return c
+	}
+
+	result1, err := svc.Forward(context.Background(), newContext("team-alpha"), account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result1)
+	require.Equal(t, int64(1), upgradeCount.Load())
+
+	result2, err := svc.Forward(context.Background(), newContext("team-beta"), account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+	require.Equal(t, int64(2), upgradeCount.Load(), "same prompt_cache_key(store=false) must not reuse WS continuation connections across entities")
+}
+
 func TestOpenAIGatewayService_Forward_WSv2StoreFalseDisableForceNewConnAllowsReuse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1488,10 +1588,12 @@ func (d *openAIWSCaptureDialer) Dial(
 	wsURL string,
 	headers http.Header,
 	proxyURL string,
+	effectiveTLS *OpenAIGatewayEffectiveTLS,
 ) (openAIWSClientConn, int, http.Header, error) {
 	_ = ctx
 	_ = wsURL
 	_ = proxyURL
+	_ = effectiveTLS
 	d.mu.Lock()
 	d.lastHeaders = cloneHeader(headers)
 	d.dialCount++

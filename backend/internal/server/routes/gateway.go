@@ -274,6 +274,8 @@ func RegisterGatewayRoutes(
 
 	r.GET("/openai/_health", h.OpenAIGateway.Health)
 	r.GET("/openai/_verify", h.OpenAIGateway.Verify)
+	r.GET("/openai/_tls_canary", h.OpenAIGateway.TLSCanary)
+	r.POST("/openai/_tls/canary", h.OpenAIGateway.TLSCanary)
 
 	// Antigravity 模型列表
 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)

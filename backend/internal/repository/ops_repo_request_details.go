@@ -53,6 +53,15 @@ func (r *opsRepository) ListRequestDetails(ctx context.Context, filter *service.
 		if filter.AccountID != nil && *filter.AccountID > 0 {
 			addCondition(fmt.Sprintf("account_id = $%d", len(args)+1), *filter.AccountID)
 		}
+		if filter.EntityID != nil && *filter.EntityID > 0 {
+			addCondition(fmt.Sprintf("entity_id = $%d", len(args)+1), *filter.EntityID)
+		}
+		if entityType := strings.TrimSpace(filter.EntityType); entityType != "" {
+			addCondition(fmt.Sprintf("entity_type = $%d", len(args)+1), entityType)
+		}
+		if claimedEntityID := strings.TrimSpace(filter.ClaimedEntityID); claimedEntityID != "" {
+			addCondition(fmt.Sprintf("claimed_entity_id = $%d", len(args)+1), claimedEntityID)
+		}
 
 		if model := strings.TrimSpace(filter.Model); model != "" {
 			addCondition(fmt.Sprintf("model = $%d", len(args)+1), model)
@@ -102,6 +111,9 @@ WITH combined AS (
     ul.api_key_id AS api_key_id,
     ul.account_id AS account_id,
     ul.group_id AS group_id,
+    ul.entity_id AS entity_id,
+    ul.entity_type AS entity_type,
+    ul.claimed_entity_id AS claimed_entity_id,
     ul.stream AS stream
   FROM usage_logs ul
   LEFT JOIN groups g ON g.id = ul.group_id
@@ -126,6 +138,9 @@ WITH combined AS (
     o.api_key_id AS api_key_id,
     o.account_id AS account_id,
     o.group_id AS group_id,
+    NULL::BIGINT AS entity_id,
+    NULL::TEXT AS entity_type,
+    NULL::TEXT AS claimed_entity_id,
     o.stream AS stream
   FROM ops_error_logs o
   LEFT JOIN groups g ON g.id = o.group_id
@@ -175,6 +190,9 @@ SELECT
   api_key_id,
   account_id,
   group_id,
+  entity_id,
+  entity_type,
+  claimed_entity_id,
   stream
 FROM combined
 %s
@@ -225,6 +243,10 @@ LIMIT $%d OFFSET $%d
 			apiKeyID  sql.NullInt64
 			accountID sql.NullInt64
 			groupID   sql.NullInt64
+			entityID  sql.NullInt64
+
+			entityType      sql.NullString
+			claimedEntityID sql.NullString
 
 			stream bool
 		)
@@ -245,6 +267,9 @@ LIMIT $%d OFFSET $%d
 			&apiKeyID,
 			&accountID,
 			&groupID,
+			&entityID,
+			&entityType,
+			&claimedEntityID,
 			&stream,
 		); err != nil {
 			return nil, 0, err
@@ -268,6 +293,10 @@ LIMIT $%d OFFSET $%d
 			APIKeyID:  toInt64Ptr(apiKeyID),
 			AccountID: toInt64Ptr(accountID),
 			GroupID:   toInt64Ptr(groupID),
+
+			EntityID:        toInt64Ptr(entityID),
+			EntityType:      strings.TrimSpace(entityType.String),
+			ClaimedEntityID: strings.TrimSpace(claimedEntityID.String),
 
 			Stream: stream,
 		}

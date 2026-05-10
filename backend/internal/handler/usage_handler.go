@@ -65,6 +65,17 @@ func (h *UsageHandler) List(c *gin.Context) {
 
 	// Parse additional filters
 	model := c.Query("model")
+	var entityID int64
+	if entityIDStr := strings.TrimSpace(c.Query("entity_id")); entityIDStr != "" {
+		id, err := strconv.ParseInt(entityIDStr, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid entity_id")
+			return
+		}
+		entityID = id
+	}
+	entityType := strings.TrimSpace(c.Query("entity_type"))
+	claimedEntityID := strings.TrimSpace(c.Query("claimed_entity_id"))
 
 	var requestType *int16
 	var stream *bool
@@ -126,14 +137,17 @@ func (h *UsageHandler) List(c *gin.Context) {
 		SortOrder: c.DefaultQuery("sort_order", "desc"),
 	}
 	filters := usagestats.UsageLogFilters{
-		UserID:      subject.UserID, // Always filter by current user for security
-		APIKeyID:    apiKeyID,
-		Model:       model,
-		RequestType: requestType,
-		Stream:      stream,
-		BillingType: billingType,
-		StartTime:   startTime,
-		EndTime:     endTime,
+		UserID:          subject.UserID, // Always filter by current user for security
+		APIKeyID:        apiKeyID,
+		EntityID:        entityID,
+		EntityType:      entityType,
+		ClaimedEntityID: claimedEntityID,
+		Model:           model,
+		RequestType:     requestType,
+		Stream:          stream,
+		BillingType:     billingType,
+		StartTime:       startTime,
+		EndTime:         endTime,
 	}
 
 	records, result, err := h.usageService.ListWithFilters(c.Request.Context(), params, filters)

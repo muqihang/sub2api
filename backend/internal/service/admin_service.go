@@ -285,6 +285,7 @@ type UpdateAccountInput struct {
 	Type                  string // Account type: oauth, setup-token, apikey
 	Credentials           map[string]any
 	Extra                 map[string]any
+	OpenAIGatewayTLS      *OpenAIGatewayAccountTLSPolicy
 	ProxyID               *int64
 	Concurrency           *int     // 使用指针区分"未提供"和"设置为0"
 	Priority              *int     // 使用指针区分"未提供"和"设置为0"
@@ -529,6 +530,7 @@ type adminServiceImpl struct {
 	defaultSubAssigner   DefaultSubscriptionAssigner
 	userSubRepo          UserSubscriptionRepository
 	privacyClientFactory PrivacyClientFactory
+	entityRegistryRepo   EntityRegistryRepository
 }
 
 type userGroupRateBatchReader interface {
@@ -554,7 +556,15 @@ func NewAdminService(
 	defaultSubAssigner DefaultSubscriptionAssigner,
 	userSubRepo UserSubscriptionRepository,
 	privacyClientFactory PrivacyClientFactory,
+	optionalDeps ...any,
 ) AdminService {
+	var entityRegistryRepo EntityRegistryRepository
+	for _, dep := range optionalDeps {
+		switch typed := dep.(type) {
+		case EntityRegistryRepository:
+			entityRegistryRepo = typed
+		}
+	}
 	return &adminServiceImpl{
 		userRepo:             userRepo,
 		groupRepo:            groupRepo,
@@ -573,6 +583,7 @@ func NewAdminService(
 		defaultSubAssigner:   defaultSubAssigner,
 		userSubRepo:          userSubRepo,
 		privacyClientFactory: privacyClientFactory,
+		entityRegistryRepo:   entityRegistryRepo,
 	}
 }
 
@@ -2223,6 +2234,34 @@ func (s *adminServiceImpl) AdminResetAPIKeyRateLimitUsage(ctx context.Context, k
 	return apiKey, nil
 }
 
+func (s *adminServiceImpl) CreateEntity(ctx context.Context, input CreateEntityInput) (*Entity, error) {
+	if s.entityRegistryRepo == nil {
+		return nil, infraerrors.InternalServer("ENTITY_REGISTRY_UNAVAILABLE", "entity registry repository is not configured")
+	}
+	return s.entityRegistryRepo.CreateEntity(ctx, input)
+}
+
+func (s *adminServiceImpl) ListEntities(ctx context.Context, filter EntityListFilter) ([]Entity, error) {
+	if s.entityRegistryRepo == nil {
+		return nil, infraerrors.InternalServer("ENTITY_REGISTRY_UNAVAILABLE", "entity registry repository is not configured")
+	}
+	return s.entityRegistryRepo.ListEntities(ctx, filter)
+}
+
+func (s *adminServiceImpl) CreateEntityBinding(ctx context.Context, input CreateEntityBindingInput) (*EntityBinding, error) {
+	if s.entityRegistryRepo == nil {
+		return nil, infraerrors.InternalServer("ENTITY_REGISTRY_UNAVAILABLE", "entity registry repository is not configured")
+	}
+	return s.entityRegistryRepo.CreateBinding(ctx, input)
+}
+
+func (s *adminServiceImpl) ListEntityBindings(ctx context.Context, filter EntityBindingListFilter) ([]EntityBinding, error) {
+	if s.entityRegistryRepo == nil {
+		return nil, infraerrors.InternalServer("ENTITY_REGISTRY_UNAVAILABLE", "entity registry repository is not configured")
+	}
+	return s.entityRegistryRepo.ListBindings(ctx, filter)
+}
+
 // ReplaceUserGroup 替换用户的专属分组
 func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error) {
 	if oldGroupID == newGroupID {
@@ -2316,6 +2355,15 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if input == nil {
+		return nil, ErrAccountNilInput
+	}
+	if input.Extra != nil {
+		if _, ok := input.Extra[OpenAIGatewayTLSExtraKey]; ok {
+			return nil, infraerrors.BadRequest("INVALID_OPENAI_GATEWAY_TLS", "extra.openai_gateway_tls is reserved; use openai_gateway_tls")
+		}
+	}
+
 	// 绑定分组
 	groupIDs := input.GroupIDs
 	// 如果没有指定分组,自动绑定对应平台的默认分组
@@ -2440,6 +2488,20 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
+	if input.OpenAIGatewayTLS == nil && input.Extra != nil {
+		if _, ok := input.Extra[OpenAIGatewayTLSExtraKey]; ok {
+			return nil, infraerrors.BadRequest("INVALID_OPENAI_GATEWAY_TLS", "extra.openai_gateway_tls is reserved; use openai_gateway_tls")
+		}
+	}
+	if input.OpenAIGatewayTLS != nil && input.Extra == nil {
+		input.Extra = cloneCredentials(account.Extra)
+	}
+	if input.OpenAIGatewayTLS != nil {
+		if err := ValidateOpenAIGatewayAccountTLSPolicyShape(input.OpenAIGatewayTLS); err != nil {
+			return nil, err
+		}
+		input.Extra[OpenAIGatewayTLSExtraKey] = input.OpenAIGatewayTLS.ExtraMap()
+	}
 	if input.Extra != nil {
 		// 保留配额用量字段，防止编辑账号时意外重置
 		for _, key := range []string{"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start"} {
@@ -2548,6 +2610,14 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	if input == nil {
+		return nil, ErrAccountNilInput
+	}
+	if input.Extra != nil {
+		if _, ok := input.Extra[OpenAIGatewayTLSExtraKey]; ok {
+			return nil, infraerrors.BadRequest("INVALID_OPENAI_GATEWAY_TLS", "extra.openai_gateway_tls is reserved; use openai_gateway_tls")
+		}
+	}
 	if len(input.AccountIDs) == 0 && input.Filters != nil {
 		accountIDs, err := s.resolveBulkUpdateTargetIDs(ctx, input.Filters)
 		if err != nil {

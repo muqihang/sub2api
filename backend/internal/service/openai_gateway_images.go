@@ -163,12 +163,11 @@ func (s *OpenAIGatewayService) ForwardImageGeneration(
 		req.Header.Set("accept", "application/json")
 	}
 
-	egress, err := s.resolveOpenAIEgress(ctx, account)
+	resp, err := s.sendOpenAIHTTPRequest(ctx, c, req, account)
 	if err != nil {
-		return nil, nil, nil, err
-	}
-	resp, err := s.httpUpstream.Do(req, egress.ProxyURL, account.ID, account.Concurrency)
-	if err != nil {
+		if isOpenAIEgressPolicyError(err) {
+			return nil, nil, nil, err
+		}
 		return nil, nil, nil, fmt.Errorf("upstream image request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()

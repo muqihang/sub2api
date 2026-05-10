@@ -89,6 +89,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		promptCacheKey = deriveCompatPromptCacheKey(&chatReq, upstreamModel)
 		compatPromptCacheInjected = promptCacheKey != ""
 	}
+	promptCacheKey = EntityScopedSeedFromContext(requestContext(c), promptCacheKey)
 
 	// 3. Build the upstream (Responses API) body.
 	//
@@ -127,6 +128,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		responsesBody, normalizedServiceTier, err := normalizeResponsesBodyServiceTier(responsesBody)
 		if err != nil {
 			return nil, fmt.Errorf("normalize service_tier in responses-shape body: %w", err)
+		}
+		if scopedBody, scoped, scopeErr := scopeOpenAIBodyPromptCacheKey(requestContext(c), responsesBody); scopeErr != nil {
+			return nil, scopeErr
+		} else if scoped {
+			responsesBody = scopedBody
 		}
 		// Minimal stub populated from the raw body so downstream billing
 		// propagation (ServiceTier, ReasoningEffort) keeps working.
@@ -197,6 +203,17 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			if existing, ok := reqBody["prompt_cache_key"].(string); !ok || strings.TrimSpace(existing) == "" {
 				reqBody["prompt_cache_key"] = trimmedKey
 				modifiedAPIKeyBody = true
+			} else if scopedExisting := EntityScopedSeedFromContext(requestContext(c), existing); scopedExisting != strings.TrimSpace(existing) {
+				reqBody["prompt_cache_key"] = scopedExisting
+				promptCacheKey = scopedExisting
+				modifiedAPIKeyBody = true
+			}
+		} else if existing, ok := reqBody["prompt_cache_key"].(string); ok && strings.TrimSpace(existing) != "" {
+			scopedExisting := EntityScopedSeedFromContext(requestContext(c), existing)
+			if scopedExisting != strings.TrimSpace(existing) {
+				reqBody["prompt_cache_key"] = scopedExisting
+				promptCacheKey = scopedExisting
+				modifiedAPIKeyBody = true
 			}
 		}
 		if applyInstructions(reqBody, false) {
@@ -242,12 +259,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// 7. Send request
-	egress, err := s.resolveOpenAIEgress(ctx, account)
+	resp, err := s.sendOpenAIHTTPRequest(ctx, c, upstreamReq, account)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := s.httpUpstream.Do(upstreamReq, egress.ProxyURL, account.ID, account.Concurrency)
-	if err != nil {
+		if isOpenAIEgressPolicyError(err) {
+			return nil, err
+		}
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{

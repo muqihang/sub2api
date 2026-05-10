@@ -19,6 +19,8 @@ func TestGatewayRoutesOpenAIPrefixedRoutesAreRegistered(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/openai/_health"},
 		{method: http.MethodGet, path: "/openai/_verify?account_id=1&transport=http"},
+		{method: http.MethodGet, path: "/openai/_tls_canary?account_id=1&bucket=default&transport=http"},
+		{method: http.MethodPost, path: "/openai/_tls/canary", body: `{"account_id":1,"bucket":"default","transport":"http","route":"/v1/responses"}`},
 		{method: http.MethodGet, path: "/openai/v1/responses"},
 		{method: http.MethodPost, path: "/openai/v1/responses", body: `{"model":"gpt-5.4"}`},
 		{method: http.MethodPost, path: "/openai/v1/responses/compact", body: `{"model":"gpt-5.4"}`},

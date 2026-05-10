@@ -63,7 +63,53 @@ func (u *openAIEgressPolicyHandlerUpstream) DoWithTLS(req *http.Request, proxyUR
 	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
 }
 
-func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account) (*OpenAIGatewayHandler, *openAIEgressPolicyHandlerUpstream) {
+type openAIHandlerEntityRepoStub struct {
+	service.EntityRegistryRepository
+
+	resolved *service.ResolvedEntity
+}
+
+func (r *openAIHandlerEntityRepoStub) ResolveEntity(ctx context.Context, input service.EntityResolutionInput) (*service.ResolvedEntity, error) {
+	return r.resolved, nil
+}
+
+type entityRateLimitPolicyRepoForHandlerTest struct {
+	policy *service.EntityRateLimitPolicy
+}
+
+func (r *entityRateLimitPolicyRepoForHandlerTest) GetActiveByEntityID(ctx context.Context, entityID int64) (*service.EntityRateLimitPolicy, error) {
+	return r.policy, nil
+}
+
+type entityRateLimitCacheForHandlerTest struct {
+	rpmCalls int
+	rpmCount int
+}
+
+func (c *entityRateLimitCacheForHandlerTest) AcquireEntitySlot(ctx context.Context, entityID int64, maxConcurrency int, requestID string) (bool, error) {
+	return true, nil
+}
+
+func (c *entityRateLimitCacheForHandlerTest) ReleaseEntitySlot(ctx context.Context, entityID int64, requestID string) error {
+	return nil
+}
+
+func (c *entityRateLimitCacheForHandlerTest) IncrementEntityRPM(ctx context.Context, entityID int64) (int, error) {
+	c.rpmCalls++
+	return c.rpmCount, nil
+}
+
+func (c *entityRateLimitCacheForHandlerTest) AddEntityTPM(ctx context.Context, entityID int64, tokens int) (int, error) {
+	return 0, nil
+}
+
+func (c *entityRateLimitCacheForHandlerTest) AddEntityCost(ctx context.Context, entityID int64, amount float64) (float64, error) {
+	return 0, nil
+}
+
+type openAIEgressPolicyHarnessConfigHook func(*config.Config)
+
+func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account, optionalDeps ...any) (*OpenAIGatewayHandler, *openAIEgressPolicyHandlerUpstream) {
 	t.Helper()
 
 	cfg := &config.Config{}
@@ -77,12 +123,21 @@ func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account) 
 		{Name: "default", Enabled: true},
 	}
 	cfg.Default.RateMultiplier = 1
+	serviceOptionalDeps := make([]any, 0, len(optionalDeps)+1)
+	for _, dep := range optionalDeps {
+		if hook, ok := dep.(openAIEgressPolicyHarnessConfigHook); ok {
+			hook(cfg)
+			continue
+		}
+		serviceOptionalDeps = append(serviceOptionalDeps, dep)
+	}
 
 	repo := &openAIEgressPolicyHandlerAccountRepo{accounts: []service.Account{account}}
 	core := service.NewOpenAIGatewayCoreService(repo, cfg, nil)
 	upstream := &openAIEgressPolicyHandlerUpstream{}
 	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg)
 	t.Cleanup(billingCache.Stop)
+	serviceOptionalDeps = append(serviceOptionalDeps, core)
 
 	gatewaySvc := service.NewOpenAIGatewayService(
 		repo,
@@ -101,7 +156,7 @@ func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account) 
 		upstream,
 		&service.DeferredService{},
 		nil,
-		core,
+		serviceOptionalDeps...,
 	)
 	concurrencySvc := service.NewConcurrencyService(&concurrencyCacheMock{
 		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -178,6 +233,63 @@ func TestOpenAIChatCompletionsHandlerMapsEgressPolicyError(t *testing.T) {
 	h.ChatCompletions(c)
 
 	requireOpenAIEgressPolicyHandlerResponse(t, rec, upstream)
+}
+
+func TestOpenAIChatCompletionsHandlerRejectsEntityQuotaBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	account := service.Account{
+		ID:          19304,
+		Name:        "openai-apikey-chat",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.openai.com",
+		},
+		Extra: map[string]any{
+			openai_compat.ExtraKeyResponsesSupported: false,
+		},
+	}
+	entityRepo := &openAIHandlerEntityRepoStub{resolved: &service.ResolvedEntity{
+		Entity: service.Entity{
+			ID:         123,
+			EntityKey:  "workspace-alpha",
+			EntityType: service.EntityTypeWorkspace,
+			Status:     service.EntityStatusActive,
+		},
+		Source: service.EntityResolutionSourceClaimedBinding,
+	}}
+	quotaRepo := &entityRateLimitPolicyRepoForHandlerTest{policy: &service.EntityRateLimitPolicy{
+		ID:       77,
+		EntityID: 123,
+		Status:   service.EntityRateLimitPolicyStatusActive,
+		RPMLimit: 1,
+	}}
+	quotaCache := &entityRateLimitCacheForHandlerTest{rpmCount: 2}
+	h, upstream := newOpenAIEgressPolicyHandlerHarness(
+		t,
+		account,
+		openAIEgressPolicyHarnessConfigHook(func(cfg *config.Config) {
+			cfg.Gateway.OpenAICore.EntityOrchestration.Enabled = true
+		}),
+		entityRepo,
+		service.NewEntityRateLimitService(quotaRepo, quotaCache),
+	)
+	body := []byte(`{"model":"gpt-5.3-codex","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c, rec := newOpenAIEgressPolicyHandlerContext(http.MethodPost, "/v1/chat/completions", body)
+	c.Request.Header.Set(service.EntityHeader, "workspace-alpha")
+
+	h.ChatCompletions(c)
+
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "rate_limit_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "error.message").String(), "requests-per-minute")
+	require.Zero(t, upstream.calls)
+	require.Equal(t, 1, quotaCache.rpmCalls)
 }
 
 func TestOpenAIImagesHandlerMapsEgressPolicyError(t *testing.T) {

@@ -111,6 +111,27 @@ func (s *AccountTestService) validateUpstreamBaseURL(raw string) (string, error)
 	return normalized, nil
 }
 
+func (s *AccountTestService) openAIAccountTestGatewayCore() *OpenAIGatewayCoreService {
+	if s == nil || s.cfg == nil || !s.cfg.Gateway.OpenAICore.Enabled {
+		return nil
+	}
+	return NewOpenAIGatewayCoreService(nil, s.cfg, nil, s.tlsFPProfileService)
+}
+
+func (s *AccountTestService) sendOpenAIAccountTestHTTPRequest(ctx context.Context, c *gin.Context, req *http.Request, account *Account) (*http.Response, error) {
+	if s == nil {
+		return nil, errOpenAIHTTPUpstreamNotConfigured
+	}
+	core := s.openAIAccountTestGatewayCore()
+	return sendOpenAIHTTPRequestWithPolicy(ctx, c, req, account, s.httpUpstream, core, func(ctx context.Context, account *Account) (*OpenAIEgressResolution, error) {
+		fallback := resolveOpenAIAccountProxyURL(account)
+		if core != nil && core.IsEnabled() {
+			return core.ResolveEgress(ctx, account, fallback)
+		}
+		return buildOpenAIEgressResolution("", fallback, openAIEgressSourceAccountFallback), nil
+	})
+}
+
 // generateSessionString generates a Claude Code style session string.
 // The output format is determined by the UA version in claude.DefaultHeaders,
 // ensuring consistency between the user_id format and the UA sent to upstream.
@@ -603,13 +624,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		}
 	}
 
-	// Get proxy URL
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
@@ -710,12 +725,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		}
 	}
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
 	if err != nil {
 		if s.accountRepo != nil {
 			updates := buildOpenAICompactProbeExtraUpdates(nil, nil, err, time.Now())
@@ -879,11 +889,8 @@ func (s *AccountTestService) routeAntigravityTest(c *gin.Context, account *Accou
 func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, account *Account, modelID string) error {
 	ctx := c.Request.Context()
 
-	// 默认模型：Claude 使用 claude-sonnet-4-5，Gemini 使用 gemini-3-pro-preview
-	testModelID := modelID
-	if testModelID == "" {
-		testModelID = "claude-sonnet-4-5"
-	}
+	// 默认模型使用当前可用的 Claude 主线，避免命中过期的 4.5 路径。
+	testModelID := resolveAntigravityTestModel(modelID)
 
 	if s.antigravityGatewayService == nil {
 		return s.sendErrorAndEnd(c, "Antigravity gateway service not configured")
@@ -991,7 +998,7 @@ func (s *AccountTestService) buildGeminiServiceAccountRequest(ctx context.Contex
 	if err != nil {
 		return nil, fmt.Errorf("failed to get service account access token: %w", err)
 	}
-	fullURL, err := buildVertexGeminiURL(account.VertexProjectID(), account.VertexLocation(modelID), modelID, "streamGenerateContent", true)
+	fullURL, err := buildVertexGeminiURL(account.VertexProjectIDWithAccessor(NewGeminiCredentialsAccessor(s.cfg, nil)), account.VertexLocation(modelID), modelID, "streamGenerateContent", true)
 	if err != nil {
 		return nil, err
 	}
@@ -1364,12 +1371,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
@@ -1464,11 +1466,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		req.Header.Set("chatgpt-account-id", chatgptAccountID)
 	}
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Responses API request failed: %s", err.Error()))
 	}

@@ -99,13 +99,7 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	egress, err := s.resolveOpenAIProbeEgress(probeCtx, account)
-	if err != nil {
-		logger.LegacyPrintf("service.openai_probe", "probe_egress_policy_rejected: account_id=%d err=%v", accountID, err)
-		return
-	}
-
-	resp, err := s.httpUpstream.DoWithTLS(req, egress.ProxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	resp, err := s.sendOpenAIProbeHTTPRequest(probeCtx, req, account)
 	if err != nil {
 		// 网络层失败：不写标记，保持 unknown，下次重试或由网关 fallback 处理
 		logger.LegacyPrintf("service.openai_probe", "probe_request_failed: account_id=%d url=%s err=%v", accountID, probeURL, err)
@@ -149,11 +143,15 @@ func isResponsesEndpointSupportedByStatus(status int) bool {
 	return true
 }
 
-func (s *AccountTestService) resolveOpenAIProbeEgress(ctx context.Context, account *Account) (*OpenAIEgressResolution, error) {
-	fallback := resolveOpenAIAccountProxyURL(account)
-	if s == nil || s.cfg == nil || !s.cfg.Gateway.OpenAICore.Enabled {
-		return buildOpenAIEgressResolution("", fallback, openAIEgressSourceAccountFallback), nil
+func (s *AccountTestService) sendOpenAIProbeHTTPRequest(ctx context.Context, req *http.Request, account *Account) (*http.Response, error) {
+	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, nil, req, account)
+	if err != nil {
+		accountID := int64(0)
+		if account != nil {
+			accountID = account.ID
+		}
+		logger.LegacyPrintf("service.openai_probe", "probe_egress_or_tls_policy_rejected: account_id=%d err=%v", accountID, err)
+		return nil, err
 	}
-	core := NewOpenAIGatewayCoreService(nil, s.cfg, nil)
-	return core.ResolveEgress(ctx, account, fallback)
+	return resp, nil
 }

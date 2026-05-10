@@ -142,6 +142,73 @@ func (_u *UsageLogUpdate) ClearUpstreamModel() *UsageLogUpdate {
 	return _u
 }
 
+// SetEntityID sets the "entity_id" field.
+func (_u *UsageLogUpdate) SetEntityID(v int64) *UsageLogUpdate {
+	_u.mutation.ResetEntityID()
+	_u.mutation.SetEntityID(v)
+	return _u
+}
+
+// SetNillableEntityID sets the "entity_id" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableEntityID(v *int64) *UsageLogUpdate {
+	if v != nil {
+		_u.SetEntityID(*v)
+	}
+	return _u
+}
+
+// AddEntityID adds value to the "entity_id" field.
+func (_u *UsageLogUpdate) AddEntityID(v int64) *UsageLogUpdate {
+	_u.mutation.AddEntityID(v)
+	return _u
+}
+
+// ClearEntityID clears the value of the "entity_id" field.
+func (_u *UsageLogUpdate) ClearEntityID() *UsageLogUpdate {
+	_u.mutation.ClearEntityID()
+	return _u
+}
+
+// SetEntityType sets the "entity_type" field.
+func (_u *UsageLogUpdate) SetEntityType(v string) *UsageLogUpdate {
+	_u.mutation.SetEntityType(v)
+	return _u
+}
+
+// SetNillableEntityType sets the "entity_type" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableEntityType(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetEntityType(*v)
+	}
+	return _u
+}
+
+// ClearEntityType clears the value of the "entity_type" field.
+func (_u *UsageLogUpdate) ClearEntityType() *UsageLogUpdate {
+	_u.mutation.ClearEntityType()
+	return _u
+}
+
+// SetClaimedEntityID sets the "claimed_entity_id" field.
+func (_u *UsageLogUpdate) SetClaimedEntityID(v string) *UsageLogUpdate {
+	_u.mutation.SetClaimedEntityID(v)
+	return _u
+}
+
+// SetNillableClaimedEntityID sets the "claimed_entity_id" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableClaimedEntityID(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetClaimedEntityID(*v)
+	}
+	return _u
+}
+
+// ClearClaimedEntityID clears the value of the "claimed_entity_id" field.
+func (_u *UsageLogUpdate) ClearClaimedEntityID() *UsageLogUpdate {
+	_u.mutation.ClearClaimedEntityID()
+	return _u
+}
+
 // SetChannelID sets the "channel_id" field.
 func (_u *UsageLogUpdate) SetChannelID(v int64) *UsageLogUpdate {
 	_u.mutation.ResetChannelID()
@@ -862,6 +929,16 @@ func (_u *UsageLogUpdate) check() error {
 			return &ValidationError{Name: "upstream_model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.upstream_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.EntityType(); ok {
+		if err := usagelog.EntityTypeValidator(v); err != nil {
+			return &ValidationError{Name: "entity_type", err: fmt.Errorf(`ent: validator failed for field "UsageLog.entity_type": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ClaimedEntityID(); ok {
+		if err := usagelog.ClaimedEntityIDValidator(v); err != nil {
+			return &ValidationError{Name: "claimed_entity_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.claimed_entity_id": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ModelMappingChain(); ok {
 		if err := usagelog.ModelMappingChainValidator(v); err != nil {
 			return &ValidationError{Name: "model_mapping_chain", err: fmt.Errorf(`ent: validator failed for field "UsageLog.model_mapping_chain": %w`, err)}
@@ -933,6 +1010,27 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.UpstreamModelCleared() {
 		_spec.ClearField(usagelog.FieldUpstreamModel, field.TypeString)
+	}
+	if value, ok := _u.mutation.EntityID(); ok {
+		_spec.SetField(usagelog.FieldEntityID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedEntityID(); ok {
+		_spec.AddField(usagelog.FieldEntityID, field.TypeInt64, value)
+	}
+	if _u.mutation.EntityIDCleared() {
+		_spec.ClearField(usagelog.FieldEntityID, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.EntityType(); ok {
+		_spec.SetField(usagelog.FieldEntityType, field.TypeString, value)
+	}
+	if _u.mutation.EntityTypeCleared() {
+		_spec.ClearField(usagelog.FieldEntityType, field.TypeString)
+	}
+	if value, ok := _u.mutation.ClaimedEntityID(); ok {
+		_spec.SetField(usagelog.FieldClaimedEntityID, field.TypeString, value)
+	}
+	if _u.mutation.ClaimedEntityIDCleared() {
+		_spec.ClearField(usagelog.FieldClaimedEntityID, field.TypeString)
 	}
 	if value, ok := _u.mutation.ChannelID(); ok {
 		_spec.SetField(usagelog.FieldChannelID, field.TypeInt64, value)
@@ -1374,6 +1472,73 @@ func (_u *UsageLogUpdateOne) SetNillableUpstreamModel(v *string) *UsageLogUpdate
 // ClearUpstreamModel clears the value of the "upstream_model" field.
 func (_u *UsageLogUpdateOne) ClearUpstreamModel() *UsageLogUpdateOne {
 	_u.mutation.ClearUpstreamModel()
+	return _u
+}
+
+// SetEntityID sets the "entity_id" field.
+func (_u *UsageLogUpdateOne) SetEntityID(v int64) *UsageLogUpdateOne {
+	_u.mutation.ResetEntityID()
+	_u.mutation.SetEntityID(v)
+	return _u
+}
+
+// SetNillableEntityID sets the "entity_id" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableEntityID(v *int64) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetEntityID(*v)
+	}
+	return _u
+}
+
+// AddEntityID adds value to the "entity_id" field.
+func (_u *UsageLogUpdateOne) AddEntityID(v int64) *UsageLogUpdateOne {
+	_u.mutation.AddEntityID(v)
+	return _u
+}
+
+// ClearEntityID clears the value of the "entity_id" field.
+func (_u *UsageLogUpdateOne) ClearEntityID() *UsageLogUpdateOne {
+	_u.mutation.ClearEntityID()
+	return _u
+}
+
+// SetEntityType sets the "entity_type" field.
+func (_u *UsageLogUpdateOne) SetEntityType(v string) *UsageLogUpdateOne {
+	_u.mutation.SetEntityType(v)
+	return _u
+}
+
+// SetNillableEntityType sets the "entity_type" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableEntityType(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetEntityType(*v)
+	}
+	return _u
+}
+
+// ClearEntityType clears the value of the "entity_type" field.
+func (_u *UsageLogUpdateOne) ClearEntityType() *UsageLogUpdateOne {
+	_u.mutation.ClearEntityType()
+	return _u
+}
+
+// SetClaimedEntityID sets the "claimed_entity_id" field.
+func (_u *UsageLogUpdateOne) SetClaimedEntityID(v string) *UsageLogUpdateOne {
+	_u.mutation.SetClaimedEntityID(v)
+	return _u
+}
+
+// SetNillableClaimedEntityID sets the "claimed_entity_id" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableClaimedEntityID(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetClaimedEntityID(*v)
+	}
+	return _u
+}
+
+// ClearClaimedEntityID clears the value of the "claimed_entity_id" field.
+func (_u *UsageLogUpdateOne) ClearClaimedEntityID() *UsageLogUpdateOne {
+	_u.mutation.ClearClaimedEntityID()
 	return _u
 }
 
@@ -2110,6 +2275,16 @@ func (_u *UsageLogUpdateOne) check() error {
 			return &ValidationError{Name: "upstream_model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.upstream_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.EntityType(); ok {
+		if err := usagelog.EntityTypeValidator(v); err != nil {
+			return &ValidationError{Name: "entity_type", err: fmt.Errorf(`ent: validator failed for field "UsageLog.entity_type": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ClaimedEntityID(); ok {
+		if err := usagelog.ClaimedEntityIDValidator(v); err != nil {
+			return &ValidationError{Name: "claimed_entity_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.claimed_entity_id": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ModelMappingChain(); ok {
 		if err := usagelog.ModelMappingChainValidator(v); err != nil {
 			return &ValidationError{Name: "model_mapping_chain", err: fmt.Errorf(`ent: validator failed for field "UsageLog.model_mapping_chain": %w`, err)}
@@ -2198,6 +2373,27 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if _u.mutation.UpstreamModelCleared() {
 		_spec.ClearField(usagelog.FieldUpstreamModel, field.TypeString)
+	}
+	if value, ok := _u.mutation.EntityID(); ok {
+		_spec.SetField(usagelog.FieldEntityID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedEntityID(); ok {
+		_spec.AddField(usagelog.FieldEntityID, field.TypeInt64, value)
+	}
+	if _u.mutation.EntityIDCleared() {
+		_spec.ClearField(usagelog.FieldEntityID, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.EntityType(); ok {
+		_spec.SetField(usagelog.FieldEntityType, field.TypeString, value)
+	}
+	if _u.mutation.EntityTypeCleared() {
+		_spec.ClearField(usagelog.FieldEntityType, field.TypeString)
+	}
+	if value, ok := _u.mutation.ClaimedEntityID(); ok {
+		_spec.SetField(usagelog.FieldClaimedEntityID, field.TypeString, value)
+	}
+	if _u.mutation.ClaimedEntityIDCleared() {
+		_spec.ClearField(usagelog.FieldClaimedEntityID, field.TypeString)
 	}
 	if value, ok := _u.mutation.ChannelID(); ok {
 		_spec.SetField(usagelog.FieldChannelID, field.TypeInt64, value)
