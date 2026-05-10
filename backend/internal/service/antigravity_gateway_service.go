@@ -141,6 +141,13 @@ type antigravityRetryLoopParams struct {
 	isStickySession bool   // 是否为粘性会话（用于账号切换时的缓存计费判断）
 	groupID         int64  // 用于模型级限流时清除粘性会话
 	sessionHash     string // 用于模型级限流时清除粘性会话
+
+	ccGatewayEnabled      bool
+	ccGatewayBaseURL      string
+	ccGatewayToken        string
+	ccGatewayEgressBucket string
+	ccGatewayProjectID    string
+	ccGatewayAccountEmail string
 }
 
 // antigravityRetryLoopResult 重试循环的结果
@@ -291,7 +298,7 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			}
 
 			// 智能重试：创建新请求
-			retryReq, err := antigravity.NewAPIRequestWithURL(p.ctx, baseURL, p.action, p.accessToken, p.body)
+			retryReq, err := newAntigravityAPIRequestWithCCGateway(p.ctx, baseURL, p.action, p.accessToken, p.body, p)
 			if err != nil {
 				logger.LegacyPrintf("service.antigravity_gateway", "%s status=smart_retry_request_build_failed error=%v", p.prefix, err)
 				p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, respBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
@@ -484,7 +491,7 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 		totalWaited += waitDuration
 
 		// 创建新请求
-		retryReq, err := antigravity.NewAPIRequestWithURL(p.ctx, baseURL, p.action, p.accessToken, p.body)
+		retryReq, err := newAntigravityAPIRequestWithCCGateway(p.ctx, baseURL, p.action, p.accessToken, p.body, p)
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s single_account_503_retry: request_build_failed error=%v", p.prefix, err)
 			break
@@ -592,6 +599,9 @@ func (s *AntigravityGatewayService) antigravityRetryLoop(p antigravityRetryLoopP
 	}
 
 	baseURL := resolveAntigravityForwardBaseURL()
+	if p.ccGatewayEnabled {
+		baseURL = strings.TrimSpace(p.ccGatewayBaseURL)
+	}
 	if baseURL == "" {
 		return nil, errors.New("no antigravity forward base url configured")
 	}
@@ -623,7 +633,7 @@ urlFallbackLoop:
 			default:
 			}
 
-			upstreamReq, err := antigravity.NewAPIRequestWithURL(p.ctx, baseURL, p.action, p.accessToken, p.body)
+			upstreamReq, err := newAntigravityAPIRequestWithCCGateway(p.ctx, baseURL, p.action, p.accessToken, p.body, p)
 			if err != nil {
 				return nil, err
 			}
@@ -1394,6 +1404,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	ccgEnabled, ccgBaseURL, ccgToken, ccgBucket, ccgEmail := s.ccGatewayAntigravityParams(account, projectID)
+	if ccgEnabled {
+		proxyURL = ""
+	}
 
 	// 获取转换选项
 	// Antigravity 上游要求必须包含身份提示词，否则会返回 429
@@ -1428,6 +1442,13 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		isStickySession: isStickySession, // Forward 由上层判断粘性会话
 		groupID:         0,               // Forward 方法没有 groupID，由上层处理粘性会话清除
 		sessionHash:     "",              // Forward 方法没有 sessionHash，由上层处理粘性会话清除
+
+		ccGatewayEnabled:      ccgEnabled,
+		ccGatewayBaseURL:      ccgBaseURL,
+		ccGatewayToken:        ccgToken,
+		ccGatewayEgressBucket: ccgBucket,
+		ccGatewayProjectID:    projectID,
+		ccGatewayAccountEmail: ccgEmail,
 	})
 	if err != nil {
 		// 检查是否是账号切换信号，转换为 UpstreamFailoverError 让 Handler 切换账号
@@ -1512,6 +1533,13 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 					isStickySession: isStickySession,
 					groupID:         0,  // Forward 方法没有 groupID，由上层处理粘性会话清除
 					sessionHash:     "", // Forward 方法没有 sessionHash，由上层处理粘性会话清除
+
+					ccGatewayEnabled:      ccgEnabled,
+					ccGatewayBaseURL:      ccgBaseURL,
+					ccGatewayToken:        ccgToken,
+					ccGatewayEgressBucket: ccgBucket,
+					ccGatewayProjectID:    projectID,
+					ccGatewayAccountEmail: ccgEmail,
 				})
 				if retryErr != nil {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -1634,6 +1662,13 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 							isStickySession: isStickySession,
 							groupID:         0,
 							sessionHash:     "",
+
+							ccGatewayEnabled:      ccgEnabled,
+							ccGatewayBaseURL:      ccgBaseURL,
+							ccGatewayToken:        ccgToken,
+							ccGatewayEgressBucket: ccgBucket,
+							ccGatewayProjectID:    projectID,
+							ccGatewayAccountEmail: ccgEmail,
 						})
 						if retryErr == nil {
 							retryResp := retryResult.resp
@@ -2140,6 +2175,10 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
+	ccgEnabled, ccgBaseURL, ccgToken, ccgBucket, ccgEmail := s.ccGatewayAntigravityParams(account, projectID)
+	if ccgEnabled {
+		proxyURL = ""
+	}
 
 	// Antigravity 上游要求必须包含身份提示词，注入到请求中
 	injectedBody, err := injectIdentityPatchToGeminiRequest(body)
@@ -2183,6 +2222,13 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		isStickySession: isStickySession, // ForwardGemini 由上层判断粘性会话
 		groupID:         0,               // ForwardGemini 方法没有 groupID，由上层处理粘性会话清除
 		sessionHash:     "",              // ForwardGemini 方法没有 sessionHash，由上层处理粘性会话清除
+
+		ccGatewayEnabled:      ccgEnabled,
+		ccGatewayBaseURL:      ccgBaseURL,
+		ccGatewayToken:        ccgToken,
+		ccGatewayEgressBucket: ccgBucket,
+		ccGatewayProjectID:    projectID,
+		ccGatewayAccountEmail: ccgEmail,
 	})
 	if err != nil {
 		// 检查是否是账号切换信号，转换为 UpstreamFailoverError 让 Handler 切换账号
@@ -2222,7 +2268,18 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 
 				fallbackWrapped, err := s.wrapV1InternalRequest(projectID, fallbackModel, injectedBody)
 				if err == nil {
-					fallbackReq, err := antigravity.NewAPIRequest(ctx, upstreamAction, accessToken, fallbackWrapped)
+					fallbackBaseURL := antigravity.BaseURL
+					if ccgEnabled {
+						fallbackBaseURL = ccgBaseURL
+					}
+					fallbackReq, err := newAntigravityAPIRequestWithCCGateway(ctx, fallbackBaseURL, upstreamAction, accessToken, fallbackWrapped, antigravityRetryLoopParams{
+						account:               account,
+						ccGatewayEnabled:      ccgEnabled,
+						ccGatewayToken:        ccgToken,
+						ccGatewayEgressBucket: ccgBucket,
+						ccGatewayProjectID:    projectID,
+						ccGatewayAccountEmail: ccgEmail,
+					})
 					if err == nil {
 						fallbackResp, err := s.httpUpstream.Do(fallbackReq, proxyURL, account.ID, account.Concurrency)
 						if err == nil && fallbackResp.StatusCode < 400 {
@@ -2282,6 +2339,13 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 					isStickySession: isStickySession,
 					groupID:         0,
 					sessionHash:     "",
+
+					ccGatewayEnabled:      ccgEnabled,
+					ccGatewayBaseURL:      ccgBaseURL,
+					ccGatewayToken:        ccgToken,
+					ccGatewayEgressBucket: ccgBucket,
+					ccGatewayProjectID:    projectID,
+					ccGatewayAccountEmail: ccgEmail,
 				})
 				if retryErr == nil {
 					retryResp := retryResult.resp

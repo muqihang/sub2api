@@ -632,6 +632,8 @@ type GatewayConfig struct {
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 	// OpenAICore: OpenAI Gateway Core 配置
 	OpenAICore GatewayOpenAICoreConfig `mapstructure:"openai_core"`
+	// CCGateway: cc-gateway 透明身份改写适配配置（默认关闭）
+	CCGateway GatewayCCGatewayConfig `mapstructure:"cc_gateway"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
 
@@ -924,6 +926,22 @@ type OpenAIGatewayBucketTLSConfig struct {
 	AllowDefaultFallback bool  `mapstructure:"allow_default_fallback"`
 	AllowPlainFallback   bool  `mapstructure:"allow_plain_fallback"`
 	AllowAccountOverride bool  `mapstructure:"allow_account_override"`
+}
+
+// GatewayCCGatewayConfig controls forwarding selected Anthropic/Antigravity
+// account credentials through cc-gateway for identity rewriting.
+type GatewayCCGatewayConfig struct {
+	Enabled             bool                            `mapstructure:"enabled"`
+	BaseURL             string                          `mapstructure:"base_url"`
+	Token               string                          `mapstructure:"token"`
+	TimeoutSeconds      int                             `mapstructure:"timeout_seconds"`
+	DefaultEgressBucket string                          `mapstructure:"default_egress_bucket"`
+	Providers           GatewayCCGatewayProvidersConfig `mapstructure:"providers"`
+}
+
+type GatewayCCGatewayProvidersConfig struct {
+	Anthropic   bool `mapstructure:"anthropic"`
+	Antigravity bool `mapstructure:"antigravity"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1785,6 +1803,13 @@ func setDefaults() {
 			"proxy_url": "",
 		},
 	})
+	viper.SetDefault("gateway.cc_gateway.enabled", false)
+	viper.SetDefault("gateway.cc_gateway.base_url", "")
+	viper.SetDefault("gateway.cc_gateway.token", "")
+	viper.SetDefault("gateway.cc_gateway.timeout_seconds", 600)
+	viper.SetDefault("gateway.cc_gateway.default_egress_bucket", "default")
+	viper.SetDefault("gateway.cc_gateway.providers.anthropic", false)
+	viper.SetDefault("gateway.cc_gateway.providers.antigravity", false)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -2605,6 +2630,27 @@ func (c *Config) Validate() error {
 		}
 		if strings.TrimSpace(item.Token) == "" {
 			return fmt.Errorf("gateway.openai_core.client_tokens[].token is required")
+		}
+	}
+	if c.Gateway.CCGateway.Enabled {
+		if strings.TrimSpace(c.Gateway.CCGateway.BaseURL) == "" {
+			return fmt.Errorf("gateway.cc_gateway.base_url is required when gateway.cc_gateway.enabled=true")
+		}
+		parsedBaseURL, err := url.ParseRequestURI(strings.TrimSpace(c.Gateway.CCGateway.BaseURL))
+		if err != nil {
+			return fmt.Errorf("gateway.cc_gateway.base_url is invalid: %w", err)
+		}
+		if parsedBaseURL.Scheme != "http" && parsedBaseURL.Scheme != "https" {
+			return fmt.Errorf("gateway.cc_gateway.base_url scheme must be http or https")
+		}
+		if strings.TrimSpace(c.Gateway.CCGateway.Token) == "" {
+			return fmt.Errorf("gateway.cc_gateway.token is required when gateway.cc_gateway.enabled=true")
+		}
+		if c.Gateway.CCGateway.TimeoutSeconds <= 0 {
+			return fmt.Errorf("gateway.cc_gateway.timeout_seconds must be positive")
+		}
+		if strings.TrimSpace(c.Gateway.CCGateway.DefaultEgressBucket) == "" {
+			return fmt.Errorf("gateway.cc_gateway.default_egress_bucket is required")
 		}
 	}
 	if c.Gateway.OpenAIWS.MaxConnsPerAccount <= 0 {
