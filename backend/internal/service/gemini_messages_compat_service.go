@@ -610,9 +610,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	switch account.Type {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
-			apiKey := account.GetCredential("api_key")
-			if strings.TrimSpace(apiKey) == "" {
-				return nil, "", errors.New("gemini api_key not configured")
+			apiKey, err := NewGeminiCredentialsAccessor(s.cfg, nil).GeminiAPIKey(account)
+			if err != nil {
+				return nil, "", err
 			}
 
 			baseURL := account.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
@@ -730,7 +730,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			if req.Stream {
 				action = "streamGenerateContent"
 			}
-			fullURL, err := buildVertexGeminiURL(account.VertexProjectID(), account.VertexLocation(mappedModel), mappedModel, action, req.Stream)
+			fullURL, err := buildVertexGeminiURL(account.VertexProjectIDWithAccessor(NewGeminiCredentialsAccessor(s.cfg, nil)), account.VertexLocation(mappedModel), mappedModel, action, req.Stream)
 			if err != nil {
 				return nil, "", err
 			}
@@ -811,7 +811,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(respBody), maxBytes)
+					upstreamDetail = sanitizeUpstreamErrorBody(respBody, maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -841,6 +841,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				retryGeminiReq, txErr := convertClaudeMessagesToGeminiGenerateContent(strippedClaudeBody)
 				if txErr == nil {
 					logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: detected signature-related 400, retrying with downgraded Claude blocks (%s)", account.ID, stageName)
+					if c != nil {
+						MarkGeminiSafetyDegraded(c, GeminiSafetyReasonCompatSignatureRetry)
+					}
 					geminiReq = retryGeminiReq
 					// Consume one retry budget attempt and continue with the updated request payload.
 					sleepGeminiBackoff(1)
@@ -894,7 +897,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(respBody), maxBytes)
+					upstreamDetail = sanitizeUpstreamErrorBody(respBody, maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -949,7 +952,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(respBody), maxBytes)
+					upstreamDetail = sanitizeUpstreamErrorBody(respBody, maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -982,7 +985,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(respBody), maxBytes)
+					upstreamDetail = sanitizeUpstreamErrorBody(respBody, maxBytes)
 				}
 				log.Printf("[Gemini] status=400 google_config_error failover=true upstream_message=%q account=%d", upstreamMsg, account.ID)
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -1011,7 +1014,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				if maxBytes <= 0 {
 					maxBytes = 2048
 				}
-				upstreamDetail = truncateString(string(respBody), maxBytes)
+				upstreamDetail = sanitizeUpstreamErrorBody(respBody, maxBytes)
 			}
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -1152,9 +1155,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	switch account.Type {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
-			apiKey := account.GetCredential("api_key")
-			if strings.TrimSpace(apiKey) == "" {
-				return nil, "", errors.New("gemini api_key not configured")
+			apiKey, err := NewGeminiCredentialsAccessor(s.cfg, nil).GeminiAPIKey(account)
+			if err != nil {
+				return nil, "", err
 			}
 
 			baseURL := account.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
@@ -1257,7 +1260,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, "", err
 			}
 
-			fullURL, err := buildVertexGeminiURL(account.VertexProjectID(), account.VertexLocation(mappedModel), mappedModel, upstreamAction, useUpstreamStream)
+			fullURL, err := buildVertexGeminiURL(account.VertexProjectIDWithAccessor(NewGeminiCredentialsAccessor(s.cfg, nil)), account.VertexLocation(mappedModel), mappedModel, upstreamAction, useUpstreamStream)
 			if err != nil {
 				return nil, "", err
 			}
@@ -1366,7 +1369,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(respBody), maxBytes)
+					upstreamDetail = sanitizeUpstreamErrorBody(respBody, maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -1460,7 +1463,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(evBody), maxBytes)
+					upstreamDetail = sanitizeUpstreamErrorBody(evBody, maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -1490,7 +1493,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(evBody), maxBytes)
+					upstreamDetail = sanitizeUpstreamErrorBody(evBody, maxBytes)
 				}
 				log.Printf("[Gemini] status=400 google_config_error failover=true upstream_message=%q account=%d", upstreamMsg, account.ID)
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -1516,7 +1519,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				if maxBytes <= 0 {
 					maxBytes = 2048
 				}
-				upstreamDetail = truncateString(string(evBody), maxBytes)
+				upstreamDetail = sanitizeUpstreamErrorBody(evBody, maxBytes)
 			}
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -1540,8 +1543,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			if maxBytes <= 0 {
 				maxBytes = 2048
 			}
-			upstreamDetail = truncateString(string(respBody), maxBytes)
-			logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini] native upstream error %d: %s", resp.StatusCode, truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes))
+			upstreamDetail = sanitizeUpstreamErrorBody(respBody, maxBytes)
+			logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini] native upstream error %d: %s", resp.StatusCode, sanitizeUpstreamErrorBody(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes))
 		}
 		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -1684,7 +1687,13 @@ func sleepGeminiBackoff(attempt int) {
 }
 
 var (
-	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
+	sensitiveJSONFieldRegex  = regexp.MustCompile(`(?i)("(?:access_token|refresh_token|id_token|api_key|client_secret|authorization_code|password)"\s*:\s*")([^"]*)(")`)
+	sensitivePlainFieldRegex = regexp.MustCompile(`(?i)\b((?:access_token|refresh_token|id_token|api_key|client_secret|authorization_code|password))\b(\s*[:=]\s*)([^,\s]+)`)
+	sensitiveQueryLikeRegex  = regexp.MustCompile(`(?i)\b((?:key|client_secret|access_token|refresh_token|id_token|api_key|authorization_code|password))=([^&\s]+)`)
+	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token|id_token|api_key|authorization_code|password)=)[^&"\s]+`)
+	bearerTokenRegex         = regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{10,}`)
+	urlLikeRegex             = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"']+`)
+	openAIKeyRegex           = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
 	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
 )
 
@@ -1692,7 +1701,34 @@ func sanitizeUpstreamErrorMessage(msg string) string {
 	if msg == "" {
 		return msg
 	}
-	return sensitiveQueryParamRegex.ReplaceAllString(msg, `$1***`)
+	out := strings.TrimSpace(msg)
+	out = sensitiveJSONFieldRegex.ReplaceAllString(out, `$1***$3`)
+	out = sensitiveQueryParamRegex.ReplaceAllString(out, `$1***`)
+	out = sensitiveQueryLikeRegex.ReplaceAllString(out, `$1=***`)
+	out = sensitivePlainFieldRegex.ReplaceAllString(out, `$1$2***`)
+	out = bearerTokenRegex.ReplaceAllString(out, `${1}***`)
+	out = openAIKeyRegex.ReplaceAllString(out, "sk-***")
+	out = urlLikeRegex.ReplaceAllStringFunc(out, func(raw string) string {
+		if strings.Contains(raw, "@") {
+			return MaskOpenAIProxyURL(raw)
+		}
+		return raw
+	})
+	return out
+}
+
+func sanitizeUpstreamErrorBody(body []byte, maxBytes int) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if maxBytes <= 0 {
+		maxBytes = 2048
+	}
+	sanitized, _ := sanitizeErrorBodyForStorage(string(body), maxBytes)
+	if sanitized == "" {
+		sanitized = truncateString(strings.TrimSpace(string(body)), maxBytes)
+	}
+	return sanitizeUpstreamErrorMessage(sanitized)
 }
 
 func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, account *Account, upstreamStatus int, upstreamRequestID string, body []byte) error {
@@ -1701,10 +1737,7 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 	upstreamDetail := ""
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
-		if maxBytes <= 0 {
-			maxBytes = 2048
-		}
-		upstreamDetail = truncateString(string(body), maxBytes)
+		upstreamDetail = sanitizeUpstreamErrorBody(body, maxBytes)
 	}
 	setOpsUpstreamError(c, upstreamStatus, upstreamMsg, upstreamDetail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -1719,7 +1752,7 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 	})
 
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-		logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini] upstream error %d: %s", upstreamStatus, truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes))
+		logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini] upstream error %d: %s", upstreamStatus, sanitizeUpstreamErrorBody(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes))
 	}
 
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
@@ -2636,9 +2669,9 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 
 	switch account.Type {
 	case AccountTypeAPIKey:
-		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
-		if apiKey == "" {
-			return nil, errors.New("gemini api_key not configured")
+		apiKey, err := NewGeminiCredentialsAccessor(s.cfg, nil).GeminiAPIKey(account)
+		if err != nil {
+			return nil, err
 		}
 		req.Header.Set("x-goog-api-key", apiKey)
 	case AccountTypeOAuth:

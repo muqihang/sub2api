@@ -570,6 +570,20 @@ Antigravity accounts support optional **hybrid scheduling**. When enabled, the g
 
 > **⚠️ Warning**: Anthropic Claude and Antigravity Claude **cannot be mixed within the same conversation context**. Use groups to isolate them properly.
 
+### cc-gateway Adapter
+
+Sub2API can forward selected Anthropic OAuth, Anthropic API key passthrough, and Antigravity OAuth traffic through cc-gateway. Enable `gateway.cc_gateway` only when a cc-gateway instance is deployed on a trusted internal network.
+
+When enabled, Sub2API keeps account selection and token refresh locally, sends the selected upstream credential to cc-gateway, and adds internal `x-cc-*` control headers:
+
+- `x-cc-gateway-token` authenticates Sub2API to cc-gateway.
+- `x-cc-provider` is `anthropic` or `antigravity`.
+- `x-cc-token-type` is `oauth` or `apikey`.
+- `x-cc-account-id` is the stable Sub2API account ID.
+- `x-cc-egress-bucket` is a bucket name only. Configure proxy URLs in cc-gateway, not in headers.
+
+Per-account egress binding uses `account.extra.cc_gateway_egress_bucket`. During migration, `account.extra.openai_gateway_egress_bucket` is accepted as a fallback.
+
 ### Known Issues
 
 In Claude Code, Plan Mode cannot exit automatically. (Normally when using the native Claude API, after planning is complete, Claude Code will pop up options for users to approve or reject the plan.)

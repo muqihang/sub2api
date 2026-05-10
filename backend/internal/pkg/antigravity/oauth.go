@@ -38,7 +38,7 @@ const (
 		"https://www.googleapis.com/auth/cclog " +
 		"https://www.googleapis.com/auth/experimentsandconfigs"
 
-	// User-Agent 相关环境变量。
+	// User-Agent / 版本相关环境变量。
 	// - ANTIGRAVITY_USER_AGENT_VERSION: 兼容上游，设置版本号
 	// - ANTIGRAVITY_USER_AGENT: 直接覆盖完整 UA（优先级高）
 	// - ANTIGRAVITY_VERSION: 仅设置版本号（优先级高于 *_USER_AGENT_VERSION）
@@ -60,8 +60,9 @@ const (
 	antigravityDailyBaseURL = "https://daily-cloudcode-pa.sandbox.googleapis.com"
 )
 
-// defaultUserAgentVersion 可通过环境变量 ANTIGRAVITY_USER_AGENT_VERSION 配置，默认 1.20.5
-var defaultUserAgentVersion = "1.21.9"
+// defaultUserAgentVersion 是当前内建的 Antigravity 默认版本。
+// 它应与官方客户端当前受支持的主版本链保持一致，并可被环境变量覆盖。
+var defaultUserAgentVersion = "1.107.0"
 
 // defaultClientSecret 可通过环境变量 ANTIGRAVITY_OAUTH_CLIENT_SECRET 配置
 var defaultClientSecret = "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"
@@ -79,6 +80,33 @@ func init() {
 
 func composeUserAgent(version string) string {
 	return fmt.Sprintf("antigravity/%s %s", version, DefaultUserAgentOSArch)
+}
+
+func extractVersionFromUserAgent(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	first := raw
+	if i := strings.IndexByte(first, ' '); i > 0 {
+		first = strings.TrimSpace(first[:i])
+	}
+	const prefix = "antigravity/"
+	if !strings.HasPrefix(strings.ToLower(first), prefix) {
+		return ""
+	}
+	return strings.TrimSpace(first[len(prefix):])
+}
+
+func firstUserAgentToken(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if i := strings.IndexByte(raw, ' '); i > 0 {
+		return strings.TrimSpace(raw[:i])
+	}
+	return raw
 }
 
 // EffectiveUserAgent returns the effective User-Agent used for Antigravity upstream requests.
@@ -126,6 +154,37 @@ func EffectiveV1InternalUserAgent() string {
 		return fmt.Sprintf("antigravity/%s", ver)
 	}
 	return fmt.Sprintf("antigravity/%s", defaultUserAgentVersion)
+}
+
+// EffectiveIDEVersion returns the effective Antigravity IDE version used in
+// v1internal metadata such as loadCodeAssist requests.
+//
+// Priority:
+//  1. ANTIGRAVITY_V1INTERNAL_USER_AGENT (extract version from full override)
+//  2. ANTIGRAVITY_VERSION
+//  3. ANTIGRAVITY_USER_AGENT (extract first token version)
+//  4. ANTIGRAVITY_USER_AGENT_VERSION
+//  5. defaultUserAgentVersion
+func EffectiveIDEVersion() string {
+	if ua := strings.TrimSpace(os.Getenv(AntigravityV1InternalUserAgentEnv)); ua != "" {
+		if ver := extractVersionFromUserAgent(ua); ver != "" {
+			return ver
+		}
+		return firstUserAgentToken(ua)
+	}
+	if ver := strings.TrimSpace(os.Getenv(AntigravityVersionEnv)); ver != "" {
+		return ver
+	}
+	if ua := strings.TrimSpace(os.Getenv(AntigravityUserAgentEnv)); ua != "" {
+		if ver := extractVersionFromUserAgent(ua); ver != "" {
+			return ver
+		}
+		return firstUserAgentToken(ua)
+	}
+	if ver := strings.TrimSpace(os.Getenv(AntigravityUserAgentVersionEnv)); ver != "" {
+		return ver
+	}
+	return defaultUserAgentVersion
 }
 
 // GetUserAgent 返回当前配置的 User-Agent（兼容历史调用点）。

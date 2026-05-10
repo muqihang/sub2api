@@ -36,7 +36,7 @@ func TestCleanGeminiNativeThoughtSignatures_ReplacesNestedThoughtSignatures(t *t
 
 	require.NotContains(t, string(cleaned), `"thoughtSignature":"sig_1"`)
 	require.NotContains(t, string(cleaned), `"thoughtSignature":"sig_2"`)
-	require.NotContains(t, string(cleaned), `"thoughtSignature":"sig_3"`)
+	require.Contains(t, string(cleaned), `"thoughtSignature":"sig_3"`)
 	require.Contains(t, string(cleaned), `"thoughtSignature":"`+antigravity.DummyThoughtSignature+`"`)
 	require.Contains(t, string(cleaned), `"signature":"keep_me"`)
 }
@@ -49,27 +49,18 @@ func TestCleanGeminiNativeThoughtSignatures_InvalidJSONReturnsOriginal(t *testin
 	require.Equal(t, input, cleaned)
 }
 
-func TestReplaceThoughtSignaturesRecursive_OnlyReplacesTargetField(t *testing.T) {
-	input := map[string]any{
-		"thoughtSignature": "sig_root",
-		"signature":        "keep_signature",
-		"nested": []any{
-			map[string]any{
-				"thoughtSignature": "sig_nested",
-				"signature":        "keep_nested_signature",
-			},
-		},
-	}
+func TestCleanGeminiNativeThoughtSignaturesDetailed_OnlyReplacesContentPartSignatures(t *testing.T) {
+	input := []byte(`{
+		"contents":[
+			{"role":"model","parts":[{"thoughtSignature":"sig_part","text":"thinking"}]}
+		],
+		"tool_schema":{"thoughtSignature":"sig_schema"},
+		"signature":"keep_signature"
+	}`)
 
-	got, ok := replaceThoughtSignaturesRecursive(input).(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, antigravity.DummyThoughtSignature, got["thoughtSignature"])
-	require.Equal(t, "keep_signature", got["signature"])
-
-	nested, ok := got["nested"].([]any)
-	require.True(t, ok)
-	nestedMap, ok := nested[0].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, antigravity.DummyThoughtSignature, nestedMap["thoughtSignature"])
-	require.Equal(t, "keep_nested_signature", nestedMap["signature"])
+	result := CleanGeminiNativeThoughtSignaturesDetailed(input)
+	require.Equal(t, 1, result.ReplacedCount)
+	require.Contains(t, string(result.Body), `"thoughtSignature":"`+antigravity.DummyThoughtSignature+`"`)
+	require.Contains(t, string(result.Body), `"thoughtSignature":"sig_schema"`)
+	require.Contains(t, string(result.Body), `"signature":"keep_signature"`)
 }

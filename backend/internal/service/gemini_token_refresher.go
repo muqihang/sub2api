@@ -39,8 +39,14 @@ func (r *GeminiTokenRefresher) Refresh(ctx context.Context, account *Account) (m
 		return nil, err
 	}
 
-	newCredentials := r.geminiOAuthService.BuildAccountCredentials(tokenInfo)
-	newCredentials = MergeCredentials(account.Credentials, newCredentials)
+	newCredentials, err := r.geminiOAuthService.BuildProtectedAccountCredentials(tokenInfo)
+	if err != nil {
+		return nil, err
+	}
+	newCredentials, err = MergeProtectedGeminiCredentials(account.Credentials, newCredentials, r.geminiOAuthService.CredentialAccessor())
+	if err != nil {
+		return nil, err
+	}
 
 	return newCredentials, nil
 }

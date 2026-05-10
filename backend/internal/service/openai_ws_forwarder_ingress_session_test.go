@@ -3140,11 +3140,13 @@ func (d *openAIWSQueueDialer) Dial(
 	wsURL string,
 	headers http.Header,
 	proxyURL string,
+	effectiveTLS *OpenAIGatewayEffectiveTLS,
 ) (openAIWSClientConn, int, http.Header, error) {
 	_ = ctx
 	_ = wsURL
 	_ = headers
 	_ = proxyURL
+	_ = effectiveTLS
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.dialCount++

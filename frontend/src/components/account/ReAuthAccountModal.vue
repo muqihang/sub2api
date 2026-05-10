@@ -396,22 +396,14 @@ const handleExchangeCode = async () => {
     const stateToUse = stateFromInput || geminiOAuth.state.value
     if (!stateToUse) return
 
-    const tokenInfo = await geminiOAuth.exchangeAuthCode({
-      code: authCode.trim(),
-      sessionId,
-      state: stateToUse,
-      proxyId: props.account.proxy_id,
-      oauthType: geminiOAuthType.value,
-      tierId: typeof (props.account.credentials as any)?.tier_id === 'string' ? ((props.account.credentials as any).tier_id as string) : undefined
-    })
-    if (!tokenInfo) return
-
-    const credentials = geminiOAuth.buildCredentials(tokenInfo)
-
     try {
-      await adminAPI.accounts.update(props.account.id, {
-        type: 'oauth',
-        credentials
+      await adminAPI.gemini.reauthorizeAccountFromOAuth(props.account.id, {
+        code: authCode.trim(),
+        session_id: sessionId,
+        state: stateToUse,
+        proxy_id: props.account.proxy_id ?? undefined,
+        oauth_type: geminiOAuthType.value,
+        tier_id: typeof (props.account.credentials as any)?.tier_id === 'string' ? ((props.account.credentials as any).tier_id as string) : undefined
       })
       await adminAPI.accounts.clearError(props.account.id)
       appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))

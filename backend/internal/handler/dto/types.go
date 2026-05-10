@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 type User struct {
@@ -206,6 +207,10 @@ type Account struct {
 	EnableTLSFingerprint    *bool  `json:"enable_tls_fingerprint,omitempty"`
 	TLSFingerprintProfileID *int64 `json:"tls_fingerprint_profile_id,omitempty"`
 
+	// OpenAI Gateway TLS 策略（仅 OpenAI 账号有效）
+	// 从 extra.openai_gateway_tls 提取，方便前端安全读写。
+	OpenAIGatewayTLS *service.OpenAIGatewayAccountTLSPolicy `json:"openai_gateway_tls,omitempty"`
+
 	// 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 启用后将在15分钟内固定 metadata.user_id 中的 session ID
 	// 从 extra 字段提取，方便前端显示和编辑
@@ -365,6 +370,10 @@ type UsageLog struct {
 	AccountID int64  `json:"account_id"`
 	RequestID string `json:"request_id"`
 	Model     string `json:"model"`
+	// Entity audit fields are nil for legacy rows and unresolved requests.
+	EntityID        *int64  `json:"entity_id,omitempty"`
+	EntityType      *string `json:"entity_type,omitempty"`
+	ClaimedEntityID *string `json:"claimed_entity_id,omitempty"`
 	// ServiceTier records the OpenAI service tier used for billing, e.g. "priority" / "flex".
 	ServiceTier *string `json:"service_tier,omitempty"`
 	// ReasoningEffort is the request's reasoning effort level.

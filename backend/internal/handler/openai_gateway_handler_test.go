@@ -188,6 +188,40 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	assert.Equal(t, "already written", w.Body.String())
 }
 
+func TestOpenAIHandleEgressPolicyError_ReturnsStable503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h := &OpenAIGatewayHandler{}
+	handled := h.handleOpenAIEgressPolicyError(c, &service.OpenAIEgressPolicyError{Code: "missing_bucket", BucketName: "secret-bucket"}, false, false)
+
+	require.True(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Equal(t, "api_error", gjson.GetBytes(w.Body.Bytes(), "error.type").String())
+	require.Equal(t, service.OpenAIEgressPolicyClientMessage, gjson.GetBytes(w.Body.Bytes(), "error.message").String())
+	require.NotContains(t, w.Body.String(), "secret-bucket")
+	require.NotContains(t, w.Body.String(), "missing_bucket")
+}
+
+func TestOpenAIHandleEgressPolicyError_ReturnsStableAnthropic503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h := &OpenAIGatewayHandler{}
+	handled := h.handleOpenAIEgressPolicyError(c, &service.OpenAIEgressPolicyError{Code: "disabled_bucket", BucketName: "secret-bucket"}, false, true)
+
+	require.True(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Equal(t, "api_error", gjson.GetBytes(w.Body.Bytes(), "error.type").String())
+	require.Equal(t, service.OpenAIEgressPolicyClientMessage, gjson.GetBytes(w.Body.Bytes(), "error.message").String())
+	require.NotContains(t, w.Body.String(), "secret-bucket")
+	require.NotContains(t, w.Body.String(), "disabled_bucket")
+}
+
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -429,7 +463,9 @@ func TestOpenAIResponses_MissingDependencies_ReturnsServiceUnavailable(t *testin
 	})
 
 	// 故意使用未初始化依赖，验证快速失败而不是崩溃。
-	h := &OpenAIGatewayHandler{}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	h := &OpenAIGatewayHandler{gatewayCoreService: service.NewOpenAIGatewayCoreService(nil, cfg, nil)}
 	require.NotPanics(t, func() {
 		h.Responses(c)
 	})
@@ -622,9 +658,10 @@ func TestOpenAIResponsesWebSocket_FirstMessageTimeoutUsesConfig(t *testing.T) {
 	}
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds = 1
+	cfg.Gateway.OpenAICore.Enabled = true
 	h := NewOpenAIGatewayHandler(
 		&service.OpenAIGatewayService{},
-		nil,
+		service.NewOpenAIGatewayCoreService(nil, cfg, nil),
 		service.NewConcurrencyService(cache),
 		&service.BillingCacheService{},
 		&service.APIKeyService{},
@@ -856,8 +893,11 @@ func newOpenAIHandlerForPreviousResponseIDValidation(t *testing.T, cache *concur
 			},
 		}
 	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
 	return &OpenAIGatewayHandler{
 		gatewayService:      &service.OpenAIGatewayService{},
+		gatewayCoreService:  service.NewOpenAIGatewayCoreService(nil, cfg, nil),
 		billingCacheService: &service.BillingCacheService{},
 		apiKeyService:       &service.APIKeyService{},
 		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
@@ -1025,9 +1065,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+	cfg.Gateway.OpenAICore.Enabled = true
 
 	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account}
 	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 1)}
+	gatewayCoreSvc := service.NewOpenAIGatewayCoreService(accountRepo, cfg, nil)
 
 	var channelSvc *service.ChannelService
 	if len(tc.channelMapping) > 0 {
@@ -1063,7 +1105,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		nil,
 		channelSvc,
-		nil,
+		gatewayCoreSvc,
 		nil,
 	)
 
@@ -1077,6 +1119,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	}
 	h := &OpenAIGatewayHandler{
 		gatewayService:      gatewaySvc,
+		gatewayCoreService:  gatewayCoreSvc,
 		billingCacheService: billingCacheSvc,
 		apiKeyService:       &service.APIKeyService{},
 		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),

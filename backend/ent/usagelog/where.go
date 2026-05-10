@@ -90,6 +90,21 @@ func UpstreamModel(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldUpstreamModel, v))
 }
 
+// EntityID applies equality check predicate on the "entity_id" field. It's identical to EntityIDEQ.
+func EntityID(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldEntityID, v))
+}
+
+// EntityType applies equality check predicate on the "entity_type" field. It's identical to EntityTypeEQ.
+func EntityType(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldEntityType, v))
+}
+
+// ClaimedEntityID applies equality check predicate on the "claimed_entity_id" field. It's identical to ClaimedEntityIDEQ.
+func ClaimedEntityID(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldClaimedEntityID, v))
+}
+
 // ChannelID applies equality check predicate on the "channel_id" field. It's identical to ChannelIDEQ.
 func ChannelID(v int64) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldChannelID, v))
@@ -578,6 +593,206 @@ func UpstreamModelEqualFold(v string) predicate.UsageLog {
 // UpstreamModelContainsFold applies the ContainsFold predicate on the "upstream_model" field.
 func UpstreamModelContainsFold(v string) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldContainsFold(FieldUpstreamModel, v))
+}
+
+// EntityIDEQ applies the EQ predicate on the "entity_id" field.
+func EntityIDEQ(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldEntityID, v))
+}
+
+// EntityIDNEQ applies the NEQ predicate on the "entity_id" field.
+func EntityIDNEQ(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldEntityID, v))
+}
+
+// EntityIDIn applies the In predicate on the "entity_id" field.
+func EntityIDIn(vs ...int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldEntityID, vs...))
+}
+
+// EntityIDNotIn applies the NotIn predicate on the "entity_id" field.
+func EntityIDNotIn(vs ...int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldEntityID, vs...))
+}
+
+// EntityIDGT applies the GT predicate on the "entity_id" field.
+func EntityIDGT(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldEntityID, v))
+}
+
+// EntityIDGTE applies the GTE predicate on the "entity_id" field.
+func EntityIDGTE(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldEntityID, v))
+}
+
+// EntityIDLT applies the LT predicate on the "entity_id" field.
+func EntityIDLT(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldEntityID, v))
+}
+
+// EntityIDLTE applies the LTE predicate on the "entity_id" field.
+func EntityIDLTE(v int64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldEntityID, v))
+}
+
+// EntityIDIsNil applies the IsNil predicate on the "entity_id" field.
+func EntityIDIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldEntityID))
+}
+
+// EntityIDNotNil applies the NotNil predicate on the "entity_id" field.
+func EntityIDNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldEntityID))
+}
+
+// EntityTypeEQ applies the EQ predicate on the "entity_type" field.
+func EntityTypeEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldEntityType, v))
+}
+
+// EntityTypeNEQ applies the NEQ predicate on the "entity_type" field.
+func EntityTypeNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldEntityType, v))
+}
+
+// EntityTypeIn applies the In predicate on the "entity_type" field.
+func EntityTypeIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldEntityType, vs...))
+}
+
+// EntityTypeNotIn applies the NotIn predicate on the "entity_type" field.
+func EntityTypeNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldEntityType, vs...))
+}
+
+// EntityTypeGT applies the GT predicate on the "entity_type" field.
+func EntityTypeGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldEntityType, v))
+}
+
+// EntityTypeGTE applies the GTE predicate on the "entity_type" field.
+func EntityTypeGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldEntityType, v))
+}
+
+// EntityTypeLT applies the LT predicate on the "entity_type" field.
+func EntityTypeLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldEntityType, v))
+}
+
+// EntityTypeLTE applies the LTE predicate on the "entity_type" field.
+func EntityTypeLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldEntityType, v))
+}
+
+// EntityTypeContains applies the Contains predicate on the "entity_type" field.
+func EntityTypeContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldEntityType, v))
+}
+
+// EntityTypeHasPrefix applies the HasPrefix predicate on the "entity_type" field.
+func EntityTypeHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldEntityType, v))
+}
+
+// EntityTypeHasSuffix applies the HasSuffix predicate on the "entity_type" field.
+func EntityTypeHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldEntityType, v))
+}
+
+// EntityTypeIsNil applies the IsNil predicate on the "entity_type" field.
+func EntityTypeIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldEntityType))
+}
+
+// EntityTypeNotNil applies the NotNil predicate on the "entity_type" field.
+func EntityTypeNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldEntityType))
+}
+
+// EntityTypeEqualFold applies the EqualFold predicate on the "entity_type" field.
+func EntityTypeEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldEntityType, v))
+}
+
+// EntityTypeContainsFold applies the ContainsFold predicate on the "entity_type" field.
+func EntityTypeContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldEntityType, v))
+}
+
+// ClaimedEntityIDEQ applies the EQ predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDNEQ applies the NEQ predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDIn applies the In predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldClaimedEntityID, vs...))
+}
+
+// ClaimedEntityIDNotIn applies the NotIn predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldClaimedEntityID, vs...))
+}
+
+// ClaimedEntityIDGT applies the GT predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDGTE applies the GTE predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDLT applies the LT predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDLTE applies the LTE predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDContains applies the Contains predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDHasPrefix applies the HasPrefix predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDHasSuffix applies the HasSuffix predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDIsNil applies the IsNil predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldClaimedEntityID))
+}
+
+// ClaimedEntityIDNotNil applies the NotNil predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldClaimedEntityID))
+}
+
+// ClaimedEntityIDEqualFold applies the EqualFold predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldClaimedEntityID, v))
+}
+
+// ClaimedEntityIDContainsFold applies the ContainsFold predicate on the "claimed_entity_id" field.
+func ClaimedEntityIDContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldClaimedEntityID, v))
 }
 
 // ChannelIDEQ applies the EQ predicate on the "channel_id" field.

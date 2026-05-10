@@ -45,10 +45,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		zap.Any("group_id", apiKey.GroupID),
 	)
 
-	if !h.ensureResponsesDependencies(c, reqLog) {
+	if !h.enforceOpenAIGatewayCoreEnabled(c, reqLog) {
 		return
 	}
 	if !h.enforceOptionalGatewayClientAuth(c, reqLog) {
+		return
+	}
+	if !h.ensureResponsesDependencies(c, reqLog) {
+		return
+	}
+	if !h.resolveTrustedOpenAIEntity(c, apiKey, reqLog, false) {
 		return
 	}
 
@@ -112,6 +118,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
+	}
+	entityReleaseFunc, admitted := h.admitOpenAIEntityQuota(c, false, streamStarted, reqLog)
+	if !admitted {
+		return
+	}
+	if entityReleaseFunc != nil {
+		defer entityReleaseFunc()
 	}
 
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
@@ -236,6 +249,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, false) {
+					reqLog.Warn("openai_chat_completions.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 				reqLog.Warn("openai_chat_completions.forward_failed",
 					zap.Int64("account_id", account.ID),
@@ -255,9 +272,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		clientIP := ip.GetClientIP(c)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveRawCCUpstreamEndpoint(c, account)
+		requestCtx := c.Request.Context()
 
 		h.submitOpenAIUsageRecordTask(result, func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+			usageCtx := service.ContextWithEntityMetadataFrom(ctx, requestCtx)
+			if err := h.gatewayService.RecordUsage(usageCtx, &service.OpenAIRecordUsageInput{
 				Result:             result,
 				APIKey:             apiKey,
 				User:               apiKey.User,

@@ -85,6 +85,26 @@ func RegisterGatewayRoutes(
 	requireGroupOpenAI := middleware.RequireGroupAssignment(settingService, middleware.OpenAIErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
 	apiKeyAuthWithAugmentBearer := augmentGatewayAPIKeyAuth(apiKeyAuth, h.Auth)
+	requireOpenAIGroup := func(c *gin.Context) bool {
+		if getGroupPlatform(c) == service.PlatformOpenAI {
+			return true
+		}
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": gin.H{
+				"type":    "not_found_error",
+				"message": "OpenAI Gateway is not supported for this platform",
+			},
+		})
+		return false
+	}
+	openAIGatewayHandler := func(next gin.HandlerFunc) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			if !requireOpenAIGroup(c) {
+				return
+			}
+			next(c)
+		}
+	}
 
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
@@ -134,7 +154,7 @@ func RegisterGatewayRoutes(
 			}
 			h.Gateway.Responses(c)
 		})
-		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
+		gateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI {
@@ -194,13 +214,13 @@ func RegisterGatewayRoutes(
 	}
 	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
-	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
+	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 	codexDirect := r.Group("/backend-api/codex")
 	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic)
 	{
 		codexDirect.POST("/responses", responsesHandler)
 		codexDirect.POST("/responses/*subpath", responsesHandler)
-		codexDirect.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
+		codexDirect.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
@@ -244,16 +264,18 @@ func RegisterGatewayRoutes(
 	openaiGateway.Use(gin.HandlerFunc(apiKeyAuth))
 	openaiGateway.Use(requireGroupOpenAI)
 	{
-		openaiGateway.POST("/responses", h.OpenAIGateway.Responses)
-		openaiGateway.POST("/responses/*subpath", h.OpenAIGateway.Responses)
-		openaiGateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
-		openaiGateway.POST("/chat/completions", h.OpenAIGateway.ChatCompletions)
-		openaiGateway.POST("/images/generations", h.OpenAIGateway.Images)
-		openaiGateway.POST("/images/edits", h.OpenAIGateway.Images)
+		openaiGateway.POST("/responses", openAIGatewayHandler(h.OpenAIGateway.Responses))
+		openaiGateway.POST("/responses/*subpath", openAIGatewayHandler(h.OpenAIGateway.Responses))
+		openaiGateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
+		openaiGateway.POST("/chat/completions", openAIGatewayHandler(h.OpenAIGateway.ChatCompletions))
+		openaiGateway.POST("/images/generations", openAIGatewayHandler(h.OpenAIGateway.Images))
+		openaiGateway.POST("/images/edits", openAIGatewayHandler(h.OpenAIGateway.Images))
 	}
 
 	r.GET("/openai/_health", h.OpenAIGateway.Health)
 	r.GET("/openai/_verify", h.OpenAIGateway.Verify)
+	r.GET("/openai/_tls_canary", h.OpenAIGateway.TLSCanary)
+	r.POST("/openai/_tls/canary", h.OpenAIGateway.TLSCanary)
 
 	// Antigravity 模型列表
 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -145,6 +146,12 @@ type UsageLog struct {
 	// UpstreamModel is the actual model sent to the upstream provider after mapping.
 	// Nil means no mapping was applied (requested model was used as-is).
 	UpstreamModel *string
+	// EntityID is the resolved entity_registry.id captured for audit. Nil means legacy/unresolved.
+	EntityID *int64
+	// EntityType is the resolved entity type snapshot captured at write time.
+	EntityType *string
+	// ClaimedEntityID records the client-claimed entity identifier when resolution used an explicit claim.
+	ClaimedEntityID *string
 	// ChannelID 渠道 ID
 	ChannelID *int64
 	// ModelMappingChain 模型映射链，如 "a→b→c"
@@ -239,4 +246,32 @@ func (u *UsageLog) SyncRequestTypeAndLegacyFields() {
 	requestType := u.EffectiveRequestType()
 	u.RequestType = requestType
 	u.Stream, u.OpenAIWSMode = ApplyLegacyRequestFields(requestType, u.Stream, u.OpenAIWSMode)
+}
+
+func (u *UsageLog) ApplyEntityAuditFromContext(ctx context.Context) {
+	if u == nil {
+		return
+	}
+	resolved, ok := ResolvedEntityFromContext(ctx)
+	if !ok {
+		return
+	}
+	entityID := resolved.Entity.ID
+	if entityID > 0 {
+		u.EntityID = &entityID
+	}
+	entityType := strings.TrimSpace(resolved.Entity.EntityType)
+	if entityType != "" {
+		u.EntityType = &entityType
+	}
+	if claimed := ClaimedEntityIDFromContext(ctx); claimed != "" {
+		u.ClaimedEntityID = &claimed
+		return
+	}
+	if resolved.Source == EntityResolutionSourceClaimedBinding {
+		claimed := strings.TrimSpace(resolved.Entity.EntityKey)
+		if claimed != "" {
+			u.ClaimedEntityID = &claimed
+		}
+	}
 }

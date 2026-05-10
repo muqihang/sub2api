@@ -75,6 +75,100 @@ func ProvideTokenRefreshService(
 	return svc
 }
 
+func ProvideAdminService(
+	userRepo UserRepository,
+	groupRepo GroupRepository,
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	apiKeyRepo APIKeyRepository,
+	redeemCodeRepo RedeemCodeRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	userRPMCache UserRPMCache,
+	billingCacheService *BillingCacheService,
+	proxyProber ProxyExitInfoProber,
+	proxyLatencyCache ProxyLatencyCache,
+	authCacheInvalidator APIKeyAuthCacheInvalidator,
+	entClient *dbent.Client,
+	settingService *SettingService,
+	defaultSubAssigner DefaultSubscriptionAssigner,
+	userSubRepo UserSubscriptionRepository,
+	privacyClientFactory PrivacyClientFactory,
+	entityRegistryRepo EntityRegistryRepository,
+) AdminService {
+	return NewAdminService(
+		userRepo,
+		groupRepo,
+		accountRepo,
+		proxyRepo,
+		apiKeyRepo,
+		redeemCodeRepo,
+		userGroupRateRepo,
+		userRPMCache,
+		billingCacheService,
+		proxyProber,
+		proxyLatencyCache,
+		authCacheInvalidator,
+		entClient,
+		settingService,
+		defaultSubAssigner,
+		userSubRepo,
+		privacyClientFactory,
+		entityRegistryRepo,
+	)
+}
+
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	gatewayCoreService *OpenAIGatewayCoreService,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	entityRegistryRepo EntityRegistryRepository,
+	entityRateLimitService *EntityRateLimitService,
+) *OpenAIGatewayService {
+	return NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		gatewayCoreService,
+		resolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+		entityRegistryRepo,
+		entityRateLimitService,
+	)
+}
+
 // ProvideClaudeTokenProvider creates ClaudeTokenProvider with OAuthRefreshAPI injection
 func ProvideClaudeTokenProvider(
 	accountRepo AccountRepository,
@@ -95,12 +189,27 @@ func ProvideOpenAITokenProvider(
 	tokenCache GeminiTokenCache,
 	openaiOAuthService *OpenAIOAuthService,
 	refreshAPI *OAuthRefreshAPI,
+	cfg *config.Config,
 ) *OpenAITokenProvider {
-	p := NewOpenAITokenProvider(accountRepo, tokenCache, openaiOAuthService)
+	p := NewOpenAITokenProvider(accountRepo, tokenCache, openaiOAuthService, cfg)
 	executor := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
 	p.SetRefreshAPI(refreshAPI, executor)
 	p.SetRefreshPolicy(OpenAIProviderRefreshPolicy())
 	return p
+}
+
+func ProvideAccountUsageService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageFetcher ClaudeUsageFetcher,
+	geminiQuotaService *GeminiQuotaService,
+	antigravityQuotaFetcher *AntigravityQuotaFetcher,
+	cache *UsageCache,
+	identityCache IdentityCache,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	cfg *config.Config,
+) *AccountUsageService {
+	return NewAccountUsageService(accountRepo, usageLogRepo, usageFetcher, geminiQuotaService, antigravityQuotaFetcher, cache, identityCache, tlsFPProfileService, cfg)
 }
 
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
@@ -557,58 +666,11 @@ func ProvideOpenAIGatewayCoreService(
 	cfg *config.Config,
 	openAITokenProvider *OpenAITokenProvider,
 	openAIOAuthService *OpenAIOAuthService,
+	tlsProfileService *TLSFingerprintProfileService,
 ) *OpenAIGatewayCoreService {
-	svc := NewOpenAIGatewayCoreService(accountRepo, cfg, openAITokenProvider)
+	svc := NewOpenAIGatewayCoreService(accountRepo, cfg, openAITokenProvider, tlsProfileService)
 	openAIOAuthService.SetGatewayCoreService(svc)
 	return svc
-}
-
-func ProvideOpenAIGatewayService(
-	accountRepo AccountRepository,
-	usageLogRepo UsageLogRepository,
-	usageBillingRepo UsageBillingRepository,
-	userRepo UserRepository,
-	userSubRepo UserSubscriptionRepository,
-	userGroupRateRepo UserGroupRateRepository,
-	cache GatewayCache,
-	cfg *config.Config,
-	schedulerSnapshot *SchedulerSnapshotService,
-	concurrencyService *ConcurrencyService,
-	billingService *BillingService,
-	rateLimitService *RateLimitService,
-	billingCacheService *BillingCacheService,
-	httpUpstream HTTPUpstream,
-	deferredService *DeferredService,
-	openAITokenProvider *OpenAITokenProvider,
-	gatewayCoreService *OpenAIGatewayCoreService,
-	modelPricingResolver *ModelPricingResolver,
-	channelService *ChannelService,
-	balanceNotifyService *BalanceNotifyService,
-	settingService *SettingService,
-) *OpenAIGatewayService {
-	return NewOpenAIGatewayService(
-		accountRepo,
-		usageLogRepo,
-		usageBillingRepo,
-		userRepo,
-		userSubRepo,
-		userGroupRateRepo,
-		cache,
-		cfg,
-		schedulerSnapshot,
-		concurrencyService,
-		billingService,
-		rateLimitService,
-		billingCacheService,
-		httpUpstream,
-		deferredService,
-		openAITokenProvider,
-		gatewayCoreService,
-		modelPricingResolver,
-		channelService,
-		balanceNotifyService,
-		settingService,
-	)
 }
 
 // ProviderSet is the Wire provider set for all services
@@ -640,13 +702,17 @@ var ProviderSet = wire.NewSet(
 	NewBillingService,
 	ProvideBillingCacheService,
 	NewAnnouncementService,
-	NewAdminService,
+	ProvideAdminService,
 	NewGatewayService,
 	ProvideOpenAIGatewayCoreService,
+	NewEntityRateLimitService,
 	ProvideOpenAIGatewayService,
 	NewOAuthService,
-	NewOpenAIOAuthService,
-	NewGeminiOAuthService,
+	ProvideOpenAIOAuthSessionStore,
+	ProvideOpenAIOAuthService,
+	ProvideGeminiOAuthSessionStore,
+	ProvideGeminiOAuthService,
+	NewGeminiHealthService,
 	NewGeminiQuotaService,
 	NewCompositeTokenCacheInvalidator,
 	wire.Bind(new(TokenCacheInvalidator), new(*CompositeTokenCacheInvalidator)),
@@ -656,10 +722,11 @@ var ProviderSet = wire.NewSet(
 	NewGeminiMessagesCompatService,
 	ProvideAntigravityTokenProvider,
 	ProvideOpenAITokenProvider,
+	ProvideOpenAISecretProtector,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
-	NewAccountUsageService,
+	ProvideAccountUsageService,
 	NewAccountTestService,
 	ProvideSettingService,
 	NewDataManagementService,

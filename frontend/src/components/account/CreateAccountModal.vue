@@ -4858,19 +4858,26 @@ const handleGeminiExchange = async (authCode: string) => {
       return
     }
 
-    const tokenInfo = await geminiOAuth.exchangeAuthCode({
-      code: authCode.trim(),
-      sessionId: geminiOAuth.sessionId.value,
+    await adminAPI.gemini.createFromOAuth({
+      session_id: geminiOAuth.sessionId.value,
       state: stateToUse,
-      proxyId: form.proxy_id,
-      oauthType: geminiOAuthType.value,
-      tierId: geminiSelectedTier.value
+      code: authCode.trim(),
+      proxy_id: form.proxy_id ?? undefined,
+      oauth_type: geminiOAuthType.value,
+      tier_id: geminiSelectedTier.value || undefined,
+      name: form.name,
+      notes: form.notes || undefined,
+      concurrency: form.concurrency,
+      load_factor: form.load_factor ?? undefined,
+      priority: form.priority,
+      rate_multiplier: form.rate_multiplier ?? undefined,
+      group_ids: form.group_ids,
+      expires_at: form.expires_at ?? undefined,
+      auto_pause_on_expired: autoPauseOnExpired.value
     })
-    if (!tokenInfo) return
-
-    const credentials = geminiOAuth.buildCredentials(tokenInfo)
-    const extra = geminiOAuth.buildExtraInfo(tokenInfo)
-    await createAccountAndFinish('gemini', 'oauth', credentials, extra)
+    appStore.showSuccess(t('admin.accounts.accountCreated'))
+    emit('created')
+    handleClose()
   } catch (error: any) {
     geminiOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
     appStore.showError(geminiOAuth.error.value)

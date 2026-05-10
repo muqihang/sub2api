@@ -321,6 +321,110 @@ func TestOpenAIGatewayServiceRecordUsage_IncludesEndpointMetadata(t *testing.T) 
 	require.Equal(t, "/v1/responses", *usageRepo.lastLog.UpstreamEndpoint)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_IncludesResolvedEntityAuditFields(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	rateRepo := &openAIUserGroupRateRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, rateRepo)
+
+	ctx := WithResolvedEntity(context.Background(), &ResolvedEntity{
+		Entity: Entity{
+			ID:         123,
+			EntityKey:  "workspace-alpha",
+			EntityType: EntityTypeWorkspace,
+		},
+		Source: EntityResolutionSourceClaimedBinding,
+	})
+	ctx = WithClaimedEntityID(ctx, "workspace-alpha-header")
+	err := svc.RecordUsage(ctx, &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_entity_audit",
+			Usage: OpenAIUsage{
+				InputTokens:  8,
+				OutputTokens: 2,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:    10022,
+			Group: &Group{RateMultiplier: 1},
+		},
+		User:    &User{ID: 20022},
+		Account: &Account{ID: 30022},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	require.NotNil(t, usageRepo.lastLog.EntityID)
+	require.Equal(t, int64(123), *usageRepo.lastLog.EntityID)
+	require.NotNil(t, usageRepo.lastLog.EntityType)
+	require.Equal(t, EntityTypeWorkspace, *usageRepo.lastLog.EntityType)
+	require.NotNil(t, usageRepo.lastLog.ClaimedEntityID)
+	require.Equal(t, "workspace-alpha-header", *usageRepo.lastLog.ClaimedEntityID)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_ReconcilesEntityQuotaFromPropagatedContext(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	rateRepo := &openAIUserGroupRateRepoStub{}
+	quotaCache := &entityRateLimitCacheStub{}
+	quotaSvc := NewEntityRateLimitService(nil, quotaCache)
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, rateRepo)
+	svc.entityRateLimitSvc = quotaSvc
+
+	requestCtx := WithResolvedEntity(context.Background(), &ResolvedEntity{
+		Entity: Entity{
+			ID:         123,
+			EntityKey:  "workspace-alpha",
+			EntityType: EntityTypeWorkspace,
+			Status:     EntityStatusActive,
+		},
+		Source: EntityResolutionSourceClaimedBinding,
+	})
+	requestCtx = WithClaimedEntityID(requestCtx, "workspace-alpha")
+	requestCtx = WithEntityRateLimitDecision(requestCtx, &EntityRateLimitDecision{
+		DecisionID:   "decision-openai-usage",
+		PolicyID:     17,
+		EntityID:     123,
+		EntityKey:    "workspace-alpha",
+		EntityType:   EntityTypeWorkspace,
+		TPMLimit:     5000,
+		CostLimitUSD: 10,
+	})
+	workerCtx := ContextWithEntityMetadataFrom(context.Background(), requestCtx)
+
+	err := svc.RecordUsage(workerCtx, &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_entity_quota_reconcile",
+			Usage: OpenAIUsage{
+				InputTokens:              100,
+				OutputTokens:             25,
+				CacheCreationInputTokens: 5,
+				CacheReadInputTokens:     10,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 1000, Quota: 100, Group: &Group{RateMultiplier: 1}},
+		User:    &User{ID: 2000},
+		Account: &Account{ID: 3000, Type: AccountTypeAPIKey, Platform: PlatformOpenAI},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, quotaCache.tpmCalls)
+	require.Equal(t, int64(123), quotaCache.lastTPMEntityID)
+	require.Equal(t, 130, quotaCache.lastTPMTokens)
+	require.Equal(t, 1, quotaCache.costCalls)
+	require.Equal(t, int64(123), quotaCache.lastCostEntityID)
+	require.Positive(t, quotaCache.lastCostAmount)
+	require.NotNil(t, usageRepo.lastLog.EntityID)
+	require.Equal(t, int64(123), *usageRepo.lastLog.EntityID)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_FallsBackToGroupDefaultRateOnResolverError(t *testing.T) {
 	groupID := int64(12)
 	groupRate := 1.6

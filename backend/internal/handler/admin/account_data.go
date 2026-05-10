@@ -316,7 +316,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		accountResult := DataImportAccountResult{Name: item.Name}
 
 		if item.Platform == service.PlatformOpenAI && item.Type == service.AccountTypeOAuth {
-			decision, decisionErr := service.EvaluateOpenAIImportLifecycle(ctx, h.openaiOAuthService, "", item.Credentials)
+			decision, decisionErr := service.EvaluateOpenAIImportLifecycleWithExtra(ctx, h.openaiOAuthService, "", item.Credentials, item.Extra)
 			if decisionErr != nil {
 				result.AccountFailed++
 				result.Errors = append(result.Errors, DataImportError{
@@ -338,7 +338,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 			skipBindForItem := skipDefaultGroupBind || decision.PoolRole != service.OpenAIPoolRoleMain
 
-			matched, matchKey := service.FindMatchingOpenAIOAuthAccount(openAIOAuthAccounts, item.Credentials)
+			matched, matchKey := service.FindMatchingOpenAIOAuthAccountWithAccessor(openAIOAuthAccounts, item.Credentials, h.openaiOAuthService.CredentialAccessor())
 			if matched != nil && !service.ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
 				msg := "import rejected: newer RT-managed account already exists"
 				result.AccountFailed++

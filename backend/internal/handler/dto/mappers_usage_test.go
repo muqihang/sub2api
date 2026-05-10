@@ -148,6 +148,55 @@ func TestUsageLogFromService_FallsBackToLegacyModelWhenRequestedModelMissing(t *
 	require.Equal(t, "claude-3", adminDTO.Model)
 }
 
+func TestUsageLogFromService_IncludesEntityAuditFields(t *testing.T) {
+	t.Parallel()
+
+	entityID := int64(123)
+	entityType := service.EntityTypeWorkspace
+	claimedEntityID := "workspace-alpha"
+	log := &service.UsageLog{
+		RequestID:       "req_entity",
+		Model:           "gpt-5",
+		EntityID:        &entityID,
+		EntityType:      &entityType,
+		ClaimedEntityID: &claimedEntityID,
+	}
+
+	userDTO := UsageLogFromService(log)
+	adminDTO := UsageLogFromServiceAdmin(log)
+
+	require.Equal(t, entityID, *userDTO.EntityID)
+	require.Equal(t, entityType, *userDTO.EntityType)
+	require.Equal(t, claimedEntityID, *userDTO.ClaimedEntityID)
+	require.Equal(t, entityID, *adminDTO.EntityID)
+	require.Equal(t, entityType, *adminDTO.EntityType)
+	require.Equal(t, claimedEntityID, *adminDTO.ClaimedEntityID)
+}
+
+func TestAccountFromService_ExposesOpenAIGatewayTLS(t *testing.T) {
+	t.Parallel()
+
+	account := &service.Account{
+		ID:       1,
+		Name:     "openai",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_gateway_tls": map[string]any{
+				"enabled":    true,
+				"profile_id": float64(7),
+			},
+		},
+	}
+
+	payload, err := json.Marshal(AccountFromService(account))
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	require.Equal(t, map[string]any{"enabled": true, "profile_id": float64(7)}, decoded["openai_gateway_tls"])
+}
+
 func f64Ptr(value float64) *float64 {
 	return &value
 }

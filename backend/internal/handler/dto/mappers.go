@@ -288,6 +288,16 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		}
 	}
 
+	if a.Platform == service.PlatformOpenAI && a.Extra != nil {
+		if _, ok := a.Extra["openai_gateway_tls"]; ok {
+			policy := a.GetOpenAIGatewayTLSOverride()
+			out.OpenAIGatewayTLS = &service.OpenAIGatewayAccountTLSPolicy{
+				Enabled:   policy.Enabled,
+				ProfileID: policy.ProfileID,
+			}
+		}
+	}
+
 	// 提取账号配额限制（apikey / bedrock 类型有效）
 	if a.IsAPIKeyOrBedrock() {
 		if limit := a.GetQuotaLimit(); limit > 0 {
@@ -575,6 +585,9 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		AccountID:             l.AccountID,
 		RequestID:             l.RequestID,
 		Model:                 requestedModel,
+		EntityID:              l.EntityID,
+		EntityType:            l.EntityType,
+		ClaimedEntityID:       l.ClaimedEntityID,
 		ServiceTier:           l.ServiceTier,
 		ReasoningEffort:       l.ReasoningEffort,
 		InboundEndpoint:       l.InboundEndpoint,

@@ -38,12 +38,24 @@ const (
 
 // OAuthSession stores OAuth flow state for OpenAI
 type OAuthSession struct {
-	State        string    `json:"state"`
-	CodeVerifier string    `json:"code_verifier"`
-	ClientID     string    `json:"client_id,omitempty"`
-	ProxyURL     string    `json:"proxy_url,omitempty"`
-	RedirectURI  string    `json:"redirect_uri"`
-	CreatedAt    time.Time `json:"created_at"`
+	State         string    `json:"state"`
+	CodeVerifier  string    `json:"code_verifier"`
+	ClientID      string    `json:"client_id,omitempty"`
+	ProxyURL      string    `json:"proxy_url,omitempty"`
+	EgressBucket  string    `json:"egress_bucket,omitempty"`
+	ProxySelected bool      `json:"proxy_selected,omitempty"`
+	ProxyLabel    string    `json:"proxy_label,omitempty"`
+	ProxyHash     string    `json:"proxy_hash,omitempty"`
+	RedirectURI   string    `json:"redirect_uri"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type OAuthSessionStore interface {
+	Set(sessionID string, session *OAuthSession) error
+	Get(sessionID string) (*OAuthSession, bool, error)
+	Consume(sessionID string) (*OAuthSession, bool, error)
+	Delete(sessionID string) error
+	Stop() error
 }
 
 // SessionStore manages OAuth sessions in memory
@@ -66,39 +78,57 @@ func NewSessionStore() *SessionStore {
 }
 
 // Set stores a session
-func (s *SessionStore) Set(sessionID string, session *OAuthSession) {
+func (s *SessionStore) Set(sessionID string, session *OAuthSession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sessionID] = session
+	return nil
 }
 
 // Get retrieves a session
-func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool) {
+func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	session, ok := s.sessions[sessionID]
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	// Check if expired
 	if time.Since(session.CreatedAt) > SessionTTL {
-		return nil, false
+		return nil, false, nil
 	}
-	return session, true
+	return session, true, nil
+}
+
+func (s *SessionStore) Consume(sessionID string) (*OAuthSession, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return nil, false, nil
+	}
+	if time.Since(session.CreatedAt) > SessionTTL {
+		delete(s.sessions, sessionID)
+		return nil, false, nil
+	}
+	delete(s.sessions, sessionID)
+	return session, true, nil
 }
 
 // Delete removes a session
-func (s *SessionStore) Delete(sessionID string) {
+func (s *SessionStore) Delete(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+	return nil
 }
 
 // Stop stops the cleanup goroutine
-func (s *SessionStore) Stop() {
+func (s *SessionStore) Stop() error {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 	})
+	return nil
 }
 
 // cleanup removes expired sessions periodically

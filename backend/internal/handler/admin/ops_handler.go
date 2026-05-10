@@ -674,6 +674,16 @@ func (h *OpsHandler) ListRequestDetails(c *gin.Context) {
 		}
 		filter.GroupID = &id
 	}
+	if v := strings.TrimSpace(c.Query("entity_id")); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid entity_id")
+			return
+		}
+		filter.EntityID = &id
+	}
+	filter.EntityType = strings.TrimSpace(c.Query("entity_type"))
+	filter.ClaimedEntityID = strings.TrimSpace(c.Query("claimed_entity_id"))
 
 	if v := strings.TrimSpace(c.Query("min_duration_ms")); v != "" {
 		parsed, err := strconv.Atoi(v)
