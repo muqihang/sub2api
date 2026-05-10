@@ -200,16 +200,23 @@ func (e *AugmentGatewayProviderExecutorImpl) providerDependencies(req AugmentGat
 
 	switch req.Provider {
 	case AugmentGatewayProviderOpenAI:
-		return groups.OpenAI, firstAugmentGatewaySelector(e.openAISelector, e.openaiGateway), e.openAIAdapter, nil
+		return augmentGatewayResolvedProviderGroupID(groups.OpenAI, req.Model.ProviderGroupID), firstAugmentGatewaySelector(e.openAISelector, e.openaiGateway), e.openAIAdapter, nil
 	case AugmentGatewayProviderDeepSeek:
-		return groups.DeepSeek, firstAugmentGatewaySelector(e.deepSeekSelector, e.openaiGateway), e.deepSeekAdapter, nil
+		return augmentGatewayResolvedProviderGroupID(groups.DeepSeek, req.Model.ProviderGroupID), firstAugmentGatewaySelector(e.deepSeekSelector, e.openaiGateway), e.deepSeekAdapter, nil
 	case AugmentGatewayProviderAnthropic:
-		return groups.Anthropic, firstAugmentGatewaySelector(e.anthropicSelector, e.anthropic), e.anthropicAdapter, nil
+		return augmentGatewayResolvedProviderGroupID(groups.Anthropic, req.Model.ProviderGroupID), firstAugmentGatewaySelector(e.anthropicSelector, e.anthropic), e.anthropicAdapter, nil
 	case AugmentGatewayProviderGemini:
-		return groups.Gemini, firstAugmentGatewaySelector(e.geminiSelector, e.gemini), e.geminiAdapter, nil
+		return augmentGatewayResolvedProviderGroupID(groups.Gemini, req.Model.ProviderGroupID), firstAugmentGatewaySelector(e.geminiSelector, e.gemini), e.geminiAdapter, nil
 	default:
 		return 0, nil, nil, fmt.Errorf("augment gateway provider %q is unsupported", req.Provider)
 	}
+}
+
+func augmentGatewayResolvedProviderGroupID(configuredGroupID int64, routedGroupID int64) int64 {
+	if configuredGroupID > 0 {
+		return configuredGroupID
+	}
+	return routedGroupID
 }
 
 func firstAugmentGatewaySelector(primary augmentGatewayAccountSelector, fallback augmentGatewayAccountSelector) augmentGatewayAccountSelector {

@@ -530,7 +530,7 @@ func TestAugmentOfficialSessionServiceReturnsPublicViewWithoutSecrets(t *testing
 func TestAugmentOfficialSessionServiceGetCredentialForRouteRequiresActiveSession(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 5, 8, 14, 20, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	cipher := newTestAugmentSessionVaultCipher(t)
 	payload := mustEncryptAugmentOfficialPayload(t, cipher, augmentOfficialEncryptedCredentialPayload{
 		AccessToken:       "access-secret",

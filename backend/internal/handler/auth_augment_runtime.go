@@ -2168,7 +2168,7 @@ func (h *AuthHandler) augmentLegacyResolveRetrieval(c *gin.Context, principal *s
 	traceFields = append(traceFields, contextBundle.TraceFields()...)
 	augmentLegacyTrace(c, "resolve_retrieval", traceFields...)
 	if skipReason != "" {
-		return "", resolved.Unknown, resolved.CheckpointNotFound
+		return "", []string{}, false
 	}
 	text := h.augmentPluginService.BuildLegacyFormattedRetrieval(question, resolved, 4000)
 	return text, resolved.Unknown, resolved.CheckpointNotFound

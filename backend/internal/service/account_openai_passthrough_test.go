@@ -205,6 +205,20 @@ func TestAccount_IsOpenAIResponsesWebSocketV2Enabled(t *testing.T) {
 	})
 }
 
+func TestAccount_OpenAIUpstreamCredentialsBehaveLikeAPIKeyRouting(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"api_key":  "sk-upstream-test",
+			"base_url": "https://upstream.example.com",
+		},
+	}
+
+	require.Equal(t, "sk-upstream-test", account.GetOpenAIApiKey())
+	require.Equal(t, "https://upstream.example.com", account.GetOpenAIBaseURL())
+}
+
 func TestAccount_ResolveOpenAIResponsesWebSocketV2Mode(t *testing.T) {
 	t.Run("default fallback to ctx_pool", func(t *testing.T) {
 		account := &Account{

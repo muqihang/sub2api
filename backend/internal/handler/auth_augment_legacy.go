@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -58,7 +59,7 @@ func (h *AuthHandler) AugmentLegacyBalance(c *gin.Context) {
 		return
 	}
 
-	loginToken, err := h.augmentPluginService.IssueLegacyLoginToken(c.Request.Context(), *principal, h.augmentTenantURL(c))
+	loginToken, err := h.augmentLegacyResolvedLoginToken(c.Request.Context(), principal, h.augmentTenantURL(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
 		return
@@ -142,13 +143,31 @@ func (h *AuthHandler) AugmentLegacyLoginToken(c *gin.Context) {
 		return
 	}
 
-	loginToken, err := h.augmentPluginService.IssueLegacyLoginToken(c.Request.Context(), *principal, h.augmentTenantURL(c))
+	loginToken, err := h.augmentLegacyResolvedLoginToken(c.Request.Context(), principal, h.augmentTenantURL(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, loginToken)
+}
+
+func (h *AuthHandler) augmentLegacyResolvedLoginToken(
+	ctx context.Context,
+	principal *service.AugmentPluginPrincipal,
+	tenantURL string,
+) (*service.AugmentLegacyLoginToken, error) {
+	if principal != nil {
+		if bundle, release, err := h.augmentLegacyOfficialSessionBundleForExecution(ctx, principal); err == nil && bundle != nil {
+			release(true, "")
+			return &service.AugmentLegacyLoginToken{
+				TenantURL:     bundle.TenantURL,
+				AccessToken:   bundle.AccessToken,
+				SessionSource: service.AugmentSessionSourceOfficial,
+			}, nil
+		}
+	}
+	return h.augmentPluginService.IssueLegacyLoginToken(ctx, *principal, tenantURL)
 }
 
 func (h *AuthHandler) AugmentLegacyInternalGetModels(c *gin.Context) {
@@ -191,6 +210,16 @@ func (h *AuthHandler) AugmentLegacyInternalGetModels(c *gin.Context) {
 		"additionalChatModels":   string(registryJSON),
 		"agent_chat_model":       defaultModel,
 		"agentChatModel":         defaultModel,
+		"vscode_agent_mode_min_version":        "1.96.0",
+		"vscodeAgentModeMinVersion":            "1.96.0",
+		"vscode_agent_mode_min_stable_version": "1.96.0",
+		"vscodeAgentModeMinStableVersion":      "1.96.0",
+		"vscode_chat_with_tools_min_version":   "1.96.0",
+		"vscodeChatWithToolsMinVersion":        "1.96.0",
+		"enable_agent_auto_mode":              true,
+		"enableAgentAutoMode":                 true,
+		"ide_enable_ask_user_tool":            true,
+		"ideEnableAskUserTool":                true,
 		"enable_model_registry":  true,
 		"enableModelRegistry":    true,
 		"model_registry":         string(registryJSON),

@@ -107,7 +107,7 @@
               >
                 <GroupBadge
                   v-if="row.group"
-                  :name="row.group.name"
+                  :name="userFacingGroupName(row.group)"
                   :platform="row.group.platform"
                   :subscription-type="row.group.subscription_type"
                   :rate-multiplier="row.group.rate_multiplier"
@@ -1068,6 +1068,7 @@
 
 <script setup lang="ts">
 	import { ref, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
+	import { useRoute, useRouter } from 'vue-router'
 	import { useI18n } from 'vue-i18n'
 	import { useAppStore } from '@/stores/app'
 	import { useOnboardingStore } from '@/stores/onboarding'
@@ -1118,6 +1119,8 @@ interface GroupOption {
 const appStore = useAppStore()
 const onboardingStore = useOnboardingStore()
 const { copyToClipboard: clipboardCopy } = useClipboard()
+const route = useRoute()
+const router = useRouter()
 
 const columns = computed<Column[]>(() => [
   { key: 'name', label: t('common.name'), sortable: true },
@@ -1236,7 +1239,7 @@ const statusOptions = computed(() => [
 const groupFilterOptions = computed(() => [
   { value: '', label: t('keys.allGroups') },
   { value: 0, label: t('keys.noGroup') },
-  ...groups.value.map((g) => ({ value: g.id, label: g.name }))
+  ...groups.value.map((g) => ({ value: g.id, label: userFacingGroupName(g) }))
 ])
 
 const statusFilterOptions = computed(() => [
@@ -1266,7 +1269,7 @@ const onStatusFilterChange = (value: string | number | boolean | null) => {
 const groupOptions = computed(() =>
   groups.value.map((group) => ({
     value: group.id,
-    label: group.name,
+    label: userFacingGroupName(group),
     description: group.description,
     rate: group.rate_multiplier,
     userRate: userGroupRates.value[group.id] ?? null,
@@ -1275,6 +1278,14 @@ const groupOptions = computed(() =>
     augmentGatewayEntitled: group.augment_gateway_entitled
   }))
 )
+
+function userFacingGroupName(group: Pick<Group, 'name' | 'augment_gateway_entitled'>): string {
+  const rawName = String(group.name || '').trim()
+  if (group.augment_gateway_entitled && rawName === 'Augment Local') {
+    return 'Augment专用'
+  }
+  return rawName
+}
 
 const entitledGroupOptions = computed(() =>
   groupOptions.value.filter((group) => group.augmentGatewayEntitled)
@@ -1399,6 +1410,22 @@ const loadPublicSettings = async () => {
   } catch (error) {
     console.error('Failed to load public settings:', error)
   }
+}
+
+const maybeOpenAugmentKeyCreate = async () => {
+  if (route.query.create !== 'augment') {
+    return
+  }
+  if (groups.value.length === 0) {
+    return
+  }
+  const entitledGroup = groups.value.find((group) => group.augment_gateway_entitled) || null
+  formData.value.augment_only = true
+  formData.value.group_id = entitledGroup?.id ?? null
+  showCreateModal.value = true
+  const nextQuery = { ...route.query }
+  delete nextQuery.create
+  await router.replace({ path: route.path, query: nextQuery })
 }
 
 const openUseKeyModal = (key: ApiKey) => {
@@ -1857,7 +1884,7 @@ function formatResetTime(resetAt: string | null): string {
 
 onMounted(() => {
   loadApiKeys()
-  loadGroups()
+  loadGroups().then(() => maybeOpenAugmentKeyCreate())
   loadUserGroupRates()
   loadPublicSettings()
   document.addEventListener('click', closeGroupSelector)

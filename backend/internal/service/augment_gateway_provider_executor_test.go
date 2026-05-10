@@ -52,6 +52,42 @@ func TestAugmentGatewayProviderExecutor_OpenAISelectsConfiguredGroup(t *testing.
 	require.Equal(t, "24h", body["prompt_cache_retention"])
 }
 
+func TestAugmentGatewayProviderExecutor_PrefersResolvedModelProviderGroupIDWhenRuntimeSettingsAreDynamic(t *testing.T) {
+	selector := &augmentGatewayProviderExecutorFakeSelector{
+		account: &Account{ID: 111, Platform: PlatformOpenAI},
+	}
+	adapter := &augmentGatewayProviderExecutorFakeAdapter{
+		result: AugmentGatewayProviderResult{Text: "ok"},
+	}
+	executor := newAugmentGatewayProviderExecutorTestSubject(selector, nil, nil, adapter, nil, nil)
+	executor.cfg = &config.Config{
+		Gateway: config.GatewayConfig{
+			Augment: config.GatewayAugmentConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	_, err := executor.Complete(context.Background(), AugmentGatewayProviderRequest{
+		Endpoint:       "/chat",
+		ConversationID: "conv-openai-dynamic",
+		RequestID:      "req-openai-dynamic",
+		SessionHash:    "session-openai-dynamic",
+		Model: AugmentGatewayModel{
+			ID:              "gpt-5.4",
+			Provider:        AugmentGatewayProviderOpenAI,
+			UpstreamModel:   "gpt-5.4",
+			ProviderGroupID: 3001,
+		},
+		RawBody: map[string]any{"messages": []any{}},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, int64(3001), selector.calls[0].groupID)
+	require.Same(t, selector.account, adapter.completeRequests[0].Account)
+	require.Equal(t, int64(3001), adapter.completeRequests[0].ProviderGroupID)
+}
+
 func TestAugmentGatewayProviderExecutor_DeepSeekSelectsConfiguredGroupAndSanitizes(t *testing.T) {
 	selector := &augmentGatewayProviderExecutorFakeSelector{
 		account: &Account{ID: 202, Platform: PlatformOpenAI},

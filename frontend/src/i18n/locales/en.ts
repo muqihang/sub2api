@@ -6554,29 +6554,30 @@ export default {
       },
       quickLogin: {
         title: 'Augment Quick Login',
-        subtitle: 'Use Official Quick Login for official cloud capabilities while keeping model routing on the dedicated Augment gateway.',
+        subtitle: 'Choose your IDE and connect Zhumeng Augment to the official cloud capability handoff path.',
+        keyActionTitle: 'Prepare an Augment-only key first',
+        keyActionDescription: 'If you do not already have an Augment-only key, create one first and paste it into the Zhumeng Augment panel.',
+        generateKey: 'Create Augment-only Key',
         requirements: {
           title: 'Requirements',
           sharedWallet: 'Augment spend still settles through the shared wallet.',
-          dedicatedGroup: 'Users must stay on a dedicated Augment-enabled group for access and attribution.',
-          dedicatedKey: 'Users must use a dedicated Augment-only API key for Augment Gateway traffic.',
-          singleActiveKey: 'Automatic gateway-key resolution for quick-login summary requires exactly one active Augment-only key.',
-          quickLoginDoesNotReplaceKey: 'Official Quick Login grants the official cloud session only. It does not replace the Augment-only API key requirement.'
+          dedicatedKey: 'Zhumeng Augment needs an Augment-only API key for model listing and chat gateway access.',
+          loginAction: 'Quick Login only signs official cloud capabilities into your IDE. It does not replace the Augment-only key.'
         },
         modeLabel: 'Authorization Mode',
         sourceLabel: 'Authorization Source',
-        continue: 'Continue',
+        continue: 'Start Login',
         requesting: 'Requesting',
-        launch: 'Open Extension',
-        manualOpen: 'Open IDE Manually',
-        copy: 'Copy Deeplink',
-        copyHint: 'If the IDE did not open automatically, copy the deeplink above and open it manually.',
-        copySuccess: 'Deeplink copied',
+        launch: 'Open IDE Again',
+        manualOpen: 'Reopen IDE',
+        copy: 'Copy Login Link',
+        copyHint: 'If the IDE did not open automatically, copy the login link and continue there.',
+        copySuccess: 'Login link copied',
         requestFailed: 'Failed to request quick login',
-        missingDeeplink: 'Backend did not return a deeplink',
-        ready: 'Deeplink is ready',
-        editorTargetTitle: 'Target IDE',
-        editorTargetDescription: 'Choose which IDE should receive the Augment auth deeplink. Unverified targets stay on the manual-open path.',
+        missingDeeplink: 'Backend did not return a login link',
+        ready: 'Login instruction is ready',
+        editorTargetTitle: 'Choose IDE',
+        editorTargetDescription: 'Choose the IDE you are currently using.',
         editorStatus: {
           verified: 'Verified',
           needsVerification: 'Needs Verification',
@@ -6605,11 +6606,11 @@ export default {
         modes: {
           officialPassthrough: {
             title: 'Official Passthrough',
-            description: 'Default production route. Official Quick Login keeps official cloud capabilities in charge.'
+            description: 'Default production route.'
           },
           localCompat: {
             title: 'Local Compat',
-            description: 'Emergency or admin-only fallback. Hidden by default.'
+            description: 'Emergency or admin-only fallback.'
           }
         },
         sources: {

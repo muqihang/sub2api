@@ -6738,29 +6738,30 @@ export default {
       },
       quickLogin: {
         title: 'Augment Quick Login',
-        subtitle: '使用官方 Quick Login 接管官方云能力，同时保留独立 Augment 网关的模型路由。',
+        subtitle: '选择你的 IDE，并把逐梦 Augment 连接到官方云能力接管链路。',
+        keyActionTitle: '先准备 Augment 专用密钥',
+        keyActionDescription: '如果你还没有 Augment 专用密钥，请先生成一个，并填入逐梦 Augment 面板。',
+        generateKey: '生成 Augment 专用密钥',
         requirements: {
           title: '使用前提',
           sharedWallet: 'Augment 花费仍然通过共享钱包结算。',
-          dedicatedGroup: '用户必须绑定独立的 Augment 授权分组，才能保持访问控制与归因隔离。',
-          dedicatedKey: '用户必须使用独立的 Augment 专用 API 密钥承载 Augment Gateway 流量。',
-          singleActiveKey: 'Quick Login 摘要自动解析网关密钥时，要求用户恰好只有一个启用中的 Augment 专用密钥。',
-          quickLoginDoesNotReplaceKey: '官方 Quick Login 只授予官方云 Session，不能替代 Augment 专用 API 密钥。'
+          dedicatedKey: '逐梦 Augment 需要使用 Augment 专用 API 密钥连接模型列表与聊天网关。',
+          loginAction: 'Quick Login 只负责把官方云能力登录到你选择的 IDE，不替代专用密钥。'
         },
         modeLabel: '授权模式',
         sourceLabel: '授权来源',
-        continue: '继续授权',
+        continue: '开始登录',
         requesting: '正在请求',
-        launch: '打开扩展',
-        manualOpen: '手动打开 IDE',
-        copy: '复制 Deeplink',
-        copyHint: '如果 IDE 没有自动打开，请复制上面的 Deeplink 手动打开。',
-        copySuccess: '已复制 Deeplink',
+        launch: '再次打开 IDE',
+        manualOpen: '重新打开 IDE',
+        copy: '复制授权链接',
+        copyHint: '如果 IDE 没有自动打开，请复制授权链接后继续。',
+        copySuccess: '已复制授权链接',
         requestFailed: '授权请求失败',
-        missingDeeplink: '后端未返回 Deeplink',
-        ready: 'Deeplink 已就绪',
-        editorTargetTitle: '目标 IDE',
-        editorTargetDescription: '选择要接收 Augment 授权 Deeplink 的 IDE。未验证目标会保留手动打开路径。',
+        missingDeeplink: '后端未返回授权链接',
+        ready: '登录指令已准备好',
+        editorTargetTitle: '选择 IDE',
+        editorTargetDescription: '选择你正在使用的 IDE。',
         editorStatus: {
           verified: '已验证',
           needsVerification: '待验证',
@@ -6789,11 +6790,11 @@ export default {
         modes: {
           officialPassthrough: {
             title: '官方能力接管',
-            description: '默认生产链路，使用官方 Quick Login 承接官方云能力。'
+            description: '默认生产链路。'
           },
           localCompat: {
             title: '本地兼容',
-            description: '仅用于应急或管理场景，默认隐藏。'
+            description: '仅用于应急或管理场景。'
           }
         },
         sources: {
@@ -6801,7 +6802,7 @@ export default {
         },
         consent: {
           title: '授权说明',
-          official: '继续前请确认：官方云能力会直接接管 Context Engine 与相关官方能力，请仅在你理解并同意后继续。',
+          official: '继续前请确认：官方云能力会直接接管 Context Engine 与相关官方能力。',
           confirm: '我已知晓并同意上述授权与托管说明。'
         },
         internalCapture: {

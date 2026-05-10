@@ -18,6 +18,16 @@ vi.mock('vue-router', () => ({
   useRoute: () => mockRoute,
 }))
 
+const globalStubs = {
+  AppLayout: {
+    template: '<div><slot /></div>',
+  },
+  RouterLink: {
+    props: ['to'],
+    template: '<a :href="typeof to === \'string\' ? to : to.path"><slot /></a>',
+  },
+}
+
 vi.mock('vue-i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
   return {
@@ -73,16 +83,11 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
     await flushPromises()
-    await wrapper.get('input[type="checkbox"]').setValue(true)
     await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
@@ -96,14 +101,12 @@ describe('QuickLoginView', () => {
     expect(mockCreatePoolBindIntent).not.toHaveBeenCalled()
     expect(mockBindPoolSession).not.toHaveBeenCalled()
 
-    const deeplinkInput = wrapper.get('input[readonly]')
-    expect((deeplinkInput.element as HTMLInputElement).value).toBe(
-      'vscode://Augment.vscode-augment/autoAuth?grant=g1&state=s1',
-    )
+    expect(wrapper.find('input[readonly]').exists()).toBe(false)
     expect(mockCopyToClipboard).toHaveBeenCalledWith(
       'vscode://Augment.vscode-augment/autoAuth?grant=g1&state=s1',
       'plugin.augment.quickLogin.copySuccess',
     )
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.generateKey')
     expect(mockShowError).not.toHaveBeenCalled()
   })
 
@@ -115,11 +118,7 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
@@ -137,11 +136,7 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
@@ -153,11 +148,7 @@ describe('QuickLoginView', () => {
   it('does not render internal capture controls unless the emergency admin gate is enabled', async () => {
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
@@ -170,11 +161,7 @@ describe('QuickLoginView', () => {
 
     const adminWrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
@@ -196,11 +183,7 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
@@ -230,17 +213,13 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
     const pageText = wrapper.text()
-    expect(pageText).toContain('mode')
-    expect(pageText).toContain('tenant_url')
+    expect(pageText).not.toContain('mode')
+    expect(pageText).not.toContain('tenant_url')
     expect(pageText).not.toContain('access_token')
     expect(pageText).not.toContain('refresh_token')
     expect(pageText).not.toContain('official_access_token')
@@ -254,24 +233,18 @@ describe('QuickLoginView', () => {
   it('shows official-only consent copy for quick login', async () => {
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
     await flushPromises()
 
-    expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.title')
-    expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.official')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.title')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.sharedWallet')
-    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.dedicatedGroup')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.dedicatedKey')
-    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.singleActiveKey')
-    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.quickLoginDoesNotReplaceKey')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.loginAction')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.generateKey')
+    expect(wrapper.text()).not.toContain('plugin.augment.quickLogin.consent.title')
     expect(wrapper.find('[data-test="source-wukong_quick_login"]').exists()).toBe(false)
   })
 
@@ -306,17 +279,12 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
     await flushPromises()
     await wrapper.get('[data-test="editor-target-cursor"]').trigger('click')
-    await wrapper.get('input[type="checkbox"]').setValue(true)
     await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
@@ -326,9 +294,7 @@ describe('QuickLoginView', () => {
     expect(wrapper.text()).toContain('Cursor handler is not verified for auto-launch.')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.manualOpen')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.copyHint')
-    expect((wrapper.get('input[readonly]').element as HTMLInputElement).value).toBe(
-      'cursor://Augment.vscode-augment/autoAuth?grant=g3&state=s3',
-    )
+    expect(wrapper.find('input[readonly]').exists()).toBe(false)
 
     Object.defineProperty(window, 'navigator', {
       configurable: true,
@@ -365,11 +331,7 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
@@ -417,11 +379,7 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
@@ -449,27 +407,22 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
     await flushPromises()
     await wrapper.get('[data-test="editor-target-cursor"]').trigger('click')
-    await wrapper.get('input[type="checkbox"]').setValue(true)
     await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('Cursor handler is not verified for auto-launch.')
-    expect(wrapper.find('input[readonly]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="quick-login-launch"]').attributes('disabled')).toBeUndefined()
 
     await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('input[readonly]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="quick-login-launch"]').attributes('disabled')).toBe('')
     expect(wrapper.text()).not.toContain('Cursor handler is not verified for auto-launch.')
     expect(wrapper.text()).not.toContain('plugin.augment.quickLogin.copyHint')
   })
@@ -481,24 +434,19 @@ describe('QuickLoginView', () => {
 
     const wrapper = mount(QuickLoginView, {
       global: {
-        stubs: {
-          AppLayout: {
-            template: '<div><slot /></div>',
-          },
-        },
+        stubs: globalStubs,
       },
     })
 
     await flushPromises()
-    await wrapper.get('input[type="checkbox"]').setValue(true)
     await wrapper.get('[data-test="quick-login-continue"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('input[readonly]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="quick-login-launch"]').attributes('disabled')).toBeUndefined()
 
     await wrapper.get('[data-test="editor-target-cursor"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('input[readonly]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="quick-login-launch"]').attributes('disabled')).toBe('')
   })
 })

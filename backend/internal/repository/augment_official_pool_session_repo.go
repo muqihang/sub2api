@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -398,7 +399,8 @@ func (r *augmentOfficialPoolSessionRepository) AcquireUsableSessionByID(ctx cont
 		return nil, err
 	}
 	if portalOrigin.Valid {
-		record.PortalOrigin = ptrString(portalOrigin.String)
+		portal := portalOrigin.String
+		record.PortalOrigin = &portal
 	}
 	if expiresAt.Valid {
 		expires := expiresAt.Time.UTC()

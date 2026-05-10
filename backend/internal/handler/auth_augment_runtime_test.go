@@ -94,6 +94,50 @@ func TestAugmentLegacyChatUnknownModelReturnsAugmentGatewayErrorWithoutFallback(
 	require.Equal(t, 0, *loopbackCalls)
 }
 
+func TestAugmentLegacyResolveRetrievalDoesNotLeakCheckpointMissWhenOfficialCodebaseToolOwnsRetrieval(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{ID: 7, Email: "augment@example.com", Role: service.RoleAdmin, Status: service.StatusActive}
+	apiKey := &service.APIKey{ID: 11, UserID: user.ID, Key: "sk-augment-runtime", Status: service.StatusActive, User: user}
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey}},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{},
+	)
+
+	principal := &service.AugmentPluginPrincipal{APIKey: apiKey, User: user}
+	namespace := buildAugmentLegacyNamespace(principal, "session-official-ce")
+	pluginService.StoreLegacyBlobsForNamespace(namespace, []service.AugmentLegacyUploadedBlob{
+		{BlobName: "blob-a", Path: "src/main.go", Content: "package main\nfunc main() {}\n"},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/chat-stream", nil)
+	req.Header.Set("x-request-session-id", "session-official-ce")
+	c.Request = req
+
+	authHandler := &AuthHandler{augmentPluginService: pluginService}
+	retrieval, unknown, checkpointNotFound := authHandler.augmentLegacyResolveRetrieval(c, principal, augmentLegacyChatRequest{
+		Model:   "gpt-5.4",
+		Message: "find gateway routing",
+		Blobs: augmentLegacyCheckpointBlobsPayload{
+			CheckpointID: "checkpoint-stale",
+		},
+		ToolDefinitions: []augmentLegacyToolDefinition{
+			{Name: "codebase-retrieval", Description: "repo search", InputSchema: map[string]any{"type": "object"}},
+		},
+	})
+
+	require.Equal(t, "", retrieval)
+	require.Equal(t, []string{}, unknown)
+	require.False(t, checkpointNotFound)
+}
+
 func TestAugmentLegacyChatRejectsGenericAPIKeyForAugmentRoutes(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)

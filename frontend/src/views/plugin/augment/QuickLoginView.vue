@@ -12,16 +12,34 @@
         </div>
 
         <div class="mt-6 space-y-6">
+          <section class="rounded-xl border border-gray-200 bg-gray-50 p-5 dark:border-dark-700 dark:bg-dark-950/50">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="space-y-1">
+                <h2 class="text-sm font-semibold text-gray-900 dark:text-white">
+                  {{ t('plugin.augment.quickLogin.keyActionTitle') }}
+                </h2>
+                <p class="text-sm text-gray-600 dark:text-gray-300">
+                  {{ t('plugin.augment.quickLogin.keyActionDescription') }}
+                </p>
+              </div>
+              <RouterLink
+                data-test="quick-login-generate-key"
+                :to="{ path: '/keys', query: { create: 'augment' } }"
+                class="btn btn-secondary"
+              >
+                {{ t('plugin.augment.quickLogin.generateKey') }}
+              </RouterLink>
+            </div>
+          </section>
+
           <section class="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900/40 dark:bg-blue-950/30">
             <h2 class="text-sm font-semibold text-blue-900 dark:text-blue-100">
               {{ t('plugin.augment.quickLogin.requirements.title') }}
             </h2>
             <div class="mt-3 space-y-2 text-sm text-blue-800 dark:text-blue-200">
               <p>{{ t('plugin.augment.quickLogin.requirements.sharedWallet') }}</p>
-              <p>{{ t('plugin.augment.quickLogin.requirements.dedicatedGroup') }}</p>
               <p>{{ t('plugin.augment.quickLogin.requirements.dedicatedKey') }}</p>
-              <p>{{ t('plugin.augment.quickLogin.requirements.singleActiveKey') }}</p>
-              <p>{{ t('plugin.augment.quickLogin.requirements.quickLoginDoesNotReplaceKey') }}</p>
+              <p>{{ t('plugin.augment.quickLogin.requirements.loginAction') }}</p>
             </div>
           </section>
 
@@ -30,12 +48,13 @@
               data-test="quick-login-continue"
               type="button"
               class="btn btn-primary"
-              :disabled="isGranting || (selectedMode === 'official_passthrough' && !consentChecked)"
+              :disabled="isGranting"
               @click="handleRequestGrant"
             >
               {{ isGranting ? t('plugin.augment.quickLogin.requesting') : t('plugin.augment.quickLogin.continue') }}
             </button>
             <button
+              data-test="quick-login-launch"
               type="button"
               class="btn btn-secondary"
               :disabled="!deeplinkUrl"
@@ -44,6 +63,7 @@
               {{ needsManualOpen ? t('plugin.augment.quickLogin.manualOpen') : t('plugin.augment.quickLogin.launch') }}
             </button>
             <button
+              data-test="quick-login-copy"
               type="button"
               class="btn btn-secondary"
               :disabled="!deeplinkUrl"
@@ -54,6 +74,7 @@
           </div>
 
           <QuickLoginModeSelector
+            v-if="showLocalCompat"
             v-model="selectedMode"
             v-model:source="selectedSource"
             :show-local-compat="showLocalCompat"
@@ -77,7 +98,10 @@
             </p>
           </section>
 
-          <section class="rounded-xl border border-gray-200 bg-gray-50 p-5 dark:border-dark-700 dark:bg-dark-950/50">
+          <section
+            v-if="showLocalCompat"
+            class="rounded-xl border border-gray-200 bg-gray-50 p-5 dark:border-dark-700 dark:bg-dark-950/50"
+          >
             <div class="space-y-2">
               <h2 class="text-sm font-semibold text-gray-900 dark:text-white">
                 {{ t('plugin.augment.quickLogin.consent.title') }}
@@ -103,7 +127,7 @@
           </section>
 
           <div
-            v-if="grantPayloadDiagnostics.length"
+            v-if="showLocalCompat && grantPayloadDiagnostics.length"
             class="grid gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/50 sm:grid-cols-2"
           >
             <div
@@ -140,11 +164,6 @@
             >
               {{ targetWarning }}
             </p>
-            <input
-              class="input w-full font-mono text-xs"
-              :value="deeplinkUrl"
-              readonly
-            />
             <p
               v-if="needsManualOpen"
               class="text-sm text-emerald-800 dark:text-emerald-200"

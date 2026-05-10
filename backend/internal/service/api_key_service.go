@@ -805,12 +805,26 @@ func (s *APIKeyService) GetAvailableGroups(ctx context.Context, userID int64) ([
 	// 过滤出用户有权限的分组
 	availableGroups := make([]Group, 0)
 	for _, group := range allGroups {
+		if isInternalAugmentRoutingGroup(&group) {
+			continue
+		}
 		if s.canUserBindGroupInternal(user, &group, subscribedGroupIDs) {
 			availableGroups = append(availableGroups, group)
 		}
 	}
 
 	return availableGroups, nil
+}
+
+func isInternalAugmentRoutingGroup(group *Group) bool {
+	if group == nil {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(group.Name))
+	if name == "" {
+		return false
+	}
+	return strings.HasPrefix(name, "augment-") && strings.HasSuffix(name, "-routing")
 }
 
 // canUserBindGroupInternal 内部方法，检查用户是否可以绑定分组（使用预加载的订阅数据）

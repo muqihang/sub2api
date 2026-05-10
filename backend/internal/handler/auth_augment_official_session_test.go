@@ -101,7 +101,7 @@ func TestAugmentOfficialSessionStatusDoesNotExposeSecrets(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
-	now := time.Date(2026, 5, 8, 15, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	store := &handlerOfficialSessionStoreStub{
 		publicView: &service.AugmentOfficialSessionStoredPublicView{
 			UserID:       42,
@@ -149,7 +149,7 @@ func TestAugmentQuickLoginGrantOfficialPassthroughUsesBoundOfficialSession(t *te
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
-	now := time.Date(2026, 5, 8, 15, 10, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	user := &service.User{
 		ID:     42,
 		Email:  "official@sub2api.local",
@@ -272,24 +272,24 @@ func (s *handlerOfficialSessionStoreStub) GetActiveSessionAdminView(ctx context.
 		return nil, nil
 	}
 	return &service.AugmentOfficialSessionStoredAdminView{
-		UserID:               s.publicView.UserID,
-		Mode:                 s.publicView.Mode,
-		Source:               s.publicView.Source,
-		TenantOrigin:         s.publicView.TenantOrigin,
-		PortalOrigin:         s.publicView.PortalOrigin,
-		Scopes:               append([]string(nil), s.publicView.Scopes...),
-		ExpiresAt:            s.publicView.ExpiresAt,
-		LastRefreshAt:        s.publicView.LastRefreshAt,
-		LastSuccessAt:        s.publicView.LastSuccessAt,
-		LastErrorAt:          s.publicView.LastErrorAt,
-		LastErrorCode:        s.publicView.LastErrorCode,
-		Status:               s.publicView.Status,
+		UserID:                  s.publicView.UserID,
+		Mode:                    s.publicView.Mode,
+		Source:                  s.publicView.Source,
+		TenantOrigin:            s.publicView.TenantOrigin,
+		PortalOrigin:            s.publicView.PortalOrigin,
+		Scopes:                  append([]string(nil), s.publicView.Scopes...),
+		ExpiresAt:               s.publicView.ExpiresAt,
+		LastRefreshAt:           s.publicView.LastRefreshAt,
+		LastSuccessAt:           s.publicView.LastSuccessAt,
+		LastErrorAt:             s.publicView.LastErrorAt,
+		LastErrorCode:           s.publicView.LastErrorCode,
+		Status:                  s.publicView.Status,
 		CredentialSchemaVersion: s.publicView.CredentialSchemaVersion,
-		KeyVersion:           s.publicView.KeyVersion,
-		Fingerprint:          s.publicView.Fingerprint,
-		CreatedAt:            s.publicView.CreatedAt,
-		UpdatedAt:            s.publicView.UpdatedAt,
-		RevokedAt:            s.publicView.RevokedAt,
+		KeyVersion:              s.publicView.KeyVersion,
+		Fingerprint:             s.publicView.Fingerprint,
+		CreatedAt:               s.publicView.CreatedAt,
+		UpdatedAt:               s.publicView.UpdatedAt,
+		RevokedAt:               s.publicView.RevokedAt,
 	}, nil
 }
 

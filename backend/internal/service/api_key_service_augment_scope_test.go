@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -222,7 +223,18 @@ func (s *apiKeyAugmentGroupRepoStub) ListWithFilters(ctx context.Context, params
 	panic("unexpected ListWithFilters call")
 }
 func (s *apiKeyAugmentGroupRepoStub) ListActive(ctx context.Context) ([]Group, error) {
-	panic("unexpected ListActive call")
+	out := make([]Group, 0, len(s.groups))
+	for _, group := range s.groups {
+		if group == nil || group.Status != StatusActive {
+			continue
+		}
+		cloned := *group
+		out = append(out, cloned)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 func (s *apiKeyAugmentGroupRepoStub) ListActiveByPlatform(ctx context.Context, platform string) ([]Group, error) {
 	panic("unexpected ListActiveByPlatform call")
@@ -270,7 +282,7 @@ func (apiKeyAugmentUserSubRepoStub) ListByUserID(ctx context.Context, userID int
 	panic("unexpected ListByUserID call")
 }
 func (apiKeyAugmentUserSubRepoStub) ListActiveByUserID(ctx context.Context, userID int64) ([]UserSubscription, error) {
-	panic("unexpected ListActiveByUserID call")
+	return []UserSubscription{}, nil
 }
 func (apiKeyAugmentUserSubRepoStub) ListByGroupID(ctx context.Context, groupID int64, params pagination.PaginationParams) ([]UserSubscription, *pagination.PaginationResult, error) {
 	panic("unexpected ListByGroupID call")
@@ -421,6 +433,53 @@ func TestAPIKeyServiceCreateSetsRestrictedClientProductForAugmentOnlyKey(t *test
 	require.NotNil(t, repo.created)
 	require.NotNil(t, repo.created.RestrictedClientProduct)
 	require.Equal(t, AugmentClientProductZhumeng, *repo.created.RestrictedClientProduct)
+}
+
+func TestAPIKeyServiceGetAvailableGroupsHidesInternalAugmentRoutingGroups(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	repo := &apiKeyAugmentRepoStub{}
+	groupRepo := &apiKeyAugmentGroupRepoStub{
+		groups: map[int64]*Group{
+			11: {
+				ID:       11,
+				Name:     "augment-openai-routing",
+				Status:   StatusActive,
+				Hydrated: true,
+				Platform: PlatformOpenAI,
+			},
+			12: {
+				ID:                     12,
+				Name:                   "Augment Local",
+				Status:                 StatusActive,
+				Hydrated:               true,
+				Platform:               PlatformOpenAI,
+				AugmentGatewayEntitled: true,
+			},
+			13: {
+				ID:       13,
+				Name:     "OpenAI Public",
+				Status:   StatusActive,
+				Hydrated: true,
+				Platform: PlatformOpenAI,
+			},
+		},
+	}
+	svc := NewAPIKeyService(
+		repo,
+		&apiKeyAugmentUserRepoStub{user: user},
+		groupRepo,
+		apiKeyAugmentUserSubRepoStub{},
+		apiKeyAugmentUserGroupRateRepoStub{},
+		nil,
+		&config.Config{Default: config.DefaultConfig{APIKeyPrefix: "sk-"}},
+	)
+
+	groups, err := svc.GetAvailableGroups(context.Background(), user.ID)
+	require.NoError(t, err)
+	require.Len(t, groups, 2)
+	require.Equal(t, []string{"Augment Local", "OpenAI Public"}, []string{groups[0].Name, groups[1].Name})
 }
 
 func TestAPIKeyServiceUpdateRevalidatesEntitlementWhenTogglingAugmentOnlyOn(t *testing.T) {
