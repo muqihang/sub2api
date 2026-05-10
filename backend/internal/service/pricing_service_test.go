@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -215,4 +216,46 @@ func TestParsePricingData_PreservesServiceTierPriorityFields(t *testing.T) {
 	require.InDelta(t, 0.00000025, pricing.CacheReadInputTokenCost, 1e-12)
 	require.InDelta(t, 0.0000005, pricing.CacheReadInputTokenCostPriority, 1e-12)
 	require.True(t, pricing.SupportsServiceTier)
+}
+
+func TestAugmentDedicatedModelsHaveExplicitCatalogPricing(t *testing.T) {
+	body, err := os.ReadFile("../../resources/model-pricing/model_prices_and_context_window.json")
+	require.NoError(t, err)
+
+	svc := &PricingService{}
+	pricingData, err := svc.parsePricingData(body)
+	require.NoError(t, err)
+
+	require.Contains(t, pricingData, "gpt-5.4")
+	require.Contains(t, pricingData, "gpt-5.5")
+	require.Contains(t, pricingData, "gpt-5.4-mini")
+	require.Contains(t, pricingData, "deepseek-v4-pro")
+	require.Contains(t, pricingData, "deepseek-v4-flash")
+
+	require.InDelta(t, 2.5e-6, pricingData["gpt-5.4"].InputCostPerToken, 1e-12)
+	require.InDelta(t, 5e-6, pricingData["gpt-5.4"].InputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 1.5e-5, pricingData["gpt-5.4"].OutputCostPerToken, 1e-12)
+	require.InDelta(t, 3e-5, pricingData["gpt-5.4"].OutputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 2.5e-7, pricingData["gpt-5.4"].CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 5e-7, pricingData["gpt-5.4"].CacheReadInputTokenCostPriority, 1e-12)
+
+	require.InDelta(t, pricingData["gpt-5.4"].InputCostPerToken, pricingData["gpt-5.5"].InputCostPerToken, 1e-12)
+	require.InDelta(t, pricingData["gpt-5.4"].InputCostPerTokenPriority, pricingData["gpt-5.5"].InputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, pricingData["gpt-5.4"].OutputCostPerToken, pricingData["gpt-5.5"].OutputCostPerToken, 1e-12)
+	require.InDelta(t, pricingData["gpt-5.4"].OutputCostPerTokenPriority, pricingData["gpt-5.5"].OutputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, pricingData["gpt-5.4"].CacheReadInputTokenCost, pricingData["gpt-5.5"].CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, pricingData["gpt-5.4"].CacheReadInputTokenCostPriority, pricingData["gpt-5.5"].CacheReadInputTokenCostPriority, 1e-12)
+
+	require.InDelta(t, 7.5e-7, pricingData["gpt-5.4-mini"].InputCostPerToken, 1e-12)
+	require.InDelta(t, 4.5e-6, pricingData["gpt-5.4-mini"].OutputCostPerToken, 1e-12)
+	require.InDelta(t, 7.5e-7, pricingData["gpt-5.4-mini"].CacheCreationInputTokenCost, 1e-12)
+	require.InDelta(t, 7.5e-8, pricingData["gpt-5.4-mini"].CacheReadInputTokenCost, 1e-12)
+
+	require.InDelta(t, 1.74e-6, pricingData["deepseek-v4-pro"].InputCostPerToken, 1e-12)
+	require.InDelta(t, 3.48e-6, pricingData["deepseek-v4-pro"].OutputCostPerToken, 1e-12)
+	require.InDelta(t, 0.145e-6, pricingData["deepseek-v4-pro"].CacheReadInputTokenCost, 1e-12)
+
+	require.InDelta(t, 0.14e-6, pricingData["deepseek-v4-flash"].InputCostPerToken, 1e-12)
+	require.InDelta(t, 0.28e-6, pricingData["deepseek-v4-flash"].OutputCostPerToken, 1e-12)
+	require.InDelta(t, 0.028e-6, pricingData["deepseek-v4-flash"].CacheReadInputTokenCost, 1e-12)
 }

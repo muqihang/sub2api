@@ -89,6 +89,28 @@ func TestAugmentGatewaySettingsRequiresSmokeBeforeVisible(t *testing.T) {
 	require.ErrorIs(t, err, ErrAugmentGatewayModelSmokeRequired)
 }
 
+func TestAugmentGatewaySettingsRejectsEnableWithoutExplicitPricing(t *testing.T) {
+	t.Parallel()
+
+	store := &augmentGatewaySettingsStoreStub{}
+	svc := NewAugmentGatewayAdminService(store, &augmentGatewayGroupReaderStub{}, config.GatewayAugmentConfig{Enabled: true})
+	svc.pricingChecker = augmentGatewayExplicitPricingCheckerStub{
+		priced: map[string]bool{
+			"gpt-5.5": false,
+		},
+	}
+
+	_, err := svc.UpdateModel(context.Background(), "gpt-5.5", AugmentGatewayModelSetting{
+		Enabled:     true,
+		SmokeStatus: AugmentGatewaySmokeStatusPassed,
+	}, AugmentGatewaySettingsMutationMeta{
+		ExpectedVersion: 0,
+		ActorAdminID:    8,
+		RequestID:       "req-model-pricing",
+	})
+	require.ErrorIs(t, err, ErrAugmentGatewayModelExplicitPricingRequired)
+}
+
 func TestAugmentGatewaySettingsVersionConflict(t *testing.T) {
 	t.Parallel()
 
@@ -170,6 +192,54 @@ func TestAugmentGatewaySettingsListModelsExposeSettingsVersion(t *testing.T) {
 	require.NotEmpty(t, rows)
 	require.Equal(t, int64(7), rows[0].SettingsVersion)
 	require.Equal(t, AugmentGatewayEnabledModelsNamespace, rows[0].SettingsNamespace)
+}
+
+func TestAugmentGatewaySettingsListModelsExposeExplicitPricingState(t *testing.T) {
+	t.Parallel()
+
+	store := &augmentGatewaySettingsStoreStub{
+		latest: map[string]*AugmentGatewaySettingsVersion{
+			AugmentGatewayEnabledModelsNamespace: {
+				Namespace: AugmentGatewayEnabledModelsNamespace,
+				Version:   7,
+				SettingsJSON: mustServiceJSON(t, map[string]AugmentGatewayModelSetting{
+					"gpt-5.4": {Enabled: true, SmokeStatus: AugmentGatewaySmokeStatusPassed},
+					"gpt-5.5": {Enabled: true, SmokeStatus: AugmentGatewaySmokeStatusPassed},
+				}),
+			},
+		},
+	}
+	svc := NewAugmentGatewayAdminService(store, &augmentGatewayGroupReaderStub{}, config.GatewayAugmentConfig{
+		Enabled: true,
+		EnabledModels: []string{
+			"gpt-5.4",
+			"gpt-5.5",
+		},
+		ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+			OpenAI: 1001,
+		},
+	})
+	svc.pricingChecker = augmentGatewayExplicitPricingCheckerStub{
+		priced: map[string]bool{
+			"gpt-5.4": true,
+			"gpt-5.5": false,
+		},
+	}
+
+	rows, err := svc.ListModels(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rows, 7)
+
+	byID := make(map[string]AugmentGatewayManagedModel, len(rows))
+	for _, row := range rows {
+		byID[row.Model.ID] = row
+	}
+
+	require.True(t, byID["gpt-5.4"].ExplicitPricing)
+	require.True(t, byID["gpt-5.4"].Enabled)
+	require.False(t, byID["gpt-5.5"].ExplicitPricing)
+	require.False(t, byID["gpt-5.5"].Enabled)
+	require.False(t, byID["gpt-5.5"].Visible)
 }
 
 func TestAugmentGatewaySettingsListEntitlementGroupsFiltersAugmentEntitledActiveGroups(t *testing.T) {

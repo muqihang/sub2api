@@ -73,9 +73,11 @@ func TestAugmentGatewayUsageServiceAdminSummaryAggregatesAcrossAllAugmentRows(t 
 	estimated2 := 0.50
 	settled1 := 1.10
 	settled2 := 0.25
+	freeQuota := 0.40
+	paidBalance := 1.35
 	repo := &augmentGatewayUsageRepoStub{
 		logs: []UsageLog{
-			{AugmentUsageFields: AugmentUsageFields{EstimatedCost: &estimated1, SettledCost: &settled1}},
+			{AugmentUsageFields: AugmentUsageFields{EstimatedCost: &estimated1, SettledCost: &settled1, FreeQuotaApplied: &freeQuota, PaidBalanceApplied: &paidBalance}},
 			{AugmentUsageFields: AugmentUsageFields{EstimatedCost: &estimated2, SettledCost: &settled2}},
 		},
 		page: &pagination.PaginationResult{Page: 1, PageSize: 500, Pages: 1, Total: 2},
@@ -86,6 +88,8 @@ func TestAugmentGatewayUsageServiceAdminSummaryAggregatesAcrossAllAugmentRows(t 
 	require.NoError(t, err)
 	require.Equal(t, 1.75, summary.EstimatedCost)
 	require.Equal(t, 1.35, summary.SettledCost)
+	require.Equal(t, freeQuota, summary.FreeQuota)
+	require.Equal(t, paidBalance, summary.PaidBalance)
 	require.Equal(t, AugmentUsageClientProduct, repo.lastFilters.ClientProduct)
 	require.Zero(t, repo.lastFilters.UserID)
 }

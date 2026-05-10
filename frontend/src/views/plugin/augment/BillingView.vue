@@ -16,7 +16,7 @@
         </div>
 
         <div v-else class="mt-6 space-y-6">
-          <div class="grid gap-4 md:grid-cols-4">
+          <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
             <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
               <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 {{ t('plugin.augment.billing.estimatedCost') }}
@@ -31,6 +31,22 @@
               </p>
               <p class="mt-2 text-xl font-semibold text-gray-900 dark:text-white">
                 {{ summary?.settled_cost ?? 0 }}
+              </p>
+            </div>
+            <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
+              <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                {{ t('plugin.augment.billing.sharedWalletFreeQuota') }}
+              </p>
+              <p class="mt-2 text-xl font-semibold text-gray-900 dark:text-white">
+                {{ summary?.free_quota ?? 0 }}
+              </p>
+            </div>
+            <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
+              <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                {{ t('plugin.augment.billing.sharedWalletPaidBalance') }}
+              </p>
+              <p class="mt-2 text-xl font-semibold text-gray-900 dark:text-white">
+                {{ summary?.paid_balance ?? 0 }}
               </p>
             </div>
             <div class="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
@@ -53,6 +69,18 @@
 
           <OfficialSessionStatusCard :session="officialSession" />
 
+          <section class="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900/40 dark:bg-blue-950/30">
+            <h2 class="text-sm font-semibold text-blue-900 dark:text-blue-100">
+              {{ t('plugin.augment.billing.sharedWalletTitle') }}
+            </h2>
+            <p class="mt-2 text-sm text-blue-800 dark:text-blue-200">
+              {{ t('plugin.augment.billing.sharedWalletDescription') }}
+            </p>
+            <p class="mt-2 text-sm text-blue-800 dark:text-blue-200">
+              {{ t('plugin.augment.billing.singleActiveKey') }}
+            </p>
+          </section>
+
           <section class="rounded-xl border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-900">
             <div class="flex items-center justify-between">
               <h2 class="text-sm font-semibold text-gray-900 dark:text-white">
@@ -69,6 +97,7 @@
                   <tr class="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-dark-700 dark:text-gray-400">
                     <th class="px-3 py-2">{{ t('plugin.augment.billing.model') }}</th>
                     <th class="px-3 py-2">{{ t('plugin.augment.billing.endpoint') }}</th>
+                    <th class="px-3 py-2">{{ t('plugin.augment.billing.attribution') }}</th>
                     <th class="px-3 py-2">{{ tokensLabel }}</th>
                     <th class="px-3 py-2">{{ t('plugin.augment.billing.cacheReadTokens') }}</th>
                     <th class="px-3 py-2">{{ t('plugin.augment.billing.cacheCreationTokens') }}</th>
@@ -83,14 +112,43 @@
                     :key="row.request_id"
                     class="border-b border-gray-100 text-gray-900 dark:border-dark-800 dark:text-gray-100"
                   >
-                    <td class="px-3 py-2">{{ row.model }}</td>
-                    <td class="px-3 py-2">{{ row.endpoint }}</td>
+                    <td class="px-3 py-2">
+                      <div>{{ row.model }}</div>
+                      <div
+                        v-if="row.upstream_model"
+                        class="text-xs text-gray-500 dark:text-gray-400"
+                      >
+                        {{ row.upstream_model }}
+                      </div>
+                    </td>
+                    <td class="px-3 py-2">
+                      <div>{{ row.endpoint }}</div>
+                      <div
+                        v-if="row.request_scope || row.feature_scope"
+                        class="text-xs text-gray-500 dark:text-gray-400"
+                      >
+                        {{ row.request_scope || '—' }} / {{ row.feature_scope || '—' }}
+                      </div>
+                    </td>
+                    <td class="px-3 py-2">
+                      <div class="text-xs text-gray-600 dark:text-gray-300">
+                        {{ t('plugin.augment.billing.groupId') }}: {{ row.group_id ?? '—' }}
+                      </div>
+                      <div class="font-mono text-xs text-gray-500 dark:text-gray-400">
+                        {{ t('plugin.augment.billing.sessionId') }}: {{ row.augment_session_id || '—' }}
+                      </div>
+                    </td>
                     <td class="px-3 py-2">{{ row.tokens }}</td>
                     <td class="px-3 py-2">{{ row.cache_read_tokens }}</td>
                     <td class="px-3 py-2">{{ row.cache_creation_tokens }}</td>
                     <td class="px-3 py-2">{{ row.estimated_cost }}</td>
                     <td class="px-3 py-2">{{ row.settled_cost }}</td>
-                    <td class="px-3 py-2 font-mono text-xs">{{ row.request_id }}</td>
+                    <td class="px-3 py-2">
+                      <div class="font-mono text-xs">{{ row.request_id }}</div>
+                      <div class="text-xs text-gray-500 dark:text-gray-400">
+                        {{ t('plugin.augment.billing.routePolicyVersion') }}: {{ row.route_policy_version || '—' }}
+                      </div>
+                    </td>
                   </tr>
                 </tbody>
               </table>

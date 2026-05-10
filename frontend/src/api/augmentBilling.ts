@@ -13,8 +13,14 @@ export interface AugmentBillingSummary {
 
 export interface AugmentBillingUsageRow {
   model: string
+  upstream_model?: string
   endpoint: string
   status: string
+  request_scope?: string
+  feature_scope?: string
+  group_id?: number
+  augment_session_id?: string
+  route_policy_version?: string
   tokens: number
   cache_read_tokens: number
   cache_creation_tokens: number

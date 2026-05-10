@@ -59,8 +59,14 @@ describe('AugmentBilling', () => {
       rows: [
         {
           model: 'gpt-5.4',
+          upstream_model: 'gpt-5.4-mini',
           endpoint: '/chat-stream',
           status: 'success',
+          request_scope: 'augment_gateway',
+          feature_scope: 'context_engine',
+          group_id: 201,
+          augment_session_id: 'augment-session-1',
+          route_policy_version: '2026-05-10',
           tokens: 222,
           cache_read_tokens: 120,
           cache_creation_tokens: 64,
@@ -148,6 +154,47 @@ describe('AugmentBilling', () => {
     expect(text).toContain('10.01')
     expect(text).toContain('1.5')
     expect(text).toContain('1.2')
+  })
+
+  it('renders shared-wallet free quota and paid balance context', async () => {
+    const wrapper = mount(BillingView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          OfficialSessionStatusCard: { template: '<div class="session-card-stub" />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('1.23')
+    expect(text).toContain('8.78')
+    expect(text).toContain('plugin.augment.billing.sharedWalletTitle')
+    expect(text).toContain('plugin.augment.billing.sharedWalletDescription')
+    expect(text).toContain('plugin.augment.billing.singleActiveKey')
+  })
+
+  it('renders request-level Augment attribution fields', async () => {
+    const wrapper = mount(BillingView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          OfficialSessionStatusCard: { template: '<div class="session-card-stub" />' },
+        },
+      },
+    })
+
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('gpt-5.4-mini')
+    expect(text).toContain('201')
+    expect(text).toContain('augment-session-1')
+    expect(text).toContain('2026-05-10')
+    expect(text).toContain('augment_gateway')
+    expect(text).toContain('context_engine')
   })
 
   it('does not render prompt, retrieval body, source body, token or cookie fields', async () => {

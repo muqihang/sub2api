@@ -12,6 +12,19 @@
         </div>
 
         <div class="mt-6 space-y-6">
+          <section class="rounded-xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900/40 dark:bg-blue-950/30">
+            <h2 class="text-sm font-semibold text-blue-900 dark:text-blue-100">
+              {{ t('plugin.augment.quickLogin.requirements.title') }}
+            </h2>
+            <div class="mt-3 space-y-2 text-sm text-blue-800 dark:text-blue-200">
+              <p>{{ t('plugin.augment.quickLogin.requirements.sharedWallet') }}</p>
+              <p>{{ t('plugin.augment.quickLogin.requirements.dedicatedGroup') }}</p>
+              <p>{{ t('plugin.augment.quickLogin.requirements.dedicatedKey') }}</p>
+              <p>{{ t('plugin.augment.quickLogin.requirements.singleActiveKey') }}</p>
+              <p>{{ t('plugin.augment.quickLogin.requirements.quickLoginDoesNotReplaceKey') }}</p>
+            </div>
+          </section>
+
           <div class="flex flex-wrap gap-3">
             <button
               data-test="quick-login-continue"

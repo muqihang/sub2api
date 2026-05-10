@@ -13,6 +13,12 @@
             <p class="text-sm text-gray-500 dark:text-gray-400">
               {{ t('admin.augmentGateway.operationalGuidance') }}
             </p>
+            <p class="text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.augmentGateway.sharedWalletDescription') }}
+            </p>
+            <p class="text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.augmentGateway.singleActiveKey') }}
+            </p>
           </div>
 
           <div class="flex flex-wrap gap-2">
@@ -248,13 +254,19 @@
                   >
                     {{ row.visible ? t('admin.augmentGateway.visibleState') : t('admin.augmentGateway.notVisibleState') }}
                   </span>
+                  <span
+                    :data-test="`model-pricing-state-${row.model.id}`"
+                    class="inline-flex items-center rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 dark:border-dark-700 dark:text-gray-300"
+                  >
+                    {{ row.explicit_pricing ? t('admin.augmentGateway.explicitPricingState') : t('admin.augmentGateway.missingExplicitPricingState') }}
+                  </span>
                 </div>
               </div>
               <button
                 :data-test="`model-toggle-${row.model.id}`"
                 type="button"
                 class="btn btn-secondary btn-sm"
-                :disabled="row.smoke_status !== 'passed'"
+                :disabled="row.smoke_status !== 'passed' || !row.explicit_pricing"
                 @click="toggleModel(row)"
               >
                 {{ row.enabled ? t('admin.augmentGateway.disableModel') : t('admin.augmentGateway.enableModel') }}
@@ -391,13 +403,19 @@
             <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">
               {{ t('admin.augmentGateway.usageDescription') }}
             </p>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.augmentGateway.sharedWalletDescription') }}
+            </p>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.augmentGateway.singleActiveKey') }}
+            </p>
           </div>
           <span class="inline-flex items-center rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 dark:border-dark-700 dark:text-gray-300">
             {{ t('admin.augmentGateway.configuredRoutePolicyVersion') }}: {{ configuredRoutePolicyVersion }}
           </span>
         </div>
 
-        <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-6">
           <div class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
             <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ t('admin.augmentGateway.cacheHitRatio') }}</p>
             <p class="mt-2 text-xl font-semibold text-gray-900 dark:text-white">{{ formatPercent(summary.usage?.cache_hit_ratio) }}</p>
@@ -413,6 +431,14 @@
           <div class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
             <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ t('admin.augmentGateway.cacheReadTokens') }}</p>
             <p class="mt-2 text-xl font-semibold text-gray-900 dark:text-white">{{ formatInteger(summary.usage?.total_cache_read_tokens) }}</p>
+          </div>
+          <div class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
+            <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ t('admin.augmentGateway.sharedWalletFreeQuota') }}</p>
+            <p class="mt-2 text-xl font-semibold text-gray-900 dark:text-white">{{ formatCurrency(summary.usage?.free_quota) }}</p>
+          </div>
+          <div class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-950/40">
+            <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{{ t('admin.augmentGateway.sharedWalletPaidBalance') }}</p>
+            <p class="mt-2 text-xl font-semibold text-gray-900 dark:text-white">{{ formatCurrency(summary.usage?.paid_balance) }}</p>
           </div>
         </div>
 

@@ -188,6 +188,33 @@ func TestAugmentGatewayRouter_CustomDefaultModel(t *testing.T) {
 	require.Equal(t, AugmentGatewayProviderOpenAI, route.Provider)
 }
 
+func TestAugmentGatewayRouter_ModelWithoutExplicitPricingReturnsTypedUnavailableError(t *testing.T) {
+	router := NewAugmentGatewayRouter(NewAugmentGatewayModelRegistry(
+		config.GatewayAugmentConfig{
+			Enabled:       true,
+			EnabledModels: []string{"gpt-5.5"},
+			ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+				OpenAI: 1001,
+			},
+		},
+		WithAugmentGatewayExplicitPricingChecker(augmentGatewayExplicitPricingCheckerStub{
+			priced: map[string]bool{
+				"gpt-5.5": false,
+			},
+		}),
+	))
+
+	route, err := router.Resolve("gpt-5.5")
+
+	require.Error(t, err)
+	require.Empty(t, route)
+
+	var unavailable *AugmentGatewayModelUnavailableError
+	require.True(t, errors.As(err, &unavailable))
+	require.Equal(t, "gpt-5.5", unavailable.ModelID)
+	require.Equal(t, AugmentGatewayModelUnavailableMissingExplicitPricing, unavailable.Kind)
+}
+
 func newAugmentGatewayRouterRegistryWithProviderGroups(openAIGroupID, deepSeekGroupID int64) *AugmentGatewayModelRegistry {
 	return NewAugmentGatewayModelRegistry(config.GatewayAugmentConfig{
 		Enabled:       true,

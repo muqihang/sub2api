@@ -14,21 +14,29 @@ type AugmentGatewayRegistryStateSource interface {
 type AugmentGatewayModelRegistryOption func(*AugmentGatewayModelRegistry)
 
 type AugmentGatewayModelRegistry struct {
-	fallback                  config.GatewayAugmentConfig
-	orderedIDs                []string
+	fallback                   config.GatewayAugmentConfig
+	orderedIDs                 []string
 	allowMissingProviderGroups bool
-	stateSource               AugmentGatewayRegistryStateSource
+	stateSource                AugmentGatewayRegistryStateSource
+	pricingChecker             AugmentGatewayExplicitPricingChecker
 }
 
 type augmentGatewayRegistryComputedState struct {
-	modelsByID map[string]AugmentGatewayModel
-	enabledIDs map[string]struct{}
-	visibleIDs map[string]struct{}
+	modelsByID         map[string]AugmentGatewayModel
+	explicitPricingIDs map[string]struct{}
+	enabledIDs         map[string]struct{}
+	visibleIDs         map[string]struct{}
 }
 
 func WithAugmentGatewayRegistryStateSource(source AugmentGatewayRegistryStateSource) AugmentGatewayModelRegistryOption {
 	return func(registry *AugmentGatewayModelRegistry) {
 		registry.stateSource = source
+	}
+}
+
+func WithAugmentGatewayExplicitPricingChecker(checker AugmentGatewayExplicitPricingChecker) AugmentGatewayModelRegistryOption {
+	return func(registry *AugmentGatewayModelRegistry) {
+		registry.pricingChecker = checker
 	}
 }
 
@@ -53,6 +61,7 @@ func NewAugmentGatewayModelRegistry(cfg config.GatewayAugmentConfig, options ...
 		fallback:                   cfg,
 		orderedIDs:                 orderedIDs,
 		allowMissingProviderGroups: false,
+		pricingChecker:             defaultAugmentGatewayExplicitPricingChecker,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -86,6 +95,12 @@ func (r *AugmentGatewayModelRegistry) IsEnabled(modelID string) bool {
 	return ok
 }
 
+func (r *AugmentGatewayModelRegistry) HasExplicitPricing(modelID string) bool {
+	state := r.computeState()
+	_, ok := state.explicitPricingIDs[strings.TrimSpace(modelID)]
+	return ok
+}
+
 func (r *AugmentGatewayModelRegistry) Resolve(modelID string) (AugmentGatewayModel, bool) {
 	state := r.computeState()
 	model, ok := state.modelsByID[strings.TrimSpace(modelID)]
@@ -94,18 +109,19 @@ func (r *AugmentGatewayModelRegistry) Resolve(modelID string) (AugmentGatewayMod
 
 func (r *AugmentGatewayModelRegistry) computeState() augmentGatewayRegistryComputedState {
 	state := augmentGatewayRegistryComputedState{
-		modelsByID: make(map[string]AugmentGatewayModel, len(defaultAugmentGatewayModels)),
-		enabledIDs: make(map[string]struct{}, len(defaultAugmentGatewayModels)),
-		visibleIDs: make(map[string]struct{}, len(defaultAugmentGatewayModels)),
+		modelsByID:         make(map[string]AugmentGatewayModel, len(defaultAugmentGatewayModels)),
+		explicitPricingIDs: make(map[string]struct{}, len(defaultAugmentGatewayModels)),
+		enabledIDs:         make(map[string]struct{}, len(defaultAugmentGatewayModels)),
+		visibleIDs:         make(map[string]struct{}, len(defaultAugmentGatewayModels)),
 	}
 	if r == nil {
 		return state
 	}
 
 	registryState := &AugmentGatewayRegistryState{
-		GatewayEnabled:    r.fallback.Enabled,
-		ProviderGroups:    buildFallbackAugmentGatewayProviderGroups(r.fallback),
-		Models:            buildFallbackAugmentGatewayModelSettings(r.fallback),
+		GatewayEnabled:     r.fallback.Enabled,
+		ProviderGroups:     buildFallbackAugmentGatewayProviderGroups(r.fallback),
+		Models:             buildFallbackAugmentGatewayModelSettings(r.fallback),
 		RoutePolicyVersion: AugmentGatewayDefaultRoutePolicyVersion,
 	}
 	if r.stateSource != nil {
@@ -118,9 +134,15 @@ func (r *AugmentGatewayModelRegistry) computeState() augmentGatewayRegistryCompu
 		providerState := registryState.ProviderGroups[model.Provider]
 		model.ProviderGroupID = providerState.GroupID
 		state.modelsByID[model.ID] = model
+		if r.pricingChecker != nil && r.pricingChecker.HasExplicitPricing(model.ID) {
+			state.explicitPricingIDs[model.ID] = struct{}{}
+		}
 
 		modelSetting := normalizeAugmentGatewayModelSetting(registryState.Models[model.ID])
 		if !registryState.GatewayEnabled || !modelSetting.Enabled {
+			continue
+		}
+		if _, ok := state.explicitPricingIDs[model.ID]; !ok {
 			continue
 		}
 		state.enabledIDs[model.ID] = struct{}{}

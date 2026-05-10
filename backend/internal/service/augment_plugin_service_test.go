@@ -180,6 +180,7 @@ func TestAugmentPluginServiceExchangeGrantSingleUse(t *testing.T) {
 		},
 	}
 	entitledGroup := testAugmentEntitledGroup(701)
+	augmentKey := testAugmentOnlyAPIKey(7010, user.ID, "sk-augment-quicklogin-single", fixedNow, entitledGroup)
 
 	svc := NewAugmentPluginService(
 		&config.Config{
@@ -188,6 +189,7 @@ func TestAugmentPluginServiceExchangeGrantSingleUse(t *testing.T) {
 		authStub,
 		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
 		&augmentAPIKeyServiceStub{
+			keysByUser:       map[int64][]APIKey{user.ID: {augmentKey}},
 			availableByUser: map[int64][]Group{user.ID: {entitledGroup}},
 		},
 		&augmentSubscriptionServiceStub{},
@@ -286,12 +288,14 @@ func TestAugmentPluginServiceCreateQuickLoginGrantDefaultsBlankModeToLocalCompat
 		},
 	}
 	entitledGroup := testAugmentEntitledGroup(703)
+	augmentKey := testAugmentOnlyAPIKey(7030, user.ID, "sk-augment-quicklogin-default", time.Date(2026, 4, 21, 10, 30, 0, 0, time.UTC), entitledGroup)
 
 	svc := NewAugmentPluginService(
 		&config.Config{},
 		authStub,
 		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
 		&augmentAPIKeyServiceStub{
+			keysByUser:       map[int64][]APIKey{user.ID: {augmentKey}},
 			availableByUser: map[int64][]Group{user.ID: {entitledGroup}},
 		},
 		&augmentSubscriptionServiceStub{},
@@ -332,12 +336,14 @@ func TestAugmentPluginServiceExchangeGrantOfficialPassthroughUsesExplicitBundle(
 		},
 	}
 	entitledGroup := testAugmentEntitledGroup(704)
+	augmentKey := testAugmentOnlyAPIKey(7040, user.ID, "sk-augment-official-explicit", time.Date(2026, 4, 21, 10, 30, 0, 0, time.UTC), entitledGroup)
 
 	svc := NewAugmentPluginService(
 		&config.Config{},
 		authStub,
 		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
 		&augmentAPIKeyServiceStub{
+			keysByUser:       map[int64][]APIKey{user.ID: {augmentKey}},
 			availableByUser: map[int64][]Group{user.ID: {entitledGroup}},
 		},
 		&augmentSubscriptionServiceStub{},

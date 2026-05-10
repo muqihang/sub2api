@@ -2389,19 +2389,22 @@ func TestAugmentLegacyModelsPrefersCurrentAPIKeyGroupDefaultModel(t *testing.T) 
 		Platform:              service.PlatformOpenAI,
 		Status:                service.StatusActive,
 		Hydrated:              true,
+		AugmentGatewayEntitled: true,
 		AllowMessagesDispatch: false,
 		SupportedModelScopes:  []string{"claude", "gemini_text", "gemini_image"},
 	}
+	product := service.AugmentClientProductZhumeng
 	apiKey := &service.APIKey{
-		ID:        1,
-		UserID:    user.ID,
-		Key:       "sk-compat-openai",
-		Name:      "compat-openai",
-		Status:    service.StatusActive,
-		GroupID:   &openAIGroupID,
-		Group:     &openAIGroup,
-		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
-		User:      user,
+		ID:                      1,
+		UserID:                  user.ID,
+		Key:                     "sk-compat-openai",
+		Name:                    "compat-openai",
+		Status:                  service.StatusActive,
+		RestrictedClientProduct: &product,
+		GroupID:                 &openAIGroupID,
+		Group:                   &openAIGroup,
+		CreatedAt:               time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:                    user,
 	}
 	anthropicGroup := service.Group{
 		ID:                   2,
@@ -2686,14 +2689,27 @@ func newAugmentModelRegistryTestHandlerWithAugmentConfig(augmentCfg config.Gatew
 		Role:     service.RoleAdmin,
 		Status:   service.StatusActive,
 	}
+	entitledGroup := service.Group{
+		ID:                     1042,
+		Name:                   "Augment Models",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	product := service.AugmentClientProductZhumeng
 	apiKey := &service.APIKey{
-		ID:        42,
-		UserID:    user.ID,
-		Key:       "sk-augment-model-registry",
-		Name:      "augment-model-registry",
-		Status:    service.StatusActive,
-		CreatedAt: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
-		User:      user,
+		ID:                      42,
+		UserID:                  user.ID,
+		Key:                     "sk-augment-model-registry",
+		Name:                    "augment-model-registry",
+		GroupID:                 &entitledGroup.ID,
+		Group:                   &entitledGroup,
+		Status:                  service.StatusActive,
+		RestrictedClientProduct: &product,
+		CreatedAt:               time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		User:                    user,
 	}
 	cfg := &config.Config{
 		Server:  config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
@@ -2706,6 +2722,9 @@ func newAugmentModelRegistryTestHandlerWithAugmentConfig(augmentCfg config.Gatew
 		augmentPluginAPIKeyStub{
 			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
 			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {entitledGroup},
+			},
 		},
 		augmentPluginSubscriptionStub{},
 		augmentPluginSettingStub{

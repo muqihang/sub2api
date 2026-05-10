@@ -188,6 +188,32 @@ func TestAugmentGatewayModelRegistryHidesProviderMissingModels(t *testing.T) {
 	require.Empty(t, reg.VisibleModels())
 }
 
+func TestAugmentGatewayModelRegistry_HidesModelsWithoutExplicitPricing(t *testing.T) {
+	reg := NewAugmentGatewayModelRegistry(
+		config.GatewayAugmentConfig{
+			Enabled:       true,
+			EnabledModels: []string{"gpt-5.4", "gpt-5.5"},
+			ProviderGroups: config.GatewayAugmentProviderGroupsConfig{
+				OpenAI: 1001,
+			},
+		},
+		WithAugmentGatewayExplicitPricingChecker(augmentGatewayExplicitPricingCheckerStub{
+			priced: map[string]bool{
+				"gpt-5.4": true,
+				"gpt-5.5": false,
+			},
+		}),
+	)
+
+	require.True(t, reg.HasExplicitPricing("gpt-5.4"))
+	require.False(t, reg.HasExplicitPricing("gpt-5.5"))
+	require.True(t, reg.IsEnabled("gpt-5.4"))
+	require.False(t, reg.IsEnabled("gpt-5.5"))
+	require.True(t, reg.IsVisible("gpt-5.4"))
+	require.False(t, reg.IsVisible("gpt-5.5"))
+	require.Equal(t, []string{"gpt-5.4"}, augmentGatewayModelIDs(reg.VisibleModels()))
+}
+
 func augmentGatewayModelIDs(models []AugmentGatewayModel) []string {
 	ids := make([]string, 0, len(models))
 	for _, model := range models {
@@ -203,4 +229,12 @@ type augmentGatewayRegistryStateSourceStub struct {
 
 func (s *augmentGatewayRegistryStateSourceStub) LoadAugmentGatewayRegistryState(_ context.Context) (*AugmentGatewayRegistryState, error) {
 	return s.state, s.err
+}
+
+type augmentGatewayExplicitPricingCheckerStub struct {
+	priced map[string]bool
+}
+
+func (s augmentGatewayExplicitPricingCheckerStub) HasExplicitPricing(modelID string) bool {
+	return s.priced[modelID]
 }

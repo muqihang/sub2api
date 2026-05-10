@@ -22,6 +22,23 @@
       </div>
 
       <!-- Platform-specific content -->
+      <template v-else-if="augmentOnly">
+        <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/40 dark:bg-amber-950/30">
+          <p class="text-sm font-semibold text-amber-900 dark:text-amber-100">
+            {{ t('keys.useKeyModal.augmentOnly.title') }}
+          </p>
+          <p class="mt-2 text-sm text-amber-800 dark:text-amber-200">
+            {{ t('keys.useKeyModal.augmentOnly.description') }}
+          </p>
+          <p class="mt-3 text-sm text-amber-800 dark:text-amber-200">
+            {{ t('keys.useKeyModal.augmentOnly.quickLoginNote') }}
+          </p>
+          <p class="mt-3 text-sm text-amber-800 dark:text-amber-200">
+            {{ t('keys.useKeyModal.augmentOnly.sharedWalletNote') }}
+          </p>
+        </div>
+      </template>
+
       <template v-else>
         <!-- Description -->
         <p class="text-sm text-gray-600 dark:text-gray-400">
@@ -146,6 +163,7 @@ interface Props {
   apiKey: string
   baseUrl: string
   platform: GroupPlatform | null
+  augmentOnly?: boolean
   allowMessagesDispatch?: boolean
 }
 
@@ -171,6 +189,8 @@ const emit = defineEmits<Emits>()
 
 const { t } = useI18n()
 const { copyToClipboard: clipboardCopy } = useClipboard()
+
+const augmentOnly = computed(() => Boolean(props.augmentOnly))
 
 const copiedIndex = ref<number | null>(null)
 const activeTab = ref<string>('unix')

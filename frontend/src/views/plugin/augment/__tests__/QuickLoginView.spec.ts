@@ -266,6 +266,12 @@ describe('QuickLoginView', () => {
 
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.title')
     expect(wrapper.text()).toContain('plugin.augment.quickLogin.consent.official')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.title')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.sharedWallet')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.dedicatedGroup')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.dedicatedKey')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.singleActiveKey')
+    expect(wrapper.text()).toContain('plugin.augment.quickLogin.requirements.quickLoginDoesNotReplaceKey')
     expect(wrapper.find('[data-test="source-wukong_quick_login"]').exists()).toBe(false)
   })
 

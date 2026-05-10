@@ -12,8 +12,9 @@ type AugmentGatewayModelUnavailableKind string
 type AugmentGatewayProviderUnavailableKind string
 
 const (
-	AugmentGatewayModelUnavailableUnknown  AugmentGatewayModelUnavailableKind = "unknown"
-	AugmentGatewayModelUnavailableDisabled AugmentGatewayModelUnavailableKind = "disabled"
+	AugmentGatewayModelUnavailableUnknown                AugmentGatewayModelUnavailableKind = "unknown"
+	AugmentGatewayModelUnavailableDisabled               AugmentGatewayModelUnavailableKind = "disabled"
+	AugmentGatewayModelUnavailableMissingExplicitPricing AugmentGatewayModelUnavailableKind = "missing_explicit_pricing"
 )
 
 const (
@@ -43,6 +44,8 @@ func (e *AugmentGatewayModelUnavailableError) Error() string {
 		return "<nil>"
 	}
 	switch e.Kind {
+	case AugmentGatewayModelUnavailableMissingExplicitPricing:
+		return fmt.Sprintf("augment gateway model %q is missing explicit pricing", e.ModelID)
 	case AugmentGatewayModelUnavailableDisabled:
 		return fmt.Sprintf("augment gateway model %q is not enabled", e.ModelID)
 	case AugmentGatewayModelUnavailableUnknown:
@@ -100,6 +103,12 @@ func (r *AugmentGatewayRouter) Resolve(modelID string) (AugmentGatewayRoutedMode
 		return AugmentGatewayRoutedModel{}, &AugmentGatewayModelUnavailableError{
 			ModelID: requestedModelID,
 			Kind:    AugmentGatewayModelUnavailableUnknown,
+		}
+	}
+	if !r.registry.HasExplicitPricing(requestedModelID) {
+		return AugmentGatewayRoutedModel{}, &AugmentGatewayModelUnavailableError{
+			ModelID: requestedModelID,
+			Kind:    AugmentGatewayModelUnavailableMissingExplicitPricing,
 		}
 	}
 	if !r.registry.IsEnabled(requestedModelID) {

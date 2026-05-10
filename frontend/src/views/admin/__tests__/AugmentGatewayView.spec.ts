@@ -115,6 +115,8 @@ describe('AugmentGateway admin', () => {
       usage: {
         estimated_cost: 12.3,
         settled_cost: 10.1,
+        free_quota: 1.2,
+        paid_balance: 8.9,
         cache_hit_ratio: 0.42,
         currency: 'USD',
       },
@@ -123,6 +125,7 @@ describe('AugmentGateway admin', () => {
           model: { id: 'gpt-5.4', provider: 'openai', upstream_model: 'gpt-5.4' },
           enabled: true,
           visible: true,
+          explicit_pricing: true,
           smoke_status: 'passed',
           provider_healthy: true,
           settings_version: 4,
@@ -132,6 +135,7 @@ describe('AugmentGateway admin', () => {
           model: { id: 'claude-sonnet-4-5', provider: 'anthropic', upstream_model: 'claude-sonnet-4-5' },
           enabled: false,
           visible: false,
+          explicit_pricing: false,
           smoke_status: 'pending',
           provider_healthy: false,
           settings_version: 4,
@@ -151,6 +155,7 @@ describe('AugmentGateway admin', () => {
           model: { id: 'gpt-5.4', provider: 'openai', upstream_model: 'gpt-5.4' },
           enabled: true,
           visible: true,
+          explicit_pricing: true,
           smoke_status: 'passed',
           provider_healthy: true,
           settings_version: 4,
@@ -160,6 +165,7 @@ describe('AugmentGateway admin', () => {
           model: { id: 'claude-sonnet-4-5', provider: 'anthropic', upstream_model: 'claude-sonnet-4-5' },
           enabled: false,
           visible: false,
+          explicit_pricing: false,
           smoke_status: 'pending',
           provider_healthy: false,
           settings_version: 4,
@@ -302,6 +308,8 @@ describe('AugmentGateway admin', () => {
       usage: {
         estimated_cost: 0,
         settled_cost: 0,
+        free_quota: 0,
+        paid_balance: 0,
         cache_hit_ratio: 0,
         currency: 'USD',
       },
@@ -310,6 +318,7 @@ describe('AugmentGateway admin', () => {
           model: { id: 'gpt-5.4', provider: 'openai', upstream_model: 'gpt-5.4' },
           enabled: true,
           visible: false,
+          explicit_pricing: true,
           smoke_status: 'passed',
           provider_healthy: true,
           settings_version: 4,
@@ -443,6 +452,8 @@ describe('AugmentGateway admin', () => {
         cache_hit_ratio: 0.42,
         estimated_cost: 12.3,
         settled_cost: 10.1,
+        free_quota: 1.2,
+        paid_balance: 8.9,
         currency: 'USD',
       },
       models: [],
@@ -455,6 +466,8 @@ describe('AugmentGateway admin', () => {
     expect(text).toContain('42.0%')
     expect(text).toContain('12.30')
     expect(text).toContain('10.10')
+    expect(text).toContain('1.20')
+    expect(text).toContain('8.90')
   })
 
   it('renders usage routing metadata and admin surface links', async () => {
@@ -470,6 +483,17 @@ describe('AugmentGateway admin', () => {
     expect(wrapper.html()).toContain('/admin/groups')
     expect(wrapper.html()).toContain('/admin/accounts')
     expect(wrapper.html()).toContain('/plugin/augment/quick-login')
+  })
+
+  it('shows shared-wallet and dedicated-key guidance on the admin surface', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('admin.augmentGateway.description')
+    expect(text).toContain('admin.augmentGateway.operationalGuidance')
+    expect(text).toContain('admin.augmentGateway.sharedWalletDescription')
+    expect(text).toContain('admin.augmentGateway.singleActiveKey')
   })
 })
 

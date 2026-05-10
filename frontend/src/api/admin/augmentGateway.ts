@@ -66,6 +66,7 @@ export interface AugmentGatewayModelRow {
   }
   enabled: boolean
   visible: boolean
+  explicit_pricing: boolean
   smoke_status: string
   provider_healthy: boolean
   settings_version: number

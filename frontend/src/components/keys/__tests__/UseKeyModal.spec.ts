@@ -50,4 +50,31 @@ describe('UseKeyModal', () => {
     expect(codeBlock.text()).toContain('"name": "GPT-5.4 Mini"')
     expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
   })
+
+  it('shows augment-only guidance instead of generic client snippets', async () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey: 'sk-augment',
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai',
+        augmentOnly: true,
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('keys.useKeyModal.augmentOnly.title')
+    expect(wrapper.text()).toContain('keys.useKeyModal.augmentOnly.description')
+    expect(wrapper.text()).toContain('keys.useKeyModal.augmentOnly.quickLoginNote')
+    expect(wrapper.find('pre code').exists()).toBe(false)
+  })
 })

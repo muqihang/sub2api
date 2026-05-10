@@ -48,6 +48,10 @@ var (
 		"AUGMENT_GATEWAY_MODEL_SMOKE_REQUIRED",
 		"augment gateway model requires passed smoke status before visible",
 	)
+	ErrAugmentGatewayModelExplicitPricingRequired = infraerrors.BadRequest(
+		"AUGMENT_GATEWAY_MODEL_EXPLICIT_PRICING_REQUIRED",
+		"augment gateway model requires explicit pricing before enablement",
+	)
 	ErrAugmentGatewayModelUnknown = infraerrors.BadRequest(
 		"AUGMENT_GATEWAY_MODEL_UNKNOWN",
 		"augment gateway model is unknown",
@@ -158,9 +162,10 @@ type AugmentGatewayRegistryState struct {
 }
 
 type AugmentGatewayAdminService struct {
-	store       AugmentGatewaySettingsStore
-	groupReader AugmentGatewayGroupReader
-	fallback    config.GatewayAugmentConfig
+	store          AugmentGatewaySettingsStore
+	groupReader    AugmentGatewayGroupReader
+	fallback       config.GatewayAugmentConfig
+	pricingChecker AugmentGatewayExplicitPricingChecker
 }
 
 func NewAugmentGatewayAdminService(
@@ -172,9 +177,10 @@ func NewAugmentGatewayAdminService(
 		fallback.EnabledModels = defaultAugmentGatewayEnabledModelIDs()
 	}
 	return &AugmentGatewayAdminService{
-		store:       store,
-		groupReader: groupReader,
-		fallback:    fallback,
+		store:          store,
+		groupReader:    groupReader,
+		fallback:       fallback,
+		pricingChecker: defaultAugmentGatewayExplicitPricingChecker,
 	}
 }
 
@@ -343,6 +349,9 @@ func (s *AugmentGatewayAdminService) UpdateModel(
 	if setting.Enabled && setting.SmokeStatus != AugmentGatewaySmokeStatusPassed {
 		return nil, ErrAugmentGatewayModelSmokeRequired
 	}
+	if setting.Enabled && s.pricingChecker != nil && !s.pricingChecker.HasExplicitPricing(modelID) {
+		return nil, ErrAugmentGatewayModelExplicitPricingRequired
+	}
 
 	models := buildFallbackAugmentGatewayModelSettings(s.fallback)
 	if s != nil && s.store != nil {
@@ -459,7 +468,11 @@ func (s *AugmentGatewayAdminService) ListModels(ctx context.Context) ([]AugmentG
 	if err != nil {
 		return nil, err
 	}
-	registry := NewAugmentGatewayModelRegistry(s.fallback, WithAugmentGatewayRegistryStateSource(s))
+	registry := NewAugmentGatewayModelRegistry(
+		s.fallback,
+		WithAugmentGatewayRegistryStateSource(s),
+		WithAugmentGatewayExplicitPricingChecker(s.pricingChecker),
+	)
 	version := int64(0)
 	if s != nil && s.store != nil {
 		record, err := s.store.GetLatest(ctx, AugmentGatewayEnabledModelsNamespace)
@@ -477,8 +490,9 @@ func (s *AugmentGatewayAdminService) ListModels(ctx context.Context) ([]AugmentG
 		model.ProviderGroupID = providerState.GroupID
 		out = append(out, AugmentGatewayManagedModel{
 			Model:             model,
-			Enabled:           setting.Enabled,
+			Enabled:           registry.IsEnabled(model.ID),
 			Visible:           registry.IsVisible(model.ID),
+			ExplicitPricing:   registry.HasExplicitPricing(model.ID),
 			SmokeStatus:       setting.SmokeStatus,
 			ProviderHealthy:   providerState.Healthy,
 			SettingsNamespace: AugmentGatewayEnabledModelsNamespace,
@@ -492,6 +506,7 @@ type AugmentGatewayManagedModel struct {
 	Model             AugmentGatewayModel       `json:"model"`
 	Enabled           bool                      `json:"enabled"`
 	Visible           bool                      `json:"visible"`
+	ExplicitPricing   bool                      `json:"explicit_pricing"`
 	SmokeStatus       AugmentGatewaySmokeStatus `json:"smoke_status"`
 	ProviderHealthy   bool                      `json:"provider_healthy"`
 	SettingsNamespace string                    `json:"settings_namespace"`
