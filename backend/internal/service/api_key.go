@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
@@ -65,6 +66,13 @@ type APIKey struct {
 
 func (k *APIKey) IsActive() bool {
 	return k.Status == StatusActive
+}
+
+func (k *APIKey) IsAugmentOnly() bool {
+	if k == nil || k.RestrictedClientProduct == nil {
+		return false
+	}
+	return strings.TrimSpace(*k.RestrictedClientProduct) == AugmentClientProductZhumeng
 }
 
 // HasRateLimits returns true if any rate limit window is configured

@@ -303,7 +303,7 @@ func augmentGatewayAPIKeyAuth(apiKeyAuth middleware.APIKeyAuthMiddleware, authHa
 	return func(c *gin.Context) {
 		originalAuthorization := c.GetHeader("Authorization")
 		if authHandler != nil {
-			if gatewayKey, ok := authHandler.AugmentGatewayAPIKeyFromAuthorization(c.Request.Context(), originalAuthorization); ok {
+			if gatewayKey, ok := authHandler.AugmentGatewayAPIKeyFromAuthorization(c.Request.Context(), originalAuthorization, c.FullPath()); ok {
 				c.Request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(gatewayKey))
 			}
 		}

@@ -17,9 +17,21 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
+
+type augmentOfficialPoolSessionContextKey string
+
+const augmentOfficialPoolSelectedSessionContextKey augmentOfficialPoolSessionContextKey = "augment_official_pool_selected_session"
+
+type augmentOfficialPoolSelectedSession struct {
+	SessionID         int64
+	Source            string
+	TenantOrigin      string
+	FingerprintPrefix string
+}
 
 const (
 	augmentResponseNodeRawResponse  = 0
@@ -712,6 +724,9 @@ func (h *AuthHandler) AugmentLegacyCodebaseRetrieval(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if h.augmentLegacyProxyOfficialEndpoint(c, principal, "/agents/codebase-retrieval") {
+		return
+	}
 
 	var req augmentLegacyCodebaseRetrievalRequest
 	if !augmentLegacyDecodeRequest(c, &req) {
@@ -764,7 +779,7 @@ func (h *AuthHandler) augmentLegacyGatewayBearer(ctx context.Context, principal 
 		return "", err
 	}
 	if summary == nil || strings.TrimSpace(summary.GatewayAPIKey) == "" {
-		return "", service.ErrAPIKeyNotFound
+		return "", service.ErrAugmentScopedAPIKeyRequired
 	}
 	return strings.TrimSpace(summary.GatewayAPIKey), nil
 }
@@ -1618,12 +1633,12 @@ func (h *AuthHandler) augmentLegacyOfficialRouteDecision(c *gin.Context, princip
 		EmergencyOff:          h.augmentLegacyOfficialRouteEmergencyOff(),
 	}
 	if h == nil || h.augmentOfficialSessionService == nil || principal == nil || principal.User == nil {
-		return service.EvaluateAugmentOfficialRoute(input)
+		return h.augmentLegacyOfficialRouteDecisionWithPoolFallback(c, principal, input)
 	}
 
 	view, err := h.augmentOfficialSessionService.GetOfficialSession(c.Request.Context(), principal.User.ID)
 	if err != nil || view == nil {
-		return service.EvaluateAugmentOfficialRoute(input)
+		return h.augmentLegacyOfficialRouteDecisionWithPoolFallback(c, principal, input)
 	}
 
 	input.SessionStatus = h.augmentLegacyOfficialRouteStatusFromView(view)
@@ -1631,7 +1646,120 @@ func (h *AuthHandler) augmentLegacyOfficialRouteDecision(c *gin.Context, princip
 	input.SessionSource = view.Source
 	input.SessionTenantOrigin = view.TenantOrigin
 	input.SessionFingerprintPrefix = view.FingerprintPrefix
+	decision := service.EvaluateAugmentOfficialRoute(input)
+	if decision.AllowLocalHandler || !augmentLegacyOfficialRouteShouldTryPoolFallback(decision) {
+		return decision
+	}
+	return h.augmentLegacyOfficialRouteDecisionWithPoolFallback(c, principal, service.AugmentOfficialRouteCheckInput{
+		Path:                  path,
+		SessionStatus:         service.AugmentOfficialSessionStatusMissing,
+		PresentedSource:       strings.TrimSpace(c.GetHeader("x-augment-official-session-source")),
+		PresentedTenantOrigin: strings.TrimSpace(c.GetHeader("x-augment-official-tenant-origin")),
+		PresentedFingerprint:  strings.TrimSpace(c.GetHeader("x-augment-official-fingerprint")),
+		EmergencyOff:          h.augmentLegacyOfficialRouteEmergencyOff(),
+	})
+}
+
+func augmentLegacyOfficialRouteShouldTryPoolFallback(decision service.AugmentOfficialRouteDecision) bool {
+	switch decision.OfficialSessionStatus {
+	case service.AugmentOfficialSessionStatusTenantMismatch,
+		service.AugmentOfficialSessionStatusSourceMismatch,
+		service.AugmentOfficialSessionStatusFingerprintMismatch:
+		return false
+	default:
+		return !decision.AllowLocalHandler
+	}
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRouteDecisionWithPoolFallback(
+	c *gin.Context,
+	principal *service.AugmentPluginPrincipal,
+	input service.AugmentOfficialRouteCheckInput,
+) service.AugmentOfficialRouteDecision {
+	if poolInput, ok := h.augmentLegacyOfficialRoutePoolInput(c, principal); ok {
+		if h.augmentLegacyOfficialRoutePopulatePoolSession(c, &input, poolInput) {
+			return service.EvaluateAugmentOfficialRoute(input)
+		}
+	}
 	return service.EvaluateAugmentOfficialRoute(input)
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRoutePoolInput(c *gin.Context, principal *service.AugmentPluginPrincipal) (service.AugmentOfficialPoolRouteSessionLookupInput, bool) {
+	if h == nil || h.augmentOfficialPoolService == nil || principal == nil || principal.User == nil || principal.User.ID <= 0 {
+		return service.AugmentOfficialPoolRouteSessionLookupInput{}, false
+	}
+	return service.AugmentOfficialPoolRouteSessionLookupInput{
+		PresentedSource:       strings.TrimSpace(c.GetHeader("x-augment-official-session-source")),
+		PresentedTenantOrigin: strings.TrimSpace(c.GetHeader("x-augment-official-tenant-origin")),
+		PresentedFingerprint:  strings.TrimSpace(c.GetHeader("x-augment-official-fingerprint")),
+	}, true
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRoutePopulatePoolSession(
+	c *gin.Context,
+	input *service.AugmentOfficialRouteCheckInput,
+	poolInput service.AugmentOfficialPoolRouteSessionLookupInput,
+) bool {
+	if h == nil || h.augmentOfficialPoolService == nil || input == nil {
+		return false
+	}
+	view, err := h.augmentOfficialPoolService.ResolveRouteSession(c.Request.Context(), poolInput)
+	if err != nil || view == nil {
+		return false
+	}
+	input.SessionStatus = h.augmentLegacyOfficialRouteStatusFromPoolView(view)
+	input.SessionScopes = append([]string(nil), view.Scopes...)
+	if !augmentLegacyHasOfficialRouteCapabilityScope(input.SessionScopes) {
+		// Platform-managed official pool sessions are trusted by possession of the
+		// encrypted credential payload itself. The captured quick-login session may
+		// only expose public OAuth scopes such as "email", so we synthesize the
+		// internal route capability marker for pool-backed runtime checks here.
+		input.SessionScopes = append(input.SessionScopes, "augment:session")
+	}
+	input.SessionSource = view.Source
+	input.SessionTenantOrigin = view.TenantOrigin
+	input.SessionFingerprintPrefix = view.FingerprintPrefix
+	h.augmentLegacyRememberOfficialPoolSession(c, view)
+	return true
+}
+
+func (h *AuthHandler) augmentLegacyRememberOfficialPoolSession(c *gin.Context, view *service.AugmentOfficialPoolSessionAdminView) {
+	if c == nil || c.Request == nil || view == nil || view.ID <= 0 {
+		return
+	}
+	ctx := context.WithValue(c.Request.Context(), augmentOfficialPoolSelectedSessionContextKey, augmentOfficialPoolSelectedSession{
+		SessionID:         view.ID,
+		Source:            view.Source,
+		TenantOrigin:      view.TenantOrigin,
+		FingerprintPrefix: view.FingerprintPrefix,
+	})
+	c.Request = c.Request.WithContext(ctx)
+}
+
+func augmentLegacySelectedOfficialPoolSession(ctx context.Context) (augmentOfficialPoolSelectedSession, bool) {
+	if ctx == nil {
+		return augmentOfficialPoolSelectedSession{}, false
+	}
+	selected, ok := ctx.Value(augmentOfficialPoolSelectedSessionContextKey).(augmentOfficialPoolSelectedSession)
+	if !ok || selected.SessionID <= 0 {
+		return augmentOfficialPoolSelectedSession{}, false
+	}
+	return selected, true
+}
+
+func (h *AuthHandler) augmentLegacyOfficialRouteStatusFromPoolView(view *service.AugmentOfficialPoolSessionAdminView) service.AugmentOfficialSessionStatus {
+	if view == nil {
+		return service.AugmentOfficialSessionStatusMissing
+	}
+	if view.ExpiresAt != nil && !view.ExpiresAt.After(time.Now().UTC()) {
+		return service.AugmentOfficialSessionStatusExpired
+	}
+	switch strings.TrimSpace(view.Status) {
+	case "", service.AugmentOfficialPoolSessionStatusActive:
+		return service.AugmentOfficialSessionStatusActive
+	default:
+		return service.AugmentOfficialSessionStatusMissing
+	}
 }
 
 func (h *AuthHandler) augmentLegacyOfficialRouteStatusFromView(view *service.AugmentOfficialSessionPublicView) service.AugmentOfficialSessionStatus {
@@ -1648,6 +1776,142 @@ func (h *AuthHandler) augmentLegacyOfficialRouteStatusFromView(view *service.Aug
 		return service.AugmentOfficialSessionStatusRefreshFailed
 	default:
 		return service.AugmentOfficialSessionStatusMissing
+	}
+}
+
+func augmentLegacyHasOfficialRouteCapabilityScope(scopes []string) bool {
+	for _, scope := range scopes {
+		if strings.TrimSpace(scope) == "augment:session" {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *AuthHandler) augmentLegacyOfficialSessionBundleForExecution(
+	ctx context.Context,
+	principal *service.AugmentPluginPrincipal,
+) (*service.AugmentSessionBundle, func(bool, string), error) {
+	noRelease := func(bool, string) {}
+	if principal == nil || principal.User == nil || principal.User.ID <= 0 {
+		return nil, noRelease, service.ErrInvalidToken
+	}
+	if selected, ok := augmentLegacySelectedOfficialPoolSession(ctx); ok && h != nil && h.augmentOfficialPoolService != nil {
+		lease, err := h.augmentOfficialPoolService.AcquireSessionBundleByID(ctx, selected.SessionID)
+		if err != nil || lease == nil || lease.Bundle == nil {
+			return nil, noRelease, service.ErrAugmentOfficialPoolSessionUnavailable
+		}
+		return lease.Bundle, func(success bool, errorCode string) {
+			releaseCtx, cancel := augmentPoolLeaseReleaseContext()
+			_ = lease.Release(releaseCtx, success, errorCode)
+			cancel()
+		}, nil
+	}
+	if h != nil && h.augmentOfficialSessionService != nil {
+		credential, err := h.augmentOfficialSessionService.GetCredentialForRoute(ctx, principal.User.ID)
+		if err == nil && credential != nil {
+			return augmentOfficialSessionBundleFromCredential(credential), noRelease, nil
+		}
+	}
+	if h != nil && h.augmentOfficialPoolService != nil {
+		lease, err := h.augmentOfficialPoolService.AcquireSessionBundle(ctx, nil)
+		if err == nil && lease != nil && lease.Bundle != nil {
+			return lease.Bundle, func(success bool, errorCode string) {
+				releaseCtx, cancel := augmentPoolLeaseReleaseContext()
+				_ = lease.Release(releaseCtx, success, errorCode)
+				cancel()
+			}, nil
+		}
+	}
+	return nil, noRelease, service.ErrAugmentOfficialPoolSessionUnavailable
+}
+
+func (h *AuthHandler) augmentLegacyProxyOfficialEndpoint(
+	c *gin.Context,
+	principal *service.AugmentPluginPrincipal,
+	upstreamPath string,
+) bool {
+	bundle, release, err := h.augmentLegacyOfficialSessionBundleForExecution(c.Request.Context(), principal)
+	if err != nil || bundle == nil || strings.TrimSpace(bundle.TenantURL) == "" || strings.TrimSpace(bundle.AccessToken) == "" {
+		return false
+	}
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		release(false, "read_request_failed")
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return true
+	}
+	upstreamURL := strings.TrimRight(strings.TrimSpace(bundle.TenantURL), "/") + upstreamPath
+	if rawQuery := strings.TrimSpace(c.Request.URL.RawQuery); rawQuery != "" {
+		upstreamURL += "?" + rawQuery
+	}
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, upstreamURL, bytes.NewReader(body))
+	if err != nil {
+		release(false, "build_upstream_request_failed")
+		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
+		return true
+	}
+	augmentLegacyCopyOfficialProxyHeaders(httpReq.Header, c.Request.Header)
+	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bundle.AccessToken))
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		release(false, "official_upstream_request_failed")
+		c.JSON(http.StatusBadGateway, gin.H{"message": err.Error()})
+		return true
+	}
+	defer resp.Body.Close()
+	defer release(true, "")
+
+	augmentLegacyCopyOfficialResponseHeaders(c.Writer.Header(), resp.Header)
+	c.Status(resp.StatusCode)
+	if flusher, ok := c.Writer.(http.Flusher); ok {
+		buffer := make([]byte, 32*1024)
+		for {
+			n, readErr := resp.Body.Read(buffer)
+			if n > 0 {
+				if _, writeErr := c.Writer.Write(buffer[:n]); writeErr != nil {
+					return true
+				}
+				flusher.Flush()
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					break
+				}
+				return true
+			}
+		}
+		return true
+	}
+	_, _ = io.Copy(c.Writer, resp.Body)
+	return true
+}
+
+func augmentLegacyCopyOfficialProxyHeaders(dst, src http.Header) {
+	for key, values := range src {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		switch lower {
+		case "authorization", "connection", "proxy-connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "content-length", "host":
+			continue
+		}
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func augmentLegacyCopyOfficialResponseHeaders(dst, src http.Header) {
+	for key, values := range src {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		switch lower {
+		case "connection", "proxy-connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade", "content-length":
+			continue
+		}
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
 	}
 }
 
@@ -3134,6 +3398,9 @@ func (h *AuthHandler) augmentLegacySimpleTextPromptCompletionThroughGateway(
 func (h *AuthHandler) AugmentLegacyPromptEnhancer(c *gin.Context) {
 	principal, ok := h.augmentLegacyOfficialRoutePrincipal(c, "/prompt-enhancer")
 	if !ok {
+		return
+	}
+	if h.augmentLegacyProxyOfficialEndpoint(c, principal, "/prompt-enhancer") {
 		return
 	}
 	var req augmentLegacyPromptEnhancerRequest

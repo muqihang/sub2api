@@ -405,10 +405,31 @@
         </div>
 
         <div>
+          <div class="mb-3 flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('keys.augmentOnlyLabel') }}</label>
+              <p class="input-hint mt-1">{{ t('keys.augmentOnlyHint') }}</p>
+            </div>
+            <button
+              type="button"
+              @click="toggleAugmentOnly"
+              :class="[
+                'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+                formData.augment_only ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  formData.augment_only ? 'translate-x-4' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
           <label class="input-label">{{ t('keys.groupLabel') }}</label>
           <Select
             v-model="formData.group_id"
-            :options="groupOptions"
+            :options="modalGroupOptions"
             :placeholder="t('keys.selectGroup')"
             :searchable="true"
             :search-placeholder="t('keys.searchGroup')"
@@ -1068,11 +1089,12 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
-	import type { ApiKey, Group, PublicSettings, SubscriptionType, GroupPlatform } from '@/types'
+import type { ApiKey, Group, PublicSettings, SubscriptionType, GroupPlatform } from '@/types'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
+import { applyChangedKeyBindingFields } from '@/views/user/keyBindingUpdate'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
@@ -1089,6 +1111,7 @@ interface GroupOption {
   userRate: number | null
   subscriptionType: SubscriptionType
   platform: GroupPlatform
+  augmentGatewayEntitled: boolean
 }
 
 const appStore = useAppStore()
@@ -1167,6 +1190,7 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 const formData = ref({
   name: '',
   group_id: null as number | null,
+  augment_only: false,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1246,20 +1270,41 @@ const groupOptions = computed(() =>
     rate: group.rate_multiplier,
     userRate: userGroupRates.value[group.id] ?? null,
     subscriptionType: group.subscription_type,
-    platform: group.platform
+    platform: group.platform,
+    augmentGatewayEntitled: group.augment_gateway_entitled
   }))
+)
+
+const entitledGroupOptions = computed(() =>
+  groupOptions.value.filter((group) => group.augmentGatewayEntitled)
+)
+
+const modalGroupOptions = computed(() =>
+  formData.value.augment_only ? entitledGroupOptions.value : groupOptions.value
 )
 
 // Group dropdown search
 const groupSearchQuery = ref('')
 const filteredGroupOptions = computed(() => {
+  const sourceOptions = selectedKeyForGroup.value?.augment_only ? entitledGroupOptions.value : groupOptions.value
   const query = groupSearchQuery.value.trim().toLowerCase()
-  if (!query) return groupOptions.value
-  return groupOptions.value.filter((opt) => {
+  if (!query) return sourceOptions
+  return sourceOptions.filter((opt) => {
     return opt.label.toLowerCase().includes(query) ||
       (opt.description && opt.description.toLowerCase().includes(query))
   })
 })
+
+const toggleAugmentOnly = () => {
+  formData.value.augment_only = !formData.value.augment_only
+  if (!formData.value.augment_only) {
+    return
+  }
+  const currentGroup = groups.value.find((group) => group.id === formData.value.group_id)
+  if (!currentGroup?.augment_gateway_entitled) {
+    formData.value.group_id = null
+  }
+}
 
 const copyToClipboard = async (text: string, keyId: number) => {
   const success = await clipboardCopy(text, t('keys.copied'))
@@ -1390,6 +1435,7 @@ const editKey = (key: ApiKey) => {
   formData.value = {
     name: key.name,
     group_id: key.group_id,
+    augment_only: key.augment_only,
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
     custom_key: '',
@@ -1484,7 +1530,7 @@ const confirmDelete = (key: ApiKey) => {
 const handleSubmit = async () => {
   // Validate group_id is required
   if (formData.value.group_id === null) {
-    appStore.showError(t('keys.groupRequired'))
+    appStore.showError(t(formData.value.augment_only ? 'keys.augmentGroupRequired' : 'keys.groupRequired'))
     return
   }
 
@@ -1538,9 +1584,8 @@ const handleSubmit = async () => {
   submitting.value = true
   try {
     if (showEditModal.value && selectedKey.value) {
-      await keysAPI.update(selectedKey.value.id, {
+      const payload = applyChangedKeyBindingFields({
         name: formData.value.name,
-        group_id: formData.value.group_id,
         status: formData.value.status,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
@@ -1549,13 +1594,21 @@ const handleSubmit = async () => {
         rate_limit_5h: rateLimitData.rate_limit_5h,
         rate_limit_1d: rateLimitData.rate_limit_1d,
         rate_limit_7d: rateLimitData.rate_limit_7d,
+      }, {
+        group_id: selectedKey.value.group_id,
+        augment_only: selectedKey.value.augment_only,
+      }, {
+        group_id: formData.value.group_id,
+        augment_only: formData.value.augment_only,
       })
+      await keysAPI.update(selectedKey.value.id, payload)
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
       const customKey = formData.value.use_custom_key ? formData.value.custom_key : undefined
       await keysAPI.create(
         formData.value.name,
         formData.value.group_id,
+        formData.value.augment_only,
         customKey,
         ipWhitelist,
         ipBlacklist,
@@ -1607,6 +1660,7 @@ const closeModals = () => {
   formData.value = {
     name: '',
     group_id: null,
+    augment_only: false,
     status: 'active',
     use_custom_key: false,
     custom_key: '',

@@ -44,6 +44,7 @@ type AugmentOfficialPoolSessionStore interface {
 	ListAdminSessions(ctx context.Context) ([]AugmentOfficialPoolStoredAdminView, error)
 	GetAdminSession(ctx context.Context, sessionID int64) (*AugmentOfficialPoolStoredAdminView, error)
 	AcquireUsableSession(ctx context.Context, source string, now, leaseUntil time.Time) (*AugmentOfficialPoolStoredCredentialRow, error)
+	AcquireUsableSessionByID(ctx context.Context, sessionID int64, now, leaseUntil time.Time) (*AugmentOfficialPoolStoredCredentialRow, error)
 	ReleaseLease(ctx context.Context, sessionID int64, input AugmentOfficialPoolLeaseReleaseInput) (*AugmentOfficialPoolStoredAdminView, error)
 	RevokePoolSession(ctx context.Context, sessionID int64, status string, now time.Time) (*AugmentOfficialPoolStoredAdminView, error)
 }
@@ -198,6 +199,12 @@ type AugmentOfficialPoolSessionDiagnostics struct {
 	LeasedUntil          *time.Time `json:"leased_until,omitempty"`
 	HealthScore          int        `json:"health_score"`
 	HasCredentialPayload bool       `json:"has_credential_payload"`
+}
+
+type AugmentOfficialPoolRouteSessionLookupInput struct {
+	PresentedSource       string
+	PresentedTenantOrigin string
+	PresentedFingerprint  string
 }
 
 type AugmentOfficialPoolSessionLease struct {
@@ -407,6 +414,42 @@ func (s *AugmentOfficialPoolSessionService) GetAdminSessionDiagnostics(ctx conte
 	}, nil
 }
 
+func (s *AugmentOfficialPoolSessionService) ResolveRouteSession(ctx context.Context, input AugmentOfficialPoolRouteSessionLookupInput) (*AugmentOfficialPoolSessionAdminView, error) {
+	if s == nil || s.store == nil {
+		return nil, infraerrors.ServiceUnavailable("AUGMENT_OFFICIAL_POOL_UNAVAILABLE", "augment official pool service is unavailable")
+	}
+	sessions, err := s.ListAdminSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sourcePriority := []string(nil)
+	if s.sourcePriorityProvider != nil {
+		if loaded, err := s.sourcePriorityProvider.GetSourcePriority(ctx); err == nil {
+			sourcePriority = loaded
+		}
+	}
+	sourceOrder := normalizePoolSourcePriority(sourcePriority)
+	sourceRank := make(map[string]int, len(sourceOrder))
+	for index, source := range sourceOrder {
+		sourceRank[source] = index
+	}
+
+	now := s.now()
+	var best *AugmentOfficialPoolSessionAdminView
+	for i := range sessions {
+		session := sessions[i]
+		if !augmentOfficialPoolSessionUsableForRoutePolicy(session, input, now) {
+			continue
+		}
+		if best == nil || augmentOfficialPoolSessionPreferred(session, *best, sourceRank) {
+			copy := session
+			best = &copy
+		}
+	}
+	return best, nil
+}
+
 func (s *AugmentOfficialPoolSessionService) RevokeSessionForAdmin(ctx context.Context, sessionID int64) (*AugmentOfficialPoolSessionAdminView, error) {
 	return s.updateSessionStatus(ctx, sessionID, AugmentOfficialPoolSessionStatusRevoked)
 }
@@ -450,40 +493,70 @@ func (s *AugmentOfficialPoolSessionService) AcquireSessionBundle(ctx context.Con
 		if row == nil {
 			continue
 		}
-		plaintext, err := s.cipher.Decrypt(row.EncryptedCredentialPayload)
-		if err != nil {
-			_ = s.releaseLease(ctx, row.ID, false, "decrypt_failed")
-			continue
+		lease, err := s.leaseFromStoredCredentialRow(ctx, row)
+		if err == nil && lease != nil {
+			return lease, nil
 		}
-		var payload augmentOfficialEncryptedCredentialPayload
-		if err := json.Unmarshal(plaintext, &payload); err != nil {
-			_ = s.releaseLease(ctx, row.ID, false, "payload_invalid")
-			continue
-		}
-		bundle := &AugmentSessionBundle{
-			AccessToken:   payload.AccessToken,
-			RefreshToken:  payload.RefreshToken,
-			TenantURL:     row.TenantOrigin,
-			Scopes:        append([]string(nil), row.Scopes...),
-			SessionSource: AugmentSessionSourceOfficial,
-		}
-		if row.PortalOrigin != nil {
-			bundle.PortalURL = *row.PortalOrigin
-		}
-		if row.ExpiresAt != nil {
-			bundle.ExpiresAt = row.ExpiresAt.UTC().Format(time.RFC3339)
-		}
-		if _, err := normalizeOfficialAugmentSessionBundle(bundle); err != nil {
-			_ = s.releaseLease(ctx, row.ID, false, "bundle_invalid")
-			continue
-		}
-		return &AugmentOfficialPoolSessionLease{
-			SessionID: row.ID,
-			Bundle:    bundle,
-			service:   s,
-		}, nil
 	}
 	return nil, ErrAugmentOfficialPoolSessionUnavailable
+}
+
+func (s *AugmentOfficialPoolSessionService) AcquireSessionBundleByID(ctx context.Context, sessionID int64) (*AugmentOfficialPoolSessionLease, error) {
+	if s == nil || s.store == nil || s.cipher == nil || sessionID <= 0 {
+		return nil, infraerrors.ServiceUnavailable("AUGMENT_OFFICIAL_POOL_UNAVAILABLE", "augment official pool service is unavailable")
+	}
+	now := s.now()
+	leaseUntil := now.Add(augmentOfficialPoolSessionLeaseTTL)
+	row, err := s.store.AcquireUsableSessionByID(ctx, sessionID, now, leaseUntil)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, ErrAugmentOfficialPoolSessionUnavailable
+	}
+	lease, err := s.leaseFromStoredCredentialRow(ctx, row)
+	if err != nil || lease == nil {
+		return nil, ErrAugmentOfficialPoolSessionUnavailable
+	}
+	return lease, nil
+}
+
+func (s *AugmentOfficialPoolSessionService) leaseFromStoredCredentialRow(ctx context.Context, row *AugmentOfficialPoolStoredCredentialRow) (*AugmentOfficialPoolSessionLease, error) {
+	if row == nil {
+		return nil, ErrAugmentOfficialPoolSessionUnavailable
+	}
+	plaintext, err := s.cipher.Decrypt(row.EncryptedCredentialPayload)
+	if err != nil {
+		_ = s.releaseLease(ctx, row.ID, false, "decrypt_failed")
+		return nil, err
+	}
+	var payload augmentOfficialEncryptedCredentialPayload
+	if err := json.Unmarshal(plaintext, &payload); err != nil {
+		_ = s.releaseLease(ctx, row.ID, false, "payload_invalid")
+		return nil, err
+	}
+	bundle := &AugmentSessionBundle{
+		AccessToken:   payload.AccessToken,
+		RefreshToken:  payload.RefreshToken,
+		TenantURL:     row.TenantOrigin,
+		Scopes:        append([]string(nil), row.Scopes...),
+		SessionSource: AugmentSessionSourceOfficial,
+	}
+	if row.PortalOrigin != nil {
+		bundle.PortalURL = *row.PortalOrigin
+	}
+	if row.ExpiresAt != nil {
+		bundle.ExpiresAt = row.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if _, err := normalizeOfficialAugmentSessionBundle(bundle); err != nil {
+		_ = s.releaseLease(ctx, row.ID, false, "bundle_invalid")
+		return nil, err
+	}
+	return &AugmentOfficialPoolSessionLease{
+		SessionID: row.ID,
+		Bundle:    bundle,
+		service:   s,
+	}, nil
 }
 
 func (s *AugmentOfficialPoolSessionService) releaseLease(ctx context.Context, sessionID int64, success bool, errorCode string) error {
@@ -598,4 +671,63 @@ func normalizePoolSourcePriority(sourcePriority []string) []string {
 		return []string{augmentOfficialSessionSourceOfficialQuickLogin, augmentOfficialSessionSourceWukongQuickLogin}
 	}
 	return out
+}
+
+func augmentOfficialPoolSessionUsableForRoutePolicy(
+	session AugmentOfficialPoolSessionAdminView,
+	input AugmentOfficialPoolRouteSessionLookupInput,
+	now time.Time,
+) bool {
+	if session.Status != AugmentOfficialPoolSessionStatusActive || !session.HasCredentialPayload {
+		return false
+	}
+	if session.ExpiresAt != nil && !session.ExpiresAt.After(now) {
+		return false
+	}
+	if session.CooldownUntil != nil && session.CooldownUntil.After(now) {
+		return false
+	}
+	if presented := strings.TrimSpace(input.PresentedSource); presented != "" && !strings.EqualFold(presented, session.Source) {
+		return false
+	}
+	if presented := strings.TrimSpace(input.PresentedTenantOrigin); presented != "" && presented != strings.TrimSpace(session.TenantOrigin) {
+		return false
+	}
+	if presented := strings.TrimSpace(input.PresentedFingerprint); presented != "" {
+		prefix := strings.TrimSpace(session.FingerprintPrefix)
+		if prefix == "" || !strings.HasPrefix(presented, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+func augmentOfficialPoolSessionPreferred(
+	candidate AugmentOfficialPoolSessionAdminView,
+	current AugmentOfficialPoolSessionAdminView,
+	sourceRank map[string]int,
+) bool {
+	candidateRank := augmentOfficialPoolSourceRank(candidate.Source, sourceRank)
+	currentRank := augmentOfficialPoolSourceRank(current.Source, sourceRank)
+	if candidateRank != currentRank {
+		return candidateRank < currentRank
+	}
+	if candidate.HealthScore != current.HealthScore {
+		return candidate.HealthScore > current.HealthScore
+	}
+	return augmentOfficialPoolSessionSortTime(candidate).After(augmentOfficialPoolSessionSortTime(current))
+}
+
+func augmentOfficialPoolSourceRank(source string, sourceRank map[string]int) int {
+	if rank, ok := sourceRank[strings.TrimSpace(source)]; ok {
+		return rank
+	}
+	return len(sourceRank) + 1
+}
+
+func augmentOfficialPoolSessionSortTime(session AugmentOfficialPoolSessionAdminView) time.Time {
+	if session.LastSuccessAt != nil {
+		return session.LastSuccessAt.UTC()
+	}
+	return session.CreatedAt.UTC()
 }

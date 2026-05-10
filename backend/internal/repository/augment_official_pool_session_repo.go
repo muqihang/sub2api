@@ -339,6 +339,77 @@ func (r *augmentOfficialPoolSessionRepository) AcquireUsableSession(ctx context.
 	return record, nil
 }
 
+func (r *augmentOfficialPoolSessionRepository) AcquireUsableSessionByID(ctx context.Context, sessionID int64, now, leaseUntil time.Time) (*service.AugmentOfficialPoolStoredCredentialRow, error) {
+	query := `
+		WITH candidate AS (
+			SELECT id
+			FROM augment_official_pool_sessions
+			WHERE id = $1
+				AND status = $2
+				AND encrypted_credential_payload IS NOT NULL
+				AND (expires_at IS NULL OR expires_at > $3)
+				AND (cooldown_until IS NULL OR cooldown_until <= $3)
+				AND (leased_until IS NULL OR leased_until <= $3)
+			FOR UPDATE SKIP LOCKED
+		),
+		updated AS (
+			UPDATE augment_official_pool_sessions AS pool
+			SET leased_at = $3, leased_until = $4, updated_at = $3
+			FROM candidate
+			WHERE pool.id = candidate.id
+			RETURNING
+				pool.id,
+				pool.source,
+				pool.tenant_origin,
+				pool.portal_origin,
+				pool.scopes,
+				pool.expires_at,
+				pool.status,
+				pool.encrypted_credential_payload,
+				pool.credential_schema_version,
+				pool.key_version,
+				pool.fingerprint,
+				pool.health_score
+		)
+		SELECT * FROM updated
+	`
+	record := &service.AugmentOfficialPoolStoredCredentialRow{}
+	var scopesJSON []byte
+	var portalOrigin sql.NullString
+	var expiresAt sql.NullTime
+	err := scanSingleRow(ctx, r.sql, query, []any{sessionID, service.AugmentOfficialPoolSessionStatusActive, now, leaseUntil},
+		&record.ID,
+		&record.Source,
+		&record.TenantOrigin,
+		&portalOrigin,
+		&scopesJSON,
+		&expiresAt,
+		&record.Status,
+		&record.EncryptedCredentialPayload,
+		&record.CredentialSchemaVersion,
+		&record.KeyVersion,
+		&record.Fingerprint,
+		&record.HealthScore,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if portalOrigin.Valid {
+		record.PortalOrigin = ptrString(portalOrigin.String)
+	}
+	if expiresAt.Valid {
+		expires := expiresAt.Time.UTC()
+		record.ExpiresAt = &expires
+	}
+	if len(scopesJSON) > 0 {
+		_ = json.Unmarshal(scopesJSON, &record.Scopes)
+	}
+	return record, nil
+}
+
 func (r *augmentOfficialPoolSessionRepository) ReleaseLease(ctx context.Context, sessionID int64, input service.AugmentOfficialPoolLeaseReleaseInput) (*service.AugmentOfficialPoolStoredAdminView, error) {
 	query := `
 		UPDATE augment_official_pool_sessions

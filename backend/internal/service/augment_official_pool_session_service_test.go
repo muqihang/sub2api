@@ -199,7 +199,9 @@ type augmentOfficialPoolSessionStoreStub struct {
 	adminViews          []AugmentOfficialPoolStoredAdminView
 	adminView           *AugmentOfficialPoolStoredAdminView
 	acquireBySource     map[string]*AugmentOfficialPoolStoredCredentialRow
+	acquireByID         map[int64]*AugmentOfficialPoolStoredCredentialRow
 	acquiredSources     []string
+	acquiredIDs         []int64
 	releaseErr          error
 	revokeView          *AugmentOfficialPoolStoredAdminView
 	revokeErr           error
@@ -241,6 +243,14 @@ func (s *augmentOfficialPoolSessionStoreStub) AcquireUsableSession(ctx context.C
 		return nil, nil
 	}
 	return s.acquireBySource[source], nil
+}
+
+func (s *augmentOfficialPoolSessionStoreStub) AcquireUsableSessionByID(ctx context.Context, sessionID int64, now, leaseUntil time.Time) (*AugmentOfficialPoolStoredCredentialRow, error) {
+	s.acquiredIDs = append(s.acquiredIDs, sessionID)
+	if s.acquireByID == nil {
+		return nil, nil
+	}
+	return s.acquireByID[sessionID], nil
 }
 
 func (s *augmentOfficialPoolSessionStoreStub) ReleaseLease(ctx context.Context, sessionID int64, input AugmentOfficialPoolLeaseReleaseInput) (*AugmentOfficialPoolStoredAdminView, error) {

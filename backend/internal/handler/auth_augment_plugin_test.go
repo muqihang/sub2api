@@ -57,8 +57,11 @@ func (s augmentPluginJWTAuthStub) ValidateToken(token string) (*service.JWTClaim
 }
 
 type handlerOfficialPoolSessionStoreStub struct {
-	credentialRow   *service.AugmentOfficialPoolStoredCredentialRow
-	acquiredSources []string
+	credentialRow      *service.AugmentOfficialPoolStoredCredentialRow
+	credentialRowsByID map[int64]*service.AugmentOfficialPoolStoredCredentialRow
+	acquiredSources    []string
+	acquiredSessionIDs []int64
+	adminViews         []service.AugmentOfficialPoolStoredAdminView
 }
 
 func (s *handlerOfficialPoolSessionStoreStub) CreateBindIntent(ctx context.Context, input service.AugmentOfficialPoolBindIntentStoreCreateInput) (*service.AugmentOfficialPoolBindIntentStoreRecord, error) {
@@ -74,15 +77,40 @@ func (s *handlerOfficialPoolSessionStoreStub) UpsertPoolSession(ctx context.Cont
 }
 
 func (s *handlerOfficialPoolSessionStoreStub) ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialPoolStoredAdminView, error) {
-	return nil, nil
+	return append([]service.AugmentOfficialPoolStoredAdminView(nil), s.adminViews...), nil
 }
 
 func (s *handlerOfficialPoolSessionStoreStub) GetAdminSession(ctx context.Context, sessionID int64) (*service.AugmentOfficialPoolStoredAdminView, error) {
+	for i := range s.adminViews {
+		if s.adminViews[i].ID == sessionID {
+			view := s.adminViews[i]
+			return &view, nil
+		}
+	}
 	return nil, nil
 }
 
 func (s *handlerOfficialPoolSessionStoreStub) AcquireUsableSession(ctx context.Context, source string, now, leaseUntil time.Time) (*service.AugmentOfficialPoolStoredCredentialRow, error) {
 	s.acquiredSources = append(s.acquiredSources, source)
+	if s.credentialRow != nil {
+		return s.credentialRow, nil
+	}
+	for _, row := range s.credentialRowsByID {
+		return row, nil
+	}
+	return nil, nil
+}
+
+func (s *handlerOfficialPoolSessionStoreStub) AcquireUsableSessionByID(ctx context.Context, sessionID int64, now, leaseUntil time.Time) (*service.AugmentOfficialPoolStoredCredentialRow, error) {
+	s.acquiredSessionIDs = append(s.acquiredSessionIDs, sessionID)
+	if s.credentialRowsByID != nil {
+		if row, ok := s.credentialRowsByID[sessionID]; ok {
+			return row, nil
+		}
+	}
+	if s.credentialRow != nil && s.credentialRow.ID == sessionID {
+		return s.credentialRow, nil
+	}
 	return s.credentialRow, nil
 }
 
@@ -135,6 +163,17 @@ func (s augmentPluginAPIKeyStub) List(ctx context.Context, userID int64, params 
 }
 
 func (s augmentPluginAPIKeyStub) GetAvailableGroups(ctx context.Context, userID int64) ([]service.Group, error) {
+	if s.availableByUser == nil {
+		return []service.Group{{
+			ID:                     700,
+			Name:                   "Augment Entitled",
+			Platform:               service.PlatformOpenAI,
+			Status:                 service.StatusActive,
+			Hydrated:               true,
+			AugmentGatewayEntitled: true,
+			DefaultMappedModel:     "gpt-5.4",
+		}}, nil
+	}
 	return append([]service.Group(nil), s.availableByUser[userID]...), nil
 }
 
@@ -314,6 +353,48 @@ func TestAugmentQuickLoginGrantAcceptsOfficialPassthroughBundle(t *testing.T) {
 	require.Contains(t, exchangeRec.Body.String(), `"session_source":"official"`)
 }
 
+func TestAugmentQuickLoginGrantRejectsUserWithoutAugmentEntitlement(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     1,
+		Email:  "admin@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			availableByUser: map[int64][]service.Group{
+				user.ID: {},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{},
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/augment/quick-login/grant", bytes.NewReader([]byte(`{"mode":"local_compat"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_ENTITLEMENT_REQUIRED")
+}
+
 func TestAugmentCallbackExchangeIncludesPortalURLFromGrantRecord(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -334,6 +415,21 @@ func TestAugmentCallbackExchangeIncludesPortalURLFromGrantRecord(t *testing.T) {
 		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
 		User:      user,
 	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
+	group := service.Group{
+		ID:                     742,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	apiKey.GroupID = &group.ID
+	apiKey.Group = &group
+	apiKey.GroupID = &group.ID
+	apiKey.Group = &group
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -342,6 +438,9 @@ func TestAugmentCallbackExchangeIncludesPortalURLFromGrantRecord(t *testing.T) {
 		augmentPluginAPIKeyStub{
 			keysByUser: map[int64][]service.APIKey{
 				user.ID: {apiKey},
+			},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
 			},
 		},
 		nil,
@@ -352,6 +451,12 @@ func TestAugmentCallbackExchangeIncludesPortalURLFromGrantRecord(t *testing.T) {
 			},
 		},
 	)
+	summary, err := pluginService.BuildSummary(context.Background(), service.AugmentPluginPrincipal{
+		Kind: "jwt",
+		User: user,
+	})
+	require.NoError(t, err)
+	t.Logf("summary gateway key: %q", summary.GatewayAPIKey)
 
 	handler := NewAuthHandler(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -553,6 +658,19 @@ func TestAugmentQuickLoginGrantIncludesPortalInVSCodeDeeplink(t *testing.T) {
 		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
 		User:      user,
 	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
+	group := service.Group{
+		ID:                     742,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	apiKey.GroupID = &group.ID
+	apiKey.Group = &group
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -561,6 +679,9 @@ func TestAugmentQuickLoginGrantIncludesPortalInVSCodeDeeplink(t *testing.T) {
 		augmentPluginAPIKeyStub{
 			keysByUser: map[int64][]service.APIKey{
 				user.ID: {apiKey},
+			},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
 			},
 		},
 		augmentPluginSubscriptionStub{},
@@ -571,7 +692,6 @@ func TestAugmentQuickLoginGrantIncludesPortalInVSCodeDeeplink(t *testing.T) {
 			},
 		},
 	)
-
 	handler := NewAuthHandler(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
 		nil,
@@ -590,7 +710,7 @@ func TestAugmentQuickLoginGrantIncludesPortalInVSCodeDeeplink(t *testing.T) {
 		handler.AugmentQuickLoginGrant(c)
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/augment/quick-login/grant", bytes.NewReader([]byte(`{}`)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/augment/quick-login/grant", bytes.NewReader([]byte(`{"mode":"local_compat"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://127.0.0.1:18082")
 	rec := httptest.NewRecorder()
@@ -1627,6 +1747,22 @@ func TestAugmentSummaryAPIKeyPrincipalDoesNotLeakSiblingActiveKey(t *testing.T) 
 		CreatedAt: time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC),
 		User:      user,
 	}
+	entitledGroup := service.Group{
+		ID:                     741,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	olderKey.RestrictedClientProduct = &restrictedClientProduct
+	olderKey.GroupID = &entitledGroup.ID
+	olderKey.Group = &entitledGroup
+	currentKey.RestrictedClientProduct = &restrictedClientProduct
+	currentKey.GroupID = &entitledGroup.ID
+	currentKey.Group = &entitledGroup
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -1638,6 +1774,9 @@ func TestAugmentSummaryAPIKeyPrincipalDoesNotLeakSiblingActiveKey(t *testing.T) 
 			},
 			keysByUser: map[int64][]service.APIKey{
 				user.ID: {olderKey, currentKey},
+			},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {entitledGroup},
 			},
 		},
 		augmentPluginSubscriptionStub{},
@@ -1682,6 +1821,106 @@ func TestAugmentSummaryAPIKeyPrincipalDoesNotLeakSiblingActiveKey(t *testing.T) 
 	require.Equal(t, currentKey.Key, body.Data.PrimaryAPIKey)
 }
 
+func TestAugmentSummaryJWTPrincipalFailsWithoutDeterministicAugmentKey(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:          18,
+		Email:       "jwt-summary@sub2api.local",
+		Username:    "jwt-summary",
+		Role:        service.RoleUser,
+		Status:      service.StatusActive,
+		Balance:     2,
+		Concurrency: 1,
+	}
+	entitledGroup := service.Group{
+		ID:                     744,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginJWTAuthStub{token: "jwt-summary-token", userID: user.ID},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			availableByUser: map[int64][]service.Group{
+				user.ID: {entitledGroup},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{public: &service.PublicSettings{SiteName: "Augment Local"}},
+	)
+
+	authHandler := NewAuthHandler(&config.Config{}, nil, nil, nil, nil, nil, nil, pluginService)
+	router := gin.New()
+	router.GET("/api/v1/plugin/augment/summary", authHandler.AugmentSummary)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugin/augment/summary", nil)
+	req.Header.Set("Authorization", "Bearer jwt-summary-token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_SCOPED_API_KEY_REQUIRED")
+}
+
+func TestAugmentQuickLoginGrantFailsWithoutDeterministicAugmentKey(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:     19,
+		Email:  "jwt-grant@sub2api.local",
+		Role:   service.RoleAdmin,
+		Status: service.StatusActive,
+	}
+	entitledGroup := service.Group{
+		ID:                     745,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			availableByUser: map[int64][]service.Group{
+				user.ID: {entitledGroup},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{public: &service.PublicSettings{SiteName: "Augment Local"}},
+	)
+
+	handler := NewAuthHandler(nil, nil, nil, nil, nil, nil, nil, pluginService)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+		c.Next()
+	})
+	router.POST("/api/v1/plugin/augment/quick-login/grant", handler.AugmentQuickLoginGrant)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/augment/quick-login/grant", bytes.NewReader([]byte(`{"mode":"local_compat"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_SCOPED_API_KEY_REQUIRED")
+}
+
 func TestAugmentLegacyBalanceAndModelsCompatibility(t *testing.T) {
 	t.Parallel()
 	gin.SetMode(gin.TestMode)
@@ -1704,14 +1943,19 @@ func TestAugmentLegacyBalanceAndModelsCompatibility(t *testing.T) {
 		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
 		User:      user,
 	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
 	group := service.Group{
-		ID:                 100,
-		Name:               "OpenAI",
-		Platform:           service.PlatformOpenAI,
-		Status:             service.StatusActive,
-		Hydrated:           true,
-		DefaultMappedModel: "gpt-5.4",
+		ID:                     100,
+		Name:                   "OpenAI",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
 	}
+	apiKey.GroupID = &group.ID
+	apiKey.Group = &group
 	expiresAt := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 
 	pluginService := service.NewAugmentPluginService(
@@ -1850,6 +2094,281 @@ func TestAugmentLegacyBalanceAndModelsCompatibility(t *testing.T) {
 	reportRec := httptest.NewRecorder()
 	router.ServeHTTP(reportRec, reportReq)
 	require.Equal(t, http.StatusNoContent, reportRec.Code)
+}
+
+func TestAugmentLegacyBalanceAllowsPlatformPoolSessionWhenOfficialRoutesEnabled(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().UTC()
+	user := &service.User{
+		ID:       1,
+		Email:    "admin@zhumeng.local",
+		Username: "zhumeng",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+		Balance:  40.73,
+	}
+	apiKey := &service.APIKey{
+		ID:        1,
+		UserID:    user.ID,
+		Key:       "sk-compat-balance-pool",
+		Name:      "compat-balance-pool",
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
+	group := service.Group{
+		ID:                     101,
+		Name:                   "OpenAI",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	apiKey.GroupID = &group.ID
+	apiKey.Group = &group
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{
+			Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{
+				Augment: config.GatewayAugmentConfig{Enabled: true},
+			},
+		},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{
+				SiteName:   "逐梦站",
+				APIBaseURL: "http://127.0.0.1:18081",
+			},
+		},
+	)
+
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{
+			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+				ID:                         1,
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://d12.api.augmentcode.com",
+				Scopes:                     []string{"email"},
+				Status:                     service.AugmentOfficialPoolSessionStatusActive,
+				EncryptedCredentialPayload: mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{"access_token": "pool-access-token"}),
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "local",
+				Fingerprint:                "fingerprint-1",
+				HealthScore:                100,
+			},
+			adminViews: []service.AugmentOfficialPoolStoredAdminView{
+				{
+					ID:                   1,
+					Source:               "official_quick_login",
+					TenantOrigin:         "https://d12.api.augmentcode.com",
+					Scopes:               []string{"email"},
+					ExpiresAt:            handlerTimePtr(now.Add(time.Hour)),
+					Status:               service.AugmentOfficialPoolSessionStatusActive,
+					Fingerprint:          "fp-prefix-full",
+					CreatedAt:            now.Add(-time.Hour),
+					UpdatedAt:            now,
+					LastSuccessAt:        handlerTimePtr(now.Add(-time.Minute)),
+					HealthScore:          100,
+					HasCredentialPayload: true,
+				},
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	authHandler := NewAuthHandler(
+		&config.Config{
+			Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{
+				Augment: config.GatewayAugmentConfig{Enabled: true},
+			},
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+		poolService,
+	)
+
+	loginBundle, release, err := authHandler.augmentLegacyOfficialSessionBundleForExecution(context.Background(), &service.AugmentPluginPrincipal{
+		Kind:   "api_key",
+		User:   user,
+		APIKey: apiKey,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, loginBundle)
+	require.Equal(t, "https://d12.api.augmentcode.com", loginBundle.TenantURL)
+	require.Equal(t, "pool-access-token", loginBundle.AccessToken)
+	release(true, "")
+
+	router := gin.New()
+	router.GET("/usage/api/balance", authHandler.AugmentLegacyBalance)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage/api/balance", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"success":true`)
+	require.Contains(t, rec.Body.String(), `"sessionSource":"official"`)
+	require.Contains(t, rec.Body.String(), `"tenantUrl":"https://d12.api.augmentcode.com"`)
+	require.Contains(t, rec.Body.String(), `"accessToken":"pool-access-token"`)
+}
+
+func TestAugmentLegacyLoginTokenPrefersPlatformPoolOfficialSession(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().UTC()
+	user := &service.User{
+		ID:       1,
+		Email:    "admin@zhumeng.local",
+		Username: "zhumeng",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	apiKey := &service.APIKey{
+		ID:        1,
+		UserID:    user.ID,
+		Key:       "sk-compat-login-token-pool",
+		Name:      "compat-login-token-pool",
+		Status:    service.StatusActive,
+		CreatedAt: now,
+		User:      user,
+	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
+	group := service.Group{
+		ID:                     101,
+		Name:                   "OpenAI",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	apiKey.GroupID = &group.ID
+	apiKey.Group = &group
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{
+			Server:  config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{Augment: config.GatewayAugmentConfig{Enabled: true}},
+		},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{
+			public: &service.PublicSettings{SiteName: "逐梦站", APIBaseURL: "http://127.0.0.1:18081"},
+		},
+	)
+
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	encryptedPayload := mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{
+		"access_token": "pool-access-token",
+	})
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{
+			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+				ID:                         1,
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://d12.api.augmentcode.com",
+				Scopes:                     []string{"email"},
+				Status:                     service.AugmentOfficialPoolSessionStatusActive,
+				EncryptedCredentialPayload: encryptedPayload,
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "local",
+				Fingerprint:                "fingerprint-1",
+				HealthScore:                100,
+			},
+			adminViews: []service.AugmentOfficialPoolStoredAdminView{
+				{
+					ID:                   1,
+					Source:               "official_quick_login",
+					TenantOrigin:         "https://d12.api.augmentcode.com",
+					Scopes:               []string{"email"},
+					Status:               service.AugmentOfficialPoolSessionStatusActive,
+					Fingerprint:          "fingerprint-1",
+					CreatedAt:            now,
+					UpdatedAt:            now,
+					LastSuccessAt:        handlerTimePtr(now),
+					HealthScore:          100,
+					HasCredentialPayload: true,
+				},
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	authHandler := NewAuthHandler(
+		&config.Config{
+			Server:  config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
+			Gateway: config.GatewayConfig{Augment: config.GatewayAugmentConfig{Enabled: true}},
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		pluginService,
+		poolService,
+	)
+
+	loginBundle, release, err := authHandler.augmentLegacyOfficialSessionBundleForExecution(context.Background(), &service.AugmentPluginPrincipal{
+		Kind:   "api_key",
+		User:   user,
+		APIKey: apiKey,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, loginBundle)
+	require.Equal(t, "https://d12.api.augmentcode.com", loginBundle.TenantURL)
+	require.Equal(t, "pool-access-token", loginBundle.AccessToken)
+	release(true, "")
+
+	router := gin.New()
+	router.GET("/usage/api/getLoginToken", authHandler.AugmentLegacyLoginToken)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage/api/getLoginToken", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	req.Header.Set("Origin", "http://127.0.0.1:18082")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"tenantUrl":"https://d12.api.augmentcode.com"`)
+	require.Contains(t, rec.Body.String(), `"accessToken":"pool-access-token"`)
+	require.Contains(t, rec.Body.String(), `"sessionSource":"official"`)
 }
 
 func TestAugmentLegacyModelsPrefersCurrentAPIKeyGroupDefaultModel(t *testing.T) {

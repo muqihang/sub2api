@@ -94,6 +94,71 @@ func TestAugmentLegacyChatUnknownModelReturnsAugmentGatewayErrorWithoutFallback(
 	require.Equal(t, 0, *loopbackCalls)
 }
 
+func TestAugmentLegacyChatRejectsGenericAPIKeyForAugmentRoutes(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:       3,
+		Email:    "generic@example.com",
+		Username: "generic",
+		Role:     service.RoleAdmin,
+		Status:   service.StatusActive,
+	}
+	group := service.Group{
+		ID:                 301,
+		Name:               "OpenAI",
+		Platform:           service.PlatformOpenAI,
+		Status:             service.StatusActive,
+		Hydrated:           true,
+		DefaultMappedModel: "gpt-5.4",
+	}
+	apiKey := &service.APIKey{
+		ID:        3,
+		UserID:    user.ID,
+		Key:       "sk-generic-runtime",
+		Name:      "generic-runtime",
+		GroupID:   &group.ID,
+		Group:     &group,
+		Status:    service.StatusActive,
+		CreatedAt: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
+		User:      user,
+	}
+
+	pluginService := service.NewAugmentPluginService(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		augmentPluginAuthStub{},
+		augmentPluginUserStub{user: user},
+		augmentPluginAPIKeyStub{
+			apiKeyByValue: map[string]*service.APIKey{apiKey.Key: apiKey},
+			keysByUser:    map[int64][]service.APIKey{user.ID: {*apiKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: {group},
+			},
+		},
+		augmentPluginSubscriptionStub{},
+		augmentPluginSettingStub{},
+	)
+
+	authHandler := NewAuthHandler(
+		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+		nil, nil, nil, nil, nil, nil,
+		pluginService,
+	)
+
+	router := gin.New()
+	router.POST("/chat", authHandler.AugmentLegacyChat)
+
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"model":"gpt-5.4","message":"deny generic key"}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), "AUGMENT_SCOPED_API_KEY_REQUIRED")
+}
+
 func TestAugmentLegacyChatStreamRoutesThroughAugmentGatewayAndEmitsReasoningToolAndUsageNodes(t *testing.T) {
 	t.Parallel()
 
@@ -1148,6 +1213,67 @@ func TestAugmentLegacyOfficialRequiredRoutesFailClosedWithoutOfficialSession(t *
 	}
 }
 
+func TestAugmentLegacyOfficialRouteDecisionAllowsActivePlatformPoolSession(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().UTC()
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{
+			adminViews: []service.AugmentOfficialPoolStoredAdminView{
+				{
+					ID:                   1,
+					Source:               "official_quick_login",
+					TenantOrigin:         "https://d12.api.augmentcode.com",
+					Scopes:               []string{"email"},
+					ExpiresAt:            handlerTimePtr(now.Add(time.Hour)),
+					Status:               service.AugmentOfficialPoolSessionStatusActive,
+					Fingerprint:          "fp-prefix-full",
+					CreatedAt:            now.Add(-time.Hour),
+					UpdatedAt:            now,
+					LastSuccessAt:        handlerTimePtr(now.Add(-time.Minute)),
+					HealthScore:          100,
+					HasCredentialPayload: true,
+				},
+			},
+		},
+		newHandlerTestAugmentSessionVaultCipher(t),
+		"bind-secret",
+	)
+
+	authHandler := NewAuthHandler(
+		&config.Config{
+			Gateway: config.GatewayConfig{
+				Augment: config.GatewayAugmentConfig{Enabled: true},
+			},
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		poolService,
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/prompt-enhancer", nil)
+
+	resolved, err := poolService.ResolveRouteSession(context.Background(), service.AugmentOfficialPoolRouteSessionLookupInput{})
+	require.NoError(t, err)
+	require.NotNil(t, resolved)
+	require.Equal(t, service.AugmentOfficialPoolSessionStatusActive, resolved.Status)
+
+	decision := authHandler.augmentLegacyOfficialRouteDecision(c, &service.AugmentPluginPrincipal{
+		User: &service.User{ID: 7, Status: service.StatusActive},
+	}, "/prompt-enhancer")
+
+	require.Equal(t, service.AugmentOfficialSessionStatusActive, decision.OfficialSessionStatus)
+	require.Equal(t, service.AugmentOfficialRouteResultAllowed, decision.OfficialRouteResult)
+	require.True(t, decision.AllowLocalHandler)
+}
+
 func TestAugmentLegacyPromptEnhancerCurrentShapeContract(t *testing.T) {
 	t.Parallel()
 
@@ -1199,6 +1325,82 @@ func TestAugmentLegacyPromptEnhancerCurrentShapeContract(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "user", message["role"])
 	require.Contains(t, stringValueOrRawJSON(t, message["content"]), "make this request production-safe")
+}
+
+func TestAugmentLegacyOfficialRouteDecisionFallsBackToPoolWhenUserBoundSessionIsUnusable(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().UTC()
+	cipher := newHandlerTestAugmentSessionVaultCipher(t)
+	officialService := service.NewAugmentOfficialSessionService(
+		&handlerOfficialSessionStoreStub{
+			publicView: &service.AugmentOfficialSessionStoredPublicView{
+				UserID:       7,
+				Source:       "official_quick_login",
+				TenantOrigin: "https://expired.augment.local",
+				Scopes:       []string{"augment:session"},
+				ExpiresAt:    handlerTimePtr(now.Add(-time.Hour)),
+				Status:       "active",
+				Fingerprint:  "expiredfp1234567890",
+				CreatedAt:    now.Add(-2 * time.Hour),
+				UpdatedAt:    now.Add(-2 * time.Hour),
+			},
+		},
+		cipher,
+		"bind-secret",
+	)
+	poolService := service.NewAugmentOfficialPoolSessionService(
+		&handlerOfficialPoolSessionStoreStub{
+			credentialRow: &service.AugmentOfficialPoolStoredCredentialRow{
+				ID:                         11,
+				Source:                     "official_quick_login",
+				TenantOrigin:               "https://pool.augment.local",
+				Scopes:                     []string{"email"},
+				Status:                     service.AugmentOfficialPoolSessionStatusActive,
+				EncryptedCredentialPayload: mustEncryptHandlerOfficialPayload(t, cipher, map[string]string{"access_token": "pool-token"}),
+				CredentialSchemaVersion:    1,
+				KeyVersion:                 "local",
+				Fingerprint:                "pool-fingerprint",
+				HealthScore:                100,
+			},
+			adminViews: []service.AugmentOfficialPoolStoredAdminView{{
+				ID:                   11,
+				Source:               "official_quick_login",
+				TenantOrigin:         "https://pool.augment.local",
+				Scopes:               []string{"email"},
+				ExpiresAt:            handlerTimePtr(now.Add(time.Hour)),
+				Status:               service.AugmentOfficialPoolSessionStatusActive,
+				Fingerprint:          "pool-fingerprint",
+				CreatedAt:            now.Add(-time.Hour),
+				UpdatedAt:            now,
+				LastSuccessAt:        handlerTimePtr(now),
+				HealthScore:          100,
+				HasCredentialPayload: true,
+			}},
+		},
+		cipher,
+		"bind-secret",
+	)
+
+	authHandler := NewAuthHandler(
+		&config.Config{Gateway: config.GatewayConfig{Augment: config.GatewayAugmentConfig{Enabled: true}}},
+		nil, nil, nil, nil, nil, nil,
+		officialService,
+		poolService,
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/prompt-enhancer", nil)
+
+	decision := authHandler.augmentLegacyOfficialRouteDecision(c, &service.AugmentPluginPrincipal{
+		User: &service.User{ID: 7, Status: service.StatusActive},
+	}, "/prompt-enhancer")
+
+	require.Equal(t, service.AugmentOfficialSessionStatusActive, decision.OfficialSessionStatus)
+	require.Equal(t, service.AugmentOfficialRouteResultAllowed, decision.OfficialRouteResult)
+	require.True(t, decision.AllowLocalHandler)
 }
 
 func TestAugmentLegacyPromptEnhancerBareTextNodeCurrentShapeContract(t *testing.T) {
@@ -3849,13 +4051,16 @@ func newAugmentGatewayRuntimeTestServerWithConfig(t *testing.T, executor service
 		CreatedAt: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC),
 		User:      user,
 	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
 	group := service.Group{
-		ID:                 101,
-		Name:               "OpenAI",
-		Platform:           service.PlatformOpenAI,
-		Status:             service.StatusActive,
-		Hydrated:           true,
-		DefaultMappedModel: "gpt-5.4",
+		ID:                     101,
+		Name:                   "OpenAI",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
 	}
 	apiKey.GroupID = &group.ID
 	apiKey.Group = &group

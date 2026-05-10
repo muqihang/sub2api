@@ -432,6 +432,9 @@ func (s *AugmentPluginService) CreateQuickLoginGrant(ctx context.Context, userID
 	if _, err := s.users.GetByID(ctx, userID); err != nil {
 		return nil, err
 	}
+	if err := s.ensureUserHasAugmentEntitlement(ctx, userID); err != nil {
+		return nil, err
+	}
 
 	mode, err := normalizeAugmentQuickLoginMode(options.Mode)
 	if err != nil {
@@ -457,7 +460,10 @@ func (s *AugmentPluginService) CreateQuickLoginGrant(ctx context.Context, userID
 
 	now := s.now()
 	expiresAt := now.Add(augmentPluginGrantTTL)
-	portalURL, _ := s.BuildQuickLoginPortalURL(ctx, userID, options.TenantURL)
+	portalURL, err := s.BuildQuickLoginPortalURL(ctx, userID, options.TenantURL)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -664,6 +670,9 @@ func (s *AugmentPluginService) VerifyPresentedAPIKey(ctx context.Context, key st
 		formatted := apiKey.ExpiresAt.Format(time.RFC3339)
 		result.ExpiresAt = &formatted
 	}
+	if result.Valid {
+		result.Valid = ValidateAugmentScopedAPIKeyAccess(apiKey, "/api/v1/plugin/augment/summary") == nil
+	}
 	if !result.Valid {
 		result.Reason = s.apiKeyInvalidReason(apiKey, user)
 	}
@@ -734,22 +743,20 @@ func (s *AugmentPluginService) BuildSummary(ctx context.Context, principal Augme
 			gatewayKey = principal.APIKey.Key
 		}
 	} else {
-		keys, err := s.listUserAPIKeys(ctx, principal.User.ID)
+		entitledGroups, err := s.listAugmentEntitledGroups(ctx, principal.User.ID)
 		if err != nil {
 			return nil, err
 		}
-
-		primaryKey = selectPrimaryActiveAPIKey(keys)
-		gatewayKey = primaryKey
-		if primaryKey == "" {
-			created, createErr := s.ensurePluginAPIKey(ctx, principal.User.ID)
-			if createErr != nil {
-				return nil, createErr
-			}
-			if created != nil && strings.TrimSpace(created.Key) != "" {
-				primaryKey = created.Key
-				gatewayKey = created.Key
-			}
+		selectedKey, selectionErr, err := s.selectDeterministicAugmentGatewayAPIKey(ctx, principal.User.ID)
+		if err != nil {
+			return nil, err
+		}
+		if selectionErr != nil && len(entitledGroups) > 0 {
+			return nil, selectionErr
+		}
+		if selectionErr == nil && selectedKey != nil && strings.TrimSpace(selectedKey.Key) != "" {
+			primaryKey = strings.TrimSpace(selectedKey.Key)
+			gatewayKey = primaryKey
 		}
 	}
 
@@ -1029,6 +1036,77 @@ func (s *AugmentPluginService) listUserAPIKeys(ctx context.Context, userID int64
 	return keys, nil
 }
 
+func (s *AugmentPluginService) listAugmentEntitledGroups(ctx context.Context, userID int64) (map[int64]Group, error) {
+	if s.apiKeys == nil {
+		return map[int64]Group{}, nil
+	}
+	groups, err := s.apiKeys.GetAvailableGroups(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]Group)
+	for i := range groups {
+		group := groups[i]
+		if group.ID <= 0 || !group.AugmentGatewayEntitled || !group.IsActive() {
+			continue
+		}
+		out[group.ID] = group
+	}
+	return out, nil
+}
+
+func (s *AugmentPluginService) selectDeterministicAugmentGatewayAPIKey(ctx context.Context, userID int64) (*APIKey, error, error) {
+	keys, err := s.listUserAPIKeys(ctx, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	entitledGroups, err := s.listAugmentEntitledGroups(ctx, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	candidates := make([]APIKey, 0, len(keys))
+	for i := range keys {
+		key := keys[i]
+		if !key.IsAugmentOnly() || key.Status != StatusActive || key.IsExpired() || key.IsQuotaExhausted() || key.GroupID == nil {
+			continue
+		}
+		group, ok := entitledGroups[*key.GroupID]
+		if !ok {
+			continue
+		}
+		if key.Group == nil {
+			groupCopy := group
+			key.Group = &groupCopy
+		}
+		candidates = append(candidates, key)
+	}
+
+	switch len(candidates) {
+	case 0:
+		return nil, ErrAugmentScopedAPIKeyRequired, nil
+	case 1:
+		selected := candidates[0]
+		return &selected, nil, nil
+	default:
+		return nil, ErrAugmentScopedAPIKeyAmbiguous, nil
+	}
+}
+
+func (s *AugmentPluginService) ensureUserHasAugmentEntitlement(ctx context.Context, userID int64) error {
+	if s.apiKeys == nil {
+		return nil
+	}
+	entitledGroups, err := s.listAugmentEntitledGroups(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if len(entitledGroups) == 0 {
+		return ErrAugmentEntitlementRequired
+	}
+	return nil
+}
+
 func (s *AugmentPluginService) publicSettings(ctx context.Context) (*PublicSettings, error) {
 	if s.settings == nil {
 		return nil, nil
@@ -1051,6 +1129,8 @@ func (s *AugmentPluginService) apiKeyInvalidReason(apiKey *APIKey, user *User) s
 	switch {
 	case apiKey == nil:
 		return "invalid_api_key"
+	case ValidateAugmentScopedAPIKeyAccess(apiKey, "/api/v1/plugin/augment/summary") != nil:
+		return "augment_key_required"
 	case user == nil:
 		return "user_not_found"
 	case !user.IsActive():

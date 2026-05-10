@@ -20,8 +20,16 @@ import (
 )
 
 var (
-	ErrAPIKeyNotFound     = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
-	ErrGroupNotAllowed    = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
+	ErrAPIKeyNotFound       = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
+	ErrGroupNotAllowed      = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
+	ErrAugmentGroupRequired = infraerrors.BadRequest(
+		"AUGMENT_GROUP_REQUIRED",
+		"an Augment-only API key requires an Augment-enabled group",
+	)
+	ErrAugmentGroupNotEntitled = infraerrors.Forbidden(
+		"AUGMENT_GROUP_NOT_ENTITLED",
+		"selected group is not enabled for Augment gateway access",
+	)
 	ErrAPIKeyExists       = infraerrors.Conflict("API_KEY_EXISTS", "api key already exists")
 	ErrAPIKeyTooShort     = infraerrors.BadRequest("API_KEY_TOO_SHORT", "api key must be at least 16 characters")
 	ErrAPIKeyInvalidChars = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
@@ -151,6 +159,7 @@ type APIKeyAuthCacheInvalidator interface {
 type CreateAPIKeyRequest struct {
 	Name        string   `json:"name"`
 	GroupID     *int64   `json:"group_id"`
+	AugmentOnly bool     `json:"augment_only"`
 	CustomKey   *string  `json:"custom_key"`   // 可选的自定义key
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
@@ -169,6 +178,7 @@ type CreateAPIKeyRequest struct {
 type UpdateAPIKeyRequest struct {
 	Name        *string  `json:"name"`
 	GroupID     *int64   `json:"group_id"`
+	AugmentOnly *bool    `json:"augment_only"`
 	Status      *string  `json:"status"`
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单（空数组清空）
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单（空数组清空）
@@ -325,6 +335,35 @@ func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group 
 	return user.CanBindGroup(group.ID, group.IsExclusive)
 }
 
+func augmentRestrictedClientProduct(augmentOnly bool) *string {
+	if !augmentOnly {
+		return nil
+	}
+	product := AugmentClientProductZhumeng
+	return &product
+}
+
+func (s *APIKeyService) validateAPIKeyBindingGroup(ctx context.Context, user *User, groupID *int64, augmentOnly bool) (*Group, error) {
+	if groupID == nil {
+		if augmentOnly {
+			return nil, ErrAugmentGroupRequired
+		}
+		return nil, nil
+	}
+
+	group, err := s.groupRepo.GetByID(ctx, *groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get group: %w", err)
+	}
+	if !s.canUserBindGroup(ctx, user, group) {
+		return nil, ErrGroupNotAllowed
+	}
+	if augmentOnly && !group.AugmentGatewayEntitled {
+		return nil, ErrAugmentGroupNotEntitled
+	}
+	return group, nil
+}
+
 // Create 创建API Key
 func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
 	// 验证用户存在
@@ -347,17 +386,8 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
-	// 验证分组权限（如果指定了分组）
-	if req.GroupID != nil {
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
-		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
-		}
-
-		// 检查用户是否可以绑定该分组
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
-		}
+	if _, err := s.validateAPIKeyBindingGroup(ctx, user, req.GroupID, req.AugmentOnly); err != nil {
+		return nil, err
 	}
 
 	var key string
@@ -397,18 +427,19 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 
 	// 创建API Key记录
 	apiKey := &APIKey{
-		UserID:      userID,
-		Key:         key,
-		Name:        req.Name,
-		GroupID:     req.GroupID,
-		Status:      StatusActive,
-		IPWhitelist: req.IPWhitelist,
-		IPBlacklist: req.IPBlacklist,
-		Quota:       req.Quota,
-		QuotaUsed:   0,
-		RateLimit5h: req.RateLimit5h,
-		RateLimit1d: req.RateLimit1d,
-		RateLimit7d: req.RateLimit7d,
+		UserID:                  userID,
+		Key:                     key,
+		Name:                    req.Name,
+		GroupID:                 req.GroupID,
+		Status:                  StatusActive,
+		RestrictedClientProduct: augmentRestrictedClientProduct(req.AugmentOnly),
+		IPWhitelist:             req.IPWhitelist,
+		IPBlacklist:             req.IPBlacklist,
+		Quota:                   req.Quota,
+		QuotaUsed:               0,
+		RateLimit5h:             req.RateLimit5h,
+		RateLimit1d:             req.RateLimit1d,
+		RateLimit7d:             req.RateLimit7d,
 	}
 
 	// Set expiration time if specified
@@ -541,23 +572,30 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		apiKey.Name = *req.Name
 	}
 
+	targetGroupID := apiKey.GroupID
 	if req.GroupID != nil {
-		// 验证分组权限
+		targetGroupID = req.GroupID
+	}
+	targetAugmentOnly := apiKey.IsAugmentOnly()
+	if req.AugmentOnly != nil {
+		targetAugmentOnly = *req.AugmentOnly
+	}
+
+	if req.GroupID != nil || req.AugmentOnly != nil {
 		user, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("get user: %w", err)
 		}
-
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
-		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
+		if _, err := s.validateAPIKeyBindingGroup(ctx, user, targetGroupID, targetAugmentOnly); err != nil {
+			return nil, err
 		}
+	}
 
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
-		}
-
+	if req.GroupID != nil {
 		apiKey.GroupID = req.GroupID
+	}
+	if req.AugmentOnly != nil {
+		apiKey.RestrictedClientProduct = augmentRestrictedClientProduct(*req.AugmentOnly)
 	}
 
 	if req.Status != nil {

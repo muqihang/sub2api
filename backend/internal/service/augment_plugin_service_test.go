@@ -77,6 +77,9 @@ func (s *augmentAPIKeyServiceStub) List(ctx context.Context, userID int64, param
 }
 
 func (s *augmentAPIKeyServiceStub) GetAvailableGroups(ctx context.Context, userID int64) ([]Group, error) {
+	if s.availableByUser == nil {
+		return []Group{testAugmentEntitledGroup(700)}, nil
+	}
 	return append([]Group(nil), s.availableByUser[userID]...), nil
 }
 
@@ -117,6 +120,35 @@ func (s *augmentSettingServiceStub) GetSiteName(ctx context.Context) string {
 	return "Sub2API"
 }
 
+func testAugmentEntitledGroup(id int64) Group {
+	return Group{
+		ID:                     id,
+		Name:                   "Augment Entitled",
+		Platform:               PlatformOpenAI,
+		Status:                 StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+}
+
+func testAugmentOnlyAPIKey(id, userID int64, key string, createdAt time.Time, group Group) APIKey {
+	groupID := group.ID
+	product := AugmentClientProductZhumeng
+	groupCopy := group
+	return APIKey{
+		ID:                      id,
+		UserID:                  userID,
+		Key:                     key,
+		Name:                    key,
+		GroupID:                 &groupID,
+		Group:                   &groupCopy,
+		Status:                  StatusActive,
+		RestrictedClientProduct: &product,
+		CreatedAt:               createdAt,
+	}
+}
+
 func TestAugmentPluginServiceExchangeGrantSingleUse(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +179,7 @@ func TestAugmentPluginServiceExchangeGrantSingleUse(t *testing.T) {
 			return nil, ErrInvalidToken
 		},
 	}
+	entitledGroup := testAugmentEntitledGroup(701)
 
 	svc := NewAugmentPluginService(
 		&config.Config{
@@ -154,7 +187,9 @@ func TestAugmentPluginServiceExchangeGrantSingleUse(t *testing.T) {
 		},
 		authStub,
 		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
-		&augmentAPIKeyServiceStub{},
+		&augmentAPIKeyServiceStub{
+			availableByUser: map[int64][]Group{user.ID: {entitledGroup}},
+		},
 		&augmentSubscriptionServiceStub{},
 		&augmentSettingServiceStub{
 			public: &PublicSettings{SiteName: "Local Site"},
@@ -193,6 +228,7 @@ func TestAugmentPluginServiceCreateQuickLoginGrantOfficialPassthroughRequiresExp
 		Role:   RoleUser,
 		Status: StatusActive,
 	}
+	entitledGroup := testAugmentEntitledGroup(702)
 
 	svc := NewAugmentPluginService(
 		&config.Config{},
@@ -208,7 +244,9 @@ func TestAugmentPluginServiceCreateQuickLoginGrantOfficialPassthroughRequiresExp
 			},
 		},
 		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
-		&augmentAPIKeyServiceStub{},
+		&augmentAPIKeyServiceStub{
+			availableByUser: map[int64][]Group{user.ID: {entitledGroup}},
+		},
 		&augmentSubscriptionServiceStub{},
 		&augmentSettingServiceStub{public: &PublicSettings{SiteName: "Local Site"}},
 	)
@@ -247,12 +285,15 @@ func TestAugmentPluginServiceCreateQuickLoginGrantDefaultsBlankModeToLocalCompat
 			return nil, ErrInvalidToken
 		},
 	}
+	entitledGroup := testAugmentEntitledGroup(703)
 
 	svc := NewAugmentPluginService(
 		&config.Config{},
 		authStub,
 		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
-		&augmentAPIKeyServiceStub{},
+		&augmentAPIKeyServiceStub{
+			availableByUser: map[int64][]Group{user.ID: {entitledGroup}},
+		},
 		&augmentSubscriptionServiceStub{},
 		&augmentSettingServiceStub{public: &PublicSettings{SiteName: "Local Site"}},
 	)
@@ -290,12 +331,15 @@ func TestAugmentPluginServiceExchangeGrantOfficialPassthroughUsesExplicitBundle(
 			return nil, ErrInvalidToken
 		},
 	}
+	entitledGroup := testAugmentEntitledGroup(704)
 
 	svc := NewAugmentPluginService(
 		&config.Config{},
 		authStub,
 		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
-		&augmentAPIKeyServiceStub{},
+		&augmentAPIKeyServiceStub{
+			availableByUser: map[int64][]Group{user.ID: {entitledGroup}},
+		},
 		&augmentSubscriptionServiceStub{},
 		&augmentSettingServiceStub{public: &PublicSettings{SiteName: "Local Site"}},
 	)
@@ -711,7 +755,7 @@ func TestAugmentPluginServiceBuildSummaryAndCompatMetadata(t *testing.T) {
 	require.Len(t, compat.ModelRegistry.Groups, 2)
 }
 
-func TestAugmentPluginServiceBuildSummaryCreatesPluginKeyWhenMissing(t *testing.T) {
+func TestAugmentPluginServiceBuildSummaryFailsWhenEntitledUserHasNoDeterministicAugmentKey(t *testing.T) {
 	t.Parallel()
 
 	user := &User{
@@ -725,6 +769,7 @@ func TestAugmentPluginServiceBuildSummaryCreatesPluginKeyWhenMissing(t *testing.
 	}
 
 	var createCalls int
+	entitledGroup := testAugmentEntitledGroup(706)
 	svc := NewAugmentPluginService(
 		&config.Config{},
 		&augmentAuthServiceStub{
@@ -742,6 +787,9 @@ func TestAugmentPluginServiceBuildSummaryCreatesPluginKeyWhenMissing(t *testing.
 		&augmentAPIKeyServiceStub{
 			keysByUser: map[int64][]APIKey{
 				user.ID: {},
+			},
+			availableByUser: map[int64][]Group{
+				user.ID: {entitledGroup},
 			},
 			createFn: func(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
 				createCalls++
@@ -767,10 +815,49 @@ func TestAugmentPluginServiceBuildSummaryCreatesPluginKeyWhenMissing(t *testing.
 		Kind: augmentPrincipalKindJWT,
 		User: user,
 	})
-	require.NoError(t, err)
-	require.Equal(t, 1, createCalls)
-	require.Equal(t, "sk-plugin-generated", summary.GatewayAPIKey)
-	require.Equal(t, "sk-plugin-generated", summary.PrimaryAPIKey)
+	require.ErrorIs(t, err, ErrAugmentScopedAPIKeyRequired)
+	require.Equal(t, 0, createCalls)
+	require.Nil(t, summary)
+}
+
+func TestAugmentPluginServiceBuildSummaryFailsWhenEntitledUserHasMultipleAugmentKeys(t *testing.T) {
+	t.Parallel()
+
+	user := &User{
+		ID:          16,
+		Email:       "ambiguous@example.com",
+		Username:    "ambiguous-user",
+		Role:        RoleUser,
+		Status:      StatusActive,
+		Balance:     1.5,
+		Concurrency: 1,
+	}
+	group := testAugmentEntitledGroup(707)
+	keyOne := testAugmentOnlyAPIKey(51, user.ID, "sk-augment-one", time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC), group)
+	keyTwo := testAugmentOnlyAPIKey(52, user.ID, "sk-augment-two", time.Date(2026, 4, 20, 13, 0, 0, 0, time.UTC), group)
+
+	svc := NewAugmentPluginService(
+		&config.Config{},
+		&augmentAuthServiceStub{validateTokenFn: func(token string) (*JWTClaims, error) { return nil, ErrInvalidToken }},
+		&augmentUserServiceStub{users: map[int64]*User{user.ID: user}},
+		&augmentAPIKeyServiceStub{
+			keysByUser: map[int64][]APIKey{
+				user.ID: {keyOne, keyTwo},
+			},
+			availableByUser: map[int64][]Group{
+				user.ID: {group},
+			},
+		},
+		&augmentSubscriptionServiceStub{},
+		&augmentSettingServiceStub{public: &PublicSettings{SiteName: "Augment Local"}},
+	)
+
+	summary, err := svc.BuildSummary(context.Background(), AugmentPluginPrincipal{
+		Kind: augmentPrincipalKindJWT,
+		User: user,
+	})
+	require.ErrorIs(t, err, ErrAugmentScopedAPIKeyAmbiguous)
+	require.Nil(t, summary)
 }
 
 func TestAugmentPluginServiceBuildSummaryJWTPrincipalSkipsExpiredAndQuotaExhaustedKeys(t *testing.T) {
@@ -778,6 +865,7 @@ func TestAugmentPluginServiceBuildSummaryJWTPrincipalSkipsExpiredAndQuotaExhaust
 
 	fixedNow := time.Date(2026, 4, 25, 23, 0, 0, 0, time.UTC)
 	expiredAt := fixedNow.Add(-time.Hour)
+	entitledGroup := testAugmentEntitledGroup(705)
 	user := &User{
 		ID:          15,
 		Email:       "usable-key@example.com",
@@ -788,33 +876,12 @@ func TestAugmentPluginServiceBuildSummaryJWTPrincipalSkipsExpiredAndQuotaExhaust
 		Concurrency: 1,
 	}
 
-	expiredKey := APIKey{
-		ID:        40,
-		UserID:    user.ID,
-		Key:       "sk-expired-active",
-		Name:      "expired-active",
-		Status:    StatusActive,
-		CreatedAt: fixedNow.Add(-3 * time.Hour),
-		ExpiresAt: &expiredAt,
-	}
-	quotaExhaustedKey := APIKey{
-		ID:        41,
-		UserID:    user.ID,
-		Key:       "sk-quota-active",
-		Name:      "quota-active",
-		Status:    StatusActive,
-		CreatedAt: fixedNow.Add(-2 * time.Hour),
-		Quota:     10,
-		QuotaUsed: 10,
-	}
-	usableKey := APIKey{
-		ID:        42,
-		UserID:    user.ID,
-		Key:       "sk-usable-active",
-		Name:      "usable-active",
-		Status:    StatusActive,
-		CreatedAt: fixedNow.Add(-time.Hour),
-	}
+	expiredKey := testAugmentOnlyAPIKey(40, user.ID, "sk-expired-active", fixedNow.Add(-3*time.Hour), entitledGroup)
+	expiredKey.ExpiresAt = &expiredAt
+	quotaExhaustedKey := testAugmentOnlyAPIKey(41, user.ID, "sk-quota-active", fixedNow.Add(-2*time.Hour), entitledGroup)
+	quotaExhaustedKey.Quota = 10
+	quotaExhaustedKey.QuotaUsed = 10
+	usableKey := testAugmentOnlyAPIKey(42, user.ID, "sk-usable-active", fixedNow.Add(-time.Hour), entitledGroup)
 
 	svc := NewAugmentPluginService(
 		&config.Config{},
@@ -833,6 +900,9 @@ func TestAugmentPluginServiceBuildSummaryJWTPrincipalSkipsExpiredAndQuotaExhaust
 		&augmentAPIKeyServiceStub{
 			keysByUser: map[int64][]APIKey{
 				user.ID: {expiredKey, quotaExhaustedKey, usableKey},
+			},
+			availableByUser: map[int64][]Group{
+				user.ID: {entitledGroup},
 			},
 		},
 		&augmentSubscriptionServiceStub{},

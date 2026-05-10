@@ -324,7 +324,7 @@ func (h *AuthHandler) augmentPrincipalFromBearer(c *gin.Context) (*service.Augme
 		return nil, false
 	}
 
-	principal, err := h.augmentPluginService.ResolvePrincipalFromBearer(c.Request.Context(), token)
+	principal, err := h.resolveAugmentPrincipalFromBearer(c.Request.Context(), token, c.FullPath())
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return nil, false
@@ -332,7 +332,20 @@ func (h *AuthHandler) augmentPrincipalFromBearer(c *gin.Context) (*service.Augme
 	return principal, true
 }
 
-func (h *AuthHandler) AugmentGatewayAPIKeyFromAuthorization(ctx context.Context, authorization string) (string, bool) {
+func (h *AuthHandler) resolveAugmentPrincipalFromBearer(ctx context.Context, token, path string) (*service.AugmentPluginPrincipal, error) {
+	principal, err := h.augmentPluginService.ResolvePrincipalFromBearer(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if principal.Kind == "api_key" {
+		if err := service.ValidateAugmentScopedAPIKeyAccess(principal.APIKey, path); err != nil {
+			return nil, err
+		}
+	}
+	return principal, nil
+}
+
+func (h *AuthHandler) AugmentGatewayAPIKeyFromAuthorization(ctx context.Context, authorization, path string) (string, bool) {
 	if h == nil || h.augmentPluginService == nil {
 		return "", false
 	}
@@ -340,7 +353,7 @@ func (h *AuthHandler) AugmentGatewayAPIKeyFromAuthorization(ctx context.Context,
 	if token == "" {
 		return "", false
 	}
-	principal, err := h.augmentPluginService.ResolvePrincipalFromBearer(ctx, token)
+	principal, err := h.resolveAugmentPrincipalFromBearer(ctx, token, path)
 	if err != nil {
 		return "", false
 	}

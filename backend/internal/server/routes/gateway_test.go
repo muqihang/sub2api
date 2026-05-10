@@ -170,8 +170,9 @@ func (s gatewayRoutesAugmentUserStub) GetByID(ctx context.Context, id int64) (*s
 }
 
 type gatewayRoutesAugmentAPIKeyStub struct {
-	apiKeyByValue map[string]*service.APIKey
-	keysByUser    map[int64][]service.APIKey
+	apiKeyByValue   map[string]*service.APIKey
+	keysByUser      map[int64][]service.APIKey
+	availableByUser map[int64][]service.Group
 }
 
 func (s gatewayRoutesAugmentAPIKeyStub) GetByKey(ctx context.Context, key string) (*service.APIKey, error) {
@@ -186,7 +187,7 @@ func (s gatewayRoutesAugmentAPIKeyStub) List(ctx context.Context, userID int64, 
 }
 
 func (s gatewayRoutesAugmentAPIKeyStub) GetAvailableGroups(ctx context.Context, userID int64) ([]service.Group, error) {
-	return nil, nil
+	return append([]service.Group(nil), s.availableByUser[userID]...), nil
 }
 
 func (s gatewayRoutesAugmentAPIKeyStub) Create(ctx context.Context, userID int64, req service.CreateAPIKeyRequest) (*service.APIKey, error) {
@@ -225,11 +226,29 @@ func TestGatewayRoutesResponsesAcceptsAugmentSessionBearer(t *testing.T) {
 		Status: service.StatusActive,
 		User:   user,
 	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	gatewayKey.RestrictedClientProduct = &restrictedClientProduct
+	entitledGroup := service.Group{
+		ID:                     901,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	gatewayKey.GroupID = &entitledGroup.ID
+	gatewayKey.Group = &entitledGroup
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{},
 		gatewayRoutesAugmentAuthStub{userID: user.ID},
 		gatewayRoutesAugmentUserStub{user: user},
-		gatewayRoutesAugmentAPIKeyStub{keysByUser: map[int64][]service.APIKey{user.ID: []service.APIKey{gatewayKey}}},
+		gatewayRoutesAugmentAPIKeyStub{
+			keysByUser: map[int64][]service.APIKey{user.ID: []service.APIKey{gatewayKey}},
+			availableByUser: map[int64][]service.Group{
+				user.ID: []service.Group{entitledGroup},
+			},
+		},
 		gatewayRoutesAugmentSubscriptionStub{},
 		gatewayRoutesAugmentSettingStub{},
 	)
@@ -296,6 +315,19 @@ func TestAugmentOfficialRoutePolicyGatewayRoutesFailClosedWhenPolicyEnabled(t *t
 		CreatedAt: time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
 		User:      user,
 	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
+	entitledGroup := service.Group{
+		ID:                     902,
+		Name:                   "Augment Entitled",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
+		AugmentGatewayEntitled: true,
+		DefaultMappedModel:     "gpt-5.4",
+	}
+	apiKey.GroupID = &entitledGroup.ID
+	apiKey.Group = &entitledGroup
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{
 			Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"},
