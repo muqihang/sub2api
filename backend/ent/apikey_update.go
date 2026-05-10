@@ -134,6 +134,26 @@ func (_u *APIKeyUpdate) SetNillableStatus(v *string) *APIKeyUpdate {
 	return _u
 }
 
+// SetRestrictedClientProduct sets the "restricted_client_product" field.
+func (_u *APIKeyUpdate) SetRestrictedClientProduct(v string) *APIKeyUpdate {
+	_u.mutation.SetRestrictedClientProduct(v)
+	return _u
+}
+
+// SetNillableRestrictedClientProduct sets the "restricted_client_product" field if the given value is not nil.
+func (_u *APIKeyUpdate) SetNillableRestrictedClientProduct(v *string) *APIKeyUpdate {
+	if v != nil {
+		_u.SetRestrictedClientProduct(*v)
+	}
+	return _u
+}
+
+// ClearRestrictedClientProduct clears the value of the "restricted_client_product" field.
+func (_u *APIKeyUpdate) ClearRestrictedClientProduct() *APIKeyUpdate {
+	_u.mutation.ClearRestrictedClientProduct()
+	return _u
+}
+
 // SetLastUsedAt sets the "last_used_at" field.
 func (_u *APIKeyUpdate) SetLastUsedAt(v time.Time) *APIKeyUpdate {
 	_u.mutation.SetLastUsedAt(v)
@@ -596,6 +616,12 @@ func (_u *APIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.RestrictedClientProduct(); ok {
+		_spec.SetField(apikey.FieldRestrictedClientProduct, field.TypeString, value)
+	}
+	if _u.mutation.RestrictedClientProductCleared() {
+		_spec.ClearField(apikey.FieldRestrictedClientProduct, field.TypeString)
+	}
 	if value, ok := _u.mutation.LastUsedAt(); ok {
 		_spec.SetField(apikey.FieldLastUsedAt, field.TypeTime, value)
 	}
@@ -918,6 +944,26 @@ func (_u *APIKeyUpdateOne) SetNillableStatus(v *string) *APIKeyUpdateOne {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
+	return _u
+}
+
+// SetRestrictedClientProduct sets the "restricted_client_product" field.
+func (_u *APIKeyUpdateOne) SetRestrictedClientProduct(v string) *APIKeyUpdateOne {
+	_u.mutation.SetRestrictedClientProduct(v)
+	return _u
+}
+
+// SetNillableRestrictedClientProduct sets the "restricted_client_product" field if the given value is not nil.
+func (_u *APIKeyUpdateOne) SetNillableRestrictedClientProduct(v *string) *APIKeyUpdateOne {
+	if v != nil {
+		_u.SetRestrictedClientProduct(*v)
+	}
+	return _u
+}
+
+// ClearRestrictedClientProduct clears the value of the "restricted_client_product" field.
+func (_u *APIKeyUpdateOne) ClearRestrictedClientProduct() *APIKeyUpdateOne {
+	_u.mutation.ClearRestrictedClientProduct()
 	return _u
 }
 
@@ -1412,6 +1458,12 @@ func (_u *APIKeyUpdateOne) sqlSave(ctx context.Context) (_node *APIKey, err erro
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.RestrictedClientProduct(); ok {
+		_spec.SetField(apikey.FieldRestrictedClientProduct, field.TypeString, value)
+	}
+	if _u.mutation.RestrictedClientProductCleared() {
+		_spec.ClearField(apikey.FieldRestrictedClientProduct, field.TypeString)
 	}
 	if value, ok := _u.mutation.LastUsedAt(); ok {
 		_spec.SetField(apikey.FieldLastUsedAt, field.TypeTime, value)

@@ -36,6 +36,8 @@ type APIKey struct {
 	GroupID *int64 `json:"group_id,omitempty"`
 	// Status holds the value of the "status" field.
 	Status string `json:"status,omitempty"`
+	// 限制此 API Key 仅可用于特定客户端产品
+	RestrictedClientProduct *string `json:"restricted_client_product,omitempty"`
 	// Last usage time of this API key
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	// Allowed IPs/CIDRs, e.g. ["192.168.1.100", "10.0.0.0/8"]
@@ -127,7 +129,7 @@ func (*APIKey) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullFloat64)
 		case apikey.FieldID, apikey.FieldUserID, apikey.FieldGroupID:
 			values[i] = new(sql.NullInt64)
-		case apikey.FieldKey, apikey.FieldName, apikey.FieldStatus:
+		case apikey.FieldKey, apikey.FieldName, apikey.FieldStatus, apikey.FieldRestrictedClientProduct:
 			values[i] = new(sql.NullString)
 		case apikey.FieldCreatedAt, apikey.FieldUpdatedAt, apikey.FieldDeletedAt, apikey.FieldLastUsedAt, apikey.FieldExpiresAt, apikey.FieldWindow5hStart, apikey.FieldWindow1dStart, apikey.FieldWindow7dStart:
 			values[i] = new(sql.NullTime)
@@ -201,6 +203,13 @@ func (_m *APIKey) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field status", values[i])
 			} else if value.Valid {
 				_m.Status = value.String
+			}
+		case apikey.FieldRestrictedClientProduct:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field restricted_client_product", values[i])
+			} else if value.Valid {
+				_m.RestrictedClientProduct = new(string)
+				*_m.RestrictedClientProduct = value.String
 			}
 		case apikey.FieldLastUsedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -379,6 +388,11 @@ func (_m *APIKey) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("status=")
 	builder.WriteString(_m.Status)
+	builder.WriteString(", ")
+	if v := _m.RestrictedClientProduct; v != nil {
+		builder.WriteString("restricted_client_product=")
+		builder.WriteString(*v)
+	}
 	builder.WriteString(", ")
 	if v := _m.LastUsedAt; v != nil {
 		builder.WriteString("last_used_at=")

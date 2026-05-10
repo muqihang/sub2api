@@ -70,6 +70,9 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Bool("augment_gateway_entitled").
+			Default(false).
+			Comment("是否为 Augment Gateway 用户授权分组"),
 		field.Int("default_validity_days").
 			Default(30),
 

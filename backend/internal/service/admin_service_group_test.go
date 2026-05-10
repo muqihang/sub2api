@@ -198,6 +198,22 @@ func TestAdminService_CreateGroup_NilImagePricing(t *testing.T) {
 	require.Nil(t, repo.created.ImagePrice4K)
 }
 
+func TestAdminService_CreateGroup_PersistsAugmentGatewayEntitlement(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:                   "augment-entitled",
+		Platform:               PlatformAnthropic,
+		RateMultiplier:         1.0,
+		AugmentGatewayEntitled: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.True(t, repo.created.AugmentGatewayEntitled)
+}
+
 // TestAdminService_UpdateGroup_WithImagePricing 测试更新分组时 ImagePrice 字段正确更新
 func TestAdminService_UpdateGroup_WithImagePricing(t *testing.T) {
 	existingGroup := &Group{
@@ -231,6 +247,27 @@ func TestAdminService_UpdateGroup_WithImagePricing(t *testing.T) {
 	require.InDelta(t, 0.12, *repo.updated.ImagePrice1K, 0.0001)
 	require.InDelta(t, 0.18, *repo.updated.ImagePrice2K, 0.0001)
 	require.InDelta(t, 0.36, *repo.updated.ImagePrice4K, 0.0001)
+}
+
+func TestAdminService_UpdateGroup_PersistsAugmentGatewayEntitlement(t *testing.T) {
+	existingGroup := &Group{
+		ID:                     1,
+		Name:                   "existing-group",
+		Platform:               PlatformAnthropic,
+		Status:                 StatusActive,
+		AugmentGatewayEntitled: false,
+	}
+	repo := &groupRepoStubForAdmin{getByID: existingGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	entitled := true
+	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+		AugmentGatewayEntitled: &entitled,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.updated)
+	require.True(t, repo.updated.AugmentGatewayEntitled)
 }
 
 // TestAdminService_UpdateGroup_PartialImagePricing 测试仅更新部分 ImagePrice 字段

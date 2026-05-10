@@ -207,6 +207,42 @@ func TestGroupHandlerEndpoints(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestGroupHandlerMapsAugmentGatewayEntitled(t *testing.T) {
+	router, adminSvc := setupAdminRouter()
+
+	body, err := json.Marshal(map[string]any{
+		"name":                     "augment-group",
+		"platform":                 "anthropic",
+		"subscription_type":        "standard",
+		"augment_gateway_entitled": true,
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/groups", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.createdGroups, 1)
+	require.True(t, adminSvc.createdGroups[0].AugmentGatewayEntitled)
+
+	updateBody, err := json.Marshal(map[string]any{
+		"augment_gateway_entitled": false,
+	})
+	require.NoError(t, err)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/admin/groups/2", bytes.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.updatedGroups, 1)
+	require.NotNil(t, adminSvc.updatedGroups[0].input.AugmentGatewayEntitled)
+	require.False(t, *adminSvc.updatedGroups[0].input.AugmentGatewayEntitled)
+}
+
 func TestProxyHandlerEndpoints(t *testing.T) {
 	router, _ := setupAdminRouter()
 

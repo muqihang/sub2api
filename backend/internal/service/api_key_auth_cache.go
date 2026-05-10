@@ -4,15 +4,16 @@ import "time"
 
 // APIKeyAuthSnapshot API Key 认证缓存快照（仅包含认证所需字段）
 type APIKeyAuthSnapshot struct {
-	Version     int                      `json:"version"`
-	APIKeyID    int64                    `json:"api_key_id"`
-	UserID      int64                    `json:"user_id"`
-	GroupID     *int64                   `json:"group_id,omitempty"`
-	Status      string                   `json:"status"`
-	IPWhitelist []string                 `json:"ip_whitelist,omitempty"`
-	IPBlacklist []string                 `json:"ip_blacklist,omitempty"`
-	User        APIKeyAuthUserSnapshot   `json:"user"`
-	Group       *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
+	Version                 int                      `json:"version"`
+	APIKeyID                int64                    `json:"api_key_id"`
+	UserID                  int64                    `json:"user_id"`
+	GroupID                 *int64                   `json:"group_id,omitempty"`
+	Status                  string                   `json:"status"`
+	RestrictedClientProduct *string                  `json:"restricted_client_product,omitempty"`
+	IPWhitelist             []string                 `json:"ip_whitelist,omitempty"`
+	IPBlacklist             []string                 `json:"ip_blacklist,omitempty"`
+	User                    APIKeyAuthUserSnapshot   `json:"user"`
+	Group                   *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
 
 	// Quota fields for API Key independent quota feature
 	Quota     float64 `json:"quota"`      // Quota limit in USD (0 = unlimited)
@@ -59,6 +60,7 @@ type APIKeyAuthGroupSnapshot struct {
 	Platform                        string   `json:"platform"`
 	Status                          string   `json:"status"`
 	SubscriptionType                string   `json:"subscription_type"`
+	AugmentGatewayEntitled          bool     `json:"augment_gateway_entitled"`
 	RateMultiplier                  float64  `json:"rate_multiplier"`
 	DailyLimitUSD                   *float64 `json:"daily_limit_usd,omitempty"`
 	WeeklyLimitUSD                  *float64 `json:"weekly_limit_usd,omitempty"`

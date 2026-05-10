@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 8 // v8: added group image generation controls
+const apiKeyAuthSnapshotVersion = 9 // v9: added augment key restriction and group entitlement fields
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -206,19 +206,20 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 		return nil
 	}
 	snapshot := &APIKeyAuthSnapshot{
-		Version:     apiKeyAuthSnapshotVersion,
-		APIKeyID:    apiKey.ID,
-		UserID:      apiKey.UserID,
-		GroupID:     apiKey.GroupID,
-		Status:      apiKey.Status,
-		IPWhitelist: apiKey.IPWhitelist,
-		IPBlacklist: apiKey.IPBlacklist,
-		Quota:       apiKey.Quota,
-		QuotaUsed:   apiKey.QuotaUsed,
-		ExpiresAt:   apiKey.ExpiresAt,
-		RateLimit5h: apiKey.RateLimit5h,
-		RateLimit1d: apiKey.RateLimit1d,
-		RateLimit7d: apiKey.RateLimit7d,
+		Version:                 apiKeyAuthSnapshotVersion,
+		APIKeyID:                apiKey.ID,
+		UserID:                  apiKey.UserID,
+		GroupID:                 apiKey.GroupID,
+		Status:                  apiKey.Status,
+		RestrictedClientProduct: apiKey.RestrictedClientProduct,
+		IPWhitelist:             apiKey.IPWhitelist,
+		IPBlacklist:             apiKey.IPBlacklist,
+		Quota:                   apiKey.Quota,
+		QuotaUsed:               apiKey.QuotaUsed,
+		ExpiresAt:               apiKey.ExpiresAt,
+		RateLimit5h:             apiKey.RateLimit5h,
+		RateLimit1d:             apiKey.RateLimit1d,
+		RateLimit7d:             apiKey.RateLimit7d,
 		User: APIKeyAuthUserSnapshot{
 			ID:                         apiKey.User.ID,
 			Status:                     apiKey.User.Status,
@@ -251,6 +252,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			Platform:                        apiKey.Group.Platform,
 			Status:                          apiKey.Group.Status,
 			SubscriptionType:                apiKey.Group.SubscriptionType,
+			AugmentGatewayEntitled:          apiKey.Group.AugmentGatewayEntitled,
 			RateMultiplier:                  apiKey.Group.RateMultiplier,
 			DailyLimitUSD:                   apiKey.Group.DailyLimitUSD,
 			WeeklyLimitUSD:                  apiKey.Group.WeeklyLimitUSD,
@@ -282,19 +284,20 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		return nil
 	}
 	apiKey := &APIKey{
-		ID:          snapshot.APIKeyID,
-		UserID:      snapshot.UserID,
-		GroupID:     snapshot.GroupID,
-		Key:         key,
-		Status:      snapshot.Status,
-		IPWhitelist: snapshot.IPWhitelist,
-		IPBlacklist: snapshot.IPBlacklist,
-		Quota:       snapshot.Quota,
-		QuotaUsed:   snapshot.QuotaUsed,
-		ExpiresAt:   snapshot.ExpiresAt,
-		RateLimit5h: snapshot.RateLimit5h,
-		RateLimit1d: snapshot.RateLimit1d,
-		RateLimit7d: snapshot.RateLimit7d,
+		ID:                      snapshot.APIKeyID,
+		UserID:                  snapshot.UserID,
+		GroupID:                 snapshot.GroupID,
+		Key:                     key,
+		Status:                  snapshot.Status,
+		RestrictedClientProduct: snapshot.RestrictedClientProduct,
+		IPWhitelist:             snapshot.IPWhitelist,
+		IPBlacklist:             snapshot.IPBlacklist,
+		Quota:                   snapshot.Quota,
+		QuotaUsed:               snapshot.QuotaUsed,
+		ExpiresAt:               snapshot.ExpiresAt,
+		RateLimit5h:             snapshot.RateLimit5h,
+		RateLimit1d:             snapshot.RateLimit1d,
+		RateLimit7d:             snapshot.RateLimit7d,
 		User: &User{
 			ID:                         snapshot.User.ID,
 			Status:                     snapshot.User.Status,
@@ -320,6 +323,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			Status:                          snapshot.Group.Status,
 			Hydrated:                        true,
 			SubscriptionType:                snapshot.Group.SubscriptionType,
+			AugmentGatewayEntitled:          snapshot.Group.AugmentGatewayEntitled,
 			RateMultiplier:                  snapshot.Group.RateMultiplier,
 			DailyLimitUSD:                   snapshot.Group.DailyLimitUSD,
 			WeeklyLimitUSD:                  snapshot.Group.WeeklyLimitUSD,

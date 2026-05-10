@@ -20,10 +20,15 @@ type stubAdminService struct {
 	boundAuthIdentity    *service.AdminBindAuthIdentityInput
 	boundAuthIdentityFor int64
 	createdAccounts      []*service.CreateAccountInput
+	createdGroups        []*service.CreateGroupInput
 	createdProxies       []*service.CreateProxyInput
 	updatedAccounts      []struct {
 		id    int64
 		input *service.UpdateAccountInput
+	}
+	updatedGroups []struct {
+		id    int64
+		input *service.UpdateGroupInput
 	}
 	updatedProxyIDs      []int64
 	updatedProxies       []*service.UpdateProxyInput
@@ -262,11 +267,16 @@ func (s *stubAdminService) GetGroup(ctx context.Context, id int64) (*service.Gro
 }
 
 func (s *stubAdminService) CreateGroup(ctx context.Context, input *service.CreateGroupInput) (*service.Group, error) {
+	s.createdGroups = append(s.createdGroups, input)
 	group := service.Group{ID: 200, Name: input.Name, Status: service.StatusActive}
 	return &group, nil
 }
 
 func (s *stubAdminService) UpdateGroup(ctx context.Context, id int64, input *service.UpdateGroupInput) (*service.Group, error) {
+	s.updatedGroups = append(s.updatedGroups, struct {
+		id    int64
+		input *service.UpdateGroupInput
+	}{id: id, input: input})
 	group := service.Group{ID: id, Name: input.Name, Status: service.StatusActive}
 	return &group, nil
 }

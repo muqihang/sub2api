@@ -98,51 +98,52 @@ const (
 // APIKeyMutation represents an operation that mutates the APIKey nodes in the graph.
 type APIKeyMutation struct {
 	config
-	op                 Op
-	typ                string
-	id                 *int64
-	created_at         *time.Time
-	updated_at         *time.Time
-	deleted_at         *time.Time
-	key                *string
-	name               *string
-	status             *string
-	last_used_at       *time.Time
-	ip_whitelist       *[]string
-	appendip_whitelist []string
-	ip_blacklist       *[]string
-	appendip_blacklist []string
-	quota              *float64
-	addquota           *float64
-	quota_used         *float64
-	addquota_used      *float64
-	expires_at         *time.Time
-	rate_limit_5h      *float64
-	addrate_limit_5h   *float64
-	rate_limit_1d      *float64
-	addrate_limit_1d   *float64
-	rate_limit_7d      *float64
-	addrate_limit_7d   *float64
-	usage_5h           *float64
-	addusage_5h        *float64
-	usage_1d           *float64
-	addusage_1d        *float64
-	usage_7d           *float64
-	addusage_7d        *float64
-	window_5h_start    *time.Time
-	window_1d_start    *time.Time
-	window_7d_start    *time.Time
-	clearedFields      map[string]struct{}
-	user               *int64
-	cleareduser        bool
-	group              *int64
-	clearedgroup       bool
-	usage_logs         map[int64]struct{}
-	removedusage_logs  map[int64]struct{}
-	clearedusage_logs  bool
-	done               bool
-	oldValue           func(context.Context) (*APIKey, error)
-	predicates         []predicate.APIKey
+	op                        Op
+	typ                       string
+	id                        *int64
+	created_at                *time.Time
+	updated_at                *time.Time
+	deleted_at                *time.Time
+	key                       *string
+	name                      *string
+	status                    *string
+	restricted_client_product *string
+	last_used_at              *time.Time
+	ip_whitelist              *[]string
+	appendip_whitelist        []string
+	ip_blacklist              *[]string
+	appendip_blacklist        []string
+	quota                     *float64
+	addquota                  *float64
+	quota_used                *float64
+	addquota_used             *float64
+	expires_at                *time.Time
+	rate_limit_5h             *float64
+	addrate_limit_5h          *float64
+	rate_limit_1d             *float64
+	addrate_limit_1d          *float64
+	rate_limit_7d             *float64
+	addrate_limit_7d          *float64
+	usage_5h                  *float64
+	addusage_5h               *float64
+	usage_1d                  *float64
+	addusage_1d               *float64
+	usage_7d                  *float64
+	addusage_7d               *float64
+	window_5h_start           *time.Time
+	window_1d_start           *time.Time
+	window_7d_start           *time.Time
+	clearedFields             map[string]struct{}
+	user                      *int64
+	cleareduser               bool
+	group                     *int64
+	clearedgroup              bool
+	usage_logs                map[int64]struct{}
+	removedusage_logs         map[int64]struct{}
+	clearedusage_logs         bool
+	done                      bool
+	oldValue                  func(context.Context) (*APIKey, error)
+	predicates                []predicate.APIKey
 }
 
 var _ ent.Mutation = (*APIKeyMutation)(nil)
@@ -555,6 +556,55 @@ func (m *APIKeyMutation) OldStatus(ctx context.Context) (v string, err error) {
 // ResetStatus resets all changes to the "status" field.
 func (m *APIKeyMutation) ResetStatus() {
 	m.status = nil
+}
+
+// SetRestrictedClientProduct sets the "restricted_client_product" field.
+func (m *APIKeyMutation) SetRestrictedClientProduct(s string) {
+	m.restricted_client_product = &s
+}
+
+// RestrictedClientProduct returns the value of the "restricted_client_product" field in the mutation.
+func (m *APIKeyMutation) RestrictedClientProduct() (r string, exists bool) {
+	v := m.restricted_client_product
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRestrictedClientProduct returns the old "restricted_client_product" field's value of the APIKey entity.
+// If the APIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *APIKeyMutation) OldRestrictedClientProduct(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRestrictedClientProduct is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRestrictedClientProduct requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRestrictedClientProduct: %w", err)
+	}
+	return oldValue.RestrictedClientProduct, nil
+}
+
+// ClearRestrictedClientProduct clears the value of the "restricted_client_product" field.
+func (m *APIKeyMutation) ClearRestrictedClientProduct() {
+	m.restricted_client_product = nil
+	m.clearedFields[apikey.FieldRestrictedClientProduct] = struct{}{}
+}
+
+// RestrictedClientProductCleared returns if the "restricted_client_product" field was cleared in this mutation.
+func (m *APIKeyMutation) RestrictedClientProductCleared() bool {
+	_, ok := m.clearedFields[apikey.FieldRestrictedClientProduct]
+	return ok
+}
+
+// ResetRestrictedClientProduct resets all changes to the "restricted_client_product" field.
+func (m *APIKeyMutation) ResetRestrictedClientProduct() {
+	m.restricted_client_product = nil
+	delete(m.clearedFields, apikey.FieldRestrictedClientProduct)
 }
 
 // SetLastUsedAt sets the "last_used_at" field.
@@ -1522,7 +1572,7 @@ func (m *APIKeyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *APIKeyMutation) Fields() []string {
-	fields := make([]string, 0, 23)
+	fields := make([]string, 0, 24)
 	if m.created_at != nil {
 		fields = append(fields, apikey.FieldCreatedAt)
 	}
@@ -1546,6 +1596,9 @@ func (m *APIKeyMutation) Fields() []string {
 	}
 	if m.status != nil {
 		fields = append(fields, apikey.FieldStatus)
+	}
+	if m.restricted_client_product != nil {
+		fields = append(fields, apikey.FieldRestrictedClientProduct)
 	}
 	if m.last_used_at != nil {
 		fields = append(fields, apikey.FieldLastUsedAt)
@@ -1616,6 +1669,8 @@ func (m *APIKeyMutation) Field(name string) (ent.Value, bool) {
 		return m.GroupID()
 	case apikey.FieldStatus:
 		return m.Status()
+	case apikey.FieldRestrictedClientProduct:
+		return m.RestrictedClientProduct()
 	case apikey.FieldLastUsedAt:
 		return m.LastUsedAt()
 	case apikey.FieldIPWhitelist:
@@ -1671,6 +1726,8 @@ func (m *APIKeyMutation) OldField(ctx context.Context, name string) (ent.Value, 
 		return m.OldGroupID(ctx)
 	case apikey.FieldStatus:
 		return m.OldStatus(ctx)
+	case apikey.FieldRestrictedClientProduct:
+		return m.OldRestrictedClientProduct(ctx)
 	case apikey.FieldLastUsedAt:
 		return m.OldLastUsedAt(ctx)
 	case apikey.FieldIPWhitelist:
@@ -1765,6 +1822,13 @@ func (m *APIKeyMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetStatus(v)
+		return nil
+	case apikey.FieldRestrictedClientProduct:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRestrictedClientProduct(v)
 		return nil
 	case apikey.FieldLastUsedAt:
 		v, ok := value.(time.Time)
@@ -2006,6 +2070,9 @@ func (m *APIKeyMutation) ClearedFields() []string {
 	if m.FieldCleared(apikey.FieldGroupID) {
 		fields = append(fields, apikey.FieldGroupID)
 	}
+	if m.FieldCleared(apikey.FieldRestrictedClientProduct) {
+		fields = append(fields, apikey.FieldRestrictedClientProduct)
+	}
 	if m.FieldCleared(apikey.FieldLastUsedAt) {
 		fields = append(fields, apikey.FieldLastUsedAt)
 	}
@@ -2046,6 +2113,9 @@ func (m *APIKeyMutation) ClearField(name string) error {
 		return nil
 	case apikey.FieldGroupID:
 		m.ClearGroupID()
+		return nil
+	case apikey.FieldRestrictedClientProduct:
+		m.ClearRestrictedClientProduct()
 		return nil
 	case apikey.FieldLastUsedAt:
 		m.ClearLastUsedAt()
@@ -2099,6 +2169,9 @@ func (m *APIKeyMutation) ResetField(name string) error {
 		return nil
 	case apikey.FieldStatus:
 		m.ResetStatus()
+		return nil
+	case apikey.FieldRestrictedClientProduct:
+		m.ResetRestrictedClientProduct()
 		return nil
 	case apikey.FieldLastUsedAt:
 		m.ResetLastUsedAt()
@@ -14762,6 +14835,7 @@ type GroupMutation struct {
 	addweekly_limit_usd                     *float64
 	monthly_limit_usd                       *float64
 	addmonthly_limit_usd                    *float64
+	augment_gateway_entitled                *bool
 	default_validity_days                   *int
 	adddefault_validity_days                *int
 	allow_image_generation                  *bool
@@ -15529,6 +15603,42 @@ func (m *GroupMutation) ResetMonthlyLimitUsd() {
 	m.monthly_limit_usd = nil
 	m.addmonthly_limit_usd = nil
 	delete(m.clearedFields, group.FieldMonthlyLimitUsd)
+}
+
+// SetAugmentGatewayEntitled sets the "augment_gateway_entitled" field.
+func (m *GroupMutation) SetAugmentGatewayEntitled(b bool) {
+	m.augment_gateway_entitled = &b
+}
+
+// AugmentGatewayEntitled returns the value of the "augment_gateway_entitled" field in the mutation.
+func (m *GroupMutation) AugmentGatewayEntitled() (r bool, exists bool) {
+	v := m.augment_gateway_entitled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAugmentGatewayEntitled returns the old "augment_gateway_entitled" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldAugmentGatewayEntitled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAugmentGatewayEntitled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAugmentGatewayEntitled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAugmentGatewayEntitled: %w", err)
+	}
+	return oldValue.AugmentGatewayEntitled, nil
+}
+
+// ResetAugmentGatewayEntitled resets all changes to the "augment_gateway_entitled" field.
+func (m *GroupMutation) ResetAugmentGatewayEntitled() {
+	m.augment_gateway_entitled = nil
 }
 
 // SetDefaultValidityDays sets the "default_validity_days" field.
@@ -16923,7 +17033,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 34)
+	fields := make([]string, 0, 35)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -16962,6 +17072,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.monthly_limit_usd != nil {
 		fields = append(fields, group.FieldMonthlyLimitUsd)
+	}
+	if m.augment_gateway_entitled != nil {
+		fields = append(fields, group.FieldAugmentGatewayEntitled)
 	}
 	if m.default_validity_days != nil {
 		fields = append(fields, group.FieldDefaultValidityDays)
@@ -17060,6 +17173,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.WeeklyLimitUsd()
 	case group.FieldMonthlyLimitUsd:
 		return m.MonthlyLimitUsd()
+	case group.FieldAugmentGatewayEntitled:
+		return m.AugmentGatewayEntitled()
 	case group.FieldDefaultValidityDays:
 		return m.DefaultValidityDays()
 	case group.FieldAllowImageGeneration:
@@ -17137,6 +17252,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldWeeklyLimitUsd(ctx)
 	case group.FieldMonthlyLimitUsd:
 		return m.OldMonthlyLimitUsd(ctx)
+	case group.FieldAugmentGatewayEntitled:
+		return m.OldAugmentGatewayEntitled(ctx)
 	case group.FieldDefaultValidityDays:
 		return m.OldDefaultValidityDays(ctx)
 	case group.FieldAllowImageGeneration:
@@ -17278,6 +17395,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetMonthlyLimitUsd(v)
+		return nil
+	case group.FieldAugmentGatewayEntitled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAugmentGatewayEntitled(v)
 		return nil
 	case group.FieldDefaultValidityDays:
 		v, ok := value.(int)
@@ -17741,6 +17865,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldMonthlyLimitUsd:
 		m.ResetMonthlyLimitUsd()
+		return nil
+	case group.FieldAugmentGatewayEntitled:
+		m.ResetAugmentGatewayEntitled()
 		return nil
 	case group.FieldDefaultValidityDays:
 		m.ResetDefaultValidityDays()

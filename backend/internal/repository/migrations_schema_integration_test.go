@@ -118,6 +118,15 @@ func TestMigrationsRunner_AuthIdentityAndPaymentSchemaStayAligned(t *testing.T) 
 	requireIndexAbsent(t, tx, "payment_orders", "paymentorder_out_trade_no_unique")
 }
 
+func TestAugmentMigrationSchemaIncludesDedicatedGroupIsolationColumns(t *testing.T) {
+	tx := testTx(t)
+
+	requireColumn(t, tx, "groups", "augment_gateway_entitled", "boolean", 0, false)
+	requireColumnDefaultContains(t, tx, "groups", "augment_gateway_entitled", "false")
+
+	requireColumn(t, tx, "api_keys", "restricted_client_product", "text", 0, true)
+}
+
 func requireIndex(t *testing.T, tx *sql.Tx, table, index string) {
 	t.Helper()
 

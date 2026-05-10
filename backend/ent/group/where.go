@@ -120,6 +120,11 @@ func MonthlyLimitUsd(v float64) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldMonthlyLimitUsd, v))
 }
 
+// AugmentGatewayEntitled applies equality check predicate on the "augment_gateway_entitled" field. It's identical to AugmentGatewayEntitledEQ.
+func AugmentGatewayEntitled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAugmentGatewayEntitled, v))
+}
+
 // DefaultValidityDays applies equality check predicate on the "default_validity_days" field. It's identical to DefaultValidityDaysEQ.
 func DefaultValidityDays(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldDefaultValidityDays, v))
@@ -873,6 +878,16 @@ func MonthlyLimitUsdIsNil() predicate.Group {
 // MonthlyLimitUsdNotNil applies the NotNil predicate on the "monthly_limit_usd" field.
 func MonthlyLimitUsdNotNil() predicate.Group {
 	return predicate.Group(sql.FieldNotNull(FieldMonthlyLimitUsd))
+}
+
+// AugmentGatewayEntitledEQ applies the EQ predicate on the "augment_gateway_entitled" field.
+func AugmentGatewayEntitledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldAugmentGatewayEntitled, v))
+}
+
+// AugmentGatewayEntitledNEQ applies the NEQ predicate on the "augment_gateway_entitled" field.
+func AugmentGatewayEntitledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldAugmentGatewayEntitled, v))
 }
 
 // DefaultValidityDaysEQ applies the EQ predicate on the "default_validity_days" field.

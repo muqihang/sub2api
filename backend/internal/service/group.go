@@ -24,6 +24,8 @@ type Group struct {
 	WeeklyLimitUSD      *float64
 	MonthlyLimitUSD     *float64
 	DefaultValidityDays int
+	// AugmentGatewayEntitled marks user-facing groups entitled to use Augment gateway features.
+	AugmentGatewayEntitled bool
 
 	// 图片生成计费配置（antigravity 和 gemini 平台使用）
 	AllowImageGeneration bool

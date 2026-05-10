@@ -203,6 +203,20 @@ func (_c *GroupCreate) SetNillableMonthlyLimitUsd(v *float64) *GroupCreate {
 	return _c
 }
 
+// SetAugmentGatewayEntitled sets the "augment_gateway_entitled" field.
+func (_c *GroupCreate) SetAugmentGatewayEntitled(v bool) *GroupCreate {
+	_c.mutation.SetAugmentGatewayEntitled(v)
+	return _c
+}
+
+// SetNillableAugmentGatewayEntitled sets the "augment_gateway_entitled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableAugmentGatewayEntitled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetAugmentGatewayEntitled(*v)
+	}
+	return _c
+}
+
 // SetDefaultValidityDays sets the "default_validity_days" field.
 func (_c *GroupCreate) SetDefaultValidityDays(v int) *GroupCreate {
 	_c.mutation.SetDefaultValidityDays(v)
@@ -642,6 +656,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultSubscriptionType
 		_c.mutation.SetSubscriptionType(v)
 	}
+	if _, ok := _c.mutation.AugmentGatewayEntitled(); !ok {
+		v := group.DefaultAugmentGatewayEntitled
+		_c.mutation.SetAugmentGatewayEntitled(v)
+	}
 	if _, ok := _c.mutation.DefaultValidityDays(); !ok {
 		v := group.DefaultDefaultValidityDays
 		_c.mutation.SetDefaultValidityDays(v)
@@ -750,6 +768,9 @@ func (_c *GroupCreate) check() error {
 		if err := group.SubscriptionTypeValidator(v); err != nil {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
 		}
+	}
+	if _, ok := _c.mutation.AugmentGatewayEntitled(); !ok {
+		return &ValidationError{Name: "augment_gateway_entitled", err: errors.New(`ent: missing required field "Group.augment_gateway_entitled"`)}
 	}
 	if _, ok := _c.mutation.DefaultValidityDays(); !ok {
 		return &ValidationError{Name: "default_validity_days", err: errors.New(`ent: missing required field "Group.default_validity_days"`)}
@@ -879,6 +900,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.MonthlyLimitUsd(); ok {
 		_spec.SetField(group.FieldMonthlyLimitUsd, field.TypeFloat64, value)
 		_node.MonthlyLimitUsd = &value
+	}
+	if value, ok := _c.mutation.AugmentGatewayEntitled(); ok {
+		_spec.SetField(group.FieldAugmentGatewayEntitled, field.TypeBool, value)
+		_node.AugmentGatewayEntitled = value
 	}
 	if value, ok := _c.mutation.DefaultValidityDays(); ok {
 		_spec.SetField(group.FieldDefaultValidityDays, field.TypeInt, value)
@@ -1315,6 +1340,18 @@ func (u *GroupUpsert) AddMonthlyLimitUsd(v float64) *GroupUpsert {
 // ClearMonthlyLimitUsd clears the value of the "monthly_limit_usd" field.
 func (u *GroupUpsert) ClearMonthlyLimitUsd() *GroupUpsert {
 	u.SetNull(group.FieldMonthlyLimitUsd)
+	return u
+}
+
+// SetAugmentGatewayEntitled sets the "augment_gateway_entitled" field.
+func (u *GroupUpsert) SetAugmentGatewayEntitled(v bool) *GroupUpsert {
+	u.Set(group.FieldAugmentGatewayEntitled, v)
+	return u
+}
+
+// UpdateAugmentGatewayEntitled sets the "augment_gateway_entitled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateAugmentGatewayEntitled() *GroupUpsert {
+	u.SetExcluded(group.FieldAugmentGatewayEntitled)
 	return u
 }
 
@@ -1933,6 +1970,20 @@ func (u *GroupUpsertOne) UpdateMonthlyLimitUsd() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearMonthlyLimitUsd() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearMonthlyLimitUsd()
+	})
+}
+
+// SetAugmentGatewayEntitled sets the "augment_gateway_entitled" field.
+func (u *GroupUpsertOne) SetAugmentGatewayEntitled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAugmentGatewayEntitled(v)
+	})
+}
+
+// UpdateAugmentGatewayEntitled sets the "augment_gateway_entitled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateAugmentGatewayEntitled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAugmentGatewayEntitled()
 	})
 }
 
@@ -2774,6 +2825,20 @@ func (u *GroupUpsertBulk) UpdateMonthlyLimitUsd() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearMonthlyLimitUsd() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearMonthlyLimitUsd()
+	})
+}
+
+// SetAugmentGatewayEntitled sets the "augment_gateway_entitled" field.
+func (u *GroupUpsertBulk) SetAugmentGatewayEntitled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetAugmentGatewayEntitled(v)
+	})
+}
+
+// UpdateAugmentGatewayEntitled sets the "augment_gateway_entitled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateAugmentGatewayEntitled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateAugmentGatewayEntitled()
 	})
 }
 
