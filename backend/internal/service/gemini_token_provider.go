@@ -3,11 +3,14 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 const (
@@ -60,11 +63,13 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		return p.getServiceAccountAccessToken(ctx, account)
 	}
 
+	credentials := p.credentialAccessor()
+
 	cacheKey := GeminiTokenCacheKey(account)
 
 	// 1) Try cache first.
 	if p.tokenCache != nil {
-		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
+		if token, err := p.readAccessTokenFromCache(ctx, account, cacheKey); err == nil && strings.TrimSpace(token) != "" {
 			return token, nil
 		}
 	}
@@ -81,7 +86,7 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 			}
 		} else if result.LockHeld {
 			if p.refreshPolicy.OnLockHeld == ProviderLockHeldWaitForCache && p.tokenCache != nil {
-				if token, cacheErr := p.tokenCache.GetAccessToken(ctx, cacheKey); cacheErr == nil && strings.TrimSpace(token) != "" {
+				if token, cacheErr := p.readAccessTokenFromCache(ctx, account, cacheKey); cacheErr == nil && strings.TrimSpace(token) != "" {
 					return token, nil
 				}
 			}
@@ -100,9 +105,9 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		}
 	}
 
-	accessToken := account.GetCredential("access_token")
-	if strings.TrimSpace(accessToken) == "" {
-		return "", errors.New("access_token not found in credentials")
+	accessToken, err := credentials.GeminiAccessToken(account)
+	if err != nil {
+		return "", err
 	}
 
 	// project_id is optional now:
@@ -125,6 +130,9 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 		detected, tierID, err := p.geminiOAuthService.fetchProjectID(ctx, accessToken, proxyURL)
 		if err != nil {
+			if !geminiAllowsProjectIDFallbackToAIStudio(p.geminiOAuthService.cfg) {
+				return "", fmt.Errorf("project_id auto-detect failed and AI Studio fallback is disabled in production: %w", err)
+			}
 			log.Printf("[GeminiTokenProvider] Auto-detect project_id failed: %v, fallback to AI Studio API mode", err)
 			return accessToken, nil
 		}
@@ -147,9 +155,9 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		latestAccount, isStale := CheckTokenVersion(ctx, account, p.accountRepo)
 		if isStale && latestAccount != nil {
 			slog.Debug("gemini_token_version_stale_use_latest", "account_id", account.ID)
-			accessToken = latestAccount.GetCredential("access_token")
-			if strings.TrimSpace(accessToken) == "" {
-				return "", errors.New("access_token not found after version check")
+			accessToken, err = credentials.GeminiAccessToken(latestAccount)
+			if err != nil {
+				return "", err
 			}
 		} else {
 			ttl := 30 * time.Minute
@@ -164,7 +172,7 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 					ttl = time.Minute
 				}
 			}
-			_ = p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
+			_ = p.writeAccessTokenToCache(ctx, cacheKey, accessToken, ttl)
 		}
 	}
 
@@ -172,7 +180,58 @@ func (p *GeminiTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 }
 
 func (p *GeminiTokenProvider) getServiceAccountAccessToken(ctx context.Context, account *Account) (string, error) {
-	return getVertexServiceAccountAccessToken(ctx, p.tokenCache, account)
+	return getVertexServiceAccountAccessTokenWithAccessor(ctx, p.tokenCache, account, p.credentialAccessor(), p.cfg(), p.accountRepo)
+}
+
+func (p *GeminiTokenProvider) credentialAccessor() *GeminiCredentialsAccessor {
+	if p == nil || p.geminiOAuthService == nil {
+		return NewGeminiCredentialsAccessor(nil, nil)
+	}
+	return p.geminiOAuthService.CredentialAccessor()
+}
+
+func (p *GeminiTokenProvider) readAccessTokenFromCache(ctx context.Context, account *Account, cacheKey string) (string, error) {
+	if p == nil || p.tokenCache == nil {
+		return "", nil
+	}
+	token, err := p.tokenCache.GetAccessToken(ctx, cacheKey)
+	if err != nil {
+		return "", err
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", nil
+	}
+	if geminiAllowsPlaintextTokenCache(p.cfg()) {
+		return token, nil
+	}
+	if strings.HasPrefix(token, geminiSecretProtectorPrefix) {
+		return "", nil
+	}
+	if geminiProductionModeEnabled(p.cfg()) {
+		if err := geminiPersistPlaintextTokenCacheDetected(ctx, p.accountRepo, account); err != nil {
+			slog.Warn("gemini_token_cache_degraded_update_failed", "account_id", account.ID, "error", err)
+		}
+	}
+	return "", nil
+}
+
+func (p *GeminiTokenProvider) writeAccessTokenToCache(ctx context.Context, cacheKey, accessToken string, ttl time.Duration) error {
+	if p == nil || p.tokenCache == nil || !geminiAllowsPlaintextTokenCache(p.cfg()) {
+		return nil
+	}
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return nil
+	}
+	return p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
+}
+
+func (p *GeminiTokenProvider) cfg() *config.Config {
+	if p == nil || p.geminiOAuthService == nil {
+		return nil
+	}
+	return p.geminiOAuthService.cfg
 }
 
 func GeminiTokenCacheKey(account *Account) string {

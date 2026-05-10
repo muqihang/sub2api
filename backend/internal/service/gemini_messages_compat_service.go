@@ -610,9 +610,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	switch account.Type {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
-			apiKey := account.GetCredential("api_key")
-			if strings.TrimSpace(apiKey) == "" {
-				return nil, "", errors.New("gemini api_key not configured")
+			apiKey, err := NewGeminiCredentialsAccessor(s.cfg, nil).GeminiAPIKey(account)
+			if err != nil {
+				return nil, "", err
 			}
 
 			baseURL := account.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
@@ -730,7 +730,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			if req.Stream {
 				action = "streamGenerateContent"
 			}
-			fullURL, err := buildVertexGeminiURL(account.VertexProjectID(), account.VertexLocation(mappedModel), mappedModel, action, req.Stream)
+			fullURL, err := buildVertexGeminiURL(account.VertexProjectIDWithAccessor(NewGeminiCredentialsAccessor(s.cfg, nil)), account.VertexLocation(mappedModel), mappedModel, action, req.Stream)
 			if err != nil {
 				return nil, "", err
 			}
@@ -841,6 +841,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				retryGeminiReq, txErr := convertClaudeMessagesToGeminiGenerateContent(strippedClaudeBody)
 				if txErr == nil {
 					logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: detected signature-related 400, retrying with downgraded Claude blocks (%s)", account.ID, stageName)
+					if c != nil {
+						MarkGeminiSafetyDegraded(c, GeminiSafetyReasonCompatSignatureRetry)
+					}
 					geminiReq = retryGeminiReq
 					// Consume one retry budget attempt and continue with the updated request payload.
 					sleepGeminiBackoff(1)
@@ -1152,9 +1155,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	switch account.Type {
 	case AccountTypeAPIKey:
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
-			apiKey := account.GetCredential("api_key")
-			if strings.TrimSpace(apiKey) == "" {
-				return nil, "", errors.New("gemini api_key not configured")
+			apiKey, err := NewGeminiCredentialsAccessor(s.cfg, nil).GeminiAPIKey(account)
+			if err != nil {
+				return nil, "", err
 			}
 
 			baseURL := account.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
@@ -1257,7 +1260,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, "", err
 			}
 
-			fullURL, err := buildVertexGeminiURL(account.VertexProjectID(), account.VertexLocation(mappedModel), mappedModel, upstreamAction, useUpstreamStream)
+			fullURL, err := buildVertexGeminiURL(account.VertexProjectIDWithAccessor(NewGeminiCredentialsAccessor(s.cfg, nil)), account.VertexLocation(mappedModel), mappedModel, upstreamAction, useUpstreamStream)
 			if err != nil {
 				return nil, "", err
 			}
@@ -2666,9 +2669,9 @@ func (s *GeminiMessagesCompatService) ForwardAIStudioGET(ctx context.Context, ac
 
 	switch account.Type {
 	case AccountTypeAPIKey:
-		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
-		if apiKey == "" {
-			return nil, errors.New("gemini api_key not configured")
+		apiKey, err := NewGeminiCredentialsAccessor(s.cfg, nil).GeminiAPIKey(account)
+		if err != nil {
+			return nil, err
 		}
 		req.Header.Set("x-goog-api-key", apiKey)
 	case AccountTypeOAuth:

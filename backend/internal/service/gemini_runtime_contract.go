@@ -33,13 +33,13 @@ const (
 )
 
 type GeminiRuntimeContract struct {
-	AccountFamily            GeminiAccountFamily
-	UpstreamFamily           GeminiUpstreamFamily
-	RequiresProjectID        bool
-	SupportsLiveAPI          bool
-	SupportsThoughtSignature bool
-	TokenSource              GeminiTokenSource
-	HasTierSemantics         bool
+	AccountFamily            GeminiAccountFamily  `json:"account_family"`
+	UpstreamFamily           GeminiUpstreamFamily `json:"upstream_family"`
+	RequiresProjectID        bool                 `json:"requires_project_id"`
+	SupportsLiveAPI          bool                 `json:"supports_live_api"`
+	SupportsThoughtSignature bool                 `json:"supports_thought_signature"`
+	TokenSource              GeminiTokenSource    `json:"token_source"`
+	HasTierSemantics         bool                 `json:"has_tier_semantics"`
 }
 
 func ResolveGeminiRuntimeContract(account *Account) (*GeminiRuntimeContract, error) {

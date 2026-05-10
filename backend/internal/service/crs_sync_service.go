@@ -44,6 +44,14 @@ func NewCRSSyncService(
 	}
 }
 
+func (s *CRSSyncService) geminiCredentialAccessor() *GeminiCredentialsAccessor {
+	return NewGeminiCredentialsAccessor(s.cfg, nil)
+}
+
+func (s *CRSSyncService) protectGeminiCredentials(credentials map[string]any) (map[string]any, error) {
+	return s.geminiCredentialAccessor().ProtectCredentials(credentials)
+}
+
 type SyncFromCRSInput struct {
 	BaseURL            string
 	Username           string
@@ -891,6 +899,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				credentials["expires_at"] = strconv.FormatInt(t.Unix(), 10)
 			}
 		}
+		credentials, err = s.protectGeminiCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 
 		extra := make(map[string]any)
 		if src.Extra != nil {
@@ -952,6 +968,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Platform = PlatformGemini
 		existing.Type = AccountTypeOAuth
 		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		existing.Credentials, err = s.protectGeminiCredentials(existing.Credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -1006,6 +1030,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		credentials := sanitizeCredentialsMap(src.Credentials)
 		if baseURL, ok := credentials["base_url"].(string); !ok || strings.TrimSpace(baseURL) == "" {
 			credentials["base_url"] = "https://generativelanguage.googleapis.com"
+		}
+		credentials, err = s.protectGeminiCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
 		}
 
 		extra := make(map[string]any)
@@ -1065,6 +1097,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Platform = PlatformGemini
 		existing.Type = AccountTypeAPIKey
 		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		existing.Credentials, err = s.protectGeminiCredentials(existing.Credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -1372,11 +1412,13 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 		if refreshErr != nil {
 			err = refreshErr
 		} else {
-			newCredentials = s.geminiOAuthService.BuildAccountCredentials(tokenInfo)
-			for k, v := range account.Credentials {
-				if _, exists := newCredentials[k]; !exists {
-					newCredentials[k] = v
-				}
+			newCredentials, err = s.geminiOAuthService.BuildProtectedAccountCredentials(tokenInfo)
+			if err != nil {
+				return nil
+			}
+			newCredentials, err = MergeProtectedGeminiCredentials(account.Credentials, newCredentials, s.geminiOAuthService.CredentialAccessor())
+			if err != nil {
+				return nil
 			}
 		}
 	default:

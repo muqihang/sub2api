@@ -19,6 +19,7 @@ const (
 	geminiWarningMemorySessionStore          = "memory_session_store"
 	geminiWarningMissingRequiredProjectID    = "missing_required_project_id"
 	geminiWarningUnsafePlaintextCredentials  = "unsafe_plaintext_credentials"
+	geminiWarningInvalidRuntimeContract      = "invalid_runtime_contract"
 )
 
 type GeminiPolicySnapshot struct {
@@ -98,6 +99,8 @@ func (s *GeminiHealthService) BuildHealthSnapshot(ctx context.Context) (*GeminiH
 		family := "unknown"
 		if contractErr == nil && contract != nil {
 			family = string(contract.AccountFamily)
+		} else {
+			warningSet[geminiWarningInvalidRuntimeContract] = struct{}{}
 		}
 		snapshot.AccountsByFamily[family]++
 

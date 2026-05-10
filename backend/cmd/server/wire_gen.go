@@ -176,7 +176,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	backupService := service.ProvideBackupService(settingRepository, configConfig, secretEncryptor, backupObjectStoreFactory, dbDumper)
 	backupHandler := admin.NewBackupHandler(backupService, userService)
 	oAuthHandler := admin.NewOAuthHandler(oAuthService)
-	geminiOAuthHandler := admin.NewGeminiOAuthHandler(geminiOAuthService)
+	geminiOAuthHandler := admin.NewGeminiOAuthHandler(geminiOAuthService, adminService)
 	geminiHealthService := service.NewGeminiHealthService(accountRepository, geminiOAuthService, configConfig)
 	geminiHealthHandler := admin.NewGeminiHealthHandler(geminiHealthService)
 	antigravityOAuthHandler := admin.NewAntigravityOAuthHandler(antigravityOAuthService)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -35,8 +36,7 @@ func TestExtractGeminiCLISessionHash(t *testing.T) {
 			name:             "without privileged-user-id but with tmp dir",
 			body:             `{"contents":[{"parts":[{"text":"The project's temporary directory is: /Users/ianshaw/.gemini/tmp/f7851b009ed314d1baee62e83115f486160283f4a55a582d89fdac8b9fe3b740"}]}]}`,
 			privilegedUserID: "",
-			wantEmpty:        false,
-			wantHash:         "f7851b009ed314d1baee62e83115f486160283f4a55a582d89fdac8b9fe3b740",
+			wantEmpty:        true,
 		},
 		{
 			name:             "without tmp dir",
@@ -74,6 +74,18 @@ func TestExtractGeminiCLISessionHash(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveGeminiStickySessionHashAndSource_PrefersGeminiCLIOverBodyFallback(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/test", nil)
+	c.Request.Header.Set("x-gemini-api-privileged-user-id", "90785f52-8bbe-4b17-b111-a1ddea1636c3")
+
+	body := []byte(`{"contents":[{"parts":[{"text":"The project's temporary directory is: /Users/ianshaw/.gemini/tmp/f7851b009ed314d1baee62e83115f486160283f4a55a582d89fdac8b9fe3b740","thoughtSignature":"sig_1"}]}]}`)
+	hash, source := resolveGeminiStickySessionHashAndSource(c, body)
+	require.NotEmpty(t, hash)
+	require.Equal(t, service.GeminiStickySessionSourceGeminiCLI, source)
 }
 
 func TestGeminiCLITmpDirRegex(t *testing.T) {

@@ -50,7 +50,7 @@ const (
 )
 
 type GeminiOAuthService struct {
-	sessionStore *geminicli.SessionStore
+	sessionStore GeminiOAuthSessionStore
 	proxyRepo    ProxyRepository
 	oauthClient  GeminiOAuthClient
 	codeAssist   GeminiCliCodeAssistClient
@@ -81,8 +81,22 @@ func NewGeminiOAuthService(
 	driveClient geminicli.DriveClient,
 	cfg *config.Config,
 ) *GeminiOAuthService {
+	return NewGeminiOAuthServiceWithStore(proxyRepo, oauthClient, codeAssist, driveClient, NewGeminiOAuthMemorySessionStore(), cfg)
+}
+
+func NewGeminiOAuthServiceWithStore(
+	proxyRepo ProxyRepository,
+	oauthClient GeminiOAuthClient,
+	codeAssist GeminiCliCodeAssistClient,
+	driveClient geminicli.DriveClient,
+	sessionStore GeminiOAuthSessionStore,
+	cfg *config.Config,
+) *GeminiOAuthService {
+	if sessionStore == nil {
+		sessionStore = NewGeminiOAuthMemorySessionStore()
+	}
 	return &GeminiOAuthService{
-		sessionStore: geminicli.NewSessionStore(),
+		sessionStore: sessionStore,
 		proxyRepo:    proxyRepo,
 		oauthClient:  oauthClient,
 		codeAssist:   codeAssist,
@@ -157,7 +171,9 @@ func (s *GeminiOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		OAuthType:    oauthType,
 		CreatedAt:    time.Now(),
 	}
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Set(sessionID, session); err != nil {
+		return nil, fmt.Errorf("failed to persist oauth session: %w", err)
+	}
 
 	effectiveCfg, err := geminicli.EffectiveOAuthConfig(oauthCfg, oauthType)
 	if err != nil {
@@ -180,7 +196,9 @@ func (s *GeminiOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		redirectURI = geminicli.AIStudioOAuthRedirectURI
 	}
 	session.RedirectURI = redirectURI
-	s.sessionStore.Set(sessionID, session)
+	if err := s.sessionStore.Set(sessionID, session); err != nil {
+		return nil, fmt.Errorf("failed to update oauth session: %w", err)
+	}
 
 	authURL, err := geminicli.BuildAuthorizationURL(effectiveCfg, state, codeChallenge, redirectURI, session.ProjectID, oauthType)
 	if err != nil {
@@ -376,6 +394,9 @@ func (s *GeminiOAuthService) FetchGoogleOneTier(ctx context.Context, accessToken
 
 	// Use Drive API to infer tier from storage quota (requires drive.readonly scope)
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Calling Drive API for storage quota...")
+	if s == nil || s.driveClient == nil {
+		return GeminiTierGoogleOneUnknown, nil, errors.New("drive client not configured")
+	}
 
 	storageInfo, err := s.driveClient.GetStorageQuota(ctx, accessToken, proxyURL)
 	if err != nil {
@@ -431,15 +452,15 @@ func (s *GeminiOAuthService) RefreshAccountGoogleOneTier(
 		return "", nil, nil, err
 	}
 
-	// 构建 extra 数据（保留原有 extra 字段）
-	extra = make(map[string]any)
-	for k, v := range account.Extra {
-		extra[k] = v
+	// 构建 extra 数据（保留原有 extra 字段，并在缺失时回退到 credentials 中的已持久化元数据）
+	extra = geminiGoogleOneStoredExtra(account)
+	if extra == nil {
+		extra = make(map[string]any)
 	}
 	if storageInfo != nil {
-		extra["drive_storage_limit"] = storageInfo.Limit
-		extra["drive_storage_usage"] = storageInfo.Usage
-		extra["drive_tier_updated_at"] = time.Now().Format(time.RFC3339)
+		extra[geminiDriveStorageLimitKey] = storageInfo.Limit
+		extra[geminiDriveStorageUsageKey] = storageInfo.Usage
+		extra[geminiDriveTierUpdatedAtKey] = time.Now().Format(time.RFC3339)
 	}
 
 	// 构建 credentials 数据
@@ -456,7 +477,11 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ========== ExchangeCode START ==========")
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] SessionID: %s", input.SessionID)
 
-	session, ok := s.sessionStore.Get(input.SessionID)
+	session, ok, err := s.sessionStore.Consume(input.SessionID)
+	if err != nil {
+		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Session lookup failed: %v", err)
+		return nil, fmt.Errorf("failed to load oauth session: %w", err)
+	}
 	if !ok {
 		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Session not found or expired")
 		return nil, fmt.Errorf("session not found or expired")
@@ -516,7 +541,6 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Token expires_in: %d seconds", tokenResp.ExpiresIn)
 
 	sessionProjectID := strings.TrimSpace(session.ProjectID)
-	s.sessionStore.Delete(input.SessionID)
 
 	// 计算过期时间：减去 5 分钟安全时间窗口（考虑网络延迟和时钟偏差）
 	// 同时设置下界保护，防止 expires_in 过小导致过去时间（引发刷新风暴）
@@ -619,19 +643,41 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 			}
 		}
 		tierID = canonicalGeminiTierIDForOAuthType(oauthType, tierID)
+		defaultTierFallbackVisible := false
 		if tierID == "" || tierID == GeminiTierGoogleOneUnknown {
 			if fallbackTierID != "" {
 				tierID = fallbackTierID
 				logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Using fallback tier_id from user/session: %s", tierID)
 			} else {
+				policy := geminiGoogleOneDefaultTierFallbackPolicy(s.cfg)
+				if !policy.Allow {
+					return nil, fmt.Errorf("google One tier detection failed and default tier fallback is disabled")
+				}
 				tierID = GeminiTierGoogleOneFree
+				defaultTierFallbackVisible = policy.VisibleDegraded
 				logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Using default tier_id: %s", tierID)
 			}
 		}
 		fmt.Printf("[GeminiOAuth] Google One tierID after normalization: %s\n", tierID)
 
+		var degradedExtra map[string]any
+		if defaultTierFallbackVisible {
+			tokenInfo := &GeminiTokenInfo{}
+			geminiMarkGoogleOneDefaultTierFallback(tokenInfo)
+			degradedExtra = tokenInfo.Extra
+		}
+
 		// Store Drive info in extra field for caching
-		if storageInfo != nil {
+		if storageInfo != nil || len(degradedExtra) > 0 {
+			extra := map[string]any{}
+			for k, v := range degradedExtra {
+				extra[k] = v
+			}
+			if storageInfo != nil {
+				extra["drive_storage_limit"] = storageInfo.Limit
+				extra["drive_storage_usage"] = storageInfo.Usage
+				extra["drive_tier_updated_at"] = time.Now().Format(time.RFC3339)
+			}
 			tokenInfo := &GeminiTokenInfo{
 				AccessToken:  tokenResp.AccessToken,
 				RefreshToken: tokenResp.RefreshToken,
@@ -642,11 +688,7 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 				ProjectID:    projectID,
 				TierID:       tierID,
 				OAuthType:    oauthType,
-				Extra: map[string]any{
-					"drive_storage_limit":   storageInfo.Limit,
-					"drive_storage_usage":   storageInfo.Usage,
-					"drive_tier_updated_at": time.Now().Format(time.RFC3339),
-				},
+				Extra:        extra,
 			}
 			logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ========== ExchangeCode END (google_one with storage info) ==========")
 			return tokenInfo, nil
@@ -777,7 +819,7 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	// Older versions could refresh Code Assist tokens using a user-provided OAuth client when configured.
 	// If the refresh token was originally issued to that custom client, forcing the built-in client will
 	// fail with "unauthorized_client". In that case, retry with the custom client (ai_studio path) when available.
-	if err != nil && oauthType == "code_assist" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled {
+	if err != nil && oauthType == "code_assist" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled && geminiAllowsUnauthorizedClientRetry(s.cfg) {
 		if alt, altErr := s.RefreshToken(ctx, "ai_studio", refreshToken, proxyURL); altErr == nil {
 			tokenInfo = alt
 			err = nil
@@ -788,7 +830,7 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	// - Old behavior: google_one always used the built-in Gemini CLI OAuth client.
 	// If an existing account was authorized with the built-in client, refreshing with the custom client
 	// will fail with "unauthorized_client". Retry with the built-in client (code_assist path forces it).
-	if err != nil && oauthType == "google_one" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled {
+	if err != nil && oauthType == "google_one" && strings.Contains(err.Error(), "unauthorized_client") && s.GetOAuthConfig().AIStudioOAuthEnabled && geminiAllowsUnauthorizedClientRetry(s.cfg) {
 		if alt, altErr := s.RefreshToken(ctx, "code_assist", refreshToken, proxyURL); altErr == nil {
 			tokenInfo = alt
 			err = nil
@@ -850,14 +892,12 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		canonicalExistingTier := canonicalGeminiTierIDForOAuthType(oauthType, existingTierID)
 		// Check if tier cache is stale (> 24 hours)
 		needsRefresh := true
-		if account.Extra != nil {
-			if updatedAtStr, ok := account.Extra["drive_tier_updated_at"].(string); ok {
-				if updatedAt, err := time.Parse(time.RFC3339, updatedAtStr); err == nil {
-					if time.Since(updatedAt) <= 24*time.Hour {
-						needsRefresh = false
-						// Use cached tier
-						tokenInfo.TierID = canonicalExistingTier
-					}
+		if updatedAtStr := geminiGoogleOneStoredUpdatedAt(account); updatedAtStr != "" {
+			if updatedAt, err := time.Parse(time.RFC3339, updatedAtStr); err == nil {
+				if time.Since(updatedAt) <= 24*time.Hour {
+					needsRefresh = false
+					// Use cached tier
+					tokenInfo.TierID = canonicalExistingTier
 				}
 			}
 		}
@@ -865,6 +905,7 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		if tokenInfo.TierID == "" {
 			tokenInfo.TierID = canonicalExistingTier
 		}
+		geminiMergeStoredExtraIntoTokenInfo(account, tokenInfo)
 
 		if needsRefresh {
 			tierID, storageInfo, err := s.FetchGoogleOneTier(ctx, tokenInfo.AccessToken, proxyURL)
@@ -874,9 +915,9 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 				}
 				if storageInfo != nil {
 					tokenInfo.Extra = map[string]any{
-						"drive_storage_limit":   storageInfo.Limit,
-						"drive_storage_usage":   storageInfo.Usage,
-						"drive_tier_updated_at": time.Now().Format(time.RFC3339),
+						geminiDriveStorageLimitKey:  storageInfo.Limit,
+						geminiDriveStorageUsageKey:  storageInfo.Usage,
+						geminiDriveTierUpdatedAtKey: time.Now().Format(time.RFC3339),
 					}
 				}
 			}
@@ -886,7 +927,13 @@ func (s *GeminiOAuthService) RefreshAccountToken(ctx context.Context, account *A
 			if canonicalExistingTier != "" {
 				tokenInfo.TierID = canonicalExistingTier
 			} else {
-				tokenInfo.TierID = GeminiTierGoogleOneFree
+				policy := geminiGoogleOneDefaultTierFallbackPolicy(s.cfg)
+				if policy.Allow {
+					tokenInfo.TierID = GeminiTierGoogleOneFree
+					if policy.VisibleDegraded {
+						geminiMarkGoogleOneDefaultTierFallback(tokenInfo)
+					}
+				}
 			}
 		}
 	}
@@ -939,7 +986,21 @@ func (s *GeminiOAuthService) BuildProtectedAccountCredentials(tokenInfo *GeminiT
 }
 
 func (s *GeminiOAuthService) Stop() {
-	s.sessionStore.Stop()
+	_ = s.sessionStore.Stop()
+}
+
+func (s *GeminiOAuthService) SessionStoreMode() string {
+	if s == nil || s.sessionStore == nil {
+		return "unknown"
+	}
+	switch s.sessionStore.(type) {
+	case *GeminiOAuthMemorySessionStore:
+		return "memory"
+	case *GeminiOAuthRedisSessionStore:
+		return "redis"
+	default:
+		return "custom"
+	}
 }
 
 func (s *GeminiOAuthService) fetchProjectID(ctx context.Context, accessToken, proxyURL string) (string, string, error) {

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -166,7 +167,11 @@ func vertexServiceAccountCacheKey(account *Account, key *vertexServiceAccountKey
 // getVertexServiceAccountAccessToken obtains an access token for a Vertex service account,
 // using the shared cache and distributed lock to avoid redundant exchanges.
 func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCache, account *Account) (string, error) {
-	key, err := parseVertexServiceAccountKey(account)
+	return getVertexServiceAccountAccessTokenWithAccessor(ctx, cache, account, nil, nil, nil)
+}
+
+func getVertexServiceAccountAccessTokenWithAccessor(ctx context.Context, cache GeminiTokenCache, account *Account, accessor *GeminiCredentialsAccessor, cfg *config.Config, accountRepo AccountRepository) (string, error) {
+	key, err := parseVertexServiceAccountKeyWithAccessor(account, accessor)
 	if err != nil {
 		return "", err
 	}
@@ -174,7 +179,14 @@ func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCa
 
 	if cache != nil {
 		if token, err := cache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
-			return token, nil
+			if geminiAllowsPlaintextTokenCache(cfg) {
+				return token, nil
+			}
+			if geminiProductionModeEnabled(cfg) {
+				if err := geminiPersistPlaintextTokenCacheDetected(ctx, accountRepo, account); err != nil {
+					slog.Warn("vertex_service_account_cache_degraded_update_failed", "account_id", account.ID, "error", err)
+				}
+			}
 		}
 	}
 
@@ -189,7 +201,14 @@ func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCa
 		} else {
 			time.Sleep(vertexLockWaitTime)
 			if token, err := cache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
-				return token, nil
+				if geminiAllowsPlaintextTokenCache(cfg) {
+					return token, nil
+				}
+				if geminiProductionModeEnabled(cfg) {
+					if err := geminiPersistPlaintextTokenCacheDetected(ctx, accountRepo, account); err != nil {
+						slog.Warn("vertex_service_account_cache_degraded_update_failed", "account_id", account.ID, "error", err)
+					}
+				}
 			}
 		}
 	}
@@ -198,7 +217,7 @@ func getVertexServiceAccountAccessToken(ctx context.Context, cache GeminiTokenCa
 	if err != nil {
 		return "", err
 	}
-	if cache != nil {
+	if cache != nil && geminiAllowsPlaintextTokenCache(cfg) {
 		_ = cache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
 	}
 	return accessToken, nil
