@@ -235,6 +235,13 @@ gateway:
   # health/verify 探针与可选 client token。
   openai_core:
     enabled: true
+    # 灰度门禁默认关闭；关闭后对应新路径必须保持旧行为。
+    tls_binding:
+      enabled: false
+    entity_orchestration:
+      enabled: false
+    entity_profile_override:
+      enabled: false
     # 本地/迁移默认配置偏兼容；生产建议见下方 production profile 注释块。
     production_mode: false
     # 默认 profile 模式：
@@ -276,13 +283,27 @@ gateway:
     # 出口桶：
     # - 当前单住宅 IP 可只保留 default 且 proxy_url 为空（表示直接走宿主机出口）
     # - 后续多出口时，可为不同 bucket 配不同 proxy_url，然后按账号 extra.openai_gateway_egress_bucket 绑定
+    # - tls_binding.enabled=true 后，生产环境每个启用 bucket 都必须配置 tls 策略；
+    #   profile_id 只做静态形状校验，实际存在性由服务预检使用 TLS profile 服务校验。
     egress_buckets:
       - name: "default"
         enabled: true
         proxy_url: ""
+        tls:
+          enabled: false
+          profile_id: 0
+          allow_default_fallback: false
+          allow_plain_fallback: true
+          allow_account_override: false
       # - name: "bucket-a"
       #   enabled: true
       #   proxy_url: "socks5://127.0.0.1:9001"
+      #   tls:
+      #     enabled: true
+      #     profile_id: 123
+      #     allow_default_fallback: false
+      #     allow_plain_fallback: false
+      #     allow_account_override: false
     # 可选：Gateway probe/client tokens
     # 配置后：
     # - /openai/_health 与 /openai/_verify 默认要求 token

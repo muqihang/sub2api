@@ -1717,6 +1717,138 @@ func TestOpenAICoreConfigValidationNormalizesSocks5Proxy(t *testing.T) {
 	require.Equal(t, "socks5h://127.0.0.1:9001", cfg.Gateway.OpenAICore.EgressBuckets[0].ProxyURL)
 }
 
+func TestOpenAICoreRolloutFlagsDefaultOff(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.False(t, cfg.Gateway.OpenAICore.TLSBinding.Enabled)
+	require.False(t, cfg.Gateway.OpenAICore.EntityOrchestration.Enabled)
+	require.False(t, cfg.Gateway.OpenAICore.EntityProfileOverride.Enabled)
+}
+
+func TestOpenAICoreBucketTLSValidationRejectsNoEffectivePolicy(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[default].tls requires profile_id or allow_default_fallback or allow_plain_fallback")
+}
+
+func TestOpenAICoreBucketTLSValidationSkipsDisabledBuckets(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled:              true,
+				AllowDefaultFallback: true,
+			},
+		},
+		{
+			Name:    "disabled",
+			Enabled: false,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	require.NoError(t, cfg.Validate())
+}
+
+func TestOpenAICoreBucketTLSValidationRejectsNonPositiveProfileID(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: -1,
+			},
+		},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[default].tls.profile_id must be positive")
+}
+
+func TestOpenAICoreProductionRejectsImplicitPlainTLSWhenBindingEnabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires tls policy for egress bucket default when tls_binding.enabled=true")
+}
+
+func TestOpenAICoreProductionRejectsPlainTLSFallback(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled:            true,
+				AllowPlainFallback: true,
+			},
+		},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode rejects tls.allow_plain_fallback for egress bucket default")
+}
+
 func TestOpenAICoreProductionRejectsDirectFallback(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -1798,6 +1930,7 @@ func TestGeminiProductionRequiresSafeSessionTopology(t *testing.T) {
 	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
 	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
 	cfg.Gemini.TokenCacheMode = "encrypted"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
 
 	err = cfg.Validate()
 	require.Error(t, err)
@@ -1815,6 +1948,7 @@ func TestGeminiProductionRejectsCompatFallbacks(t *testing.T) {
 	cfg.Gemini.AllowProjectIDFallbackToAIStudio = true
 	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
 	cfg.Gemini.TokenCacheMode = "encrypted"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
 
 	err = cfg.Validate()
 	require.Error(t, err)
@@ -1826,6 +1960,24 @@ func TestGeminiProductionRejectsCompatFallbacks(t *testing.T) {
 	err = cfg.Validate()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "gemini.production_mode requires allow_unauthorized_client_retry_fallback=false")
+}
+
+func TestGeminiProductionRequiresCredentialEncryptionKey(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "encrypted"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = ""
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires gateway.openai_core.credential_encryption_key to be configured")
 }
 
 func TestGeminiConfigRejectsInvalidTokenCacheMode(t *testing.T) {

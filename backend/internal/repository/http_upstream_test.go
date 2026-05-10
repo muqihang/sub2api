@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -245,6 +247,70 @@ func (s *HTTPUpstreamSuite) TestGetClientEntryWithTLS_LogsRedactedProxy() {
 	require.NotContains(s.T(), logOutput, "user:pass")
 	require.NotContains(s.T(), logOutput, "q=1")
 	require.NotContains(s.T(), logOutput, "cache_key=")
+}
+
+func (s *HTTPUpstreamSuite) TestGetClientEntryWithTLS_EvictsIdleClientWhenEffectiveFingerprintChanges() {
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy}
+	svc := s.newService()
+
+	entry1, err := svc.getClientEntryWithTLS(
+		"",
+		42,
+		2,
+		&tlsfingerprint.Profile{Name: "profile-a", ALPNProtocols: []string{"http/1.1"}},
+		false,
+		false,
+	)
+	require.NoError(s.T(), err)
+
+	entry2, err := svc.getClientEntryWithTLS(
+		"",
+		42,
+		2,
+		&tlsfingerprint.Profile{Name: "profile-b", ALPNProtocols: []string{"h2", "http/1.1"}},
+		false,
+		false,
+	)
+	require.NoError(s.T(), err)
+
+	require.NotSame(s.T(), entry1, entry2, "changed effective TLS fingerprint must not reuse the old HTTP client")
+	require.False(s.T(), hasEntry(svc, entry1), "old idle TLS client for the same account/proxy bucket should be invalidated")
+	require.Equal(s.T(), 1, len(svc.clients), "same logical TLS path should retain only the newest idle client")
+}
+
+func (s *HTTPUpstreamSuite) TestDoWithTLS_SeparatesGatewayVisibleTLSCacheIdentity() {
+	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	s.T().Cleanup(upstream.Close)
+
+	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccountProxy}
+	svc := s.newService()
+	profile := &tlsfingerprint.Profile{Name: "same-fingerprint"}
+
+	req1, err := http.NewRequestWithContext(
+		service.WithOpenAIHTTPUpstreamTLSCacheIdentity(context.Background(), "bucket=a|proxy=direct|profile_hash=same|source=bucket"),
+		http.MethodGet,
+		upstream.URL+"/a",
+		nil,
+	)
+	require.NoError(s.T(), err)
+	resp1, err := svc.DoWithTLS(req1, "", 42, 2, profile)
+	require.NoError(s.T(), err)
+	require.NoError(s.T(), resp1.Body.Close())
+
+	req2, err := http.NewRequestWithContext(
+		service.WithOpenAIHTTPUpstreamTLSCacheIdentity(context.Background(), "bucket=b|proxy=direct|profile_hash=same|source=bucket"),
+		http.MethodGet,
+		upstream.URL+"/b",
+		nil,
+	)
+	require.NoError(s.T(), err)
+	resp2, err := svc.DoWithTLS(req2, "", 42, 2, profile)
+	require.NoError(s.T(), err)
+	require.NoError(s.T(), resp2.Body.Close())
+
+	require.Len(s.T(), svc.clients, 2, "gateway-visible TLS cache identity must participate in the transport cache key")
 }
 
 func (s *HTTPUpstreamSuite) TestDoWithTLS_LogsRedactedProxyOnAcquireFailure() {

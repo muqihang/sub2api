@@ -48,6 +48,13 @@ func (s *OpenAIOAuthService) SetGatewayCoreService(core *OpenAIGatewayCoreServic
 	s.gatewayCoreService = core
 }
 
+func (s *OpenAIOAuthService) GatewayCoreService() *OpenAIGatewayCoreService {
+	if s == nil {
+		return nil
+	}
+	return s.gatewayCoreService
+}
+
 func (s *OpenAIOAuthService) SetSessionStore(store openai.OAuthSessionStore) {
 	if s == nil {
 		return

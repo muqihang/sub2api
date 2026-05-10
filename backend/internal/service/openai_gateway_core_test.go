@@ -1,21 +1,187 @@
-//go:build unit
-
 package service
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/model"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
 
+type openAIGatewayCoreAccountRepoStubBase struct {
+	accounts     []Account
+	accountsByID map[int64]*Account
+}
+
+func (m *openAIGatewayCoreAccountRepoStubBase) Create(ctx context.Context, account *Account) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) GetByID(ctx context.Context, id int64) (*Account, error) {
+	if m.accountsByID != nil {
+		if acc, ok := m.accountsByID[id]; ok {
+			return acc, nil
+		}
+	}
+	return nil, errors.New("account not found")
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	var result []*Account
+	for _, id := range ids {
+		if m.accountsByID != nil {
+			if acc, ok := m.accountsByID[id]; ok {
+				result = append(result, acc)
+			}
+		}
+	}
+	return result, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ExistsByID(ctx context.Context, id int64) (bool, error) {
+	if m.accountsByID == nil {
+		return false, nil
+	}
+	_, ok := m.accountsByID[id]
+	return ok, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) GetByCRSAccountID(ctx context.Context, crsAccountID string) (*Account, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) FindByExtraField(ctx context.Context, key string, value any) ([]Account, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListCRSAccountIDs(ctx context.Context) (map[string]int64, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) Update(ctx context.Context, account *Account) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) Delete(ctx context.Context, id int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) List(ctx context.Context, params pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error) {
+	return nil, nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error) {
+	return nil, nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListActive(ctx context.Context) ([]Account, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) UpdateLastUsed(ctx context.Context, id int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) BatchUpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) SetError(ctx context.Context, id int64, errorMsg string) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ClearError(ctx context.Context, id int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) SetSchedulable(ctx context.Context, id int64, schedulable bool) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error) {
+	return 0, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulable(ctx context.Context) ([]Account, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
+	return nil, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	var result []Account
+	for _, acc := range m.accounts {
+		if acc.Platform == platform && acc.IsSchedulable() {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+	return m.ListSchedulableByPlatform(ctx, platform)
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]Account, error) {
+	platformSet := make(map[string]bool, len(platforms))
+	for _, platform := range platforms {
+		platformSet[platform] = true
+	}
+	var result []Account
+	for _, acc := range m.accounts {
+		if platformSet[acc.Platform] && acc.IsSchedulable() {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulableByGroupIDAndPlatforms(ctx context.Context, groupID int64, platforms []string) ([]Account, error) {
+	return m.ListSchedulableByPlatforms(ctx, platforms)
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return m.ListSchedulableByPlatform(ctx, platform)
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ListSchedulableUngroupedByPlatforms(ctx context.Context, platforms []string) ([]Account, error) {
+	return m.ListSchedulableByPlatforms(ctx, platforms)
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) SetOverloaded(ctx context.Context, id int64, until time.Time) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ClearTempUnschedulable(ctx context.Context, id int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ClearRateLimit(ctx context.Context, id int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ClearModelRateLimits(ctx context.Context, id int64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) UpdateSessionWindow(ctx context.Context, id int64, start, end *time.Time, status string) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) BulkUpdate(ctx context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
+	return 0, nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	return nil
+}
+func (m *openAIGatewayCoreAccountRepoStubBase) ResetQuotaUsed(ctx context.Context, id int64) error {
+	return nil
+}
+
 type openAIGatewayCoreRepoStub struct {
-	mockAccountRepoForGemini
+	openAIGatewayCoreAccountRepoStubBase
 	updateExtraCalls int
 	lastExtra        map[string]any
 }
@@ -36,6 +202,18 @@ func (r *openAIGatewayCoreRepoStub) ListByPlatform(ctx context.Context, platform
 		return append([]Account(nil), r.accounts...), nil
 	}
 	return nil, nil
+}
+
+func testOpenAITLSProfileService(profiles ...*model.TLSFingerprintProfile) *TLSFingerprintProfileService {
+	svc := &TLSFingerprintProfileService{
+		localCache: map[int64]*model.TLSFingerprintProfile{},
+	}
+	for _, profile := range profiles {
+		if profile != nil {
+			svc.localCache[profile.ID] = profile
+		}
+	}
+	return svc
 }
 
 func TestOpenAIGatewayCoreService_AuthenticateClientHeaders(t *testing.T) {
@@ -68,7 +246,7 @@ func TestOpenAIGatewayCoreService_ResolveAccountRuntime_StablePerAccount(t *test
 	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accountsByID: map[int64]*Account{
 				1: {ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Credentials: map[string]any{"chatgpt_account_id": "acct-1"}},
 				2: {ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Credentials: map[string]any{"chatgpt_account_id": "acct-2"}},
@@ -99,6 +277,54 @@ func TestOpenAIGatewayCoreService_ResolveAccountRuntime_StablePerAccount(t *test
 	require.GreaterOrEqual(t, repo.updateExtraCalls, 2)
 }
 
+func TestOpenAIGatewayCoreService_TLSEntityFlagsDisabledPreserveRuntime(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = false
+	cfg.Gateway.OpenAICore.EntityOrchestration.Enabled = false
+	cfg.Gateway.OpenAICore.EntityProfileOverride.Enabled = false
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 999,
+			},
+		},
+	}
+
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accountsByID: map[int64]*Account{
+				1: {
+					ID:          1,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeOAuth,
+					Status:      StatusActive,
+					Credentials: map[string]any{"chatgpt_account_id": "acct-1"},
+					Extra: map[string]any{
+						"openai_gateway_tls": map[string]any{
+							"enabled":    true,
+							"profile_id": 123,
+						},
+						"openai_gateway_entity_id": "entity-ignored",
+					},
+				},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil)
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), repo.accountsByID[1], http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.Nil(t, runtime.TLS)
+	require.Equal(t, "default", runtime.EgressBucket)
+	require.NotEmpty(t, runtime.Profile.ProfileID)
+}
+
 func TestOpenAIGatewayCoreService_ResolveAccountRuntimeObserveModeAlignsVersion(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAICore.Enabled = true
@@ -106,7 +332,7 @@ func TestOpenAIGatewayCoreService_ResolveAccountRuntimeObserveModeAlignsVersion(
 	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accountsByID: map[int64]*Account{
 				1: {
 					ID:       1,
@@ -168,13 +394,382 @@ func TestOpenAIGatewayCoreService_ResolveEgressBucket(t *testing.T) {
 	require.Equal(t, "fallback-proxy", egress.ProxyURL)
 }
 
+func TestOpenAIGatewayCoreService_ValidateTLSProfilesAcceptsConfiguredProfile(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{
+		ID:   7,
+		Name: "Chrome 124",
+	}))
+
+	require.NoError(t, svc.ValidateConfiguredTLSProfiles(context.Background()))
+}
+
+func TestOpenAIGatewayCoreService_ValidateTLSProfilesRejectsMissingProfile(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 404,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService())
+
+	err := svc.ValidateConfiguredTLSProfiles(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[default].tls.profile_id 404 not found")
+}
+
+func TestOpenAIGatewayCoreService_ValidateTLSProfilesSkippedWhenBindingDisabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = false
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 404,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService())
+
+	require.NoError(t, svc.ValidateConfiguredTLSProfiles(context.Background()))
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeTLSSelectsBucketProfile(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{
+		ID:   7,
+		Name: "Chrome 124",
+	}))
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.NotNil(t, runtime.TLS)
+	require.True(t, runtime.TLS.Enabled)
+	require.Equal(t, int64(7), runtime.TLS.ProfileID)
+	require.Equal(t, "Chrome 124", runtime.TLS.ProfileName)
+	require.Equal(t, "bucket", runtime.TLS.Source)
+	require.NotEmpty(t, runtime.TLS.ProfileHash)
+	require.Contains(t, runtime.TLS.CacheIdentity, "bucket=default")
+	require.Contains(t, runtime.TLS.CacheIdentity, "profile_hash="+runtime.TLS.ProfileHash)
+	require.True(t, runtime.TLS.HTTPApplicable)
+	require.True(t, runtime.TLS.WSApplicable)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeWSFlagsUseActualDialerStrategy(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:     "default",
+			Enabled:  true,
+			ProxyURL: "https://127.0.0.1:8443",
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{
+		ID:   7,
+		Name: "Chrome 124",
+	}))
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportWS)
+	require.NoError(t, err)
+	require.NotNil(t, runtime.TLS)
+	require.True(t, runtime.TLS.Enabled)
+	require.False(t, runtime.TLS.WSApplicable, "WSApplicable must reflect actual TLS-bound WS strategy support")
+	require.Equal(t, "https_proxy_unsupported_for_tls_bound_ws", runtime.TLS.FallbackReason)
+}
+
+func TestOpenAIGatewayCoreService_BuildTLSCanarySnapshotWSIncludesStrategyDiagnostics(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accountsByID: map[int64]*Account{
+				1: {
+					ID:       1,
+					Name:     "oauth",
+					Platform: PlatformOpenAI,
+					Type:     AccountTypeOAuth,
+					Credentials: map[string]any{
+						"chatgpt_account_id": "acct_123",
+					},
+				},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{
+		ID:   7,
+		Name: "Chrome 124",
+	}))
+
+	snapshot, err := svc.BuildTLSCanarySnapshot(context.Background(), 1, "default", "/v1/realtime", http.Header{}, OpenAIClientTransportWS)
+	require.NoError(t, err)
+	require.Equal(t, "ws", snapshot.Transport)
+	require.Equal(t, "WSCoderCustomHTTPClient", snapshot.EffectiveSendMethod)
+	require.Equal(t, "coder_custom_http_client", snapshot.Diagnostics["ws_dialer_strategy"])
+	require.Equal(t, "true", snapshot.Diagnostics["ws_transport_supported"])
+	require.Empty(t, snapshot.Diagnostics["ws_transport_unsupported_reason"])
+	require.True(t, snapshot.TLS.WSApplicable)
+}
+
+func TestOpenAIGatewayService_RunTLSCanaryProbeUsesCanaryOnlyTLSProfileOverride(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	account := &Account{
+		ID:          1,
+		Name:        "api",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-test"},
+	}
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accountsByID: map[int64]*Account{1: account},
+		},
+	}
+	core := NewOpenAIGatewayCoreService(repo, cfg, nil, testOpenAITLSProfileService(
+		&model.TLSFingerprintProfile{ID: 7, Name: "Bucket TLS"},
+		&model.TLSFingerprintProfile{ID: 9, Name: "Canary TLS"},
+	))
+	upstream := &openAIHTTPSenderUpstreamRecorder{}
+	svc := &OpenAIGatewayService{
+		accountRepo:         repo,
+		cfg:                 cfg,
+		httpUpstream:        upstream,
+		gatewayCoreService:  core,
+		openAITokenProvider: nil,
+	}
+
+	snapshot, err := svc.RunOpenAITLSCanaryProbe(context.Background(), OpenAIGatewayTLSCanaryProbeInput{
+		AccountID:    1,
+		Bucket:       "default",
+		TLSProfileID: 9,
+		Transport:    OpenAIClientTransportHTTP,
+		Route:        "/v1/responses",
+	})
+	require.NoError(t, err)
+	require.True(t, snapshot.Success)
+	require.NotNil(t, snapshot.Probe)
+	require.Equal(t, http.StatusOK, snapshot.Probe.HTTPStatus)
+	require.Equal(t, int64(9), snapshot.TLS.ProfileID)
+	require.Equal(t, "Canary TLS", snapshot.TLS.ProfileName)
+	require.Equal(t, "Canary TLS", upstream.lastProfile.Name)
+	require.Nil(t, account.Extra[OpenAIGatewayTLSExtraKey], "canary profile override must not persist to account extra")
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeTLSAccountOverrideOnlyWhenAllowed(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:              true,
+				ProfileID:            7,
+				AllowAccountOverride: false,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(
+		&model.TLSFingerprintProfile{ID: 7, Name: "Bucket"},
+		&model.TLSFingerprintProfile{ID: 9, Name: "Account"},
+	))
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_gateway_tls": map[string]any{
+				"enabled":    true,
+				"profile_id": 9,
+			},
+		},
+	}
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), account, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.Equal(t, int64(7), runtime.TLS.ProfileID)
+	require.Equal(t, "bucket", runtime.TLS.Source)
+
+	cfg.Gateway.OpenAICore.EgressBuckets[0].TLS.AllowAccountOverride = true
+	runtime, err = svc.ResolveAccountRuntime(context.Background(), account, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.Equal(t, int64(9), runtime.TLS.ProfileID)
+	require.Equal(t, "account_override", runtime.TLS.Source)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeTLSDefaultFallback(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:              true,
+				AllowDefaultFallback: true,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService())
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.True(t, runtime.TLS.Enabled)
+	require.Equal(t, int64(0), runtime.TLS.ProfileID)
+	require.Equal(t, "default_fallback", runtime.TLS.Source)
+	require.Equal(t, "bucket_profile_unset", runtime.TLS.FallbackReason)
+	require.NotEmpty(t, runtime.TLS.ProfileName)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeTLSFailsClosedWithoutEffectivePolicy(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled: true,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService())
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportHTTP)
+	require.Nil(t, runtime)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.True(t, errors.As(err, &policyErr))
+	require.Equal(t, "tls_policy_no_effective_profile", policyErr.Code)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeTLSOpenAIOverrideDoesNotDependOnAnthropicFlag(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:              true,
+				ProfileID:            7,
+				AllowAccountOverride: true,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(
+		&model.TLSFingerprintProfile{ID: 7, Name: "Bucket"},
+		&model.TLSFingerprintProfile{ID: 9, Name: "Account"},
+	))
+	account := &Account{
+		ID:       1,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"enable_tls_fingerprint": false,
+			"openai_gateway_tls": map[string]any{
+				"enabled":    true,
+				"profile_id": 9,
+			},
+		},
+	}
+	require.False(t, account.IsTLSFingerprintEnabled())
+
+	runtime, err := svc.ResolveAccountRuntime(context.Background(), account, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+	require.Equal(t, int64(9), runtime.TLS.ProfileID)
+	require.Equal(t, "account_override", runtime.TLS.Source)
+}
+
 func TestOpenAIGatewayCoreService_BuildHealthSnapshot(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAICore.Enabled = true
 	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{
 					ID:       1,
@@ -217,6 +812,251 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshot(t *testing.T) {
 	require.NotEmpty(t, health.DegradedReason)
 }
 
+func TestOpenAIGatewayCoreService_BuildHealthSnapshotIncludesTLSBinding(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{
+		ID:   7,
+		Name: "Chrome 124",
+	}))
+
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.NotNil(t, health.TLSBinding)
+	require.True(t, health.TLSBinding.Enabled)
+	require.True(t, health.TLSBinding.Buckets["default"].Enabled)
+	require.Equal(t, int64(7), health.TLSBinding.Buckets["default"].ProfileID)
+	require.Equal(t, "Chrome 124", health.TLSBinding.Buckets["default"].ProfileName)
+	require.Equal(t, "bucket", health.TLSBinding.Buckets["default"].Source)
+	require.NotEmpty(t, health.TLSBinding.Buckets["default"].CacheIdentity)
+	require.True(t, health.TLSBinding.Buckets["default"].HTTPApplicable)
+	require.True(t, health.TLSBinding.Buckets["default"].WSApplicable)
+}
+
+func TestOpenAIGatewayCoreService_BuildHealthSnapshotIncludesTLSBindingSummary(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "bound"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "bound",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+		{
+			Name:    "default-fallback",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:              true,
+				AllowDefaultFallback: true,
+			},
+		},
+		{
+			Name:    "plain-fallback",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:            true,
+				AllowPlainFallback: true,
+			},
+		},
+		{
+			Name:    "fail-closed",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled: true,
+			},
+		},
+	}
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bound", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+				{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "default-fallback", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+				{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "plain-fallback", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+				{ID: 4, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "fail-closed", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{ID: 7, Name: "Chrome 124"}))
+
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.NotNil(t, health.TLSBinding)
+	require.NotNil(t, health.TLSBinding.Summary)
+	require.Equal(t, int64(4), health.TLSBinding.Summary.AccountsTotal)
+	require.Equal(t, int64(1), health.TLSBinding.Summary.BoundAccounts)
+	require.Equal(t, int64(1), health.TLSBinding.Summary.DefaultFallbackAccounts)
+	require.Equal(t, int64(1), health.TLSBinding.Summary.PlainFallbackAccounts)
+	require.Equal(t, int64(1), health.TLSBinding.Summary.FailClosedAccounts)
+	require.Equal(t, int64(1), health.TLSBinding.Summary.ProfileUsage["profile_id:7"])
+	require.Equal(t, int64(1), health.TLSBinding.Summary.ProfileUsage["builtin_default"])
+	require.Contains(t, health.WarningCodes, "tls_policy_no_effective_profile")
+}
+
+func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnMissingConfiguredTLSProfile(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 404,
+			},
+		},
+	}
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "default", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil, testOpenAITLSProfileService())
+
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.Contains(t, health.WarningCodes, "tls_profile_not_found")
+	require.Equal(t, "degraded", health.GatewayStatus)
+	require.Equal(t, "degraded", health.OAuthStatus)
+	require.Equal(t, "tls_profile_not_found", health.DegradedReason)
+}
+
+func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnInvalidConfiguredTLSProfile(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accounts: []Account{
+				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "default", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(repo, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{ID: 7}))
+
+	health, err := svc.BuildHealthSnapshot(context.Background(), OpenAIWSPerformanceMetricsSnapshot{})
+	require.NoError(t, err)
+	require.Contains(t, health.WarningCodes, "tls_profile_invalid")
+	require.Equal(t, "degraded", health.GatewayStatus)
+	require.Equal(t, "tls_profile_invalid", health.DegradedReason)
+}
+
+func TestOpenAIGatewayCoreService_ResolveEffectiveTLSPreservesInvalidProfileCode(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(&model.TLSFingerprintProfile{ID: 7}))
+
+	_, err := svc.ResolveEffectiveTLS(context.Background(), &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, buildOpenAIEgressResolution("default", "", openAIEgressSourceBucket), OpenAIClientTransportWS)
+	require.Error(t, err)
+	var policyErr *OpenAIEgressPolicyError
+	require.ErrorAs(t, err, &policyErr)
+	require.Equal(t, "tls_profile_invalid", policyErr.Code)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeTLSIdentityChangesWhenFingerprintChanges(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	profile := &model.TLSFingerprintProfile{ID: 7, Name: "Chrome 124", ALPNProtocols: []string{"h2", "http/1.1"}}
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(profile))
+
+	first, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+
+	profile.ALPNProtocols = []string{"http/1.1"}
+	second, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+
+	require.NotEqual(t, first.TLS.ProfileHash, second.TLS.ProfileHash)
+	require.NotEqual(t, first.TLS.CacheIdentity, second.TLS.CacheIdentity)
+}
+
+func TestOpenAIGatewayCoreService_ResolveAccountRuntimeTLSHashUsesEffectiveDefaults(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultProfileMode = OpenAIGatewayProfileModeFixed
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: config.OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: 7,
+			},
+		},
+	}
+	implicitDefault := &model.TLSFingerprintProfile{ID: 7, Name: "Implicit default"}
+	explicitDefault := &model.TLSFingerprintProfile{ID: 7, Name: "Explicit default", ALPNProtocols: []string{"http/1.1"}}
+
+	svc := NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(implicitDefault))
+	first, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+
+	svc = NewOpenAIGatewayCoreService(&openAIGatewayCoreRepoStub{}, cfg, nil, testOpenAITLSProfileService(explicitDefault))
+	second, err := svc.ResolveAccountRuntime(context.Background(), &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, http.Header{}, OpenAIClientTransportHTTP)
+	require.NoError(t, err)
+
+	require.Equal(t, first.TLS.ProfileHash, second.TLS.ProfileHash)
+	require.Equal(t, first.TLS.CacheIdentity, second.TLS.CacheIdentity)
+}
+
 func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeCredentials(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAICore.Enabled = true
@@ -224,9 +1064,12 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeCredentials
 	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
 	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("aa", 32)
 	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true, ProxyURL: "http://127.0.0.1:8080"},
+	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{
 					ID:       1,
@@ -252,7 +1095,7 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeCredentials
 	require.Equal(t, "degraded", health.GatewayStatus)
 	require.Equal(t, "degraded", health.OAuthStatus)
 	require.Equal(t, int64(1), health.UnsafeCredentialAccounts)
-	require.Equal(t, "unsafe_plaintext_credentials_present", health.DegradedReason)
+	require.Equal(t, "credential_storage_not_production_safe", health.DegradedReason)
 }
 
 func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeAPIKeyCredentials(t *testing.T) {
@@ -262,9 +1105,12 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeAPIKeyCrede
 	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
 	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("ac", 32)
 	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []config.OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true, ProxyURL: "http://127.0.0.1:8080"},
+	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{
 					ID:       2,
@@ -284,7 +1130,7 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotDegradesOnUnsafeAPIKeyCrede
 	require.NoError(t, err)
 	require.Equal(t, "degraded", health.GatewayStatus)
 	require.Equal(t, int64(1), health.UnsafeCredentialAccounts)
-	require.Equal(t, "unsafe_plaintext_credentials_present", health.DegradedReason)
+	require.Equal(t, "credential_storage_not_production_safe", health.DegradedReason)
 }
 
 func TestOpenAIGatewayService_ResolveOpenAIEgressUsesBucketProxy(t *testing.T) {
@@ -392,7 +1238,7 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshot(t *testing.T) {
 	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{
 					ID:       1,
@@ -443,7 +1289,7 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshotRedactsProxyURL(t *tes
 	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{
 					ID:       1,
@@ -483,7 +1329,7 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotWarnsOnBucketConcentration(
 	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
 				{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
@@ -508,7 +1354,7 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotWarnsOnDirectEgressInProduc
 	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
 			},
@@ -534,7 +1380,7 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotWarnsOnDirectEgressInProduc
 	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a"}},
 			},
@@ -560,7 +1406,7 @@ func TestOpenAIGatewayCoreService_BuildHealthSnapshotWarnsOnDirectFallbackDisabl
 	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{ID: 4, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
 			},
@@ -585,7 +1431,7 @@ func TestOpenAIGatewayCoreService_BuildAdminStatusSnapshotWarnsOnBucketConcentra
 	}
 
 	repo := &openAIGatewayCoreRepoStub{
-		mockAccountRepoForGemini: mockAccountRepoForGemini{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
 			accounts: []Account{
 				{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},
 				{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Extra: map[string]any{"openai_gateway_egress_bucket": "bucket-a", "openai_token_source": OpenAITokenSourceRTManaged, "openai_auth_state": OpenAIAuthStateHealthy}},

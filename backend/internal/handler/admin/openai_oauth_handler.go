@@ -441,35 +441,48 @@ func (h *OpenAIOAuthHandler) UpdateGatewayRuntime(c *gin.Context) {
 	}
 
 	var req struct {
-		EgressBucket string `json:"egress_bucket"`
-		ProfileMode  string `json:"profile_mode"`
+		EgressBucket     *string                                `json:"egress_bucket"`
+		ProfileMode      *string                                `json:"profile_mode"`
+		OpenAIGatewayTLS *service.OpenAIGatewayAccountTLSPolicy `json:"openai_gateway_tls"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(req.EgressBucket) != "" && !h.gatewayCoreService.HasEgressBucket(req.EgressBucket) {
+	if req.EgressBucket != nil && strings.TrimSpace(*req.EgressBucket) != "" && !h.gatewayCoreService.HasEgressBucket(*req.EgressBucket) {
 		response.BadRequest(c, "Unknown egress bucket")
 		return
 	}
-	if mode := strings.TrimSpace(req.ProfileMode); mode != "" &&
-		mode != service.OpenAIGatewayProfileModeFixed &&
-		mode != service.OpenAIGatewayProfileModeObserve &&
-		mode != service.OpenAIGatewayProfileModeFrozen {
-		response.BadRequest(c, "Invalid profile_mode")
-		return
+	if req.ProfileMode != nil {
+		mode := strings.TrimSpace(*req.ProfileMode)
+		if mode != "" &&
+			mode != service.OpenAIGatewayProfileModeFixed &&
+			mode != service.OpenAIGatewayProfileModeObserve &&
+			mode != service.OpenAIGatewayProfileModeFrozen {
+			response.BadRequest(c, "Invalid profile_mode")
+			return
+		}
 	}
 
-	extra := map[string]any{}
-	for k, v := range account.Extra {
-		extra[k] = v
+	extra := cloneAccountExtraForAdminUpdate(account.Extra)
+	if req.EgressBucket != nil {
+		extra["openai_gateway_egress_bucket"] = strings.TrimSpace(*req.EgressBucket)
 	}
-	extra["openai_gateway_egress_bucket"] = strings.TrimSpace(req.EgressBucket)
-	extra["openai_gateway_profile_mode"] = strings.TrimSpace(req.ProfileMode)
+	if req.ProfileMode != nil {
+		extra["openai_gateway_profile_mode"] = strings.TrimSpace(*req.ProfileMode)
+	}
+	if req.OpenAIGatewayTLS != nil {
+		if err := h.gatewayCoreService.ValidateAccountTLSPolicyUpdate(c.Request.Context(), account, extra, req.OpenAIGatewayTLS); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		extra["openai_gateway_tls"] = req.OpenAIGatewayTLS.ExtraMap()
+	}
 
 	updated, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Name:  account.Name,
-		Extra: extra,
+		Name:             account.Name,
+		Extra:            extra,
+		OpenAIGatewayTLS: req.OpenAIGatewayTLS,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

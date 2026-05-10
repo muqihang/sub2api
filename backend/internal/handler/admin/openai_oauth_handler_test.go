@@ -134,6 +134,73 @@ func TestOpenAIOAuthHandler_UpdateGatewayRuntime(t *testing.T) {
 	require.Equal(t, "frozen", adminSvc.updatedAccounts[0].input.Extra["openai_gateway_profile_mode"])
 }
 
+func TestOpenAIOAuthHandler_UpdateGatewayRuntimeSetsTLSPolicyAndPreservesRuntimeFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	core := testOpenAIAccountTLSGatewayCore(true, 7)
+	adminSvc := newStubAdminService()
+	adminSvc.accounts = []service.Account{
+		{
+			ID:       3,
+			Name:     "openai-acc",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+			Extra: map[string]any{
+				"openai_gateway_egress_bucket": "default",
+				"openai_gateway_profile_mode":  service.OpenAIGatewayProfileModeFrozen,
+			},
+		},
+	}
+	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, core, nil, nil, nil)
+	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc)
+	router.POST("/api/v1/admin/openai/gateway/accounts/:id/runtime", h.UpdateGatewayRuntime)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/gateway/accounts/3/runtime", strings.NewReader(`{"openai_gateway_tls":{"enabled":true,"profile_id":7}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.updatedAccounts, 1)
+	extra := adminSvc.updatedAccounts[0].input.Extra
+	require.Equal(t, "default", extra["openai_gateway_egress_bucket"])
+	require.Equal(t, service.OpenAIGatewayProfileModeFrozen, extra["openai_gateway_profile_mode"])
+	require.Equal(t, map[string]any{"enabled": true, "profile_id": int64(7)}, extra["openai_gateway_tls"])
+}
+
+func TestOpenAIOAuthHandler_UpdateGatewayRuntimeRejectsTLSOverrideWhenBucketDisallows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	core := testOpenAIAccountTLSGatewayCore(false, 7)
+	adminSvc := newStubAdminService()
+	adminSvc.accounts = []service.Account{
+		{
+			ID:       3,
+			Name:     "openai-acc",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+			Extra: map[string]any{
+				"openai_gateway_egress_bucket": "default",
+			},
+		},
+	}
+	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, core, nil, nil, nil)
+	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc)
+	router.POST("/api/v1/admin/openai/gateway/accounts/:id/runtime", h.UpdateGatewayRuntime)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/gateway/accounts/3/runtime", strings.NewReader(`{"openai_gateway_tls":{"enabled":true,"profile_id":7}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Empty(t, adminSvc.updatedAccounts)
+}
+
 func TestOpenAIOAuthHandler_CreateAccountFromOAuthPersistsEgressBucket(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

@@ -850,6 +850,12 @@ type GatewayOpenAIWSConfig struct {
 type GatewayOpenAICoreConfig struct {
 	// Enabled: 是否启用 OpenAI Gateway Core（默认 true）
 	Enabled bool `mapstructure:"enabled"`
+	// TLSBinding: OpenAI 上游 TLS 指纹绑定灰度门禁（默认关闭）
+	TLSBinding OpenAIGatewayFeatureFlagConfig `mapstructure:"tls_binding"`
+	// EntityOrchestration: OpenAI 多实体编排灰度门禁（默认关闭）
+	EntityOrchestration OpenAIGatewayFeatureFlagConfig `mapstructure:"entity_orchestration"`
+	// EntityProfileOverride: OpenAI 实体 profile override 灰度门禁（默认关闭）
+	EntityProfileOverride OpenAIGatewayFeatureFlagConfig `mapstructure:"entity_profile_override"`
 	// ProductionMode: 生产安全模式，启用后要求出口与凭证相关门禁 fail-closed
 	ProductionMode bool `mapstructure:"production_mode"`
 	// DefaultProfileMode: 默认 profile 模式（fixed/observe/frozen）
@@ -901,10 +907,23 @@ type OpenAIGatewayClientTokenConfig struct {
 	Token string `mapstructure:"token"`
 }
 
+type OpenAIGatewayFeatureFlagConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 type OpenAIGatewayEgressBucketConfig struct {
-	Name     string `mapstructure:"name"`
-	Enabled  bool   `mapstructure:"enabled"`
-	ProxyURL string `mapstructure:"proxy_url"`
+	Name     string                       `mapstructure:"name"`
+	Enabled  bool                         `mapstructure:"enabled"`
+	ProxyURL string                       `mapstructure:"proxy_url"`
+	TLS      OpenAIGatewayBucketTLSConfig `mapstructure:"tls"`
+}
+
+type OpenAIGatewayBucketTLSConfig struct {
+	Enabled              bool  `mapstructure:"enabled"`
+	ProfileID            int64 `mapstructure:"profile_id"`
+	AllowDefaultFallback bool  `mapstructure:"allow_default_fallback"`
+	AllowPlainFallback   bool  `mapstructure:"allow_plain_fallback"`
+	AllowAccountOverride bool  `mapstructure:"allow_account_override"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1736,6 +1755,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_core.enabled", true)
+	viper.SetDefault("gateway.openai_core.tls_binding.enabled", false)
+	viper.SetDefault("gateway.openai_core.entity_orchestration.enabled", false)
+	viper.SetDefault("gateway.openai_core.entity_profile_override.enabled", false)
 	viper.SetDefault("gateway.openai_core.production_mode", false)
 	viper.SetDefault("gateway.openai_core.default_profile_mode", "fixed")
 	viper.SetDefault("gateway.openai_core.default_egress_bucket", "default")
@@ -1990,6 +2012,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty")
 	}
 	geminiTokenCacheMode := strings.ToLower(strings.TrimSpace(c.Gemini.TokenCacheMode))
+	geminiCredentialKey := strings.TrimSpace(c.Gateway.OpenAICore.CredentialEncryptionKey)
 	switch geminiTokenCacheMode {
 	case "plaintext", "disabled", "encrypted":
 	default:
@@ -1998,6 +2021,9 @@ func (c *Config) Validate() error {
 	if c.Gemini.ProductionMode {
 		if geminiTokenCacheMode == "plaintext" {
 			return fmt.Errorf("gemini.production_mode rejects token_cache_mode=plaintext")
+		}
+		if geminiCredentialKey == "" {
+			return fmt.Errorf("gemini.production_mode requires gateway.openai_core.credential_encryption_key to be configured")
 		}
 		if !c.Gemini.RequireSafeOAuthSessionStore || !c.Gemini.RequireThoughtSignatureSessionSafety {
 			return fmt.Errorf("gemini.production_mode requires safe OAuth session topology")
@@ -2517,6 +2543,11 @@ func (c *Config) Validate() error {
 		} else {
 			bucket.ProxyURL = normalizedProxyURL
 		}
+		if bucket.Enabled && c.Gateway.OpenAICore.TLSBinding.Enabled {
+			if err := validateOpenAIGatewayBucketTLSConfig(name, bucket.TLS, c.Gateway.OpenAICore.ProductionMode); err != nil {
+				return err
+			}
+		}
 		if name == defaultBucket {
 			defaultBucketEnabled = bucket.Enabled
 		}
@@ -2841,6 +2872,25 @@ func (c *Config) Validate() error {
 	}
 	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
 		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
+	}
+	return nil
+}
+
+func validateOpenAIGatewayBucketTLSConfig(bucketName string, tls OpenAIGatewayBucketTLSConfig, productionMode bool) error {
+	if !tls.Enabled {
+		if productionMode {
+			return fmt.Errorf("gateway.openai_core.production_mode requires tls policy for egress bucket %s when tls_binding.enabled=true", bucketName)
+		}
+		return nil
+	}
+	if tls.ProfileID < 0 {
+		return fmt.Errorf("gateway.openai_core.egress_buckets[%s].tls.profile_id must be positive", bucketName)
+	}
+	if tls.ProfileID == 0 && !tls.AllowDefaultFallback && !tls.AllowPlainFallback {
+		return fmt.Errorf("gateway.openai_core.egress_buckets[%s].tls requires profile_id or allow_default_fallback or allow_plain_fallback", bucketName)
+	}
+	if productionMode && tls.AllowPlainFallback {
+		return fmt.Errorf("gateway.openai_core.production_mode rejects tls.allow_plain_fallback for egress bucket %s", bucketName)
 	}
 	return nil
 }

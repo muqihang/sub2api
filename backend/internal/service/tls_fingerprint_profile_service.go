@@ -135,6 +135,9 @@ func (s *TLSFingerprintProfileService) Delete(ctx context.Context, id int64) err
 // GetProfileByID 根据 ID 从本地缓存获取 Profile（用于 DoWithTLS 热路径）
 // 返回 nil 表示未找到，调用方应 fallback 到内置默认 Profile
 func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *tlsfingerprint.Profile {
+	if s == nil {
+		return nil
+	}
 	s.localMu.RLock()
 	p, ok := s.localCache[id]
 	s.localMu.RUnlock()
@@ -145,8 +148,21 @@ func (s *TLSFingerprintProfileService) GetProfileByID(id int64) *tlsfingerprint.
 	return nil
 }
 
+func (s *TLSFingerprintProfileService) GetProfileModelByID(id int64) *model.TLSFingerprintProfile {
+	if s == nil {
+		return nil
+	}
+	s.localMu.RLock()
+	p := s.localCache[id]
+	s.localMu.RUnlock()
+	return p
+}
+
 // getRandomProfile 从本地缓存中随机选择一个 Profile
 func (s *TLSFingerprintProfileService) getRandomProfile() *tlsfingerprint.Profile {
+	if s == nil {
+		return nil
+	}
 	s.localMu.RLock()
 	defer s.localMu.RUnlock()
 

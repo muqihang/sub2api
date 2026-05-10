@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 )
 
@@ -25,6 +26,15 @@ type OpenAIEgressResolution struct {
 	ProxyLabel    string
 	ProxyHash     string
 	Source        string
+	TLS           OpenAIEgressTLSView
+}
+
+type OpenAIEgressTLSView struct {
+	Enabled              bool  `json:"enabled"`
+	ProfileID            int64 `json:"profile_id,omitempty"`
+	AllowDefaultFallback bool  `json:"allow_default_fallback,omitempty"`
+	AllowPlainFallback   bool  `json:"allow_plain_fallback,omitempty"`
+	AllowAccountOverride bool  `json:"allow_account_override,omitempty"`
 }
 
 type OpenAIEgressPolicyError struct {
@@ -59,10 +69,10 @@ func (s *OpenAIGatewayCoreService) ResolveEgress(ctx context.Context, account *A
 	}
 	proxyURL := strings.TrimSpace(bucket.ProxyURL)
 	if proxyURL != "" {
-		return buildOpenAIEgressResolution(bucketName, proxyURL, openAIEgressSourceBucket), nil
+		return buildOpenAIEgressResolutionWithTLS(bucketName, proxyURL, openAIEgressSourceBucket, bucket.TLS), nil
 	}
 	if s.allowDirectEgressFallback() {
-		return buildOpenAIEgressResolution(bucketName, "", openAIEgressSourceDirectFallback), nil
+		return buildOpenAIEgressResolutionWithTLS(bucketName, "", openAIEgressSourceDirectFallback, bucket.TLS), nil
 	}
 	return nil, &OpenAIEgressPolicyError{Code: "direct_fallback_disabled", BucketName: bucketName}
 }
@@ -78,6 +88,7 @@ func (s *OpenAIGatewayCoreService) findEgressBucket(name string) (bucket openAIE
 				Name:     strings.TrimSpace(item.Name),
 				Enabled:  item.Enabled,
 				ProxyURL: strings.TrimSpace(item.ProxyURL),
+				TLS:      buildOpenAIEgressTLSView(item.TLS),
 			}, true
 		}
 	}
@@ -88,6 +99,7 @@ type openAIEgressBucketView struct {
 	Name     string
 	Enabled  bool
 	ProxyURL string
+	TLS      OpenAIEgressTLSView
 }
 
 func (s *OpenAIGatewayCoreService) resolveOpenAIEgressFallback(bucketName, code, fallbackProxyURL string) (*OpenAIEgressResolution, error) {
@@ -110,18 +122,33 @@ func (s *OpenAIGatewayCoreService) resolveOpenAIEgressFallback(bucketName, code,
 }
 
 func buildOpenAIEgressResolution(bucketName, proxyURL, source string) *OpenAIEgressResolution {
+	return buildOpenAIEgressResolutionWithTLS(bucketName, proxyURL, source, OpenAIEgressTLSView{})
+}
+
+func buildOpenAIEgressResolutionWithTLS(bucketName, proxyURL, source string, tls OpenAIEgressTLSView) *OpenAIEgressResolution {
 	proxyURL = strings.TrimSpace(proxyURL)
 	resolution := &OpenAIEgressResolution{
 		BucketName:    strings.TrimSpace(bucketName),
 		ProxyURL:      proxyURL,
 		ProxySelected: proxyURL != "",
 		Source:        source,
+		TLS:           tls,
 	}
 	if proxyURL != "" {
 		resolution.ProxyLabel = MaskOpenAIProxyURL(proxyURL)
 		resolution.ProxyHash = HashOpenAIProxyURL(proxyURL)
 	}
 	return resolution
+}
+
+func buildOpenAIEgressTLSView(tls config.OpenAIGatewayBucketTLSConfig) OpenAIEgressTLSView {
+	return OpenAIEgressTLSView{
+		Enabled:              tls.Enabled,
+		ProfileID:            tls.ProfileID,
+		AllowDefaultFallback: tls.AllowDefaultFallback,
+		AllowPlainFallback:   tls.AllowPlainFallback,
+		AllowAccountOverride: tls.AllowAccountOverride,
+	}
 }
 
 func (s *OpenAIGatewayCoreService) allowAccountProxyFallback() bool {

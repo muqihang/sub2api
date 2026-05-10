@@ -26,6 +26,12 @@ func testOpenAIEgressConfig() *config.Config {
 
 func TestOpenAIGatewayEgressSelectsEnabledBucketProxy(t *testing.T) {
 	cfg := testOpenAIEgressConfig()
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets[1].TLS = config.OpenAIGatewayBucketTLSConfig{
+		Enabled:              true,
+		ProfileID:            42,
+		AllowAccountOverride: true,
+	}
 	svc := NewOpenAIGatewayCoreService(nil, cfg, nil)
 	account := &Account{
 		Platform: PlatformOpenAI,
@@ -41,6 +47,9 @@ func TestOpenAIGatewayEgressSelectsEnabledBucketProxy(t *testing.T) {
 	require.NotContains(t, resolution.ProxyLabel, "user")
 	require.NotContains(t, resolution.ProxyLabel, "pass")
 	require.NotEmpty(t, resolution.ProxyHash)
+	require.True(t, resolution.TLS.Enabled)
+	require.Equal(t, int64(42), resolution.TLS.ProfileID)
+	require.True(t, resolution.TLS.AllowAccountOverride)
 }
 
 func TestOpenAIGatewayEgressAllowsDirectBucketInLocalMode(t *testing.T) {
@@ -153,6 +162,28 @@ func TestOpenAIGatewayRuntimeSnapshotDoesNotExposeRawProxyURL(t *testing.T) {
 	raw, err := json.Marshal(runtime)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "egress_proxy_url")
+}
+
+func TestOpenAIGatewayRuntimeSnapshotExposesNonSensitiveTLS(t *testing.T) {
+	runtime := OpenAIGatewayAccountRuntime{
+		EgressBucket: "bucket-a",
+		TLS: &OpenAIGatewayEffectiveTLS{
+			Enabled:        true,
+			ProfileID:      42,
+			ProfileName:    "Chrome",
+			ProfileHash:    "profile-hash",
+			Source:         "bucket",
+			CacheIdentity:  "bucket=bucket-a|proxy=direct|profile=42|source=bucket",
+			HTTPApplicable: true,
+			WSApplicable:   true,
+		},
+	}
+
+	raw, err := json.Marshal(runtime)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"tls"`)
+	require.Contains(t, string(raw), `"profile_id":42`)
+	require.NotContains(t, string(raw), "proxy_url")
 }
 
 func TestOpenAIGatewayAdminBucketSnapshotDoesNotExposeRawProxyURL(t *testing.T) {
