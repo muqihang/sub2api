@@ -1,0 +1,136 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.5",
+      "display_name": "GPT-5.5",
+      "provider": "openai",
+      "upstream_model": "gpt-5.5",
+      "visibility": "visible",
+      "supported_in_api": true,
+      "priority": 100,
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "context_window": 400000,
+      "auto_compact_token_limit": 300000,
+      "max_output_tokens": 128000,
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": true,
+      "supports_search_tool": true,
+      "experimental_supported_tools": [
+        "function",
+        "namespace",
+        "custom"
+      ],
+      "shell_type": "local",
+      "web_search_tool_type": "openai",
+      "image_generation_tool_type": "openai"
+    },
+    {
+      "slug": "gpt-5.4",
+      "display_name": "GPT-5.4",
+      "provider": "openai",
+      "upstream_model": "gpt-5.4",
+      "visibility": "visible",
+      "supported_in_api": true,
+      "priority": 90,
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "context_window": 400000,
+      "auto_compact_token_limit": 300000,
+      "max_output_tokens": 128000,
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": true,
+      "supports_search_tool": true,
+      "experimental_supported_tools": [
+        "function",
+        "namespace",
+        "custom"
+      ],
+      "shell_type": "local",
+      "web_search_tool_type": "openai",
+      "image_generation_tool_type": "openai"
+    },
+    {
+      "slug": "gpt-5.4-mini",
+      "display_name": "GPT-5.4 Mini",
+      "provider": "openai",
+      "upstream_model": "gpt-5.4-mini",
+      "visibility": "visible",
+      "supported_in_api": true,
+      "priority": 80,
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "context_window": 400000,
+      "auto_compact_token_limit": 300000,
+      "max_output_tokens": 128000,
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": true,
+      "supports_search_tool": true,
+      "experimental_supported_tools": [
+        "function",
+        "namespace",
+        "custom"
+      ],
+      "shell_type": "local",
+      "web_search_tool_type": "openai",
+      "image_generation_tool_type": "openai"
+    },
+    {
+      "slug": "gpt-5.3-codex",
+      "display_name": "GPT-5.3 Codex",
+      "provider": "openai",
+      "upstream_model": "gpt-5.3-codex",
+      "visibility": "visible",
+      "supported_in_api": true,
+      "priority": 70,
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "support_verbosity": true,
+      "supports_parallel_tool_calls": true,
+      "context_window": 400000,
+      "auto_compact_token_limit": 300000,
+      "max_output_tokens": 128000,
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": true,
+      "supports_search_tool": true,
+      "experimental_supported_tools": [
+        "function",
+        "namespace",
+        "custom"
+      ],
+      "shell_type": "local",
+      "web_search_tool_type": "openai",
+      "image_generation_tool_type": "openai"
+    }
+  ]
+}

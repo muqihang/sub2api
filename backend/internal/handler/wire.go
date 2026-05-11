@@ -149,6 +149,10 @@ func ProvideOpenAIGatewayHandler(
 	)
 }
 
+func ProvideCodexGatewayHandler() *CodexGatewayHandler {
+	return NewCodexGatewayHandler(nil)
+}
+
 // ProvideHandlers creates the Handlers struct
 func ProvideHandlers(
 	authHandler *AuthHandler,
@@ -161,6 +165,7 @@ func ProvideHandlers(
 	channelMonitorUserHandler *ChannelMonitorUserHandler,
 	adminHandlers *AdminHandlers,
 	gatewayHandler *GatewayHandler,
+	codexGatewayHandler *CodexGatewayHandler,
 	openaiGatewayHandler *OpenAIGatewayHandler,
 	settingHandler *SettingHandler,
 	totpHandler *TotpHandler,
@@ -181,6 +186,7 @@ func ProvideHandlers(
 		ChannelMonitor:   channelMonitorUserHandler,
 		Admin:            adminHandlers,
 		Gateway:          gatewayHandler,
+		CodexGateway:     codexGatewayHandler,
 		OpenAIGateway:    openaiGatewayHandler,
 		Setting:          settingHandler,
 		Totp:             totpHandler,
@@ -202,6 +208,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementHandler,
 	NewChannelMonitorUserHandler,
 	NewGatewayHandler,
+	ProvideCodexGatewayHandler,
 	ProvideOpenAIGatewayHandler,
 	NewTotpHandler,
 	ProvideSettingHandler,
