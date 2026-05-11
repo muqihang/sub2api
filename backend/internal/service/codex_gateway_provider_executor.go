@@ -61,22 +61,24 @@ type codexGatewayProviderAdapter interface {
 }
 
 type CodexGatewayProviderExecutor struct {
-	cfg           *config.Config
-	openaiGateway *OpenAIGatewayService
+	cfg             *config.Config
+	openaiGateway   *OpenAIGatewayService
+	stateSource     CodexGatewayRegistryStateSource
 	accountSelector codexGatewayAccountSelector
-	stateStore    *CodexGatewayStateStore
-	usageRecorder codexGatewayUsageRecorder
-	openaiAdapter codexGatewayProviderAdapter
-	deepseek      codexGatewayProviderAdapter
+	stateStore      *CodexGatewayStateStore
+	usageRecorder   codexGatewayUsageRecorder
+	openaiAdapter   codexGatewayProviderAdapter
+	deepseek        codexGatewayProviderAdapter
 }
 
-func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, stateStore *CodexGatewayStateStore) *CodexGatewayProviderExecutor {
+func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, stateStore *CodexGatewayStateStore, stateSource CodexGatewayRegistryStateSource) *CodexGatewayProviderExecutor {
 	executor := &CodexGatewayProviderExecutor{
-		cfg:           cfg,
-		openaiGateway: openaiGateway,
+		cfg:             cfg,
+		openaiGateway:   openaiGateway,
+		stateSource:     stateSource,
 		accountSelector: openaiGateway,
-		stateStore:    stateStore,
-		usageRecorder: openaiGateway,
+		stateStore:      stateStore,
+		usageRecorder:   openaiGateway,
 	}
 	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: openaiGateway}
 	executor.deepseek = &codexGatewayDeepSeekProviderAdapter{stateStore: stateStore}
@@ -85,7 +87,7 @@ func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGa
 
 func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
 	startedAt := time.Now()
-	groupID, adapter, err := e.providerGroupAndAdapter(req.Model)
+	groupID, adapter, err := e.providerGroupAndAdapter(ctx, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +120,7 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 
 func (e *CodexGatewayProviderExecutor) Stream(ctx context.Context, req CodexGatewayProviderRequest) error {
 	startedAt := time.Now()
-	groupID, adapter, err := e.providerGroupAndAdapter(req.Model)
+	groupID, adapter, err := e.providerGroupAndAdapter(ctx, req.Model)
 	if err != nil {
 		return err
 	}
@@ -149,24 +151,51 @@ func (e *CodexGatewayProviderExecutor) Stream(ctx context.Context, req CodexGate
 	}
 }
 
-func (e *CodexGatewayProviderExecutor) providerGroupAndAdapter(model CodexGatewayModel) (int64, codexGatewayProviderAdapter, error) {
+func (e *CodexGatewayProviderExecutor) providerGroupAndAdapter(ctx context.Context, model CodexGatewayModel) (int64, codexGatewayProviderAdapter, error) {
 	if e == nil || e.cfg == nil {
 		return 0, nil, fmt.Errorf("codex gateway provider executor is not configured")
 	}
+	runtime := e.providerRuntime(ctx, model.Provider)
 	switch strings.TrimSpace(model.Provider) {
 	case "openai":
-		if e.cfg.Gateway.Codex.ProviderGroups.OpenAI <= 0 {
+		if runtime.GroupID <= 0 || !runtime.Healthy {
 			return 0, nil, &CodexGatewayProviderUnavailableError{ModelID: model.Slug, Provider: model.Provider, Kind: CodexGatewayProviderUnavailableNoProviderGroup}
 		}
-		return e.cfg.Gateway.Codex.ProviderGroups.OpenAI, e.openaiAdapter, nil
+		return runtime.GroupID, e.openaiAdapter, nil
 	case "deepseek":
-		if e.cfg.Gateway.Codex.ProviderGroups.DeepSeek <= 0 {
+		if runtime.GroupID <= 0 || !runtime.Healthy {
 			return 0, nil, &CodexGatewayProviderUnavailableError{ModelID: model.Slug, Provider: model.Provider, Kind: CodexGatewayProviderUnavailableNoProviderGroup}
 		}
-		return e.cfg.Gateway.Codex.ProviderGroups.DeepSeek, e.deepseek, nil
+		return runtime.GroupID, e.deepseek, nil
 	default:
 		return 0, nil, fmt.Errorf("unsupported codex gateway provider %q", model.Provider)
 	}
+}
+
+func (e *CodexGatewayProviderExecutor) providerRuntime(ctx context.Context, provider string) CodexGatewayProviderRuntime {
+	runtime := CodexGatewayProviderRuntime{
+		Provider: normalizeCodexGatewayProvider(CodexGatewayProvider(provider)),
+	}
+	if e != nil && e.cfg != nil {
+		switch runtime.Provider {
+		case CodexGatewayProviderOpenAI:
+			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.OpenAI
+		case CodexGatewayProviderDeepSeek:
+			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.DeepSeek
+		}
+		runtime.Healthy = runtime.GroupID > 0
+	}
+	if e == nil || e.stateSource == nil {
+		return runtime
+	}
+	state, err := e.stateSource.LoadCodexGatewayRegistryState(ctx)
+	if err != nil || state == nil {
+		return runtime
+	}
+	if loaded, ok := state.ProviderGroups[runtime.Provider]; ok {
+		return loaded
+	}
+	return runtime
 }
 
 func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupID int64, req CodexGatewayProviderRequest, excluded map[int64]struct{}) (*Account, error) {

@@ -131,6 +131,70 @@
       "shell_type": "local",
       "web_search_tool_type": "openai",
       "image_generation_tool_type": "openai"
+    },
+    {
+      "slug": "deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro",
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-pro",
+      "visibility": "visible",
+      "supported_in_api": true,
+      "priority": 60,
+      "default_reasoning_level": "xhigh",
+      "supported_reasoning_levels": [
+        "high",
+        "xhigh"
+      ],
+      "support_verbosity": false,
+      "supports_parallel_tool_calls": false,
+      "context_window": 1000000,
+      "auto_compact_token_limit": 850000,
+      "max_output_tokens": 384000,
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": false,
+      "supports_search_tool": false,
+      "experimental_supported_tools": [
+        "function",
+        "namespace",
+        "custom"
+      ],
+      "shell_type": "local",
+      "web_search_tool_type": "none",
+      "image_generation_tool_type": "none"
+    },
+    {
+      "slug": "deepseek-v4-flash",
+      "display_name": "DeepSeek V4 Flash",
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-flash",
+      "visibility": "visible",
+      "supported_in_api": true,
+      "priority": 50,
+      "default_reasoning_level": "xhigh",
+      "supported_reasoning_levels": [
+        "high",
+        "xhigh"
+      ],
+      "support_verbosity": false,
+      "supports_parallel_tool_calls": false,
+      "context_window": 1000000,
+      "auto_compact_token_limit": 850000,
+      "max_output_tokens": 384000,
+      "input_modalities": [
+        "text"
+      ],
+      "supports_image_detail_original": false,
+      "supports_search_tool": false,
+      "experimental_supported_tools": [
+        "function",
+        "namespace",
+        "custom"
+      ],
+      "shell_type": "local",
+      "web_search_tool_type": "none",
+      "image_generation_tool_type": "none"
     }
   ]
 }

@@ -1,0 +1,46 @@
+{
+  "name": "final_assistant_reasoning_replay_request",
+  "mode": "request_replay",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "previous_response_id": "resp_final_turn",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "continue"
+          }
+        ]
+      }
+    ]
+  },
+  "seed_state": {
+    "key": {
+      "response_id": "resp_final_turn",
+      "session_key": "fixture-session",
+      "isolation_key": "fixture-isolation",
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-pro"
+    },
+    "assistant_content": "done already",
+    "assistant_content_present": true,
+    "reasoning_content": "finished analysis",
+    "reasoning_content_present": true
+  },
+  "expect": {
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "done already",
+        "reasoning_content": "finished analysis"
+      },
+      {
+        "role": "user",
+        "content": "continue"
+      }
+    ]
+  }
+}

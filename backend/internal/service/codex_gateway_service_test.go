@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -79,24 +80,27 @@ func TestCodexGatewayService_ResponsesRejectsScopeMismatch(t *testing.T) {
 }
 
 func TestCodexGatewayService_ResponsesDeepSeekPreviousResponseIDReturns400(t *testing.T) {
-	registry := &CodexGatewayModelRegistry{
-		models: []CodexGatewayModel{{
-			Slug:          "deepseek-v4-pro",
-			Provider:      "deepseek",
-			UpstreamModel: "deepseek-v4-pro",
-			Visibility:    "visible",
-			SupportedInAPI: true,
-		}},
-		index: map[string]CodexGatewayModel{
-			"deepseek-v4-pro": {
-				Slug:          "deepseek-v4-pro",
-				Provider:      "deepseek",
-				UpstreamModel: "deepseek-v4-pro",
-				Visibility:    "visible",
-				SupportedInAPI: true,
-			},
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"deepseek-v4-pro"},
 		},
-	}
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderDeepSeek: {
+						Provider: CodexGatewayProviderDeepSeek,
+						GroupID:  2002,
+						Healthy:  true,
+					},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"deepseek-v4-pro": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+	)
 	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
 		completeFn: func(_ context.Context, _ CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
 			t.Fatal("executor should not be called")

@@ -42,6 +42,7 @@ func ProvideAdminHandlers(
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
 	augmentGatewayHandler *admin.AugmentGatewayHandler,
+	codexGatewayHandler *admin.CodexGatewayHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -76,6 +77,7 @@ func ProvideAdminHandlers(
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
 		AugmentGateway:         augmentGatewayHandler,
+		CodexGateway:           codexGatewayHandler,
 	}
 }
 
@@ -90,6 +92,12 @@ func ProvideAugmentGatewayHandler(
 	usageSvc *service.AugmentGatewayUsageService,
 ) *admin.AugmentGatewayHandler {
 	return admin.NewAugmentGatewayHandler(settingsSvc, sessionSvc, usageSvc)
+}
+
+func ProvideCodexGatewayAdminHandler(
+	adminSvc *service.CodexGatewayAdminService,
+) *admin.CodexGatewayHandler {
+	return admin.NewCodexGatewayHandler(adminSvc)
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
@@ -249,6 +257,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewPaymentHandler,
 	admin.NewAffiliateHandler,
 	ProvideAugmentGatewayHandler,
+	ProvideCodexGatewayAdminHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

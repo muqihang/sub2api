@@ -187,6 +187,51 @@ func TestCodexGatewayProviderExecutor_UsesDeepSeekProviderGroup(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestCodexGatewayProviderExecutor_UsesAdminProviderGroupState(t *testing.T) {
+	account := &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeUpstream, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.cfg.Gateway.Codex.ProviderGroups.DeepSeek = 0
+	executor.stateSource = &codexGatewayRegistryStateSourceStub{
+		state: &CodexGatewayRegistryState{
+			ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+				CodexGatewayProviderDeepSeek: {
+					Provider: CodexGatewayProviderDeepSeek,
+					GroupID:  303,
+					Healthy:  true,
+				},
+			},
+		},
+	}
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, _ string, requestedModel string, _ map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(303), *groupID)
+			require.Equal(t, "deepseek-v4-pro", requestedModel)
+			return account, nil
+		},
+	}
+	executor.deepseek = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, account *Account, _ CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			require.Equal(t, int64(9), account.ID)
+			return CodexGatewayDeepSeekAdapterResult{
+				ServiceResponse: CodexGatewayServiceResponse{StatusCode: http.StatusOK},
+				ProviderResult:  CodexGatewayProviderResult{UpstreamRequestID: "req_ds_admin", UpstreamModel: "deepseek-v4-pro"},
+			}, nil
+		},
+	}
+	executor.usageRecorder = &codexGatewayUsageRecorderStub{}
+
+	resp, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request:      CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model:        CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"},
+		Parsed:       CodexGatewayResponsesCreateRequest{Model: "deepseek-v4-pro"},
+		SessionKey:   "sess_hash",
+		IsolationKey: "iso_hash",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
 func TestCodexGatewayProviderExecutor_CompleteReturnsUnavailableWhenNoAccountCanBeSelected(t *testing.T) {
 	executor := newCodexGatewayProviderExecutorForTest()
 	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{

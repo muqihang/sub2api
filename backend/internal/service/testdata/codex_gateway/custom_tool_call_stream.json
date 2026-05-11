@@ -1,0 +1,54 @@
+{
+  "name": "custom_tool_call_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "run shell"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "custom",
+        "name": "shell",
+        "description": "run shell",
+        "input_schema": {
+          "type": "string"
+        }
+      }
+    ]
+  },
+  "upstream": {
+    "status_code": 200,
+    "headers": {
+      "Content-Type": "text/event-stream"
+    },
+    "body": "data: {\"id\":\"chatcmpl_custom_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"shell first\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_custom_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_shell\",\"type\":\"function\",\"function\":{\"name\":\"custom__shell\",\"arguments\":\"pwd\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"id\":\"chatcmpl_custom_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":2,\"total_tokens\":8,\"prompt_cache_hit_tokens\":0}}\n\ndata: [DONE]\n\n"
+  },
+  "expect": {
+    "terminal_event": "response.completed",
+    "response_status": "completed",
+    "usage": {
+      "input_tokens": 6,
+      "output_tokens": 2,
+      "total_tokens": 8,
+      "cached_tokens": 0
+    },
+    "reasoning_text": "shell first",
+    "output_types": [
+      "reasoning",
+      "custom_tool_call"
+    ],
+    "tool_name": "shell",
+    "tool_arguments": "pwd",
+    "stored_tool_calls": 1
+  }
+}

@@ -106,18 +106,18 @@ type CodexGatewayStateStoreConfig struct {
 }
 
 type CodexGatewayStateLookupKey struct {
-	ResponseID    string
-	SessionKey    string
-	IsolationKey  string
-	Provider      string
-	UpstreamModel string
+	ResponseID    string `json:"response_id"`
+	SessionKey    string `json:"session_key"`
+	IsolationKey  string `json:"isolation_key"`
+	Provider      string `json:"provider"`
+	UpstreamModel string `json:"upstream_model"`
 }
 
 type CodexGatewayStoredToolCall struct {
-	ID        string
-	Type      string
-	Name      string
-	Arguments string
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type CodexGatewayToolNameMapEntry struct {
@@ -135,14 +135,14 @@ type CodexGatewayToolMappingResult struct {
 }
 
 type CodexGatewayResponseState struct {
-	Key                         CodexGatewayStateLookupKey
-	AssistantContent            string
-	AssistantContentPresent     bool
-	ReasoningContent            string
-	ReasoningContentPresent     bool
-	ReasoningContentSynthesized bool
-	ToolCalls                   []CodexGatewayStoredToolCall
-	ToolNameMap                 map[string]CodexGatewayToolNameMapEntry
+	Key                         CodexGatewayStateLookupKey              `json:"key"`
+	AssistantContent            string                                  `json:"assistant_content,omitempty"`
+	AssistantContentPresent     bool                                    `json:"assistant_content_present,omitempty"`
+	ReasoningContent            string                                  `json:"reasoning_content,omitempty"`
+	ReasoningContentPresent     bool                                    `json:"reasoning_content_present,omitempty"`
+	ReasoningContentSynthesized bool                                    `json:"reasoning_content_synthesized,omitempty"`
+	ToolCalls                   []CodexGatewayStoredToolCall            `json:"tool_calls,omitempty"`
+	ToolNameMap                 map[string]CodexGatewayToolNameMapEntry `json:"tool_name_map,omitempty"`
 }
 
 type CodexGatewayToolMappingConfig struct {

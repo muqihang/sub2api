@@ -1,0 +1,34 @@
+{
+  "name": "error_upstream_failure_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "server error"
+          }
+        ]
+      }
+    ]
+  },
+  "upstream": {
+    "status_code": 503,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{\"error\":{\"type\":\"api_error\",\"code\":\"upstream_error\",\"message\":\"temporary overload\"}}"
+  },
+  "expect": {
+    "terminal_event": "response.failed",
+    "response_status": "failed",
+    "error_type": "api_error",
+    "error_code": "upstream_error",
+    "error_message": "temporary overload",
+    "output_types": []
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "error_invalid_request_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "bad request"
+          }
+        ]
+      }
+    ]
+  },
+  "upstream": {
+    "status_code": 400,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": "{\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_request\",\"message\":\"bad request\"}}"
+  },
+  "expect": {
+    "terminal_event": "response.failed",
+    "response_status": "failed",
+    "error_type": "invalid_request_error",
+    "error_code": "invalid_request",
+    "error_message": "bad request",
+    "output_types": []
+  }
+}
