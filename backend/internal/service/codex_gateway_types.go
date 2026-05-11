@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 type CodexGatewayModelsRequest struct {
@@ -85,4 +86,82 @@ type CodexGatewayResponseError struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	RawFields map[string]json.RawMessage `json:"-"`
+}
+
+const (
+	CodexGatewayToolKindFunction  = "function"
+	CodexGatewayToolKindNamespace = "namespace"
+	CodexGatewayToolKindCustom    = "custom"
+)
+
+type CodexGatewayStateStoreConfig struct {
+	TTL      time.Duration
+	MaxItems int
+	Now      func() time.Time
+}
+
+type CodexGatewayStateLookupKey struct {
+	ResponseID    string
+	SessionKey    string
+	IsolationKey  string
+	Provider      string
+	UpstreamModel string
+}
+
+type CodexGatewayStoredToolCall struct {
+	ID        string
+	Type      string
+	Name      string
+	Arguments string
+}
+
+type CodexGatewayToolNameMapEntry struct {
+	Alias     string
+	Kind      string
+	Namespace string
+	Name      string
+}
+
+type CodexGatewayToolMappingResult struct {
+	Tools           []map[string]any
+	NameMap         map[string]CodexGatewayToolNameMapEntry
+	originalToAlias map[string]string
+}
+
+type CodexGatewayResponseState struct {
+	Key                         CodexGatewayStateLookupKey
+	AssistantContent            string
+	AssistantContentPresent      bool
+	ReasoningContent             string
+	ReasoningContentPresent      bool
+	ReasoningContentSynthesized  bool
+	ToolCalls                    []CodexGatewayStoredToolCall
+	ToolNameMap                  map[string]CodexGatewayToolNameMapEntry
+}
+
+type CodexGatewayToolMappingConfig struct {
+	EnableStrictBeta               bool
+	RejectUnsupportedStrictSchemas bool
+}
+
+const (
+	CodexGatewayDeepSeekImageInputModePlaceholder = "placeholder"
+	CodexGatewayDeepSeekImageInputModeReject      = "reject"
+)
+
+type CodexGatewayDeepSeekRequestContext struct {
+	SessionKey   string
+	IsolationKey string
+	UserID       string
+}
+
+type CodexGatewayDeepSeekRequestConfig struct {
+	ToolMappingConfig      CodexGatewayToolMappingConfig
+	ImageInputMode         string
+	AllowReasoningDisable  bool
+}
+
+type CodexGatewayPreparedDeepSeekRequest struct {
+	Body         map[string]any
+	ToolNameMap  map[string]CodexGatewayToolNameMapEntry
 }
