@@ -28,6 +28,7 @@ func SetupRouter(
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
+	codexAgentService *service.CodexAgentService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
 	cfg *config.Config,
@@ -81,7 +82,7 @@ func SetupRouter(
 	}
 
 	// 注册路由
-	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
+	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, codexAgentService, opsService, settingService, cfg, redisClient)
 
 	return r
 }
@@ -95,6 +96,7 @@ func registerRoutes(
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
+	codexAgentService *service.CodexAgentService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
 	cfg *config.Config,
@@ -109,7 +111,8 @@ func registerRoutes(
 	// 注册各模块路由
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, redisClient, settingService)
 	routes.RegisterUserRoutes(v1, h, jwtAuth, settingService)
+	routes.RegisterCodexAgentRoutes(v1, h, jwtAuth, settingService)
 	routes.RegisterAdminRoutes(v1, h, adminAuth)
-	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
+	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, codexAgentService, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, settingService)
 }

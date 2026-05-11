@@ -21,6 +21,18 @@ type Announcement func(*sql.Selector)
 // AnnouncementRead is the predicate function for announcementread builders.
 type AnnouncementRead func(*sql.Selector)
 
+// CodexDeviceAuditLog is the predicate function for codexdeviceauditlog builders.
+type CodexDeviceAuditLog func(*sql.Selector)
+
+// CodexDeviceToken is the predicate function for codexdevicetoken builders.
+type CodexDeviceToken func(*sql.Selector)
+
+// CodexManagedDevice is the predicate function for codexmanageddevice builders.
+type CodexManagedDevice func(*sql.Selector)
+
+// CodexSetupGrant is the predicate function for codexsetupgrant builders.
+type CodexSetupGrant func(*sql.Selector)
+
 // ErrorPassthroughRule is the predicate function for errorpassthroughrule builders.
 type ErrorPassthroughRule func(*sql.Selector)
 

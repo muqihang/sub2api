@@ -24,6 +24,14 @@ type Tx struct {
 	Announcement *AnnouncementClient
 	// AnnouncementRead is the client for interacting with the AnnouncementRead builders.
 	AnnouncementRead *AnnouncementReadClient
+	// CodexDeviceAuditLog is the client for interacting with the CodexDeviceAuditLog builders.
+	CodexDeviceAuditLog *CodexDeviceAuditLogClient
+	// CodexDeviceToken is the client for interacting with the CodexDeviceToken builders.
+	CodexDeviceToken *CodexDeviceTokenClient
+	// CodexManagedDevice is the client for interacting with the CodexManagedDevice builders.
+	CodexManagedDevice *CodexManagedDeviceClient
+	// CodexSetupGrant is the client for interacting with the CodexSetupGrant builders.
+	CodexSetupGrant *CodexSetupGrantClient
 	// ErrorPassthroughRule is the client for interacting with the ErrorPassthroughRule builders.
 	ErrorPassthroughRule *ErrorPassthroughRuleClient
 	// Group is the client for interacting with the Group builders.
@@ -202,6 +210,10 @@ func (tx *Tx) init() {
 	tx.AccountGroup = NewAccountGroupClient(tx.config)
 	tx.Announcement = NewAnnouncementClient(tx.config)
 	tx.AnnouncementRead = NewAnnouncementReadClient(tx.config)
+	tx.CodexDeviceAuditLog = NewCodexDeviceAuditLogClient(tx.config)
+	tx.CodexDeviceToken = NewCodexDeviceTokenClient(tx.config)
+	tx.CodexManagedDevice = NewCodexManagedDeviceClient(tx.config)
+	tx.CodexSetupGrant = NewCodexSetupGrantClient(tx.config)
 	tx.ErrorPassthroughRule = NewErrorPassthroughRuleClient(tx.config)
 	tx.Group = NewGroupClient(tx.config)
 	tx.IdempotencyRecord = NewIdempotencyRecordClient(tx.config)

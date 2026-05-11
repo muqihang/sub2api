@@ -69,6 +69,54 @@ func (f AnnouncementReadFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.V
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.AnnouncementReadMutation", m)
 }
 
+// The CodexDeviceAuditLogFunc type is an adapter to allow the use of ordinary
+// function as CodexDeviceAuditLog mutator.
+type CodexDeviceAuditLogFunc func(context.Context, *ent.CodexDeviceAuditLogMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f CodexDeviceAuditLogFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.CodexDeviceAuditLogMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.CodexDeviceAuditLogMutation", m)
+}
+
+// The CodexDeviceTokenFunc type is an adapter to allow the use of ordinary
+// function as CodexDeviceToken mutator.
+type CodexDeviceTokenFunc func(context.Context, *ent.CodexDeviceTokenMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f CodexDeviceTokenFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.CodexDeviceTokenMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.CodexDeviceTokenMutation", m)
+}
+
+// The CodexManagedDeviceFunc type is an adapter to allow the use of ordinary
+// function as CodexManagedDevice mutator.
+type CodexManagedDeviceFunc func(context.Context, *ent.CodexManagedDeviceMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f CodexManagedDeviceFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.CodexManagedDeviceMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.CodexManagedDeviceMutation", m)
+}
+
+// The CodexSetupGrantFunc type is an adapter to allow the use of ordinary
+// function as CodexSetupGrant mutator.
+type CodexSetupGrantFunc func(context.Context, *ent.CodexSetupGrantMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f CodexSetupGrantFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.CodexSetupGrantMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.CodexSetupGrantMutation", m)
+}
+
 // The ErrorPassthroughRuleFunc type is an adapter to allow the use of ordinary
 // function as ErrorPassthroughRule mutator.
 type ErrorPassthroughRuleFunc func(context.Context, *ent.ErrorPassthroughRuleMutation) (ent.Value, error)

@@ -2,7 +2,10 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -39,27 +42,36 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		// 尝试从Authorization header中提取API key (Bearer scheme)
 		authHeader := c.GetHeader("Authorization")
 		var apiKeyString string
+		apiKeySource := ""
 
 		if authHeader != "" {
 			// 验证Bearer scheme
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 				apiKeyString = strings.TrimSpace(parts[1])
+				apiKeySource = "authorization"
 			}
 		}
 
 		// 如果Authorization header中没有，尝试从x-api-key header中提取
 		if apiKeyString == "" {
 			apiKeyString = c.GetHeader("x-api-key")
+			if strings.TrimSpace(apiKeyString) != "" {
+				apiKeySource = "x-api-key"
+			}
 		}
 
 		// 如果x-api-key header中没有，尝试从x-goog-api-key header中提取（Gemini CLI兼容）
 		if apiKeyString == "" {
 			apiKeyString = c.GetHeader("x-goog-api-key")
+			if strings.TrimSpace(apiKeyString) != "" {
+				apiKeySource = "x-goog-api-key"
+			}
 		}
 
 		// 如果所有header都没有API key
 		if apiKeyString == "" {
+			logAPIKeyAuthFailure(c, apiKeySource, apiKeyString, "api_key_required", nil)
 			AbortWithError(c, 401, "API_KEY_REQUIRED", "API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header")
 			return
 		}
@@ -69,155 +81,185 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		apiKey, err := apiKeyService.GetByKey(c.Request.Context(), apiKeyString)
 		if err != nil {
 			if errors.Is(err, service.ErrAPIKeyNotFound) {
+				logAPIKeyAuthFailure(c, apiKeySource, apiKeyString, "invalid_api_key", nil)
 				AbortWithError(c, 401, "INVALID_API_KEY", "Invalid API key")
 				return
 			}
 			AbortWithError(c, 500, "INTERNAL_ERROR", "Failed to validate API key")
 			return
 		}
-
-		// ── 3. 基础鉴权（始终执行） ─────────────────────────────────
-
-		// disabled / 未知状态 → 无条件拦截（expired 和 quota_exhausted 留给计费阶段）
-		if !apiKey.IsActive() &&
-			apiKey.Status != service.StatusAPIKeyExpired &&
-			apiKey.Status != service.StatusAPIKeyQuotaExhausted {
-			AbortWithError(c, 401, "API_KEY_DISABLED", "API key is disabled")
+		if !validateAndSetAPIKeyContext(c, apiKey, apiKeyService, subscriptionService, cfg, apiKeySource, apiKeyString) {
 			return
 		}
-
-		// 检查 IP 限制（白名单/黑名单）
-		// 注意：错误信息故意模糊，避免暴露具体的 IP 限制机制
-		if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
-			clientIP := ip.GetTrustedClientIP(c)
-			allowed, _ := ip.CheckIPRestrictionWithCompiledRules(clientIP, apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
-			if !allowed {
-				AbortWithError(c, 403, "ACCESS_DENIED", "Access denied")
-				return
-			}
-		}
-
-		// 检查关联的用户
-		if apiKey.User == nil {
-			AbortWithError(c, 401, "USER_NOT_FOUND", "User associated with API key not found")
-			return
-		}
-
-		// 检查用户状态
-		if !apiKey.User.IsActive() {
-			AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
-			return
-		}
-
-		// ── 4. SimpleMode → early return ─────────────────────────────
-
-		if cfg.RunMode == config.RunModeSimple {
-			c.Set(string(ContextKeyAPIKey), apiKey)
-			c.Set(string(ContextKeyUser), AuthSubject{
-				UserID:      apiKey.User.ID,
-				Concurrency: apiKey.User.Concurrency,
-			})
-			c.Set(string(ContextKeyUserRole), apiKey.User.Role)
-			setGroupContext(c, apiKey.Group)
-			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
-			c.Next()
-			return
-		}
-
-		// ── 5. 加载订阅（订阅模式时始终加载） ───────────────────────
-
-		// skipBilling: /v1/usage 只需鉴权，跳过所有计费执行
-		skipBilling := c.Request.URL.Path == "/v1/usage"
-
-		var subscription *service.UserSubscription
-		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
-
-		if isSubscriptionType && subscriptionService != nil {
-			sub, subErr := subscriptionService.GetActiveSubscription(
-				c.Request.Context(),
-				apiKey.User.ID,
-				apiKey.Group.ID,
-			)
-			if subErr != nil {
-				if !skipBilling {
-					AbortWithError(c, 403, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
-					return
-				}
-				// skipBilling: 订阅不存在也放行，handler 会返回可用的数据
-			} else {
-				subscription = sub
-			}
-		}
-
-		// ── 6. 计费执行（skipBilling 时整块跳过） ────────────────────
-
-		if !skipBilling {
-			// Key 状态检查
-			switch apiKey.Status {
-			case service.StatusAPIKeyQuotaExhausted:
-				AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
-				return
-			case service.StatusAPIKeyExpired:
-				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
-				return
-			}
-
-			// 运行时过期/配额检查（即使状态是 active，也要检查时间和用量）
-			if apiKey.IsExpired() {
-				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
-				return
-			}
-			if apiKey.IsQuotaExhausted() {
-				AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
-				return
-			}
-
-			// 订阅模式：验证订阅限额
-			if subscription != nil {
-				needsMaintenance, validateErr := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
-				if validateErr != nil {
-					code := "SUBSCRIPTION_INVALID"
-					status := 403
-					if errors.Is(validateErr, service.ErrDailyLimitExceeded) ||
-						errors.Is(validateErr, service.ErrWeeklyLimitExceeded) ||
-						errors.Is(validateErr, service.ErrMonthlyLimitExceeded) {
-						code = "USAGE_LIMIT_EXCEEDED"
-						status = 429
-					}
-					AbortWithError(c, status, code, validateErr.Error())
-					return
-				}
-
-				// 窗口维护异步化（不阻塞请求）
-				if needsMaintenance {
-					maintenanceCopy := *subscription
-					subscriptionService.DoWindowMaintenance(&maintenanceCopy)
-				}
-			} else {
-				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
-				if apiKey.User.Balance <= 0 {
-					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
-					return
-				}
-			}
-		}
-
-		// ── 7. 设置上下文 → Next ─────────────────────────────────────
-
-		if subscription != nil {
-			c.Set(string(ContextKeySubscription), subscription)
-		}
-		c.Set(string(ContextKeyAPIKey), apiKey)
-		c.Set(string(ContextKeyUser), AuthSubject{
-			UserID:      apiKey.User.ID,
-			Concurrency: apiKey.User.Concurrency,
-		})
-		c.Set(string(ContextKeyUserRole), apiKey.User.Role)
-		setGroupContext(c, apiKey.Group)
-		_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
-
 		c.Next()
 	}
+}
+
+func validateAndSetAPIKeyContext(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	apiKeyService *service.APIKeyService,
+	subscriptionService *service.SubscriptionService,
+	cfg *config.Config,
+	apiKeySource string,
+	apiKeyString string,
+) bool {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+
+	// ── 3. 基础鉴权（始终执行） ─────────────────────────────────
+
+	if !apiKey.IsActive() &&
+		apiKey.Status != service.StatusAPIKeyExpired &&
+		apiKey.Status != service.StatusAPIKeyQuotaExhausted {
+		logAPIKeyAuthFailure(c, apiKeySource, apiKeyString, "api_key_disabled", apiKey)
+		AbortWithError(c, 401, "API_KEY_DISABLED", "API key is disabled")
+		return false
+	}
+
+	if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
+		clientIP := ip.GetTrustedClientIP(c)
+		allowed, _ := ip.CheckIPRestrictionWithCompiledRules(clientIP, apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
+		if !allowed {
+			AbortWithError(c, 403, "ACCESS_DENIED", "Access denied")
+			return false
+		}
+	}
+
+	if apiKey.User == nil {
+		logAPIKeyAuthFailure(c, apiKeySource, apiKeyString, "user_not_found", apiKey)
+		AbortWithError(c, 401, "USER_NOT_FOUND", "User associated with API key not found")
+		return false
+	}
+
+	if !apiKey.User.IsActive() {
+		logAPIKeyAuthFailure(c, apiKeySource, apiKeyString, "user_inactive", apiKey)
+		AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
+		return false
+	}
+
+	if cfg.RunMode == config.RunModeSimple {
+		setAPIKeyContext(c, apiKey, nil)
+		if apiKeyService != nil {
+			_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+		}
+		return true
+	}
+
+	skipBilling := c.Request.URL.Path == "/v1/usage"
+
+	var subscription *service.UserSubscription
+	isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
+	if isSubscriptionType && subscriptionService != nil {
+		sub, subErr := subscriptionService.GetActiveSubscription(
+			c.Request.Context(),
+			apiKey.User.ID,
+			apiKey.Group.ID,
+		)
+		if subErr != nil {
+			if !skipBilling {
+				AbortWithError(c, 403, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
+				return false
+			}
+		} else {
+			subscription = sub
+		}
+	}
+
+	if !skipBilling {
+		switch apiKey.Status {
+		case service.StatusAPIKeyQuotaExhausted:
+			AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+			return false
+		case service.StatusAPIKeyExpired:
+			AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+			return false
+		}
+
+		if apiKey.IsExpired() {
+			AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+			return false
+		}
+		if apiKey.IsQuotaExhausted() {
+			AbortWithError(c, 429, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+			return false
+		}
+
+		if subscription != nil {
+			needsMaintenance, validateErr := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
+			if validateErr != nil {
+				code := "SUBSCRIPTION_INVALID"
+				status := 403
+				if errors.Is(validateErr, service.ErrDailyLimitExceeded) ||
+					errors.Is(validateErr, service.ErrWeeklyLimitExceeded) ||
+					errors.Is(validateErr, service.ErrMonthlyLimitExceeded) {
+					code = "USAGE_LIMIT_EXCEEDED"
+					status = 429
+				}
+				AbortWithError(c, status, code, validateErr.Error())
+				return false
+			}
+			if needsMaintenance {
+				maintenanceCopy := *subscription
+				subscriptionService.DoWindowMaintenance(&maintenanceCopy)
+			}
+		} else if apiKey.User.Balance <= 0 {
+			AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+			return false
+		}
+	}
+
+	setAPIKeyContext(c, apiKey, subscription)
+	if apiKeyService != nil {
+		_ = apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+	}
+	return true
+}
+
+func setAPIKeyContext(c *gin.Context, apiKey *service.APIKey, subscription *service.UserSubscription) {
+	if subscription != nil {
+		c.Set(string(ContextKeySubscription), subscription)
+	}
+	c.Set(string(ContextKeyAPIKey), apiKey)
+	c.Set(string(ContextKeyUser), AuthSubject{
+		UserID:      apiKey.User.ID,
+		Concurrency: apiKey.User.Concurrency,
+	})
+	c.Set(string(ContextKeyUserRole), apiKey.User.Role)
+	setGroupContext(c, apiKey.Group)
+}
+
+func fingerprintAPIKeyForLog(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
+}
+
+func logAPIKeyAuthFailure(c *gin.Context, source, apiKey string, reason string, resolvedKey *service.APIKey) {
+	fields := []any{
+		"auth_reason", strings.TrimSpace(reason),
+		"api_key_source", strings.TrimSpace(source),
+		"api_key_fingerprint", fingerprintAPIKeyForLog(apiKey),
+		"api_key_length", len(strings.TrimSpace(apiKey)),
+	}
+	if c != nil && c.Request != nil {
+		fields = append(fields,
+			"method", c.Request.Method,
+			"path", c.Request.URL.Path,
+		)
+	}
+	if resolvedKey != nil {
+		fields = append(fields,
+			"api_key_id", resolvedKey.ID,
+			"user_id", resolvedKey.UserID,
+			"api_key_status", resolvedKey.Status,
+		)
+	}
+	slog.Warn("api_key_auth_rejected", fields...)
 }
 
 // GetAPIKeyFromContext 从上下文中获取API key

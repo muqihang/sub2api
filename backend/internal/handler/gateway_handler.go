@@ -890,7 +890,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	// Get available models from account configurations (without platform filter)
-	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, "")
+	var availableModels []string
+	if h.gatewayService != nil {
+		availableModels = h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, "")
+	}
 
 	if len(availableModels) > 0 {
 		// Build model list from whitelist

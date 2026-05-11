@@ -89,6 +89,8 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughRepository,
 	NewTLSFingerprintProfileRepository,
 	NewChannelRepository,
+	NewCodexAgentRepository,
+	wire.Bind(new(service.CodexAgentRepository), new(*codexAgentRepository)),
 
 	// Cache implementations
 	NewGatewayCache,

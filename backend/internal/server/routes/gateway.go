@@ -20,8 +20,54 @@ func RegisterGatewayRoutes(
 	subscriptionService *service.SubscriptionService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
+	codexAgentService middleware.ManagedDeviceAccessValidator,
 	cfg *config.Config,
 ) {
+	r.GET("/usage/api/balance", h.Auth.AugmentLegacyBalance)
+	r.GET("/usage/api/get-models", h.Auth.AugmentLegacyModels)
+	r.GET("/usage/api/getLoginToken", h.Auth.AugmentLegacyLoginToken)
+	r.POST("/get-models", h.Auth.AugmentLegacyInternalGetModels)
+	r.POST("/batch-upload", h.Auth.AugmentLegacyBatchUpload)
+	r.POST("/checkpoint-blobs", h.Auth.AugmentLegacyCheckpointBlobs)
+	r.POST("/find-missing", h.Auth.AugmentLegacyFindMissing)
+	r.POST("/save-chat", h.Auth.AugmentLegacySaveChat)
+	r.POST("/chat", h.Auth.AugmentLegacyChat)
+	r.POST("/chat-stream", h.Auth.AugmentLegacyChatStream)
+	r.POST("/prompt-enhancer", h.Auth.AugmentLegacyPromptEnhancer)
+	r.POST("/instruction-stream", h.Auth.AugmentLegacyInstructionStream)
+	r.POST("/smart-paste-stream", h.Auth.AugmentLegacySmartPasteStream)
+	r.POST("/generate-commit-message-stream", h.Auth.AugmentLegacyGenerateCommitMessageStream)
+	r.POST("/next_edit_loc", h.Auth.AugmentLegacyNextEditLocation)
+	r.POST("/next-edit-stream", h.Auth.AugmentLegacyNextEditStream)
+	r.POST("/remote-agents/list", h.Auth.AugmentLegacyListRemoteAgents)
+	r.POST("/agents/codebase-retrieval", h.Auth.AugmentLegacyCodebaseRetrieval)
+	r.POST("/agents/list-remote-tools", h.Auth.AugmentLegacyListRemoteTools)
+	r.POST("/get-implicit-external-sources", h.Auth.AugmentLegacyGetImplicitExternalSources)
+	r.POST("/search-external-sources", h.Auth.AugmentLegacySearchExternalSources)
+	r.POST("/context-canvas/list", h.Auth.AugmentLegacyContextCanvasList)
+	r.GET("/notifications/read", h.Auth.AugmentLegacyNotificationsRead)
+	r.POST("/notifications/read", h.Auth.AugmentLegacyNotificationsRead)
+	r.POST("/notifications/mark-as-read", h.Auth.AugmentLegacyNotificationsMarkRead)
+	r.GET("/subscription-banner", h.Auth.AugmentLegacySubscriptionBanner)
+	r.POST("/subscription-banner", h.Auth.AugmentLegacySubscriptionBanner)
+	r.POST("/report-error", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/report-feature-vector", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/client-metrics", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/record-session-events", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/record-request-events", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/record-user-events", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/record-preference-sample", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/client-completion-timelines", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/chat-feedback", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/completion-feedback", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/next-edit-feedback", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/resolve-completions", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/resolve-chat-input-completion", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/resolve-edit", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/resolve-instruction", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/resolve-next-edit", h.Auth.AugmentLegacyJSONAck)
+	r.POST("/resolve-smart-paste", h.Auth.AugmentLegacyJSONAck)
+
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
 	clientRequestID := middleware.ClientRequestID()
 	opsErrorLogger := handler.OpsErrorLoggerMiddleware(opsService)
@@ -29,7 +75,9 @@ func RegisterGatewayRoutes(
 
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
+	requireGroupOpenAI := middleware.RequireGroupAssignment(settingService, middleware.OpenAIErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
+	managedOrAPIKeyAuth := middleware.ManagedDeviceOrAPIKeyAuth(codexAgentService, apiKeyAuth, apiKeyService, subscriptionService, cfg)
 
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
@@ -37,11 +85,9 @@ func RegisterGatewayRoutes(
 	gateway.Use(clientRequestID)
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
-	gateway.Use(gin.HandlerFunc(apiKeyAuth))
-	gateway.Use(requireGroupAnthropic)
 	{
 		// /v1/messages: auto-route based on group platform
-		gateway.POST("/messages", func(c *gin.Context) {
+		gateway.POST("/messages", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI {
 				h.OpenAIGateway.Messages(c)
 				return
@@ -49,7 +95,7 @@ func RegisterGatewayRoutes(
 			h.Gateway.Messages(c)
 		})
 		// /v1/messages/count_tokens: OpenAI groups get 404
-		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
+		gateway.POST("/messages/count_tokens", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI {
 				c.JSON(http.StatusNotFound, gin.H{
 					"type": "error",
@@ -62,26 +108,26 @@ func RegisterGatewayRoutes(
 			}
 			h.Gateway.CountTokens(c)
 		})
-		gateway.GET("/models", h.Gateway.Models)
-		gateway.GET("/usage", h.Gateway.Usage)
+		gateway.GET("/models", managedOrAPIKeyAuth, requireGroupAnthropic, h.Gateway.Models)
+		gateway.GET("/usage", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.Usage)
 		// OpenAI Responses API: auto-route based on group platform
-		gateway.POST("/responses", func(c *gin.Context) {
+		gateway.POST("/responses", managedOrAPIKeyAuth, requireGroupOpenAI, func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
 			h.Gateway.Responses(c)
 		})
-		gateway.POST("/responses/*subpath", func(c *gin.Context) {
+		gateway.POST("/responses/*subpath", managedOrAPIKeyAuth, requireGroupOpenAI, func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
 			h.Gateway.Responses(c)
 		})
-		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
+		gateway.GET("/responses", managedOrAPIKeyAuth, requireGroupOpenAI, h.OpenAIGateway.ResponsesWebSocket)
 		// OpenAI Chat Completions API: auto-route based on group platform
-		gateway.POST("/chat/completions", func(c *gin.Context) {
+		gateway.POST("/chat/completions", managedOrAPIKeyAuth, requireGroupOpenAI, func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
@@ -89,6 +135,9 @@ func RegisterGatewayRoutes(
 			h.Gateway.ChatCompletions(c)
 		})
 	}
+
+	r.POST("/v1/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
+	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
 
 	// Gemini 原生 API 兼容层（Gemini SDK/CLI 直连）
 	gemini := r.Group("/v1beta")
@@ -113,17 +162,32 @@ func RegisterGatewayRoutes(
 		}
 		h.Gateway.Responses(c)
 	}
-	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
+	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, managedOrAPIKeyAuth, requireGroupOpenAI, responsesHandler)
+	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, managedOrAPIKeyAuth, requireGroupOpenAI, responsesHandler)
+	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, managedOrAPIKeyAuth, requireGroupOpenAI, h.OpenAIGateway.ResponsesWebSocket)
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
-	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, managedOrAPIKeyAuth, requireGroupOpenAI, func(c *gin.Context) {
 		if getGroupPlatform(c) == service.PlatformOpenAI {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}
 		h.Gateway.ChatCompletions(c)
 	})
+
+	// OpenAI Gateway Core 显式前缀入口（供 OpenAI/Codex 客户端直连）
+	openaiGateway := r.Group("/openai/v1")
+	openaiGateway.Use(bodyLimit)
+	openaiGateway.Use(clientRequestID)
+	openaiGateway.Use(opsErrorLogger)
+	openaiGateway.Use(endpointNorm)
+	{
+		openaiGateway.POST("/responses", managedOrAPIKeyAuth, requireGroupOpenAI, h.OpenAIGateway.Responses)
+		openaiGateway.POST("/responses/*subpath", managedOrAPIKeyAuth, requireGroupOpenAI, h.OpenAIGateway.Responses)
+		openaiGateway.GET("/responses", managedOrAPIKeyAuth, requireGroupOpenAI, h.OpenAIGateway.ResponsesWebSocket)
+		openaiGateway.POST("/chat/completions", managedOrAPIKeyAuth, requireGroupOpenAI, h.OpenAIGateway.ChatCompletions)
+	}
+	r.POST("/openai/v1/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupOpenAI, h.OpenAIGateway.ImageGenerations)
+
 	r.GET("/openai/_health", h.OpenAIGateway.Health)
 	r.GET("/openai/_verify", h.OpenAIGateway.Verify)
 
