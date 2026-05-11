@@ -489,3 +489,106 @@ func TestGatewayRoutesOrdinaryPathsDoNotTouchAugmentGateway(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayRoutesCodexDirectRequiresCodexScopedKey(t *testing.T) {
+	t.Parallel()
+
+	router := newGatewayRoutesCodexScopeTestRouter(&service.APIKey{
+		ID:     101,
+		UserID: 202,
+		Key:    "sk-generic",
+		Status: service.StatusActive,
+		GroupID: testInt64Ptr(1),
+		Group: &service.Group{
+			ID:                   1,
+			Platform:             service.PlatformOpenAI,
+			Status:               service.StatusActive,
+			Hydrated:             true,
+			CodexGatewayEntitled: true,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses/compact", strings.NewReader(`{"model":"gpt-5","input":"title"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), `"type":"invalid_request_error"`)
+	require.Contains(t, w.Body.String(), "Codex-only API key")
+}
+
+func TestGatewayRoutesCodexDirectAllowsEntitledCodexScopedKey(t *testing.T) {
+	t.Parallel()
+
+	product := service.CodexUsageClientProduct
+	router := newGatewayRoutesCodexScopeTestRouter(&service.APIKey{
+		ID:                      303,
+		UserID:                  404,
+		Key:                     "sk-codex",
+		Status:                  service.StatusActive,
+		RestrictedClientProduct: &product,
+		GroupID:                 testInt64Ptr(2),
+		Group: &service.Group{
+			ID:                   2,
+			Platform:             service.PlatformOpenAI,
+			Status:               service.StatusActive,
+			Hydrated:             true,
+			CodexGatewayEntitled: true,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses/compact", strings.NewReader(`{"model":"gpt-5","input":"title"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Contains(t, w.Body.String(), "OpenAI gateway core disabled")
+}
+
+func newGatewayRoutesCodexScopeTestRouter(apiKey *service.APIKey) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	cfg := &config.Config{}
+	openAIGatewayHandler := handler.NewOpenAIGatewayHandler(nil, service.NewOpenAIGatewayCoreService(nil, cfg, nil))
+	RegisterGatewayRoutes(
+		router,
+		&handler.Handlers{
+			Auth: handler.NewAuthHandler(
+				&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				service.NewAugmentPluginService(nil, nil, nil, nil, nil, nil),
+			),
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: openAIGatewayHandler,
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			c.Set(string(servermiddleware.ContextKeyAPIKey), apiKey)
+			c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{
+				UserID:      apiKey.UserID,
+				Concurrency: 1,
+			})
+			c.Next()
+		}),
+		nil,
+		nil,
+		nil,
+		nil,
+		cfg,
+	)
+
+	return router
+}
+
+func testInt64Ptr(v int64) *int64 {
+	return &v
+}

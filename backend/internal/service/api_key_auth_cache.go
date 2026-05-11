@@ -61,6 +61,7 @@ type APIKeyAuthGroupSnapshot struct {
 	Status                          string   `json:"status"`
 	SubscriptionType                string   `json:"subscription_type"`
 	AugmentGatewayEntitled          bool     `json:"augment_gateway_entitled"`
+	CodexGatewayEntitled            bool     `json:"codex_gateway_entitled"`
 	RateMultiplier                  float64  `json:"rate_multiplier"`
 	DailyLimitUSD                   *float64 `json:"daily_limit_usd,omitempty"`
 	WeeklyLimitUSD                  *float64 `json:"weekly_limit_usd,omitempty"`

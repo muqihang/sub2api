@@ -53,6 +53,7 @@ type APIKey struct {
 	Name        string     `json:"name"`
 	GroupID     *int64     `json:"group_id"`
 	AugmentOnly bool       `json:"augment_only"`
+	CodexOnly   bool       `json:"codex_only"`
 	Status      string     `json:"status"`
 	IPWhitelist []string   `json:"ip_whitelist"`
 	IPBlacklist []string   `json:"ip_blacklist"`
@@ -95,6 +96,7 @@ type Group struct {
 	WeeklyLimitUSD         *float64 `json:"weekly_limit_usd"`
 	MonthlyLimitUSD        *float64 `json:"monthly_limit_usd"`
 	AugmentGatewayEntitled bool     `json:"augment_gateway_entitled"`
+	CodexGatewayEntitled   bool     `json:"codex_gateway_entitled"`
 
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration bool     `json:"allow_image_generation"`

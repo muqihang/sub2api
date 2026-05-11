@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -76,6 +77,15 @@ func TestReadRequestBodyWithPrealloc_DecodesGzip(t *testing.T) {
 	if string(got) != samplePayload {
 		t.Fatalf("body mismatch: got %q", got)
 	}
+	if req.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("Content-Encoding should be cleared after decoding")
+	}
+	if req.Header.Get("Content-Length") != "" {
+		t.Fatalf("Content-Length should be cleared after decoding")
+	}
+	if req.ContentLength != int64(len(samplePayload)) {
+		t.Fatalf("ContentLength not updated: %d", req.ContentLength)
+	}
 }
 
 func TestReadRequestBodyWithPrealloc_DecodesDeflate(t *testing.T) {
@@ -104,6 +114,9 @@ func TestReadRequestBodyWithPrealloc_RejectsUnsupportedEncoding(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported encoding, got nil")
 	}
+	if !errors.Is(err, ErrUnsupportedContentEncoding) {
+		t.Fatalf("expected unsupported encoding typed error, got %v", err)
+	}
 	if !strings.Contains(err.Error(), "br") {
 		t.Fatalf("error should mention encoding, got %v", err)
 	}
@@ -114,6 +127,9 @@ func TestReadRequestBodyWithPrealloc_RejectsCorruptZstd(t *testing.T) {
 	_, err := ReadRequestBodyWithPrealloc(req)
 	if err == nil {
 		t.Fatal("expected error for corrupt zstd body, got nil")
+	}
+	if !errors.Is(err, ErrMalformedCompressedRequestBody) {
+		t.Fatalf("expected malformed compressed body typed error, got %v", err)
 	}
 }
 
@@ -139,5 +155,51 @@ func TestReadRequestBodyWithPrealloc_RespectsIdentityEncoding(t *testing.T) {
 	}
 	if string(got) != samplePayload {
 		t.Fatalf("body mismatch: got %q", got)
+	}
+}
+
+func TestReadRequestBodyWithPrealloc_DecodesCompressedBodyAtExactLimit(t *testing.T) {
+	payload := bytes.Repeat([]byte("a"), maxDecompressedBodySize)
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := gw.Write(payload)
+	if err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	req := newRequestWithBody(t, buf.Bytes(), "gzip")
+	got, err := ReadRequestBodyWithPrealloc(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != len(payload) {
+		t.Fatalf("decoded size mismatch: got %d want %d", len(got), len(payload))
+	}
+}
+
+func TestReadRequestBodyWithPrealloc_RejectsCompressedBodyOverLimit(t *testing.T) {
+	payload := bytes.Repeat([]byte("a"), maxDecompressedBodySize+1)
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := gw.Write(payload)
+	if err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	req := newRequestWithBody(t, buf.Bytes(), "gzip")
+	_, err = ReadRequestBodyWithPrealloc(req)
+	if err == nil {
+		t.Fatal("expected overflow error, got nil")
+	}
+	if !errors.Is(err, ErrRequestBodyTooLarge) {
+		t.Fatalf("expected overflow typed error, got %v", err)
 	}
 }

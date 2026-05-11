@@ -189,6 +189,7 @@ type CreateGroupInput struct {
 	WeeklyLimitUSD         *float64 // 周限额 (USD)
 	MonthlyLimitUSD        *float64 // 月限额 (USD)
 	AugmentGatewayEntitled bool
+	CodexGatewayEntitled   bool
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration bool
 	ImageRateIndependent bool
@@ -230,6 +231,7 @@ type UpdateGroupInput struct {
 	WeeklyLimitUSD         *float64 // 周限额 (USD)
 	MonthlyLimitUSD        *float64 // 月限额 (USD)
 	AugmentGatewayEntitled *bool
+	CodexGatewayEntitled   *bool
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration *bool
 	ImageRateIndependent *bool
@@ -1651,6 +1653,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		WeeklyLimitUSD:                  weeklyLimit,
 		MonthlyLimitUSD:                 monthlyLimit,
 		AugmentGatewayEntitled:          input.AugmentGatewayEntitled,
+		CodexGatewayEntitled:            input.CodexGatewayEntitled,
 		AllowImageGeneration:            input.AllowImageGeneration,
 		ImageRateIndependent:            input.ImageRateIndependent,
 		ImageRateMultiplier:             imageRateMultiplier,
@@ -1831,6 +1834,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	group.MonthlyLimitUSD = normalizeLimit(input.MonthlyLimitUSD)
 	if input.AugmentGatewayEntitled != nil {
 		group.AugmentGatewayEntitled = *input.AugmentGatewayEntitled
+	}
+	if input.CodexGatewayEntitled != nil {
+		group.CodexGatewayEntitled = *input.CodexGatewayEntitled
 	}
 	// 图片生成计费配置：负数表示清除（使用默认价格）
 	if input.AllowImageGeneration != nil {

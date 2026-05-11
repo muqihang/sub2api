@@ -634,6 +634,8 @@ type GatewayConfig struct {
 	OpenAICore GatewayOpenAICoreConfig `mapstructure:"openai_core"`
 	// Augment: 逐梦 Augment Code 专用模型池配置
 	Augment GatewayAugmentConfig `mapstructure:"augment"`
+	// Codex: Codex Gateway 专用模型池配置
+	Codex GatewayCodexConfig `mapstructure:"codex"`
 	// CCGateway: cc-gateway 透明身份改写适配配置（默认关闭）
 	CCGateway GatewayCCGatewayConfig `mapstructure:"cc_gateway"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
@@ -730,6 +732,23 @@ type GatewayAugmentProviderGroupsConfig struct {
 	DeepSeek  int64 `mapstructure:"deepseek"`
 	Anthropic int64 `mapstructure:"anthropic"`
 	Gemini    int64 `mapstructure:"gemini"`
+}
+
+type GatewayCodexConfig struct {
+	Enabled              bool                             `mapstructure:"enabled"`
+	ExposeV1Alias        bool                             `mapstructure:"expose_v1_alias"`
+	ModelCatalogPath     string                           `mapstructure:"model_catalog_path"`
+	SupportsWebSockets   bool                             `mapstructure:"supports_websockets"`
+	StateStoreTTLSeconds int                              `mapstructure:"state_store_ttl_seconds"`
+	MaxStateItems        int                              `mapstructure:"max_state_items"`
+	StreamMaxLineSize    int64                            `mapstructure:"stream_max_line_size"`
+	EnabledModels        []string                         `mapstructure:"enabled_models"`
+	ProviderGroups       GatewayCodexProviderGroupsConfig `mapstructure:"provider_groups"`
+}
+
+type GatewayCodexProviderGroupsConfig struct {
+	OpenAI   int64 `mapstructure:"openai"`
+	DeepSeek int64 `mapstructure:"deepseek"`
 }
 
 // UserMessageQueueConfig 用户消息串行队列配置
@@ -1447,6 +1466,8 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
 	cfg.Gateway.Augment.EnabledModels = normalizeStringSlice(cfg.Gateway.Augment.EnabledModels)
+	cfg.Gateway.Codex.ModelCatalogPath = strings.TrimSpace(cfg.Gateway.Codex.ModelCatalogPath)
+	cfg.Gateway.Codex.EnabledModels = normalizeStringSlice(cfg.Gateway.Codex.EnabledModels)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -1831,6 +1852,23 @@ func setDefaults() {
 	viper.SetDefault("gateway.augment.provider_groups.deepseek", int64(0))
 	viper.SetDefault("gateway.augment.provider_groups.anthropic", int64(0))
 	viper.SetDefault("gateway.augment.provider_groups.gemini", int64(0))
+	viper.SetDefault("gateway.codex.enabled", false)
+	viper.SetDefault("gateway.codex.expose_v1_alias", false)
+	viper.SetDefault("gateway.codex.model_catalog_path", "")
+	viper.SetDefault("gateway.codex.supports_websockets", false)
+	viper.SetDefault("gateway.codex.state_store_ttl_seconds", 86400)
+	viper.SetDefault("gateway.codex.max_state_items", 200)
+	viper.SetDefault("gateway.codex.stream_max_line_size", int64(1<<20))
+	viper.SetDefault("gateway.codex.enabled_models", []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+	})
+	viper.SetDefault("gateway.codex.provider_groups.openai", int64(0))
+	viper.SetDefault("gateway.codex.provider_groups.deepseek", int64(0))
 	viper.SetDefault("gateway.cc_gateway.enabled", false)
 	viper.SetDefault("gateway.cc_gateway.base_url", "")
 	viper.SetDefault("gateway.cc_gateway.token", "")
@@ -2940,6 +2978,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Augment.ProviderGroups.Gemini < 0 {
 		return fmt.Errorf("gateway.augment.provider_groups.gemini must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.OpenAI < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.openai must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.DeepSeek < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.deepseek must be non-negative")
+	}
+	if c.Gateway.Codex.StateStoreTTLSeconds <= 0 {
+		return fmt.Errorf("gateway.codex.state_store_ttl_seconds must be positive")
+	}
+	if c.Gateway.Codex.MaxStateItems <= 0 {
+		return fmt.Errorf("gateway.codex.max_state_items must be positive")
+	}
+	if c.Gateway.Codex.StreamMaxLineSize <= 0 {
+		return fmt.Errorf("gateway.codex.stream_max_line_size must be positive")
 	}
 	if c.Ops.MetricsCollectorCache.TTL < 0 {
 		return fmt.Errorf("ops.metrics_collector_cache.ttl must be non-negative")

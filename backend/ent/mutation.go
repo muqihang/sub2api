@@ -14836,6 +14836,7 @@ type GroupMutation struct {
 	monthly_limit_usd                       *float64
 	addmonthly_limit_usd                    *float64
 	augment_gateway_entitled                *bool
+	codex_gateway_entitled                  *bool
 	default_validity_days                   *int
 	adddefault_validity_days                *int
 	allow_image_generation                  *bool
@@ -15639,6 +15640,42 @@ func (m *GroupMutation) OldAugmentGatewayEntitled(ctx context.Context) (v bool, 
 // ResetAugmentGatewayEntitled resets all changes to the "augment_gateway_entitled" field.
 func (m *GroupMutation) ResetAugmentGatewayEntitled() {
 	m.augment_gateway_entitled = nil
+}
+
+// SetCodexGatewayEntitled sets the "codex_gateway_entitled" field.
+func (m *GroupMutation) SetCodexGatewayEntitled(b bool) {
+	m.codex_gateway_entitled = &b
+}
+
+// CodexGatewayEntitled returns the value of the "codex_gateway_entitled" field in the mutation.
+func (m *GroupMutation) CodexGatewayEntitled() (r bool, exists bool) {
+	v := m.codex_gateway_entitled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCodexGatewayEntitled returns the old "codex_gateway_entitled" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldCodexGatewayEntitled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCodexGatewayEntitled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCodexGatewayEntitled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCodexGatewayEntitled: %w", err)
+	}
+	return oldValue.CodexGatewayEntitled, nil
+}
+
+// ResetCodexGatewayEntitled resets all changes to the "codex_gateway_entitled" field.
+func (m *GroupMutation) ResetCodexGatewayEntitled() {
+	m.codex_gateway_entitled = nil
 }
 
 // SetDefaultValidityDays sets the "default_validity_days" field.
@@ -17033,7 +17070,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 35)
+	fields := make([]string, 0, 36)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -17075,6 +17112,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.augment_gateway_entitled != nil {
 		fields = append(fields, group.FieldAugmentGatewayEntitled)
+	}
+	if m.codex_gateway_entitled != nil {
+		fields = append(fields, group.FieldCodexGatewayEntitled)
 	}
 	if m.default_validity_days != nil {
 		fields = append(fields, group.FieldDefaultValidityDays)
@@ -17175,6 +17215,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.MonthlyLimitUsd()
 	case group.FieldAugmentGatewayEntitled:
 		return m.AugmentGatewayEntitled()
+	case group.FieldCodexGatewayEntitled:
+		return m.CodexGatewayEntitled()
 	case group.FieldDefaultValidityDays:
 		return m.DefaultValidityDays()
 	case group.FieldAllowImageGeneration:
@@ -17254,6 +17296,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldMonthlyLimitUsd(ctx)
 	case group.FieldAugmentGatewayEntitled:
 		return m.OldAugmentGatewayEntitled(ctx)
+	case group.FieldCodexGatewayEntitled:
+		return m.OldCodexGatewayEntitled(ctx)
 	case group.FieldDefaultValidityDays:
 		return m.OldDefaultValidityDays(ctx)
 	case group.FieldAllowImageGeneration:
@@ -17402,6 +17446,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetAugmentGatewayEntitled(v)
+		return nil
+	case group.FieldCodexGatewayEntitled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCodexGatewayEntitled(v)
 		return nil
 	case group.FieldDefaultValidityDays:
 		v, ok := value.(int)
@@ -17868,6 +17919,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldAugmentGatewayEntitled:
 		m.ResetAugmentGatewayEntitled()
+		return nil
+	case group.FieldCodexGatewayEntitled:
+		m.ResetCodexGatewayEntitled()
 		return nil
 	case group.FieldDefaultValidityDays:
 		m.ResetDefaultValidityDays()

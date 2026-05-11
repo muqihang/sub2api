@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 9 // v9: added augment key restriction and group entitlement fields
+const apiKeyAuthSnapshotVersion = 10 // v10: added Codex group entitlement to scoped API key auth snapshots
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -253,6 +253,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			Status:                          apiKey.Group.Status,
 			SubscriptionType:                apiKey.Group.SubscriptionType,
 			AugmentGatewayEntitled:          apiKey.Group.AugmentGatewayEntitled,
+			CodexGatewayEntitled:            apiKey.Group.CodexGatewayEntitled,
 			RateMultiplier:                  apiKey.Group.RateMultiplier,
 			DailyLimitUSD:                   apiKey.Group.DailyLimitUSD,
 			WeeklyLimitUSD:                  apiKey.Group.WeeklyLimitUSD,
@@ -324,6 +325,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			Hydrated:                        true,
 			SubscriptionType:                snapshot.Group.SubscriptionType,
 			AugmentGatewayEntitled:          snapshot.Group.AugmentGatewayEntitled,
+			CodexGatewayEntitled:            snapshot.Group.CodexGatewayEntitled,
 			RateMultiplier:                  snapshot.Group.RateMultiplier,
 			DailyLimitUSD:                   snapshot.Group.DailyLimitUSD,
 			WeeklyLimitUSD:                  snapshot.Group.WeeklyLimitUSD,

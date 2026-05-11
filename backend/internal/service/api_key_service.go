@@ -26,9 +26,21 @@ var (
 		"AUGMENT_GROUP_REQUIRED",
 		"an Augment-only API key requires an Augment-enabled group",
 	)
+	ErrCodexGroupRequired = infraerrors.BadRequest(
+		"CODEX_GROUP_REQUIRED",
+		"a Codex-only API key requires a Codex-enabled group",
+	)
 	ErrAugmentGroupNotEntitled = infraerrors.Forbidden(
 		"AUGMENT_GROUP_NOT_ENTITLED",
 		"selected group is not enabled for Augment gateway access",
+	)
+	ErrCodexGroupNotEntitled = infraerrors.Forbidden(
+		"CODEX_GROUP_NOT_ENTITLED",
+		"selected group is not enabled for Codex gateway access",
+	)
+	ErrAPIKeyClientProductConflict = infraerrors.BadRequest(
+		"API_KEY_CLIENT_PRODUCT_CONFLICT",
+		"augment_only and codex_only cannot both be enabled",
 	)
 	ErrAPIKeyExists       = infraerrors.Conflict("API_KEY_EXISTS", "api key already exists")
 	ErrAPIKeyTooShort     = infraerrors.BadRequest("API_KEY_TOO_SHORT", "api key must be at least 16 characters")
@@ -160,6 +172,7 @@ type CreateAPIKeyRequest struct {
 	Name        string   `json:"name"`
 	GroupID     *int64   `json:"group_id"`
 	AugmentOnly bool     `json:"augment_only"`
+	CodexOnly   bool     `json:"codex_only"`
 	CustomKey   *string  `json:"custom_key"`   // 可选的自定义key
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
@@ -179,6 +192,7 @@ type UpdateAPIKeyRequest struct {
 	Name        *string  `json:"name"`
 	GroupID     *int64   `json:"group_id"`
 	AugmentOnly *bool    `json:"augment_only"`
+	CodexOnly   *bool    `json:"codex_only"`
 	Status      *string  `json:"status"`
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单（空数组清空）
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单（空数组清空）
@@ -335,18 +349,29 @@ func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group 
 	return user.CanBindGroup(group.ID, group.IsExclusive)
 }
 
-func augmentRestrictedClientProduct(augmentOnly bool) *string {
-	if !augmentOnly {
-		return nil
+func restrictedClientProductForScopeFlags(augmentOnly, codexOnly bool) (*string, error) {
+	if augmentOnly && codexOnly {
+		return nil, ErrAPIKeyClientProductConflict
 	}
-	product := AugmentClientProductZhumeng
-	return &product
+	switch {
+	case augmentOnly:
+		product := AugmentClientProductZhumeng
+		return &product, nil
+	case codexOnly:
+		product := CodexUsageClientProduct
+		return &product, nil
+	default:
+		return nil, nil
+	}
 }
 
-func (s *APIKeyService) validateAPIKeyBindingGroup(ctx context.Context, user *User, groupID *int64, augmentOnly bool) (*Group, error) {
+func (s *APIKeyService) validateAPIKeyBindingGroup(ctx context.Context, user *User, groupID *int64, restrictedClientProduct string) (*Group, error) {
 	if groupID == nil {
-		if augmentOnly {
+		switch restrictedClientProduct {
+		case AugmentClientProductZhumeng:
 			return nil, ErrAugmentGroupRequired
+		case CodexUsageClientProduct:
+			return nil, ErrCodexGroupRequired
 		}
 		return nil, nil
 	}
@@ -358,10 +383,32 @@ func (s *APIKeyService) validateAPIKeyBindingGroup(ctx context.Context, user *Us
 	if !s.canUserBindGroup(ctx, user, group) {
 		return nil, ErrGroupNotAllowed
 	}
-	if augmentOnly && !group.AugmentGatewayEntitled {
-		return nil, ErrAugmentGroupNotEntitled
+	switch restrictedClientProduct {
+	case AugmentClientProductZhumeng:
+		if !group.AugmentGatewayEntitled {
+			return nil, ErrAugmentGroupNotEntitled
+		}
+	case CodexUsageClientProduct:
+		if !group.CodexGatewayEntitled {
+			return nil, ErrCodexGroupNotEntitled
+		}
 	}
 	return group, nil
+}
+
+func (s *APIKeyService) validateScopeFlags(augmentOnly, codexOnly bool) (*string, error) {
+	product, err := restrictedClientProductForScopeFlags(augmentOnly, codexOnly)
+	if err != nil {
+		return nil, err
+	}
+	return product, nil
+}
+
+func clientProductValue(product *string) string {
+	if product == nil {
+		return ""
+	}
+	return strings.TrimSpace(*product)
 }
 
 // Create 创建API Key
@@ -386,7 +433,11 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
-	if _, err := s.validateAPIKeyBindingGroup(ctx, user, req.GroupID, req.AugmentOnly); err != nil {
+	restrictedClientProduct, err := s.validateScopeFlags(req.AugmentOnly, req.CodexOnly)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.validateAPIKeyBindingGroup(ctx, user, req.GroupID, clientProductValue(restrictedClientProduct)); err != nil {
 		return nil, err
 	}
 
@@ -432,7 +483,7 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		Name:                    req.Name,
 		GroupID:                 req.GroupID,
 		Status:                  StatusActive,
-		RestrictedClientProduct: augmentRestrictedClientProduct(req.AugmentOnly),
+		RestrictedClientProduct: restrictedClientProduct,
 		IPWhitelist:             req.IPWhitelist,
 		IPBlacklist:             req.IPBlacklist,
 		Quota:                   req.Quota,
@@ -580,13 +631,21 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	if req.AugmentOnly != nil {
 		targetAugmentOnly = *req.AugmentOnly
 	}
+	targetCodexOnly := apiKey.IsCodexOnly()
+	if req.CodexOnly != nil {
+		targetCodexOnly = *req.CodexOnly
+	}
+	restrictedClientProduct, err := s.validateScopeFlags(targetAugmentOnly, targetCodexOnly)
+	if err != nil {
+		return nil, err
+	}
 
-	if req.GroupID != nil || req.AugmentOnly != nil {
+	if req.GroupID != nil || req.AugmentOnly != nil || req.CodexOnly != nil {
 		user, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("get user: %w", err)
 		}
-		if _, err := s.validateAPIKeyBindingGroup(ctx, user, targetGroupID, targetAugmentOnly); err != nil {
+		if _, err := s.validateAPIKeyBindingGroup(ctx, user, targetGroupID, clientProductValue(restrictedClientProduct)); err != nil {
 			return nil, err
 		}
 	}
@@ -594,8 +653,8 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	if req.GroupID != nil {
 		apiKey.GroupID = req.GroupID
 	}
-	if req.AugmentOnly != nil {
-		apiKey.RestrictedClientProduct = augmentRestrictedClientProduct(*req.AugmentOnly)
+	if req.AugmentOnly != nil || req.CodexOnly != nil {
+		apiKey.RestrictedClientProduct = restrictedClientProduct
 	}
 
 	if req.Status != nil {

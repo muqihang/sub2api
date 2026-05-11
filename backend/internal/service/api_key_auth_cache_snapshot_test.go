@@ -35,6 +35,7 @@ func TestAPIKeyRestrictionSnapshotRoundTripPreservesRestrictionAndEntitlement(t 
 			SubscriptionType:       SubscriptionTypeStandard,
 			RateMultiplier:         1,
 			AugmentGatewayEntitled: true,
+			CodexGatewayEntitled:   true,
 		},
 	}
 
@@ -45,6 +46,7 @@ func TestAPIKeyRestrictionSnapshotRoundTripPreservesRestrictionAndEntitlement(t 
 	require.Equal(t, restrictedClientProduct, *snapshot.RestrictedClientProduct)
 	require.NotNil(t, snapshot.Group)
 	require.True(t, snapshot.Group.AugmentGatewayEntitled)
+	require.True(t, snapshot.Group.CodexGatewayEntitled)
 
 	roundTrip := svc.snapshotToAPIKey(apiKey.Key, snapshot)
 	require.NotNil(t, roundTrip)
@@ -52,6 +54,7 @@ func TestAPIKeyRestrictionSnapshotRoundTripPreservesRestrictionAndEntitlement(t 
 	require.Equal(t, restrictedClientProduct, *roundTrip.RestrictedClientProduct)
 	require.NotNil(t, roundTrip.Group)
 	require.True(t, roundTrip.Group.AugmentGatewayEntitled)
+	require.True(t, roundTrip.Group.CodexGatewayEntitled)
 }
 
 func TestAPIKeyRestrictionSnapshotVersionMismatchBypassesCache(t *testing.T) {

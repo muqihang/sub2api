@@ -26,6 +26,8 @@ type Group struct {
 	DefaultValidityDays int
 	// AugmentGatewayEntitled marks user-facing groups entitled to use Augment gateway features.
 	AugmentGatewayEntitled bool
+	// CodexGatewayEntitled marks user-facing groups entitled to use Codex gateway features.
+	CodexGatewayEntitled bool
 
 	// 图片生成计费配置（antigravity 和 gemini 平台使用）
 	AllowImageGeneration bool
