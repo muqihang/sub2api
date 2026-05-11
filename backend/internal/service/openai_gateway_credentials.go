@@ -21,8 +21,8 @@ func (c *OpenAIGatewayCredentials) OpenAIAPIKey(account *Account) (string, error
 	if account == nil {
 		return "", ErrAccountNilInput
 	}
-	if !account.IsOpenAIApiKey() {
-		return "", errors.New("account is not an openai api_key account")
+	if !account.IsOpenAI() || (account.Type != AccountTypeAPIKey && account.Type != AccountTypeUpstream) {
+		return "", errors.New("account is not an openai api_key or upstream account")
 	}
 	return c.readCredential(account, "api_key")
 }

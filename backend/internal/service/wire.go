@@ -657,6 +657,35 @@ func ProvideAugmentGatewayModelRegistry(cfg *config.Config, adminService *Augmen
 	return NewAugmentGatewayModelRegistry(cfg.Gateway.Augment, WithAugmentGatewayRegistryStateSource(adminService))
 }
 
+func ProvideCodexGatewayModelRegistry(cfg *config.Config) *CodexGatewayModelRegistry {
+	if cfg == nil {
+		return NewDefaultCodexGatewayModelRegistry()
+	}
+	return NewCodexGatewayModelRegistry(cfg.Gateway.Codex)
+}
+
+func ProvideCodexGatewayStateStore(cfg *config.Config) *CodexGatewayStateStore {
+	storeCfg := CodexGatewayStateStoreConfig{}
+	if cfg != nil {
+		if cfg.Gateway.Codex.StateStoreTTLSeconds > 0 {
+			storeCfg.TTL = time.Duration(cfg.Gateway.Codex.StateStoreTTLSeconds) * time.Second
+		}
+		storeCfg.MaxItems = cfg.Gateway.Codex.MaxStateItems
+	}
+	return NewCodexGatewayStateStore(storeCfg)
+}
+
+func ProvideCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, stateStore *CodexGatewayStateStore) *CodexGatewayProviderExecutor {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	return NewCodexGatewayProviderExecutor(cfg, openaiGateway, stateStore)
+}
+
+func ProvideCodexGatewayService(registry *CodexGatewayModelRegistry, executor *CodexGatewayProviderExecutor) *CodexGatewayService {
+	return NewCodexGatewayService(registry, executor)
+}
+
 func ProvideAugmentGatewayRouter(registry *AugmentGatewayModelRegistry) *AugmentGatewayRouter {
 	return NewAugmentGatewayRouter(registry)
 }
@@ -685,6 +714,10 @@ var ProviderSet = wire.NewSet(
 	ProvideAugmentGatewayAdminService,
 	ProvideAugmentGatewayModelRegistry,
 	ProvideAugmentGatewayRouter,
+	ProvideCodexGatewayModelRegistry,
+	ProvideCodexGatewayStateStore,
+	ProvideCodexGatewayProviderExecutor,
+	ProvideCodexGatewayService,
 	NewAugmentGatewayReasoningTurnStore,
 	NewAugmentGatewayProviderExecutor,
 	NewAugmentGatewayService,

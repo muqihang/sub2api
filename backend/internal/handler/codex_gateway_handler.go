@@ -84,12 +84,19 @@ func (h *CodexGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	resp, err := h.service.Responses(c.Request.Context(), service.CodexGatewayResponsesRequest{
-		APIKey:  apiKey,
-		Headers: c.Request.Header.Clone(),
-		Body:    body,
+		APIKey:         apiKey,
+		Headers:        c.Request.Header.Clone(),
+		Body:           body,
+		StreamWriter:   c.Writer,
+		ResponseHeader: c.Writer.Header(),
+		WriteStatus:    c.Status,
+		Flush:          c.Writer.Flush,
 	})
 	if err != nil {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusInternalServerError, service.CodexGatewayErrorTypeAPI, "internal_error", err.Error())
+		return
+	}
+	if resp == nil && c.Writer.Written() {
 		return
 	}
 	writeCodexGatewayServiceResponse(c, resp)

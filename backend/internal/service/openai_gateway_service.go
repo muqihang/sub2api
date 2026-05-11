@@ -109,6 +109,34 @@ var codexCLIOnlyDebugHeaderWhitelist = []string{
 	"X-Real-IP",
 }
 
+var codexGatewayAllowedOpenAIRequestHeaders = map[string]bool{
+	"accept":                true,
+	"accept-language":       true,
+	"content-type":          true,
+	"conversation_id":       true,
+	"openai-beta":           true,
+	"originator":            true,
+	"session_id":            true,
+	"user-agent":            true,
+	"x-codex-turn-metadata": true,
+	"x-codex-turn-state":    true,
+}
+
+func codexGatewayAllowedOpenAIResponseHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "content-type",
+		"x-request-id",
+		"x-codex-turn-state",
+		"x-reasoning-included",
+		"x-models-etag",
+		"openai-model",
+		"x-openai-model":
+		return true
+	default:
+		return false
+	}
+}
+
 // OpenAICodexUsageSnapshot represents Codex API usage limits from response headers
 type OpenAICodexUsageSnapshot struct {
 	PrimaryUsedPercent          *float64 `json:"primary_used_percent,omitempty"`
@@ -2389,7 +2417,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", err
 		}
 		return accessToken, "oauth", nil
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		apiKey, err := credentials.OpenAIAPIKey(account)
 		if err != nil {
 			return "", "", err
@@ -2398,6 +2426,94 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 	default:
 		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
 	}
+}
+
+func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, account *Account, clientHeaders http.Header, body []byte, stream bool) (*http.Response, error) {
+	if s == nil || s.httpUpstream == nil {
+		return nil, fmt.Errorf("openai gateway upstream is not configured")
+	}
+	if account == nil {
+		return nil, fmt.Errorf("native responses request requires selected account")
+	}
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	targetURL := openaiPlatformAPIURL
+	switch account.Type {
+	case AccountTypeOAuth:
+		targetURL = chatgptCodexURL
+	case AccountTypeAPIKey, AccountTypeUpstream:
+		baseURL := account.GetOpenAIBaseURL()
+		if baseURL != "" {
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return nil, err
+			}
+			targetURL = buildOpenAIResponsesURL(validatedURL)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+	for key, values := range clientHeaders {
+		normalizedKey := strings.ToLower(strings.TrimSpace(key))
+		if !codexGatewayAllowedOpenAIRequestHeaders[normalizedKey] {
+			continue
+		}
+		if normalizedKey == "content-type" || normalizedKey == "accept" {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	if account.Type == AccountTypeOAuth {
+		req.Host = "chatgpt.com"
+		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+			req.Header.Set("chatgpt-account-id", chatgptAccountID)
+		}
+	}
+	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+		req.Header.Set("User-Agent", customUA)
+	}
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+}
+
+func (s *OpenAIGatewayService) FilterNativeResponsesResponseHeaders(src http.Header) http.Header {
+	out := http.Header{}
+	if src == nil {
+		return out
+	}
+	for key, values := range src {
+		if !codexGatewayAllowedOpenAIResponseHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			out.Add(key, value)
+		}
+	}
+	if out.Get("Content-Type") == "" {
+		if contentType := strings.TrimSpace(src.Get("Content-Type")); contentType != "" {
+			out.Set("Content-Type", contentType)
+		}
+	}
+	return out
 }
 
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {

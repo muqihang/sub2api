@@ -21,6 +21,11 @@ func newTestBillingServiceForResolver() *BillingService {
 		CacheReadPricePerToken:     0.3e-6,
 		SupportsCacheBreakdown:     false,
 	}
+	bs.fallbackPrices["deepseek-v4-pro"] = &ModelPricing{
+		InputPricePerToken:     2.0e-6,
+		OutputPricePerToken:    8.0e-6,
+		CacheReadPricePerToken: 0.5e-6,
+	}
 	return bs
 }
 
@@ -55,6 +60,21 @@ func TestResolve_UnknownModel(t *testing.T) {
 	require.Nil(t, resolved.BasePricing)
 	// Unknown model: GetModelPricing returns error, source is "fallback"
 	require.Equal(t, "fallback", resolved.Source)
+}
+
+func TestResolve_HiddenDeepSeekModelsCanStillResolvePricingInternally(t *testing.T) {
+	bs := newTestBillingServiceForResolver()
+	r := NewModelPricingResolver(&ChannelService{}, bs)
+
+	resolved := r.Resolve(context.Background(), PricingInput{
+		Model: "deepseek-v4-pro",
+	})
+
+	require.NotNil(t, resolved)
+	require.Equal(t, BillingModeToken, resolved.Mode)
+	require.NotNil(t, resolved.BasePricing)
+	require.InDelta(t, 2.0e-6, resolved.BasePricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 8.0e-6, resolved.BasePricing.OutputPricePerToken, 1e-12)
 }
 
 func TestGetIntervalPricing_NoIntervals(t *testing.T) {

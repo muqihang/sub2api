@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 )
@@ -12,9 +13,13 @@ type CodexGatewayModelsRequest struct {
 }
 
 type CodexGatewayResponsesRequest struct {
-	APIKey  *APIKey
-	Headers http.Header
-	Body    []byte
+	APIKey         *APIKey
+	Headers        http.Header
+	Body           []byte
+	StreamWriter   io.Writer
+	ResponseHeader http.Header
+	WriteStatus    func(int)
+	Flush          func()
 }
 
 type CodexGatewayServiceResponse struct {

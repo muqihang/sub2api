@@ -21,6 +21,7 @@ type codexGatewayHandlerServiceStub struct {
 	responsesReq  *service.CodexGatewayResponsesRequest
 	responsesResp *service.CodexGatewayServiceResponse
 	responsesErr  error
+	responsesHook func(req service.CodexGatewayResponsesRequest)
 }
 
 func (s *codexGatewayHandlerServiceStub) Models(_ context.Context, req service.CodexGatewayModelsRequest) (*service.CodexGatewayServiceResponse, error) {
@@ -30,6 +31,9 @@ func (s *codexGatewayHandlerServiceStub) Models(_ context.Context, req service.C
 
 func (s *codexGatewayHandlerServiceStub) Responses(_ context.Context, req service.CodexGatewayResponsesRequest) (*service.CodexGatewayServiceResponse, error) {
 	s.responsesReq = &req
+	if s.responsesHook != nil {
+		s.responsesHook(req)
+	}
 	return s.responsesResp, s.responsesErr
 }
 
@@ -217,6 +221,51 @@ func TestCodexGatewayHandler_ResponsesNilServiceResponseReturnsAPIError(t *testi
 	require.Equal(t, http.StatusBadGateway, w.Code)
 	require.Contains(t, w.Body.String(), `"type":"api_error"`)
 	require.Contains(t, w.Body.String(), `"code":"upstream_error"`)
+}
+
+func TestCodexGatewayHandlerResponses_ServiceManagedStreamingResponseIsPreserved(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	apiKey := validCodexGatewayHandlerAPIKeyForTest(16)
+	h := NewCodexGatewayHandler(&codexGatewayHandlerServiceStub{
+		responsesHook: func(req service.CodexGatewayResponsesRequest) {
+			req.ResponseHeader.Set("Content-Type", "text/event-stream")
+			req.WriteStatus(http.StatusOK)
+			_, _ = req.StreamWriter.Write([]byte("data: stream-output\n\n"))
+			if req.Flush != nil {
+				req.Flush()
+			}
+		},
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/codex/v1/responses", ioNopCloserString(`{"model":"gpt-5.5","stream":true}`))
+	c.Set(string(middleware.ContextKeyAPIKey), apiKey)
+
+	h.Responses(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "text/event-stream", w.Header().Get("Content-Type"))
+	require.Equal(t, "data: stream-output\n\n", w.Body.String())
+}
+
+func validCodexGatewayHandlerAPIKeyForTest(groupID int64) *service.APIKey {
+	product := service.CodexUsageClientProduct
+	return &service.APIKey{
+		ID:                      42,
+		Key:                     "sk-test",
+		Status:                  service.StatusActive,
+		GroupID:                 &groupID,
+		RestrictedClientProduct: &product,
+		Group: &service.Group{
+			ID:                   groupID,
+			Platform:             service.PlatformOpenAI,
+			Status:               service.StatusActive,
+			Hydrated:             true,
+			CodexGatewayEntitled: true,
+		},
+	}
 }
 
 type nopStringReadCloser struct {

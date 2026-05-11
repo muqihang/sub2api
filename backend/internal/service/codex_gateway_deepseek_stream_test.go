@@ -754,14 +754,3 @@ func (w *failingCodexGatewayStreamWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
-
-func cloneCodexGatewayStreamBody(in map[string]any) map[string]any {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}

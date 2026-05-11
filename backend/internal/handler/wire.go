@@ -149,8 +149,8 @@ func ProvideOpenAIGatewayHandler(
 	)
 }
 
-func ProvideCodexGatewayHandler() *CodexGatewayHandler {
-	return NewCodexGatewayHandler(nil)
+func ProvideCodexGatewayHandler(codexGatewayService *service.CodexGatewayService) *CodexGatewayHandler {
+	return NewCodexGatewayHandler(codexGatewayService)
 }
 
 // ProvideHandlers creates the Handlers struct
