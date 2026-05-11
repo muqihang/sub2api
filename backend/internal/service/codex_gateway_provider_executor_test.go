@@ -191,7 +191,7 @@ func TestCodexGatewayProviderExecutor_CompleteReturnsUnavailableWhenNoAccountCan
 	executor := newCodexGatewayProviderExecutorForTest()
 	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
 		selectFn: func(_ context.Context, _ *int64, _ string, _ string, _ map[int64]struct{}) (*Account, error) {
-			return nil, errors.New("none")
+			return nil, ErrNoAvailableAccounts
 		},
 	}
 	executor.openaiAdapter = &codexGatewayProviderAdapterStub{
@@ -210,6 +210,170 @@ func TestCodexGatewayProviderExecutor_CompleteReturnsUnavailableWhenNoAccountCan
 	var unavailable *CodexGatewayProviderUnavailableError
 	require.ErrorAs(t, err, &unavailable)
 	require.Equal(t, CodexGatewayProviderUnavailableNoAccounts, unavailable.Kind)
+}
+
+func TestCodexGatewayProviderExecutor_CompleteReturnsLastFailoverWhenAccountsExhausted(t *testing.T) {
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	selectionCalls := 0
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, excludedIDs map[int64]struct{}) (*Account, error) {
+			selectionCalls++
+			if selectionCalls == 1 {
+				require.Empty(t, excludedIDs)
+				return account, nil
+			}
+			_, excluded := excludedIDs[account.ID]
+			require.True(t, excluded)
+			return nil, ErrNoAvailableAccounts
+		},
+	}
+	executor.openaiAdapter = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, _ *Account, _ CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+		},
+	}
+
+	_, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request:    CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model:      CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		Parsed:     CodexGatewayResponsesCreateRequest{Model: "gpt-5.5"},
+		SessionKey: "sess_hash",
+	})
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.Equal(t, 2, selectionCalls)
+}
+
+func TestCodexGatewayProviderExecutor_CompletePropagatesSelectorErrors(t *testing.T) {
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, _ map[int64]struct{}) (*Account, error) {
+			return nil, errors.New("db unavailable")
+		},
+	}
+	executor.openaiAdapter = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, _ *Account, _ CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			return CodexGatewayDeepSeekAdapterResult{}, nil
+		},
+	}
+
+	_, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request:    CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model:      CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		Parsed:     CodexGatewayResponsesCreateRequest{Model: "gpt-5.5"},
+		SessionKey: "sess_hash",
+	})
+	require.EqualError(t, err, "db unavailable")
+}
+
+func TestCodexGatewayProviderExecutor_CompleteDoesNotMaskSelectorErrorsAfterFailover(t *testing.T) {
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	selectionCalls := 0
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, excludedIDs map[int64]struct{}) (*Account, error) {
+			selectionCalls++
+			if selectionCalls == 1 {
+				require.Empty(t, excludedIDs)
+				return account, nil
+			}
+			_, excluded := excludedIDs[account.ID]
+			require.True(t, excluded)
+			return nil, errors.New("db unavailable")
+		},
+	}
+	executor.openaiAdapter = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, _ *Account, _ CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+		},
+	}
+
+	_, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request:    CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model:      CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		Parsed:     CodexGatewayResponsesCreateRequest{Model: "gpt-5.5"},
+		SessionKey: "sess_hash",
+	})
+	require.EqualError(t, err, "db unavailable")
+	require.Equal(t, 2, selectionCalls)
+}
+
+func TestCodexGatewayProviderExecutor_StreamReturnsLastFailoverWhenAccountsExhausted(t *testing.T) {
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	selectionCalls := 0
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, excludedIDs map[int64]struct{}) (*Account, error) {
+			selectionCalls++
+			if selectionCalls == 1 {
+				require.Empty(t, excludedIDs)
+				return account, nil
+			}
+			_, excluded := excludedIDs[account.ID]
+			require.True(t, excluded)
+			return nil, ErrNoAvailableAccounts
+		},
+	}
+	executor.openaiAdapter = &codexGatewayProviderAdapterStub{
+		streamFn: func(_ context.Context, _ *Account, _ CodexGatewayProviderRequest) (CodexGatewayProviderResult, error) {
+			return CodexGatewayProviderResult{}, &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+		},
+	}
+	var out bytes.Buffer
+
+	err := executor.Stream(context.Background(), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			APIKey:       validCodexGatewayAPIKeyForTest(),
+			StreamWriter: &out,
+		},
+		Model:      CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		Parsed:     CodexGatewayResponsesCreateRequest{Model: "gpt-5.5", Stream: testBoolPtr(true)},
+		SessionKey: "sess_hash",
+	})
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusTooManyRequests, failoverErr.StatusCode)
+	require.Equal(t, 2, selectionCalls)
+	require.Empty(t, out.String())
+}
+
+func TestCodexGatewayProviderExecutor_StreamDoesNotMaskSelectorErrorsAfterFailover(t *testing.T) {
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	selectionCalls := 0
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, excludedIDs map[int64]struct{}) (*Account, error) {
+			selectionCalls++
+			if selectionCalls == 1 {
+				require.Empty(t, excludedIDs)
+				return account, nil
+			}
+			_, excluded := excludedIDs[account.ID]
+			require.True(t, excluded)
+			return nil, errors.New("db unavailable")
+		},
+	}
+	executor.openaiAdapter = &codexGatewayProviderAdapterStub{
+		streamFn: func(_ context.Context, _ *Account, _ CodexGatewayProviderRequest) (CodexGatewayProviderResult, error) {
+			return CodexGatewayProviderResult{}, &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+		},
+	}
+	var out bytes.Buffer
+
+	err := executor.Stream(context.Background(), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			APIKey:       validCodexGatewayAPIKeyForTest(),
+			StreamWriter: &out,
+		},
+		Model:      CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		Parsed:     CodexGatewayResponsesCreateRequest{Model: "gpt-5.5", Stream: testBoolPtr(true)},
+		SessionKey: "sess_hash",
+	})
+	require.EqualError(t, err, "db unavailable")
+	require.Equal(t, 2, selectionCalls)
+	require.Empty(t, out.String())
 }
 
 func TestCodexGatewayProviderExecutor_RecordUsageDurationUsesCallStart(t *testing.T) {

@@ -95,7 +95,8 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 	for {
 		account, err := e.selectAccount(ctx, groupID, req, excluded)
 		if err != nil {
-			if lastFailover != nil {
+			var unavailable *CodexGatewayProviderUnavailableError
+			if lastFailover != nil && errors.As(err, &unavailable) && unavailable.Kind == CodexGatewayProviderUnavailableNoAccounts {
 				return nil, lastFailover
 			}
 			return nil, err
@@ -127,7 +128,8 @@ func (e *CodexGatewayProviderExecutor) Stream(ctx context.Context, req CodexGate
 	for {
 		account, err := e.selectAccount(ctx, groupID, req, excluded)
 		if err != nil {
-			if lastFailover != nil {
+			var unavailable *CodexGatewayProviderUnavailableError
+			if lastFailover != nil && errors.As(err, &unavailable) && unavailable.Kind == CodexGatewayProviderUnavailableNoAccounts {
 				return lastFailover
 			}
 			return err
@@ -173,6 +175,9 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 	}
 	account, err := e.accountSelector.SelectAccountForModelWithExclusions(ctx, &groupID, req.SessionKey, req.Model.UpstreamModel, excluded)
 	if err != nil {
+		if !errors.Is(err, ErrNoAvailableAccounts) {
+			return nil, err
+		}
 		return nil, &CodexGatewayProviderUnavailableError{
 			ModelID:  req.Model.Slug,
 			Provider: req.Model.Provider,

@@ -163,6 +163,50 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteSupportsUpstreamAccountType(
 	require.Equal(t, "resp_upstream", result.ProviderResult.ResponseID)
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_CompleteFailoverAppliesRateLimitSideEffects(t *testing.T) {
+	account := newCodexGatewayOpenAIAccountForTest("http://openai.local")
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &codexGatewayAdapterHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Content-Type":                        []string{"application/json"},
+			"X-Codex-Primary-Used-Percent":        []string{"100"},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"7200"},
+			"X-Codex-Primary-Window-Minutes":      []string{"10080"},
+			"X-Codex-Secondary-Used-Percent":      []string{"3"},
+			"X-Codex-Secondary-Reset-After-Seconds": []string{"1800"},
+			"X-Codex-Secondary-Window-Minutes":    []string{"300"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"usage limit reached","type":"rate_limit_exceeded"}}`)),
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	gateway := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     upstream,
+		accountRepo:      repo,
+		rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
+	}
+	adapter := &codexGatewayOpenAIResponsesAdapter{gateway: gateway}
+
+	_, err := adapter.Complete(context.Background(), account, CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body: []byte(`{"model":"gpt-5.5","stream":false}`),
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, 100.0, repo.lastExtra["codex_7d_used_percent"])
+	require.Equal(t, 3.0, repo.lastExtra["codex_5h_used_percent"])
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_StreamFailsOverBeforeClientOutput(t *testing.T) {
 	streamBody := "" +
 		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
@@ -188,6 +232,53 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamFailsOverBeforeClientOutput(t 
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
 	require.Equal(t, 0, statusCode)
+	require.Empty(t, out.String())
+}
+
+func TestCodexGatewayOpenAIResponsesAdapter_StreamFailoverAppliesRateLimitSideEffects(t *testing.T) {
+	account := newCodexGatewayOpenAIAccountForTest("http://openai.local")
+	repo := &openAIGatewayCoreRepoStub{
+		openAIGatewayCoreAccountRepoStubBase: openAIGatewayCoreAccountRepoStubBase{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &codexGatewayAdapterHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Content-Type":                          []string{"application/json"},
+			"X-Codex-Primary-Used-Percent":          []string{"100"},
+			"X-Codex-Primary-Reset-After-Seconds":   []string{"604800"},
+			"X-Codex-Primary-Window-Minutes":        []string{"10080"},
+			"X-Codex-Secondary-Used-Percent":        []string{"100"},
+			"X-Codex-Secondary-Reset-After-Seconds": []string{"18000"},
+			"X-Codex-Secondary-Window-Minutes":      []string{"300"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"usage limit reached","type":"rate_limit_exceeded"}}`)),
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	gateway := &OpenAIGatewayService{
+		cfg:              cfg,
+		httpUpstream:     upstream,
+		accountRepo:      repo,
+		rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
+	}
+	adapter := &codexGatewayOpenAIResponsesAdapter{gateway: gateway}
+	var out bytes.Buffer
+
+	_, err := adapter.Stream(context.Background(), account, CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body:         []byte(`{"model":"gpt-5.5","stream":true}`),
+			StreamWriter: &out,
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, 100.0, repo.lastExtra["codex_7d_used_percent"])
+	require.Equal(t, 100.0, repo.lastExtra["codex_5h_used_percent"])
 	require.Empty(t, out.String())
 }
 

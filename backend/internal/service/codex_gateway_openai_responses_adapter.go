@@ -40,6 +40,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if resp.StatusCode >= 400 {
 		msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if a.gateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, body) {
+			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
 			return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: append([]byte(nil), body...)}
 		}
 		return CodexGatewayDeepSeekAdapterResult{ServiceResponse: serviceResp}, nil
@@ -96,6 +97,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		}
 		msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if a.gateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, body) {
+			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
 			return CodexGatewayProviderResult{}, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: append([]byte(nil), body...)}
 		}
 		mapped := codexGatewayDeepSeekMapErrorBody(resp.StatusCode, body)

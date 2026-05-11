@@ -2533,8 +2533,18 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 }
 
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
+	if resp == nil {
+		return
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+	s.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
+}
+
+func (s *OpenAIGatewayService) handleFailoverSideEffectsWithBody(ctx context.Context, statusCode int, headers http.Header, body []byte, account *Account) {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return
+	}
+	s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body)
 }
 
 // Forward forwards request to OpenAI API
