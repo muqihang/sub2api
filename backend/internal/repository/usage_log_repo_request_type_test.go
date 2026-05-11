@@ -262,16 +262,16 @@ func TestUsageLogInsertStoresAugmentScopeFields(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 
-	require.Equal(t, clientProduct, prepared.args[45].(sql.NullString).String)
-	require.Equal(t, requestScope, prepared.args[46].(sql.NullString).String)
-	require.Equal(t, featureScope, prepared.args[47].(sql.NullString).String)
-	require.Equal(t, augmentSessionID, prepared.args[48].(sql.NullString).String)
-	require.Equal(t, routePolicyVersion, prepared.args[49].(sql.NullString).String)
-	require.Equal(t, pricingVersion, prepared.args[50].(sql.NullString).String)
-	require.Equal(t, billable, prepared.args[51].(sql.NullBool).Bool)
-	require.Equal(t, upstreamAttemptID, prepared.args[54].(sql.NullString).String)
-	require.Equal(t, estimatedCost, prepared.args[61].(sql.NullFloat64).Float64)
-	require.Equal(t, settledCost, prepared.args[62].(sql.NullFloat64).Float64)
+	require.Equal(t, clientProduct, prepared.args[48].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[49].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[50].(sql.NullString).String)
+	require.Equal(t, augmentSessionID, prepared.args[51].(sql.NullString).String)
+	require.Equal(t, routePolicyVersion, prepared.args[52].(sql.NullString).String)
+	require.Equal(t, pricingVersion, prepared.args[53].(sql.NullString).String)
+	require.Equal(t, billable, prepared.args[54].(sql.NullBool).Bool)
+	require.Equal(t, upstreamAttemptID, prepared.args[57].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[64].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[65].(sql.NullFloat64).Float64)
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
 		WithArgs(anySliceToDriverValues(prepared.args)...).
@@ -281,6 +281,43 @@ func TestUsageLogInsertStoresAugmentScopeFields(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, inserted)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPrepareUsageLogInsert_PreservesEntityAndAugmentColumnOrder(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	requestScope := service.AugmentUsageRequestScopeGateway
+	featureScope := service.AugmentUsageFeatureScopeChat
+	entityType := service.EntityTypeWorkspace
+	claimedEntityID := "workspace-alpha"
+	log := &service.UsageLog{
+		UserID:          1,
+		APIKeyID:        2,
+		AccountID:       3,
+		RequestID:       "req-union-order",
+		Model:           "gpt-5.4",
+		RequestedModel:  "gpt-5.4",
+		EntityID:        ptrInt64(99),
+		EntityType:      &entityType,
+		ClaimedEntityID: &claimedEntityID,
+		CreatedAt:       time.Date(2026, 5, 8, 12, 30, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct: &clientProduct,
+			RequestScope:  &requestScope,
+			FeatureScope:  &featureScope,
+		},
+	}
+
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, int64(99), prepared.args[7].(sql.NullInt64).Int64)
+	require.Equal(t, entityType, prepared.args[8].(sql.NullString).String)
+	require.Equal(t, claimedEntityID, prepared.args[9].(sql.NullString).String)
+	require.Equal(t, clientProduct, prepared.args[48].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[49].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[50].(sql.NullString).String)
+
+	query, _ := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
+	require.Contains(t, query, "upstream_model,\n\t\t\tentity_id,\n\t\t\tentity_type,\n\t\t\tclaimed_entity_id,\n\t\t\tgroup_id,")
+	require.Contains(t, query, "account_stats_cost,\n\t\t\t\tclient_product,\n\t\t\t\trequest_scope,\n\t\t\t\tfeature_scope,")
 }
 
 func TestUsageLogListFiltersClientProductZhumengAugment(t *testing.T) {
@@ -324,9 +361,9 @@ func TestUsageLogPricingVersionDoesNotChangeHistoricalCost(t *testing.T) {
 		},
 	}
 	prepared := prepareUsageLogInsert(log)
-	require.Equal(t, 2.5, prepared.args[21])
-	require.Equal(t, 2.0, prepared.args[22])
-	require.Equal(t, pricingVersion, prepared.args[50].(sql.NullString).String)
+	require.Equal(t, 2.5, prepared.args[24])
+	require.Equal(t, 2.0, prepared.args[25])
+	require.Equal(t, pricingVersion, prepared.args[53].(sql.NullString).String)
 }
 
 func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
@@ -347,7 +384,7 @@ func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 	require.Equal(t, "req-provider-retry", prepared.requestID)
-	require.Equal(t, upstreamAttemptID, prepared.args[54].(sql.NullString).String)
+	require.Equal(t, upstreamAttemptID, prepared.args[57].(sql.NullString).String)
 }
 
 func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
@@ -375,11 +412,11 @@ func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
 		},
 	}
 	prepared := prepareUsageLogInsert(log)
-	require.Equal(t, inputUnitPrice, prepared.args[56].(sql.NullFloat64).Float64)
-	require.Equal(t, outputUnitPrice, prepared.args[57].(sql.NullFloat64).Float64)
-	require.Equal(t, cacheReadUnitPrice, prepared.args[58].(sql.NullFloat64).Float64)
-	require.Equal(t, cacheCreationUnitPrice, prepared.args[59].(sql.NullFloat64).Float64)
-	require.Equal(t, reasoningUnitPrice, prepared.args[60].(sql.NullFloat64).Float64)
+	require.Equal(t, inputUnitPrice, prepared.args[59].(sql.NullFloat64).Float64)
+	require.Equal(t, outputUnitPrice, prepared.args[60].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheReadUnitPrice, prepared.args[61].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheCreationUnitPrice, prepared.args[62].(sql.NullFloat64).Float64)
+	require.Equal(t, reasoningUnitPrice, prepared.args[63].(sql.NullFloat64).Float64)
 }
 
 func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testing.T) {
@@ -407,10 +444,10 @@ func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testi
 		},
 	}
 	prepared := prepareUsageLogInsert(log)
-	require.Equal(t, false, prepared.args[51].(sql.NullBool).Bool)
-	require.Equal(t, settlementStatus, prepared.args[55].(sql.NullString).String)
-	require.Equal(t, estimatedCost, prepared.args[61].(sql.NullFloat64).Float64)
-	require.Equal(t, settledCost, prepared.args[62].(sql.NullFloat64).Float64)
+	require.Equal(t, false, prepared.args[54].(sql.NullBool).Bool)
+	require.Equal(t, settlementStatus, prepared.args[58].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[64].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[65].(sql.NullFloat64).Float64)
 }
 
 func anySliceToDriverValues(values []any) []driver.Value {

@@ -242,6 +242,45 @@ func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing
 	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_NonBillableAugmentSchedulesLastUsedUpdate(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	quotaSvc := &openAIRecordUsageAPIKeyQuotaStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	billable := false
+	clientProduct := AugmentUsageClientProduct
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_non_billable_augment",
+			Usage:     OpenAIUsage{OutputTokens: 5},
+			Model:     "gpt-5.4",
+			Duration:  time.Second,
+		},
+		APIKey: &APIKey{ID: 1000, Quota: 100, Group: &Group{RateMultiplier: 1}},
+		User:   &User{ID: 2000},
+		Account: &Account{
+			ID:   3000,
+			Type: AccountTypeAPIKey,
+		},
+		APIKeyService: quotaSvc,
+		AugmentUsageFields: AugmentUsageFields{
+			Billable:      &billable,
+			ClientProduct: &clientProduct,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 0, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, AugmentUsageSettlementSkipped, derefUsageString(usageRepo.lastLog.SettlementStatus))
+	_, ok := svc.deferredService.lastUsedUpdates.Load(int64(3000))
+	require.True(t, ok)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_UsesUserSpecificGroupRate(t *testing.T) {
 	groupID := int64(11)
 	groupRate := 1.4
