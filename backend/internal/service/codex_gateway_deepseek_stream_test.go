@@ -384,6 +384,47 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, "partial", gjson.GetBytes(events[len(events)-1].Payload, "response.output.0.content.0.text").String())
 	})
 
+	t.Run("empty reasoning delta still yields incomplete on upstream close", func(t *testing.T) {
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+			]`),
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_empty_reasoning","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":""},"finish_reason":null}]}`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_empty_reasoning", IsolationKey: "iso_empty_reasoning"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, "incomplete", result.ProviderResult.Response.Status)
+		events := parseCodexGatewayOrderedEvents(t, buf.String())
+		require.Equal(t, "response.incomplete", events[len(events)-1].Event)
+	})
+
 	t.Run("does not persist partial tool call state on early stream close", func(t *testing.T) {
 		model := CodexGatewayModel{
 			Slug:          "deepseek-v4-pro",
@@ -586,6 +627,67 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, "invalid_request", gjson.GetBytes(events[len(events)-1].Payload, "response.error.code").String())
 		require.Equal(t, "bad request", gjson.GetBytes(events[len(events)-1].Payload, "response.error.message").String())
 	})
+
+	t.Run("writer failure during terminal events prevents persistence", func(t *testing.T) {
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"use tools"}]}
+			]`),
+			Tools: json.RawMessage(`[
+				{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}
+			]`),
+		}
+		stateStore := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+			TTL:      time.Minute,
+			MaxItems: 4,
+			Now:      time.Now,
+		})
+		reqCtx := CodexGatewayDeepSeekRequestContext{
+			SessionKey:   "session_writer_fail_terminal",
+			IsolationKey: "iso_writer_fail_terminal",
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_writer_fail_terminal","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_weather","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		writer := &failingCodexGatewayStreamWriter{failOn: "event: response.function_call_arguments.done"}
+		_, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			stateStore,
+			reqCtx,
+			CodexGatewayDeepSeekRequestConfig{},
+			writer,
+		)
+		require.Error(t, err)
+		_, err = stateStore.Get(CodexGatewayStateLookupKey{
+			ResponseID:    "chatcmpl_stream_writer_fail_terminal",
+			SessionKey:    "session_writer_fail_terminal",
+			IsolationKey:  "iso_writer_fail_terminal",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrCodexGatewayStateNotFound)
+	})
 }
 
 type codexGatewayOrderedEvent struct {
@@ -640,6 +742,17 @@ func indexCodexGatewayEvent(events []codexGatewayOrderedEvent, name string) int 
 		}
 	}
 	return -1
+}
+
+type failingCodexGatewayStreamWriter struct {
+	failOn string
+}
+
+func (w *failingCodexGatewayStreamWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.failOn) {
+		return 0, io.ErrClosedPipe
+	}
+	return len(p), nil
 }
 
 func cloneCodexGatewayStreamBody(in map[string]any) map[string]any {

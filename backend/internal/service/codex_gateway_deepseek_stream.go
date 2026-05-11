@@ -646,7 +646,7 @@ func (s *codexGatewayDeepSeekStreamState) responseModel() string {
 }
 
 func (s *codexGatewayDeepSeekStreamState) hasPartialState() bool {
-	return s.messageAdded || len(s.toolCalls) > 0 || s.reasoningText.Len() > 0 || len(s.usageRaw) > 0
+	return s.messageAdded || len(s.toolCalls) > 0 || s.reasoningAdded || s.reasoningPresent || s.reasoningText.Len() > 0 || len(s.usageRaw) > 0
 }
 
 func (s *codexGatewayDeepSeekStreamState) shouldPersistToolLoopState() bool {
