@@ -119,6 +119,7 @@ type CodexGatewayToolNameMapEntry struct {
 	Alias     string
 	Kind      string
 	Namespace string
+	NamespacePath string `json:"-"`
 	Name      string
 }
 

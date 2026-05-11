@@ -183,8 +183,10 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 	}
 
 	openCalls := make(map[string]int, len(seedCalls))
+	seenCallIDs := make(map[string]struct{}, len(seedCalls))
 	for id := range seedCalls {
 		openCalls[id]++
+		seenCallIDs[id] = struct{}{}
 	}
 
 	for _, item := range items {
@@ -192,13 +194,19 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		if err != nil {
 			return nil, nil, err
 		}
+		if storedAssistant != nil && len(seedCalls) > 0 && len(openCalls) > 0 {
+			if msg == nil || strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "tool" {
+				return nil, nil, fmt.Errorf("%w: replayed tool outputs must precede subsequent turns", ErrCodexGatewayStateInvalid)
+			}
+		}
 		if msg != nil {
 			messages = append(messages, msg)
 		}
 		for _, callID := range newCalls {
-			if openCalls[callID] > 0 {
+			if _, exists := seenCallIDs[callID]; exists {
 				return nil, nil, fmt.Errorf("codex deepseek request has duplicate call_id %q", callID)
 			}
+			seenCallIDs[callID] = struct{}{}
 			openCalls[callID]++
 		}
 		if msg != nil && strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) == "tool" {
@@ -559,7 +567,10 @@ func buildCodexGatewayDeepSeekToolChoice(raw json.RawMessage, toolMapping CodexG
 		}, true, nil
 	case map[string]any:
 		choiceType := strings.TrimSpace(firstCodexGatewayToolString(typed["type"]))
-		if choiceType == "" || strings.EqualFold(choiceType, "auto") {
+		if choiceType == "" {
+			return nil, false, fmt.Errorf("tool_choice.type is required")
+		}
+		if strings.EqualFold(choiceType, "auto") {
 			return nil, false, nil
 		}
 		if choiceType == "function" || choiceType == CodexGatewayToolKindCustom || choiceType == CodexGatewayToolKindNamespace {
@@ -599,15 +610,9 @@ func resolveCodexGatewayToolAlias(mapping CodexGatewayToolMappingResult, name st
 	if name == "" {
 		return "", nil
 	}
-	if _, ok := mapping.NameMap[name]; ok {
-		return name, nil
-	}
-	if alias, ok := mapping.originalToAlias[toolMappingOriginalKey(CodexGatewayToolKindFunction, "", name)]; ok {
-		return alias, nil
-	}
 	matches := make([]string, 0, 1)
 	for alias, entry := range mapping.NameMap {
-		if entry.Name == name || entry.Alias == name {
+		if entry.Name == name || entry.Alias == name || codexGatewayOriginalToolPath(entry) == name {
 			matches = append(matches, alias)
 		}
 	}
@@ -619,6 +624,16 @@ func resolveCodexGatewayToolAlias(mapping CodexGatewayToolMappingResult, name st
 	default:
 		return "", fmt.Errorf("ambiguous tool name %q", name)
 	}
+}
+
+func codexGatewayOriginalToolPath(entry CodexGatewayToolNameMapEntry) string {
+	if entry.NamespacePath != "" {
+		return codexGatewayNamespaceDisplay(entry.NamespacePath) + "__" + entry.Name
+	}
+	if entry.Namespace != "" {
+		return entry.Namespace + "__" + entry.Name
+	}
+	return entry.Name
 }
 
 func resolveCodexGatewayToolChoiceAlias(mapping CodexGatewayToolMappingResult, kind, name string) (string, error) {
@@ -639,7 +654,7 @@ func resolveCodexGatewayToolChoiceAlias(mapping CodexGatewayToolMappingResult, k
 		if entry.Kind != kind {
 			continue
 		}
-		if name == "" || entry.Name == name || entry.Alias == name {
+		if name == "" || entry.Name == name || entry.Alias == name || codexGatewayOriginalToolPath(entry) == name {
 			matches = append(matches, alias)
 		}
 	}

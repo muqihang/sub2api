@@ -279,6 +279,20 @@ func TestCodexGatewayDeepSeekRequest_RejectsInvalidStateAndUnpairedToolOutputs(t
 	_, err = BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
 		Model:              "deepseek-v4-pro",
 		PreviousResponseID: stringPtr("resp_parallel"),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"before tool output"}]},
+			{"type":"function_call_output","call_id":"call_a","output":"ok"}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrCodexGatewayStateInvalid))
+
+	_, err = BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_parallel"),
 		Input:              json.RawMessage(`[{"type":"function_call_output","call_id":"call_a","output":"ok"}]`),
 	}, nil, CodexGatewayDeepSeekRequestContext{
 		SessionKey:   "session_1",
@@ -302,6 +316,20 @@ func TestCodexGatewayDeepSeekRequest_RejectsInvalidStateAndUnpairedToolOutputs(t
 			{"type":"function_call","call_id":"call_dup","name":"shell","arguments":"{\"cmd\":\"pwd\"}"},
 			{"type":"function_call","call_id":"call_dup","name":"shell","arguments":"{\"cmd\":\"ls\"}"},
 			{"type":"function_call_output","call_id":"call_dup","output":"ok"}
+		]`),
+		Tools: json.RawMessage(`[{"type":"function","name":"shell","parameters":{"type":"object"}}]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.Error(t, err)
+
+	_, err = BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_reuse","name":"shell","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_reuse","output":"ok"},
+			{"type":"function_call","call_id":"call_reuse","name":"shell","arguments":"{\"cmd\":\"ls\"}"}
 		]`),
 		Tools: json.RawMessage(`[{"type":"function","name":"shell","parameters":{"type":"object"}}]`),
 	}, nil, CodexGatewayDeepSeekRequestContext{
@@ -406,6 +434,18 @@ func TestCodexGatewayDeepSeekRequest_FunctionCallsToolChoiceAndReasoningDisableP
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported type")
 
+	_, err = BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:      "deepseek-v4-flash",
+		Input:      json.RawMessage(`[{"type":"function_call","call_id":"call_2e","name":"shell","arguments":"{\"cmd\":\"pwd\"}"}]`),
+		Tools:      json.RawMessage(`[{"type":"function","name":"shell","parameters":{"type":"object"}}]`),
+		ToolChoice: json.RawMessage(`{"name":"shell"}`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool_choice.type is required")
+
 	preparedCustomChoice, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
 		Model:      "deepseek-v4-flash",
 		Input:      json.RawMessage(`[{"type":"function_call","call_id":"call_3","name":"shell","arguments":"{\"cmd\":\"pwd\"}"}]`),
@@ -419,6 +459,20 @@ func TestCodexGatewayDeepSeekRequest_FunctionCallsToolChoiceAndReasoningDisableP
 	toolChoiceCustom := preparedCustomChoice.Body["tool_choice"].(map[string]any)
 	require.Equal(t, "function", toolChoiceCustom["type"])
 	require.Equal(t, "custom__scratch_pad", toolChoiceCustom["function"].(map[string]any)["name"])
+
+	preparedCustomPathChoice, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:      "deepseek-v4-flash",
+		Input:      json.RawMessage(`[{"type":"function_call","call_id":"call_3b","name":"shell","arguments":"{\"cmd\":\"pwd\"}"}]`),
+		Tools:      json.RawMessage(`[{"type":"namespace","name":"browser","tools":[{"type":"custom","name":"scratch pad","custom":{"input_schema":{"type":"object"}}}]}]`),
+		ToolChoice: json.RawMessage(`{"type":"custom","name":"browser__scratch pad"}`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	toolChoiceCustomPath := preparedCustomPathChoice.Body["tool_choice"].(map[string]any)
+	require.Equal(t, "function", toolChoiceCustomPath["type"])
+	require.Equal(t, "browser__custom__scratch_pad", toolChoiceCustomPath["function"].(map[string]any)["name"])
 
 	_, err = BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
 		Model:      "deepseek-v4-flash",
@@ -447,6 +501,31 @@ func TestCodexGatewayDeepSeekRequest_RejectsAmbiguousLeafToolNames(t *testing.T)
 		Tools: json.RawMessage(`[
 			{"type":"namespace","name":"browser","tools":[{"name":"open","parameters":{"type":"object"}}]},
 			{"type":"namespace","name":"tabs","tools":[{"name":"open","parameters":{"type":"object"}}]}
+		]`),
+	}
+
+	_, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ambiguous tool name")
+}
+
+func TestCodexGatewayDeepSeekRequest_RejectsAmbiguousTopLevelAndNamespacedPath(t *testing.T) {
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_1","name":"a__b","arguments":"{\"url\":\"https://example.com\"}"}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"a__b","parameters":{"type":"object"}},
+			{"type":"namespace","name":"a","tools":[{"name":"b","parameters":{"type":"object"}}]}
 		]`),
 	}
 

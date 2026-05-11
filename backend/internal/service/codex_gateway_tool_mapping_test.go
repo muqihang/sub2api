@@ -100,6 +100,22 @@ func TestCodexGatewayToolMapping_PreservesNestedCustomNamespacePath(t *testing.T
 	require.Equal(t, "browser", result.NameMap["browser__custom__scratch_pad"].Namespace)
 }
 
+func TestCodexGatewayToolMapping_LiteralDoubleUnderscoreDoesNotCollapseIntoStructure(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"namespace","name":"a__b","tools":[{"name":"open","parameters":{"type":"object"}}]},
+		{"type":"namespace","name":"a","tools":[{"type":"namespace","name":"b","tools":[{"name":"open","parameters":{"type":"object"}}]}]}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 2)
+	first := result.Tools[0]["function"].(map[string]any)["name"].(string)
+	second := result.Tools[1]["function"].(map[string]any)["name"].(string)
+	require.NotEqual(t, first, second)
+	require.Regexp(t, codexGatewayToolSafeNameRe, first)
+	require.Regexp(t, codexGatewayToolSafeNameRe, second)
+}
+
 func TestCodexGatewayToolMapping_SanitizesNonASCIIAliasesToASCII(t *testing.T) {
 	raw := json.RawMessage(`[
 		{"type":"namespace","name":"浏览器","tools":[{"name":"open","parameters":{"type":"object"}}]},
@@ -226,4 +242,30 @@ func TestCodexGatewayToolMapping_NonStrictSchemasPassThrough(t *testing.T) {
 	require.Contains(t, query, "anyOf")
 	require.Contains(t, query, "minLength")
 	require.NotContains(t, function, "strict")
+}
+
+func TestCodexGatewayToolMapping_StrictSchemaPreservesPropertyNamesThatMatchKeywords(t *testing.T) {
+	raw := json.RawMessage(`[
+		{
+			"type":"function",
+			"name":"search",
+			"parameters":{
+				"type":"object",
+				"properties":{
+					"minLength":{"type":"integer"}
+				}
+			},
+			"strict":true
+		}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{
+		EnableStrictBeta:              true,
+		RejectUnsupportedStrictSchemas: true,
+	})
+	require.NoError(t, err)
+	function := result.Tools[0]["function"].(map[string]any)
+	params := function["parameters"].(map[string]any)
+	properties := params["properties"].(map[string]any)
+	require.Contains(t, properties, "minLength")
 }

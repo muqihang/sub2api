@@ -47,7 +47,7 @@ func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappi
 				return CodexGatewayToolMappingResult{}, fmt.Errorf("duplicate tool alias %q", record.alias)
 			}
 			result.NameMap[record.alias] = record.entry
-			result.originalToAlias[toolMappingOriginalKey(record.entry.Kind, record.entry.Namespace, record.entry.Name)] = record.alias
+			result.originalToAlias[toolMappingOriginalKey(record.entry.Kind, record.entry.NamespacePath, record.entry.Name)] = record.alias
 			flattened = append(flattened, recordToDeepSeekTool(record, cfg))
 		}
 	}
@@ -155,10 +155,11 @@ func flattenCodexGatewayFunctionTool(tool map[string]any, namespacePrefix, paren
 	return codexGatewayToolMappingRecord{
 		alias: alias,
 		entry: CodexGatewayToolNameMapEntry{
-			Alias:     alias,
-			Kind:      kind,
-			Namespace: codexGatewayNamespaceDisplay(namespacePrefix),
-			Name:      name,
+			Alias:         alias,
+			Kind:          kind,
+			Namespace:     codexGatewayNamespaceDisplay(namespacePrefix),
+			NamespacePath: namespacePrefix,
+			Name:          name,
 		},
 		tool: map[string]any{
 			"type":     "function",
@@ -196,10 +197,11 @@ func flattenCodexGatewayCustomTool(tool map[string]any, namespacePrefix string, 
 	return codexGatewayToolMappingRecord{
 		alias: alias,
 		entry: CodexGatewayToolNameMapEntry{
-			Alias:     alias,
-			Kind:      CodexGatewayToolKindCustom,
-			Namespace: codexGatewayNamespaceDisplay(namespacePrefix),
-			Name:      name,
+			Alias:         alias,
+			Kind:          CodexGatewayToolKindCustom,
+			Namespace:     codexGatewayNamespaceDisplay(namespacePrefix),
+			NamespacePath: namespacePrefix,
+			Name:          name,
 		},
 		tool: map[string]any{
 			"type":     "function",
@@ -435,16 +437,36 @@ var codexGatewayUnsupportedSchemaKeys = map[string]struct{}{
 }
 
 func stripUnsupportedCodexGatewaySchemaConstraints(value any) (any, bool) {
+	return stripUnsupportedCodexGatewaySchemaConstraintsWithContext(value, false)
+}
+
+func stripUnsupportedCodexGatewaySchemaConstraintsWithContext(value any, propertyContainer bool) (any, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		unsupported := false
 		for key, item := range typed {
+			if propertyContainer {
+				next, childUnsupported := stripUnsupportedCodexGatewaySchemaConstraintsWithContext(item, false)
+				if childUnsupported {
+					unsupported = true
+				}
+				out[key] = next
+				continue
+			}
+			if key == "properties" {
+				next, childUnsupported := stripUnsupportedCodexGatewaySchemaConstraintsWithContext(item, true)
+				if childUnsupported {
+					unsupported = true
+				}
+				out[key] = next
+				continue
+			}
 			if _, drop := codexGatewayUnsupportedSchemaKeys[key]; drop {
 				unsupported = true
 				continue
 			}
-			next, childUnsupported := stripUnsupportedCodexGatewaySchemaConstraints(item)
+			next, childUnsupported := stripUnsupportedCodexGatewaySchemaConstraintsWithContext(item, false)
 			if childUnsupported {
 				unsupported = true
 			}
@@ -455,7 +477,7 @@ func stripUnsupportedCodexGatewaySchemaConstraints(value any) (any, bool) {
 		out := make([]any, len(typed))
 		unsupported := false
 		for i, item := range typed {
-			next, childUnsupported := stripUnsupportedCodexGatewaySchemaConstraints(item)
+			next, childUnsupported := stripUnsupportedCodexGatewaySchemaConstraintsWithContext(item, false)
 			if childUnsupported {
 				unsupported = true
 			}
