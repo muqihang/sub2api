@@ -113,7 +113,7 @@ func (r CodexGatewayResponse) MarshalJSON() ([]byte, error) {
 	if err := set("status", r.Status, r.Status != ""); err != nil {
 		return nil, err
 	}
-	if err := set("output", r.Output, len(r.Output) > 0); err != nil {
+	if err := set("output", r.Output, r.Output != nil); err != nil {
 		return nil, err
 	}
 	if err := set("usage", json.RawMessage(r.Usage), len(r.Usage) > 0); err != nil {
@@ -184,23 +184,78 @@ func (w *CodexGatewayResponseEventWriter) WriteOutputTextDelta(responseID, itemI
 	})
 }
 
-func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDelta(responseID, callID, name, delta string) error {
-	return w.write("response.function_call_arguments.delta", map[string]any{
-		"type":        "response.function_call_arguments.delta",
-		"response_id": responseID,
-		"call_id":     callID,
-		"name":        name,
-		"delta":       delta,
+func (w *CodexGatewayResponseEventWriter) WriteOutputTextDone(responseID, itemID string, outputIndex, contentIndex int, text string) error {
+	return w.write("response.output_text.done", map[string]any{
+		"type":          "response.output_text.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"text":          text,
 	})
 }
 
-func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(responseID, callID, name, arguments string) error {
+func (w *CodexGatewayResponseEventWriter) WriteReasoningTextDelta(responseID, itemID string, outputIndex, contentIndex int, delta string) error {
+	return w.write("response.reasoning_text.delta", map[string]any{
+		"type":          "response.reasoning_text.delta",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"delta":         delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteReasoningTextDone(responseID, itemID string, outputIndex, contentIndex int, text string) error {
+	return w.write("response.reasoning_text.done", map[string]any{
+		"type":          "response.reasoning_text.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"text":          text,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteContentPartAdded(responseID, itemID string, outputIndex, contentIndex int, part json.RawMessage) error {
+	return w.write("response.content_part.added", map[string]any{
+		"type":          "response.content_part.added",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"part":          json.RawMessage(part),
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteContentPartDone(responseID, itemID string, outputIndex, contentIndex int, part json.RawMessage) error {
+	return w.write("response.content_part.done", map[string]any{
+		"type":          "response.content_part.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"part":          json.RawMessage(part),
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDelta(responseID, itemID string, outputIndex int, delta string) error {
+	return w.write("response.function_call_arguments.delta", map[string]any{
+		"type":         "response.function_call_arguments.delta",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
+		"delta":        delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(responseID, itemID string, outputIndex int, item json.RawMessage) error {
 	return w.write("response.function_call_arguments.done", map[string]any{
-		"type":        "response.function_call_arguments.done",
-		"response_id": responseID,
-		"call_id":     callID,
-		"name":        name,
-		"arguments":   arguments,
+		"type":         "response.function_call_arguments.done",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
+		"item":         json.RawMessage(item),
 	})
 }
 

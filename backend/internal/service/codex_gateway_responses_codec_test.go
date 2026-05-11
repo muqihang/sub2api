@@ -88,8 +88,8 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	require.NoError(t, writer.WriteResponseCreated(response))
 	require.NoError(t, writer.WriteOutputItemAdded("resp_123", 0, item))
 	require.NoError(t, writer.WriteOutputTextDelta("resp_123", "msg_1", 0, 0, "hel"))
-	require.NoError(t, writer.WriteFunctionCallArgumentsDelta("resp_123", "call_1", "shell", "{\"cmd\":\"ls"))
-	require.NoError(t, writer.WriteFunctionCallArgumentsDone("resp_123", "call_1", "shell", "{\"cmd\":\"ls\"}"))
+	require.NoError(t, writer.WriteFunctionCallArgumentsDelta("resp_123", "fc_call_1", 1, "{\"cmd\":\"ls"))
+	require.NoError(t, writer.WriteFunctionCallArgumentsDone("resp_123", "fc_call_1", 1, json.RawMessage(`{"id":"fc_call_1","type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"cmd\":\"ls\"}"}`)))
 	require.NoError(t, writer.WriteOutputItemDone("resp_123", 0, item))
 	require.NoError(t, writer.WriteResponseCompleted(response))
 	require.NoError(t, writer.WriteResponseFailed(CodexGatewayResponse{
@@ -161,6 +161,16 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "resp_incomplete", incompleteResponse["id"])
 	require.Equal(t, "incomplete", incompleteResponse["status"])
+
+	funcDelta := events["response.function_call_arguments.delta"]
+	require.Equal(t, "fc_call_1", funcDelta["item_id"])
+	require.Equal(t, float64(1), funcDelta["output_index"])
+	funcDone := events["response.function_call_arguments.done"]
+	require.Equal(t, "fc_call_1", funcDone["item_id"])
+	require.Equal(t, float64(1), funcDone["output_index"])
+	doneItem, ok := funcDone["item"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "fc_call_1", doneItem["id"])
 }
 
 func TestCodexGatewayErrors_InvalidRequestEnvelope(t *testing.T) {
