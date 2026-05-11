@@ -193,6 +193,26 @@ func TestScanUsageLog_AllowsLegacyNullEntityAuditFields(t *testing.T) {
 			nil,       // billing_tier
 			nil,       // billing_mode
 			nil,       // account_stats_cost
+			nil,       // client_product
+			nil,       // request_scope
+			nil,       // feature_scope
+			nil,       // augment_session_id
+			nil,       // route_policy_version
+			nil,       // pricing_version
+			nil,       // billable
+			nil,       // cost_source
+			nil,       // currency
+			nil,       // upstream_attempt_id
+			nil,       // settlement_status
+			nil,       // input_unit_price
+			nil,       // output_unit_price
+			nil,       // cache_read_unit_price
+			nil,       // cache_creation_unit_price
+			nil,       // reasoning_unit_price
+			nil,       // estimated_cost
+			nil,       // settled_cost
+			nil,       // free_quota_applied
+			nil,       // paid_balance_applied
 			createdAt, // created_at
 		)
 	mock.ExpectQuery("SELECT").
