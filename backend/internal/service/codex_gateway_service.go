@@ -122,6 +122,11 @@ func codexGatewayWriteStreamingError(req CodexGatewayResponsesRequest, err error
 	}
 	status, errType, errCode, message := codexGatewayErrorEnvelopeForError(err)
 	if req.ResponseHeader != nil {
+		for key := range req.ResponseHeader {
+			if codexGatewayAllowedOpenAIResponseHeader(key) {
+				req.ResponseHeader.Del(key)
+			}
+		}
 		req.ResponseHeader.Set("Content-Type", "text/event-stream")
 		req.ResponseHeader.Set("Cache-Control", "no-cache")
 		req.ResponseHeader.Set("Connection", "keep-alive")

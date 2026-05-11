@@ -187,7 +187,7 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamFailsOverBeforeClientOutput(t 
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusOK, statusCode)
+	require.Equal(t, 0, statusCode)
 	require.Empty(t, out.String())
 }
 
@@ -220,7 +220,7 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamDoesNotFailoverAfterClientOutp
 func TestCodexGatewayOpenAIResponsesAdapter_StreamFlushesPreOutputTerminalFailure(t *testing.T) {
 	streamBody := "" +
 		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
-		"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"failed\",\"output\":[],\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_request\",\"message\":\"hard reject\"}}}\n\n"
+		"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"failed\",\"output\":[],\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_request\",\"message\":\"hard reject\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n"
 	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -239,6 +239,9 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamFlushesPreOutputTerminalFailur
 	require.Equal(t, "resp_1", result.ResponseID)
 	require.Contains(t, out.String(), `"type":"response.failed"`)
 	require.Contains(t, out.String(), `"message":"hard reject"`)
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 1, result.Usage.OutputTokens)
+	require.Equal(t, 4, result.Usage.TotalTokens)
 }
 
 func TestCodexGatewayOpenAIResponsesAdapter_CompleteAcceptsSSETerminalPayload(t *testing.T) {
@@ -314,6 +317,54 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteAcceptsHeaderlessSSEOAuthPay
 	require.NoError(t, err)
 	require.Equal(t, "resp_1", result.ProviderResult.ResponseID)
 	require.Equal(t, "application/json; charset=utf-8", result.ServiceResponse.Headers.Get("Content-Type"))
+}
+
+func TestCodexGatewayOpenAIResponsesAdapter_CompleteDoesNotMisclassifyHeaderlessJSONAsSSE(t *testing.T) {
+	body := `{"id":"resp_json","object":"response","model":"gpt-5.5","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"literal data: value and event: marker"}]}],"usage":{"input_tokens":2,"output_tokens":5,"total_tokens":7}}`
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}, nil)
+	account := newCodexGatewayOpenAIAccountForTest("http://openai.local")
+	account.Type = AccountTypeOAuth
+	account.Credentials = map[string]any{
+		"access_token": "oauth-token",
+		"base_url":     "http://openai.local",
+	}
+
+	result, err := adapter.Complete(context.Background(), account, CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body: []byte(`{"model":"gpt-5.5","stream":false}`),
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "resp_json", result.ProviderResult.ResponseID)
+	require.Equal(t, "literal data: value and event: marker", gjson.GetBytes(result.ServiceResponse.Body, "output.0.content.0.text").String())
+}
+
+func TestCodexGatewayOpenAIResponsesAdapter_CompleteAcceptsIncompleteSSETerminalPayload(t *testing.T) {
+	streamBody := "" +
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_incomplete\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_incomplete\",\"object\":\"response\",\"model\":\"gpt-5.5\",\"status\":\"incomplete\",\"output\":[],\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n" +
+		"data: [DONE]\n\n"
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}, nil)
+
+	result, err := adapter.Complete(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body: []byte(`{"model":"gpt-5.5","stream":false}`),
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "resp_incomplete", result.ProviderResult.ResponseID)
+	require.Equal(t, "incomplete", result.ProviderResult.Response.Status)
+	require.Equal(t, "max_output_tokens", gjson.GetBytes(result.ServiceResponse.Body, "incomplete_details.reason").String())
 }
 
 func TestCodexGatewayOpenAIResponsesAdapter_CompleteAcceptsCRLFMultilineSSE(t *testing.T) {

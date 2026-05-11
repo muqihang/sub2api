@@ -44,7 +44,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 		}
 		return CodexGatewayDeepSeekAdapterResult{ServiceResponse: serviceResp}, nil
 	}
-	if isEventStreamResponse(resp.Header) || (account != nil && account.Type == AccountTypeOAuth && codexGatewayLooksLikeSSEBody(body)) {
+	if isEventStreamResponse(resp.Header) || (account != nil && account.Type == AccountTypeOAuth && looksLikeSSEPayload(body)) {
 		convertedResp, err := codexGatewayOpenAIStreamJSONResponse(body)
 		if err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
@@ -112,15 +112,21 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		}
 		return CodexGatewayProviderResult{}, &codexGatewayStreamingHandledError{}
 	}
-
-	if req.Request.ResponseHeader != nil {
-		copyCodexGatewayHTTPHeaders(req.Request.ResponseHeader, a.gateway.FilterNativeResponsesResponseHeaders(resp.Header))
-		if req.Request.ResponseHeader.Get("Content-Type") == "" {
-			req.Request.ResponseHeader.Set("Content-Type", "text/event-stream")
+	headersWritten := false
+	writeStreamHeaders := func() {
+		if headersWritten {
+			return
 		}
-	}
-	if req.Request.WriteStatus != nil {
-		req.Request.WriteStatus(resp.StatusCode)
+		if req.Request.ResponseHeader != nil {
+			copyCodexGatewayHTTPHeaders(req.Request.ResponseHeader, a.gateway.FilterNativeResponsesResponseHeaders(resp.Header))
+			if req.Request.ResponseHeader.Get("Content-Type") == "" {
+				req.Request.ResponseHeader.Set("Content-Type", "text/event-stream")
+			}
+		}
+		if req.Request.WriteStatus != nil {
+			req.Request.WriteStatus(resp.StatusCode)
+		}
+		headersWritten = true
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -169,6 +175,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 					}
 				}
 				if !clientOutputStarted && openAIStreamDataStartsClientOutput(payload, eventType) {
+					writeStreamHeaders()
 					if preOutput.Len() > 0 {
 						if _, err := io.Copy(req.Request.StreamWriter, &preOutput); err != nil {
 							return err
@@ -220,6 +227,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		return CodexGatewayProviderResult{}, fmt.Errorf("codex gateway openai stream ended without terminal event")
 	}
 	if !clientOutputStarted && preOutput.Len() > 0 {
+		writeStreamHeaders()
 		if _, err := io.Copy(req.Request.StreamWriter, &preOutput); err != nil {
 			return CodexGatewayProviderResult{}, err
 		}
@@ -239,6 +247,14 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		result.ResponseID = strings.TrimSpace(finalResponse.ID)
 		if strings.TrimSpace(finalResponse.Model) != "" {
 			result.UpstreamModel = strings.TrimSpace(finalResponse.Model)
+		}
+		if parsedUsage, ok := extractOpenAIUsageFromUsageJSONBytes(finalResponse.Usage); ok {
+			result.Usage = CodexGatewayProviderUsage{
+				InputTokens:          parsedUsage.InputTokens,
+				OutputTokens:         parsedUsage.OutputTokens,
+				TotalTokens:          parsedUsage.InputTokens + parsedUsage.OutputTokens,
+				CacheReadInputTokens: parsedUsage.CacheReadInputTokens,
+			}
 		}
 	}
 	return result, nil
@@ -280,6 +296,21 @@ func firstNonBlankString(values ...string) string {
 	return ""
 }
 
-func codexGatewayLooksLikeSSEBody(body []byte) bool {
-	return bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
+func extractOpenAIUsageFromUsageJSONBytes(body []byte) (OpenAIUsage, bool) {
+	if len(body) == 0 {
+		return OpenAIUsage{}, false
+	}
+	values := gjson.GetManyBytes(
+		body,
+		"input_tokens",
+		"output_tokens",
+		"input_tokens_details.cached_tokens",
+		"output_tokens_details.image_tokens",
+	)
+	return OpenAIUsage{
+		InputTokens:          int(values[0].Int()),
+		OutputTokens:         int(values[1].Int()),
+		CacheReadInputTokens: int(values[2].Int()),
+		ImageOutputTokens:    int(values[3].Int()),
+	}, true
 }

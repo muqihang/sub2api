@@ -207,6 +207,38 @@ func TestCodexGatewayService_ResponsesStreamingFailoverErrorKeepsSSEEnvelope(t *
 	require.Contains(t, out.String(), `"type":"response.failed"`)
 }
 
+func TestCodexGatewayService_ResponsesStreamingFailoverErrorClearsStaleUpstreamHeaders(t *testing.T) {
+	registry := NewDefaultCodexGatewayModelRegistry()
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		streamFn: func(_ context.Context, req CodexGatewayProviderRequest) error {
+			if req.Request.ResponseHeader != nil {
+				req.Request.ResponseHeader.Set("X-Request-Id", "stale-upstream")
+				req.Request.ResponseHeader.Set("X-Codex-Turn-State", "stale-turn")
+				req.Request.ResponseHeader.Set("Content-Type", "application/json")
+			}
+			return &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+		},
+	})
+	var out bytes.Buffer
+	var statusCode int
+	headers := http.Header{}
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey:         validCodexGatewayAPIKeyForTest(),
+		Body:           []byte(`{"model":"gpt-5.5","stream":true}`),
+		StreamWriter:   &out,
+		ResponseHeader: headers,
+		WriteStatus:    func(code int) { statusCode = code },
+	})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Equal(t, http.StatusOK, statusCode)
+	require.Equal(t, "text/event-stream", headers.Get("Content-Type"))
+	require.Empty(t, headers.Get("X-Request-Id"))
+	require.Empty(t, headers.Get("X-Codex-Turn-State"))
+	require.Contains(t, out.String(), `"type":"response.failed"`)
+}
+
 func TestCodexGatewayService_ModelsReturnsVisibleCatalog(t *testing.T) {
 	svc := NewCodexGatewayService(NewDefaultCodexGatewayModelRegistry(), &codexGatewayExecutorStub{
 		completeFn: func(_ context.Context, _ CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {

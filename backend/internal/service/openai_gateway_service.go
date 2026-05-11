@@ -5450,12 +5450,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 	// For OAuth accounts, also fall back to a body-content heuristic because
 	// the upstream may omit the Content-Type header while still sending SSE.
-	// This heuristic is NOT applied to API-key accounts to avoid false
-	// positives on JSON responses that coincidentally contain "data:" or
-	// "event:" in their text content.
+	// This heuristic is NOT applied to API-key accounts.
 	if account.Type == AccountTypeOAuth {
-		bodyLooksLikeSSE := bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
-		if bodyLooksLikeSSE {
+		if looksLikeSSEPayload(body) {
 			return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
 		}
 	}
@@ -5610,7 +5607,7 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 			return
 		}
 		eventType := gjson.GetBytes(data, "type").String()
-		if eventType == "response.done" || eventType == "response.completed" {
+		if eventType == "response.done" || eventType == "response.completed" || eventType == "response.failed" || eventType == "response.incomplete" || eventType == "response.cancelled" || eventType == "response.canceled" {
 			if response := gjson.GetBytes(data, "response"); response.Exists() && response.Type == gjson.JSON && response.Raw != "" {
 				finalResponse = []byte(response.Raw)
 			}
@@ -5620,6 +5617,16 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 		return finalResponse, true
 	}
 	return nil, false
+}
+
+func looksLikeSSEPayload(body []byte) bool {
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, "event:") {
+			return true
+		}
+	}
+	return false
 }
 
 // reconstructResponseOutputFromSSE scans raw SSE body text for delta events and
