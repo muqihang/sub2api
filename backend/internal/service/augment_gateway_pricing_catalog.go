@@ -61,7 +61,8 @@ func augmentGatewayHasCompleteExplicitPricing(entry LiteLLMRawEntry) bool {
 		return false
 	}
 	if entry.SupportsPromptCaching {
-		if entry.CacheReadInputTokenCost == nil || entry.CacheCreationInputTokenCost == nil {
+		hasCacheCreationPrice := entry.CacheCreationInputTokenCost != nil || entry.CacheCreationInputTokenCostAbove200kTokens != nil
+		if entry.CacheReadInputTokenCost == nil || !hasCacheCreationPrice {
 			return false
 		}
 	}
