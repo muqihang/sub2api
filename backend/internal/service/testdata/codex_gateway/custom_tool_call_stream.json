@@ -42,9 +42,8 @@
       "total_tokens": 8,
       "cached_tokens": 0
     },
-    "reasoning_text": "shell first",
     "output_types": [
-      "reasoning",
+      "message",
       "custom_tool_call"
     ],
     "tool_name": "shell",

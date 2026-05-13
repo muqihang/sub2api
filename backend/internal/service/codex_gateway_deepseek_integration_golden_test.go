@@ -145,7 +145,7 @@ func TestCodexGatewayDeepSeekIntegrationGolden_StreamFixtures(t *testing.T) {
 				require.Equal(t, fixture.Expect.ReasoningText, gjson.GetBytes(events[len(events)-1].Payload, "response.output.0.content.0.text").String())
 			}
 			if fixture.Expect.OutputText != "" {
-				require.Equal(t, fixture.Expect.OutputText, gjson.GetBytes(events[len(events)-1].Payload, "response.output.1.content.0.text").String())
+				require.Equal(t, fixture.Expect.OutputText, codexGatewayGoldenFirstMessageText(events[len(events)-1].Payload))
 			}
 			if len(fixture.Expect.OutputTypes) > 0 {
 				require.Equal(t, fixture.Expect.OutputTypes, codexGatewayGoldenOutputTypes(t, events[len(events)-1].Payload))
@@ -278,13 +278,13 @@ func assertCodexGatewayGoldenEventContract(t *testing.T, events []codexGatewayOr
 				key = "output_index:" + gjson.GetBytes(event.Payload, "output_index").String()
 			}
 			seenAdded[key] = i
-		case "response.output_text.delta", "response.reasoning_text.delta", "response.function_call_arguments.delta":
+		case "response.output_text.delta", "response.reasoning_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 			key := gjson.GetBytes(event.Payload, "item_id").String()
 			if key == "" {
 				key = "output_index:" + gjson.GetBytes(event.Payload, "output_index").String()
 			}
 			seenDelta[key] = i
-		case "response.output_item.done", "response.output_text.done", "response.reasoning_text.done", "response.function_call_arguments.done":
+		case "response.output_item.done", "response.output_text.done", "response.reasoning_text.done", "response.function_call_arguments.done", "response.custom_tool_call_input.done":
 			key := gjson.GetBytes(event.Payload, "item.id").String()
 			if key == "" {
 				key = gjson.GetBytes(event.Payload, "item_id").String()
@@ -335,6 +335,19 @@ func codexGatewayGoldenFirstOutputString(payload []byte, field string) string {
 			return false
 		}
 		return true
+	})
+	return value
+}
+
+func codexGatewayGoldenFirstMessageText(payload []byte) string {
+	result := gjson.GetBytes(payload, "response.output")
+	value := ""
+	result.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").String() != "message" {
+			return true
+		}
+		value = item.Get("content.0.text").String()
+		return false
 	})
 	return value
 }

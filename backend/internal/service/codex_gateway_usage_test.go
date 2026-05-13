@@ -30,15 +30,20 @@ func validCodexGatewayAPIKeyForTest() *APIKey {
 
 func TestCodexGatewayUsage_ProviderUsagePreservesCacheReadTokens(t *testing.T) {
 	usage := codexGatewayProviderUsageToOpenAIUsage(CodexGatewayProviderUsage{
-		InputTokens:          18,
-		OutputTokens:         6,
-		CacheReadInputTokens: 5,
+		InputTokens:              18,
+		OutputTokens:             6,
+		CacheCreationInputTokens: 3,
+		CacheReadInputTokens:     5,
+		CacheCreation5mTokens:    1,
+		CacheCreation1hTokens:    2,
 	})
 
 	require.Equal(t, 18, usage.InputTokens)
 	require.Equal(t, 6, usage.OutputTokens)
 	require.Equal(t, 5, usage.CacheReadInputTokens)
-	require.Equal(t, 0, usage.CacheCreationInputTokens)
+	require.Equal(t, 3, usage.CacheCreationInputTokens)
+	require.Equal(t, 1, usage.CacheCreation5mTokens)
+	require.Equal(t, 2, usage.CacheCreation1hTokens)
 }
 
 func TestCodexGatewayUsage_RecordUsageBestEffortPopulatesGatewayMetadata(t *testing.T) {

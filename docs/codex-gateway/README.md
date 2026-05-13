@@ -7,6 +7,7 @@
 - `gateway.codex.enabled: true`
 - `gateway.codex.provider_groups.openai` must point at a healthy OpenAI-capable group for native Responses models
 - `gateway.codex.provider_groups.deepseek` must point at a healthy DeepSeek-capable group before DeepSeek models become visible
+- `gateway.codex.provider_groups.anthropic` must point at a healthy Anthropic Messages-compatible group before Claude or other Anthropic-compatible models become visible
 - DeepSeek visibility is gated by:
   - model enabled
   - provider group configured and healthy
@@ -33,9 +34,13 @@ gateway:
       - gpt-5.3-codex
       - deepseek-v4-pro
       - deepseek-v4-flash
+      - claude-opus-4-6
+      - claude-opus-4-6-thinking
+      - claude-sonnet-4-6
     provider_groups:
       openai: 1001
       deepseek: 2002
+      anthropic: 3003
 ```
 
 ### Codex provider sample
@@ -73,4 +78,52 @@ The current admin implementation is intentionally MVP-scoped:
 
 ### Catalog example
 
-`docs/codex-gateway/sub2api-codex-models.example.json` is a checked-in sample catalog representing a fully configured Codex gateway where the DeepSeek visibility gates are satisfied.
+`docs/codex-gateway/sub2api-codex-models.example.json` is a checked-in `model_catalog_json` sample for the Codex CLI/Desktop local model catalog loader. This is intentionally different from the remote `/codex/v1/models` provider response:
+
+- local `model_catalog_json` uses Codex CLI-native values such as `visibility: "list"` and object-shaped `supported_reasoning_levels`
+- remote `/codex/v1/models` keeps the gateway provider envelope used by sub2api admin/runtime code
+- GPT entries keep hosted OpenAI Responses capabilities such as `web_search_tool_type`
+- DeepSeek entries declare only capabilities that can be executed through Codex client-side tools or MCP/function/custom/namespace calls; OpenAI hosted tools such as `web_search` and `image_generation` are not advertised for DeepSeek because the DeepSeek Chat Completions upstream cannot execute them server-side
+- Anthropic entries use the same Codex client-side tool ecosystem as DeepSeek. The gateway converts Responses messages, function/custom/namespace tools, tool results, image blocks, prompt-cache markers, and tool-loop state into Anthropic Messages-compatible requests.
+
+Codex Desktop app-server v2 remains Codex's local control plane for `thread/*`, `turn/*`, `plugin/*`, `app/list`, `mcpServer/*`, and `fs/*` methods. The gateway is only the custom Responses model provider behind `model_providers.<id>.base_url`; it should not implement app-server v2 itself.
+
+### Integration closure notes
+
+The integration target is considered ready for merge preparation after focused Codex Gateway regression, local Desktop testing, and upstream error hardening.
+
+Verified provider groups:
+
+- OpenAI Responses-compatible GPT models
+- DeepSeek V4 Pro and Flash through Chat Completions-compatible conversion
+- Anthropic Messages-compatible Claude models, including ordinary and thinking variants
+
+Verified Codex Desktop scenarios:
+
+- model picker visibility for GPT, DeepSeek, and Claude entries
+- GPT controller turns and subagent dispatch
+- DeepSeek V4 Pro and Flash tool calls
+- Computer Use and browser plugin tool forwarding through Codex client-side tools
+- context compaction after gateway-backed turns
+- Claude ordinary and thinking model turns
+- Anthropic thinking signature preservation for tool-result replay
+- Cloudflare HTML upstream errors mapped to clean `upstream_timeout` errors
+
+Anthropic robustness rules:
+
+- Thinking is preserved by default, including large tool-result replay requests.
+- Forced Anthropic `tool_choice` disables thinking only for that request because Anthropic extended thinking is incompatible with forced tool choice.
+- Streaming upstream errors before any client-visible output may trigger account failover.
+- Streaming errors after visible output are not transparently replayed, preserving Responses event ordering.
+- Cloudflare `520`, `522`, and `524` upstream errors are sanitized and never forwarded as raw HTML.
+
+Known upstream limitation:
+
+- Cloudflare-fronted Anthropic-compatible relays can still return `524` when their origin server cannot produce timely streaming output for heavy Claude Thinking requests. This is an upstream capacity or relay behavior issue, not a gateway protocol failure. The gateway isolates it through sanitized errors and account failover before visible output.
+
+Merge preparation checklist:
+
+- Exclude local Codex Desktop patch artifacts unless they are intentionally part of the merge.
+- Keep local `~/.codex` sessions and credentials out of the repository.
+- Run the focused verification command from `smoke.md`.
+- Run a wider suite only after unrelated existing Gemini service test failures are resolved.

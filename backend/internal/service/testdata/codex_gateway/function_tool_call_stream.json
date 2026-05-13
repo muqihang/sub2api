@@ -46,9 +46,8 @@
       "total_tokens": 12,
       "cached_tokens": 2
     },
-    "reasoning_text": "need weather",
     "output_types": [
-      "reasoning",
+      "message",
       "function_call"
     ],
     "tool_name": "get_weather",

@@ -156,6 +156,23 @@ func codexGatewayErrorEnvelopeForError(err error) (int, string, string, string) 
 	}
 	var failoverErr *UpstreamFailoverError
 	if errors.As(err, &failoverErr) {
+		if len(failoverErr.ResponseBody) > 0 {
+			errType := strings.TrimSpace(gjson.GetBytes(failoverErr.ResponseBody, "error.type").String())
+			errCode := strings.TrimSpace(gjson.GetBytes(failoverErr.ResponseBody, "error.code").String())
+			message := strings.TrimSpace(gjson.GetBytes(failoverErr.ResponseBody, "error.message").String())
+			if errType != "" || errCode != "" || message != "" {
+				if errType == "" {
+					errType = CodexGatewayErrorTypeAPI
+				}
+				if errCode == "" {
+					errCode = "upstream_error"
+				}
+				if message == "" {
+					message = "upstream request failed"
+				}
+				return http.StatusBadGateway, errType, errCode, message
+			}
+		}
 		return http.StatusBadGateway, CodexGatewayErrorTypeAPI, "upstream_error", "upstream request failed"
 	}
 	return http.StatusBadGateway, CodexGatewayErrorTypeAPI, "upstream_error", strings.TrimSpace(err.Error())

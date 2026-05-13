@@ -141,23 +141,7 @@ func codexGatewayDeepSeekMapChatCompletionResponse(
 	result.ReasoningContent = choice.Message.ReasoningContent
 	result.ReasoningContentPresent = reasoningPresent
 
-	output := make([]json.RawMessage, 0, 2+len(choice.Message.ToolCalls))
-	if reasoningPresent {
-		item := map[string]any{
-			"type":   "reasoning",
-			"id":     codexGatewayDeepSeekReasoningItemID(responseID),
-			"status": "completed",
-			"content": []map[string]any{{
-				"type": "reasoning_text",
-				"text": choice.Message.ReasoningContent,
-			}},
-		}
-		rawItem, err := json.Marshal(item)
-		if err != nil {
-			return CodexGatewayProviderResult{}, err
-		}
-		output = append(output, rawItem)
-	}
+	output := make([]json.RawMessage, 0, 1+len(choice.Message.ToolCalls))
 	if strings.TrimSpace(text) != "" {
 		item := map[string]any{
 			"type":   "message",
@@ -260,6 +244,7 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 	stored := CodexGatewayStoredToolCall{
 		ID:        callID,
 		Type:      entry.Kind,
+		Alias:     alias,
 		Name:      entry.Name,
 		Arguments: toolCall.Function.Arguments,
 	}
@@ -272,12 +257,77 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 	}
 	if entry.Kind == CodexGatewayToolKindCustom {
 		item["type"] = "custom_tool_call"
-		item["input"] = toolCall.Function.Arguments
+		item["input"] = codexGatewayDeepSeekCustomToolInput(toolCall.Function.Arguments, entry)
 	} else {
 		item["type"] = "function_call"
+		if namespace := strings.TrimSpace(entry.Namespace); namespace != "" {
+			item["namespace"] = namespace
+		}
 		item["arguments"] = toolCall.Function.Arguments
 	}
 	return item, stored, true
+}
+
+func codexGatewayDeepSeekCustomToolInput(arguments string, entry CodexGatewayToolNameMapEntry) string {
+	raw := strings.TrimSpace(arguments)
+	if raw == "" {
+		return arguments
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal([]byte(raw), &object); err != nil {
+		return arguments
+	}
+
+	for _, key := range []string{
+		entry.Alias,
+		entry.Name,
+		codexGatewayOriginalToolPath(entry),
+		"input",
+		"patch",
+		"content",
+		"text",
+	} {
+		if value, ok := codexGatewayDeepSeekCustomToolStringField(object, key); ok {
+			return value
+		}
+	}
+	if len(object) == 1 {
+		for _, value := range object {
+			if s, ok := value.(string); ok {
+				return s
+			}
+		}
+	}
+	return arguments
+}
+
+func codexGatewayDeepSeekCustomToolStreamInput(arguments string, entry CodexGatewayToolNameMapEntry) (string, bool) {
+	raw := strings.TrimSpace(arguments)
+	if raw == "" {
+		return arguments, true
+	}
+	if !strings.HasPrefix(raw, "{") {
+		return arguments, true
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(raw), &object); err != nil {
+		return "", false
+	}
+	return codexGatewayDeepSeekCustomToolInput(arguments, entry), true
+}
+
+func codexGatewayDeepSeekCustomToolStringField(object map[string]any, key string) (string, bool) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false
+	}
+	value, ok := object[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := value.(string)
+	return s, ok
 }
 
 func codexGatewayDeepSeekPersistState(

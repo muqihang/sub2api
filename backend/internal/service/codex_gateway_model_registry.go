@@ -41,6 +41,57 @@ type codexGatewayRegistryComputedState struct {
 	index  map[string]CodexGatewayModel
 }
 
+type CodexGatewayCodexCLICatalog struct {
+	Models []CodexGatewayCodexCLIModel `json:"models"`
+}
+
+type CodexGatewayCodexCLIModel struct {
+	Slug                          string                            `json:"slug"`
+	DisplayName                   string                            `json:"display_name"`
+	Description                   string                            `json:"description"`
+	DefaultReasoningLevel         string                            `json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels      []CodexGatewayReasoningLevelInfo  `json:"supported_reasoning_levels,omitempty"`
+	ShellType                     string                            `json:"shell_type"`
+	Visibility                    string                            `json:"visibility"`
+	SupportedInAPI                bool                              `json:"supported_in_api"`
+	Priority                      int                               `json:"priority"`
+	BaseInstructions              string                            `json:"base_instructions"`
+	ModelMessages                 CodexGatewayCodexCLIModelMessages `json:"model_messages"`
+	ContextWindow                 int                               `json:"context_window,omitempty"`
+	MaxContextWindow              int                               `json:"max_context_window,omitempty"`
+	EffectiveContextWindowPercent int                               `json:"effective_context_window_percent,omitempty"`
+	MaxOutputTokens               int                               `json:"max_output_tokens,omitempty"`
+	SupportVerbosity              bool                              `json:"support_verbosity"`
+	DefaultVerbosity              string                            `json:"default_verbosity,omitempty"`
+	ApplyPatchToolType            string                            `json:"apply_patch_tool_type,omitempty"`
+	WebSearchToolType             string                            `json:"web_search_tool_type,omitempty"`
+	TruncationPolicy              CodexGatewayCodexCLITruncation    `json:"truncation_policy"`
+	SupportsParallelToolCalls     bool                              `json:"supports_parallel_tool_calls"`
+	SupportsImageDetailOriginal   bool                              `json:"supports_image_detail_original"`
+	SupportsReasoningSummaries    bool                              `json:"supports_reasoning_summaries"`
+	DefaultReasoningSummary       string                            `json:"default_reasoning_summary,omitempty"`
+	ExperimentalSupportedTools    []string                          `json:"experimental_supported_tools"`
+	InputModalities               []string                          `json:"input_modalities"`
+	SupportsSearchTool            bool                              `json:"supports_search_tool"`
+}
+
+type CodexGatewayReasoningLevelInfo struct {
+	Effort      string `json:"effort"`
+	Description string `json:"description"`
+}
+
+type CodexGatewayCodexCLIModelMessages struct {
+	InstructionsTemplate  string            `json:"instructions_template"`
+	InstructionsVariables map[string]string `json:"instructions_variables"`
+}
+
+type CodexGatewayCodexCLITruncation struct {
+	Mode  string `json:"mode"`
+	Limit int    `json:"limit"`
+}
+
+const codexGatewayDefaultBaseInstructions = "You are Codex, a coding agent. Work in the user's workspace, inspect the code before changing it, use available tools carefully, preserve unrelated user changes, and carry coding tasks through implementation and verification."
+
 func WithCodexGatewayRegistryStateSource(source CodexGatewayRegistryStateSource) CodexGatewayModelRegistryOption {
 	return func(registry *CodexGatewayModelRegistry) {
 		registry.stateSource = source
@@ -179,6 +230,152 @@ func (r *CodexGatewayModelRegistry) ExportCatalogJSON() ([]byte, error) {
 	return json.MarshalIndent(r.ModelsResponse(), "", "  ")
 }
 
+func (r *CodexGatewayModelRegistry) ExportCodexCLICatalogJSON() ([]byte, error) {
+	models := r.Models()
+	out := CodexGatewayCodexCLICatalog{
+		Models: make([]CodexGatewayCodexCLIModel, 0, len(models)),
+	}
+	for _, model := range models {
+		out.Models = append(out.Models, codexGatewayModelToCodexCLIModel(model))
+	}
+	return json.MarshalIndent(out, "", "  ")
+}
+
+func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodexCLIModel {
+	contextWindow := model.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = 200000
+	}
+	maxContextWindow := contextWindow
+	truncationLimit := model.AutoCompactTokenLimit
+	if truncationLimit <= 0 {
+		truncationLimit = int(float64(contextWindow) * 0.75)
+	}
+	description := model.DisplayName + " via Sub2API Codex Gateway."
+	if normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) == CodexGatewayProviderOpenAI {
+		description = model.DisplayName + " via the configured OpenAI Responses upstream."
+	}
+	cli := CodexGatewayCodexCLIModel{
+		Slug:                          model.Slug,
+		DisplayName:                   model.DisplayName,
+		Description:                   description,
+		DefaultReasoningLevel:         model.DefaultReasoningLevel,
+		SupportedReasoningLevels:      codexGatewayReasoningLevelInfo(model.SupportedReasoningLevels),
+		ShellType:                     codexGatewayCLIShellType(model.ShellType),
+		Visibility:                    codexGatewayCLIVisibility(model.Visibility),
+		SupportedInAPI:                model.SupportedInAPI,
+		Priority:                      model.Priority,
+		BaseInstructions:              codexGatewayDefaultBaseInstructions,
+		ModelMessages:                 codexGatewayDefaultCLIModelMessages(),
+		ContextWindow:                 contextWindow,
+		MaxContextWindow:              maxContextWindow,
+		EffectiveContextWindowPercent: 95,
+		MaxOutputTokens:               model.MaxOutputTokens,
+		SupportVerbosity:              model.SupportVerbosity,
+		DefaultVerbosity:              codexGatewayDefaultVerbosity(model),
+		ApplyPatchToolType:            "freeform",
+		TruncationPolicy:              CodexGatewayCodexCLITruncation{Mode: "tokens", Limit: min(truncationLimit, 10000)},
+		SupportsParallelToolCalls:     model.SupportsParallelToolCalls,
+		SupportsImageDetailOriginal:   model.SupportsImageDetailOriginal,
+		SupportsReasoningSummaries:    true,
+		DefaultReasoningSummary:       "none",
+		ExperimentalSupportedTools:    []string{},
+		InputModalities:               append([]string(nil), model.InputModalities...),
+		SupportsSearchTool:            model.SupportsSearchTool,
+	}
+	if cli.DefaultReasoningLevel == "" {
+		cli.DefaultReasoningLevel = "medium"
+	}
+	if len(cli.SupportedReasoningLevels) == 0 {
+		cli.SupportedReasoningLevels = codexGatewayReasoningLevelInfo([]string{"medium"})
+	}
+	if len(cli.InputModalities) == 0 {
+		cli.InputModalities = []string{"text"}
+	}
+	if model.SupportsSearchTool {
+		cli.WebSearchToolType = codexGatewayCLIWebSearchToolType(model)
+	}
+	return cli
+}
+
+func codexGatewayDefaultCLIModelMessages() CodexGatewayCodexCLIModelMessages {
+	return CodexGatewayCodexCLIModelMessages{
+		InstructionsTemplate:  codexGatewayDefaultBaseInstructions,
+		InstructionsVariables: map[string]string{},
+	}
+}
+
+func codexGatewayCLIShellType(shellType string) string {
+	switch strings.TrimSpace(shellType) {
+	case "shell_command":
+		return "shell_command"
+	default:
+		return "shell_command"
+	}
+}
+
+func codexGatewayCLIVisibility(visibility string) string {
+	switch strings.TrimSpace(visibility) {
+	case "hidden", "hide":
+		return "hide"
+	case "none":
+		return "none"
+	default:
+		return "list"
+	}
+}
+
+func codexGatewayCLIWebSearchToolType(model CodexGatewayModel) string {
+	switch strings.TrimSpace(model.WebSearchToolType) {
+	case "text", "text_and_image":
+		return strings.TrimSpace(model.WebSearchToolType)
+	default:
+		if model.SupportsImageDetailOriginal {
+			return "text_and_image"
+		}
+		return "text"
+	}
+}
+
+func codexGatewayDefaultVerbosity(model CodexGatewayModel) string {
+	if model.SupportVerbosity {
+		return "low"
+	}
+	return ""
+}
+
+func codexGatewayReasoningLevelInfo(levels []string) []CodexGatewayReasoningLevelInfo {
+	out := make([]CodexGatewayReasoningLevelInfo, 0, len(levels))
+	for _, level := range levels {
+		level = strings.TrimSpace(level)
+		if level == "" {
+			continue
+		}
+		out = append(out, CodexGatewayReasoningLevelInfo{
+			Effort:      level,
+			Description: codexGatewayReasoningLevelDescription(level),
+		})
+	}
+	return out
+}
+
+func codexGatewayReasoningLevelDescription(level string) string {
+	switch level {
+	case "minimal":
+		return "Fastest responses with minimal reasoning"
+	case "low":
+		return "Fast responses with lighter reasoning"
+	case "medium":
+		return "Balances speed and reasoning depth for everyday tasks"
+	case "high":
+		return "Greater reasoning depth for complex problems"
+	case "xhigh":
+		return "Extra high reasoning depth for complex problems"
+	default:
+		return "Reasoning effort " + level
+	}
+}
+
 func defaultCodexGatewayModels() []CodexGatewayModel {
 	openAIModel := func(slug, displayName string, priority int) CodexGatewayModel {
 		return CodexGatewayModel{
@@ -189,14 +386,14 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 			Visibility:                  "visible",
 			SupportedInAPI:              true,
 			Priority:                    priority,
-			DefaultReasoningLevel:       "high",
-			SupportedReasoningLevels:    []string{"medium", "high", "xhigh"},
+			DefaultReasoningLevel:       "medium",
+			SupportedReasoningLevels:    []string{"low", "medium", "high", "xhigh"},
 			SupportVerbosity:            true,
 			SupportsParallelToolCalls:   true,
 			ContextWindow:               400000,
 			AutoCompactTokenLimit:       300000,
 			MaxOutputTokens:             128000,
-			InputModalities:             []string{"text"},
+			InputModalities:             []string{"text", "image"},
 			SupportsImageDetailOriginal: true,
 			SupportsSearchTool:          true,
 			ExperimentalSupportedTools:  []string{"function", "namespace", "custom"},
@@ -232,6 +429,32 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		}
 	}
 
+	anthropicModel := func(slug, displayName, defaultReasoning string, priority int) CodexGatewayModel {
+		return CodexGatewayModel{
+			Slug:                        slug,
+			DisplayName:                 displayName,
+			Provider:                    "anthropic",
+			UpstreamModel:               slug,
+			Visibility:                  "visible",
+			SupportedInAPI:              true,
+			Priority:                    priority,
+			DefaultReasoningLevel:       defaultReasoning,
+			SupportedReasoningLevels:    []string{"none", "low", "medium", "high", "xhigh"},
+			SupportVerbosity:            false,
+			SupportsParallelToolCalls:   true,
+			ContextWindow:               1_000_000,
+			AutoCompactTokenLimit:       850_000,
+			MaxOutputTokens:             64_000,
+			InputModalities:             []string{"text", "image"},
+			SupportsImageDetailOriginal: true,
+			SupportsSearchTool:          false,
+			ExperimentalSupportedTools:  []string{"function", "namespace", "custom"},
+			ShellType:                   "local",
+			WebSearchToolType:           "none",
+			ImageGenerationToolType:     "none",
+		}
+	}
+
 	return []CodexGatewayModel{
 		openAIModel("gpt-5.5", "GPT-5.5", 100),
 		openAIModel("gpt-5.4", "GPT-5.4", 90),
@@ -239,6 +462,9 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		openAIModel("gpt-5.3-codex", "GPT-5.3 Codex", 70),
 		deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro", 60),
 		deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash", 50),
+		anthropicModel("claude-opus-4-6", "Claude Opus 4.6", "none", 45),
+		anthropicModel("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", "xhigh", 44),
+		anthropicModel("claude-sonnet-4-6", "Claude Sonnet 4.6", "none", 43),
 	}
 }
 

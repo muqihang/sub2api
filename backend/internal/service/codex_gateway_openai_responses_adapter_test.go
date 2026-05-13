@@ -73,11 +73,11 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompletePreservesNativeRequestAndMap
 	adapter, upstream := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
 		StatusCode: http.StatusOK,
 		Header: http.Header{
-			"Content-Type":        []string{"application/json"},
-			"X-Request-Id":        []string{"req_789"},
-			"X-Codex-Turn-State":  []string{"turn_state"},
-			"Set-Cookie":          []string{"drop=true"},
-			"X-Unrelated-Header":  []string{"blocked"},
+			"Content-Type":         []string{"application/json"},
+			"X-Request-Id":         []string{"req_789"},
+			"X-Codex-Turn-State":   []string{"turn_state"},
+			"Set-Cookie":           []string{"drop=true"},
+			"X-Unrelated-Header":   []string{"blocked"},
 			"X-Reasoning-Included": []string{"true"},
 		},
 		Body: io.NopCloser(strings.NewReader(respBody)),
@@ -86,16 +86,16 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompletePreservesNativeRequestAndMap
 	result, err := adapter.Complete(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
 		Request: CodexGatewayResponsesRequest{
 			Headers: http.Header{
-				"Content-Type":           []string{"application/json"},
-				"OpenAI-Beta":            []string{"responses=v1"},
-				"Session_ID":             []string{"sess_1"},
-				"Conversation_ID":        []string{"conv_1"},
-				"X-Codex-Turn-State":     []string{"turn_state"},
-				"X-Codex-Turn-Metadata":  []string{"turn_meta"},
-				"X-Unsafe-Forwarded":     []string{"blocked"},
-				"X-Not-On-Allowlist":     []string{"blocked"},
-				"User-Agent":             []string{"codex-cli"},
-				"Accept-Language":        []string{"en-US"},
+				"Content-Type":          []string{"application/json"},
+				"OpenAI-Beta":           []string{"responses=v1"},
+				"Session_ID":            []string{"sess_1"},
+				"Conversation_ID":       []string{"conv_1"},
+				"X-Codex-Turn-State":    []string{"turn_state"},
+				"X-Codex-Turn-Metadata": []string{"turn_meta"},
+				"X-Unsafe-Forwarded":    []string{"blocked"},
+				"X-Not-On-Allowlist":    []string{"blocked"},
+				"User-Agent":            []string{"codex-cli"},
+				"Accept-Language":       []string{"en-US"},
 			},
 			Body: body,
 		},
@@ -163,6 +163,44 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteSupportsUpstreamAccountType(
 	require.Equal(t, "resp_upstream", result.ProviderResult.ResponseID)
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_StripsPlaintextReasoningHistoryBeforeUpstream(t *testing.T) {
+	adapter, upstream := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_sanitized","object":"response","model":"gpt-5.4","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)),
+	}, nil)
+
+	body := []byte(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"before"}]},
+			{"type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"provider private chain"}],"encrypted_content":null},
+			{"type":"reasoning","summary":[],"content":null,"encrypted_content":"opaque-openai-reasoning"},
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"}
+		],
+		"include":["reasoning.encrypted_content"],
+		"stream":true
+	}`)
+
+	_, err := adapter.Stream(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body:         body,
+			StreamWriter: &bytes.Buffer{},
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.4", Provider: "openai", UpstreamModel: "gpt-5.4"},
+	})
+	require.Error(t, err)
+	require.NotNil(t, upstream.lastRequest)
+	require.NotContains(t, string(upstream.lastBody), "provider private chain")
+	require.Equal(t, int64(4), gjson.GetBytes(upstream.lastBody, "input.#").Int())
+	require.Equal(t, "message", gjson.GetBytes(upstream.lastBody, "input.0.type").String())
+	require.Equal(t, "reasoning", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
+	require.Equal(t, "opaque-openai-reasoning", gjson.GetBytes(upstream.lastBody, "input.1.encrypted_content").String())
+	require.Equal(t, "function_call", gjson.GetBytes(upstream.lastBody, "input.2.type").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(upstream.lastBody, "input.3.type").String())
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_CompleteFailoverAppliesRateLimitSideEffects(t *testing.T) {
 	account := newCodexGatewayOpenAIAccountForTest("http://openai.local")
 	repo := &openAIGatewayCoreRepoStub{
@@ -173,13 +211,13 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteFailoverAppliesRateLimitSide
 	upstream := &codexGatewayAdapterHTTPUpstreamStub{response: &http.Response{
 		StatusCode: http.StatusTooManyRequests,
 		Header: http.Header{
-			"Content-Type":                        []string{"application/json"},
-			"X-Codex-Primary-Used-Percent":        []string{"100"},
-			"X-Codex-Primary-Reset-After-Seconds": []string{"7200"},
-			"X-Codex-Primary-Window-Minutes":      []string{"10080"},
-			"X-Codex-Secondary-Used-Percent":      []string{"3"},
+			"Content-Type":                          []string{"application/json"},
+			"X-Codex-Primary-Used-Percent":          []string{"100"},
+			"X-Codex-Primary-Reset-After-Seconds":   []string{"7200"},
+			"X-Codex-Primary-Window-Minutes":        []string{"10080"},
+			"X-Codex-Secondary-Used-Percent":        []string{"3"},
 			"X-Codex-Secondary-Reset-After-Seconds": []string{"1800"},
-			"X-Codex-Secondary-Window-Minutes":    []string{"300"},
+			"X-Codex-Secondary-Window-Minutes":      []string{"300"},
 		},
 		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"usage limit reached","type":"rate_limit_exceeded"}}`)),
 	}}

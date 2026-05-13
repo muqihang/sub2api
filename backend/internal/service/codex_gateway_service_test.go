@@ -58,6 +58,51 @@ func TestCodexGatewayService_ResponsesDispatchesSynchronousRequest(t *testing.T)
 	require.Equal(t, codexGatewayIsolationKey(context.Background(), apiKey), captured.IsolationKey)
 }
 
+func TestCodexGatewayService_ResponsesFailoverErrorUsesMappedBodyMessage(t *testing.T) {
+	registry := NewDefaultCodexGatewayModelRegistry()
+	mappedBody, err := MarshalCodexGatewayErrorJSON(CodexGatewayErrorTypeAPI, "upstream_timeout", "Anthropic upstream returned Cloudflare 524 timeout.")
+	require.NoError(t, err)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, _ CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			return nil, &UpstreamFailoverError{StatusCode: 524, ResponseBody: mappedBody}
+		},
+	})
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	require.Equal(t, "upstream_timeout", gjson.GetBytes(resp.Body, "error.code").String())
+	require.Equal(t, "Anthropic upstream returned Cloudflare 524 timeout.", gjson.GetBytes(resp.Body, "error.message").String())
+}
+
+func TestCodexGatewayService_StreamFailoverErrorUsesMappedBodyMessage(t *testing.T) {
+	registry := NewDefaultCodexGatewayModelRegistry()
+	mappedBody, err := MarshalCodexGatewayErrorJSON(CodexGatewayErrorTypeAPI, "upstream_timeout", "Anthropic upstream returned Cloudflare 524 timeout.")
+	require.NoError(t, err)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		streamFn: func(_ context.Context, _ CodexGatewayProviderRequest) error {
+			return &UpstreamFailoverError{StatusCode: 524, ResponseBody: mappedBody}
+		},
+	})
+
+	var out bytes.Buffer
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey:         validCodexGatewayAPIKeyForTest(),
+		Body:           []byte(`{"model":"gpt-5.5","input":"hello","stream":true}`),
+		StreamWriter:   &out,
+		ResponseHeader: http.Header{},
+		WriteStatus:    func(int) {},
+	})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Contains(t, out.String(), `"code":"upstream_timeout"`)
+	require.Contains(t, out.String(), `"message":"Anthropic upstream returned Cloudflare 524 timeout."`)
+	require.NotContains(t, out.String(), "<!DOCTYPE html>")
+}
+
 func TestCodexGatewayService_ResponsesRejectsScopeMismatch(t *testing.T) {
 	registry := NewDefaultCodexGatewayModelRegistry()
 	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{

@@ -18,8 +18,10 @@ func codexGatewayProviderUsageToOpenAIUsage(usage CodexGatewayProviderUsage) Ope
 	return OpenAIUsage{
 		InputTokens:              usage.InputTokens,
 		OutputTokens:             usage.OutputTokens,
-		CacheCreationInputTokens: 0,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
 		CacheReadInputTokens:     usage.CacheReadInputTokens,
+		CacheCreation5mTokens:    usage.CacheCreation5mTokens,
+		CacheCreation1hTokens:    usage.CacheCreation1hTokens,
 	}
 }
 

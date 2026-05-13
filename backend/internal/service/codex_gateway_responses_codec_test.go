@@ -90,6 +90,8 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	require.NoError(t, writer.WriteOutputTextDelta("resp_123", "msg_1", 0, 0, "hel"))
 	require.NoError(t, writer.WriteFunctionCallArgumentsDelta("resp_123", "fc_call_1", 1, "{\"cmd\":\"ls"))
 	require.NoError(t, writer.WriteFunctionCallArgumentsDone("resp_123", "fc_call_1", 1, json.RawMessage(`{"id":"fc_call_1","type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"cmd\":\"ls\"}"}`)))
+	require.NoError(t, writer.WriteCustomToolCallInputDelta("resp_123", "fc_call_2", "call_2", 2, "*** Begin"))
+	require.NoError(t, writer.WriteCustomToolCallInputDone("resp_123", "fc_call_2", 2, "*** Begin Patch\n*** End Patch"))
 	require.NoError(t, writer.WriteOutputItemDone("resp_123", 0, item))
 	require.NoError(t, writer.WriteResponseCompleted(response))
 	require.NoError(t, writer.WriteResponseFailed(CodexGatewayResponse{
@@ -107,10 +109,10 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 		},
 	}))
 	require.NoError(t, writer.WriteResponseIncomplete(CodexGatewayResponse{
-		ID:     "resp_incomplete",
-		Object: "response",
-		Model:  "gpt-5.5",
-		Status: "incomplete",
+		ID:                "resp_incomplete",
+		Object:            "response",
+		Model:             "gpt-5.5",
+		Status:            "incomplete",
 		IncompleteDetails: json.RawMessage(`{"reason":"max_output_tokens"}`),
 	}))
 
@@ -121,6 +123,8 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 		"response.output_text.delta",
 		"response.function_call_arguments.delta",
 		"response.function_call_arguments.done",
+		"response.custom_tool_call_input.delta",
+		"response.custom_tool_call_input.done",
 		"response.output_item.done",
 		"response.completed",
 		"response.failed",
@@ -171,6 +175,15 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	doneItem, ok := funcDone["item"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "fc_call_1", doneItem["id"])
+
+	customDelta := events["response.custom_tool_call_input.delta"]
+	require.Equal(t, "fc_call_2", customDelta["item_id"])
+	require.Equal(t, "call_2", customDelta["call_id"])
+	require.Equal(t, "*** Begin", customDelta["delta"])
+	customDone := events["response.custom_tool_call_input.done"]
+	require.Equal(t, "fc_call_2", customDone["item_id"])
+	require.Equal(t, float64(2), customDone["output_index"])
+	require.Equal(t, "*** Begin Patch\n*** End Patch", customDone["input"])
 }
 
 func TestCodexGatewayErrors_InvalidRequestEnvelope(t *testing.T) {

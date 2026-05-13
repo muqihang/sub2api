@@ -74,6 +74,207 @@ func TestCodexGatewayDeepSeekRequest_BuildsMessagesToolsAndUserID(t *testing.T) 
 	require.True(t, regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`).MatchString(userID))
 }
 
+func TestCodexGatewayDeepSeekRequest_IgnoresHostedToolsAndParallelToolFlag(t *testing.T) {
+	parallel := true
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"web_search"},
+			{"type":"image_generation"},
+			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
+		]`),
+		ToolChoice:        json.RawMessage(`"auto"`),
+		ParallelToolCalls: &parallel,
+	}
+	model := CodexGatewayModel{
+		Slug:                      "deepseek-v4-pro",
+		Provider:                  "deepseek",
+		UpstreamModel:             "deepseek-v4-pro",
+		SupportsParallelToolCalls: false,
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	require.NotContains(t, prepared.Body, "parallel_tool_calls")
+	require.NotContains(t, prepared.Body, "tool_choice")
+	require.Contains(t, prepared.Body["messages"].([]any)[0].(map[string]any)["content"], "OpenAI hosted tools are not available")
+
+	tools := prepared.Body["tools"].([]any)
+	require.Len(t, tools, 1)
+	require.Equal(t, "exec_command", tools[0].(map[string]any)["function"].(map[string]any)["name"])
+}
+
+func TestCodexGatewayDeepSeekRequest_DefaultUserIDIsStableAcrossSessionsWithinIsolation(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	first, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_alpha",
+		IsolationKey: "api_key_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	second, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_beta",
+		IsolationKey: "api_key_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	third, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_alpha",
+		IsolationKey: "api_key_2",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	require.Equal(t, first.Body["user_id"], second.Body["user_id"])
+	require.NotEqual(t, first.Body["user_id"], third.Body["user_id"])
+}
+
+func TestCodexGatewayDeepSeekRequest_HostedToolNoticeIsStableAcrossHostedToolOrder(t *testing.T) {
+	reqA := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"web_search"},
+			{"type":"image_generation"},
+			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
+		]`),
+	}
+	reqB := reqA
+	reqB.Tools = json.RawMessage(`[
+		{"type":"image_generation"},
+		{"type":"web_search"},
+		{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
+	]`)
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	ctx := CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "api_key_1",
+	}
+
+	first, err := BuildCodexGatewayDeepSeekRequest(model, reqA, nil, ctx, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	second, err := BuildCodexGatewayDeepSeekRequest(model, reqB, nil, ctx, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	firstNotice := first.Body["messages"].([]any)[0].(map[string]any)["content"]
+	secondNotice := second.Body["messages"].([]any)[0].(map[string]any)["content"]
+	require.Equal(t, firstNotice, secondNotice)
+	require.Contains(t, firstNotice, "image_generation, web_search")
+}
+
+func TestCodexGatewayDeepSeekRequest_BodyIsDeterministicForCachePrefix(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model:        "deepseek-v4-pro",
+		Instructions: json.RawMessage(`"Act as a coding agent."`),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"developer","content":[{"type":"input_text","text":"Use local tools when useful."}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect the project"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"computer-use","tools":[
+				{"name":"click","parameters":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}}}},
+				{"name":"press_key","parameters":{"type":"object","properties":{"key":{"type":"string"}}}}
+			]},
+			{"type":"custom","name":"apply_patch","format":{"type":"grammar"}},
+			{"type":"web_search"}
+		]`),
+		Reasoning: json.RawMessage(`{"effort":"xhigh"}`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	ctx := CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "api_key_1",
+	}
+
+	first, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, ctx, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	second, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, ctx, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	firstJSON, err := json.Marshal(first.Body)
+	require.NoError(t, err)
+	secondJSON, err := json.Marshal(second.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, string(firstJSON), string(secondJSON))
+	require.Equal(t, string(firstJSON), string(secondJSON))
+}
+
+func TestCodexGatewayDeepSeekRequest_NormalizesDeveloperRoleForChatCompletions(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"developer","content":[{"type":"input_text","text":"Always be concise."}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Reply OK."}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Equal(t, "system", messages[0].(map[string]any)["role"])
+	require.Contains(t, messages[0].(map[string]any)["content"], "Always be concise.")
+	require.Equal(t, "user", messages[1].(map[string]any)["role"])
+}
+
+func TestCodexGatewayDeepSeekRequest_NormalizesLatestReminderRoleForChatCompletions(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"latest_reminder","content":[{"type":"input_text","text":"Keep the most recent user instruction in force."}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Reply OK."}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Equal(t, "system", messages[0].(map[string]any)["role"])
+	require.Contains(t, messages[0].(map[string]any)["content"], "Keep the most recent user instruction")
+	require.Equal(t, "user", messages[1].(map[string]any)["role"])
+}
+
 func TestCodexGatewayDeepSeekRequest_ReplaysPreviousToolLoopStateAndNormalizesOutputs(t *testing.T) {
 	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
 		TTL:      time.Minute,
@@ -93,7 +294,7 @@ func TestCodexGatewayDeepSeekRequest_ReplaysPreviousToolLoopStateAndNormalizesOu
 		ReasoningContent:        "need tool result",
 		ReasoningContentPresent: true,
 		ToolCalls: []CodexGatewayStoredToolCall{
-			{ID: "call_1", Name: "browser__open-page", Arguments: `{"url":"https://example.com"}`},
+			{ID: "call_1", Type: CodexGatewayToolKindNamespace, Name: "open-page", Arguments: `{"url":"https://example.com"}`},
 		},
 		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
 			"browser__open-page": {Alias: "browser__open-page", Kind: CodexGatewayToolKindNamespace, Namespace: "browser", Name: "open-page"},
@@ -134,6 +335,143 @@ func TestCodexGatewayDeepSeekRequest_ReplaysPreviousToolLoopStateAndNormalizesOu
 	require.Equal(t, "tool", toolMessage["role"])
 	require.Equal(t, "call_1", toolMessage["tool_call_id"])
 	require.Equal(t, `{"ok":true,"url":"https://example.com"}`, toolMessage["content"])
+}
+
+func TestCodexGatewayDeepSeekRequest_CoalescesConsecutiveFunctionCallsBeforeOutputs(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_00","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call","call_id":"call_01","name":"exec_command","arguments":"{\"cmd\":\"rg --files\"}"},
+			{"type":"function_call","call_id":"call_02","name":"exec_command","arguments":"{\"cmd\":\"git status --short\"}"},
+			{"type":"function_call_output","call_id":"call_00","output":"pwd output"},
+			{"type":"function_call_output","call_id":"call_01","output":"rg output"},
+			{"type":"function_call_output","call_id":"call_02","output":"git output"}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 4)
+
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "", assistant["content"])
+	calls := assistant["tool_calls"].([]any)
+	require.Len(t, calls, 3)
+	require.Equal(t, "call_00", calls[0].(map[string]any)["id"])
+	require.Equal(t, "call_01", calls[1].(map[string]any)["id"])
+	require.Equal(t, "call_02", calls[2].(map[string]any)["id"])
+
+	for i, expectedCallID := range []string{"call_00", "call_01", "call_02"} {
+		toolMessage := messages[i+1].(map[string]any)
+		require.Equal(t, "tool", toolMessage["role"])
+		require.Equal(t, expectedCallID, toolMessage["tool_call_id"])
+	}
+}
+
+func TestCodexGatewayDeepSeekRequest_ReplaysPreviousCustomToolLoopState(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_custom",
+			SessionKey:    "session_1",
+			IsolationKey:  "user_1",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "",
+		AssistantContentPresent: true,
+		ReasoningContent:        "need to patch",
+		ReasoningContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{
+			{ID: "call_patch", Type: CodexGatewayToolKindCustom, Name: "apply_patch", Arguments: "*** Begin Patch\n*** End Patch\n"},
+		},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"custom__apply_patch": {Alias: "custom__apply_patch", Kind: CodexGatewayToolKindCustom, Name: "apply_patch"},
+		},
+	}))
+
+	req := CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_custom"),
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call_output","call_id":"call_patch","name":"apply_patch","output":"patch applied"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 3)
+
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "custom__apply_patch", assistant["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
+
+	toolMessage := messages[1].(map[string]any)
+	require.Equal(t, "tool", toolMessage["role"])
+	require.Equal(t, "call_patch", toolMessage["tool_call_id"])
+	require.Equal(t, "patch applied", toolMessage["content"])
+}
+
+func TestCodexGatewayDeepSeekRequest_ConvertsInlineCustomToolCallsAndOutputs(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":"*** Begin Patch\n*** End Patch\n"},
+			{"type":"custom_tool_call_output","call_id":"call_patch","output":{"ok":true}}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"custom","name":"apply_patch","description":"edit files","format":{"type":"grammar"}}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "custom__apply_patch", assistant["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
+	require.Equal(t, "*** Begin Patch\n*** End Patch\n", assistant["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["arguments"])
+	require.Equal(t, `{"ok":true}`, messages[1].(map[string]any)["content"])
 }
 
 func TestCodexGatewayDeepSeekRequest_MapsAssistantToolCallsAndBackfillsReasoningContent(t *testing.T) {
@@ -215,7 +553,7 @@ func TestCodexGatewayDeepSeekRequest_RejectsInvalidStateAndUnpairedToolOutputs(t
 		ToolCalls:               []CodexGatewayStoredToolCall{{ID: "call_1", Name: "shell", Arguments: `{}`}},
 	}
 	store.entries[codexGatewayStateStorageKey(invalidState.Key)] = codexGatewayStateEntry{
-		state: invalidState,
+		state:     invalidState,
 		expiresAt: time.Now().Add(time.Minute),
 	}
 
@@ -351,9 +689,9 @@ func TestCodexGatewayDeepSeekRequest_FunctionCallsToolChoiceAndReasoningDisableP
 			{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"cmd\":\"pwd\"}"},
 			{"type":"function_call_output","call_id":"call_1","output":"ok"}
 		]`),
-		Tools:       json.RawMessage(`[{"type":"function","name":"shell","parameters":{"type":"object"}}]`),
-		ToolChoice:  json.RawMessage(`{"type":"function","name":"shell"}`),
-		Reasoning:   json.RawMessage(`{"effort":"minimal"}`),
+		Tools:      json.RawMessage(`[{"type":"function","name":"shell","parameters":{"type":"object"}}]`),
+		ToolChoice: json.RawMessage(`{"type":"function","name":"shell"}`),
+		Reasoning:  json.RawMessage(`{"effort":"minimal"}`),
 		RawFields: map[string]json.RawMessage{
 			"temperature": json.RawMessage(`0.4`),
 		},

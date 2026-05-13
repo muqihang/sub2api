@@ -116,6 +116,7 @@ type CodexGatewayStateLookupKey struct {
 type CodexGatewayStoredToolCall struct {
 	ID        string `json:"id"`
 	Type      string `json:"type"`
+	Alias     string `json:"alias,omitempty"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
@@ -129,9 +130,10 @@ type CodexGatewayToolNameMapEntry struct {
 }
 
 type CodexGatewayToolMappingResult struct {
-	Tools           []map[string]any
-	NameMap         map[string]CodexGatewayToolNameMapEntry
-	originalToAlias map[string]string
+	Tools                  []map[string]any
+	NameMap                map[string]CodexGatewayToolNameMapEntry
+	IgnoredHostedToolTypes []string
+	originalToAlias        map[string]string
 }
 
 type CodexGatewayResponseState struct {
@@ -141,8 +143,10 @@ type CodexGatewayResponseState struct {
 	ReasoningContent            string                                  `json:"reasoning_content,omitempty"`
 	ReasoningContentPresent     bool                                    `json:"reasoning_content_present,omitempty"`
 	ReasoningContentSynthesized bool                                    `json:"reasoning_content_synthesized,omitempty"`
+	AnthropicThinkingBlocks     []json.RawMessage                       `json:"anthropic_thinking_blocks,omitempty"`
 	ToolCalls                   []CodexGatewayStoredToolCall            `json:"tool_calls,omitempty"`
 	ToolNameMap                 map[string]CodexGatewayToolNameMapEntry `json:"tool_name_map,omitempty"`
+	ReplayMessages              []json.RawMessage                       `json:"replay_messages,omitempty"`
 }
 
 type CodexGatewayToolMappingConfig struct {
@@ -172,12 +176,33 @@ type CodexGatewayPreparedDeepSeekRequest struct {
 	ToolNameMap map[string]CodexGatewayToolNameMapEntry
 }
 
+type CodexGatewayAnthropicRequestContext struct {
+	SessionKey   string
+	IsolationKey string
+}
+
+type CodexGatewayAnthropicRequestConfig struct {
+	ToolMappingConfig    CodexGatewayToolMappingConfig
+	ImageInputMode       string
+	CacheTTL             string
+	ForceDisableThinking bool
+}
+
+type CodexGatewayPreparedAnthropicRequest struct {
+	Body           map[string]any
+	ToolNameMap    map[string]CodexGatewayToolNameMapEntry
+	ReplayMessages []json.RawMessage
+}
+
 type CodexGatewayProviderUsage struct {
-	InputTokens          int
-	OutputTokens         int
-	TotalTokens          int
-	CacheReadInputTokens int
-	ProviderUsageExtra   map[string]any
+	InputTokens              int
+	OutputTokens             int
+	TotalTokens              int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	CacheCreation5mTokens    int
+	CacheCreation1hTokens    int
+	ProviderUsageExtra       map[string]any
 }
 
 type CodexGatewayProviderResult struct {

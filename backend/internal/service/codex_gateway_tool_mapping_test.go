@@ -57,6 +57,65 @@ func TestCodexGatewayToolMapping_FunctionNamespaceAndCustomTools(t *testing.T) {
 	require.Equal(t, "mcp shell", result.NameMap["custom__mcp_shell"].Name)
 }
 
+func TestCodexGatewayToolMapping_CustomFormatBecomesInputSchema(t *testing.T) {
+	raw := json.RawMessage(`[
+		{
+			"type":"custom",
+			"name":"apply_patch",
+			"description":"Use the apply_patch tool to edit files.",
+			"format":{
+				"type":"grammar",
+				"syntax":"lark",
+				"definition":"start: begin_patch hunk+ end_patch\nbegin_patch: \"*** Begin Patch\" LF\nend_patch: \"*** End Patch\" LF?\n"
+			}
+		}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+
+	function := result.Tools[0]["function"].(map[string]any)
+	require.Equal(t, "custom__apply_patch", function["name"])
+	require.Contains(t, function["description"], "exact raw input")
+	require.Contains(t, function["description"], "start: begin_patch")
+
+	params := function["parameters"].(map[string]any)
+	require.Equal(t, "object", params["type"])
+	require.Equal(t, []any{"input"}, params["required"])
+	input := params["properties"].(map[string]any)["input"].(map[string]any)
+	require.Equal(t, "string", input["type"])
+	require.Contains(t, input["description"], "freeform payload")
+}
+
+func TestCodexGatewayToolMapping_IgnoresHostedResponsesTools(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"web_search"},
+		{"type":"image_generation","size":"1024x1024"},
+		{
+			"type":"namespace",
+			"name":"mcp__computer_use__",
+			"tools":[
+				{
+					"type":"function",
+					"name":"click",
+					"description":"Click an element",
+					"parameters":{"type":"object","properties":{"x":{"type":"number"}}}
+				}
+			]
+		}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"web_search", "image_generation"}, result.IgnoredHostedToolTypes)
+	require.Len(t, result.Tools, 1)
+	alias := result.Tools[0]["function"].(map[string]any)["name"].(string)
+	require.Contains(t, alias, "mcp_computer_use")
+	require.Contains(t, alias, "__click")
+	require.Equal(t, CodexGatewayToolKindNamespace, result.NameMap[alias].Kind)
+}
+
 func TestCodexGatewayToolMapping_PreservesNestedNamespacePath(t *testing.T) {
 	raw := json.RawMessage(`[
 		{
@@ -179,7 +238,7 @@ func TestCodexGatewayToolMapping_StrictBetaStripsOrRejectsUnsupportedConstraints
 	]`)
 
 	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{
-		EnableStrictBeta:              true,
+		EnableStrictBeta:               true,
 		RejectUnsupportedStrictSchemas: false,
 	})
 	require.NoError(t, err)
@@ -192,7 +251,7 @@ func TestCodexGatewayToolMapping_StrictBetaStripsOrRejectsUnsupportedConstraints
 	require.NotContains(t, query, "minLength")
 
 	_, err = BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{
-		EnableStrictBeta:              true,
+		EnableStrictBeta:               true,
 		RejectUnsupportedStrictSchemas: true,
 	})
 	require.Error(t, err)
@@ -210,7 +269,7 @@ func TestCodexGatewayToolMapping_StrictBetaStripsOrRejectsUnsupportedConstraints
 			}
 		}
 	]`), CodexGatewayToolMappingConfig{
-		EnableStrictBeta:              true,
+		EnableStrictBeta:               true,
 		RejectUnsupportedStrictSchemas: true,
 	})
 	require.Error(t, err)
@@ -260,7 +319,7 @@ func TestCodexGatewayToolMapping_StrictSchemaPreservesPropertyNamesThatMatchKeyw
 	]`)
 
 	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{
-		EnableStrictBeta:              true,
+		EnableStrictBeta:               true,
 		RejectUnsupportedStrictSchemas: true,
 	})
 	require.NoError(t, err)

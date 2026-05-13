@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -254,18 +255,17 @@ func TestCodexGatewayDeepSeekAdapterNonStream(t *testing.T) {
 		require.Equal(t, "need both tools", result.ProviderResult.ReasoningContent)
 
 		body := result.ServiceResponse.Body
-		require.Equal(t, "reasoning", gjson.GetBytes(body, "output.0.type").String())
-		require.Equal(t, "need both tools", gjson.GetBytes(body, "output.0.content.0.text").String())
-		require.Equal(t, "function_call", gjson.GetBytes(body, "output.1.type").String())
-		require.Equal(t, "fc_call_weather", gjson.GetBytes(body, "output.1.id").String())
-		require.Equal(t, "call_weather", gjson.GetBytes(body, "output.1.call_id").String())
-		require.Equal(t, "get_weather", gjson.GetBytes(body, "output.1.name").String())
-		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(body, "output.1.arguments").String())
-		require.Equal(t, "custom_tool_call", gjson.GetBytes(body, "output.2.type").String())
-		require.Equal(t, "fc_call_shell", gjson.GetBytes(body, "output.2.id").String())
-		require.Equal(t, "call_shell", gjson.GetBytes(body, "output.2.call_id").String())
-		require.Equal(t, "shell", gjson.GetBytes(body, "output.2.name").String())
-		require.Equal(t, "pwd", gjson.GetBytes(body, "output.2.input").String())
+		require.NotContains(t, string(body), "need both tools")
+		require.Equal(t, "function_call", gjson.GetBytes(body, "output.0.type").String())
+		require.Equal(t, "fc_call_weather", gjson.GetBytes(body, "output.0.id").String())
+		require.Equal(t, "call_weather", gjson.GetBytes(body, "output.0.call_id").String())
+		require.Equal(t, "get_weather", gjson.GetBytes(body, "output.0.name").String())
+		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(body, "output.0.arguments").String())
+		require.Equal(t, "custom_tool_call", gjson.GetBytes(body, "output.1.type").String())
+		require.Equal(t, "fc_call_shell", gjson.GetBytes(body, "output.1.id").String())
+		require.Equal(t, "call_shell", gjson.GetBytes(body, "output.1.call_id").String())
+		require.Equal(t, "shell", gjson.GetBytes(body, "output.1.name").String())
+		require.Equal(t, "pwd", gjson.GetBytes(body, "output.1.input").String())
 		require.Equal(t, int64(7), gjson.GetBytes(body, "usage.input_tokens_details.cached_tokens").Int())
 
 		stored, err := stateStore.Get(CodexGatewayStateLookupKey{
@@ -280,7 +280,9 @@ func TestCodexGatewayDeepSeekAdapterNonStream(t *testing.T) {
 		require.True(t, stored.ReasoningContentPresent)
 		require.Len(t, stored.ToolCalls, 2)
 		require.Equal(t, "get_weather", stored.ToolCalls[0].Name)
+		require.Equal(t, "get_weather", stored.ToolCalls[0].Alias)
 		require.Equal(t, "shell", stored.ToolCalls[1].Name)
+		require.Equal(t, "custom__shell", stored.ToolCalls[1].Alias)
 	})
 
 	t.Run("maps finish reasons conservatively", func(t *testing.T) {
@@ -530,4 +532,49 @@ func TestCodexGatewayDeepSeekAdapterNonStream(t *testing.T) {
 		require.NotContains(t, string(result.ServiceResponse.Body), "chat.completion.chunk")
 		require.NotContains(t, string(result.ServiceResponse.Body), "delta")
 	})
+}
+
+func TestCodexGatewayDeepSeekToolCallOutputItem_PreservesNamespaceForCodex(t *testing.T) {
+	item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(apicompat.ChatToolCall{
+		ID: "call_click",
+		Function: apicompat.ChatFunctionCall{
+			Name:      "mcp_computer_use_click_123456",
+			Arguments: `{"x":10,"y":20}`,
+		},
+	}, map[string]CodexGatewayToolNameMapEntry{
+		"mcp_computer_use_click_123456": {
+			Alias:     "mcp_computer_use_click_123456",
+			Kind:      CodexGatewayToolKindNamespace,
+			Namespace: "mcp__computer_use__",
+			Name:      "click",
+		},
+	})
+	require.True(t, ok)
+	require.Equal(t, "function_call", item["type"])
+	require.Equal(t, "click", item["name"])
+	require.Equal(t, "mcp__computer_use__", item["namespace"])
+	require.Equal(t, "mcp_computer_use_click_123456", stored.Alias)
+	require.Equal(t, "click", stored.Name)
+}
+
+func TestCodexGatewayDeepSeekToolCallOutputItem_UnwrapsCustomToolInput(t *testing.T) {
+	rawArguments := `{"custom__apply_patch":"*** Begin Patch\n*** Add File: probe.txt\n+codex-gateway-custom\n*** End Patch\n"}`
+	item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(apicompat.ChatToolCall{
+		ID: "call_patch",
+		Function: apicompat.ChatFunctionCall{
+			Name:      "custom__apply_patch",
+			Arguments: rawArguments,
+		},
+	}, map[string]CodexGatewayToolNameMapEntry{
+		"custom__apply_patch": {
+			Alias: "custom__apply_patch",
+			Kind:  CodexGatewayToolKindCustom,
+			Name:  "apply_patch",
+		},
+	})
+	require.True(t, ok)
+	require.Equal(t, "custom_tool_call", item["type"])
+	require.Equal(t, "apply_patch", item["name"])
+	require.Equal(t, "*** Begin Patch\n*** Add File: probe.txt\n+codex-gateway-custom\n*** End Patch\n", item["input"])
+	require.Equal(t, rawArguments, stored.Arguments)
 }

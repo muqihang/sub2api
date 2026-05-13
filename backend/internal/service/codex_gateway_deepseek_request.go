@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -43,6 +44,12 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 		}
 		body["tools"] = tools
 	}
+	if len(toolMapping.IgnoredHostedToolTypes) > 0 {
+		leadingMessages = append(leadingMessages, map[string]any{
+			"role":    "system",
+			"content": codexGatewayDeepSeekHostedToolNotice(toolMapping.IgnoredHostedToolTypes),
+		})
+	}
 
 	reasoningEffort, thinkingEnabled := codexGatewayDeepSeekReasoningConfig(req.Reasoning, model, cfg.AllowReasoningDisable)
 	body["reasoning_effort"] = reasoningEffort
@@ -61,7 +68,7 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	if req.Stream != nil {
 		body["stream"] = *req.Stream
 	}
-	if req.ParallelToolCalls != nil {
+	if req.ParallelToolCalls != nil && model.SupportsParallelToolCalls {
 		body["parallel_tool_calls"] = *req.ParallelToolCalls
 	}
 	if len(req.Include) > 0 {
@@ -130,6 +137,32 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}, nil
 }
 
+func codexGatewayDeepSeekHostedToolNotice(toolTypes []string) string {
+	types := uniqueCodexGatewayStrings(toolTypes)
+	if len(types) == 0 {
+		return ""
+	}
+	return "OpenAI hosted tools are not available through the DeepSeek Chat Completions upstream and were not forwarded: " + strings.Join(types, ", ") + ". Use the available local, function, custom, namespace, MCP, browser, or computer-use tools when they are present in this request."
+}
+
+func uniqueCodexGatewayStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func buildCodexGatewayMessagesPlaceholder() []any { return nil }
 
 func parseCodexGatewayJSONString(raw json.RawMessage) (string, bool) {
@@ -172,7 +205,7 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		for _, call := range state.ToolCalls {
 			seedCalls[strings.TrimSpace(call.ID)] = call
 		}
-		if len(state.ToolCalls) > 0 && !codexGatewayInputHasFunctionCallOutput(items) {
+		if len(state.ToolCalls) > 0 && !codexGatewayInputHasToolCallOutput(items) {
 			return nil, nil, fmt.Errorf("%w: previous_response_id requires function_call_output items", ErrCodexGatewayStateInvalid)
 		}
 	}
@@ -180,6 +213,14 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 	messages := make([]any, 0, len(items)+1)
 	if storedAssistant != nil {
 		messages = append(messages, storedAssistant)
+	}
+	var pendingToolCallAssistant map[string]any
+	flushPendingToolCallAssistant := func() {
+		if pendingToolCallAssistant == nil {
+			return
+		}
+		messages = append(messages, pendingToolCallAssistant)
+		pendingToolCallAssistant = nil
 	}
 
 	openCalls := make(map[string]int, len(seedCalls))
@@ -199,15 +240,24 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 				return nil, nil, fmt.Errorf("%w: replayed tool outputs must precede subsequent turns", ErrCodexGatewayStateInvalid)
 			}
 		}
-		if msg != nil {
-			messages = append(messages, msg)
-		}
 		for _, callID := range newCalls {
 			if _, exists := seenCallIDs[callID]; exists {
 				return nil, nil, fmt.Errorf("codex deepseek request has duplicate call_id %q", callID)
 			}
 			seenCallIDs[callID] = struct{}{}
 			openCalls[callID]++
+		}
+		if msg != nil && codexGatewayDeepSeekCanMergeAssistantToolCallMessage(msg) {
+			if pendingToolCallAssistant == nil {
+				pendingToolCallAssistant = msg
+			} else if err := codexGatewayDeepSeekMergeAssistantToolCallMessage(pendingToolCallAssistant, msg); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
+		if msg != nil {
+			flushPendingToolCallAssistant()
+			messages = append(messages, msg)
 		}
 		if msg != nil && strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) == "tool" {
 			callID := strings.TrimSpace(firstCodexGatewayToolString(msg["tool_call_id"]))
@@ -223,6 +273,7 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 			}
 		}
 	}
+	flushPendingToolCallAssistant()
 	if storedAssistant != nil && len(seedCalls) > 0 && len(openCalls) > 0 {
 		return nil, nil, fmt.Errorf("codex deepseek request has incomplete replay for response %q", strings.TrimSpace(*req.PreviousResponseID))
 	}
@@ -230,13 +281,43 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 	return messages, seedCalls, nil
 }
 
-func codexGatewayInputHasFunctionCallOutput(items []any) bool {
+func codexGatewayDeepSeekCanMergeAssistantToolCallMessage(msg map[string]any) bool {
+	if strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "assistant" {
+		return false
+	}
+	calls, ok := msg["tool_calls"].([]any)
+	if !ok || len(calls) == 0 {
+		return false
+	}
+	return strings.TrimSpace(firstCodexGatewayToolString(msg["content"])) == ""
+}
+
+func codexGatewayDeepSeekMergeAssistantToolCallMessage(dst, src map[string]any) error {
+	dstCalls, ok := dst["tool_calls"].([]any)
+	if !ok {
+		return fmt.Errorf("codex deepseek request has invalid pending tool_calls")
+	}
+	srcCalls, ok := src["tool_calls"].([]any)
+	if !ok {
+		return fmt.Errorf("codex deepseek request has invalid tool_calls")
+	}
+	dst["tool_calls"] = append(dstCalls, srcCalls...)
+	if strings.TrimSpace(firstCodexGatewayToolString(dst["reasoning_content"])) == "" {
+		if reasoning := strings.TrimSpace(firstCodexGatewayToolString(src["reasoning_content"])); reasoning != "" {
+			dst["reasoning_content"] = reasoning
+		}
+	}
+	return nil
+}
+
+func codexGatewayInputHasToolCallOutput(items []any) bool {
 	for _, item := range items {
 		m, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(firstCodexGatewayToolString(m["type"])) == "function_call_output" {
+		switch strings.TrimSpace(firstCodexGatewayToolString(m["type"])) {
+		case "function_call_output", "custom_tool_call_output":
 			return true
 		}
 	}
@@ -269,7 +350,11 @@ func convertCodexGatewayInputItem(item any, toolMapping CodexGatewayToolMappingR
 		return convertCodexGatewayMessageItem(m, toolMapping, cfg)
 	case "function_call":
 		return convertCodexGatewayFunctionCallItem(m, toolMapping)
+	case "custom_tool_call":
+		return convertCodexGatewayCustomToolCallItem(m, toolMapping)
 	case "function_call_output":
+		return convertCodexGatewayFunctionCallOutputItem(m)
+	case "custom_tool_call_output":
 		return convertCodexGatewayFunctionCallOutputItem(m)
 	default:
 		return convertCodexGatewayMessageItem(m, toolMapping, cfg)
@@ -281,6 +366,7 @@ func convertCodexGatewayMessageItem(m map[string]any, toolMapping CodexGatewayTo
 	if role == "" {
 		role = "user"
 	}
+	role = normalizeCodexGatewayDeepSeekMessageRole(role)
 	msg := map[string]any{
 		"role": role,
 	}
@@ -318,6 +404,17 @@ func convertCodexGatewayMessageItem(m map[string]any, toolMapping CodexGatewayTo
 	return msg, nil, nil
 }
 
+func normalizeCodexGatewayDeepSeekMessageRole(role string) string {
+	switch strings.TrimSpace(role) {
+	case "developer", "latest_reminder":
+		return "system"
+	case "system", "user", "assistant", "tool":
+		return strings.TrimSpace(role)
+	default:
+		return "user"
+	}
+}
+
 func convertCodexGatewayFunctionCallItem(m map[string]any, toolMapping CodexGatewayToolMappingResult) (map[string]any, []string, error) {
 	callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
 	if callID == "" {
@@ -350,6 +447,35 @@ func convertCodexGatewayFunctionCallItem(m map[string]any, toolMapping CodexGate
 		msg["reasoning_content"] = reasoning
 	} else {
 		msg["reasoning_content"] = ""
+	}
+	return msg, []string{callID}, nil
+}
+
+func convertCodexGatewayCustomToolCallItem(m map[string]any, toolMapping CodexGatewayToolMappingResult) (map[string]any, []string, error) {
+	callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
+	if callID == "" {
+		return nil, nil, fmt.Errorf("custom_tool_call requires call_id")
+	}
+	name := strings.TrimSpace(firstCodexGatewayToolString(m["name"]))
+	alias, err := resolveCodexGatewayToolChoiceAlias(toolMapping, CodexGatewayToolKindCustom, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	arguments := normalizeCodexGatewayToolArguments(m["input"])
+	msg := map[string]any{
+		"role":    "assistant",
+		"content": "",
+		"tool_calls": []any{
+			map[string]any{
+				"id":   callID,
+				"type": "function",
+				"function": map[string]any{
+					"name":      alias,
+					"arguments": arguments,
+				},
+			},
+		},
+		"reasoning_content": "",
 	}
 	return msg, []string{callID}, nil
 }
@@ -688,7 +814,7 @@ func codexGatewayDeepSeekAssistantMessageFromState(state CodexGatewayResponseSta
 				"id":   call.ID,
 				"type": "function",
 				"function": map[string]any{
-					"name":      call.Name,
+					"name":      codexGatewayDeepSeekStoredToolCallAlias(call, state.ToolNameMap),
 					"arguments": call.Arguments,
 				},
 			})
@@ -696,6 +822,29 @@ func codexGatewayDeepSeekAssistantMessageFromState(state CodexGatewayResponseSta
 		msg["tool_calls"] = toolCalls
 	}
 	return msg
+}
+
+func codexGatewayDeepSeekStoredToolCallAlias(call CodexGatewayStoredToolCall, toolNameMap map[string]CodexGatewayToolNameMapEntry) string {
+	if alias := strings.TrimSpace(call.Alias); alias != "" {
+		return alias
+	}
+	name := strings.TrimSpace(call.Name)
+	if len(toolNameMap) == 0 {
+		return name
+	}
+	matches := make([]string, 0, 1)
+	for alias, entry := range toolNameMap {
+		if entry.Kind != "" && call.Type != "" && entry.Kind != call.Type {
+			continue
+		}
+		if entry.Name == name || entry.Alias == name || codexGatewayOriginalToolPath(entry) == name {
+			matches = append(matches, alias)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return name
 }
 
 func codexGatewayDeepSeekReasoningConfig(raw json.RawMessage, model CodexGatewayModel, allowDisable bool) (string, bool) {
@@ -740,11 +889,10 @@ func codexGatewayDeepSeekStableUserID(ctx CodexGatewayDeepSeekRequestContext, ra
 		return ctx.UserID, nil
 	}
 	parts := []string{"codex_gateway_deepseek"}
-	if strings.TrimSpace(ctx.SessionKey) != "" {
-		parts = append(parts, "session="+strings.TrimSpace(ctx.SessionKey))
-	}
 	if strings.TrimSpace(ctx.IsolationKey) != "" {
 		parts = append(parts, "isolation="+strings.TrimSpace(ctx.IsolationKey))
+	} else if strings.TrimSpace(ctx.SessionKey) != "" {
+		parts = append(parts, "session="+strings.TrimSpace(ctx.SessionKey))
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return "sub2api_" + hex.EncodeToString(sum[:12]), nil

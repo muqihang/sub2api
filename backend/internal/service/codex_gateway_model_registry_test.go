@@ -20,6 +20,9 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 		"gpt-5.3-codex",
 		"deepseek-v4-pro",
 		"deepseek-v4-flash",
+		"claude-opus-4-6",
+		"claude-opus-4-6-thinking",
+		"claude-sonnet-4-6",
 	}, codexGatewayModelSlugs(models))
 
 	gpt55, ok := reg.Resolve("gpt-5.5")
@@ -43,6 +46,16 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 	require.Equal(t, "hidden", flash.Visibility)
 	require.Equal(t, "xhigh", flash.DefaultReasoningLevel)
 	require.False(t, flash.SupportsParallelToolCalls)
+
+	claude, ok := reg.Resolve("claude-opus-4-6")
+	require.True(t, ok)
+	require.Equal(t, "anthropic", claude.Provider)
+	require.Equal(t, "hidden", claude.Visibility)
+	require.False(t, claude.SupportedInAPI)
+	require.Equal(t, 1_000_000, claude.ContextWindow)
+	require.Equal(t, 850_000, claude.AutoCompactTokenLimit)
+	require.Equal(t, 64_000, claude.MaxOutputTokens)
+	require.Equal(t, []string{"none", "low", "medium", "high", "xhigh"}, claude.SupportedReasoningLevels)
 }
 
 func TestCodexGatewayModelRegistry_ConfigFilterAppliesToCatalog(t *testing.T) {
@@ -87,6 +100,74 @@ func TestCodexGatewayModelRegistry_ExportCatalogJSON(t *testing.T) {
 	}, codexGatewayModelSlugs(envelope.Models))
 }
 
+func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"gpt-5.5", "deepseek-v4-pro"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderOpenAI: {
+						Provider: CodexGatewayProviderOpenAI,
+						GroupID:  1001,
+						Healthy:  true,
+					},
+					CodexGatewayProviderDeepSeek: {
+						Provider: CodexGatewayProviderDeepSeek,
+						GroupID:  2002,
+						Healthy:  true,
+					},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"deepseek-v4-pro": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+	)
+
+	raw, err := reg.ExportCodexCLICatalogJSON()
+	require.NoError(t, err)
+
+	var envelope struct {
+		Models []struct {
+			Slug                      string `json:"slug"`
+			Visibility                string `json:"visibility"`
+			ShellType                 string `json:"shell_type"`
+			WebSearchToolType         string `json:"web_search_tool_type,omitempty"`
+			SupportsSearchTool        bool   `json:"supports_search_tool"`
+			SupportsParallelToolCalls bool   `json:"supports_parallel_tool_calls"`
+			SupportedReasoningLevels  []struct {
+				Effort      string `json:"effort"`
+				Description string `json:"description"`
+			} `json:"supported_reasoning_levels"`
+			BaseInstructions string `json:"base_instructions"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &envelope))
+	require.Len(t, envelope.Models, 2)
+
+	bySlug := make(map[string]any, len(envelope.Models))
+	for _, model := range envelope.Models {
+		bySlug[model.Slug] = model
+		require.Equal(t, "list", model.Visibility)
+		require.Equal(t, "shell_command", model.ShellType)
+		require.NotEmpty(t, model.BaseInstructions)
+		require.NotEmpty(t, model.SupportedReasoningLevels)
+		require.NotEmpty(t, model.SupportedReasoningLevels[0].Description)
+	}
+	require.Contains(t, bySlug, "gpt-5.5")
+	require.Contains(t, bySlug, "deepseek-v4-pro")
+
+	deepseek := envelope.Models[1]
+	require.Equal(t, "deepseek-v4-pro", deepseek.Slug)
+	require.False(t, deepseek.SupportsSearchTool)
+	require.Empty(t, deepseek.WebSearchToolType)
+	require.False(t, deepseek.SupportsParallelToolCalls)
+}
+
 func TestCodexGatewayModelRegistry_HidesOpenAIModelsWhenProviderGroupIsUnavailable(t *testing.T) {
 	reg := NewCodexGatewayModelRegistry(config.GatewayCodexConfig{
 		EnabledModels: []string{"gpt-5.5"},
@@ -129,6 +210,36 @@ func TestCodexGatewayModelRegistry_DeepSeekVisibleWhenAllGatesPass(t *testing.T)
 	require.True(t, model.SupportedInAPI)
 	require.Equal(t, "visible", model.Visibility)
 	require.Contains(t, codexGatewayModelSlugs(reg.Models()), "deepseek-v4-pro")
+}
+
+func TestCodexGatewayModelRegistry_AnthropicVisibleWhenProviderGroupIsHealthy(t *testing.T) {
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"claude-opus-4-6", "claude-opus-4-6-thinking", "claude-sonnet-4-6"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderAnthropic: {
+						Provider: CodexGatewayProviderAnthropic,
+						GroupID:  3003,
+						Healthy:  true,
+					},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"claude-opus-4-6":          {Enabled: true},
+					"claude-opus-4-6-thinking": {Enabled: true},
+					"claude-sonnet-4-6":        {Enabled: true},
+				},
+			},
+		}),
+	)
+
+	require.Equal(t, []string{"claude-opus-4-6", "claude-opus-4-6-thinking", "claude-sonnet-4-6"}, codexGatewayModelSlugs(reg.Models()))
+	thinking, ok := reg.Resolve("claude-opus-4-6-thinking")
+	require.True(t, ok)
+	require.Equal(t, "xhigh", thinking.DefaultReasoningLevel)
+	require.True(t, thinking.SupportedInAPI)
 }
 
 func TestCodexGatewayModelRegistry_DeepSeekRemainsHiddenWhenProtocolFixtureGateFails(t *testing.T) {

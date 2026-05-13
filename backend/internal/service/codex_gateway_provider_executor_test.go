@@ -47,6 +47,7 @@ func newCodexGatewayProviderExecutorForTest() *CodexGatewayProviderExecutor {
 	cfg := &config.Config{}
 	cfg.Gateway.Codex.ProviderGroups.OpenAI = 101
 	cfg.Gateway.Codex.ProviderGroups.DeepSeek = 202
+	cfg.Gateway.Codex.ProviderGroups.Anthropic = 303
 	return &CodexGatewayProviderExecutor{cfg: cfg}
 }
 
@@ -185,6 +186,52 @@ func TestCodexGatewayProviderExecutor_UsesDeepSeekProviderGroup(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestCodexGatewayProviderExecutor_UsesAnthropicProviderGroup(t *testing.T) {
+	account := &Account{ID: 10, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, _ string, requestedModel string, _ map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(303), *groupID)
+			require.Equal(t, "claude-sonnet-4-6", requestedModel)
+			return account, nil
+		},
+	}
+	executor.anthropic = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, account *Account, _ CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			require.Equal(t, int64(10), account.ID)
+			return CodexGatewayDeepSeekAdapterResult{
+				ServiceResponse: CodexGatewayServiceResponse{StatusCode: http.StatusOK},
+				ProviderResult:  CodexGatewayProviderResult{UpstreamRequestID: "req_claude", UpstreamModel: "claude-sonnet-4-6"},
+			}, nil
+		},
+	}
+	executor.usageRecorder = &codexGatewayUsageRecorderStub{}
+
+	resp, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request:      CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model:        CodexGatewayModel{Slug: "claude-sonnet-4-6", Provider: "anthropic", UpstreamModel: "claude-sonnet-4-6"},
+		Parsed:       CodexGatewayResponsesCreateRequest{Model: "claude-sonnet-4-6"},
+		SessionKey:   "sess_hash",
+		IsolationKey: "iso_hash",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestCodexGatewayAnthropicAccountBaseURLFallsBackForLegacyAPIKeyType(t *testing.T) {
+	account := &Account{
+		ID:       10,
+		Platform: PlatformAnthropic,
+		Type:     "api_key",
+		Credentials: map[string]any{
+			"base_url": "https://anthropic-compatible.example/v1",
+		},
+	}
+
+	require.Equal(t, "https://anthropic-compatible.example/v1", codexGatewayAnthropicAccountBaseURL(account))
 }
 
 func TestCodexGatewayProviderExecutor_UsesAdminProviderGroupState(t *testing.T) {

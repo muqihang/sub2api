@@ -22,13 +22,17 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if a == nil || a.gateway == nil {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex gateway openai adapter is not configured")
 	}
-	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, req.Request.Body, false)
+	body, err := codexGatewayOpenAIUpstreamRequestBody(req.Request.Body)
+	if err != nil {
+		return CodexGatewayDeepSeekAdapterResult{}, err
+	}
+	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, false)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
@@ -84,7 +88,11 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	if req.Request.StreamWriter == nil {
 		return CodexGatewayProviderResult{}, fmt.Errorf("codex gateway openai stream requires writer")
 	}
-	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, req.Request.Body, true)
+	body, err := codexGatewayOpenAIUpstreamRequestBody(req.Request.Body)
+	if err != nil {
+		return CodexGatewayProviderResult{}, err
+	}
+	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, true)
 	if err != nil {
 		return CodexGatewayProviderResult{}, err
 	}
@@ -260,6 +268,68 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		}
 	}
 	return result, nil
+}
+
+func codexGatewayOpenAIUpstreamRequestBody(body []byte) ([]byte, error) {
+	sanitized, changed, err := codexGatewayStripPlaintextReasoningHistory(body)
+	if err != nil || !changed {
+		return body, err
+	}
+	return sanitized, nil
+}
+
+func codexGatewayStripPlaintextReasoningHistory(body []byte) ([]byte, bool, error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return body, false, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false, fmt.Errorf("decode codex gateway openai request for reasoning scrub: %w", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) == 0 {
+		return body, false, nil
+	}
+	filtered := make([]any, 0, len(input))
+	changed := false
+	for _, item := range input {
+		if codexGatewayIsPlaintextReasoningInputItem(item) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if !changed {
+		return body, false, nil
+	}
+	payload["input"] = filtered
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode codex gateway openai request after reasoning scrub: %w", err)
+	}
+	return out, true, nil
+}
+
+func codexGatewayIsPlaintextReasoningInputItem(item any) bool {
+	obj, ok := item.(map[string]any)
+	if !ok {
+		return false
+	}
+	if strings.TrimSpace(firstCodexGatewayToolString(obj["type"])) != "reasoning" {
+		return false
+	}
+	content, exists := obj["content"]
+	if !exists || content == nil {
+		return false
+	}
+	switch typed := content.(type) {
+	case []any:
+		return len(typed) > 0
+	case string:
+		return strings.TrimSpace(typed) != ""
+	default:
+		return true
+	}
 }
 
 func codexGatewayOpenAIStreamJSONResponse(body []byte) ([]byte, error) {

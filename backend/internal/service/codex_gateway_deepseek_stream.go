@@ -179,9 +179,10 @@ type codexGatewayDeepSeekStreamState struct {
 	messageAdded     bool
 	messageID        string
 	messageIndex     int
-	reasoningItemID  string
-	reasoningAdded   bool
-	reasoningIndex   int
+	activityText     string
+	activityAdded    bool
+	activityID       string
+	activityIndex    int
 	nextOutputIndex  int
 	toolCalls        map[int]*codexGatewayDeepSeekStreamToolCall
 	toolOrder        []int
@@ -198,11 +199,24 @@ type codexGatewayDeepSeekStreamToolCall struct {
 	CallID      string
 	Alias       string
 	Name        string
+	Namespace   string
 	Kind        string
 	Buffer      strings.Builder
 	Added       bool
 	ItemEmitted bool
 	EmittedLen  int
+}
+
+func (c *codexGatewayDeepSeekStreamToolCall) toolNameMapEntry() CodexGatewayToolNameMapEntry {
+	if c == nil {
+		return CodexGatewayToolNameMapEntry{}
+	}
+	return CodexGatewayToolNameMapEntry{
+		Alias:     c.Alias,
+		Kind:      c.Kind,
+		Namespace: c.Namespace,
+		Name:      c.Name,
+	}
 }
 
 func newCodexGatewayDeepSeekStreamState(model CodexGatewayModel, toolNameMap map[string]CodexGatewayToolNameMapEntry) *codexGatewayDeepSeekStreamState {
@@ -224,7 +238,7 @@ func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer 
 			s.responseID = "chatcmpl_stream"
 		}
 		s.messageID = codexGatewayDeepSeekMessageID(s.responseID, 0)
-		s.reasoningItemID = codexGatewayDeepSeekReasoningItemID(s.responseID)
+		s.activityID = codexGatewayDeepSeekActivityMessageID(s.responseID)
 	}
 	if s.upstreamModel == "" {
 		s.upstreamModel = strings.TrimSpace(chunk.Model)
@@ -246,33 +260,8 @@ func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer 
 	if len(chunk.Choices) > 0 {
 		choice := chunk.Choices[0]
 		if choice.Delta.ReasoningContent != nil {
-			if !s.reasoningAdded {
-				item := map[string]any{
-					"type":    "reasoning",
-					"id":      s.reasoningItemID,
-					"status":  "in_progress",
-					"content": []map[string]any{},
-				}
-				rawItem, err := json.Marshal(item)
-				if err != nil {
-					return err
-				}
-				if err := writer.WriteOutputItemAdded(s.responseID, s.nextOutputIndex, rawItem); err != nil {
-					return err
-				}
-				part, _ := json.Marshal(map[string]any{"type": "reasoning_text", "text": ""})
-				if err := writer.WriteContentPartAdded(s.responseID, s.reasoningItemID, s.nextOutputIndex, 0, part); err != nil {
-					return err
-				}
-				s.reasoningAdded = true
-				s.reasoningIndex = s.nextOutputIndex
-				s.nextOutputIndex++
-			}
 			s.reasoningPresent = true
 			s.reasoningText.WriteString(*choice.Delta.ReasoningContent)
-			if err := writer.WriteReasoningTextDelta(s.responseID, s.reasoningItemID, s.reasoningIndex, 0, *choice.Delta.ReasoningContent); err != nil {
-				return err
-			}
 		}
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			if !s.messageAdded {
@@ -328,11 +317,10 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 	if call == nil {
 		call = &codexGatewayDeepSeekStreamToolCall{
 			Index:       index,
-			OutputIndex: s.nextOutputIndex,
+			OutputIndex: -1,
 		}
 		s.toolCalls[index] = call
 		s.toolOrder = append(s.toolOrder, index)
-		s.nextOutputIndex++
 	}
 	if strings.TrimSpace(delta.ID) != "" {
 		call.CallID = strings.TrimSpace(delta.ID)
@@ -342,9 +330,11 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 		entry, ok := s.toolNameMap[call.Alias]
 		if ok {
 			call.Name = entry.Name
+			call.Namespace = entry.Namespace
 			call.Kind = entry.Kind
 		} else {
 			call.Name = call.Alias
+			call.Namespace = ""
 			call.Kind = CodexGatewayToolKindFunction
 		}
 	}
@@ -352,6 +342,15 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 		call.Added = true
 	}
 	if call.Added && !call.ItemEmitted {
+		if !s.activityAdded && !s.messageAdded {
+			if err := s.emitActivityMessage(writer); err != nil {
+				return err
+			}
+		}
+		if call.OutputIndex < 0 {
+			call.OutputIndex = s.nextOutputIndex
+			s.nextOutputIndex++
+		}
 		item := map[string]any{
 			"id":      codexGatewayDeepSeekToolItemID(call.CallID),
 			"call_id": call.CallID,
@@ -363,6 +362,9 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 			item["input"] = ""
 		} else {
 			item["type"] = "function_call"
+			if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
+				item["namespace"] = namespace
+			}
 			item["arguments"] = ""
 		}
 		rawItem, err := json.Marshal(item)
@@ -379,12 +381,55 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 	}
 	if call.ItemEmitted {
 		args := call.Buffer.String()
+		if call.Kind == CodexGatewayToolKindCustom {
+			input, ready := codexGatewayDeepSeekCustomToolStreamInput(args, call.toolNameMapEntry())
+			if !ready {
+				return nil
+			}
+			if len(input) > call.EmittedLen {
+				deltaText := input[call.EmittedLen:]
+				call.EmittedLen = len(input)
+				return writer.WriteCustomToolCallInputDelta(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.CallID, call.OutputIndex, deltaText)
+			}
+			return nil
+		}
 		if len(args) > call.EmittedLen {
 			deltaText := args[call.EmittedLen:]
 			call.EmittedLen = len(args)
 			return writer.WriteFunctionCallArgumentsDelta(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, deltaText)
 		}
 	}
+	return nil
+}
+
+func (s *codexGatewayDeepSeekStreamState) emitActivityMessage(writer *CodexGatewayResponseEventWriter) error {
+	s.activityText = codexGatewayDeepSeekToolActivityText()
+	s.activityIndex = s.nextOutputIndex
+	s.nextOutputIndex++
+	item := map[string]any{
+		"type":   "message",
+		"id":     s.activityID,
+		"role":   "assistant",
+		"status": "in_progress",
+		"content": []map[string]any{
+			{"type": "output_text", "text": ""},
+		},
+	}
+	rawItem, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	if err := writer.WriteOutputItemAdded(s.responseID, s.activityIndex, rawItem); err != nil {
+		return err
+	}
+	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
+	if err := writer.WriteContentPartAdded(s.responseID, s.activityID, s.activityIndex, 0, part); err != nil {
+		return err
+	}
+	if err := writer.WriteOutputTextDelta(s.responseID, s.activityID, s.activityIndex, 0, s.activityText); err != nil {
+		return err
+	}
+	s.activityAdded = true
 	return nil
 }
 
@@ -441,28 +486,6 @@ func (s *codexGatewayDeepSeekStreamState) finishEarly(writer *CodexGatewayRespon
 func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayResponseEventWriter) error {
 	for _, index := range s.sortedOutputIndexes() {
 		switch {
-		case s.reasoningAdded && index == s.reasoningIndex:
-			if err := writer.WriteReasoningTextDone(s.responseID, s.reasoningItemID, s.reasoningIndex, 0, s.reasoningText.String()); err != nil {
-				return err
-			}
-			part, _ := json.Marshal(map[string]any{"type": "reasoning_text", "text": s.reasoningText.String()})
-			if err := writer.WriteContentPartDone(s.responseID, s.reasoningItemID, s.reasoningIndex, 0, part); err != nil {
-				return err
-			}
-			item := map[string]any{
-				"type":   "reasoning",
-				"id":     s.reasoningItemID,
-				"status": "completed",
-				"content": []map[string]any{{
-					"type": "reasoning_text",
-					"text": s.reasoningText.String(),
-				}},
-			}
-			if rawItem, err := json.Marshal(item); err == nil {
-				if err := writer.WriteOutputItemDone(s.responseID, s.reasoningIndex, rawItem); err != nil {
-					return err
-				}
-			}
 		case s.messageAdded && index == s.messageIndex:
 			if err := writer.WriteOutputTextDone(s.responseID, s.messageID, s.messageIndex, 0, s.messageText.String()); err != nil {
 				return err
@@ -486,9 +509,35 @@ func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayRe
 					return err
 				}
 			}
+		case s.activityAdded && index == s.activityIndex:
+			if err := writer.WriteOutputTextDone(s.responseID, s.activityID, s.activityIndex, 0, s.activityText); err != nil {
+				return err
+			}
+			part, _ := json.Marshal(map[string]any{"type": "output_text", "text": s.activityText})
+			if err := writer.WriteContentPartDone(s.responseID, s.activityID, s.activityIndex, 0, part); err != nil {
+				return err
+			}
+			item := map[string]any{
+				"type":   "message",
+				"id":     s.activityID,
+				"role":   "assistant",
+				"status": "completed",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": s.activityText,
+				}},
+			}
+			if rawItem, err := json.Marshal(item); err == nil {
+				if err := writer.WriteOutputItemDone(s.responseID, s.activityIndex, rawItem); err != nil {
+					return err
+				}
+			}
 		default:
 			call := s.toolCallByOutputIndex(index)
 			if call == nil || !s.shouldExposeToolCall(call) {
+				continue
+			}
+			if call.OutputIndex < 0 {
 				continue
 			}
 			doneItem := map[string]any{
@@ -499,14 +548,23 @@ func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayRe
 			}
 			if call.Kind == CodexGatewayToolKindCustom {
 				doneItem["type"] = "custom_tool_call"
-				doneItem["input"] = call.Buffer.String()
+				doneItem["input"] = codexGatewayDeepSeekCustomToolInput(call.Buffer.String(), call.toolNameMapEntry())
 			} else {
 				doneItem["type"] = "function_call"
+				if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
+					doneItem["namespace"] = namespace
+				}
 				doneItem["arguments"] = call.Buffer.String()
 			}
 			if rawItem, err := json.Marshal(doneItem); err == nil {
-				if err := writer.WriteFunctionCallArgumentsDone(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, rawItem); err != nil {
-					return err
+				if call.Kind == CodexGatewayToolKindCustom {
+					if err := writer.WriteCustomToolCallInputDone(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, firstCodexGatewayToolString(doneItem["input"])); err != nil {
+						return err
+					}
+				} else {
+					if err := writer.WriteFunctionCallArgumentsDone(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, rawItem); err != nil {
+						return err
+					}
 				}
 				if err := writer.WriteOutputItemDone(s.responseID, call.OutputIndex, rawItem); err != nil {
 					return err
@@ -535,19 +593,6 @@ func (s *codexGatewayDeepSeekStreamState) finalResponse(status, incompleteReason
 func (s *codexGatewayDeepSeekStreamState) outputItems() []json.RawMessage {
 	byIndex := make(map[int]json.RawMessage, 2+len(s.toolCalls))
 	indexes := make([]int, 0, 2+len(s.toolCalls))
-	if s.reasoningAdded {
-		item, _ := json.Marshal(map[string]any{
-			"type":   "reasoning",
-			"id":     s.reasoningItemID,
-			"status": "completed",
-			"content": []map[string]any{{
-				"type": "reasoning_text",
-				"text": s.reasoningText.String(),
-			}},
-		})
-		byIndex[s.reasoningIndex] = item
-		indexes = append(indexes, s.reasoningIndex)
-	}
 	if s.messageAdded {
 		item, _ := json.Marshal(map[string]any{
 			"type":   "message",
@@ -562,9 +607,26 @@ func (s *codexGatewayDeepSeekStreamState) outputItems() []json.RawMessage {
 		byIndex[s.messageIndex] = item
 		indexes = append(indexes, s.messageIndex)
 	}
+	if s.activityAdded {
+		item, _ := json.Marshal(map[string]any{
+			"type":   "message",
+			"id":     s.activityID,
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": s.activityText,
+			}},
+		})
+		byIndex[s.activityIndex] = item
+		indexes = append(indexes, s.activityIndex)
+	}
 	for _, index := range s.sortedToolOrder() {
 		call := s.toolCalls[index]
 		if call == nil || !s.shouldExposeToolCall(call) {
+			continue
+		}
+		if call.OutputIndex < 0 {
 			continue
 		}
 		item := map[string]any{
@@ -575,9 +637,12 @@ func (s *codexGatewayDeepSeekStreamState) outputItems() []json.RawMessage {
 		}
 		if call.Kind == CodexGatewayToolKindCustom {
 			item["type"] = "custom_tool_call"
-			item["input"] = call.Buffer.String()
+			item["input"] = codexGatewayDeepSeekCustomToolInput(call.Buffer.String(), call.toolNameMapEntry())
 		} else {
 			item["type"] = "function_call"
+			if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
+				item["namespace"] = namespace
+			}
 			item["arguments"] = call.Buffer.String()
 		}
 		rawItem, _ := json.Marshal(item)
@@ -600,9 +665,13 @@ func (s *codexGatewayDeepSeekStreamState) storedToolCalls() []CodexGatewayStored
 		if call == nil || !s.shouldExposeToolCall(call) {
 			continue
 		}
+		if call.OutputIndex < 0 {
+			continue
+		}
 		out = append(out, CodexGatewayStoredToolCall{
 			ID:        call.CallID,
 			Type:      call.Kind,
+			Alias:     call.Alias,
 			Name:      call.Name,
 			Arguments: call.Buffer.String(),
 		})
@@ -630,12 +699,16 @@ func (s *codexGatewayDeepSeekStreamState) providerResult(upstreamRequestID strin
 	}
 }
 
-func codexGatewayDeepSeekReasoningItemID(responseID string) string {
+func codexGatewayDeepSeekActivityMessageID(responseID string) string {
 	responseID = strings.TrimSpace(responseID)
 	if responseID == "" {
 		responseID = "response"
 	}
-	return "rs_" + responseID
+	return "msg_activity_" + responseID
+}
+
+func codexGatewayDeepSeekToolActivityText() string {
+	return "正在使用工具继续推进。\n"
 }
 
 func (s *codexGatewayDeepSeekStreamState) responseModel() string {
@@ -646,7 +719,7 @@ func (s *codexGatewayDeepSeekStreamState) responseModel() string {
 }
 
 func (s *codexGatewayDeepSeekStreamState) hasPartialState() bool {
-	return s.messageAdded || len(s.toolCalls) > 0 || s.reasoningAdded || s.reasoningPresent || s.reasoningText.Len() > 0 || len(s.usageRaw) > 0
+	return s.messageAdded || s.activityAdded || len(s.toolCalls) > 0 || s.reasoningPresent || s.reasoningText.Len() > 0 || len(s.usageRaw) > 0
 }
 
 func (s *codexGatewayDeepSeekStreamState) shouldPersistToolLoopState() bool {
@@ -698,14 +771,16 @@ func (s *codexGatewayDeepSeekStreamState) sortedToolCallsByOutputIndex() []*code
 
 func (s *codexGatewayDeepSeekStreamState) sortedOutputIndexes() []int {
 	indexes := make([]int, 0, 2+len(s.toolCalls))
-	if s.reasoningAdded {
-		indexes = append(indexes, s.reasoningIndex)
-	}
 	if s.messageAdded {
 		indexes = append(indexes, s.messageIndex)
 	}
+	if s.activityAdded {
+		indexes = append(indexes, s.activityIndex)
+	}
 	for _, call := range s.sortedToolCallsByOutputIndex() {
-		indexes = append(indexes, call.OutputIndex)
+		if call.OutputIndex >= 0 {
+			indexes = append(indexes, call.OutputIndex)
+		}
 	}
 	sort.Ints(indexes)
 	return indexes

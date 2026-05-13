@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,8 +13,8 @@ import (
 
 var (
 	ErrCodexGatewayStateNotFound = errors.New("codex gateway state not found")
-	ErrCodexGatewayStateConflict  = errors.New("codex gateway state conflict")
-	ErrCodexGatewayStateInvalid   = errors.New("codex gateway state invalid")
+	ErrCodexGatewayStateConflict = errors.New("codex gateway state conflict")
+	ErrCodexGatewayStateInvalid  = errors.New("codex gateway state invalid")
 )
 
 type codexGatewayStateEntry struct {
@@ -218,6 +219,8 @@ func cloneCodexGatewayResponseState(state CodexGatewayResponseState) CodexGatewa
 	if len(state.ToolNameMap) > 0 {
 		state.ToolNameMap = cloneCodexGatewayToolNameMap(state.ToolNameMap)
 	}
+	state.AnthropicThinkingBlocks = cloneCodexGatewayRawMessages(state.AnthropicThinkingBlocks)
+	state.ReplayMessages = cloneCodexGatewayRawMessages(state.ReplayMessages)
 	return state
 }
 
@@ -237,6 +240,20 @@ func cloneCodexGatewayToolNameMap(in map[string]CodexGatewayToolNameMapEntry) ma
 	out := make(map[string]CodexGatewayToolNameMapEntry, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func cloneCodexGatewayRawMessages(in []json.RawMessage) []json.RawMessage {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(in))
+	for _, raw := range in {
+		if len(raw) == 0 {
+			continue
+		}
+		out = append(out, append(json.RawMessage(nil), raw...))
 	}
 	return out
 }

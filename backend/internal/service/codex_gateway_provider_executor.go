@@ -61,27 +61,31 @@ type codexGatewayProviderAdapter interface {
 }
 
 type CodexGatewayProviderExecutor struct {
-	cfg             *config.Config
-	openaiGateway   *OpenAIGatewayService
-	stateSource     CodexGatewayRegistryStateSource
-	accountSelector codexGatewayAccountSelector
-	stateStore      *CodexGatewayStateStore
-	usageRecorder   codexGatewayUsageRecorder
-	openaiAdapter   codexGatewayProviderAdapter
-	deepseek        codexGatewayProviderAdapter
+	cfg                      *config.Config
+	openaiGateway            *OpenAIGatewayService
+	stateSource              CodexGatewayRegistryStateSource
+	accountSelector          codexGatewayAccountSelector
+	anthropicAccountSelector codexGatewayAccountSelector
+	stateStore               *CodexGatewayStateStore
+	usageRecorder            codexGatewayUsageRecorder
+	openaiAdapter            codexGatewayProviderAdapter
+	deepseek                 codexGatewayProviderAdapter
+	anthropic                codexGatewayProviderAdapter
 }
 
-func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, stateStore *CodexGatewayStateStore, stateSource CodexGatewayRegistryStateSource) *CodexGatewayProviderExecutor {
+func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, anthropicGateway *GatewayService, stateStore *CodexGatewayStateStore, stateSource CodexGatewayRegistryStateSource) *CodexGatewayProviderExecutor {
 	executor := &CodexGatewayProviderExecutor{
-		cfg:             cfg,
-		openaiGateway:   openaiGateway,
-		stateSource:     stateSource,
-		accountSelector: openaiGateway,
-		stateStore:      stateStore,
-		usageRecorder:   openaiGateway,
+		cfg:                      cfg,
+		openaiGateway:            openaiGateway,
+		stateSource:              stateSource,
+		accountSelector:          openaiGateway,
+		anthropicAccountSelector: anthropicGateway,
+		stateStore:               stateStore,
+		usageRecorder:            openaiGateway,
 	}
 	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: openaiGateway}
 	executor.deepseek = &codexGatewayDeepSeekProviderAdapter{stateStore: stateStore}
+	executor.anthropic = &codexGatewayAnthropicProviderAdapter{stateStore: stateStore}
 	return executor
 }
 
@@ -167,6 +171,11 @@ func (e *CodexGatewayProviderExecutor) providerGroupAndAdapter(ctx context.Conte
 			return 0, nil, &CodexGatewayProviderUnavailableError{ModelID: model.Slug, Provider: model.Provider, Kind: CodexGatewayProviderUnavailableNoProviderGroup}
 		}
 		return runtime.GroupID, e.deepseek, nil
+	case "anthropic":
+		if runtime.GroupID <= 0 || !runtime.Healthy {
+			return 0, nil, &CodexGatewayProviderUnavailableError{ModelID: model.Slug, Provider: model.Provider, Kind: CodexGatewayProviderUnavailableNoProviderGroup}
+		}
+		return runtime.GroupID, e.anthropic, nil
 	default:
 		return 0, nil, fmt.Errorf("unsupported codex gateway provider %q", model.Provider)
 	}
@@ -182,6 +191,8 @@ func (e *CodexGatewayProviderExecutor) providerRuntime(ctx context.Context, prov
 			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.OpenAI
 		case CodexGatewayProviderDeepSeek:
 			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.DeepSeek
+		case CodexGatewayProviderAnthropic:
+			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.Anthropic
 		}
 		runtime.Healthy = runtime.GroupID > 0
 	}
@@ -202,7 +213,14 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 	if e == nil || e.accountSelector == nil {
 		return nil, fmt.Errorf("codex gateway account selector is not configured")
 	}
-	account, err := e.accountSelector.SelectAccountForModelWithExclusions(ctx, &groupID, req.SessionKey, req.Model.UpstreamModel, excluded)
+	selector := e.accountSelector
+	if normalizeCodexGatewayProvider(CodexGatewayProvider(req.Model.Provider)) == CodexGatewayProviderAnthropic && e.anthropicAccountSelector != nil {
+		selector = e.anthropicAccountSelector
+	}
+	if selector == nil {
+		return nil, fmt.Errorf("codex gateway account selector is not configured")
+	}
+	account, err := selector.SelectAccountForModelWithExclusions(ctx, &groupID, req.SessionKey, req.Model.UpstreamModel, excluded)
 	if err != nil {
 		if !errors.Is(err, ErrNoAvailableAccounts) {
 			return nil, err
@@ -217,6 +235,10 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 }
 
 type codexGatewayDeepSeekProviderAdapter struct {
+	stateStore *CodexGatewayStateStore
+}
+
+type codexGatewayAnthropicProviderAdapter struct {
 	stateStore *CodexGatewayStateStore
 }
 
@@ -235,7 +257,6 @@ func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, acco
 		CodexGatewayDeepSeekRequestContext{
 			SessionKey:   req.SessionKey,
 			IsolationKey: req.IsolationKey,
-			UserID:       fmt.Sprintf("user:%d", req.Request.APIKey.UserID),
 		},
 		CodexGatewayDeepSeekRequestConfig{},
 	)
@@ -264,7 +285,6 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 		CodexGatewayDeepSeekRequestContext{
 			SessionKey:   req.SessionKey,
 			IsolationKey: req.IsolationKey,
-			UserID:       fmt.Sprintf("user:%d", req.Request.APIKey.UserID),
 		},
 		CodexGatewayDeepSeekRequestConfig{},
 		req.Request.StreamWriter,
@@ -274,6 +294,73 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 	}
 	copyCodexGatewayHTTPHeaders(req.Request.ResponseHeader, result.ServiceResponse.Headers)
 	return result.ProviderResult, nil
+}
+
+func (a *codexGatewayAnthropicProviderAdapter) Complete(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+	if account == nil {
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex gateway anthropic adapter requires selected account")
+	}
+	return ExecuteCodexGatewayAnthropicAdapter(
+		ctx,
+		http.DefaultClient,
+		codexGatewayAnthropicAccountBaseURL(account),
+		account.GetCredential("api_key"),
+		req.Model,
+		req.Parsed,
+		a.stateStore,
+		CodexGatewayAnthropicRequestContext{
+			SessionKey:   req.SessionKey,
+			IsolationKey: req.IsolationKey,
+		},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+}
+
+func (a *codexGatewayAnthropicProviderAdapter) Stream(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayProviderResult, error) {
+	if account == nil {
+		return CodexGatewayProviderResult{}, fmt.Errorf("codex gateway anthropic adapter requires selected account")
+	}
+	if req.Request.ResponseHeader != nil {
+		req.Request.ResponseHeader.Set("Content-Type", "text/event-stream")
+		req.Request.ResponseHeader.Set("Cache-Control", "no-cache")
+		req.Request.ResponseHeader.Set("Connection", "keep-alive")
+	}
+	if req.Request.WriteStatus != nil {
+		req.Request.WriteStatus(http.StatusOK)
+	}
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		ctx,
+		http.DefaultClient,
+		codexGatewayAnthropicAccountBaseURL(account),
+		account.GetCredential("api_key"),
+		req.Model,
+		req.Parsed,
+		a.stateStore,
+		CodexGatewayAnthropicRequestContext{
+			SessionKey:   req.SessionKey,
+			IsolationKey: req.IsolationKey,
+		},
+		CodexGatewayAnthropicRequestConfig{},
+		req.Request.StreamWriter,
+	)
+	if err != nil {
+		return CodexGatewayProviderResult{}, err
+	}
+	copyCodexGatewayHTTPHeaders(req.Request.ResponseHeader, result.ServiceResponse.Headers)
+	return result.ProviderResult, nil
+}
+
+func codexGatewayAnthropicAccountBaseURL(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if baseURL := strings.TrimSpace(account.GetBaseURL()); baseURL != "" {
+		return baseURL
+	}
+	if strings.EqualFold(strings.TrimSpace(account.Platform), PlatformAnthropic) {
+		return strings.TrimSpace(account.GetCredential("base_url"))
+	}
+	return ""
 }
 
 func copyCodexGatewayHTTPHeaders(dst http.Header, src http.Header) {

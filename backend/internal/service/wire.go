@@ -683,11 +683,11 @@ func ProvideCodexGatewayStateStore(cfg *config.Config) *CodexGatewayStateStore {
 	return NewCodexGatewayStateStore(storeCfg)
 }
 
-func ProvideCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, stateStore *CodexGatewayStateStore, adminService *CodexGatewayAdminService) *CodexGatewayProviderExecutor {
+func ProvideCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, gatewayService *GatewayService, stateStore *CodexGatewayStateStore, adminService *CodexGatewayAdminService) *CodexGatewayProviderExecutor {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	return NewCodexGatewayProviderExecutor(cfg, openaiGateway, stateStore, adminService)
+	return NewCodexGatewayProviderExecutor(cfg, openaiGateway, gatewayService, stateStore, adminService)
 }
 
 func ProvideCodexGatewayService(registry *CodexGatewayModelRegistry, executor *CodexGatewayProviderExecutor) *CodexGatewayService {

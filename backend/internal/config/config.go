@@ -747,8 +747,9 @@ type GatewayCodexConfig struct {
 }
 
 type GatewayCodexProviderGroupsConfig struct {
-	OpenAI   int64 `mapstructure:"openai"`
-	DeepSeek int64 `mapstructure:"deepseek"`
+	OpenAI    int64 `mapstructure:"openai"`
+	DeepSeek  int64 `mapstructure:"deepseek"`
+	Anthropic int64 `mapstructure:"anthropic"`
 }
 
 // UserMessageQueueConfig 用户消息串行队列配置
@@ -1866,9 +1867,13 @@ func setDefaults() {
 		"gpt-5.3-codex",
 		"deepseek-v4-pro",
 		"deepseek-v4-flash",
+		"claude-opus-4-6",
+		"claude-opus-4-6-thinking",
+		"claude-sonnet-4-6",
 	})
 	viper.SetDefault("gateway.codex.provider_groups.openai", int64(0))
 	viper.SetDefault("gateway.codex.provider_groups.deepseek", int64(0))
+	viper.SetDefault("gateway.codex.provider_groups.anthropic", int64(0))
 	viper.SetDefault("gateway.cc_gateway.enabled", false)
 	viper.SetDefault("gateway.cc_gateway.base_url", "")
 	viper.SetDefault("gateway.cc_gateway.token", "")
@@ -2984,6 +2989,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Codex.ProviderGroups.DeepSeek < 0 {
 		return fmt.Errorf("gateway.codex.provider_groups.deepseek must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.Anthropic < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.anthropic must be non-negative")
 	}
 	if c.Gateway.Codex.StateStoreTTLSeconds <= 0 {
 		return fmt.Errorf("gateway.codex.state_store_ttl_seconds must be positive")

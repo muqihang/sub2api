@@ -13,6 +13,13 @@ var codexGatewayToolSafeNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 const codexGatewayNamespacePathSeparator = "\x1f"
 
+var codexGatewayHostedResponsesToolTypes = map[string]struct{}{
+	"computer_use_preview": {},
+	"file_search":          {},
+	"image_generation":     {},
+	"web_search":           {},
+}
+
 type codexGatewayToolMappingRecord struct {
 	alias string
 	entry CodexGatewayToolNameMapEntry
@@ -21,8 +28,8 @@ type codexGatewayToolMappingRecord struct {
 
 func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappingConfig) (CodexGatewayToolMappingResult, error) {
 	result := CodexGatewayToolMappingResult{
-		NameMap:            make(map[string]CodexGatewayToolNameMapEntry),
-		originalToAlias:    make(map[string]string),
+		NameMap:         make(map[string]CodexGatewayToolNameMapEntry),
+		originalToAlias: make(map[string]string),
 	}
 	if len(raw) == 0 {
 		return result, nil
@@ -35,10 +42,11 @@ func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappi
 
 	var flattened []map[string]any
 	for _, tool := range tools {
-		records, err := flattenCodexGatewayTool(tool, "", "", cfg)
+		records, ignored, err := flattenCodexGatewayTool(tool, "", "", cfg)
 		if err != nil {
 			return CodexGatewayToolMappingResult{}, err
 		}
+		result.IgnoredHostedToolTypes = append(result.IgnoredHostedToolTypes, ignored...)
 		for _, record := range records {
 			if existing, ok := result.NameMap[record.alias]; ok {
 				if existing != record.entry {
@@ -55,15 +63,18 @@ func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappi
 	return result, nil
 }
 
-func flattenCodexGatewayTool(raw any, namespacePrefix, parentKind string, cfg CodexGatewayToolMappingConfig) ([]codexGatewayToolMappingRecord, error) {
+func flattenCodexGatewayTool(raw any, namespacePrefix, parentKind string, cfg CodexGatewayToolMappingConfig) ([]codexGatewayToolMappingRecord, []string, error) {
 	tool, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("tool definition must be an object")
+		return nil, nil, fmt.Errorf("tool definition must be an object")
 	}
 
 	toolType := strings.TrimSpace(firstCodexGatewayToolString(tool["type"]))
 	if toolType == "" {
 		toolType = CodexGatewayToolKindFunction
+	}
+	if isCodexGatewayHostedResponsesToolType(toolType) {
+		return nil, []string{toolType}, nil
 	}
 
 	switch toolType {
@@ -72,25 +83,25 @@ func flattenCodexGatewayTool(raw any, namespacePrefix, parentKind string, cfg Co
 	case CodexGatewayToolKindCustom:
 		record, err := flattenCodexGatewayCustomTool(tool, namespacePrefix, cfg)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return []codexGatewayToolMappingRecord{record}, nil
+		return []codexGatewayToolMappingRecord{record}, nil, nil
 	default:
 		record, err := flattenCodexGatewayFunctionTool(tool, namespacePrefix, parentKind, cfg)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return []codexGatewayToolMappingRecord{record}, nil
+		return []codexGatewayToolMappingRecord{record}, nil, nil
 	}
 }
 
-func flattenCodexGatewayNamespaceTool(tool map[string]any, parentNamespace string, cfg CodexGatewayToolMappingConfig) ([]codexGatewayToolMappingRecord, error) {
+func flattenCodexGatewayNamespaceTool(tool map[string]any, parentNamespace string, cfg CodexGatewayToolMappingConfig) ([]codexGatewayToolMappingRecord, []string, error) {
 	namespace := strings.TrimSpace(firstCodexGatewayToolString(tool["name"]))
 	if namespace == "" {
 		namespace = strings.TrimSpace(firstCodexGatewayToolString(tool["namespace"]))
 	}
 	if namespace == "" {
-		return nil, fmt.Errorf("namespace tool requires a name")
+		return nil, nil, fmt.Errorf("namespace tool requires a name")
 	}
 	namespace = appendCodexGatewayNamespacePath(parentNamespace, namespace)
 
@@ -101,18 +112,20 @@ func flattenCodexGatewayNamespaceTool(tool map[string]any, parentNamespace strin
 		}
 	}
 	if len(nested) == 0 {
-		return nil, fmt.Errorf("namespace tool %q requires nested tools", namespace)
+		return nil, nil, fmt.Errorf("namespace tool %q requires nested tools", namespace)
 	}
 
 	var out []codexGatewayToolMappingRecord
+	var ignored []string
 	for _, child := range nested {
-		records, err := flattenCodexGatewayTool(child, namespace, CodexGatewayToolKindNamespace, cfg)
+		records, childIgnored, err := flattenCodexGatewayTool(child, namespace, CodexGatewayToolKindNamespace, cfg)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, records...)
+		ignored = append(ignored, childIgnored...)
 	}
-	return out, nil
+	return out, ignored, nil
 }
 
 func flattenCodexGatewayFunctionTool(tool map[string]any, namespacePrefix, parentKind string, cfg CodexGatewayToolMappingConfig) (codexGatewayToolMappingRecord, error) {
@@ -176,7 +189,12 @@ func flattenCodexGatewayCustomTool(tool map[string]any, namespacePrefix string, 
 	alias := buildCodexGatewayToolAlias(namespacePrefix, "custom", name)
 	spec, _ := tool["custom"].(map[string]any)
 	desc := strings.TrimSpace(firstCodexGatewayToolString(spec["description"], tool["description"]))
+	format := firstCodexGatewayToolValue(spec["format"], tool["format"])
+	desc = codexGatewayCustomToolDescription(desc, format)
 	params := firstCodexGatewayToolValue(spec["input_schema"], tool["input_schema"])
+	if params == nil && format != nil {
+		params = codexGatewayCustomFormatInputSchema(format)
+	}
 	strict, strictSet := codexGatewayToolStrictValue(spec, tool)
 	schema, err := prepareCodexGatewayToolSchema(params, strictSet && strict, cfg)
 	if err != nil {
@@ -210,6 +228,59 @@ func flattenCodexGatewayCustomTool(tool map[string]any, namespacePrefix string, 
 	}, nil
 }
 
+func codexGatewayCustomToolDescription(desc string, format any) string {
+	if format == nil {
+		return desc
+	}
+	notes := "For this Codex custom tool, call the function with a JSON object containing string field \"input\". The input field must contain the exact raw input for the custom tool; the gateway unwraps it before invoking Codex."
+	if formatDesc := codexGatewayCustomFormatDescription(format); formatDesc != "" {
+		notes += "\nCustom tool format:\n" + formatDesc
+	}
+	if strings.TrimSpace(desc) == "" {
+		return notes
+	}
+	return strings.TrimSpace(desc) + "\n\n" + notes
+}
+
+func codexGatewayCustomFormatInputSchema(format any) map[string]any {
+	inputDescription := "Exact raw freeform payload for the custom tool. Put the full custom-tool input here as a string; do not nest it under another key."
+	if formatDesc := codexGatewayCustomFormatDescription(format); formatDesc != "" {
+		inputDescription += "\n\nExpected format:\n" + formatDesc
+	}
+	return map[string]any{
+		"type":     "object",
+		"required": []any{"input"},
+		"properties": map[string]any{
+			"input": map[string]any{
+				"type":        "string",
+				"description": inputDescription,
+			},
+		},
+		"additionalProperties": false,
+	}
+}
+
+func codexGatewayCustomFormatDescription(format any) string {
+	formatMap, ok := format.(map[string]any)
+	if !ok {
+		if raw, err := json.Marshal(format); err == nil {
+			return string(raw)
+		}
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if typ := strings.TrimSpace(firstCodexGatewayToolString(formatMap["type"])); typ != "" {
+		parts = append(parts, "type: "+typ)
+	}
+	if syntax := strings.TrimSpace(firstCodexGatewayToolString(formatMap["syntax"])); syntax != "" {
+		parts = append(parts, "syntax: "+syntax)
+	}
+	if definition := strings.TrimSpace(firstCodexGatewayToolString(formatMap["definition"])); definition != "" {
+		parts = append(parts, definition)
+	}
+	return strings.Join(parts, "\n")
+}
+
 func recordToDeepSeekTool(record codexGatewayToolMappingRecord, cfg CodexGatewayToolMappingConfig) map[string]any {
 	if record.tool == nil {
 		return map[string]any{
@@ -220,6 +291,15 @@ func recordToDeepSeekTool(record codexGatewayToolMappingRecord, cfg CodexGateway
 		}
 	}
 	return record.tool
+}
+
+func isCodexGatewayHostedResponsesToolType(toolType string) bool {
+	normalized := strings.TrimSpace(toolType)
+	if strings.HasPrefix(normalized, "web_search") {
+		return true
+	}
+	_, ok := codexGatewayHostedResponsesToolTypes[normalized]
+	return ok
 }
 
 func toolMappingOriginalKey(kind, namespace, name string) string {
@@ -341,7 +421,11 @@ func codexGatewayToolAliasPart(raw string) string {
 	}
 	if strings.Contains(raw, "__") {
 		sum := sha256.Sum256([]byte(raw))
-		return "seg_" + hex.EncodeToString(sum[:4])
+		readable := sanitizeCodexGatewayToolSegment(strings.ReplaceAll(raw, "__", "_"))
+		if readable == "" {
+			return "seg_" + hex.EncodeToString(sum[:4])
+		}
+		return readable + "_" + hex.EncodeToString(sum[:4])
 	}
 	safe := sanitizeCodexGatewayToolSegment(raw)
 	if safe == "" {
@@ -420,20 +504,20 @@ func prepareCodexGatewayToolSchema(schema any, strict bool, cfg CodexGatewayTool
 }
 
 var codexGatewayUnsupportedSchemaKeys = map[string]struct{}{
-	"oneOf":               {},
-	"allOf":               {},
-	"not":                 {},
-	"if":                  {},
-	"then":                {},
-	"else":                {},
-	"patternProperties":   {},
-	"dependentSchemas":    {},
+	"oneOf":                 {},
+	"allOf":                 {},
+	"not":                   {},
+	"if":                    {},
+	"then":                  {},
+	"else":                  {},
+	"patternProperties":     {},
+	"dependentSchemas":      {},
 	"unevaluatedProperties": {},
-	"unevaluatedItems":     {},
-	"minLength":            {},
-	"maxLength":            {},
-	"minItems":             {},
-	"maxItems":             {},
+	"unevaluatedItems":      {},
+	"minLength":             {},
+	"maxLength":             {},
+	"minItems":              {},
+	"maxItems":              {},
 }
 
 func stripUnsupportedCodexGatewaySchemaConstraints(value any) (any, bool) {

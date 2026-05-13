@@ -11,16 +11,18 @@ import (
 )
 
 const (
-	CodexGatewayProviderGroupOpenAINamespace   = "gateway.codex.provider_groups.openai"
-	CodexGatewayProviderGroupDeepSeekNamespace = "gateway.codex.provider_groups.deepseek"
-	CodexGatewayEnabledModelsNamespace         = "gateway.codex.enabled_models"
+	CodexGatewayProviderGroupOpenAINamespace    = "gateway.codex.provider_groups.openai"
+	CodexGatewayProviderGroupDeepSeekNamespace  = "gateway.codex.provider_groups.deepseek"
+	CodexGatewayProviderGroupAnthropicNamespace = "gateway.codex.provider_groups.anthropic"
+	CodexGatewayEnabledModelsNamespace          = "gateway.codex.enabled_models"
 )
 
 type CodexGatewayProvider string
 
 const (
-	CodexGatewayProviderOpenAI   CodexGatewayProvider = "openai"
-	CodexGatewayProviderDeepSeek CodexGatewayProvider = "deepseek"
+	CodexGatewayProviderOpenAI    CodexGatewayProvider = "openai"
+	CodexGatewayProviderDeepSeek  CodexGatewayProvider = "deepseek"
+	CodexGatewayProviderAnthropic CodexGatewayProvider = "anthropic"
 )
 
 type CodexGatewaySmokeStatus string
@@ -182,6 +184,7 @@ func (s *CodexGatewayAdminService) ListProviderGroups(context.Context) ([]CodexG
 	rows := []CodexGatewayProviderRuntime{
 		s.providerGroups[CodexGatewayProviderOpenAI],
 		s.providerGroups[CodexGatewayProviderDeepSeek],
+		s.providerGroups[CodexGatewayProviderAnthropic],
 	}
 	return rows, nil
 }
@@ -352,6 +355,12 @@ func buildFallbackCodexGatewayProviderGroups(cfg config.GatewayCodexConfig) map[
 			GroupID:   cfg.ProviderGroups.DeepSeek,
 			Healthy:   cfg.ProviderGroups.DeepSeek > 0,
 		},
+		CodexGatewayProviderAnthropic: {
+			Provider:  CodexGatewayProviderAnthropic,
+			Namespace: CodexGatewayProviderGroupAnthropicNamespace,
+			GroupID:   cfg.ProviderGroups.Anthropic,
+			Healthy:   cfg.ProviderGroups.Anthropic > 0,
+		},
 	}
 }
 
@@ -404,6 +413,8 @@ func normalizeCodexGatewayProvider(provider CodexGatewayProvider) CodexGatewayPr
 		return CodexGatewayProviderOpenAI
 	case string(CodexGatewayProviderDeepSeek):
 		return CodexGatewayProviderDeepSeek
+	case string(CodexGatewayProviderAnthropic):
+		return CodexGatewayProviderAnthropic
 	default:
 		return CodexGatewayProvider(strings.ToLower(strings.TrimSpace(string(provider))))
 	}
@@ -415,6 +426,8 @@ func codexGatewayProviderNamespace(provider CodexGatewayProvider) (string, bool)
 		return CodexGatewayProviderGroupOpenAINamespace, true
 	case CodexGatewayProviderDeepSeek:
 		return CodexGatewayProviderGroupDeepSeekNamespace, true
+	case CodexGatewayProviderAnthropic:
+		return CodexGatewayProviderGroupAnthropicNamespace, true
 	default:
 		return "", false
 	}

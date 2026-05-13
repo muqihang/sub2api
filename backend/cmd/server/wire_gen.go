@@ -273,7 +273,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexGatewayStateStore := service.ProvideCodexGatewayStateStore(configConfig)
 	codexGatewayAdminService := service.ProvideCodexGatewayAdminService(configConfig, codexGatewayStateStore)
 	codexGatewayModelRegistry := service.ProvideCodexGatewayModelRegistry(configConfig, codexGatewayAdminService)
-	codexGatewayProviderExecutor := service.ProvideCodexGatewayProviderExecutor(configConfig, openAIGatewayService, codexGatewayStateStore, codexGatewayAdminService)
+	codexGatewayProviderExecutor := service.ProvideCodexGatewayProviderExecutor(configConfig, openAIGatewayService, gatewayService, codexGatewayStateStore, codexGatewayAdminService)
 	codexGatewayService := service.ProvideCodexGatewayService(codexGatewayModelRegistry, codexGatewayProviderExecutor)
 	codexGatewayAdminHandler := handler.ProvideCodexGatewayAdminHandler(codexGatewayAdminService)
 	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, geminiHealthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, entityHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, paymentHandler, affiliateHandler, augmentGatewayHandler, codexGatewayAdminHandler)

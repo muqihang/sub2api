@@ -249,6 +249,27 @@ func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDelta(respon
 	})
 }
 
+func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDelta(responseID, itemID, callID string, outputIndex int, delta string) error {
+	return w.write("response.custom_tool_call_input.delta", map[string]any{
+		"type":         "response.custom_tool_call_input.delta",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"call_id":      callID,
+		"output_index": outputIndex,
+		"delta":        delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDone(responseID, itemID string, outputIndex int, input string) error {
+	return w.write("response.custom_tool_call_input.done", map[string]any{
+		"type":         "response.custom_tool_call_input.done",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
+		"input":        input,
+	})
+}
+
 func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(responseID, itemID string, outputIndex int, item json.RawMessage) error {
 	return w.write("response.function_call_arguments.done", map[string]any{
 		"type":         "response.function_call_arguments.done",
