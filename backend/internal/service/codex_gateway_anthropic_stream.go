@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func ExecuteCodexGatewayAnthropicStream(
@@ -266,6 +268,9 @@ func (s *codexGatewayAnthropicStreamState) consumePayload(payload []byte, writer
 		case "input_json_delta":
 			return s.consumeToolInputJSONDelta(index, delta.Get("partial_json").String(), writer)
 		}
+	case "content_block_stop":
+		index := int(gjson.GetBytes(payload, "index").Int())
+		return s.stopContentBlock(index, writer)
 	case "message_delta":
 		delta := gjson.GetBytes(payload, "delta")
 		if reason := strings.TrimSpace(delta.Get("stop_reason").String()); reason != "" {
@@ -479,12 +484,29 @@ func (s *codexGatewayAnthropicStreamState) consumeToolInputJSONDelta(index int, 
 		}
 		return nil
 	}
+	if codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) {
+		return nil
+	}
 	if len(args) > call.EmittedLen {
 		deltaText := args[call.EmittedLen:]
 		call.EmittedLen = len(args)
 		return writer.WriteFunctionCallArgumentsDelta(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, deltaText)
 	}
 	return nil
+}
+
+func (s *codexGatewayAnthropicStreamState) stopContentBlock(index int, writer *CodexGatewayResponseEventWriter) error {
+	call := s.toolCalls[index]
+	if call == nil || !call.ItemEmitted || !codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) {
+		return nil
+	}
+	args := codexGatewayAnthropicFunctionToolArguments(call)
+	if len(args) <= call.EmittedLen {
+		return nil
+	}
+	deltaText := args[call.EmittedLen:]
+	call.EmittedLen = len(args)
+	return writer.WriteFunctionCallArgumentsDelta(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, deltaText)
 }
 
 func (s *codexGatewayAnthropicStreamState) mergeUsage(usage gjson.Result) {
@@ -660,7 +682,7 @@ func (s *codexGatewayAnthropicStreamState) toolCallDoneItem(call *codexGatewayAn
 		if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 			item["namespace"] = namespace
 		}
-		item["arguments"] = call.Buffer.String()
+		item["arguments"] = codexGatewayAnthropicFunctionToolArguments(call)
 	}
 	return item
 }
@@ -699,10 +721,88 @@ func (s *codexGatewayAnthropicStreamState) storedToolCalls() []CodexGatewayStore
 			Type:      call.Kind,
 			Alias:     call.Alias,
 			Name:      call.Name,
-			Arguments: call.Buffer.String(),
+			Arguments: codexGatewayAnthropicFunctionToolArguments(call),
 		})
 	}
 	return out
+}
+
+func codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call *codexGatewayAnthropicStreamToolCall) bool {
+	if call == nil || call.Kind == CodexGatewayToolKindCustom {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(call.Name), "wait_agent")
+}
+
+func codexGatewayAnthropicFunctionToolArguments(call *codexGatewayAnthropicStreamToolCall) string {
+	if call == nil {
+		return ""
+	}
+	args := call.Buffer.String()
+	if call.Kind == CodexGatewayToolKindCustom {
+		return args
+	}
+	if next, changed := codexGatewayNormalizeFunctionToolArguments(call.Name, args); changed {
+		return next
+	}
+	return args
+}
+
+func codexGatewayNormalizeFunctionToolArguments(toolName, argsJSON string) (string, bool) {
+	if !strings.EqualFold(strings.TrimSpace(toolName), "wait_agent") {
+		return argsJSON, false
+	}
+	argsJSON = strings.TrimSpace(argsJSON)
+	if argsJSON == "" || !gjson.Valid(argsJSON) || !gjson.Parse(argsJSON).IsObject() {
+		return argsJSON, false
+	}
+
+	updated := argsJSON
+	changed := false
+	targets := gjson.Get(updated, "targets")
+	if targets.Exists() && targets.Type == gjson.String {
+		if next, ok := codexGatewayNormalizeWaitAgentTargets(updated, strings.TrimSpace(targets.Str)); ok {
+			updated = next
+			changed = true
+		}
+	}
+	timeout := gjson.Get(updated, "timeout_ms")
+	if timeout.Exists() && timeout.Type == gjson.String {
+		if n, err := strconv.ParseInt(strings.TrimSpace(timeout.Str), 10, 64); err == nil && n >= 0 {
+			if next, err := sjson.Set(updated, "timeout_ms", n); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+	}
+	return updated, changed
+}
+
+func codexGatewayNormalizeWaitAgentTargets(argsJSON, raw string) (string, bool) {
+	if raw == "" {
+		return argsJSON, false
+	}
+	if gjson.Valid(raw) && gjson.Parse(raw).IsArray() {
+		next, err := sjson.SetRaw(argsJSON, "targets", raw)
+		return next, err == nil
+	}
+	parts := strings.Split(raw, ",")
+	targets := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			targets = append(targets, part)
+		}
+	}
+	if len(targets) == 0 {
+		return argsJSON, false
+	}
+	rawTargets, err := json.Marshal(targets)
+	if err != nil {
+		return argsJSON, false
+	}
+	next, err := sjson.SetRaw(argsJSON, "targets", string(rawTargets))
+	return next, err == nil
 }
 
 func (s *codexGatewayAnthropicStreamState) storedThinkingBlocks() []json.RawMessage {

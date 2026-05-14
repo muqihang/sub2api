@@ -119,6 +119,66 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 	require.Equal(t, float64(32), usage["total_tokens"])
 }
 
+func TestExecuteCodexGatewayAnthropicStream_NormalizesWaitAgentArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_wait","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":11}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_wait","name":"wait_agent","input":{}}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"targets\":\"agent-1\",\"timeout_ms\":\"30000\"}"}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-sonnet-4-6",
+		"input":[{"type":"message","role":"user","content":"wait"}],
+		"tools":[{"type":"function","name":"wait_agent","parameters":{"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"}},"timeout_ms":{"type":"number"}},"required":["targets"]}}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	var dst bytes.Buffer
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-sonnet-4-6", Provider: "anthropic", UpstreamModel: "claude-sonnet-4-6"},
+		req,
+		NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{}),
+		CodexGatewayAnthropicRequestContext{SessionKey: "s", IsolationKey: "i"},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Len(t, result.ProviderResult.ToolCalls, 1)
+	require.JSONEq(t, `{"targets":["agent-1"],"timeout_ms":30000}`, result.ProviderResult.ToolCalls[0].Arguments)
+
+	events := dst.String()
+	require.Contains(t, events, `"name":"wait_agent"`)
+	require.Contains(t, events, `\"targets\":[\"agent-1\"]`)
+	require.Contains(t, events, `\"timeout_ms\":30000`)
+	require.NotContains(t, events, `\"targets\":\"agent-1\"`)
+	require.Contains(t, events, "event: response.function_call_arguments.delta")
+	require.Contains(t, events, "event: response.function_call_arguments.done")
+}
+
 func TestExecuteCodexGatewayAnthropicStream_PersistsThinkingSignatureForToolReplay(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
