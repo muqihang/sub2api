@@ -251,13 +251,13 @@ func TestAugmentDedicatedModelsHaveExplicitCatalogPricing(t *testing.T) {
 	require.InDelta(t, 7.5e-7, pricingData["gpt-5.4-mini"].CacheCreationInputTokenCost, 1e-12)
 	require.InDelta(t, 7.5e-8, pricingData["gpt-5.4-mini"].CacheReadInputTokenCost, 1e-12)
 
-	require.InDelta(t, 1.74e-6, pricingData["deepseek-v4-pro"].InputCostPerToken, 1e-12)
-	require.InDelta(t, 3.48e-6, pricingData["deepseek-v4-pro"].OutputCostPerToken, 1e-12)
-	require.InDelta(t, 0.145e-6, pricingData["deepseek-v4-pro"].CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 0.435e-6, pricingData["deepseek-v4-pro"].InputCostPerToken, 1e-12)
+	require.InDelta(t, 0.87e-6, pricingData["deepseek-v4-pro"].OutputCostPerToken, 1e-12)
+	require.InDelta(t, 0.003625e-6, pricingData["deepseek-v4-pro"].CacheReadInputTokenCost, 1e-12)
 
 	require.InDelta(t, 0.14e-6, pricingData["deepseek-v4-flash"].InputCostPerToken, 1e-12)
 	require.InDelta(t, 0.28e-6, pricingData["deepseek-v4-flash"].OutputCostPerToken, 1e-12)
-	require.InDelta(t, 0.028e-6, pricingData["deepseek-v4-flash"].CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 0.0028e-6, pricingData["deepseek-v4-flash"].CacheReadInputTokenCost, 1e-12)
 }
 
 func TestLoadPricingData_MergesEmbeddedCatalogWhenLocalPricingIsStale(t *testing.T) {
@@ -279,13 +279,13 @@ func TestLoadPricingData_MergesEmbeddedCatalogWhenLocalPricingIsStale(t *testing
 
 	pro := svc.GetModelPricing("deepseek-v4-pro")
 	require.NotNil(t, pro)
-	require.InDelta(t, 1.74e-6, pro.InputCostPerToken, 1e-12)
-	require.InDelta(t, 3.48e-6, pro.OutputCostPerToken, 1e-12)
-	require.InDelta(t, 0.145e-6, pro.CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 0.435e-6, pro.InputCostPerToken, 1e-12)
+	require.InDelta(t, 0.87e-6, pro.OutputCostPerToken, 1e-12)
+	require.InDelta(t, 0.003625e-6, pro.CacheReadInputTokenCost, 1e-12)
 
 	flash := svc.GetModelPricing("deepseek-v4-flash")
 	require.NotNil(t, flash)
 	require.InDelta(t, 0.14e-6, flash.InputCostPerToken, 1e-12)
 	require.InDelta(t, 0.28e-6, flash.OutputCostPerToken, 1e-12)
-	require.InDelta(t, 0.028e-6, flash.CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 0.0028e-6, flash.CacheReadInputTokenCost, 1e-12)
 }
