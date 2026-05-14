@@ -45,6 +45,7 @@ type CodexGatewayProviderRequest struct {
 	Parsed       CodexGatewayResponsesCreateRequest
 	SessionKey   string
 	IsolationKey string
+	CaptureTrace *CodexGatewayTrace
 }
 
 type codexGatewayUsageRecorder interface {
@@ -98,7 +99,9 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 
 	var lastFailover *UpstreamFailoverError
 	excluded := make(map[int64]struct{})
+	attempt := 0
 	for {
+		attempt++
 		account, err := e.selectAccount(ctx, groupID, req, excluded)
 		if err != nil {
 			var unavailable *CodexGatewayProviderUnavailableError
@@ -107,13 +110,16 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 			}
 			return nil, err
 		}
+		codexGatewayCaptureProviderSelection(req, attempt, account)
 		result, err := adapter.Complete(ctx, account, req)
 		if err == nil {
+			codexGatewayCaptureProviderResult(req, result.ProviderResult)
 			codexGatewayRecordUsageBestEffort(ctx, e.usageRecorder, req, account, result.ProviderResult, false, startedAt)
 			return &result.ServiceResponse, nil
 		}
 		var failoverErr *UpstreamFailoverError
 		if errors.As(err, &failoverErr) {
+			codexGatewayCaptureProviderFailover(req, attempt, failoverErr)
 			lastFailover = failoverErr
 			excluded[account.ID] = struct{}{}
 			continue
@@ -131,7 +137,9 @@ func (e *CodexGatewayProviderExecutor) Stream(ctx context.Context, req CodexGate
 
 	var lastFailover *UpstreamFailoverError
 	excluded := make(map[int64]struct{})
+	attempt := 0
 	for {
+		attempt++
 		account, err := e.selectAccount(ctx, groupID, req, excluded)
 		if err != nil {
 			var unavailable *CodexGatewayProviderUnavailableError
@@ -140,19 +148,74 @@ func (e *CodexGatewayProviderExecutor) Stream(ctx context.Context, req CodexGate
 			}
 			return err
 		}
+		codexGatewayCaptureProviderSelection(req, attempt, account)
 		providerResult, err := adapter.Stream(ctx, account, req)
 		if err == nil {
+			codexGatewayCaptureProviderResult(req, providerResult)
 			codexGatewayRecordUsageBestEffort(ctx, e.usageRecorder, req, account, providerResult, true, startedAt)
 			return nil
 		}
 		var failoverErr *UpstreamFailoverError
 		if errors.As(err, &failoverErr) {
+			codexGatewayCaptureProviderFailover(req, attempt, failoverErr)
 			lastFailover = failoverErr
 			excluded[account.ID] = struct{}{}
 			continue
 		}
 		return err
 	}
+}
+
+func codexGatewayCaptureProviderResult(req CodexGatewayProviderRequest, result CodexGatewayProviderResult) {
+	if req.CaptureTrace == nil || req.CaptureTrace.manager == nil {
+		return
+	}
+	req.CaptureTrace.manager.RecordProviderResult(req.CaptureTrace, result)
+}
+
+func codexGatewayCaptureProviderSelection(req CodexGatewayProviderRequest, attempt int, account *Account) {
+	if req.CaptureTrace == nil || req.CaptureTrace.manager == nil {
+		return
+	}
+	req.CaptureTrace.manager.RecordProviderSelectionAttempt(
+		req.CaptureTrace,
+		attempt,
+		req.Model.Provider,
+		req.Model.UpstreamModel,
+		req.CaptureTrace.manager.redact.HashText(fmt.Sprintf("%d", apiKeyAccountIDValue(account))),
+	)
+}
+
+func codexGatewayCaptureProviderFailover(req CodexGatewayProviderRequest, attempt int, failoverErr *UpstreamFailoverError) {
+	if req.CaptureTrace == nil || req.CaptureTrace.manager == nil || failoverErr == nil {
+		return
+	}
+	bodyHash := ""
+	if len(failoverErr.ResponseBody) > 0 {
+		bodyHash = req.CaptureTrace.manager.redact.HashText(string(failoverErr.ResponseBody))
+	}
+	req.CaptureTrace.manager.RecordError(req.CaptureTrace, CodexGatewayCaptureError{
+		Origin:           "upstream",
+		Stage:            "provider_attempt",
+		Provider:         req.Model.Provider,
+		Model:            req.Model.Slug,
+		UpstreamModel:    req.Model.UpstreamModel,
+		Attempt:          attempt,
+		HTTPStatus:       failoverErr.StatusCode,
+		ErrorType:        CodexGatewayErrorTypeAPI,
+		ErrorCode:        "upstream_failover",
+		Retryable:        true,
+		FailoverDecision: "retry_next_account",
+		BodyHash:         bodyHash,
+		Message:          "upstream attempt failed before visible output",
+	})
+}
+
+func apiKeyAccountIDValue(account *Account) int64 {
+	if account == nil {
+		return 0
+	}
+	return account.ID
 }
 
 func (e *CodexGatewayProviderExecutor) providerGroupAndAdapter(ctx context.Context, model CodexGatewayModel) (int64, codexGatewayProviderAdapter, error) {
@@ -257,6 +320,7 @@ func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, acco
 		CodexGatewayDeepSeekRequestContext{
 			SessionKey:   req.SessionKey,
 			IsolationKey: req.IsolationKey,
+			CaptureTrace: req.CaptureTrace,
 		},
 		CodexGatewayDeepSeekRequestConfig{},
 	)
@@ -285,6 +349,7 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 		CodexGatewayDeepSeekRequestContext{
 			SessionKey:   req.SessionKey,
 			IsolationKey: req.IsolationKey,
+			CaptureTrace: req.CaptureTrace,
 		},
 		CodexGatewayDeepSeekRequestConfig{},
 		req.Request.StreamWriter,
@@ -311,6 +376,7 @@ func (a *codexGatewayAnthropicProviderAdapter) Complete(ctx context.Context, acc
 		CodexGatewayAnthropicRequestContext{
 			SessionKey:   req.SessionKey,
 			IsolationKey: req.IsolationKey,
+			CaptureTrace: req.CaptureTrace,
 		},
 		CodexGatewayAnthropicRequestConfig{},
 	)
@@ -339,6 +405,7 @@ func (a *codexGatewayAnthropicProviderAdapter) Stream(ctx context.Context, accou
 		CodexGatewayAnthropicRequestContext{
 			SessionKey:   req.SessionKey,
 			IsolationKey: req.IsolationKey,
+			CaptureTrace: req.CaptureTrace,
 		},
 		CodexGatewayAnthropicRequestConfig{},
 		req.Request.StreamWriter,

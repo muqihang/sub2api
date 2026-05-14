@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -55,6 +57,16 @@ func TestCodexGatewayProviderExecutor_CompleteFailsOverBeforeVisibleOutput(t *te
 	account1 := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
 	account2 := &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
 	recorder := &codexGatewayUsageRecorderStub{}
+	captureBaseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  captureBaseDir,
+		HashKeyFile:              filepath.Join(captureBaseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer capture.Close()
+	trace := capture.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "failover"})
+	require.NotNil(t, trace)
 	executor := newCodexGatewayProviderExecutorForTest()
 	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
 		selectFn: func(_ context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
@@ -103,13 +115,24 @@ func TestCodexGatewayProviderExecutor_CompleteFailsOverBeforeVisibleOutput(t *te
 		Parsed:       CodexGatewayResponsesCreateRequest{Model: "gpt-5.5"},
 		SessionKey:   "sess_hash",
 		IsolationKey: "iso_hash",
+		CaptureTrace: trace,
 	})
 	require.NoError(t, err)
+	capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, capture.Close())
 	require.NotNil(t, resp)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Len(t, recorder.inputs, 1)
 	require.Equal(t, account2.ID, recorder.inputs[0].Account.ID)
 	require.Equal(t, "req_2", recorder.inputs[0].Result.RequestID)
+	traceDir := filepath.Join(captureBaseDir, time.Now().Format("2006-01-02"), "failover")
+	attempts, err := os.ReadFile(filepath.Join(traceDir, "provider_attempts.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(attempts), `"attempt":1`)
+	require.Contains(t, string(attempts), `"attempt":2`)
+	errorsBytes, err := os.ReadFile(filepath.Join(traceDir, "errors.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(errorsBytes), "upstream_failover")
 }
 
 func TestCodexGatewayProviderExecutor_StreamDoesNotFailoverAfterVisibleOutput(t *testing.T) {

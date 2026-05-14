@@ -3,10 +3,14 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -82,6 +86,16 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompletePreservesNativeRequestAndMap
 		},
 		Body: io.NopCloser(strings.NewReader(respBody)),
 	}, nil)
+	captureBaseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  captureBaseDir,
+		HashKeyFile:              filepath.Join(captureBaseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer capture.Close()
+	trace := capture.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "openai_sync"})
+	require.NotNil(t, trace)
 
 	result, err := adapter.Complete(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
 		Request: CodexGatewayResponsesRequest{
@@ -99,9 +113,12 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompletePreservesNativeRequestAndMap
 			},
 			Body: body,
 		},
-		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		Model:        CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		CaptureTrace: trace,
 	})
 	require.NoError(t, err)
+	capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, capture.Close())
 
 	require.NotNil(t, upstream.lastRequest)
 	require.Equal(t, "POST", upstream.lastRequest.Method)
@@ -132,6 +149,10 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompletePreservesNativeRequestAndMap
 	require.Equal(t, 7, result.ProviderResult.Usage.OutputTokens)
 	require.Equal(t, 18, result.ProviderResult.Usage.TotalTokens)
 	require.Equal(t, 3, result.ProviderResult.Usage.CacheReadInputTokens)
+	upstreamResponseShape, err := os.ReadFile(filepath.Join(captureBaseDir, time.Now().Format("2006-01-02"), "openai_sync", "upstream_response.shape.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(upstreamResponseShape), `"bytes": `+fmt.Sprint(len(respBody)))
+	require.NotContains(t, string(upstreamResponseShape), "pk_123")
 }
 
 func TestCodexGatewayOpenAIResponsesAdapter_CompleteSupportsUpstreamAccountType(t *testing.T) {

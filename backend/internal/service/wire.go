@@ -690,8 +690,15 @@ func ProvideCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *Open
 	return NewCodexGatewayProviderExecutor(cfg, openaiGateway, gatewayService, stateStore, adminService)
 }
 
-func ProvideCodexGatewayService(registry *CodexGatewayModelRegistry, executor *CodexGatewayProviderExecutor) *CodexGatewayService {
-	return NewCodexGatewayService(registry, executor)
+func ProvideCodexGatewayCaptureManager(cfg *config.Config) *CodexGatewayCaptureManager {
+	if cfg == nil {
+		return NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{})
+	}
+	return NewCodexGatewayCaptureManager(cfg.Gateway.Codex.Capture)
+}
+
+func ProvideCodexGatewayService(registry *CodexGatewayModelRegistry, executor *CodexGatewayProviderExecutor, capture *CodexGatewayCaptureManager) *CodexGatewayService {
+	return NewCodexGatewayService(registry, executor, capture)
 }
 
 func ProvideCodexGatewayAdminService(cfg *config.Config, stateStore *CodexGatewayStateStore) *CodexGatewayAdminService {
@@ -735,6 +742,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCodexGatewayModelRegistry,
 	ProvideCodexGatewayStateStore,
 	ProvideCodexGatewayProviderExecutor,
+	ProvideCodexGatewayCaptureManager,
 	ProvideCodexGatewayService,
 	ProvideCodexGatewayAdminService,
 	NewAugmentGatewayReasoningTurnStore,

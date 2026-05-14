@@ -63,6 +63,49 @@ curl -sS http://127.0.0.1:3000/api/v1/admin/codex-gateway/state-store/summary \
 12. Continue the same Claude Thinking conversation with a follow-up tool-result turn and verify the stream completes.
 13. Use `gpt-5.4` as controller and dispatch DeepSeek and Claude subagents; verify the controller can summarize their results.
 
+### Protocol capture smoke
+
+Enable capture in local config:
+
+```yaml
+gateway:
+  codex:
+    capture:
+      enabled: true
+      level: summary
+      raw_payloads: false
+      base_dir: data/codex-gateway-captures
+      capture_success_sample_rate: 1.0
+      capture_errors_always: true
+```
+
+After one GPT, one DeepSeek, and one Claude request, verify:
+
+```bash
+find data/codex-gateway-captures -maxdepth 3 -type f | sort
+```
+
+Expected capture files include:
+
+- `summary.json`
+- `client_request.shape.json`
+- `client_request.headers.json`
+- `upstream_request.shape.json`
+- `upstream_response.shape.json`
+- `client_stream.events.jsonl` for stream requests
+- `tool_closure.json` when a turn emits or returns tool calls/results
+- `cache_usage.json`
+- `errors.jsonl` for failed requests
+
+Content checks:
+
+```bash
+rg -n "private prompt|sk-|Bearer " data/codex-gateway-captures || true
+rg -n "hmac-sha256|cache_read_input_tokens|response.output" data/codex-gateway-captures
+```
+
+The first command should not find raw user prompt text or credentials in summary-mode captures. The second command should show hashed content metadata, cache usage fields, and stream event names.
+
 ### Regression prompts
 
 Use these prompts when validating Codex Desktop end-to-end.

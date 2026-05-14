@@ -7,10 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -32,6 +35,17 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 			SessionKey:   "session_stream_text",
 			IsolationKey: "iso_stream_text",
 		}
+		captureBaseDir := t.TempDir()
+		capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+			Enabled:                  true,
+			BaseDir:                  captureBaseDir,
+			HashKeyFile:              captureBaseDir + "/.key",
+			CaptureSuccessSampleRate: 1,
+		})
+		defer capture.Close()
+		trace := capture.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "deepseek_stream"})
+		require.NotNil(t, trace)
+		reqCtx.CaptureTrace = trace
 		prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, reqCtx, CodexGatewayDeepSeekRequestConfig{})
 		require.NoError(t, err)
 		expectedBody := cloneCodexGatewayStreamBody(prepared.Body)
@@ -76,6 +90,8 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 			&buf,
 		)
 		require.NoError(t, err)
+		capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+		require.NoError(t, capture.Close())
 		require.Equal(t, "completed", result.ProviderResult.Response.Status)
 		require.Equal(t, 3, result.ProviderResult.Usage.CacheReadInputTokens)
 		require.Equal(t, "plan ", result.ProviderResult.ReasoningContent)
@@ -104,6 +120,10 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, "message", gjson.GetBytes(terminal, "response.output.0.type").String())
 		require.Equal(t, "hello world", gjson.GetBytes(terminal, "response.output.0.content.0.text").String())
 		require.Equal(t, int64(3), gjson.GetBytes(terminal, "response.usage.input_tokens_details.cached_tokens").Int())
+		upstreamEvents, err := os.ReadFile(filepath.Join(captureBaseDir, time.Now().Format("2006-01-02"), "deepseek_stream", "upstream_stream.events.jsonl"))
+		require.NoError(t, err)
+		require.Contains(t, string(upstreamEvents), "chat.completion.chunk")
+		require.NotContains(t, string(upstreamEvents), "plan ")
 	})
 
 	t.Run("does not expose upstream reasoning text in client-visible stream", func(t *testing.T) {

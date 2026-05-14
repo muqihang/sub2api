@@ -744,12 +744,38 @@ type GatewayCodexConfig struct {
 	StreamMaxLineSize    int64                            `mapstructure:"stream_max_line_size"`
 	EnabledModels        []string                         `mapstructure:"enabled_models"`
 	ProviderGroups       GatewayCodexProviderGroupsConfig `mapstructure:"provider_groups"`
+	Capture              GatewayCodexCaptureConfig        `mapstructure:"capture"`
 }
 
 type GatewayCodexProviderGroupsConfig struct {
 	OpenAI    int64 `mapstructure:"openai"`
 	DeepSeek  int64 `mapstructure:"deepseek"`
 	Anthropic int64 `mapstructure:"anthropic"`
+}
+
+type GatewayCodexCaptureConfig struct {
+	Enabled                     bool                            `mapstructure:"enabled"`
+	Level                       string                          `mapstructure:"level"`
+	RawPayloads                 bool                            `mapstructure:"raw_payloads"`
+	BaseDir                     string                          `mapstructure:"base_dir"`
+	RetentionDays               int                             `mapstructure:"retention_days"`
+	MaxTraceBytes               int64                           `mapstructure:"max_trace_bytes"`
+	MaxBodyBytes                int64                           `mapstructure:"max_body_bytes"`
+	MaxEventBytes               int64                           `mapstructure:"max_event_bytes"`
+	CaptureErrorsAlways         bool                            `mapstructure:"capture_errors_always"`
+	CaptureSuccessSampleRate    float64                         `mapstructure:"capture_success_sample_rate"`
+	IncludeResponseHeader       bool                            `mapstructure:"include_response_header"`
+	AsyncQueueSize              int                             `mapstructure:"async_queue_size"`
+	HashMode                    string                          `mapstructure:"hash_mode"`
+	HashKeyFile                 string                          `mapstructure:"hash_key_file"`
+	RequireRawPayloadsUnlockEnv string                          `mapstructure:"require_raw_payloads_unlock_env"`
+	Redact                      GatewayCodexCaptureRedactConfig `mapstructure:"redact"`
+}
+
+type GatewayCodexCaptureRedactConfig struct {
+	Enabled     bool     `mapstructure:"enabled"`
+	HeaderNames []string `mapstructure:"header_names"`
+	JSONKeys    []string `mapstructure:"json_keys"`
 }
 
 // UserMessageQueueConfig 用户消息串行队列配置
@@ -1469,6 +1495,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Gateway.Augment.EnabledModels = normalizeStringSlice(cfg.Gateway.Augment.EnabledModels)
 	cfg.Gateway.Codex.ModelCatalogPath = strings.TrimSpace(cfg.Gateway.Codex.ModelCatalogPath)
 	cfg.Gateway.Codex.EnabledModels = normalizeStringSlice(cfg.Gateway.Codex.EnabledModels)
+	cfg.Gateway.Codex.Capture.Level = strings.ToLower(strings.TrimSpace(cfg.Gateway.Codex.Capture.Level))
+	cfg.Gateway.Codex.Capture.BaseDir = strings.TrimSpace(cfg.Gateway.Codex.Capture.BaseDir)
+	cfg.Gateway.Codex.Capture.HashMode = strings.ToLower(strings.TrimSpace(cfg.Gateway.Codex.Capture.HashMode))
+	cfg.Gateway.Codex.Capture.HashKeyFile = strings.TrimSpace(cfg.Gateway.Codex.Capture.HashKeyFile)
+	cfg.Gateway.Codex.Capture.RequireRawPayloadsUnlockEnv = strings.TrimSpace(cfg.Gateway.Codex.Capture.RequireRawPayloadsUnlockEnv)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -1536,8 +1567,28 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 			"force_remove", cfg.Security.ResponseHeaders.ForceRemove,
 		)
 	}
+	if err := validateCodexCaptureRuntimeConfig(cfg.Gateway.Codex.Capture, cfg.Server.Mode); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
+}
+
+func validateCodexCaptureRuntimeConfig(capture GatewayCodexCaptureConfig, serverMode string) error {
+	if !capture.Enabled || !capture.RawPayloads {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(serverMode), "production") {
+		return fmt.Errorf("gateway.codex.capture.raw_payloads is not allowed in production server mode")
+	}
+	name, value, ok := strings.Cut(strings.TrimSpace(capture.RequireRawPayloadsUnlockEnv), "=")
+	if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
+		return fmt.Errorf("gateway.codex.capture.require_raw_payloads_unlock_env must be NAME=VALUE")
+	}
+	if os.Getenv(strings.TrimSpace(name)) != strings.TrimSpace(value) {
+		return fmt.Errorf("gateway.codex.capture.raw_payloads requires %s", capture.RequireRawPayloadsUnlockEnv)
+	}
+	return nil
 }
 
 func setDefaults() {
@@ -1874,6 +1925,45 @@ func setDefaults() {
 	viper.SetDefault("gateway.codex.provider_groups.openai", int64(0))
 	viper.SetDefault("gateway.codex.provider_groups.deepseek", int64(0))
 	viper.SetDefault("gateway.codex.provider_groups.anthropic", int64(0))
+	viper.SetDefault("gateway.codex.capture.enabled", false)
+	viper.SetDefault("gateway.codex.capture.level", "summary")
+	viper.SetDefault("gateway.codex.capture.raw_payloads", false)
+	viper.SetDefault("gateway.codex.capture.base_dir", "data/codex-gateway-captures")
+	viper.SetDefault("gateway.codex.capture.retention_days", 7)
+	viper.SetDefault("gateway.codex.capture.max_trace_bytes", int64(64*1024*1024))
+	viper.SetDefault("gateway.codex.capture.max_body_bytes", int64(2*1024*1024))
+	viper.SetDefault("gateway.codex.capture.max_event_bytes", int64(128*1024))
+	viper.SetDefault("gateway.codex.capture.capture_errors_always", true)
+	viper.SetDefault("gateway.codex.capture.capture_success_sample_rate", 0.0)
+	viper.SetDefault("gateway.codex.capture.include_response_header", true)
+	viper.SetDefault("gateway.codex.capture.async_queue_size", 4096)
+	viper.SetDefault("gateway.codex.capture.hash_mode", "hmac-sha256")
+	viper.SetDefault("gateway.codex.capture.hash_key_file", "data/codex-gateway-captures/.capture-hmac-key")
+	viper.SetDefault("gateway.codex.capture.require_raw_payloads_unlock_env", "SUB2API_CODEX_CAPTURE_RAW_UNLOCK=I_UNDERSTAND_THIS_WRITES_LOCAL_RAW_PROTOCOL_PAYLOADS")
+	viper.SetDefault("gateway.codex.capture.redact.enabled", true)
+	viper.SetDefault("gateway.codex.capture.redact.header_names", []string{
+		"Authorization",
+		"Cookie",
+		"Set-Cookie",
+		"X-Api-Key",
+		"Api-Key",
+		"X-OpenAI-Api-Key",
+		"Anthropic-Api-Key",
+	})
+	viper.SetDefault("gateway.codex.capture.redact.json_keys", []string{
+		"authorization",
+		"cookie",
+		"set-cookie",
+		"x-api-key",
+		"api-key",
+		"api_key",
+		"apikey",
+		"token",
+		"access_token",
+		"refresh_token",
+		"password",
+		"secret",
+	})
 	viper.SetDefault("gateway.cc_gateway.enabled", false)
 	viper.SetDefault("gateway.cc_gateway.base_url", "")
 	viper.SetDefault("gateway.cc_gateway.token", "")
@@ -3001,6 +3091,28 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Codex.StreamMaxLineSize <= 0 {
 		return fmt.Errorf("gateway.codex.stream_max_line_size must be positive")
+	}
+	captureLevel := strings.ToLower(strings.TrimSpace(c.Gateway.Codex.Capture.Level))
+	if captureLevel != "" && captureLevel != "summary" && captureLevel != "headers" && captureLevel != "full" {
+		return fmt.Errorf("gateway.codex.capture.level must be one of summary, headers, full")
+	}
+	if c.Gateway.Codex.Capture.RetentionDays < 0 {
+		return fmt.Errorf("gateway.codex.capture.retention_days must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.MaxTraceBytes < 0 {
+		return fmt.Errorf("gateway.codex.capture.max_trace_bytes must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.MaxBodyBytes < 0 {
+		return fmt.Errorf("gateway.codex.capture.max_body_bytes must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.MaxEventBytes < 0 {
+		return fmt.Errorf("gateway.codex.capture.max_event_bytes must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.AsyncQueueSize < 0 {
+		return fmt.Errorf("gateway.codex.capture.async_queue_size must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.CaptureSuccessSampleRate < 0 || c.Gateway.Codex.Capture.CaptureSuccessSampleRate > 1 {
+		return fmt.Errorf("gateway.codex.capture.capture_success_sample_rate must be between 0 and 1")
 	}
 	if c.Ops.MetricsCollectorCache.TTL < 0 {
 		return fmt.Errorf("ops.metrics_collector_cache.ttl must be non-negative")

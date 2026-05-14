@@ -54,6 +54,7 @@ func ExecuteCodexGatewayDeepSeekStream(
 	if strings.TrimSpace(apiKey) != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	}
+	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "deepseek", httpReq.Header, rawBody)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -67,6 +68,7 @@ func ExecuteCodexGatewayDeepSeekStream(
 			Headers:    cloneCodexGatewayHTTPHeader(resp.Header),
 		},
 	}
+	codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, nil)
 	writer := NewCodexGatewayResponseEventWriter(dst)
 
 	if resp.StatusCode >= 400 {
@@ -74,6 +76,7 @@ func ExecuteCodexGatewayDeepSeekStream(
 		if readErr != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, readErr
 		}
+		codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, bodyBytes)
 		result.ServiceResponse.Body = codexGatewayDeepSeekMapErrorBody(resp.StatusCode, bodyBytes)
 		errorType := gjson.GetBytes(result.ServiceResponse.Body, "error.type").String()
 		errorCode := gjson.GetBytes(result.ServiceResponse.Body, "error.code").String()
@@ -109,9 +112,14 @@ func ExecuteCodexGatewayDeepSeekStream(
 		payload := strings.TrimSpace(strings.Join(dataLines, "\n"))
 		dataLines = dataLines[:0]
 		if payload == "" || payload == "[DONE]" {
+			if payload == "[DONE]" {
+				codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, "deepseek.done", []byte(`{"done":true}`))
+			}
 			return nil
 		}
-		return state.consumePayload([]byte(payload), writer)
+		payloadBytes := []byte(payload)
+		codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, "chat.completion.chunk", payloadBytes)
+		return state.consumePayload(payloadBytes, writer)
 	}
 
 	for scanner.Scan() {

@@ -32,7 +32,7 @@ func ExecuteCodexGatewayDeepSeekAdapter(
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
-	resp, body, err := doCodexGatewayDeepSeekChatCompletionsRequest(ctx, client, baseURL, apiKey, prepared.Body)
+	resp, body, err := doCodexGatewayDeepSeekChatCompletionsRequest(ctx, client, baseURL, apiKey, prepared.Body, reqCtx)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
@@ -63,7 +63,7 @@ func ExecuteCodexGatewayDeepSeekAdapter(
 	return result, nil
 }
 
-func doCodexGatewayDeepSeekChatCompletionsRequest(ctx context.Context, client *http.Client, baseURL, apiKey string, body map[string]any) (*http.Response, []byte, error) {
+func doCodexGatewayDeepSeekChatCompletionsRequest(ctx context.Context, client *http.Client, baseURL, apiKey string, body map[string]any, reqCtx CodexGatewayDeepSeekRequestContext) (*http.Response, []byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -80,6 +80,7 @@ func doCodexGatewayDeepSeekChatCompletionsRequest(ctx context.Context, client *h
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	}
 	req.Header.Set("Accept", "application/json")
+	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "deepseek", req.Header, rawBody)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -91,6 +92,7 @@ func doCodexGatewayDeepSeekChatCompletionsRequest(ctx context.Context, client *h
 		return nil, nil, fmt.Errorf("read codex deepseek response: %w", readErr)
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, bodyBytes)
 	return resp, bodyBytes, nil
 }
 

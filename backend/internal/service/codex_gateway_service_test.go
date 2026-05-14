@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
@@ -16,6 +19,79 @@ import (
 type codexGatewayExecutorStub struct {
 	completeFn func(ctx context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error)
 	streamFn   func(ctx context.Context, req CodexGatewayProviderRequest) error
+}
+
+func TestCodexGatewayService_ResponsesRecordsCaptureTrace(t *testing.T) {
+	baseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              filepath.Join(baseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+		IncludeResponseHeader:    true,
+	})
+	defer capture.Close()
+	registry := NewDefaultCodexGatewayModelRegistry()
+	executor := &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			require.NotNil(t, req.CaptureTrace)
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_capture","model":"gpt-5.5","output":[]}`),
+			}, nil
+		},
+	}
+	svc := NewCodexGatewayService(registry, executor, capture)
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey:  validCodexGatewayAPIKeyForTest(),
+		Headers: http.Header{"Authorization": []string{"Bearer sk-secret"}},
+		Body:    []byte(`{"model":"gpt-5.5","input":"private prompt"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, capture.Close())
+
+	dateDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"))
+	entries, err := os.ReadDir(dateDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	traceDir := filepath.Join(dateDir, entries[0].Name())
+	summary, err := os.ReadFile(filepath.Join(traceDir, "summary.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(summary), `"status": "ok"`)
+	clientShape, err := os.ReadFile(filepath.Join(traceDir, "client_request.shape.json"))
+	require.NoError(t, err)
+	require.NotContains(t, string(clientShape), "private prompt")
+	headers, err := os.ReadFile(filepath.Join(traceDir, "client_request.headers.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(headers), "[REDACTED]")
+}
+
+func TestCodexGatewayService_ModelsRecordsCaptureTrace(t *testing.T) {
+	baseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              filepath.Join(baseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer capture.Close()
+	svc := NewCodexGatewayService(NewDefaultCodexGatewayModelRegistry(), &codexGatewayExecutorStub{}, capture)
+
+	resp, err := svc.Models(context.Background(), CodexGatewayModelsRequest{APIKey: validCodexGatewayAPIKeyForTest()})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, capture.Close())
+
+	dateDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"))
+	entries, err := os.ReadDir(dateDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	modelShape, err := os.ReadFile(filepath.Join(dateDir, entries[0].Name(), "model_catalog.shape.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(modelShape), "gpt-5.5")
+	require.Contains(t, string(modelShape), "supported_in_api")
 }
 
 func (s *codexGatewayExecutorStub) Complete(ctx context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {

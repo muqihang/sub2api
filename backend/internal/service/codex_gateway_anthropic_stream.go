@@ -47,6 +47,7 @@ func ExecuteCodexGatewayAnthropicStream(
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("build codex anthropic stream request: %w", err)
 	}
 	setCodexGatewayAnthropicHeaders(httpReq, apiKey, true)
+	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "anthropic", httpReq.Header, rawBody)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -60,12 +61,14 @@ func ExecuteCodexGatewayAnthropicStream(
 			Headers:    cloneCodexGatewayHTTPHeader(resp.Header),
 		},
 	}
+	codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, nil)
 	writer := NewCodexGatewayResponseEventWriter(dst)
 	if resp.StatusCode >= 400 {
 		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		if readErr != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, readErr
 		}
+		codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, bodyBytes)
 		result.ServiceResponse.Body = codexGatewayAnthropicMapErrorBody(resp.StatusCode, bodyBytes)
 		if codexGatewayAnthropicShouldFailoverUpstreamResponse(resp.StatusCode, resp.Header, bodyBytes) {
 			return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{
@@ -104,9 +107,18 @@ func ExecuteCodexGatewayAnthropicStream(
 		payload := strings.TrimSpace(strings.Join(dataLines, "\n"))
 		dataLines = dataLines[:0]
 		if payload == "" || payload == "[DONE]" {
+			if payload == "[DONE]" {
+				codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, "anthropic.done", []byte(`{"done":true}`))
+			}
 			return nil
 		}
-		return state.consumePayload([]byte(payload), writer)
+		payloadBytes := []byte(payload)
+		eventType := strings.TrimSpace(gjson.GetBytes(payloadBytes, "type").String())
+		if eventType == "" {
+			eventType = "anthropic.message"
+		}
+		codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, eventType, payloadBytes)
+		return state.consumePayload(payloadBytes, writer)
 	}
 	for scanner.Scan() {
 		line := scanner.Text()

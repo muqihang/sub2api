@@ -26,6 +26,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
+	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, false)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
@@ -36,6 +37,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
+	codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, body)
 	serviceResp := CodexGatewayServiceResponse{
 		StatusCode: resp.StatusCode,
 		Headers:    a.gateway.FilterNativeResponsesResponseHeaders(resp.Header),
@@ -92,17 +94,20 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	if err != nil {
 		return CodexGatewayProviderResult{}, err
 	}
+	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, true)
 	if err != nil {
 		return CodexGatewayProviderResult{}, err
 	}
 	defer resp.Body.Close()
+	codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, nil)
 
 	if resp.StatusCode >= 400 {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		if readErr != nil {
 			return CodexGatewayProviderResult{}, readErr
 		}
+		codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, body)
 		msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if a.gateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, body) {
 			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
@@ -171,6 +176,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 				payloadBytes := []byte(payload)
 				a.gateway.parseSSEUsageBytes(payloadBytes, &usage)
 				eventType = strings.TrimSpace(gjson.GetBytes(payloadBytes, "type").String())
+				codexGatewayCaptureUpstreamStreamEvent(req.CaptureTrace, firstNonBlankString(eventType, "openai.response.event"), payloadBytes)
 				if openAIStreamEventIsTerminal(payload) {
 					sawTerminal = true
 					if responseRaw := gjson.GetBytes(payloadBytes, "response"); responseRaw.Exists() && responseRaw.Raw != "" {
@@ -193,6 +199,8 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 					}
 					clientOutputStarted = true
 				}
+			} else if payload == "[DONE]" {
+				codexGatewayCaptureUpstreamStreamEvent(req.CaptureTrace, "openai.done", []byte(`{"done":true}`))
 			}
 		}
 		if clientOutputStarted {

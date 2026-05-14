@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -22,6 +23,7 @@ func (e *codexGatewayStreamingHandledError) Error() string {
 type CodexGatewayService struct {
 	registry *CodexGatewayModelRegistry
 	executor codexGatewayExecutor
+	capture  *CodexGatewayCaptureManager
 }
 
 type codexGatewayExecutor interface {
@@ -29,14 +31,18 @@ type codexGatewayExecutor interface {
 	Stream(ctx context.Context, req CodexGatewayProviderRequest) error
 }
 
-func NewCodexGatewayService(registry *CodexGatewayModelRegistry, executor codexGatewayExecutor) *CodexGatewayService {
-	return &CodexGatewayService{
+func NewCodexGatewayService(registry *CodexGatewayModelRegistry, executor codexGatewayExecutor, capture ...*CodexGatewayCaptureManager) *CodexGatewayService {
+	svc := &CodexGatewayService{
 		registry: registry,
 		executor: executor,
 	}
+	if len(capture) > 0 {
+		svc.capture = capture[0]
+	}
+	return svc
 }
 
-func (s *CodexGatewayService) Models(_ context.Context, req CodexGatewayModelsRequest) (*CodexGatewayServiceResponse, error) {
+func (s *CodexGatewayService) Models(ctx context.Context, req CodexGatewayModelsRequest) (*CodexGatewayServiceResponse, error) {
 	if err := ValidateCodexScopedAPIKeyAccess(req.APIKey, "/codex/v1/models"); err != nil {
 		return codexGatewayHTTPErrorResponse(http.StatusForbidden, CodexGatewayErrorTypeAuthentication, "invalid_api_key", err.Error()), nil
 	}
@@ -46,6 +52,17 @@ func (s *CodexGatewayService) Models(_ context.Context, req CodexGatewayModelsRe
 	body, err := json.Marshal(s.registry.ModelsResponse())
 	if err != nil {
 		return nil, err
+	}
+	if s.capture != nil {
+		trace := s.capture.StartTrace(ctx, CodexGatewayCaptureTraceMeta{
+			Method:       "GET",
+			Path:         "/codex/v1/models",
+			ForceCapture: false,
+		})
+		if trace != nil {
+			s.capture.RecordModelCatalog(trace, body)
+			s.capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok", HTTPStatus: http.StatusOK})
+		}
 	}
 	return &CodexGatewayServiceResponse{
 		StatusCode: http.StatusOK,
@@ -62,23 +79,44 @@ func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayRes
 		return codexGatewayHTTPErrorResponse(http.StatusServiceUnavailable, CodexGatewayErrorTypeAPI, "service_unavailable", "codex gateway service is not configured"), nil
 	}
 
+	trace := s.startCaptureTrace(ctx, req)
+	if trace != nil {
+		req.CaptureTrace = trace
+		s.capture.RecordClientRequest(trace, req.Headers, req.Body)
+	}
+
 	parsed, err := DecodeCodexGatewayResponsesCreateRequest(req.Body)
 	if err != nil {
+		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "client", Stage: "decode", ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: "failed to parse request body"})
 		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, "failed to parse request body"), nil
 	}
 	if strings.TrimSpace(parsed.Model) == "" {
+		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "client", Stage: "validate", ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: "model is required"})
 		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, "model is required"), nil
 	}
 
 	model, ok := s.registry.Resolve(parsed.Model)
 	if !ok {
+		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "model_resolution", Model: parsed.Model, ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: fmt.Sprintf("model %q is not supported", parsed.Model)})
 		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, fmt.Sprintf("model %q is not supported", parsed.Model)), nil
 	}
 	if !model.SupportedInAPI || strings.TrimSpace(model.Visibility) != "visible" {
+		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "model_visibility", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: fmt.Sprintf("model %q is not supported", parsed.Model)})
 		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, fmt.Sprintf("model %q is not supported", parsed.Model)), nil
 	}
 	if model.Provider == "deepseek" && parsed.PreviousResponseID != nil && strings.TrimSpace(*parsed.PreviousResponseID) != "" {
+		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "validate", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: "previous_response_id is not supported on the HTTP gateway path for DeepSeek models"})
 		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, "previous_response_id is not supported on the HTTP gateway path for DeepSeek models"), nil
+	}
+	if trace != nil {
+		trace.Meta.Model = parsed.Model
+		trace.Meta.Provider = model.Provider
+		s.capture.RecordProviderSelection(trace, model.Provider, model.UpstreamModel, "")
+	}
+	streamWriter := req.StreamWriter
+	if trace != nil && streamWriter != nil {
+		streamWriter = NewCodexGatewayCaptureStreamWriter(streamWriter, s.capture, trace, "client")
+		req.StreamWriter = streamWriter
 	}
 
 	providerReq := CodexGatewayProviderRequest{
@@ -87,6 +125,7 @@ func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayRes
 		Parsed:       parsed,
 		SessionKey:   codexGatewaySessionKey(ctx, req.Headers, req.Body),
 		IsolationKey: codexGatewayIsolationKey(ctx, req.APIKey),
+		CaptureTrace: trace,
 	}
 
 	isStream := parsed.Stream != nil && *parsed.Stream
@@ -100,16 +139,74 @@ func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayRes
 			req.WriteStatus(http.StatusOK)
 		}
 		if err := s.executor.Stream(ctx, providerReq); err != nil {
+			s.captureStreamPending(streamWriter)
+			s.finishCaptureError(trace, captureErrorForCodexGatewayError(err, model, "stream"))
 			codexGatewayWriteStreamingError(req, err)
+		} else {
+			s.captureStreamPending(streamWriter)
+			s.finishCaptureOK(trace, CodexGatewayCaptureFinishSummary{Status: "ok", UpstreamModel: model.UpstreamModel})
 		}
 		return nil, nil
 	}
 
 	resp, err := s.executor.Complete(ctx, providerReq)
 	if err != nil {
+		s.finishCaptureError(trace, captureErrorForCodexGatewayError(err, model, "complete"))
 		return codexGatewayMapProviderError(err), nil
 	}
+	if trace != nil && resp != nil {
+		s.finishCaptureOK(trace, CodexGatewayCaptureFinishSummary{Status: "ok", HTTPStatus: resp.StatusCode, UpstreamModel: model.UpstreamModel})
+	}
 	return resp, nil
+}
+
+func (s *CodexGatewayService) startCaptureTrace(ctx context.Context, req CodexGatewayResponsesRequest) *CodexGatewayTrace {
+	if s == nil || s.capture == nil {
+		return nil
+	}
+	return s.capture.StartTrace(ctx, CodexGatewayCaptureTraceMeta{
+		Method:       "POST",
+		Path:         "/codex/v1/responses",
+		SessionID:    strings.TrimSpace(req.Headers.Get("session_id")),
+		ThreadID:     strings.TrimSpace(req.Headers.Get("conversation_id")),
+		ForceCapture: false,
+	})
+}
+
+func (s *CodexGatewayService) finishCaptureOK(trace *CodexGatewayTrace, summary CodexGatewayCaptureFinishSummary) {
+	if s == nil || s.capture == nil || trace == nil {
+		return
+	}
+	s.capture.FinishTrace(trace, summary)
+}
+
+func (s *CodexGatewayService) finishCaptureError(trace *CodexGatewayTrace, errMeta CodexGatewayCaptureError) {
+	if s == nil || s.capture == nil || trace == nil {
+		return
+	}
+	s.capture.RecordError(trace, errMeta)
+	s.capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "failed", HTTPStatus: errMeta.HTTPStatus, UpstreamModel: errMeta.UpstreamModel})
+}
+
+func (s *CodexGatewayService) captureStreamPending(w io.Writer) {
+	if flusher, ok := w.(*CodexGatewayCaptureStreamWriter); ok {
+		flusher.FlushPending()
+	}
+}
+
+func captureErrorForCodexGatewayError(err error, model CodexGatewayModel, stage string) CodexGatewayCaptureError {
+	status, errType, errCode, message := codexGatewayErrorEnvelopeForError(err)
+	return CodexGatewayCaptureError{
+		Origin:        "upstream",
+		Stage:         stage,
+		Provider:      model.Provider,
+		Model:         model.Slug,
+		UpstreamModel: model.UpstreamModel,
+		HTTPStatus:    status,
+		ErrorType:     errType,
+		ErrorCode:     errCode,
+		Message:       message,
+	}
 }
 
 func codexGatewayWriteStreamingError(req CodexGatewayResponsesRequest, err error) {

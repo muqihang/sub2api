@@ -20,6 +20,7 @@ type CodexGatewayResponsesRequest struct {
 	ResponseHeader http.Header
 	WriteStatus    func(int)
 	Flush          func()
+	CaptureTrace   *CodexGatewayTrace
 }
 
 type CodexGatewayServiceResponse struct {
@@ -163,6 +164,7 @@ type CodexGatewayDeepSeekRequestContext struct {
 	SessionKey   string
 	IsolationKey string
 	UserID       string
+	CaptureTrace *CodexGatewayTrace
 }
 
 type CodexGatewayDeepSeekRequestConfig struct {
@@ -179,6 +181,7 @@ type CodexGatewayPreparedDeepSeekRequest struct {
 type CodexGatewayAnthropicRequestContext struct {
 	SessionKey   string
 	IsolationKey string
+	CaptureTrace *CodexGatewayTrace
 }
 
 type CodexGatewayAnthropicRequestConfig struct {

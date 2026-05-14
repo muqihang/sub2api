@@ -31,7 +31,7 @@ func ExecuteCodexGatewayAnthropicAdapter(
 	}
 	body := cloneCodexGatewayStreamBody(prepared.Body)
 	body["stream"] = false
-	resp, bodyBytes, err := doCodexGatewayAnthropicMessagesRequest(ctx, client, baseURL, apiKey, body)
+	resp, bodyBytes, err := doCodexGatewayAnthropicMessagesRequest(ctx, client, baseURL, apiKey, body, reqCtx)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
@@ -68,7 +68,7 @@ func ExecuteCodexGatewayAnthropicAdapter(
 	return result, nil
 }
 
-func doCodexGatewayAnthropicMessagesRequest(ctx context.Context, client *http.Client, baseURL, apiKey string, body map[string]any) (*http.Response, []byte, error) {
+func doCodexGatewayAnthropicMessagesRequest(ctx context.Context, client *http.Client, baseURL, apiKey string, body map[string]any, reqCtx CodexGatewayAnthropicRequestContext) (*http.Response, []byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -81,6 +81,7 @@ func doCodexGatewayAnthropicMessagesRequest(ctx context.Context, client *http.Cl
 		return nil, nil, fmt.Errorf("build codex anthropic request: %w", err)
 	}
 	setCodexGatewayAnthropicHeaders(httpReq, apiKey, false)
+	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "anthropic", httpReq.Header, rawBody)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, nil, fmt.Errorf("send codex anthropic request: %w", err)
@@ -91,6 +92,7 @@ func doCodexGatewayAnthropicMessagesRequest(ctx context.Context, client *http.Cl
 		return nil, nil, fmt.Errorf("read codex anthropic response: %w", readErr)
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, bodyBytes)
 	return resp, bodyBytes, nil
 }
 

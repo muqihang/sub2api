@@ -41,7 +41,56 @@ gateway:
       openai: 1001
       deepseek: 2002
       anthropic: 3003
+    capture:
+      enabled: true
+      level: summary
+      raw_payloads: false
+      base_dir: data/codex-gateway-captures
+      retention_days: 7
+      capture_success_sample_rate: 1.0
+      capture_errors_always: true
+      include_response_header: true
 ```
+
+### Protocol capture
+
+Codex Gateway includes a local protocol capture system for debugging provider compatibility without defaulting to user-content capture.
+
+Default `summary` capture records:
+
+- request method/path, model, provider, selected upstream model, trace id, timing, and sanitized status
+- top-level Responses request field shape
+- tool names, tool schema fields, required parameters, and protocol item types
+- prompt/tool-output lengths and keyed hashes, not raw prompt or output text
+- upstream request/response shape for OpenAI Responses, DeepSeek Chat Completions, and Anthropic Messages conversions
+- client SSE event names, ordering, payload shape, size, timing, and terminal signals
+- `tool_closure.json`, `cache_usage.json`, and `errors.jsonl`
+
+Trace layout:
+
+```text
+data/codex-gateway-captures/YYYY-MM-DD/<trace_id>/
+  summary.json
+  client_request.shape.json
+  client_request.headers.json
+  upstream_request.shape.json
+  upstream_request.headers.json
+  upstream_response.headers.json
+  upstream_response.shape.json
+  client_stream.events.jsonl
+  upstream_stream.events.jsonl
+  tool_closure.json
+  cache_usage.json
+  errors.jsonl
+```
+
+`raw_payloads` is a local debugging escape hatch. It is rejected in `server.mode=production` and requires both config and the exact unlock environment variable:
+
+```bash
+export SUB2API_CODEX_CAPTURE_RAW_UNLOCK=I_UNDERSTAND_THIS_WRITES_LOCAL_RAW_PROTOCOL_PAYLOADS
+```
+
+Even in raw mode, known credential fields and bearer tokens are redacted. Raw mode is not intended for shared deployments.
 
 ### Codex provider sample
 
@@ -91,6 +140,11 @@ Codex Desktop app-server v2 remains Codex's local control plane for `thread/*`, 
 ### Integration closure notes
 
 The integration target is considered ready for merge preparation after focused Codex Gateway regression, local Desktop testing, and upstream error hardening.
+
+Protocol observability documents:
+
+- `docs/codex-gateway/protocol-capture-design.md` defines the safe protocol-capture architecture for improving Codex Gateway without defaulting to user-content capture.
+- `docs/codex-gateway/protocol-capture-implementation-plan.md` breaks that design into implementation checkpoints.
 
 Verified provider groups:
 
