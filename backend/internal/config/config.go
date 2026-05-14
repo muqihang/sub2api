@@ -768,6 +768,7 @@ type GatewayCodexCaptureConfig struct {
 	AsyncQueueSize              int                             `mapstructure:"async_queue_size"`
 	HashMode                    string                          `mapstructure:"hash_mode"`
 	HashKeyFile                 string                          `mapstructure:"hash_key_file"`
+	CorrelationHashKeyFile      string                          `mapstructure:"correlation_hash_key_file"`
 	RequireRawPayloadsUnlockEnv string                          `mapstructure:"require_raw_payloads_unlock_env"`
 	Redact                      GatewayCodexCaptureRedactConfig `mapstructure:"redact"`
 }
@@ -1939,6 +1940,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.codex.capture.async_queue_size", 4096)
 	viper.SetDefault("gateway.codex.capture.hash_mode", "hmac-sha256")
 	viper.SetDefault("gateway.codex.capture.hash_key_file", "data/codex-gateway-captures/.capture-hmac-key")
+	viper.SetDefault("gateway.codex.capture.correlation_hash_key_file", "")
 	viper.SetDefault("gateway.codex.capture.require_raw_payloads_unlock_env", "SUB2API_CODEX_CAPTURE_RAW_UNLOCK=I_UNDERSTAND_THIS_WRITES_LOCAL_RAW_PROTOCOL_PAYLOADS")
 	viper.SetDefault("gateway.codex.capture.redact.enabled", true)
 	viper.SetDefault("gateway.codex.capture.redact.header_names", []string{

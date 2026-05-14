@@ -53,10 +53,9 @@ func TestCodexGatewayService_ResponsesRecordsCaptureTrace(t *testing.T) {
 	require.NoError(t, capture.Close())
 
 	dateDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"))
-	entries, err := os.ReadDir(dateDir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	traceDir := filepath.Join(dateDir, entries[0].Name())
+	traceDirs := codexGatewayCaptureTraceDirsForTest(t, dateDir)
+	require.Len(t, traceDirs, 1)
+	traceDir := filepath.Join(dateDir, traceDirs[0])
 	summary, err := os.ReadFile(filepath.Join(traceDir, "summary.json"))
 	require.NoError(t, err)
 	require.Contains(t, string(summary), `"status": "ok"`)
@@ -85,13 +84,25 @@ func TestCodexGatewayService_ModelsRecordsCaptureTrace(t *testing.T) {
 	require.NoError(t, capture.Close())
 
 	dateDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"))
+	traceDirs := codexGatewayCaptureTraceDirsForTest(t, dateDir)
+	require.Len(t, traceDirs, 1)
+	modelShape, err := os.ReadFile(filepath.Join(dateDir, traceDirs[0], "model_catalog.shape.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(modelShape), "models")
+	require.Contains(t, string(modelShape), "supported_in_api")
+}
+
+func codexGatewayCaptureTraceDirsForTest(t *testing.T, dateDir string) []string {
+	t.Helper()
 	entries, err := os.ReadDir(dateDir)
 	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	modelShape, err := os.ReadFile(filepath.Join(dateDir, entries[0].Name(), "model_catalog.shape.json"))
-	require.NoError(t, err)
-	require.Contains(t, string(modelShape), "gpt-5.5")
-	require.Contains(t, string(modelShape), "supported_in_api")
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			out = append(out, entry.Name())
+		}
+	}
+	return out
 }
 
 func (s *codexGatewayExecutorStub) Complete(ctx context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {

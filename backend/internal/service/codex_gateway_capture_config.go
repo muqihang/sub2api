@@ -39,6 +39,9 @@ func NormalizeCodexGatewayCaptureConfig(in config.GatewayCodexCaptureConfig) con
 	if strings.TrimSpace(out.HashKeyFile) == "" {
 		out.HashKeyFile = strings.TrimRight(out.BaseDir, "/") + "/.capture-hmac-key"
 	}
+	if strings.TrimSpace(out.CorrelationHashKeyFile) != "" {
+		out.CorrelationHashKeyFile = strings.TrimSpace(out.CorrelationHashKeyFile)
+	}
 	if strings.TrimSpace(out.RequireRawPayloadsUnlockEnv) == "" {
 		out.RequireRawPayloadsUnlockEnv = "SUB2API_CODEX_CAPTURE_RAW_UNLOCK=" + codexGatewayCaptureRawUnlockValue
 	}

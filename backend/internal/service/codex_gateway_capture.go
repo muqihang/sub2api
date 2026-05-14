@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,7 @@ type CodexGatewayCaptureError struct {
 	HTTPStatus           int    `json:"http_status,omitempty"`
 	ErrorType            string `json:"error_type,omitempty"`
 	ErrorCode            string `json:"error_code,omitempty"`
+	ErrorClass           string `json:"error_class,omitempty"`
 	Retryable            bool   `json:"retryable,omitempty"`
 	FailoverDecision     string `json:"failover_decision,omitempty"`
 	VisibleOutputStarted bool   `json:"visible_output_started,omitempty"`
@@ -57,6 +59,8 @@ type CodexGatewayCaptureError struct {
 	ResponseContentType  string `json:"response_content_type,omitempty"`
 	BodyHash             string `json:"body_hash,omitempty"`
 	Message              string `json:"message,omitempty"`
+	MessageHash          string `json:"message_hash,omitempty"`
+	MessageChars         int    `json:"message_chars,omitempty"`
 }
 
 type CodexGatewayCaptureManager struct {
@@ -67,6 +71,9 @@ type CodexGatewayCaptureManager struct {
 	close    sync.Once
 	closed   atomic.Bool
 	disabled bool
+
+	linksMu       sync.Mutex
+	emittedCallBy map[string]codexGatewayCaptureToolLink
 }
 
 type CodexGatewayTrace struct {
@@ -81,9 +88,29 @@ type CodexGatewayTrace struct {
 	pending     []codexGatewayCapturePendingWrite
 	cacheUsage  map[string]any
 	toolClosure map[string]any
+	requestDiag map[string]any
+	state       codexGatewayCaptureTraceState
 	bytes       atomic.Int64
 	dropped     atomic.Int64
 	seq         atomic.Int64
+}
+
+type codexGatewayCaptureTraceState struct {
+	HTTPStatus            int
+	ResponseID            string
+	UpstreamRequestID     string
+	UpstreamModel         string
+	ProviderUsage         CodexGatewayProviderUsage
+	ClientEventCount      int64
+	UpstreamEventCount    int64
+	ClientFirstEventAt    time.Time
+	ClientLastEventAt     time.Time
+	UpstreamFirstEventAt  time.Time
+	UpstreamLastEventAt   time.Time
+	ClientTerminalEvent   string
+	UpstreamTerminalEvent string
+	VisibleOutputStarted  bool
+	LastError             *CodexGatewayCaptureError
 }
 
 type codexGatewayCapturePendingWrite struct {
@@ -95,8 +122,9 @@ type codexGatewayCapturePendingWrite struct {
 func NewCodexGatewayCaptureManager(cfg config.GatewayCodexCaptureConfig) *CodexGatewayCaptureManager {
 	cfg = NormalizeCodexGatewayCaptureConfig(cfg)
 	m := &CodexGatewayCaptureManager{
-		cfg:      cfg,
-		disabled: !cfg.Enabled,
+		cfg:           cfg,
+		disabled:      !cfg.Enabled,
+		emittedCallBy: make(map[string]codexGatewayCaptureToolLink),
 	}
 	if m.disabled {
 		return m
@@ -156,6 +184,7 @@ func (m *CodexGatewayCaptureManager) StartTrace(_ context.Context, meta CodexGat
 			"orphan_results":    []any{},
 			"linked_trace_ids":  []any{},
 			"mapping_kind":      "responses_api",
+			"privacy":           "call_ids_hashed",
 		},
 	}
 	trace.sampled.Store(sampled)
@@ -172,7 +201,7 @@ func (m *CodexGatewayCaptureManager) RecordClientRequest(trace *CodexGatewayTrac
 		return
 	}
 	if m.cfg.IncludeResponseHeader {
-		m.writeJSON(trace, "client_request.headers.json", m.redact.RedactHeaders(headers))
+		m.writeJSON(trace, "client_request.headers.json", m.summarizeHeaders(headers))
 	}
 	shape, err := ExtractCodexGatewayCaptureShape(body, m.redact)
 	if err != nil {
@@ -221,7 +250,7 @@ func (m *CodexGatewayCaptureManager) RecordUpstreamRequest(trace *CodexGatewayTr
 		return
 	}
 	if m.cfg.IncludeResponseHeader {
-		m.writeJSON(trace, "upstream_request.headers.json", m.redact.RedactHeaders(headers))
+		m.writeJSON(trace, "upstream_request.headers.json", m.summarizeHeaders(headers))
 	}
 	shape, err := ExtractCodexGatewayCaptureShape(body, m.redact)
 	if err != nil {
@@ -241,8 +270,13 @@ func (m *CodexGatewayCaptureManager) RecordUpstreamResponse(trace *CodexGatewayT
 	if !m.enabledTrace(trace) {
 		return
 	}
+	trace.mu.Lock()
+	if status > 0 {
+		trace.state.HTTPStatus = status
+	}
+	trace.mu.Unlock()
 	if m.cfg.IncludeResponseHeader {
-		m.writeJSON(trace, "upstream_response.headers.json", m.redact.RedactHeaders(headers))
+		m.writeJSON(trace, "upstream_response.headers.json", m.summarizeHeaders(headers))
 	}
 	summary := map[string]any{
 		"http_status": status,
@@ -259,11 +293,15 @@ func (m *CodexGatewayCaptureManager) RecordStreamEvent(trace *CodexGatewayTrace,
 	if !m.enabledTrace(trace) {
 		return
 	}
+	now := time.Now().UTC()
+	normalizedDirection := strings.TrimSpace(direction)
+	normalizedEvent := strings.TrimSpace(eventName)
+	m.updateStreamState(trace, normalizedDirection, normalizedEvent)
 	event := map[string]any{
-		"ts":         time.Now().UTC().Format(time.RFC3339Nano),
+		"ts":         now.Format(time.RFC3339Nano),
 		"seq":        trace.seq.Add(1),
-		"direction":  strings.TrimSpace(direction),
-		"event_name": strings.TrimSpace(eventName),
+		"direction":  normalizedDirection,
+		"event_name": normalizedEvent,
 		"bytes":      len(payload),
 	}
 	if len(payload) > 0 {
@@ -279,6 +317,14 @@ func (m *CodexGatewayCaptureManager) RecordError(trace *CodexGatewayTrace, errMe
 	if !m.enabledTrace(trace) {
 		return
 	}
+	errMeta = m.enrichError(trace, errMeta)
+	errMeta = m.sanitizeErrorForCapture(errMeta)
+	trace.mu.Lock()
+	trace.state.LastError = &errMeta
+	if trace.state.HTTPStatus == 0 && errMeta.HTTPStatus > 0 {
+		trace.state.HTTPStatus = errMeta.HTTPStatus
+	}
+	trace.mu.Unlock()
 	m.activateTrace(trace)
 	m.writeJSONLCritical(trace, "errors.jsonl", errMeta)
 }
@@ -287,25 +333,64 @@ func (m *CodexGatewayCaptureManager) FinishTrace(trace *CodexGatewayTrace, finis
 	if !m.enabledTrace(trace) {
 		return
 	}
-	summary := map[string]any{
-		"trace_id":               trace.ID,
-		"started_at":             trace.StartedAt.UTC().Format(time.RFC3339Nano),
-		"finished_at":            time.Now().UTC().Format(time.RFC3339Nano),
-		"duration_ms":            time.Since(trace.StartedAt).Milliseconds(),
-		"method":                 trace.Meta.Method,
-		"path":                   trace.Meta.Path,
-		"model":                  trace.Meta.Model,
-		"provider":               trace.Meta.Provider,
-		"status":                 finish.Status,
-		"http_status":            finish.HTTPStatus,
-		"response_id":            finish.ResponseID,
-		"upstream_request_id":    finish.UpstreamRequestID,
-		"upstream_model":         finish.UpstreamModel,
-		"provider_usage":         finish.ProviderUsage,
-		"capture_dropped_events": trace.dropped.Load(),
+	trace.mu.Lock()
+	state := trace.state
+	requestDiag := cloneCaptureMap(trace.requestDiag)
+	if finish.HTTPStatus == 0 {
+		finish.HTTPStatus = state.HTTPStatus
 	}
-	for key, value := range finish.Additional {
-		summary[key] = value
+	if finish.ResponseID == "" {
+		finish.ResponseID = state.ResponseID
+	}
+	if finish.UpstreamRequestID == "" {
+		finish.UpstreamRequestID = state.UpstreamRequestID
+	}
+	if finish.UpstreamModel == "" {
+		finish.UpstreamModel = state.UpstreamModel
+	}
+	if !codexGatewayProviderUsagePresent(finish.ProviderUsage) && codexGatewayProviderUsagePresent(state.ProviderUsage) {
+		finish.ProviderUsage = state.ProviderUsage
+	}
+	trace.mu.Unlock()
+	terminalClassification := codexGatewayCaptureTerminalClassification(state, finish)
+	summary := map[string]any{
+		"trace_id":                trace.ID,
+		"started_at":              trace.StartedAt.UTC().Format(time.RFC3339Nano),
+		"finished_at":             time.Now().UTC().Format(time.RFC3339Nano),
+		"duration_ms":             time.Since(trace.StartedAt).Milliseconds(),
+		"method":                  trace.Meta.Method,
+		"path":                    trace.Meta.Path,
+		"model":                   trace.Meta.Model,
+		"provider":                trace.Meta.Provider,
+		"status":                  finish.Status,
+		"http_status":             finish.HTTPStatus,
+		"upstream_model":          finish.UpstreamModel,
+		"provider_usage":          finish.ProviderUsage,
+		"capture_dropped_events":  trace.dropped.Load(),
+		"terminal_classification": terminalClassification,
+		"stream": map[string]any{
+			"client_event_count":      state.ClientEventCount,
+			"upstream_event_count":    state.UpstreamEventCount,
+			"client_terminal_event":   state.ClientTerminalEvent,
+			"upstream_terminal_event": state.UpstreamTerminalEvent,
+			"visible_output_started":  state.VisibleOutputStarted,
+			"client_stream_span_ms":   codexGatewayCaptureSpanMillis(state.ClientFirstEventAt, state.ClientLastEventAt),
+			"upstream_stream_span_ms": codexGatewayCaptureSpanMillis(state.UpstreamFirstEventAt, state.UpstreamLastEventAt),
+		},
+	}
+	if len(requestDiag) > 0 {
+		summary["request_diagnostics"] = requestDiag
+	}
+	if strings.TrimSpace(finish.ResponseID) != "" {
+		summary["response_id_hash"] = m.redact.CorrelationHash("response_id", finish.ResponseID)
+		summary["response_id_chars"] = len([]rune(finish.ResponseID))
+	}
+	if strings.TrimSpace(finish.UpstreamRequestID) != "" {
+		summary["upstream_request_id_hash"] = m.redact.CorrelationHash("upstream_request_id", finish.UpstreamRequestID)
+		summary["upstream_request_id_chars"] = len([]rune(finish.UpstreamRequestID))
+	}
+	if len(finish.Additional) > 0 {
+		summary["additional"] = m.sanitizeSummaryAdditional(finish.Additional)
 	}
 	if !trace.sampled.Load() {
 		if strings.EqualFold(strings.TrimSpace(finish.Status), "failed") {
@@ -315,6 +400,8 @@ func (m *CodexGatewayCaptureManager) FinishTrace(trace *CodexGatewayTrace, finis
 		}
 	}
 	m.writeJSONCritical(trace, "summary.json", summary)
+	m.writeJSONCritical(trace, "trace_report.json", m.traceReport(trace, summary, terminalClassification))
+	m.writeSessionReport(trace, summary, terminalClassification)
 }
 
 func (m *CodexGatewayCaptureManager) enabledTrace(trace *CodexGatewayTrace) bool {
@@ -409,7 +496,10 @@ func (m *CodexGatewayCaptureManager) writeBytesSync(trace *CodexGatewayTrace, na
 			return
 		}
 		defer f.Close()
-		_, _ = f.Write(payload)
+		n, err := f.Write(payload)
+		if err != nil || n != len(payload) {
+			trace.dropped.Add(1)
+		}
 		return
 	}
 	_ = os.WriteFile(path, payload, 0o600)
@@ -490,6 +580,94 @@ func (m *CodexGatewayCaptureManager) redactRawJSON(body []byte) any {
 		}
 	}
 	return m.redact.RedactJSONValue(value)
+}
+
+func (m *CodexGatewayCaptureManager) sanitizeSummaryAdditional(values map[string]any) map[string]any {
+	out := make(map[string]any, len(values))
+	sensitiveFields := make([]map[string]any, 0)
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if codexGatewayCaptureIsSensitiveAdditionalKey(key) {
+			sensitiveFields = append(sensitiveFields, map[string]any{
+				"key_hash":   m.redact.CorrelationHash("additional_key", key),
+				"value_hash": m.redact.HashText(fmtAnyCapture(value)),
+				"value_type": codexGatewayCaptureTypeName(value),
+			})
+			continue
+		}
+		out[key] = m.summarizeAdditionalValue(value)
+	}
+	if len(sensitiveFields) > 0 {
+		out["sensitive_fields"] = sensitiveFields
+	}
+	return out
+}
+
+func (m *CodexGatewayCaptureManager) summarizeAdditionalValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return map[string]any{
+			"type":  "string",
+			"chars": len([]rune(typed)),
+			"hash":  m.redact.HashText(typed),
+		}
+	case bool, float64, int, int64, uint64, nil:
+		return typed
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		hashes := make([]string, 0, len(typed))
+		for key := range typed {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			keys = append(keys, key)
+			hashes = append(hashes, m.redact.CorrelationHash("additional_key", key))
+		}
+		sort.Strings(keys)
+		sort.Strings(hashes)
+		return map[string]any{
+			"type":       "object",
+			"key_count":  len(keys),
+			"key_hashes": hashes,
+		}
+	case []any:
+		return map[string]any{
+			"type":   "array",
+			"length": len(typed),
+		}
+	default:
+		return map[string]any{
+			"type": codexGatewayCaptureTypeName(value),
+			"hash": m.redact.HashText(fmtAnyCapture(value)),
+		}
+	}
+}
+
+func codexGatewayCaptureIsSensitiveAdditionalKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	return strings.Contains(normalized, "response_id") ||
+		strings.Contains(normalized, "request_id") ||
+		strings.Contains(normalized, "trace_id") ||
+		strings.Contains(normalized, "url") ||
+		strings.Contains(normalized, "path") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "cookie") ||
+		strings.Contains(normalized, "authorization") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "api_key") ||
+		strings.Contains(normalized, "apikey")
+}
+
+func fmtAnyCapture(value any) string {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(payload)
 }
 
 func codexGatewayCaptureStreamFile(direction string) string {

@@ -18,11 +18,12 @@ import (
 var codexGatewayCaptureBearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[-._~+/=A-Za-z0-9]+`)
 
 type CodexGatewayCaptureRedactor struct {
-	cfg         config.GatewayCodexCaptureConfig
-	headerKeys  map[string]struct{}
-	jsonKeys    map[string]struct{}
-	hashKey     []byte
-	redactValue string
+	cfg                config.GatewayCodexCaptureConfig
+	headerKeys         map[string]struct{}
+	jsonKeys           map[string]struct{}
+	hashKey            []byte
+	correlationHashKey []byte
+	redactValue        string
 }
 
 func NewCodexGatewayCaptureRedactor(cfg config.GatewayCodexCaptureConfig) *CodexGatewayCaptureRedactor {
@@ -40,6 +41,9 @@ func NewCodexGatewayCaptureRedactor(cfg config.GatewayCodexCaptureConfig) *Codex
 		r.jsonKeys[strings.ToLower(strings.TrimSpace(key))] = struct{}{}
 	}
 	r.hashKey = codexGatewayCaptureLoadOrCreateHashKey(cfg.HashKeyFile)
+	if strings.TrimSpace(cfg.CorrelationHashKeyFile) != "" {
+		r.correlationHashKey = codexGatewayCaptureLoadOrCreateHashKey(cfg.CorrelationHashKeyFile)
+	}
 	return r
 }
 
@@ -55,6 +59,10 @@ func (r *CodexGatewayCaptureRedactor) RedactHeaders(headers http.Header) http.He
 		}
 		cloned := make([]string, 0, len(values))
 		for _, value := range values {
+			if r.shouldHashHeader(key) {
+				cloned = append(cloned, r.CorrelationHash("header:"+strings.ToLower(strings.TrimSpace(key)), value))
+				continue
+			}
 			cloned = append(cloned, r.RedactString(value))
 		}
 		out[key] = cloned
@@ -71,15 +79,30 @@ func (r *CodexGatewayCaptureRedactor) RedactString(value string) string {
 }
 
 func (r *CodexGatewayCaptureRedactor) HashText(value string) string {
+	return r.hashTextWithKey(r.hashKey, value)
+}
+
+func (r *CodexGatewayCaptureRedactor) CorrelationHash(kind, value string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "unknown"
+	}
+	if len(r.correlationHashKey) < 32 {
+		return r.HashText(kind + "\x00" + value)
+	}
+	return r.hashTextWithKey(r.correlationHashKey, kind+"\x00"+value)
+}
+
+func (r *CodexGatewayCaptureRedactor) hashTextWithKey(key []byte, value string) string {
 	mode := strings.ToLower(strings.TrimSpace(r.cfg.HashMode))
 	if mode == "sha256" {
 		sum := sha256.Sum256([]byte(value))
 		return fmt.Sprintf("sha256:%s chars=%d", hex.EncodeToString(sum[:]), len([]rune(value)))
 	}
-	if len(r.hashKey) < 32 {
+	if len(key) < 32 {
 		return fmt.Sprintf("hmac-sha256:unavailable chars=%d", len([]rune(value)))
 	}
-	mac := hmac.New(sha256.New, r.hashKey)
+	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write([]byte(value))
 	return fmt.Sprintf("hmac-sha256:%s chars=%d", hex.EncodeToString(mac.Sum(nil)), len([]rune(value)))
 }
@@ -114,6 +137,14 @@ func (r *CodexGatewayCaptureRedactor) shouldRedactHeader(key string) bool {
 	}
 	_, ok := r.headerKeys[strings.ToLower(strings.TrimSpace(key))]
 	return ok
+}
+
+func (r *CodexGatewayCaptureRedactor) shouldHashHeader(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	return strings.Contains(normalized, "request-id") ||
+		strings.Contains(normalized, "response-id") ||
+		strings.Contains(normalized, "trace-id") ||
+		strings.Contains(normalized, "correlation-id")
 }
 
 func (r *CodexGatewayCaptureRedactor) shouldRedactJSONKey(key string) bool {

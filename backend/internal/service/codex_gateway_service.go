@@ -168,7 +168,7 @@ func (s *CodexGatewayService) startCaptureTrace(ctx context.Context, req CodexGa
 		Method:       "POST",
 		Path:         "/codex/v1/responses",
 		SessionID:    strings.TrimSpace(req.Headers.Get("session_id")),
-		ThreadID:     strings.TrimSpace(req.Headers.Get("conversation_id")),
+		ThreadID:     firstCaptureNonEmpty(req.Headers.Get("thread_id"), req.Headers.Get("conversation_id")),
 		ForceCapture: false,
 	})
 }
@@ -176,6 +176,9 @@ func (s *CodexGatewayService) startCaptureTrace(ctx context.Context, req CodexGa
 func (s *CodexGatewayService) finishCaptureOK(trace *CodexGatewayTrace, summary CodexGatewayCaptureFinishSummary) {
 	if s == nil || s.capture == nil || trace == nil {
 		return
+	}
+	if summary.HTTPStatus == 0 {
+		summary.HTTPStatus = http.StatusOK
 	}
 	s.capture.FinishTrace(trace, summary)
 }
