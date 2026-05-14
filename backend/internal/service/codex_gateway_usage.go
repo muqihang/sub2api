@@ -104,7 +104,9 @@ func codexGatewayRecordUsageBestEffort(ctx context.Context, recorder codexGatewa
 
 	result := codexGatewayForwardResult(req.Model, req.Parsed, providerResult, stream, time.Since(startedAt))
 	fields := codexGatewayUsageFields(req.Model.Provider, providerResult.UpstreamRequestID)
-	if err := recorder.RecordUsage(ctx, &OpenAIRecordUsageInput{
+	usageCtx, cancel := context.WithTimeout(ContextWithEntityMetadataFrom(context.Background(), ctx), 10*time.Second)
+	defer cancel()
+	if err := recorder.RecordUsage(usageCtx, &OpenAIRecordUsageInput{
 		Result:             result,
 		APIKey:             apiKey,
 		User:               user,

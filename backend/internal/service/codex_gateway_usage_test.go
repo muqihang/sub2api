@@ -107,6 +107,36 @@ func TestCodexGatewayUsage_RecordUsageBestEffortPopulatesGatewayMetadata(t *test
 	require.NotEmpty(t, input.RequestPayloadHash)
 	require.NotNil(t, input.User)
 	require.Equal(t, apiKey.UserID, input.User.ID)
+	require.Equal(t, []error{nil}, recorder.ctxErrs)
+}
+
+func TestCodexGatewayUsage_RecordUsageBestEffortDetachesCanceledRequestContext(t *testing.T) {
+	recorder := &codexGatewayUsageRecorderStub{}
+	apiKey := validCodexGatewayAPIKeyForTest()
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithClaimedEntityID(ctx, "entity-test")
+	cancel()
+
+	codexGatewayRecordUsageBestEffort(ctx, recorder, CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			APIKey: apiKey,
+			Body:   []byte(`{"model":"gpt-5.4","input":"hello"}`),
+		},
+		Model: CodexGatewayModel{
+			Slug:          "gpt-5.4",
+			Provider:      "openai",
+			UpstreamModel: "gpt-5.4",
+		},
+		Parsed: CodexGatewayResponsesCreateRequest{Model: "gpt-5.4"},
+	}, &Account{ID: 12, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, CodexGatewayProviderResult{
+		ResponseID:        "resp_1",
+		UpstreamRequestID: "req_1",
+		UpstreamModel:     "gpt-5.4",
+		Usage:             CodexGatewayProviderUsage{InputTokens: 20, OutputTokens: 6},
+	}, true, time.Now().Add(-time.Second))
+
+	require.Len(t, recorder.inputs, 1)
+	require.Equal(t, []error{nil}, recorder.ctxErrs)
 }
 
 func TestCodexGatewayUsage_DeepSeekUsesChatCompletionsBillingEndpoint(t *testing.T) {

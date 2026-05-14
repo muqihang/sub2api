@@ -36,11 +36,17 @@ func (s *codexGatewayProviderAdapterStub) Stream(ctx context.Context, account *A
 }
 
 type codexGatewayUsageRecorderStub struct {
-	inputs []*OpenAIRecordUsageInput
-	err    error
+	inputs  []*OpenAIRecordUsageInput
+	ctxErrs []error
+	err     error
 }
 
-func (s *codexGatewayUsageRecorderStub) RecordUsage(_ context.Context, input *OpenAIRecordUsageInput) error {
+func (s *codexGatewayUsageRecorderStub) RecordUsage(ctx context.Context, input *OpenAIRecordUsageInput) error {
+	if ctx != nil {
+		s.ctxErrs = append(s.ctxErrs, ctx.Err())
+	} else {
+		s.ctxErrs = append(s.ctxErrs, nil)
+	}
 	s.inputs = append(s.inputs, input)
 	return s.err
 }
