@@ -26,12 +26,12 @@ func TestCodexGatewayStateStore_PutGetConflictAndMissing(t *testing.T) {
 			Provider:      "deepseek",
 			UpstreamModel: "deepseek-v4-pro",
 		},
-		AssistantContent:          "",
-		AssistantContentPresent:   true,
-		ReasoningContent:          "need tool context",
-		ReasoningContentPresent:   true,
-		ToolCalls:                 []CodexGatewayStoredToolCall{{ID: "call_1", Name: "shell", Arguments: `{}`}},
-		ToolNameMap:               map[string]CodexGatewayToolNameMapEntry{"shell": {Alias: "shell", Kind: "function", Name: "shell"}},
+		AssistantContent:            "",
+		AssistantContentPresent:     true,
+		ReasoningContent:            "need tool context",
+		ReasoningContentPresent:     true,
+		ToolCalls:                   []CodexGatewayStoredToolCall{{ID: "call_1", Name: "shell", Arguments: `{}`}},
+		ToolNameMap:                 map[string]CodexGatewayToolNameMapEntry{"shell": {Alias: "shell", Kind: "function", Name: "shell"}},
 		ReasoningContentSynthesized: false,
 	}
 
@@ -127,10 +127,10 @@ func TestCodexGatewayStateStore_RejectsInvalidDeepSeekToolLoopState(t *testing.T
 			Provider:      "deepseek",
 			UpstreamModel: "deepseek-v4-pro",
 		},
-		AssistantContentPresent:      true,
-		ReasoningContentSynthesized:  true,
-		ToolCalls:                    []CodexGatewayStoredToolCall{{ID: "call_1", Name: "shell", Arguments: `{}`}},
-		ToolNameMap:                  map[string]CodexGatewayToolNameMapEntry{"shell": {Alias: "shell", Kind: "function", Name: "shell"}},
+		AssistantContentPresent:     true,
+		ReasoningContentSynthesized: true,
+		ToolCalls:                   []CodexGatewayStoredToolCall{{ID: "call_1", Name: "shell", Arguments: `{}`}},
+		ToolNameMap:                 map[string]CodexGatewayToolNameMapEntry{"shell": {Alias: "shell", Kind: "function", Name: "shell"}},
 	})
 	require.NoError(t, err)
 

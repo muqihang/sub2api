@@ -372,6 +372,50 @@ func TestAPIKeyService_GetByKey_NegativeCache(t *testing.T) {
 	require.ErrorIs(t, err, ErrAPIKeyNotFound)
 }
 
+func TestAPIKeyService_GetByKey_RedisAuthCacheTimeoutFallsBackToRepo(t *testing.T) {
+	cache := &authCacheStub{}
+	var repoCalls int32
+	repo := &authRepoStub{
+		getByKeyForAuth: func(ctx context.Context, key string) (*APIKey, error) {
+			atomic.AddInt32(&repoCalls, 1)
+			return &APIKey{
+				ID:     42,
+				UserID: 7,
+				Status: StatusActive,
+				User: &User{
+					ID:          7,
+					Status:      StatusActive,
+					Role:        RoleUser,
+					Balance:     10,
+					Concurrency: 2,
+				},
+			}, nil
+		},
+	}
+	cfg := &config.Config{
+		APIKeyAuth: config.APIKeyAuthCacheConfig{
+			L2TTLSeconds:       60,
+			NegativeTTLSeconds: 30,
+		},
+	}
+	svc := NewAPIKeyService(repo, nil, nil, nil, nil, cache, cfg)
+	cache.getAuthCache = func(ctx context.Context, key string) (*APIKeyAuthCacheEntry, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	start := time.Now()
+	apiKey, err := svc.GetByKey(context.Background(), "k-timeout")
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.NotNil(t, apiKey)
+	require.Equal(t, int64(42), apiKey.ID)
+	require.Equal(t, int32(1), atomic.LoadInt32(&repoCalls))
+	require.Less(t, elapsed, 2*time.Second)
+	require.GreaterOrEqual(t, elapsed, apiKeyAuthCacheRedisOpTimeout)
+}
+
 func TestAPIKeyService_GetByKey_CacheMissStoresL2(t *testing.T) {
 	cache := &authCacheStub{}
 	repo := &authRepoStub{

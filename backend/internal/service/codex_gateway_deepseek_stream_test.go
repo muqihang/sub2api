@@ -243,34 +243,34 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, "need tools", result.ProviderResult.ReasoningContent)
 
 		stream := buf.String()
-		require.Contains(t, stream, "event: response.content_part.added")
-		require.Contains(t, stream, "event: response.content_part.done")
 		require.Contains(t, stream, "event: response.function_call_arguments.delta")
 		require.Contains(t, stream, "event: response.function_call_arguments.done")
 		require.Contains(t, stream, "event: response.custom_tool_call_input.delta")
 		require.Contains(t, stream, "event: response.custom_tool_call_input.done")
+		require.NotContains(t, stream, "event: response.output_text.delta")
+		require.NotContains(t, stream, "event: response.content_part.added")
+		require.NotContains(t, stream, "event: response.content_part.done")
 		require.NotContains(t, stream, "event: response.reasoning_text.delta")
 		require.NotContains(t, stream, "event: response.reasoning_text.done")
 		require.NotContains(t, stream, "need tools")
+		require.NotContains(t, stream, "正在使用工具继续推进")
 		events := parseCodexGatewayOrderedEvents(t, stream)
 		require.Equal(t, 1, countCodexGatewayEvent(events, "response.created"))
 		require.Equal(t, "response.completed", events[len(events)-1].Event)
 		addedPayload := firstCodexGatewayEventPayload(t, events, "response.output_item.added")
 		require.Equal(t, "in_progress", gjson.GetBytes(addedPayload, "item.status").String())
 		terminal := events[len(events)-1].Payload
-		require.Equal(t, "message", gjson.GetBytes(terminal, "response.output.0.type").String())
-		require.Equal(t, "正在使用工具继续推进。\n", gjson.GetBytes(terminal, "response.output.0.content.0.text").String())
-		require.Equal(t, "function_call", gjson.GetBytes(terminal, "response.output.1.type").String())
-		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(terminal, "response.output.1.arguments").String())
-		require.Equal(t, "custom_tool_call", gjson.GetBytes(terminal, "response.output.2.type").String())
-		require.Equal(t, "pwd", gjson.GetBytes(terminal, "response.output.2.input").String())
+		require.Equal(t, "function_call", gjson.GetBytes(terminal, "response.output.0.type").String())
+		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(terminal, "response.output.0.arguments").String())
+		require.Equal(t, "custom_tool_call", gjson.GetBytes(terminal, "response.output.1.type").String())
+		require.Equal(t, "pwd", gjson.GetBytes(terminal, "response.output.1.input").String())
 
 		funcDeltaPayload := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.delta")
 		require.Equal(t, "fc_call_weather", gjson.GetBytes(funcDeltaPayload, "item_id").String())
-		require.Equal(t, int64(1), gjson.GetBytes(funcDeltaPayload, "output_index").Int())
+		require.Equal(t, int64(0), gjson.GetBytes(funcDeltaPayload, "output_index").Int())
 		funcDonePayload := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.done")
 		require.Equal(t, "fc_call_weather", gjson.GetBytes(funcDonePayload, "item_id").String())
-		require.Equal(t, int64(1), gjson.GetBytes(funcDonePayload, "output_index").Int())
+		require.Equal(t, int64(0), gjson.GetBytes(funcDonePayload, "output_index").Int())
 		require.Equal(t, "fc_call_weather", gjson.GetBytes(funcDonePayload, "item.id").String())
 		customDeltaPayload := firstCodexGatewayEventPayload(t, events, "response.custom_tool_call_input.delta")
 		require.Equal(t, "fc_call_shell", gjson.GetBytes(customDeltaPayload, "item_id").String())
@@ -356,13 +356,12 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, "*** Begin Patch\n*** End Patch", gjson.GetBytes(customDonePayload, "input").String())
 
 		terminal := events[len(events)-1].Payload
-		require.Equal(t, "message", gjson.GetBytes(terminal, "response.output.0.type").String())
-		require.Equal(t, "正在使用工具继续推进。\n", gjson.GetBytes(terminal, "response.output.0.content.0.text").String())
-		require.Equal(t, "custom_tool_call", gjson.GetBytes(terminal, "response.output.1.type").String())
-		require.Equal(t, "*** Begin Patch\n*** End Patch", gjson.GetBytes(terminal, "response.output.1.input").String())
+		require.NotContains(t, buf.String(), "正在使用工具继续推进")
+		require.Equal(t, "custom_tool_call", gjson.GetBytes(terminal, "response.output.0.type").String())
+		require.Equal(t, "*** Begin Patch\n*** End Patch", gjson.GetBytes(terminal, "response.output.0.input").String())
 	})
 
-	t.Run("emits safe activity text before tool-only turns", func(t *testing.T) {
+	t.Run("does not synthesize assistant text before tool-only turns", func(t *testing.T) {
 		model := CodexGatewayModel{
 			Slug:          "deepseek-v4-pro",
 			Provider:      "deepseek",
@@ -407,23 +406,19 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 
 		events := parseCodexGatewayOrderedEvents(t, buf.String())
 		firstAdded := firstCodexGatewayEventPayload(t, events, "response.output_item.added")
-		require.Equal(t, "message", gjson.GetBytes(firstAdded, "item.type").String())
-		require.Equal(t, "assistant", gjson.GetBytes(firstAdded, "item.role").String())
+		require.Equal(t, "function_call", gjson.GetBytes(firstAdded, "item.type").String())
 		require.Equal(t, "in_progress", gjson.GetBytes(firstAdded, "item.status").String())
-		require.Contains(t, buf.String(), "event: response.output_text.delta")
-		require.Contains(t, buf.String(), "正在使用工具继续推进。")
+		require.NotContains(t, buf.String(), "event: response.output_text.delta")
+		require.NotContains(t, buf.String(), "event: response.content_part.added")
+		require.NotContains(t, buf.String(), "正在使用工具继续推进")
 
-		activityDoneIdx := indexCodexGatewayEvent(events, "response.output_text.done")
 		functionDoneIdx := indexCodexGatewayEvent(events, "response.function_call_arguments.done")
-		require.GreaterOrEqual(t, activityDoneIdx, 0)
+		require.Equal(t, -1, indexCodexGatewayEvent(events, "response.output_text.done"))
 		require.GreaterOrEqual(t, functionDoneIdx, 0)
-		require.Less(t, activityDoneIdx, functionDoneIdx)
 
 		terminal := events[len(events)-1].Payload
-		require.Equal(t, "message", gjson.GetBytes(terminal, "response.output.0.type").String())
-		require.Equal(t, "正在使用工具继续推进。\n", gjson.GetBytes(terminal, "response.output.0.content.0.text").String())
-		require.Equal(t, "function_call", gjson.GetBytes(terminal, "response.output.1.type").String())
-		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(terminal, "response.output.1.arguments").String())
+		require.Equal(t, "function_call", gjson.GetBytes(terminal, "response.output.0.type").String())
+		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(terminal, "response.output.0.arguments").String())
 	})
 
 	t.Run("buffers tool argument deltas until id and name are known", func(t *testing.T) {
@@ -480,7 +475,7 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 
 		funcDeltaPayload := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.delta")
 		require.Equal(t, "fc_call_weather", gjson.GetBytes(funcDeltaPayload, "item_id").String())
-		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(events[len(events)-1].Payload, "response.output.1.arguments").String())
+		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(events[len(events)-1].Payload, "response.output.0.arguments").String())
 	})
 
 	t.Run("done event and stored tool order follow output index", func(t *testing.T) {
@@ -536,9 +531,8 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Equal(t, "completed", result.ProviderResult.Response.Status)
-		require.Equal(t, "message", gjson.GetBytes(result.ProviderResult.Response.Output[0], "type").String())
-		require.Equal(t, "function_call", gjson.GetBytes(result.ProviderResult.Response.Output[1], "type").String())
-		require.Len(t, result.ProviderResult.Response.Output, 2)
+		require.Equal(t, "function_call", gjson.GetBytes(result.ProviderResult.Response.Output[0], "type").String())
+		require.Len(t, result.ProviderResult.Response.Output, 1)
 		require.Len(t, result.ProviderResult.ToolCalls, 1)
 		require.Equal(t, "get_weather", result.ProviderResult.ToolCalls[0].Name)
 
@@ -695,8 +689,8 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Len(t, result.ProviderResult.ToolCalls, 0)
 		require.NotContains(t, buf.String(), "event: response.function_call_arguments.done")
 		events := parseCodexGatewayOrderedEvents(t, buf.String())
-		require.Equal(t, int64(1), gjson.GetBytes(events[len(events)-1].Payload, "response.output.#").Int())
-		require.Equal(t, "message", gjson.GetBytes(events[len(events)-1].Payload, "response.output.0.type").String())
+		require.Equal(t, int64(0), gjson.GetBytes(events[len(events)-1].Payload, "response.output.#").Int())
+		require.NotContains(t, buf.String(), "正在使用工具继续推进")
 
 		_, err = stateStore.Get(CodexGatewayStateLookupKey{
 			ResponseID:    "chatcmpl_stream_partial_tool",

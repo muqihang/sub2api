@@ -187,10 +187,6 @@ type codexGatewayDeepSeekStreamState struct {
 	messageAdded     bool
 	messageID        string
 	messageIndex     int
-	activityText     string
-	activityAdded    bool
-	activityID       string
-	activityIndex    int
 	nextOutputIndex  int
 	toolCalls        map[int]*codexGatewayDeepSeekStreamToolCall
 	toolOrder        []int
@@ -246,7 +242,6 @@ func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer 
 			s.responseID = "chatcmpl_stream"
 		}
 		s.messageID = codexGatewayDeepSeekMessageID(s.responseID, 0)
-		s.activityID = codexGatewayDeepSeekActivityMessageID(s.responseID)
 	}
 	if s.upstreamModel == "" {
 		s.upstreamModel = strings.TrimSpace(chunk.Model)
@@ -350,11 +345,6 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 		call.Added = true
 	}
 	if call.Added && !call.ItemEmitted {
-		if !s.activityAdded && !s.messageAdded {
-			if err := s.emitActivityMessage(writer); err != nil {
-				return err
-			}
-		}
 		if call.OutputIndex < 0 {
 			call.OutputIndex = s.nextOutputIndex
 			s.nextOutputIndex++
@@ -407,37 +397,6 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 			return writer.WriteFunctionCallArgumentsDelta(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, deltaText)
 		}
 	}
-	return nil
-}
-
-func (s *codexGatewayDeepSeekStreamState) emitActivityMessage(writer *CodexGatewayResponseEventWriter) error {
-	s.activityText = codexGatewayDeepSeekToolActivityText()
-	s.activityIndex = s.nextOutputIndex
-	s.nextOutputIndex++
-	item := map[string]any{
-		"type":   "message",
-		"id":     s.activityID,
-		"role":   "assistant",
-		"status": "in_progress",
-		"content": []map[string]any{
-			{"type": "output_text", "text": ""},
-		},
-	}
-	rawItem, err := json.Marshal(item)
-	if err != nil {
-		return err
-	}
-	if err := writer.WriteOutputItemAdded(s.responseID, s.activityIndex, rawItem); err != nil {
-		return err
-	}
-	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
-	if err := writer.WriteContentPartAdded(s.responseID, s.activityID, s.activityIndex, 0, part); err != nil {
-		return err
-	}
-	if err := writer.WriteOutputTextDelta(s.responseID, s.activityID, s.activityIndex, 0, s.activityText); err != nil {
-		return err
-	}
-	s.activityAdded = true
 	return nil
 }
 
@@ -517,29 +476,6 @@ func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayRe
 					return err
 				}
 			}
-		case s.activityAdded && index == s.activityIndex:
-			if err := writer.WriteOutputTextDone(s.responseID, s.activityID, s.activityIndex, 0, s.activityText); err != nil {
-				return err
-			}
-			part, _ := json.Marshal(map[string]any{"type": "output_text", "text": s.activityText})
-			if err := writer.WriteContentPartDone(s.responseID, s.activityID, s.activityIndex, 0, part); err != nil {
-				return err
-			}
-			item := map[string]any{
-				"type":   "message",
-				"id":     s.activityID,
-				"role":   "assistant",
-				"status": "completed",
-				"content": []map[string]any{{
-					"type": "output_text",
-					"text": s.activityText,
-				}},
-			}
-			if rawItem, err := json.Marshal(item); err == nil {
-				if err := writer.WriteOutputItemDone(s.responseID, s.activityIndex, rawItem); err != nil {
-					return err
-				}
-			}
 		default:
 			call := s.toolCallByOutputIndex(index)
 			if call == nil || !s.shouldExposeToolCall(call) {
@@ -614,20 +550,6 @@ func (s *codexGatewayDeepSeekStreamState) outputItems() []json.RawMessage {
 		})
 		byIndex[s.messageIndex] = item
 		indexes = append(indexes, s.messageIndex)
-	}
-	if s.activityAdded {
-		item, _ := json.Marshal(map[string]any{
-			"type":   "message",
-			"id":     s.activityID,
-			"role":   "assistant",
-			"status": "completed",
-			"content": []map[string]any{{
-				"type": "output_text",
-				"text": s.activityText,
-			}},
-		})
-		byIndex[s.activityIndex] = item
-		indexes = append(indexes, s.activityIndex)
 	}
 	for _, index := range s.sortedToolOrder() {
 		call := s.toolCalls[index]
@@ -707,18 +629,6 @@ func (s *codexGatewayDeepSeekStreamState) providerResult(upstreamRequestID strin
 	}
 }
 
-func codexGatewayDeepSeekActivityMessageID(responseID string) string {
-	responseID = strings.TrimSpace(responseID)
-	if responseID == "" {
-		responseID = "response"
-	}
-	return "msg_activity_" + responseID
-}
-
-func codexGatewayDeepSeekToolActivityText() string {
-	return "正在使用工具继续推进。\n"
-}
-
 func (s *codexGatewayDeepSeekStreamState) responseModel() string {
 	if strings.TrimSpace(s.model.Slug) != "" {
 		return strings.TrimSpace(s.model.Slug)
@@ -727,7 +637,7 @@ func (s *codexGatewayDeepSeekStreamState) responseModel() string {
 }
 
 func (s *codexGatewayDeepSeekStreamState) hasPartialState() bool {
-	return s.messageAdded || s.activityAdded || len(s.toolCalls) > 0 || s.reasoningPresent || s.reasoningText.Len() > 0 || len(s.usageRaw) > 0
+	return s.messageAdded || len(s.toolCalls) > 0 || s.reasoningPresent || s.reasoningText.Len() > 0 || len(s.usageRaw) > 0
 }
 
 func (s *codexGatewayDeepSeekStreamState) shouldPersistToolLoopState() bool {
@@ -781,9 +691,6 @@ func (s *codexGatewayDeepSeekStreamState) sortedOutputIndexes() []int {
 	indexes := make([]int, 0, 2+len(s.toolCalls))
 	if s.messageAdded {
 		indexes = append(indexes, s.messageIndex)
-	}
-	if s.activityAdded {
-		indexes = append(indexes, s.activityIndex)
 	}
 	for _, call := range s.sortedToolCallsByOutputIndex() {
 		if call.OutputIndex >= 0 {

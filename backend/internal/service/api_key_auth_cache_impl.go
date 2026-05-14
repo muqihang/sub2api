@@ -15,6 +15,7 @@ import (
 )
 
 const apiKeyAuthSnapshotVersion = 10 // v10: added Codex group entitlement to scoped API key auth snapshots
+const apiKeyAuthCacheRedisOpTimeout = 250 * time.Millisecond
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -96,12 +97,14 @@ func (s *APIKeyService) StartAuthCacheInvalidationSubscriber(ctx context.Context
 	if s.cache == nil || s.authCacheL1 == nil {
 		return
 	}
-	if err := s.cache.SubscribeAuthCacheInvalidation(ctx, func(cacheKey string) {
-		s.authCacheL1.Del(cacheKey)
-	}); err != nil {
-		// Log but don't fail - L1 cache will still work, just without cross-instance invalidation
-		slog.Warn("failed to start auth cache invalidation subscriber", "error", err)
-	}
+	go func() {
+		if err := s.cache.SubscribeAuthCacheInvalidation(ctx, func(cacheKey string) {
+			s.authCacheL1.Del(cacheKey)
+		}); err != nil {
+			// Log but don't fail - L1 cache will still work, just without cross-instance invalidation
+			slog.Warn("failed to start auth cache invalidation subscriber", "error", err)
+		}
+	}()
 }
 
 func (s *APIKeyService) authCacheKey(key string) string {
@@ -120,7 +123,9 @@ func (s *APIKeyService) getAuthCacheEntry(ctx context.Context, cacheKey string) 
 	if s.cache == nil || !s.authCfg.l2Enabled() {
 		return nil, false
 	}
-	entry, err := s.cache.GetAuthCache(ctx, cacheKey)
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer cancel()
+	entry, err := s.cache.GetAuthCache(cacheCtx, cacheKey)
 	if err != nil {
 		return nil, false
 	}
@@ -148,7 +153,9 @@ func (s *APIKeyService) setAuthCacheEntry(ctx context.Context, cacheKey string, 
 	if s.cache == nil || !s.authCfg.l2Enabled() {
 		return
 	}
-	_ = s.cache.SetAuthCache(ctx, cacheKey, entry, s.authCfg.jitterTTL(ttl))
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer cancel()
+	_ = s.cache.SetAuthCache(cacheCtx, cacheKey, entry, s.authCfg.jitterTTL(ttl))
 }
 
 func (s *APIKeyService) deleteAuthCache(ctx context.Context, cacheKey string) {
@@ -158,9 +165,13 @@ func (s *APIKeyService) deleteAuthCache(ctx context.Context, cacheKey string) {
 	if s.cache == nil {
 		return
 	}
-	_ = s.cache.DeleteAuthCache(ctx, cacheKey)
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer cancel()
+	_ = s.cache.DeleteAuthCache(cacheCtx, cacheKey)
 	// Publish invalidation message to other instances
-	_ = s.cache.PublishAuthCacheInvalidation(ctx, cacheKey)
+	pubCtx, pubCancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer pubCancel()
+	_ = s.cache.PublishAuthCacheInvalidation(pubCtx, cacheKey)
 }
 
 func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey string) (*APIKeyAuthCacheEntry, error) {

@@ -43,7 +43,6 @@
       "cached_tokens": 0
     },
     "output_types": [
-      "message",
       "custom_tool_call"
     ],
     "tool_name": "shell",
