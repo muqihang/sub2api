@@ -211,6 +211,77 @@ func TestCodexGatewayProviderExecutor_UsesDeepSeekProviderGroup(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestCodexGatewayProviderExecutor_DeepSeekSelectionUsesModelScopedStickySession(t *testing.T) {
+	account := &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeUpstream, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	var selectedSessionHash string
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, sessionHash string, requestedModel string, _ map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(202), *groupID)
+			require.Equal(t, "deepseek-v4-pro", requestedModel)
+			selectedSessionHash = sessionHash
+			return account, nil
+		},
+	}
+	executor.deepseek = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, account *Account, _ CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			require.Equal(t, int64(9), account.ID)
+			return CodexGatewayDeepSeekAdapterResult{
+				ServiceResponse: CodexGatewayServiceResponse{StatusCode: http.StatusOK},
+				ProviderResult:  CodexGatewayProviderResult{UpstreamRequestID: "req_ds", UpstreamModel: "deepseek-v4-pro"},
+			}, nil
+		},
+	}
+	executor.usageRecorder = &codexGatewayUsageRecorderStub{}
+
+	resp, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request:      CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model:        CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"},
+		Parsed:       CodexGatewayResponsesCreateRequest{Model: "deepseek-v4-pro"},
+		SessionKey:   "session_hash",
+		IsolationKey: "isolation_hash",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-pro:isolation_hash", selectedSessionHash)
+}
+
+func TestCodexGatewayProviderSelectionSessionKeyScopesOnlyDeepSeek(t *testing.T) {
+	base := CodexGatewayProviderRequest{
+		Model:        CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"},
+		SessionKey:   "session_hash",
+		IsolationKey: "isolation_hash",
+	}
+
+	pro := codexGatewayProviderSelectionSessionKey(base)
+	flashReq := base
+	flashReq.Model.UpstreamModel = "deepseek-v4-flash"
+	flashReq.Model.Slug = "deepseek-v4-flash"
+	flash := codexGatewayProviderSelectionSessionKey(flashReq)
+	otherIsolationReq := base
+	otherIsolationReq.IsolationKey = "other_isolation"
+	otherIsolation := codexGatewayProviderSelectionSessionKey(otherIsolationReq)
+	slugFallbackReq := base
+	slugFallbackReq.Model.UpstreamModel = ""
+	slugFallback := codexGatewayProviderSelectionSessionKey(slugFallbackReq)
+	openAIReq := base
+	openAIReq.Model.Provider = "openai"
+	openAIReq.Model.UpstreamModel = "gpt-5.4"
+	anthropicReq := base
+	anthropicReq.Model.Provider = "anthropic"
+	anthropicReq.Model.UpstreamModel = "claude-sonnet-4-6"
+
+	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-pro:isolation_hash", pro)
+	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-flash:isolation_hash", flash)
+	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-pro:other_isolation", otherIsolation)
+	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-pro:isolation_hash", slugFallback)
+	require.NotEqual(t, pro, flash)
+	require.NotEqual(t, pro, otherIsolation)
+	require.Equal(t, "session_hash", codexGatewayProviderSelectionSessionKey(openAIReq))
+	require.Equal(t, "session_hash", codexGatewayProviderSelectionSessionKey(anthropicReq))
+}
+
 func TestCodexGatewayProviderExecutor_UsesAnthropicProviderGroup(t *testing.T) {
 	account := &Account{ID: 10, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
 	executor := newCodexGatewayProviderExecutorForTest()

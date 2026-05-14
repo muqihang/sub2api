@@ -283,7 +283,7 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 	if selector == nil {
 		return nil, fmt.Errorf("codex gateway account selector is not configured")
 	}
-	account, err := selector.SelectAccountForModelWithExclusions(ctx, &groupID, req.SessionKey, req.Model.UpstreamModel, excluded)
+	account, err := selector.SelectAccountForModelWithExclusions(ctx, &groupID, codexGatewayProviderSelectionSessionKey(req), req.Model.UpstreamModel, excluded)
 	if err != nil {
 		if !errors.Is(err, ErrNoAvailableAccounts) {
 			return nil, err
@@ -295,6 +295,28 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 		}
 	}
 	return account, nil
+}
+
+func codexGatewayProviderSelectionSessionKey(req CodexGatewayProviderRequest) string {
+	sessionKey := strings.TrimSpace(req.SessionKey)
+	if sessionKey == "" {
+		return ""
+	}
+	if normalizeCodexGatewayProvider(CodexGatewayProvider(req.Model.Provider)) != CodexGatewayProviderDeepSeek {
+		return sessionKey
+	}
+	upstreamModel := strings.ToLower(strings.TrimSpace(req.Model.UpstreamModel))
+	if upstreamModel == "" {
+		upstreamModel = strings.ToLower(strings.TrimSpace(req.Model.Slug))
+	}
+	if upstreamModel == "" {
+		return sessionKey
+	}
+	isolationKey := strings.TrimSpace(req.IsolationKey)
+	if isolationKey == "" {
+		isolationKey = "shared"
+	}
+	return sessionKey + ":codex_gateway:deepseek:" + upstreamModel + ":" + isolationKey
 }
 
 type codexGatewayDeepSeekProviderAdapter struct {

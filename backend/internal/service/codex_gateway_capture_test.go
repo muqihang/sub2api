@@ -740,6 +740,63 @@ func TestCodexGatewayCaptureV2GPTMiniBackgroundTaskDiagnostics(t *testing.T) {
 	)
 }
 
+func TestCodexGatewayCaptureV2CacheEfficiencyDiagnostics(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("01234567890123456789012345678901"), 0o600))
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              keyPath,
+		CorrelationHashKeyFile:   keyPath,
+		CaptureSuccessSampleRate: 1,
+	})
+	defer manager.Close()
+
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+		TraceID:  "cache_efficiency",
+		Method:   "POST",
+		Path:     "/codex/v1/responses",
+		Model:    "deepseek-v4-pro",
+		Provider: "deepseek",
+	})
+	require.NotNil(t, trace)
+	manager.RecordProviderResult(trace, CodexGatewayProviderResult{
+		UpstreamRequestID: "upstream_secret_request_id",
+		UpstreamModel:     "deepseek-v4-pro",
+		Usage: CodexGatewayProviderUsage{
+			InputTokens:          1200,
+			OutputTokens:         20,
+			TotalTokens:          1220,
+			CacheReadInputTokens: 240,
+		},
+	})
+	manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, manager.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "cache_efficiency")
+	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
+	efficiency := report["cache_efficiency"].(map[string]any)
+	require.Equal(t, float64(1200), efficiency["input_tokens"])
+	require.Equal(t, float64(240), efficiency["cache_read_input_tokens"])
+	require.Equal(t, float64(960), efficiency["cache_miss_input_tokens"])
+	require.Equal(t, 0.2, efficiency["cache_hit_rate"])
+	require.Contains(t, fmtAny(efficiency), "low_cache_hit_rate")
+	require.Contains(t, fmtAny(efficiency), "deepseek_account_or_prefix_changed")
+
+	sessionReport, err := os.ReadFile(filepath.Join(baseDir, time.Now().Format("2006-01-02"), "session_report.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(sessionReport), `"cache_hit_rate":0.2`)
+	require.Contains(t, string(sessionReport), `"cache_miss_input_tokens":960`)
+	require.Contains(t, string(sessionReport), "low_cache_hit_rate")
+	assertCaptureDirDoesNotContain(t, traceDir,
+		"PRIVATE_PROMPT_SENTINEL",
+		"PRIVATE_TOOL_OUTPUT_SENTINEL",
+		"sk-test-secret",
+		"upstream_secret_request_id",
+	)
+}
+
 func readCaptureJSONFile(t *testing.T, path string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)
