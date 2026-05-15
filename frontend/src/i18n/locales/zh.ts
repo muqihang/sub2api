@@ -729,6 +729,25 @@ export default {
         hint: '配置文件路径：~/.config/opencode/opencode.json（或 opencode.jsonc），不存在需手动创建。可使用默认 provider（openai/anthropic/google）或自定义 provider_id。API Key 支持直接配置或通过客户端 /connect 命令配置。示例仅供参考，模型与选项可按需调整。'
       }
     },
+    zhumengAgent: {
+      title: '逐梦 Agent 一键接入',
+      description: '为当前 API 密钥生成一次性授权，并唤起本地逐梦 Agent 完成 Codex 托管接入。',
+      setup: '一键接入 Codex',
+      creating: '生成中...',
+      install: '安装逐梦 Agent',
+      keyIdRequired: '当前密钥缺少 ID，无法发起一键接入。',
+      fallbackHelp: '如果没有自动唤起逐梦 Agent，请先安装本地工具，或继续使用下方的手动配置。',
+      devicesTitle: '已接入设备',
+      emptyDevices: '当前 API 密钥下还没有接入设备。',
+      revoke: '撤销设备',
+      confirmRevoke: '确认撤销',
+      revoking: '撤销中...',
+      status: {
+        active: '正常',
+        revoked: '已撤销',
+        reauthorizationRequired: '需要重新授权',
+      },
+    },
     customKeyLabel: '自定义密钥',
     customKeyPlaceholder: '输入自定义密钥（至少16个字符）',
     customKeyHint: '仅允许字母、数字、下划线和连字符，最少16个字符。',
@@ -2244,7 +2263,7 @@ export default {
         familyMappingTitle: '系列默认映射',
         familyMappingHint: '当请求命中 Opus、Sonnet、Haiku 系列时，会优先使用这里配置的目标模型。',
         opusModel: 'Opus 映射模型',
-        opusModelPlaceholder: '例如: gpt-5.4',
+        opusModelPlaceholder: '例如: gpt-5.5',
         sonnetModel: 'Sonnet 映射模型',
         sonnetModelPlaceholder: '例如: gpt-5.3-codex',
         haikuModel: 'Haiku 映射模型',
@@ -2256,7 +2275,7 @@ export default {
         claudeModel: 'Claude 模型',
         claudeModelPlaceholder: '例如: claude-sonnet-4-5-20250929',
         targetModel: '目标模型',
-        targetModelPlaceholder: '例如: gpt-5.4',
+        targetModelPlaceholder: '例如: gpt-5.5',
         removeExactMapping: '删除精确映射'
       },
       invalidRequestFallback: {
@@ -6708,10 +6727,10 @@ export default {
     },
   },
 
-  plugin: {
-    augment: {
-      accountTitle: 'Augment 账户',
-      billingTitle: 'Augment 计费',
+	plugin: {
+	  augment: {
+	    accountTitle: 'Augment 账户',
+	    billingTitle: 'Augment 计费',
       billing: {
         summaryTitle: '查看逐梦 Augment 的官方 Session 状态、缓存命中与共享钱包请求计费。',
         estimatedCost: '预估费用',
@@ -6820,9 +6839,9 @@ export default {
           status: '状态',
           expiresAt: '到期时间',
           lastError: '最后错误'
-        }
-      }
-    }
-  },
+	        }
+	      }
+	    }
+	  },
 
 }

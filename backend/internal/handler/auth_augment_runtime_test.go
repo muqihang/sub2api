@@ -709,6 +709,7 @@ func TestAugmentLegacyRuntimeCompatibilityEndpoints(t *testing.T) {
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -1180,6 +1181,7 @@ func TestAugmentLegacyOfficialRequiredRoutesFailClosedWithoutOfficialSession(t *
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{
@@ -2927,6 +2929,7 @@ func TestAugmentLegacyChatStreamFlushesBeforeUpstreamCompletes(t *testing.T) {
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3052,6 +3055,7 @@ func TestAugmentLegacyChatStreamReturnsHTTPErrorWhenLoopbackFailsBeforeStreaming
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3144,6 +3148,7 @@ func TestAugmentLegacyChatStreamBuffersSplitToolCallArgumentsUntilValidJSON(t *t
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3265,6 +3270,7 @@ func TestAugmentLegacyChatStreamInvalidFinalToolArgumentsDoNotLeaveToolUseRequir
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3386,6 +3392,7 @@ func TestAugmentLegacyChatStreamEmitsInterleavedToolCallsInIndexOrder(t *testing
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3573,6 +3580,8 @@ func TestAugmentLegacyCompatNamespacesAreScopedByAuthenticatedUser(t *testing.T)
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKeyOne, &group)
+	markAugmentRuntimeAPIKey(apiKeyTwo, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3689,6 +3698,7 @@ func TestAugmentLegacyCheckpointBlobsKeepsAuthenticatedNamespaceAcrossCompatFlow
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3801,6 +3811,8 @@ func TestAugmentLegacyCompatNamespacesAreScopedPerAPIKeyPrincipal(t *testing.T) 
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKeyOne, &group)
+	markAugmentRuntimeAPIKey(apiKeyTwo, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
@@ -3884,9 +3896,24 @@ func newAugmentLegacyRuntimeTestServer(t *testing.T) (*httptest.Server, string, 
 	})
 }
 
+func markAugmentRuntimeAPIKey(apiKey *service.APIKey, group *service.Group) {
+	if apiKey == nil || group == nil {
+		return
+	}
+	group.AugmentGatewayEntitled = true
+	product := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &product
+	apiKey.GroupID = &group.ID
+	apiKey.Group = group
+}
+
 func newAugmentLegacyRuntimeTestServerWithGroups(t *testing.T, groups []service.Group) (*httptest.Server, string, *string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	groups = append([]service.Group(nil), groups...)
+	for idx := range groups {
+		groups[idx].AugmentGatewayEntitled = true
+	}
 
 	user := &service.User{
 		ID:       2,
@@ -3904,6 +3931,8 @@ func newAugmentLegacyRuntimeTestServerWithGroups(t *testing.T, groups []service.
 		CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
 		User:      user,
 	}
+	restrictedClientProduct := service.AugmentClientProductZhumeng
+	apiKey.RestrictedClientProduct = &restrictedClientProduct
 	if len(groups) > 0 {
 		currentGroup := groups[0]
 		apiKey.GroupID = &currentGroup.ID
@@ -4393,6 +4422,7 @@ func newAugmentLegacyAuxiliaryContractTestServer(t *testing.T) (*httptest.Server
 		Hydrated:           true,
 		DefaultMappedModel: "gpt-5.4",
 	}
+	markAugmentRuntimeAPIKey(apiKey, &group)
 
 	pluginService := service.NewAugmentPluginService(
 		&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},

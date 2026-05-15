@@ -23,6 +23,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
+	"github.com/Wei-Shaw/sub2api/ent/codexdeviceauditlog"
+	"github.com/Wei-Shaw/sub2api/ent/codexdevicetoken"
+	"github.com/Wei-Shaw/sub2api/ent/codexmanageddevice"
+	"github.com/Wei-Shaw/sub2api/ent/codexsetupgrant"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -70,6 +74,10 @@ const (
 	TypeChannelMonitorDailyRollup     = "ChannelMonitorDailyRollup"
 	TypeChannelMonitorHistory         = "ChannelMonitorHistory"
 	TypeChannelMonitorRequestTemplate = "ChannelMonitorRequestTemplate"
+	TypeCodexDeviceAuditLog           = "CodexDeviceAuditLog"
+	TypeCodexDeviceToken              = "CodexDeviceToken"
+	TypeCodexManagedDevice            = "CodexManagedDevice"
+	TypeCodexSetupGrant               = "CodexSetupGrant"
 	TypeErrorPassthroughRule          = "ErrorPassthroughRule"
 	TypeGroup                         = "Group"
 	TypeIdempotencyRecord             = "IdempotencyRecord"
@@ -13490,6 +13498,3514 @@ func (m *ChannelMonitorRequestTemplateMutation) ResetEdge(name string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown ChannelMonitorRequestTemplate edge %s", name)
+}
+
+// CodexDeviceAuditLogMutation represents an operation that mutates the CodexDeviceAuditLog nodes in the graph.
+type CodexDeviceAuditLogMutation struct {
+	config
+	op            Op
+	typ           string
+	id            *int64
+	event         *string
+	ip            *string
+	user_agent    *string
+	metadata      *map[string]interface{}
+	created_at    *time.Time
+	clearedFields map[string]struct{}
+	user          *int64
+	cleareduser   bool
+	device        *int64
+	cleareddevice bool
+	done          bool
+	oldValue      func(context.Context) (*CodexDeviceAuditLog, error)
+	predicates    []predicate.CodexDeviceAuditLog
+}
+
+var _ ent.Mutation = (*CodexDeviceAuditLogMutation)(nil)
+
+// codexdeviceauditlogOption allows management of the mutation configuration using functional options.
+type codexdeviceauditlogOption func(*CodexDeviceAuditLogMutation)
+
+// newCodexDeviceAuditLogMutation creates new mutation for the CodexDeviceAuditLog entity.
+func newCodexDeviceAuditLogMutation(c config, op Op, opts ...codexdeviceauditlogOption) *CodexDeviceAuditLogMutation {
+	m := &CodexDeviceAuditLogMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeCodexDeviceAuditLog,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withCodexDeviceAuditLogID sets the ID field of the mutation.
+func withCodexDeviceAuditLogID(id int64) codexdeviceauditlogOption {
+	return func(m *CodexDeviceAuditLogMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *CodexDeviceAuditLog
+		)
+		m.oldValue = func(ctx context.Context) (*CodexDeviceAuditLog, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().CodexDeviceAuditLog.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withCodexDeviceAuditLog sets the old CodexDeviceAuditLog of the mutation.
+func withCodexDeviceAuditLog(node *CodexDeviceAuditLog) codexdeviceauditlogOption {
+	return func(m *CodexDeviceAuditLogMutation) {
+		m.oldValue = func(context.Context) (*CodexDeviceAuditLog, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m CodexDeviceAuditLogMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m CodexDeviceAuditLogMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *CodexDeviceAuditLogMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *CodexDeviceAuditLogMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().CodexDeviceAuditLog.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetDeviceID sets the "device_id" field.
+func (m *CodexDeviceAuditLogMutation) SetDeviceID(i int64) {
+	m.device = &i
+}
+
+// DeviceID returns the value of the "device_id" field in the mutation.
+func (m *CodexDeviceAuditLogMutation) DeviceID() (r int64, exists bool) {
+	v := m.device
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDeviceID returns the old "device_id" field's value of the CodexDeviceAuditLog entity.
+// If the CodexDeviceAuditLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceAuditLogMutation) OldDeviceID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDeviceID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDeviceID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDeviceID: %w", err)
+	}
+	return oldValue.DeviceID, nil
+}
+
+// ResetDeviceID resets all changes to the "device_id" field.
+func (m *CodexDeviceAuditLogMutation) ResetDeviceID() {
+	m.device = nil
+}
+
+// SetUserID sets the "user_id" field.
+func (m *CodexDeviceAuditLogMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *CodexDeviceAuditLogMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the CodexDeviceAuditLog entity.
+// If the CodexDeviceAuditLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceAuditLogMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *CodexDeviceAuditLogMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetEvent sets the "event" field.
+func (m *CodexDeviceAuditLogMutation) SetEvent(s string) {
+	m.event = &s
+}
+
+// Event returns the value of the "event" field in the mutation.
+func (m *CodexDeviceAuditLogMutation) Event() (r string, exists bool) {
+	v := m.event
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEvent returns the old "event" field's value of the CodexDeviceAuditLog entity.
+// If the CodexDeviceAuditLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceAuditLogMutation) OldEvent(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEvent is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEvent requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEvent: %w", err)
+	}
+	return oldValue.Event, nil
+}
+
+// ResetEvent resets all changes to the "event" field.
+func (m *CodexDeviceAuditLogMutation) ResetEvent() {
+	m.event = nil
+}
+
+// SetIP sets the "ip" field.
+func (m *CodexDeviceAuditLogMutation) SetIP(s string) {
+	m.ip = &s
+}
+
+// IP returns the value of the "ip" field in the mutation.
+func (m *CodexDeviceAuditLogMutation) IP() (r string, exists bool) {
+	v := m.ip
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldIP returns the old "ip" field's value of the CodexDeviceAuditLog entity.
+// If the CodexDeviceAuditLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceAuditLogMutation) OldIP(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldIP is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldIP requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldIP: %w", err)
+	}
+	return oldValue.IP, nil
+}
+
+// ResetIP resets all changes to the "ip" field.
+func (m *CodexDeviceAuditLogMutation) ResetIP() {
+	m.ip = nil
+}
+
+// SetUserAgent sets the "user_agent" field.
+func (m *CodexDeviceAuditLogMutation) SetUserAgent(s string) {
+	m.user_agent = &s
+}
+
+// UserAgent returns the value of the "user_agent" field in the mutation.
+func (m *CodexDeviceAuditLogMutation) UserAgent() (r string, exists bool) {
+	v := m.user_agent
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserAgent returns the old "user_agent" field's value of the CodexDeviceAuditLog entity.
+// If the CodexDeviceAuditLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceAuditLogMutation) OldUserAgent(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserAgent is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserAgent requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserAgent: %w", err)
+	}
+	return oldValue.UserAgent, nil
+}
+
+// ResetUserAgent resets all changes to the "user_agent" field.
+func (m *CodexDeviceAuditLogMutation) ResetUserAgent() {
+	m.user_agent = nil
+}
+
+// SetMetadata sets the "metadata" field.
+func (m *CodexDeviceAuditLogMutation) SetMetadata(value map[string]interface{}) {
+	m.metadata = &value
+}
+
+// Metadata returns the value of the "metadata" field in the mutation.
+func (m *CodexDeviceAuditLogMutation) Metadata() (r map[string]interface{}, exists bool) {
+	v := m.metadata
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMetadata returns the old "metadata" field's value of the CodexDeviceAuditLog entity.
+// If the CodexDeviceAuditLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceAuditLogMutation) OldMetadata(ctx context.Context) (v map[string]interface{}, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMetadata is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMetadata requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMetadata: %w", err)
+	}
+	return oldValue.Metadata, nil
+}
+
+// ResetMetadata resets all changes to the "metadata" field.
+func (m *CodexDeviceAuditLogMutation) ResetMetadata() {
+	m.metadata = nil
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *CodexDeviceAuditLogMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *CodexDeviceAuditLogMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the CodexDeviceAuditLog entity.
+// If the CodexDeviceAuditLog object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceAuditLogMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *CodexDeviceAuditLogMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *CodexDeviceAuditLogMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[codexdeviceauditlog.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *CodexDeviceAuditLogMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *CodexDeviceAuditLogMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *CodexDeviceAuditLogMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// ClearDevice clears the "device" edge to the CodexManagedDevice entity.
+func (m *CodexDeviceAuditLogMutation) ClearDevice() {
+	m.cleareddevice = true
+	m.clearedFields[codexdeviceauditlog.FieldDeviceID] = struct{}{}
+}
+
+// DeviceCleared reports if the "device" edge to the CodexManagedDevice entity was cleared.
+func (m *CodexDeviceAuditLogMutation) DeviceCleared() bool {
+	return m.cleareddevice
+}
+
+// DeviceIDs returns the "device" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// DeviceID instead. It exists only for internal usage by the builders.
+func (m *CodexDeviceAuditLogMutation) DeviceIDs() (ids []int64) {
+	if id := m.device; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetDevice resets all changes to the "device" edge.
+func (m *CodexDeviceAuditLogMutation) ResetDevice() {
+	m.device = nil
+	m.cleareddevice = false
+}
+
+// Where appends a list predicates to the CodexDeviceAuditLogMutation builder.
+func (m *CodexDeviceAuditLogMutation) Where(ps ...predicate.CodexDeviceAuditLog) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the CodexDeviceAuditLogMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *CodexDeviceAuditLogMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.CodexDeviceAuditLog, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *CodexDeviceAuditLogMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *CodexDeviceAuditLogMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (CodexDeviceAuditLog).
+func (m *CodexDeviceAuditLogMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *CodexDeviceAuditLogMutation) Fields() []string {
+	fields := make([]string, 0, 7)
+	if m.device != nil {
+		fields = append(fields, codexdeviceauditlog.FieldDeviceID)
+	}
+	if m.user != nil {
+		fields = append(fields, codexdeviceauditlog.FieldUserID)
+	}
+	if m.event != nil {
+		fields = append(fields, codexdeviceauditlog.FieldEvent)
+	}
+	if m.ip != nil {
+		fields = append(fields, codexdeviceauditlog.FieldIP)
+	}
+	if m.user_agent != nil {
+		fields = append(fields, codexdeviceauditlog.FieldUserAgent)
+	}
+	if m.metadata != nil {
+		fields = append(fields, codexdeviceauditlog.FieldMetadata)
+	}
+	if m.created_at != nil {
+		fields = append(fields, codexdeviceauditlog.FieldCreatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *CodexDeviceAuditLogMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case codexdeviceauditlog.FieldDeviceID:
+		return m.DeviceID()
+	case codexdeviceauditlog.FieldUserID:
+		return m.UserID()
+	case codexdeviceauditlog.FieldEvent:
+		return m.Event()
+	case codexdeviceauditlog.FieldIP:
+		return m.IP()
+	case codexdeviceauditlog.FieldUserAgent:
+		return m.UserAgent()
+	case codexdeviceauditlog.FieldMetadata:
+		return m.Metadata()
+	case codexdeviceauditlog.FieldCreatedAt:
+		return m.CreatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *CodexDeviceAuditLogMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case codexdeviceauditlog.FieldDeviceID:
+		return m.OldDeviceID(ctx)
+	case codexdeviceauditlog.FieldUserID:
+		return m.OldUserID(ctx)
+	case codexdeviceauditlog.FieldEvent:
+		return m.OldEvent(ctx)
+	case codexdeviceauditlog.FieldIP:
+		return m.OldIP(ctx)
+	case codexdeviceauditlog.FieldUserAgent:
+		return m.OldUserAgent(ctx)
+	case codexdeviceauditlog.FieldMetadata:
+		return m.OldMetadata(ctx)
+	case codexdeviceauditlog.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown CodexDeviceAuditLog field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexDeviceAuditLogMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case codexdeviceauditlog.FieldDeviceID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDeviceID(v)
+		return nil
+	case codexdeviceauditlog.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case codexdeviceauditlog.FieldEvent:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEvent(v)
+		return nil
+	case codexdeviceauditlog.FieldIP:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetIP(v)
+		return nil
+	case codexdeviceauditlog.FieldUserAgent:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserAgent(v)
+		return nil
+	case codexdeviceauditlog.FieldMetadata:
+		v, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMetadata(v)
+		return nil
+	case codexdeviceauditlog.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceAuditLog field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *CodexDeviceAuditLogMutation) AddedFields() []string {
+	var fields []string
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *CodexDeviceAuditLogMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexDeviceAuditLogMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown CodexDeviceAuditLog numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *CodexDeviceAuditLogMutation) ClearedFields() []string {
+	return nil
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *CodexDeviceAuditLogMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *CodexDeviceAuditLogMutation) ClearField(name string) error {
+	return fmt.Errorf("unknown CodexDeviceAuditLog nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *CodexDeviceAuditLogMutation) ResetField(name string) error {
+	switch name {
+	case codexdeviceauditlog.FieldDeviceID:
+		m.ResetDeviceID()
+		return nil
+	case codexdeviceauditlog.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case codexdeviceauditlog.FieldEvent:
+		m.ResetEvent()
+		return nil
+	case codexdeviceauditlog.FieldIP:
+		m.ResetIP()
+		return nil
+	case codexdeviceauditlog.FieldUserAgent:
+		m.ResetUserAgent()
+		return nil
+	case codexdeviceauditlog.FieldMetadata:
+		m.ResetMetadata()
+		return nil
+	case codexdeviceauditlog.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceAuditLog field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *CodexDeviceAuditLogMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.user != nil {
+		edges = append(edges, codexdeviceauditlog.EdgeUser)
+	}
+	if m.device != nil {
+		edges = append(edges, codexdeviceauditlog.EdgeDevice)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *CodexDeviceAuditLogMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case codexdeviceauditlog.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	case codexdeviceauditlog.EdgeDevice:
+		if id := m.device; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *CodexDeviceAuditLogMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *CodexDeviceAuditLogMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *CodexDeviceAuditLogMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.cleareduser {
+		edges = append(edges, codexdeviceauditlog.EdgeUser)
+	}
+	if m.cleareddevice {
+		edges = append(edges, codexdeviceauditlog.EdgeDevice)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *CodexDeviceAuditLogMutation) EdgeCleared(name string) bool {
+	switch name {
+	case codexdeviceauditlog.EdgeUser:
+		return m.cleareduser
+	case codexdeviceauditlog.EdgeDevice:
+		return m.cleareddevice
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *CodexDeviceAuditLogMutation) ClearEdge(name string) error {
+	switch name {
+	case codexdeviceauditlog.EdgeUser:
+		m.ClearUser()
+		return nil
+	case codexdeviceauditlog.EdgeDevice:
+		m.ClearDevice()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceAuditLog unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *CodexDeviceAuditLogMutation) ResetEdge(name string) error {
+	switch name {
+	case codexdeviceauditlog.EdgeUser:
+		m.ResetUser()
+		return nil
+	case codexdeviceauditlog.EdgeDevice:
+		m.ResetDevice()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceAuditLog edge %s", name)
+}
+
+// CodexDeviceTokenMutation represents an operation that mutates the CodexDeviceToken nodes in the graph.
+type CodexDeviceTokenMutation struct {
+	config
+	op                 Op
+	typ                string
+	id                 *int64
+	refresh_token_hash *string
+	expires_at         *time.Time
+	created_at         *time.Time
+	rotated_at         *time.Time
+	revoked_at         *time.Time
+	clearedFields      map[string]struct{}
+	device             *int64
+	cleareddevice      bool
+	done               bool
+	oldValue           func(context.Context) (*CodexDeviceToken, error)
+	predicates         []predicate.CodexDeviceToken
+}
+
+var _ ent.Mutation = (*CodexDeviceTokenMutation)(nil)
+
+// codexdevicetokenOption allows management of the mutation configuration using functional options.
+type codexdevicetokenOption func(*CodexDeviceTokenMutation)
+
+// newCodexDeviceTokenMutation creates new mutation for the CodexDeviceToken entity.
+func newCodexDeviceTokenMutation(c config, op Op, opts ...codexdevicetokenOption) *CodexDeviceTokenMutation {
+	m := &CodexDeviceTokenMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeCodexDeviceToken,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withCodexDeviceTokenID sets the ID field of the mutation.
+func withCodexDeviceTokenID(id int64) codexdevicetokenOption {
+	return func(m *CodexDeviceTokenMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *CodexDeviceToken
+		)
+		m.oldValue = func(ctx context.Context) (*CodexDeviceToken, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().CodexDeviceToken.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withCodexDeviceToken sets the old CodexDeviceToken of the mutation.
+func withCodexDeviceToken(node *CodexDeviceToken) codexdevicetokenOption {
+	return func(m *CodexDeviceTokenMutation) {
+		m.oldValue = func(context.Context) (*CodexDeviceToken, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m CodexDeviceTokenMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m CodexDeviceTokenMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *CodexDeviceTokenMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *CodexDeviceTokenMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().CodexDeviceToken.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetDeviceID sets the "device_id" field.
+func (m *CodexDeviceTokenMutation) SetDeviceID(i int64) {
+	m.device = &i
+}
+
+// DeviceID returns the value of the "device_id" field in the mutation.
+func (m *CodexDeviceTokenMutation) DeviceID() (r int64, exists bool) {
+	v := m.device
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldDeviceID returns the old "device_id" field's value of the CodexDeviceToken entity.
+// If the CodexDeviceToken object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceTokenMutation) OldDeviceID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldDeviceID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldDeviceID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldDeviceID: %w", err)
+	}
+	return oldValue.DeviceID, nil
+}
+
+// ResetDeviceID resets all changes to the "device_id" field.
+func (m *CodexDeviceTokenMutation) ResetDeviceID() {
+	m.device = nil
+}
+
+// SetRefreshTokenHash sets the "refresh_token_hash" field.
+func (m *CodexDeviceTokenMutation) SetRefreshTokenHash(s string) {
+	m.refresh_token_hash = &s
+}
+
+// RefreshTokenHash returns the value of the "refresh_token_hash" field in the mutation.
+func (m *CodexDeviceTokenMutation) RefreshTokenHash() (r string, exists bool) {
+	v := m.refresh_token_hash
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRefreshTokenHash returns the old "refresh_token_hash" field's value of the CodexDeviceToken entity.
+// If the CodexDeviceToken object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceTokenMutation) OldRefreshTokenHash(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRefreshTokenHash is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRefreshTokenHash requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRefreshTokenHash: %w", err)
+	}
+	return oldValue.RefreshTokenHash, nil
+}
+
+// ResetRefreshTokenHash resets all changes to the "refresh_token_hash" field.
+func (m *CodexDeviceTokenMutation) ResetRefreshTokenHash() {
+	m.refresh_token_hash = nil
+}
+
+// SetExpiresAt sets the "expires_at" field.
+func (m *CodexDeviceTokenMutation) SetExpiresAt(t time.Time) {
+	m.expires_at = &t
+}
+
+// ExpiresAt returns the value of the "expires_at" field in the mutation.
+func (m *CodexDeviceTokenMutation) ExpiresAt() (r time.Time, exists bool) {
+	v := m.expires_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExpiresAt returns the old "expires_at" field's value of the CodexDeviceToken entity.
+// If the CodexDeviceToken object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceTokenMutation) OldExpiresAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExpiresAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExpiresAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExpiresAt: %w", err)
+	}
+	return oldValue.ExpiresAt, nil
+}
+
+// ResetExpiresAt resets all changes to the "expires_at" field.
+func (m *CodexDeviceTokenMutation) ResetExpiresAt() {
+	m.expires_at = nil
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *CodexDeviceTokenMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *CodexDeviceTokenMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the CodexDeviceToken entity.
+// If the CodexDeviceToken object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceTokenMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *CodexDeviceTokenMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetRotatedAt sets the "rotated_at" field.
+func (m *CodexDeviceTokenMutation) SetRotatedAt(t time.Time) {
+	m.rotated_at = &t
+}
+
+// RotatedAt returns the value of the "rotated_at" field in the mutation.
+func (m *CodexDeviceTokenMutation) RotatedAt() (r time.Time, exists bool) {
+	v := m.rotated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRotatedAt returns the old "rotated_at" field's value of the CodexDeviceToken entity.
+// If the CodexDeviceToken object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceTokenMutation) OldRotatedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRotatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRotatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRotatedAt: %w", err)
+	}
+	return oldValue.RotatedAt, nil
+}
+
+// ClearRotatedAt clears the value of the "rotated_at" field.
+func (m *CodexDeviceTokenMutation) ClearRotatedAt() {
+	m.rotated_at = nil
+	m.clearedFields[codexdevicetoken.FieldRotatedAt] = struct{}{}
+}
+
+// RotatedAtCleared returns if the "rotated_at" field was cleared in this mutation.
+func (m *CodexDeviceTokenMutation) RotatedAtCleared() bool {
+	_, ok := m.clearedFields[codexdevicetoken.FieldRotatedAt]
+	return ok
+}
+
+// ResetRotatedAt resets all changes to the "rotated_at" field.
+func (m *CodexDeviceTokenMutation) ResetRotatedAt() {
+	m.rotated_at = nil
+	delete(m.clearedFields, codexdevicetoken.FieldRotatedAt)
+}
+
+// SetRevokedAt sets the "revoked_at" field.
+func (m *CodexDeviceTokenMutation) SetRevokedAt(t time.Time) {
+	m.revoked_at = &t
+}
+
+// RevokedAt returns the value of the "revoked_at" field in the mutation.
+func (m *CodexDeviceTokenMutation) RevokedAt() (r time.Time, exists bool) {
+	v := m.revoked_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRevokedAt returns the old "revoked_at" field's value of the CodexDeviceToken entity.
+// If the CodexDeviceToken object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexDeviceTokenMutation) OldRevokedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRevokedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRevokedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRevokedAt: %w", err)
+	}
+	return oldValue.RevokedAt, nil
+}
+
+// ClearRevokedAt clears the value of the "revoked_at" field.
+func (m *CodexDeviceTokenMutation) ClearRevokedAt() {
+	m.revoked_at = nil
+	m.clearedFields[codexdevicetoken.FieldRevokedAt] = struct{}{}
+}
+
+// RevokedAtCleared returns if the "revoked_at" field was cleared in this mutation.
+func (m *CodexDeviceTokenMutation) RevokedAtCleared() bool {
+	_, ok := m.clearedFields[codexdevicetoken.FieldRevokedAt]
+	return ok
+}
+
+// ResetRevokedAt resets all changes to the "revoked_at" field.
+func (m *CodexDeviceTokenMutation) ResetRevokedAt() {
+	m.revoked_at = nil
+	delete(m.clearedFields, codexdevicetoken.FieldRevokedAt)
+}
+
+// ClearDevice clears the "device" edge to the CodexManagedDevice entity.
+func (m *CodexDeviceTokenMutation) ClearDevice() {
+	m.cleareddevice = true
+	m.clearedFields[codexdevicetoken.FieldDeviceID] = struct{}{}
+}
+
+// DeviceCleared reports if the "device" edge to the CodexManagedDevice entity was cleared.
+func (m *CodexDeviceTokenMutation) DeviceCleared() bool {
+	return m.cleareddevice
+}
+
+// DeviceIDs returns the "device" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// DeviceID instead. It exists only for internal usage by the builders.
+func (m *CodexDeviceTokenMutation) DeviceIDs() (ids []int64) {
+	if id := m.device; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetDevice resets all changes to the "device" edge.
+func (m *CodexDeviceTokenMutation) ResetDevice() {
+	m.device = nil
+	m.cleareddevice = false
+}
+
+// Where appends a list predicates to the CodexDeviceTokenMutation builder.
+func (m *CodexDeviceTokenMutation) Where(ps ...predicate.CodexDeviceToken) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the CodexDeviceTokenMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *CodexDeviceTokenMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.CodexDeviceToken, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *CodexDeviceTokenMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *CodexDeviceTokenMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (CodexDeviceToken).
+func (m *CodexDeviceTokenMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *CodexDeviceTokenMutation) Fields() []string {
+	fields := make([]string, 0, 6)
+	if m.device != nil {
+		fields = append(fields, codexdevicetoken.FieldDeviceID)
+	}
+	if m.refresh_token_hash != nil {
+		fields = append(fields, codexdevicetoken.FieldRefreshTokenHash)
+	}
+	if m.expires_at != nil {
+		fields = append(fields, codexdevicetoken.FieldExpiresAt)
+	}
+	if m.created_at != nil {
+		fields = append(fields, codexdevicetoken.FieldCreatedAt)
+	}
+	if m.rotated_at != nil {
+		fields = append(fields, codexdevicetoken.FieldRotatedAt)
+	}
+	if m.revoked_at != nil {
+		fields = append(fields, codexdevicetoken.FieldRevokedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *CodexDeviceTokenMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case codexdevicetoken.FieldDeviceID:
+		return m.DeviceID()
+	case codexdevicetoken.FieldRefreshTokenHash:
+		return m.RefreshTokenHash()
+	case codexdevicetoken.FieldExpiresAt:
+		return m.ExpiresAt()
+	case codexdevicetoken.FieldCreatedAt:
+		return m.CreatedAt()
+	case codexdevicetoken.FieldRotatedAt:
+		return m.RotatedAt()
+	case codexdevicetoken.FieldRevokedAt:
+		return m.RevokedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *CodexDeviceTokenMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case codexdevicetoken.FieldDeviceID:
+		return m.OldDeviceID(ctx)
+	case codexdevicetoken.FieldRefreshTokenHash:
+		return m.OldRefreshTokenHash(ctx)
+	case codexdevicetoken.FieldExpiresAt:
+		return m.OldExpiresAt(ctx)
+	case codexdevicetoken.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case codexdevicetoken.FieldRotatedAt:
+		return m.OldRotatedAt(ctx)
+	case codexdevicetoken.FieldRevokedAt:
+		return m.OldRevokedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown CodexDeviceToken field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexDeviceTokenMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case codexdevicetoken.FieldDeviceID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetDeviceID(v)
+		return nil
+	case codexdevicetoken.FieldRefreshTokenHash:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRefreshTokenHash(v)
+		return nil
+	case codexdevicetoken.FieldExpiresAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExpiresAt(v)
+		return nil
+	case codexdevicetoken.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case codexdevicetoken.FieldRotatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRotatedAt(v)
+		return nil
+	case codexdevicetoken.FieldRevokedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRevokedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceToken field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *CodexDeviceTokenMutation) AddedFields() []string {
+	var fields []string
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *CodexDeviceTokenMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexDeviceTokenMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown CodexDeviceToken numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *CodexDeviceTokenMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(codexdevicetoken.FieldRotatedAt) {
+		fields = append(fields, codexdevicetoken.FieldRotatedAt)
+	}
+	if m.FieldCleared(codexdevicetoken.FieldRevokedAt) {
+		fields = append(fields, codexdevicetoken.FieldRevokedAt)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *CodexDeviceTokenMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *CodexDeviceTokenMutation) ClearField(name string) error {
+	switch name {
+	case codexdevicetoken.FieldRotatedAt:
+		m.ClearRotatedAt()
+		return nil
+	case codexdevicetoken.FieldRevokedAt:
+		m.ClearRevokedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceToken nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *CodexDeviceTokenMutation) ResetField(name string) error {
+	switch name {
+	case codexdevicetoken.FieldDeviceID:
+		m.ResetDeviceID()
+		return nil
+	case codexdevicetoken.FieldRefreshTokenHash:
+		m.ResetRefreshTokenHash()
+		return nil
+	case codexdevicetoken.FieldExpiresAt:
+		m.ResetExpiresAt()
+		return nil
+	case codexdevicetoken.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case codexdevicetoken.FieldRotatedAt:
+		m.ResetRotatedAt()
+		return nil
+	case codexdevicetoken.FieldRevokedAt:
+		m.ResetRevokedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceToken field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *CodexDeviceTokenMutation) AddedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.device != nil {
+		edges = append(edges, codexdevicetoken.EdgeDevice)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *CodexDeviceTokenMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case codexdevicetoken.EdgeDevice:
+		if id := m.device; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *CodexDeviceTokenMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 1)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *CodexDeviceTokenMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *CodexDeviceTokenMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.cleareddevice {
+		edges = append(edges, codexdevicetoken.EdgeDevice)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *CodexDeviceTokenMutation) EdgeCleared(name string) bool {
+	switch name {
+	case codexdevicetoken.EdgeDevice:
+		return m.cleareddevice
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *CodexDeviceTokenMutation) ClearEdge(name string) error {
+	switch name {
+	case codexdevicetoken.EdgeDevice:
+		m.ClearDevice()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceToken unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *CodexDeviceTokenMutation) ResetEdge(name string) error {
+	switch name {
+	case codexdevicetoken.EdgeDevice:
+		m.ResetDevice()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexDeviceToken edge %s", name)
+}
+
+// CodexManagedDeviceMutation represents an operation that mutates the CodexManagedDevice nodes in the graph.
+type CodexManagedDeviceMutation struct {
+	config
+	op                Op
+	typ               string
+	id                *int64
+	created_at        *time.Time
+	updated_at        *time.Time
+	name              *string
+	platform          *string
+	arch              *string
+	manager_version   *string
+	status            *codexmanageddevice.Status
+	last_seen_at      *time.Time
+	revoked_at        *time.Time
+	clearedFields     map[string]struct{}
+	user              *int64
+	cleareduser       bool
+	api_key           *int64
+	clearedapi_key    bool
+	tokens            map[int64]struct{}
+	removedtokens     map[int64]struct{}
+	clearedtokens     bool
+	audit_logs        map[int64]struct{}
+	removedaudit_logs map[int64]struct{}
+	clearedaudit_logs bool
+	done              bool
+	oldValue          func(context.Context) (*CodexManagedDevice, error)
+	predicates        []predicate.CodexManagedDevice
+}
+
+var _ ent.Mutation = (*CodexManagedDeviceMutation)(nil)
+
+// codexmanageddeviceOption allows management of the mutation configuration using functional options.
+type codexmanageddeviceOption func(*CodexManagedDeviceMutation)
+
+// newCodexManagedDeviceMutation creates new mutation for the CodexManagedDevice entity.
+func newCodexManagedDeviceMutation(c config, op Op, opts ...codexmanageddeviceOption) *CodexManagedDeviceMutation {
+	m := &CodexManagedDeviceMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeCodexManagedDevice,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withCodexManagedDeviceID sets the ID field of the mutation.
+func withCodexManagedDeviceID(id int64) codexmanageddeviceOption {
+	return func(m *CodexManagedDeviceMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *CodexManagedDevice
+		)
+		m.oldValue = func(ctx context.Context) (*CodexManagedDevice, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().CodexManagedDevice.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withCodexManagedDevice sets the old CodexManagedDevice of the mutation.
+func withCodexManagedDevice(node *CodexManagedDevice) codexmanageddeviceOption {
+	return func(m *CodexManagedDeviceMutation) {
+		m.oldValue = func(context.Context) (*CodexManagedDevice, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m CodexManagedDeviceMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m CodexManagedDeviceMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *CodexManagedDeviceMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *CodexManagedDeviceMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().CodexManagedDevice.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *CodexManagedDeviceMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *CodexManagedDeviceMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *CodexManagedDeviceMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *CodexManagedDeviceMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *CodexManagedDeviceMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *CodexManagedDeviceMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// SetUserID sets the "user_id" field.
+func (m *CodexManagedDeviceMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *CodexManagedDeviceMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *CodexManagedDeviceMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetAPIKeyID sets the "api_key_id" field.
+func (m *CodexManagedDeviceMutation) SetAPIKeyID(i int64) {
+	m.api_key = &i
+}
+
+// APIKeyID returns the value of the "api_key_id" field in the mutation.
+func (m *CodexManagedDeviceMutation) APIKeyID() (r int64, exists bool) {
+	v := m.api_key
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAPIKeyID returns the old "api_key_id" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldAPIKeyID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAPIKeyID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAPIKeyID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAPIKeyID: %w", err)
+	}
+	return oldValue.APIKeyID, nil
+}
+
+// ResetAPIKeyID resets all changes to the "api_key_id" field.
+func (m *CodexManagedDeviceMutation) ResetAPIKeyID() {
+	m.api_key = nil
+}
+
+// SetName sets the "name" field.
+func (m *CodexManagedDeviceMutation) SetName(s string) {
+	m.name = &s
+}
+
+// Name returns the value of the "name" field in the mutation.
+func (m *CodexManagedDeviceMutation) Name() (r string, exists bool) {
+	v := m.name
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldName returns the old "name" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldName(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldName is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldName requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldName: %w", err)
+	}
+	return oldValue.Name, nil
+}
+
+// ResetName resets all changes to the "name" field.
+func (m *CodexManagedDeviceMutation) ResetName() {
+	m.name = nil
+}
+
+// SetPlatform sets the "platform" field.
+func (m *CodexManagedDeviceMutation) SetPlatform(s string) {
+	m.platform = &s
+}
+
+// Platform returns the value of the "platform" field in the mutation.
+func (m *CodexManagedDeviceMutation) Platform() (r string, exists bool) {
+	v := m.platform
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldPlatform returns the old "platform" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldPlatform(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldPlatform is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldPlatform requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldPlatform: %w", err)
+	}
+	return oldValue.Platform, nil
+}
+
+// ResetPlatform resets all changes to the "platform" field.
+func (m *CodexManagedDeviceMutation) ResetPlatform() {
+	m.platform = nil
+}
+
+// SetArch sets the "arch" field.
+func (m *CodexManagedDeviceMutation) SetArch(s string) {
+	m.arch = &s
+}
+
+// Arch returns the value of the "arch" field in the mutation.
+func (m *CodexManagedDeviceMutation) Arch() (r string, exists bool) {
+	v := m.arch
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldArch returns the old "arch" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldArch(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldArch is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldArch requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldArch: %w", err)
+	}
+	return oldValue.Arch, nil
+}
+
+// ResetArch resets all changes to the "arch" field.
+func (m *CodexManagedDeviceMutation) ResetArch() {
+	m.arch = nil
+}
+
+// SetManagerVersion sets the "manager_version" field.
+func (m *CodexManagedDeviceMutation) SetManagerVersion(s string) {
+	m.manager_version = &s
+}
+
+// ManagerVersion returns the value of the "manager_version" field in the mutation.
+func (m *CodexManagedDeviceMutation) ManagerVersion() (r string, exists bool) {
+	v := m.manager_version
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldManagerVersion returns the old "manager_version" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldManagerVersion(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldManagerVersion is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldManagerVersion requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldManagerVersion: %w", err)
+	}
+	return oldValue.ManagerVersion, nil
+}
+
+// ResetManagerVersion resets all changes to the "manager_version" field.
+func (m *CodexManagedDeviceMutation) ResetManagerVersion() {
+	m.manager_version = nil
+}
+
+// SetStatus sets the "status" field.
+func (m *CodexManagedDeviceMutation) SetStatus(c codexmanageddevice.Status) {
+	m.status = &c
+}
+
+// Status returns the value of the "status" field in the mutation.
+func (m *CodexManagedDeviceMutation) Status() (r codexmanageddevice.Status, exists bool) {
+	v := m.status
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStatus returns the old "status" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldStatus(ctx context.Context) (v codexmanageddevice.Status, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStatus is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStatus requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStatus: %w", err)
+	}
+	return oldValue.Status, nil
+}
+
+// ResetStatus resets all changes to the "status" field.
+func (m *CodexManagedDeviceMutation) ResetStatus() {
+	m.status = nil
+}
+
+// SetLastSeenAt sets the "last_seen_at" field.
+func (m *CodexManagedDeviceMutation) SetLastSeenAt(t time.Time) {
+	m.last_seen_at = &t
+}
+
+// LastSeenAt returns the value of the "last_seen_at" field in the mutation.
+func (m *CodexManagedDeviceMutation) LastSeenAt() (r time.Time, exists bool) {
+	v := m.last_seen_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldLastSeenAt returns the old "last_seen_at" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldLastSeenAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldLastSeenAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldLastSeenAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldLastSeenAt: %w", err)
+	}
+	return oldValue.LastSeenAt, nil
+}
+
+// ClearLastSeenAt clears the value of the "last_seen_at" field.
+func (m *CodexManagedDeviceMutation) ClearLastSeenAt() {
+	m.last_seen_at = nil
+	m.clearedFields[codexmanageddevice.FieldLastSeenAt] = struct{}{}
+}
+
+// LastSeenAtCleared returns if the "last_seen_at" field was cleared in this mutation.
+func (m *CodexManagedDeviceMutation) LastSeenAtCleared() bool {
+	_, ok := m.clearedFields[codexmanageddevice.FieldLastSeenAt]
+	return ok
+}
+
+// ResetLastSeenAt resets all changes to the "last_seen_at" field.
+func (m *CodexManagedDeviceMutation) ResetLastSeenAt() {
+	m.last_seen_at = nil
+	delete(m.clearedFields, codexmanageddevice.FieldLastSeenAt)
+}
+
+// SetRevokedAt sets the "revoked_at" field.
+func (m *CodexManagedDeviceMutation) SetRevokedAt(t time.Time) {
+	m.revoked_at = &t
+}
+
+// RevokedAt returns the value of the "revoked_at" field in the mutation.
+func (m *CodexManagedDeviceMutation) RevokedAt() (r time.Time, exists bool) {
+	v := m.revoked_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRevokedAt returns the old "revoked_at" field's value of the CodexManagedDevice entity.
+// If the CodexManagedDevice object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexManagedDeviceMutation) OldRevokedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRevokedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRevokedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRevokedAt: %w", err)
+	}
+	return oldValue.RevokedAt, nil
+}
+
+// ClearRevokedAt clears the value of the "revoked_at" field.
+func (m *CodexManagedDeviceMutation) ClearRevokedAt() {
+	m.revoked_at = nil
+	m.clearedFields[codexmanageddevice.FieldRevokedAt] = struct{}{}
+}
+
+// RevokedAtCleared returns if the "revoked_at" field was cleared in this mutation.
+func (m *CodexManagedDeviceMutation) RevokedAtCleared() bool {
+	_, ok := m.clearedFields[codexmanageddevice.FieldRevokedAt]
+	return ok
+}
+
+// ResetRevokedAt resets all changes to the "revoked_at" field.
+func (m *CodexManagedDeviceMutation) ResetRevokedAt() {
+	m.revoked_at = nil
+	delete(m.clearedFields, codexmanageddevice.FieldRevokedAt)
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *CodexManagedDeviceMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[codexmanageddevice.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *CodexManagedDeviceMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *CodexManagedDeviceMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *CodexManagedDeviceMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// ClearAPIKey clears the "api_key" edge to the APIKey entity.
+func (m *CodexManagedDeviceMutation) ClearAPIKey() {
+	m.clearedapi_key = true
+	m.clearedFields[codexmanageddevice.FieldAPIKeyID] = struct{}{}
+}
+
+// APIKeyCleared reports if the "api_key" edge to the APIKey entity was cleared.
+func (m *CodexManagedDeviceMutation) APIKeyCleared() bool {
+	return m.clearedapi_key
+}
+
+// APIKeyIDs returns the "api_key" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// APIKeyID instead. It exists only for internal usage by the builders.
+func (m *CodexManagedDeviceMutation) APIKeyIDs() (ids []int64) {
+	if id := m.api_key; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetAPIKey resets all changes to the "api_key" edge.
+func (m *CodexManagedDeviceMutation) ResetAPIKey() {
+	m.api_key = nil
+	m.clearedapi_key = false
+}
+
+// AddTokenIDs adds the "tokens" edge to the CodexDeviceToken entity by ids.
+func (m *CodexManagedDeviceMutation) AddTokenIDs(ids ...int64) {
+	if m.tokens == nil {
+		m.tokens = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.tokens[ids[i]] = struct{}{}
+	}
+}
+
+// ClearTokens clears the "tokens" edge to the CodexDeviceToken entity.
+func (m *CodexManagedDeviceMutation) ClearTokens() {
+	m.clearedtokens = true
+}
+
+// TokensCleared reports if the "tokens" edge to the CodexDeviceToken entity was cleared.
+func (m *CodexManagedDeviceMutation) TokensCleared() bool {
+	return m.clearedtokens
+}
+
+// RemoveTokenIDs removes the "tokens" edge to the CodexDeviceToken entity by IDs.
+func (m *CodexManagedDeviceMutation) RemoveTokenIDs(ids ...int64) {
+	if m.removedtokens == nil {
+		m.removedtokens = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.tokens, ids[i])
+		m.removedtokens[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedTokens returns the removed IDs of the "tokens" edge to the CodexDeviceToken entity.
+func (m *CodexManagedDeviceMutation) RemovedTokensIDs() (ids []int64) {
+	for id := range m.removedtokens {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// TokensIDs returns the "tokens" edge IDs in the mutation.
+func (m *CodexManagedDeviceMutation) TokensIDs() (ids []int64) {
+	for id := range m.tokens {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetTokens resets all changes to the "tokens" edge.
+func (m *CodexManagedDeviceMutation) ResetTokens() {
+	m.tokens = nil
+	m.clearedtokens = false
+	m.removedtokens = nil
+}
+
+// AddAuditLogIDs adds the "audit_logs" edge to the CodexDeviceAuditLog entity by ids.
+func (m *CodexManagedDeviceMutation) AddAuditLogIDs(ids ...int64) {
+	if m.audit_logs == nil {
+		m.audit_logs = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.audit_logs[ids[i]] = struct{}{}
+	}
+}
+
+// ClearAuditLogs clears the "audit_logs" edge to the CodexDeviceAuditLog entity.
+func (m *CodexManagedDeviceMutation) ClearAuditLogs() {
+	m.clearedaudit_logs = true
+}
+
+// AuditLogsCleared reports if the "audit_logs" edge to the CodexDeviceAuditLog entity was cleared.
+func (m *CodexManagedDeviceMutation) AuditLogsCleared() bool {
+	return m.clearedaudit_logs
+}
+
+// RemoveAuditLogIDs removes the "audit_logs" edge to the CodexDeviceAuditLog entity by IDs.
+func (m *CodexManagedDeviceMutation) RemoveAuditLogIDs(ids ...int64) {
+	if m.removedaudit_logs == nil {
+		m.removedaudit_logs = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.audit_logs, ids[i])
+		m.removedaudit_logs[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedAuditLogs returns the removed IDs of the "audit_logs" edge to the CodexDeviceAuditLog entity.
+func (m *CodexManagedDeviceMutation) RemovedAuditLogsIDs() (ids []int64) {
+	for id := range m.removedaudit_logs {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// AuditLogsIDs returns the "audit_logs" edge IDs in the mutation.
+func (m *CodexManagedDeviceMutation) AuditLogsIDs() (ids []int64) {
+	for id := range m.audit_logs {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetAuditLogs resets all changes to the "audit_logs" edge.
+func (m *CodexManagedDeviceMutation) ResetAuditLogs() {
+	m.audit_logs = nil
+	m.clearedaudit_logs = false
+	m.removedaudit_logs = nil
+}
+
+// Where appends a list predicates to the CodexManagedDeviceMutation builder.
+func (m *CodexManagedDeviceMutation) Where(ps ...predicate.CodexManagedDevice) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the CodexManagedDeviceMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *CodexManagedDeviceMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.CodexManagedDevice, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *CodexManagedDeviceMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *CodexManagedDeviceMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (CodexManagedDevice).
+func (m *CodexManagedDeviceMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *CodexManagedDeviceMutation) Fields() []string {
+	fields := make([]string, 0, 11)
+	if m.created_at != nil {
+		fields = append(fields, codexmanageddevice.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, codexmanageddevice.FieldUpdatedAt)
+	}
+	if m.user != nil {
+		fields = append(fields, codexmanageddevice.FieldUserID)
+	}
+	if m.api_key != nil {
+		fields = append(fields, codexmanageddevice.FieldAPIKeyID)
+	}
+	if m.name != nil {
+		fields = append(fields, codexmanageddevice.FieldName)
+	}
+	if m.platform != nil {
+		fields = append(fields, codexmanageddevice.FieldPlatform)
+	}
+	if m.arch != nil {
+		fields = append(fields, codexmanageddevice.FieldArch)
+	}
+	if m.manager_version != nil {
+		fields = append(fields, codexmanageddevice.FieldManagerVersion)
+	}
+	if m.status != nil {
+		fields = append(fields, codexmanageddevice.FieldStatus)
+	}
+	if m.last_seen_at != nil {
+		fields = append(fields, codexmanageddevice.FieldLastSeenAt)
+	}
+	if m.revoked_at != nil {
+		fields = append(fields, codexmanageddevice.FieldRevokedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *CodexManagedDeviceMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case codexmanageddevice.FieldCreatedAt:
+		return m.CreatedAt()
+	case codexmanageddevice.FieldUpdatedAt:
+		return m.UpdatedAt()
+	case codexmanageddevice.FieldUserID:
+		return m.UserID()
+	case codexmanageddevice.FieldAPIKeyID:
+		return m.APIKeyID()
+	case codexmanageddevice.FieldName:
+		return m.Name()
+	case codexmanageddevice.FieldPlatform:
+		return m.Platform()
+	case codexmanageddevice.FieldArch:
+		return m.Arch()
+	case codexmanageddevice.FieldManagerVersion:
+		return m.ManagerVersion()
+	case codexmanageddevice.FieldStatus:
+		return m.Status()
+	case codexmanageddevice.FieldLastSeenAt:
+		return m.LastSeenAt()
+	case codexmanageddevice.FieldRevokedAt:
+		return m.RevokedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *CodexManagedDeviceMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case codexmanageddevice.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case codexmanageddevice.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	case codexmanageddevice.FieldUserID:
+		return m.OldUserID(ctx)
+	case codexmanageddevice.FieldAPIKeyID:
+		return m.OldAPIKeyID(ctx)
+	case codexmanageddevice.FieldName:
+		return m.OldName(ctx)
+	case codexmanageddevice.FieldPlatform:
+		return m.OldPlatform(ctx)
+	case codexmanageddevice.FieldArch:
+		return m.OldArch(ctx)
+	case codexmanageddevice.FieldManagerVersion:
+		return m.OldManagerVersion(ctx)
+	case codexmanageddevice.FieldStatus:
+		return m.OldStatus(ctx)
+	case codexmanageddevice.FieldLastSeenAt:
+		return m.OldLastSeenAt(ctx)
+	case codexmanageddevice.FieldRevokedAt:
+		return m.OldRevokedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown CodexManagedDevice field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexManagedDeviceMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case codexmanageddevice.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case codexmanageddevice.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	case codexmanageddevice.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case codexmanageddevice.FieldAPIKeyID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAPIKeyID(v)
+		return nil
+	case codexmanageddevice.FieldName:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetName(v)
+		return nil
+	case codexmanageddevice.FieldPlatform:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetPlatform(v)
+		return nil
+	case codexmanageddevice.FieldArch:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetArch(v)
+		return nil
+	case codexmanageddevice.FieldManagerVersion:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetManagerVersion(v)
+		return nil
+	case codexmanageddevice.FieldStatus:
+		v, ok := value.(codexmanageddevice.Status)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStatus(v)
+		return nil
+	case codexmanageddevice.FieldLastSeenAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetLastSeenAt(v)
+		return nil
+	case codexmanageddevice.FieldRevokedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRevokedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown CodexManagedDevice field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *CodexManagedDeviceMutation) AddedFields() []string {
+	var fields []string
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *CodexManagedDeviceMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexManagedDeviceMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown CodexManagedDevice numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *CodexManagedDeviceMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(codexmanageddevice.FieldLastSeenAt) {
+		fields = append(fields, codexmanageddevice.FieldLastSeenAt)
+	}
+	if m.FieldCleared(codexmanageddevice.FieldRevokedAt) {
+		fields = append(fields, codexmanageddevice.FieldRevokedAt)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *CodexManagedDeviceMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *CodexManagedDeviceMutation) ClearField(name string) error {
+	switch name {
+	case codexmanageddevice.FieldLastSeenAt:
+		m.ClearLastSeenAt()
+		return nil
+	case codexmanageddevice.FieldRevokedAt:
+		m.ClearRevokedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexManagedDevice nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *CodexManagedDeviceMutation) ResetField(name string) error {
+	switch name {
+	case codexmanageddevice.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case codexmanageddevice.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	case codexmanageddevice.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case codexmanageddevice.FieldAPIKeyID:
+		m.ResetAPIKeyID()
+		return nil
+	case codexmanageddevice.FieldName:
+		m.ResetName()
+		return nil
+	case codexmanageddevice.FieldPlatform:
+		m.ResetPlatform()
+		return nil
+	case codexmanageddevice.FieldArch:
+		m.ResetArch()
+		return nil
+	case codexmanageddevice.FieldManagerVersion:
+		m.ResetManagerVersion()
+		return nil
+	case codexmanageddevice.FieldStatus:
+		m.ResetStatus()
+		return nil
+	case codexmanageddevice.FieldLastSeenAt:
+		m.ResetLastSeenAt()
+		return nil
+	case codexmanageddevice.FieldRevokedAt:
+		m.ResetRevokedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexManagedDevice field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *CodexManagedDeviceMutation) AddedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.user != nil {
+		edges = append(edges, codexmanageddevice.EdgeUser)
+	}
+	if m.api_key != nil {
+		edges = append(edges, codexmanageddevice.EdgeAPIKey)
+	}
+	if m.tokens != nil {
+		edges = append(edges, codexmanageddevice.EdgeTokens)
+	}
+	if m.audit_logs != nil {
+		edges = append(edges, codexmanageddevice.EdgeAuditLogs)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *CodexManagedDeviceMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case codexmanageddevice.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	case codexmanageddevice.EdgeAPIKey:
+		if id := m.api_key; id != nil {
+			return []ent.Value{*id}
+		}
+	case codexmanageddevice.EdgeTokens:
+		ids := make([]ent.Value, 0, len(m.tokens))
+		for id := range m.tokens {
+			ids = append(ids, id)
+		}
+		return ids
+	case codexmanageddevice.EdgeAuditLogs:
+		ids := make([]ent.Value, 0, len(m.audit_logs))
+		for id := range m.audit_logs {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *CodexManagedDeviceMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.removedtokens != nil {
+		edges = append(edges, codexmanageddevice.EdgeTokens)
+	}
+	if m.removedaudit_logs != nil {
+		edges = append(edges, codexmanageddevice.EdgeAuditLogs)
+	}
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *CodexManagedDeviceMutation) RemovedIDs(name string) []ent.Value {
+	switch name {
+	case codexmanageddevice.EdgeTokens:
+		ids := make([]ent.Value, 0, len(m.removedtokens))
+		for id := range m.removedtokens {
+			ids = append(ids, id)
+		}
+		return ids
+	case codexmanageddevice.EdgeAuditLogs:
+		ids := make([]ent.Value, 0, len(m.removedaudit_logs))
+		for id := range m.removedaudit_logs {
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *CodexManagedDeviceMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 4)
+	if m.cleareduser {
+		edges = append(edges, codexmanageddevice.EdgeUser)
+	}
+	if m.clearedapi_key {
+		edges = append(edges, codexmanageddevice.EdgeAPIKey)
+	}
+	if m.clearedtokens {
+		edges = append(edges, codexmanageddevice.EdgeTokens)
+	}
+	if m.clearedaudit_logs {
+		edges = append(edges, codexmanageddevice.EdgeAuditLogs)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *CodexManagedDeviceMutation) EdgeCleared(name string) bool {
+	switch name {
+	case codexmanageddevice.EdgeUser:
+		return m.cleareduser
+	case codexmanageddevice.EdgeAPIKey:
+		return m.clearedapi_key
+	case codexmanageddevice.EdgeTokens:
+		return m.clearedtokens
+	case codexmanageddevice.EdgeAuditLogs:
+		return m.clearedaudit_logs
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *CodexManagedDeviceMutation) ClearEdge(name string) error {
+	switch name {
+	case codexmanageddevice.EdgeUser:
+		m.ClearUser()
+		return nil
+	case codexmanageddevice.EdgeAPIKey:
+		m.ClearAPIKey()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexManagedDevice unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *CodexManagedDeviceMutation) ResetEdge(name string) error {
+	switch name {
+	case codexmanageddevice.EdgeUser:
+		m.ResetUser()
+		return nil
+	case codexmanageddevice.EdgeAPIKey:
+		m.ResetAPIKey()
+		return nil
+	case codexmanageddevice.EdgeTokens:
+		m.ResetTokens()
+		return nil
+	case codexmanageddevice.EdgeAuditLogs:
+		m.ResetAuditLogs()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexManagedDevice edge %s", name)
+}
+
+// CodexSetupGrantMutation represents an operation that mutates the CodexSetupGrant nodes in the graph.
+type CodexSetupGrantMutation struct {
+	config
+	op             Op
+	typ            string
+	id             *int64
+	code_hash      *string
+	mode           *string
+	server_origin  *string
+	gateway_origin *string
+	expires_at     *time.Time
+	consumed_at    *time.Time
+	created_at     *time.Time
+	clearedFields  map[string]struct{}
+	user           *int64
+	cleareduser    bool
+	api_key        *int64
+	clearedapi_key bool
+	done           bool
+	oldValue       func(context.Context) (*CodexSetupGrant, error)
+	predicates     []predicate.CodexSetupGrant
+}
+
+var _ ent.Mutation = (*CodexSetupGrantMutation)(nil)
+
+// codexsetupgrantOption allows management of the mutation configuration using functional options.
+type codexsetupgrantOption func(*CodexSetupGrantMutation)
+
+// newCodexSetupGrantMutation creates new mutation for the CodexSetupGrant entity.
+func newCodexSetupGrantMutation(c config, op Op, opts ...codexsetupgrantOption) *CodexSetupGrantMutation {
+	m := &CodexSetupGrantMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeCodexSetupGrant,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withCodexSetupGrantID sets the ID field of the mutation.
+func withCodexSetupGrantID(id int64) codexsetupgrantOption {
+	return func(m *CodexSetupGrantMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *CodexSetupGrant
+		)
+		m.oldValue = func(ctx context.Context) (*CodexSetupGrant, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().CodexSetupGrant.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withCodexSetupGrant sets the old CodexSetupGrant of the mutation.
+func withCodexSetupGrant(node *CodexSetupGrant) codexsetupgrantOption {
+	return func(m *CodexSetupGrantMutation) {
+		m.oldValue = func(context.Context) (*CodexSetupGrant, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m CodexSetupGrantMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m CodexSetupGrantMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *CodexSetupGrantMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *CodexSetupGrantMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().CodexSetupGrant.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCodeHash sets the "code_hash" field.
+func (m *CodexSetupGrantMutation) SetCodeHash(s string) {
+	m.code_hash = &s
+}
+
+// CodeHash returns the value of the "code_hash" field in the mutation.
+func (m *CodexSetupGrantMutation) CodeHash() (r string, exists bool) {
+	v := m.code_hash
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCodeHash returns the old "code_hash" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldCodeHash(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCodeHash is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCodeHash requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCodeHash: %w", err)
+	}
+	return oldValue.CodeHash, nil
+}
+
+// ResetCodeHash resets all changes to the "code_hash" field.
+func (m *CodexSetupGrantMutation) ResetCodeHash() {
+	m.code_hash = nil
+}
+
+// SetUserID sets the "user_id" field.
+func (m *CodexSetupGrantMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *CodexSetupGrantMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *CodexSetupGrantMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetAPIKeyID sets the "api_key_id" field.
+func (m *CodexSetupGrantMutation) SetAPIKeyID(i int64) {
+	m.api_key = &i
+}
+
+// APIKeyID returns the value of the "api_key_id" field in the mutation.
+func (m *CodexSetupGrantMutation) APIKeyID() (r int64, exists bool) {
+	v := m.api_key
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAPIKeyID returns the old "api_key_id" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldAPIKeyID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAPIKeyID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAPIKeyID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAPIKeyID: %w", err)
+	}
+	return oldValue.APIKeyID, nil
+}
+
+// ResetAPIKeyID resets all changes to the "api_key_id" field.
+func (m *CodexSetupGrantMutation) ResetAPIKeyID() {
+	m.api_key = nil
+}
+
+// SetMode sets the "mode" field.
+func (m *CodexSetupGrantMutation) SetMode(s string) {
+	m.mode = &s
+}
+
+// Mode returns the value of the "mode" field in the mutation.
+func (m *CodexSetupGrantMutation) Mode() (r string, exists bool) {
+	v := m.mode
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldMode returns the old "mode" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldMode(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldMode is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldMode requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldMode: %w", err)
+	}
+	return oldValue.Mode, nil
+}
+
+// ResetMode resets all changes to the "mode" field.
+func (m *CodexSetupGrantMutation) ResetMode() {
+	m.mode = nil
+}
+
+// SetServerOrigin sets the "server_origin" field.
+func (m *CodexSetupGrantMutation) SetServerOrigin(s string) {
+	m.server_origin = &s
+}
+
+// ServerOrigin returns the value of the "server_origin" field in the mutation.
+func (m *CodexSetupGrantMutation) ServerOrigin() (r string, exists bool) {
+	v := m.server_origin
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldServerOrigin returns the old "server_origin" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldServerOrigin(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldServerOrigin is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldServerOrigin requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldServerOrigin: %w", err)
+	}
+	return oldValue.ServerOrigin, nil
+}
+
+// ResetServerOrigin resets all changes to the "server_origin" field.
+func (m *CodexSetupGrantMutation) ResetServerOrigin() {
+	m.server_origin = nil
+}
+
+// SetGatewayOrigin sets the "gateway_origin" field.
+func (m *CodexSetupGrantMutation) SetGatewayOrigin(s string) {
+	m.gateway_origin = &s
+}
+
+// GatewayOrigin returns the value of the "gateway_origin" field in the mutation.
+func (m *CodexSetupGrantMutation) GatewayOrigin() (r string, exists bool) {
+	v := m.gateway_origin
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldGatewayOrigin returns the old "gateway_origin" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldGatewayOrigin(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldGatewayOrigin is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldGatewayOrigin requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldGatewayOrigin: %w", err)
+	}
+	return oldValue.GatewayOrigin, nil
+}
+
+// ResetGatewayOrigin resets all changes to the "gateway_origin" field.
+func (m *CodexSetupGrantMutation) ResetGatewayOrigin() {
+	m.gateway_origin = nil
+}
+
+// SetExpiresAt sets the "expires_at" field.
+func (m *CodexSetupGrantMutation) SetExpiresAt(t time.Time) {
+	m.expires_at = &t
+}
+
+// ExpiresAt returns the value of the "expires_at" field in the mutation.
+func (m *CodexSetupGrantMutation) ExpiresAt() (r time.Time, exists bool) {
+	v := m.expires_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldExpiresAt returns the old "expires_at" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldExpiresAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldExpiresAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldExpiresAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldExpiresAt: %w", err)
+	}
+	return oldValue.ExpiresAt, nil
+}
+
+// ResetExpiresAt resets all changes to the "expires_at" field.
+func (m *CodexSetupGrantMutation) ResetExpiresAt() {
+	m.expires_at = nil
+}
+
+// SetConsumedAt sets the "consumed_at" field.
+func (m *CodexSetupGrantMutation) SetConsumedAt(t time.Time) {
+	m.consumed_at = &t
+}
+
+// ConsumedAt returns the value of the "consumed_at" field in the mutation.
+func (m *CodexSetupGrantMutation) ConsumedAt() (r time.Time, exists bool) {
+	v := m.consumed_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldConsumedAt returns the old "consumed_at" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldConsumedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldConsumedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldConsumedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldConsumedAt: %w", err)
+	}
+	return oldValue.ConsumedAt, nil
+}
+
+// ClearConsumedAt clears the value of the "consumed_at" field.
+func (m *CodexSetupGrantMutation) ClearConsumedAt() {
+	m.consumed_at = nil
+	m.clearedFields[codexsetupgrant.FieldConsumedAt] = struct{}{}
+}
+
+// ConsumedAtCleared returns if the "consumed_at" field was cleared in this mutation.
+func (m *CodexSetupGrantMutation) ConsumedAtCleared() bool {
+	_, ok := m.clearedFields[codexsetupgrant.FieldConsumedAt]
+	return ok
+}
+
+// ResetConsumedAt resets all changes to the "consumed_at" field.
+func (m *CodexSetupGrantMutation) ResetConsumedAt() {
+	m.consumed_at = nil
+	delete(m.clearedFields, codexsetupgrant.FieldConsumedAt)
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *CodexSetupGrantMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *CodexSetupGrantMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the CodexSetupGrant entity.
+// If the CodexSetupGrant object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *CodexSetupGrantMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *CodexSetupGrantMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *CodexSetupGrantMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[codexsetupgrant.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *CodexSetupGrantMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *CodexSetupGrantMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *CodexSetupGrantMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// ClearAPIKey clears the "api_key" edge to the APIKey entity.
+func (m *CodexSetupGrantMutation) ClearAPIKey() {
+	m.clearedapi_key = true
+	m.clearedFields[codexsetupgrant.FieldAPIKeyID] = struct{}{}
+}
+
+// APIKeyCleared reports if the "api_key" edge to the APIKey entity was cleared.
+func (m *CodexSetupGrantMutation) APIKeyCleared() bool {
+	return m.clearedapi_key
+}
+
+// APIKeyIDs returns the "api_key" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// APIKeyID instead. It exists only for internal usage by the builders.
+func (m *CodexSetupGrantMutation) APIKeyIDs() (ids []int64) {
+	if id := m.api_key; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetAPIKey resets all changes to the "api_key" edge.
+func (m *CodexSetupGrantMutation) ResetAPIKey() {
+	m.api_key = nil
+	m.clearedapi_key = false
+}
+
+// Where appends a list predicates to the CodexSetupGrantMutation builder.
+func (m *CodexSetupGrantMutation) Where(ps ...predicate.CodexSetupGrant) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the CodexSetupGrantMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *CodexSetupGrantMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.CodexSetupGrant, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *CodexSetupGrantMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *CodexSetupGrantMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (CodexSetupGrant).
+func (m *CodexSetupGrantMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *CodexSetupGrantMutation) Fields() []string {
+	fields := make([]string, 0, 9)
+	if m.code_hash != nil {
+		fields = append(fields, codexsetupgrant.FieldCodeHash)
+	}
+	if m.user != nil {
+		fields = append(fields, codexsetupgrant.FieldUserID)
+	}
+	if m.api_key != nil {
+		fields = append(fields, codexsetupgrant.FieldAPIKeyID)
+	}
+	if m.mode != nil {
+		fields = append(fields, codexsetupgrant.FieldMode)
+	}
+	if m.server_origin != nil {
+		fields = append(fields, codexsetupgrant.FieldServerOrigin)
+	}
+	if m.gateway_origin != nil {
+		fields = append(fields, codexsetupgrant.FieldGatewayOrigin)
+	}
+	if m.expires_at != nil {
+		fields = append(fields, codexsetupgrant.FieldExpiresAt)
+	}
+	if m.consumed_at != nil {
+		fields = append(fields, codexsetupgrant.FieldConsumedAt)
+	}
+	if m.created_at != nil {
+		fields = append(fields, codexsetupgrant.FieldCreatedAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *CodexSetupGrantMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case codexsetupgrant.FieldCodeHash:
+		return m.CodeHash()
+	case codexsetupgrant.FieldUserID:
+		return m.UserID()
+	case codexsetupgrant.FieldAPIKeyID:
+		return m.APIKeyID()
+	case codexsetupgrant.FieldMode:
+		return m.Mode()
+	case codexsetupgrant.FieldServerOrigin:
+		return m.ServerOrigin()
+	case codexsetupgrant.FieldGatewayOrigin:
+		return m.GatewayOrigin()
+	case codexsetupgrant.FieldExpiresAt:
+		return m.ExpiresAt()
+	case codexsetupgrant.FieldConsumedAt:
+		return m.ConsumedAt()
+	case codexsetupgrant.FieldCreatedAt:
+		return m.CreatedAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *CodexSetupGrantMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case codexsetupgrant.FieldCodeHash:
+		return m.OldCodeHash(ctx)
+	case codexsetupgrant.FieldUserID:
+		return m.OldUserID(ctx)
+	case codexsetupgrant.FieldAPIKeyID:
+		return m.OldAPIKeyID(ctx)
+	case codexsetupgrant.FieldMode:
+		return m.OldMode(ctx)
+	case codexsetupgrant.FieldServerOrigin:
+		return m.OldServerOrigin(ctx)
+	case codexsetupgrant.FieldGatewayOrigin:
+		return m.OldGatewayOrigin(ctx)
+	case codexsetupgrant.FieldExpiresAt:
+		return m.OldExpiresAt(ctx)
+	case codexsetupgrant.FieldConsumedAt:
+		return m.OldConsumedAt(ctx)
+	case codexsetupgrant.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown CodexSetupGrant field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexSetupGrantMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case codexsetupgrant.FieldCodeHash:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCodeHash(v)
+		return nil
+	case codexsetupgrant.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case codexsetupgrant.FieldAPIKeyID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAPIKeyID(v)
+		return nil
+	case codexsetupgrant.FieldMode:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetMode(v)
+		return nil
+	case codexsetupgrant.FieldServerOrigin:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetServerOrigin(v)
+		return nil
+	case codexsetupgrant.FieldGatewayOrigin:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetGatewayOrigin(v)
+		return nil
+	case codexsetupgrant.FieldExpiresAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetExpiresAt(v)
+		return nil
+	case codexsetupgrant.FieldConsumedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetConsumedAt(v)
+		return nil
+	case codexsetupgrant.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown CodexSetupGrant field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *CodexSetupGrantMutation) AddedFields() []string {
+	var fields []string
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *CodexSetupGrantMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *CodexSetupGrantMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	}
+	return fmt.Errorf("unknown CodexSetupGrant numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *CodexSetupGrantMutation) ClearedFields() []string {
+	var fields []string
+	if m.FieldCleared(codexsetupgrant.FieldConsumedAt) {
+		fields = append(fields, codexsetupgrant.FieldConsumedAt)
+	}
+	return fields
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *CodexSetupGrantMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *CodexSetupGrantMutation) ClearField(name string) error {
+	switch name {
+	case codexsetupgrant.FieldConsumedAt:
+		m.ClearConsumedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexSetupGrant nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *CodexSetupGrantMutation) ResetField(name string) error {
+	switch name {
+	case codexsetupgrant.FieldCodeHash:
+		m.ResetCodeHash()
+		return nil
+	case codexsetupgrant.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case codexsetupgrant.FieldAPIKeyID:
+		m.ResetAPIKeyID()
+		return nil
+	case codexsetupgrant.FieldMode:
+		m.ResetMode()
+		return nil
+	case codexsetupgrant.FieldServerOrigin:
+		m.ResetServerOrigin()
+		return nil
+	case codexsetupgrant.FieldGatewayOrigin:
+		m.ResetGatewayOrigin()
+		return nil
+	case codexsetupgrant.FieldExpiresAt:
+		m.ResetExpiresAt()
+		return nil
+	case codexsetupgrant.FieldConsumedAt:
+		m.ResetConsumedAt()
+		return nil
+	case codexsetupgrant.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexSetupGrant field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *CodexSetupGrantMutation) AddedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.user != nil {
+		edges = append(edges, codexsetupgrant.EdgeUser)
+	}
+	if m.api_key != nil {
+		edges = append(edges, codexsetupgrant.EdgeAPIKey)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *CodexSetupGrantMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case codexsetupgrant.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	case codexsetupgrant.EdgeAPIKey:
+		if id := m.api_key; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *CodexSetupGrantMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 2)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *CodexSetupGrantMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *CodexSetupGrantMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 2)
+	if m.cleareduser {
+		edges = append(edges, codexsetupgrant.EdgeUser)
+	}
+	if m.clearedapi_key {
+		edges = append(edges, codexsetupgrant.EdgeAPIKey)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *CodexSetupGrantMutation) EdgeCleared(name string) bool {
+	switch name {
+	case codexsetupgrant.EdgeUser:
+		return m.cleareduser
+	case codexsetupgrant.EdgeAPIKey:
+		return m.clearedapi_key
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *CodexSetupGrantMutation) ClearEdge(name string) error {
+	switch name {
+	case codexsetupgrant.EdgeUser:
+		m.ClearUser()
+		return nil
+	case codexsetupgrant.EdgeAPIKey:
+		m.ClearAPIKey()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexSetupGrant unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *CodexSetupGrantMutation) ResetEdge(name string) error {
+	switch name {
+	case codexsetupgrant.EdgeUser:
+		m.ResetUser()
+		return nil
+	case codexsetupgrant.EdgeAPIKey:
+		m.ResetAPIKey()
+		return nil
+	}
+	return fmt.Errorf("unknown CodexSetupGrant edge %s", name)
 }
 
 // ErrorPassthroughRuleMutation represents an operation that mutates the ErrorPassthroughRule nodes in the graph.

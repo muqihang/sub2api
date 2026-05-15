@@ -1959,6 +1959,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
+		models = appendOpenAIModelIfMissing(models, service.OpenAIOAuthDefaultTestModel)
 		response.Success(c, models)
 		return
 	}
@@ -2047,6 +2048,32 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	response.Success(c, models)
+}
+
+func appendOpenAIModelIfMissing(models []openai.Model, modelID string) []openai.Model {
+	if strings.TrimSpace(modelID) == "" {
+		return models
+	}
+	for _, model := range models {
+		if model.ID == modelID {
+			return models
+		}
+	}
+
+	displayName := modelID
+	for _, model := range openai.DefaultModels {
+		if model.ID == modelID {
+			displayName = model.DisplayName
+			break
+		}
+	}
+
+	return append(models, openai.Model{
+		ID:          modelID,
+		Object:      "model",
+		Type:        "model",
+		DisplayName: displayName,
+	})
 }
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth account

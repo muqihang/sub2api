@@ -23,6 +23,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
+	"github.com/Wei-Shaw/sub2api/ent/codexdeviceauditlog"
+	"github.com/Wei-Shaw/sub2api/ent/codexdevicetoken"
+	"github.com/Wei-Shaw/sub2api/ent/codexmanageddevice"
+	"github.com/Wei-Shaw/sub2api/ent/codexsetupgrant"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -117,6 +121,10 @@ func checkColumn(t, c string) error {
 			channelmonitordailyrollup.Table:     channelmonitordailyrollup.ValidColumn,
 			channelmonitorhistory.Table:         channelmonitorhistory.ValidColumn,
 			channelmonitorrequesttemplate.Table: channelmonitorrequesttemplate.ValidColumn,
+			codexdeviceauditlog.Table:           codexdeviceauditlog.ValidColumn,
+			codexdevicetoken.Table:              codexdevicetoken.ValidColumn,
+			codexmanageddevice.Table:            codexmanageddevice.ValidColumn,
+			codexsetupgrant.Table:               codexsetupgrant.ValidColumn,
 			errorpassthroughrule.Table:          errorpassthroughrule.ValidColumn,
 			group.Table:                         group.ValidColumn,
 			idempotencyrecord.Table:             idempotencyrecord.ValidColumn,

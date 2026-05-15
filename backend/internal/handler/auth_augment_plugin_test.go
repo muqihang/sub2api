@@ -2416,14 +2416,14 @@ func TestAugmentLegacyModelsPrefersCurrentAPIKeyGroupDefaultModel(t *testing.T) 
 	}
 	openAIGroupID := int64(3)
 	openAIGroup := service.Group{
-		ID:                    openAIGroupID,
-		Name:                  "openai-default",
-		Platform:              service.PlatformOpenAI,
-		Status:                service.StatusActive,
-		Hydrated:              true,
+		ID:                     openAIGroupID,
+		Name:                   "openai-default",
+		Platform:               service.PlatformOpenAI,
+		Status:                 service.StatusActive,
+		Hydrated:               true,
 		AugmentGatewayEntitled: true,
-		AllowMessagesDispatch: false,
-		SupportedModelScopes:  []string{"claude", "gemini_text", "gemini_image"},
+		AllowMessagesDispatch:  false,
+		SupportedModelScopes:   []string{"claude", "gemini_text", "gemini_image"},
 	}
 	product := service.AugmentClientProductZhumeng
 	apiKey := &service.APIKey{
@@ -2689,7 +2689,7 @@ func TestAugmentLegacyModelsExposeClaudeGeminiWhenEnabledAndConfigured(t *testin
 	var body map[string]map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Contains(t, body, "claude-sonnet-4-5")
-	require.NotContains(t, body, "gemini-2.5-pro")
+	require.Contains(t, body, "gemini-2.5-pro")
 
 	postReq := httptest.NewRequest(http.MethodPost, "/get-models", bytes.NewReader([]byte(`{}`)))
 	postReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -2708,6 +2708,7 @@ func TestAugmentLegacyModelsExposeClaudeGeminiWhenEnabledAndConfigured(t *testin
 		"deepseek-v4-pro",
 		"deepseek-v4-flash",
 		"claude-sonnet-4-5",
+		"gemini-2.5-pro",
 	}, augmentLegacyInternalModelNames(postBody.Models))
 }
 

@@ -138,7 +138,7 @@ func TestCodexGatewayRoutes_AuthErrorsUseResponsesEnvelope(t *testing.T) {
 		cfg,
 		auth,
 		&codexGatewayRoutesServiceStub{
-			modelsResp: &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"models":[]}`)},
+			modelsResp:    &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"models":[]}`)},
 			responsesResp: &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"id":"resp_123"}`)},
 		},
 	)
@@ -203,6 +203,119 @@ func TestCodexGatewayRoutes_QueryAPIKeyErrorUsesInvalidRequestError(t *testing.T
 	require.Contains(t, w.Body.String(), `"code":"api_key_in_query_deprecated"`)
 }
 
+func TestCodexGatewayRoutes_ManagedHeadersAllowCodexGateway(t *testing.T) {
+	cfg := &config.Config{RunMode: config.RunModeStandard, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, Codex: config.GatewayCodexConfig{Enabled: true}}}
+	managedKey := newCodexGatewayRoutesCodexOnlyKey(42, "managed")
+	validatorCalls := 0
+	auth := servermiddleware.APIKeyAuthMiddleware(servermiddleware.ManagedDeviceOrAPIKeyAuth(
+		servermiddleware.ManagedDeviceAccessValidatorFunc(func(_ context.Context, req service.ValidateManagedDeviceAccessRequest) (*service.ManagedDeviceAccessContext, error) {
+			validatorCalls++
+			require.Equal(t, "Bearer managed-token", req.AccessToken)
+			require.Equal(t, int64(9), req.DeviceID)
+			require.Equal(t, "sess-1", req.ManagedSessionID)
+			return &service.ManagedDeviceAccessContext{
+				APIKey:           managedKey,
+				User:             managedKey.User,
+				ManagedSessionID: "sess-1",
+			}, nil
+		}),
+		servermiddleware.NewCodexGatewayAPIKeyAuthMiddleware(service.NewAPIKeyService(&codexGatewayRoutesAPIKeyRepo{}, nil, nil, nil, nil, nil, cfg), nil, cfg),
+		nil,
+		nil,
+		cfg,
+	))
+	router := newCodexGatewayRoutesTestRouter(
+		cfg,
+		auth,
+		&codexGatewayRoutesServiceStub{
+			modelsResp:    &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"models":[]}`)},
+			responsesResp: &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"id":"resp_123"}`)},
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/codex/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer managed-token")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "sess-1")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest(http.MethodPost, "/codex/v1/responses", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer managed-token")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "sess-1")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 2, validatorCalls)
+}
+
+func TestCodexGatewayRoutes_IncompleteManagedHeadersFailClosed(t *testing.T) {
+	cfg := &config.Config{RunMode: config.RunModeStandard, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, Codex: config.GatewayCodexConfig{Enabled: true}}}
+	repo := &codexGatewayRoutesAPIKeyRepo{keys: map[string]*service.APIKey{
+		"valid": newCodexGatewayRoutesCodexOnlyKey(42, "valid"),
+	}}
+	auth := servermiddleware.APIKeyAuthMiddleware(servermiddleware.ManagedDeviceOrAPIKeyAuth(
+		servermiddleware.ManagedDeviceAccessValidatorFunc(func(context.Context, service.ValidateManagedDeviceAccessRequest) (*service.ManagedDeviceAccessContext, error) {
+			t.Fatal("validator should not be called for incomplete managed headers")
+			return nil, nil
+		}),
+		servermiddleware.NewCodexGatewayAPIKeyAuthMiddleware(service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg), nil, cfg),
+		nil,
+		nil,
+		cfg,
+	))
+	router := newCodexGatewayRoutesTestRouter(
+		cfg,
+		auth,
+		&codexGatewayRoutesServiceStub{modelsResp: &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"models":[]}`)}},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/codex/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer valid")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Zero(t, repo.getByKeyCalls)
+	require.Contains(t, w.Body.String(), "CODEX_MANAGED_HEADERS_REQUIRED")
+}
+
+func TestCodexGatewayRoutes_InvalidManagedAccessDoesNotFallbackToAPIKey(t *testing.T) {
+	cfg := &config.Config{RunMode: config.RunModeStandard, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, Codex: config.GatewayCodexConfig{Enabled: true}}}
+	repo := &codexGatewayRoutesAPIKeyRepo{keys: map[string]*service.APIKey{
+		"valid": newCodexGatewayRoutesCodexOnlyKey(42, "valid"),
+	}}
+	auth := servermiddleware.APIKeyAuthMiddleware(servermiddleware.ManagedDeviceOrAPIKeyAuth(
+		servermiddleware.ManagedDeviceAccessValidatorFunc(func(context.Context, service.ValidateManagedDeviceAccessRequest) (*service.ManagedDeviceAccessContext, error) {
+			return nil, service.ErrCodexManagedAccessInvalid
+		}),
+		servermiddleware.NewCodexGatewayAPIKeyAuthMiddleware(service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg), nil, cfg),
+		nil,
+		nil,
+		cfg,
+	))
+	router := newCodexGatewayRoutesTestRouter(
+		cfg,
+		auth,
+		&codexGatewayRoutesServiceStub{modelsResp: &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"models":[]}`)}},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/codex/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer valid")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "sess-1")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Zero(t, repo.getByKeyCalls)
+	require.Contains(t, w.Body.String(), "CODEX_MANAGED_ACCESS_INVALID")
+}
+
 func newCodexGatewayRoutesTestRouter(cfg *config.Config, apiKeyAuth servermiddleware.APIKeyAuthMiddleware, svc *codexGatewayRoutesServiceStub) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -222,7 +335,8 @@ func newCodexGatewayRoutesTestRouter(cfg *config.Config, apiKeyAuth servermiddle
 }
 
 type codexGatewayRoutesAPIKeyRepo struct {
-	keys map[string]*service.APIKey
+	keys          map[string]*service.APIKey
+	getByKeyCalls int
 }
 
 func (r *codexGatewayRoutesAPIKeyRepo) Create(context.Context, *service.APIKey) error { return nil }
@@ -233,6 +347,7 @@ func (r *codexGatewayRoutesAPIKeyRepo) GetKeyAndOwnerID(context.Context, int64) 
 	return "", 0, service.ErrAPIKeyNotFound
 }
 func (r *codexGatewayRoutesAPIKeyRepo) GetByKey(_ context.Context, key string) (*service.APIKey, error) {
+	r.getByKeyCalls++
 	apiKey, ok := r.keys[key]
 	if !ok {
 		return nil, service.ErrAPIKeyNotFound
@@ -244,7 +359,7 @@ func (r *codexGatewayRoutesAPIKeyRepo) GetByKeyForAuth(ctx context.Context, key 
 	return r.GetByKey(ctx, key)
 }
 func (r *codexGatewayRoutesAPIKeyRepo) Update(context.Context, *service.APIKey) error { return nil }
-func (r *codexGatewayRoutesAPIKeyRepo) Delete(context.Context, int64) error          { return nil }
+func (r *codexGatewayRoutesAPIKeyRepo) Delete(context.Context, int64) error           { return nil }
 func (r *codexGatewayRoutesAPIKeyRepo) ListByUserID(context.Context, int64, pagination.PaginationParams, service.APIKeyListFilters) ([]service.APIKey, *pagination.PaginationResult, error) {
 	return nil, &pagination.PaginationResult{}, nil
 }
@@ -281,11 +396,29 @@ func (r *codexGatewayRoutesAPIKeyRepo) ListKeysByGroupID(context.Context, int64)
 func (r *codexGatewayRoutesAPIKeyRepo) IncrementQuotaUsed(context.Context, int64, float64) (float64, error) {
 	return 0, nil
 }
-func (r *codexGatewayRoutesAPIKeyRepo) UpdateLastUsed(context.Context, int64, time.Time) error { return nil }
+func (r *codexGatewayRoutesAPIKeyRepo) UpdateLastUsed(context.Context, int64, time.Time) error {
+	return nil
+}
 func (r *codexGatewayRoutesAPIKeyRepo) IncrementRateLimitUsage(context.Context, int64, float64) error {
 	return nil
 }
-func (r *codexGatewayRoutesAPIKeyRepo) ResetRateLimitWindows(context.Context, int64) error { return nil }
+func (r *codexGatewayRoutesAPIKeyRepo) ResetRateLimitWindows(context.Context, int64) error {
+	return nil
+}
 func (r *codexGatewayRoutesAPIKeyRepo) GetRateLimitData(context.Context, int64) (*service.APIKeyRateLimitData, error) {
 	return &service.APIKeyRateLimitData{}, nil
+}
+
+func newCodexGatewayRoutesCodexOnlyKey(id int64, key string) *service.APIKey {
+	groupID := int64(1)
+	product := service.CodexUsageClientProduct
+	return &service.APIKey{
+		ID:                      id,
+		Key:                     key,
+		Status:                  service.StatusActive,
+		User:                    &service.User{ID: 7, Status: service.StatusActive, Role: service.RoleUser, Balance: 1, Concurrency: 1},
+		GroupID:                 &groupID,
+		Group:                   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true, CodexGatewayEntitled: true},
+		RestrictedClientProduct: &product,
+	}
 }

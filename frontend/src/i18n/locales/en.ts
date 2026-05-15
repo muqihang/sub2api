@@ -726,6 +726,25 @@ export default {
         hint: 'Config path: ~/.config/opencode/opencode.json (or opencode.jsonc), create if not exists. Use default providers (openai/anthropic/google) or custom provider_id. API Key can be configured directly or via /connect command. This is an example, adjust models and options as needed.',
       },
     },
+    zhumengAgent: {
+      title: 'Zhumeng Agent One-Click Setup',
+      description: 'Create a one-time setup grant for this API key and hand it to the local Zhumeng Agent for managed Codex setup.',
+      setup: 'One-Click Codex Setup',
+      creating: 'Creating...',
+      install: 'Install Zhumeng Agent',
+      keyIdRequired: 'This key does not have an ID yet, so one-click setup is unavailable.',
+      fallbackHelp: 'If Zhumeng Agent does not open automatically, install the local tool first or continue with the manual configuration below.',
+      devicesTitle: 'Connected Devices',
+      emptyDevices: 'No connected devices for this API key yet.',
+      revoke: 'Revoke Device',
+      confirmRevoke: 'Confirm Revoke',
+      revoking: 'Revoking...',
+      status: {
+        active: 'Active',
+        revoked: 'Revoked',
+        reauthorizationRequired: 'Reauthorization Required',
+      },
+    },
     customKeyLabel: 'Custom Key',
     customKeyPlaceholder: 'Enter your custom key (min 16 chars)',
     customKeyHint: 'Only letters, numbers, underscores and hyphens allowed. Minimum 16 characters.',
@@ -2160,7 +2179,7 @@ export default {
         familyMappingTitle: 'Family Default Mapping',
         familyMappingHint: 'Requests that match the Opus, Sonnet, or Haiku families will prefer the target model configured here.',
         opusModel: 'Opus Target Model',
-        opusModelPlaceholder: 'e.g., gpt-5.4',
+        opusModelPlaceholder: 'e.g., gpt-5.5',
         sonnetModel: 'Sonnet Target Model',
         sonnetModelPlaceholder: 'e.g., gpt-5.3-codex',
         haikuModel: 'Haiku Target Model',
@@ -2172,7 +2191,7 @@ export default {
         claudeModel: 'Claude Model',
         claudeModelPlaceholder: 'e.g., claude-sonnet-4-5-20250929',
         targetModel: 'Target Model',
-        targetModelPlaceholder: 'e.g., gpt-5.4',
+        targetModelPlaceholder: 'e.g., gpt-5.5',
         removeExactMapping: 'Remove Exact Mapping'
       },
       invalidRequestFallback: {
@@ -6524,11 +6543,11 @@ export default {
     },
   },
 
-  plugin: {
-    augment: {
-      accountTitle: 'Augment Account',
-      billingTitle: 'Augment Billing',
-      billing: {
+	plugin: {
+	  augment: {
+	    accountTitle: 'Augment Account',
+	    billingTitle: 'Augment Billing',
+	    billing: {
         summaryTitle: 'Inspect official session state, cache efficiency, and shared-wallet request billing for Zhumeng Augment.',
         estimatedCost: 'Estimated Cost',
         settledCost: 'Settled Cost',
@@ -6636,9 +6655,9 @@ export default {
           status: 'Status',
           expiresAt: 'Expires At',
           lastError: 'Last Error'
-        }
-      }
-    }
-  },
+	        }
+	      }
+	    }
+	  },
 
 }

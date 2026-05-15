@@ -97,6 +97,8 @@ var ProviderSet = wire.NewSet(
 	NewAffiliateRepository,
 	NewEntityRegistryRepository,
 	NewEntityRateLimitPolicyRepository,
+	NewCodexAgentRepository,
+	wire.Bind(new(service.CodexAgentRepository), new(*codexAgentRepository)),
 
 	// Cache implementations
 	NewGatewayCache,

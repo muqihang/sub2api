@@ -16,6 +16,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
+	"github.com/Wei-Shaw/sub2api/ent/codexdeviceauditlog"
+	"github.com/Wei-Shaw/sub2api/ent/codexdevicetoken"
+	"github.com/Wei-Shaw/sub2api/ent/codexmanageddevice"
+	"github.com/Wei-Shaw/sub2api/ent/codexsetupgrant"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -677,6 +681,233 @@ func init() {
 	channelmonitorrequesttemplate.DefaultBodyOverrideMode = channelmonitorrequesttemplateDescBodyOverrideMode.Default.(string)
 	// channelmonitorrequesttemplate.BodyOverrideModeValidator is a validator for the "body_override_mode" field. It is called by the builders before save.
 	channelmonitorrequesttemplate.BodyOverrideModeValidator = channelmonitorrequesttemplateDescBodyOverrideMode.Validators[0].(func(string) error)
+	codexdeviceauditlogFields := schema.CodexDeviceAuditLog{}.Fields()
+	_ = codexdeviceauditlogFields
+	// codexdeviceauditlogDescEvent is the schema descriptor for event field.
+	codexdeviceauditlogDescEvent := codexdeviceauditlogFields[2].Descriptor()
+	// codexdeviceauditlog.EventValidator is a validator for the "event" field. It is called by the builders before save.
+	codexdeviceauditlog.EventValidator = func() func(string) error {
+		validators := codexdeviceauditlogDescEvent.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(event string) error {
+			for _, fn := range fns {
+				if err := fn(event); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexdeviceauditlogDescIP is the schema descriptor for ip field.
+	codexdeviceauditlogDescIP := codexdeviceauditlogFields[3].Descriptor()
+	// codexdeviceauditlog.DefaultIP holds the default value on creation for the ip field.
+	codexdeviceauditlog.DefaultIP = codexdeviceauditlogDescIP.Default.(string)
+	// codexdeviceauditlog.IPValidator is a validator for the "ip" field. It is called by the builders before save.
+	codexdeviceauditlog.IPValidator = codexdeviceauditlogDescIP.Validators[0].(func(string) error)
+	// codexdeviceauditlogDescUserAgent is the schema descriptor for user_agent field.
+	codexdeviceauditlogDescUserAgent := codexdeviceauditlogFields[4].Descriptor()
+	// codexdeviceauditlog.DefaultUserAgent holds the default value on creation for the user_agent field.
+	codexdeviceauditlog.DefaultUserAgent = codexdeviceauditlogDescUserAgent.Default.(string)
+	// codexdeviceauditlogDescMetadata is the schema descriptor for metadata field.
+	codexdeviceauditlogDescMetadata := codexdeviceauditlogFields[5].Descriptor()
+	// codexdeviceauditlog.DefaultMetadata holds the default value on creation for the metadata field.
+	codexdeviceauditlog.DefaultMetadata = codexdeviceauditlogDescMetadata.Default.(func() map[string]interface{})
+	// codexdeviceauditlogDescCreatedAt is the schema descriptor for created_at field.
+	codexdeviceauditlogDescCreatedAt := codexdeviceauditlogFields[6].Descriptor()
+	// codexdeviceauditlog.DefaultCreatedAt holds the default value on creation for the created_at field.
+	codexdeviceauditlog.DefaultCreatedAt = codexdeviceauditlogDescCreatedAt.Default.(func() time.Time)
+	codexdevicetokenFields := schema.CodexDeviceToken{}.Fields()
+	_ = codexdevicetokenFields
+	// codexdevicetokenDescRefreshTokenHash is the schema descriptor for refresh_token_hash field.
+	codexdevicetokenDescRefreshTokenHash := codexdevicetokenFields[1].Descriptor()
+	// codexdevicetoken.RefreshTokenHashValidator is a validator for the "refresh_token_hash" field. It is called by the builders before save.
+	codexdevicetoken.RefreshTokenHashValidator = func() func(string) error {
+		validators := codexdevicetokenDescRefreshTokenHash.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(refresh_token_hash string) error {
+			for _, fn := range fns {
+				if err := fn(refresh_token_hash); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexdevicetokenDescCreatedAt is the schema descriptor for created_at field.
+	codexdevicetokenDescCreatedAt := codexdevicetokenFields[3].Descriptor()
+	// codexdevicetoken.DefaultCreatedAt holds the default value on creation for the created_at field.
+	codexdevicetoken.DefaultCreatedAt = codexdevicetokenDescCreatedAt.Default.(func() time.Time)
+	codexmanageddeviceMixin := schema.CodexManagedDevice{}.Mixin()
+	codexmanageddeviceMixinFields0 := codexmanageddeviceMixin[0].Fields()
+	_ = codexmanageddeviceMixinFields0
+	codexmanageddeviceFields := schema.CodexManagedDevice{}.Fields()
+	_ = codexmanageddeviceFields
+	// codexmanageddeviceDescCreatedAt is the schema descriptor for created_at field.
+	codexmanageddeviceDescCreatedAt := codexmanageddeviceMixinFields0[0].Descriptor()
+	// codexmanageddevice.DefaultCreatedAt holds the default value on creation for the created_at field.
+	codexmanageddevice.DefaultCreatedAt = codexmanageddeviceDescCreatedAt.Default.(func() time.Time)
+	// codexmanageddeviceDescUpdatedAt is the schema descriptor for updated_at field.
+	codexmanageddeviceDescUpdatedAt := codexmanageddeviceMixinFields0[1].Descriptor()
+	// codexmanageddevice.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	codexmanageddevice.DefaultUpdatedAt = codexmanageddeviceDescUpdatedAt.Default.(func() time.Time)
+	// codexmanageddevice.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	codexmanageddevice.UpdateDefaultUpdatedAt = codexmanageddeviceDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// codexmanageddeviceDescName is the schema descriptor for name field.
+	codexmanageddeviceDescName := codexmanageddeviceFields[2].Descriptor()
+	// codexmanageddevice.NameValidator is a validator for the "name" field. It is called by the builders before save.
+	codexmanageddevice.NameValidator = func() func(string) error {
+		validators := codexmanageddeviceDescName.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(name string) error {
+			for _, fn := range fns {
+				if err := fn(name); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexmanageddeviceDescPlatform is the schema descriptor for platform field.
+	codexmanageddeviceDescPlatform := codexmanageddeviceFields[3].Descriptor()
+	// codexmanageddevice.PlatformValidator is a validator for the "platform" field. It is called by the builders before save.
+	codexmanageddevice.PlatformValidator = func() func(string) error {
+		validators := codexmanageddeviceDescPlatform.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(platform string) error {
+			for _, fn := range fns {
+				if err := fn(platform); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexmanageddeviceDescArch is the schema descriptor for arch field.
+	codexmanageddeviceDescArch := codexmanageddeviceFields[4].Descriptor()
+	// codexmanageddevice.ArchValidator is a validator for the "arch" field. It is called by the builders before save.
+	codexmanageddevice.ArchValidator = func() func(string) error {
+		validators := codexmanageddeviceDescArch.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(arch string) error {
+			for _, fn := range fns {
+				if err := fn(arch); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexmanageddeviceDescManagerVersion is the schema descriptor for manager_version field.
+	codexmanageddeviceDescManagerVersion := codexmanageddeviceFields[5].Descriptor()
+	// codexmanageddevice.ManagerVersionValidator is a validator for the "manager_version" field. It is called by the builders before save.
+	codexmanageddevice.ManagerVersionValidator = func() func(string) error {
+		validators := codexmanageddeviceDescManagerVersion.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(manager_version string) error {
+			for _, fn := range fns {
+				if err := fn(manager_version); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	codexsetupgrantFields := schema.CodexSetupGrant{}.Fields()
+	_ = codexsetupgrantFields
+	// codexsetupgrantDescCodeHash is the schema descriptor for code_hash field.
+	codexsetupgrantDescCodeHash := codexsetupgrantFields[0].Descriptor()
+	// codexsetupgrant.CodeHashValidator is a validator for the "code_hash" field. It is called by the builders before save.
+	codexsetupgrant.CodeHashValidator = func() func(string) error {
+		validators := codexsetupgrantDescCodeHash.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(code_hash string) error {
+			for _, fn := range fns {
+				if err := fn(code_hash); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexsetupgrantDescMode is the schema descriptor for mode field.
+	codexsetupgrantDescMode := codexsetupgrantFields[3].Descriptor()
+	// codexsetupgrant.ModeValidator is a validator for the "mode" field. It is called by the builders before save.
+	codexsetupgrant.ModeValidator = func() func(string) error {
+		validators := codexsetupgrantDescMode.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(mode string) error {
+			for _, fn := range fns {
+				if err := fn(mode); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexsetupgrantDescServerOrigin is the schema descriptor for server_origin field.
+	codexsetupgrantDescServerOrigin := codexsetupgrantFields[4].Descriptor()
+	// codexsetupgrant.ServerOriginValidator is a validator for the "server_origin" field. It is called by the builders before save.
+	codexsetupgrant.ServerOriginValidator = func() func(string) error {
+		validators := codexsetupgrantDescServerOrigin.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(server_origin string) error {
+			for _, fn := range fns {
+				if err := fn(server_origin); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexsetupgrantDescGatewayOrigin is the schema descriptor for gateway_origin field.
+	codexsetupgrantDescGatewayOrigin := codexsetupgrantFields[5].Descriptor()
+	// codexsetupgrant.GatewayOriginValidator is a validator for the "gateway_origin" field. It is called by the builders before save.
+	codexsetupgrant.GatewayOriginValidator = func() func(string) error {
+		validators := codexsetupgrantDescGatewayOrigin.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(gateway_origin string) error {
+			for _, fn := range fns {
+				if err := fn(gateway_origin); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// codexsetupgrantDescCreatedAt is the schema descriptor for created_at field.
+	codexsetupgrantDescCreatedAt := codexsetupgrantFields[8].Descriptor()
+	// codexsetupgrant.DefaultCreatedAt holds the default value on creation for the created_at field.
+	codexsetupgrant.DefaultCreatedAt = codexsetupgrantDescCreatedAt.Default.(func() time.Time)
 	errorpassthroughruleMixin := schema.ErrorPassthroughRule{}.Mixin()
 	errorpassthroughruleMixinFields0 := errorpassthroughruleMixin[0].Fields()
 	_ = errorpassthroughruleMixinFields0

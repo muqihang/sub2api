@@ -121,6 +121,13 @@ backend/.installed
 tests
 !tools/tests/
 !tools/tests/*.py
+!tools/zhumeng-agent/tests/
+!tools/zhumeng-agent/tests/**
+tools/zhumeng-agent/.venv/
+tools/zhumeng-agent/uv.lock
+tools/zhumeng-agent/src/*.egg-info/
+tools/zhumeng-agent/tests/__pycache__/
+tools/zhumeng-agent/tests/**/*.pyc
 CLAUDE.md
 .claude
 scripts

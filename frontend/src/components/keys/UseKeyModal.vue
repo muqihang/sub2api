@@ -89,6 +89,34 @@
           </nav>
         </div>
 
+        <div
+          v-if="showOpenAIModelSelector"
+          class="flex items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-700"
+        >
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">OpenAI Model</span>
+          <div class="flex items-center gap-2">
+            <button
+              v-for="modelOption in openAIModelOptions"
+              :key="modelOption"
+              type="button"
+              @click="selectedOpenAIModel = modelOption"
+              :class="[
+                'rounded-lg px-3 py-1.5 text-sm transition-colors',
+                selectedOpenAIModel === modelOption
+                  ? 'bg-primary-500 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600'
+              ]"
+            >
+              {{ modelOption }}
+            </button>
+          </div>
+        </div>
+
+        <ZhumengAgentSetupPanel
+          v-if="showZhumengAgentPanel"
+          :api-key-id="apiKeyId"
+        />
+
         <!-- Code Blocks (Stacked for multi-file platforms) -->
         <div class="space-y-4">
           <div
@@ -157,9 +185,11 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import type { GroupPlatform } from '@/types'
+import ZhumengAgentSetupPanel from './ZhumengAgentSetupPanel.vue'
 
 interface Props {
   show: boolean
+  apiKeyId: number | null
   apiKey: string
   baseUrl: string
   platform: GroupPlatform | null
@@ -195,6 +225,8 @@ const augmentOnly = computed(() => Boolean(props.augmentOnly))
 const copiedIndex = ref<number | null>(null)
 const activeTab = ref<string>('unix')
 const activeClientTab = ref<string>('claude')
+const selectedOpenAIModel = ref<'gpt-5.4' | 'gpt-5.5'>('gpt-5.5')
+const openAIModelOptions: Array<'gpt-5.4' | 'gpt-5.5'> = ['gpt-5.4', 'gpt-5.5']
 
 // Reset tabs when platform changes
 const defaultClientTab = computed(() => {
@@ -213,6 +245,7 @@ const defaultClientTab = computed(() => {
 watch(() => props.platform, () => {
   activeTab.value = 'unix'
   activeClientTab.value = defaultClientTab.value
+  selectedOpenAIModel.value = 'gpt-5.5'
 }, { immediate: true })
 
 // Reset shell tab when client changes
@@ -330,6 +363,13 @@ const openaiTabs: TabConfig[] = [
 ]
 
 const showShellTabs = computed(() => activeClientTab.value !== 'opencode')
+const showOpenAIModelSelector = computed(() =>
+  props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
+)
+
+const showZhumengAgentPanel = computed(() =>
+  props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
+)
 
 const currentTabs = computed(() => {
   if (!showShellTabs.value) return []
@@ -438,9 +478,9 @@ const currentFiles = computed((): FileConfig[] => {
         return generateAnthropicFiles(baseUrl, apiKey)
       }
       if (activeClientTab.value === 'codex-ws') {
-        return generateOpenAIWsFiles(baseUrl, apiKey)
+        return generateOpenAIWsFiles(baseUrl, apiKey, selectedOpenAIModel.value)
       }
-      return generateOpenAIFiles(baseUrl, apiKey)
+      return generateOpenAIFiles(baseUrl, apiKey, selectedOpenAIModel.value)
     case 'gemini':
       return [generateGeminiCliContent(baseUrl, apiKey)]
     case 'antigravity':
@@ -545,14 +585,14 @@ ${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model
   return { path, content, highlighted }
 }
 
-function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
+function generateOpenAIFiles(baseUrl: string, apiKey: string, model: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
 
   // config.toml content
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.4"
-review_model = "gpt-5.4"
+model = "${model}"
+review_model = "${model}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
@@ -584,14 +624,14 @@ requires_openai_auth = true`
   ]
 }
 
-function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
+function generateOpenAIWsFiles(baseUrl: string, apiKey: string, model: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.4"
-review_model = "gpt-5.4"
+model = "${model}"
+review_model = "${model}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
@@ -653,12 +693,12 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         xhigh: {}
       }
     },
-    'gpt-5.5': {
-      name: 'GPT-5.5',
-      limit: {
-        context: 1050000,
-        output: 128000
-      },
+	    'gpt-5.5': {
+	      name: 'GPT-5.5',
+	      limit: {
+	        context: 1050000,
+	        output: 128000
+	      },
       options: {
         store: false
       },

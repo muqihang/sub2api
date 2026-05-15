@@ -19,6 +19,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
+	"github.com/Wei-Shaw/sub2api/ent/codexdeviceauditlog"
+	"github.com/Wei-Shaw/sub2api/ent/codexdevicetoken"
+	"github.com/Wei-Shaw/sub2api/ent/codexmanageddevice"
+	"github.com/Wei-Shaw/sub2api/ent/codexsetupgrant"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -396,6 +400,114 @@ func (f TraverseChannelMonitorRequestTemplate) Traverse(ctx context.Context, q e
 		return f(ctx, q)
 	}
 	return fmt.Errorf("unexpected query type %T. expect *ent.ChannelMonitorRequestTemplateQuery", q)
+}
+
+// The CodexDeviceAuditLogFunc type is an adapter to allow the use of ordinary function as a Querier.
+type CodexDeviceAuditLogFunc func(context.Context, *ent.CodexDeviceAuditLogQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f CodexDeviceAuditLogFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.CodexDeviceAuditLogQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.CodexDeviceAuditLogQuery", q)
+}
+
+// The TraverseCodexDeviceAuditLog type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseCodexDeviceAuditLog func(context.Context, *ent.CodexDeviceAuditLogQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseCodexDeviceAuditLog) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseCodexDeviceAuditLog) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.CodexDeviceAuditLogQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.CodexDeviceAuditLogQuery", q)
+}
+
+// The CodexDeviceTokenFunc type is an adapter to allow the use of ordinary function as a Querier.
+type CodexDeviceTokenFunc func(context.Context, *ent.CodexDeviceTokenQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f CodexDeviceTokenFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.CodexDeviceTokenQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.CodexDeviceTokenQuery", q)
+}
+
+// The TraverseCodexDeviceToken type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseCodexDeviceToken func(context.Context, *ent.CodexDeviceTokenQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseCodexDeviceToken) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseCodexDeviceToken) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.CodexDeviceTokenQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.CodexDeviceTokenQuery", q)
+}
+
+// The CodexManagedDeviceFunc type is an adapter to allow the use of ordinary function as a Querier.
+type CodexManagedDeviceFunc func(context.Context, *ent.CodexManagedDeviceQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f CodexManagedDeviceFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.CodexManagedDeviceQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.CodexManagedDeviceQuery", q)
+}
+
+// The TraverseCodexManagedDevice type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseCodexManagedDevice func(context.Context, *ent.CodexManagedDeviceQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseCodexManagedDevice) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseCodexManagedDevice) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.CodexManagedDeviceQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.CodexManagedDeviceQuery", q)
+}
+
+// The CodexSetupGrantFunc type is an adapter to allow the use of ordinary function as a Querier.
+type CodexSetupGrantFunc func(context.Context, *ent.CodexSetupGrantQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f CodexSetupGrantFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.CodexSetupGrantQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.CodexSetupGrantQuery", q)
+}
+
+// The TraverseCodexSetupGrant type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseCodexSetupGrant func(context.Context, *ent.CodexSetupGrantQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseCodexSetupGrant) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseCodexSetupGrant) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.CodexSetupGrantQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.CodexSetupGrantQuery", q)
 }
 
 // The ErrorPassthroughRuleFunc type is an adapter to allow the use of ordinary function as a Querier.
@@ -1044,6 +1156,14 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.ChannelMonitorHistoryQuery, predicate.ChannelMonitorHistory, channelmonitorhistory.OrderOption]{typ: ent.TypeChannelMonitorHistory, tq: q}, nil
 	case *ent.ChannelMonitorRequestTemplateQuery:
 		return &query[*ent.ChannelMonitorRequestTemplateQuery, predicate.ChannelMonitorRequestTemplate, channelmonitorrequesttemplate.OrderOption]{typ: ent.TypeChannelMonitorRequestTemplate, tq: q}, nil
+	case *ent.CodexDeviceAuditLogQuery:
+		return &query[*ent.CodexDeviceAuditLogQuery, predicate.CodexDeviceAuditLog, codexdeviceauditlog.OrderOption]{typ: ent.TypeCodexDeviceAuditLog, tq: q}, nil
+	case *ent.CodexDeviceTokenQuery:
+		return &query[*ent.CodexDeviceTokenQuery, predicate.CodexDeviceToken, codexdevicetoken.OrderOption]{typ: ent.TypeCodexDeviceToken, tq: q}, nil
+	case *ent.CodexManagedDeviceQuery:
+		return &query[*ent.CodexManagedDeviceQuery, predicate.CodexManagedDevice, codexmanageddevice.OrderOption]{typ: ent.TypeCodexManagedDevice, tq: q}, nil
+	case *ent.CodexSetupGrantQuery:
+		return &query[*ent.CodexSetupGrantQuery, predicate.CodexSetupGrant, codexsetupgrant.OrderOption]{typ: ent.TypeCodexSetupGrant, tq: q}, nil
 	case *ent.ErrorPassthroughRuleQuery:
 		return &query[*ent.ErrorPassthroughRuleQuery, predicate.ErrorPassthroughRule, errorpassthroughrule.OrderOption]{typ: ent.TypeErrorPassthroughRule, tq: q}, nil
 	case *ent.GroupQuery:

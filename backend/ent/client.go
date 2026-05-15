@@ -26,6 +26,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
+	"github.com/Wei-Shaw/sub2api/ent/codexdeviceauditlog"
+	"github.com/Wei-Shaw/sub2api/ent/codexdevicetoken"
+	"github.com/Wei-Shaw/sub2api/ent/codexmanageddevice"
+	"github.com/Wei-Shaw/sub2api/ent/codexsetupgrant"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -80,6 +84,14 @@ type Client struct {
 	ChannelMonitorHistory *ChannelMonitorHistoryClient
 	// ChannelMonitorRequestTemplate is the client for interacting with the ChannelMonitorRequestTemplate builders.
 	ChannelMonitorRequestTemplate *ChannelMonitorRequestTemplateClient
+	// CodexDeviceAuditLog is the client for interacting with the CodexDeviceAuditLog builders.
+	CodexDeviceAuditLog *CodexDeviceAuditLogClient
+	// CodexDeviceToken is the client for interacting with the CodexDeviceToken builders.
+	CodexDeviceToken *CodexDeviceTokenClient
+	// CodexManagedDevice is the client for interacting with the CodexManagedDevice builders.
+	CodexManagedDevice *CodexManagedDeviceClient
+	// CodexSetupGrant is the client for interacting with the CodexSetupGrant builders.
+	CodexSetupGrant *CodexSetupGrantClient
 	// ErrorPassthroughRule is the client for interacting with the ErrorPassthroughRule builders.
 	ErrorPassthroughRule *ErrorPassthroughRuleClient
 	// Group is the client for interacting with the Group builders.
@@ -148,6 +160,10 @@ func (c *Client) init() {
 	c.ChannelMonitorDailyRollup = NewChannelMonitorDailyRollupClient(c.config)
 	c.ChannelMonitorHistory = NewChannelMonitorHistoryClient(c.config)
 	c.ChannelMonitorRequestTemplate = NewChannelMonitorRequestTemplateClient(c.config)
+	c.CodexDeviceAuditLog = NewCodexDeviceAuditLogClient(c.config)
+	c.CodexDeviceToken = NewCodexDeviceTokenClient(c.config)
+	c.CodexManagedDevice = NewCodexManagedDeviceClient(c.config)
+	c.CodexSetupGrant = NewCodexSetupGrantClient(c.config)
 	c.ErrorPassthroughRule = NewErrorPassthroughRuleClient(c.config)
 	c.Group = NewGroupClient(c.config)
 	c.IdempotencyRecord = NewIdempotencyRecordClient(c.config)
@@ -274,6 +290,10 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		ChannelMonitorDailyRollup:     NewChannelMonitorDailyRollupClient(cfg),
 		ChannelMonitorHistory:         NewChannelMonitorHistoryClient(cfg),
 		ChannelMonitorRequestTemplate: NewChannelMonitorRequestTemplateClient(cfg),
+		CodexDeviceAuditLog:           NewCodexDeviceAuditLogClient(cfg),
+		CodexDeviceToken:              NewCodexDeviceTokenClient(cfg),
+		CodexManagedDevice:            NewCodexManagedDeviceClient(cfg),
+		CodexSetupGrant:               NewCodexSetupGrantClient(cfg),
 		ErrorPassthroughRule:          NewErrorPassthroughRuleClient(cfg),
 		Group:                         NewGroupClient(cfg),
 		IdempotencyRecord:             NewIdempotencyRecordClient(cfg),
@@ -327,6 +347,10 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		ChannelMonitorDailyRollup:     NewChannelMonitorDailyRollupClient(cfg),
 		ChannelMonitorHistory:         NewChannelMonitorHistoryClient(cfg),
 		ChannelMonitorRequestTemplate: NewChannelMonitorRequestTemplateClient(cfg),
+		CodexDeviceAuditLog:           NewCodexDeviceAuditLogClient(cfg),
+		CodexDeviceToken:              NewCodexDeviceTokenClient(cfg),
+		CodexManagedDevice:            NewCodexManagedDeviceClient(cfg),
+		CodexSetupGrant:               NewCodexSetupGrantClient(cfg),
 		ErrorPassthroughRule:          NewErrorPassthroughRuleClient(cfg),
 		Group:                         NewGroupClient(cfg),
 		IdempotencyRecord:             NewIdempotencyRecordClient(cfg),
@@ -382,7 +406,8 @@ func (c *Client) Use(hooks ...Hook) {
 		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
 		c.AuthIdentity, c.AuthIdentityChannel, c.ChannelMonitor,
 		c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
-		c.ChannelMonitorRequestTemplate, c.ErrorPassthroughRule, c.Group,
+		c.ChannelMonitorRequestTemplate, c.CodexDeviceAuditLog, c.CodexDeviceToken,
+		c.CodexManagedDevice, c.CodexSetupGrant, c.ErrorPassthroughRule, c.Group,
 		c.IdempotencyRecord, c.IdentityAdoptionDecision, c.PaymentAuditLog,
 		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
 		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
@@ -401,7 +426,8 @@ func (c *Client) Intercept(interceptors ...Interceptor) {
 		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
 		c.AuthIdentity, c.AuthIdentityChannel, c.ChannelMonitor,
 		c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
-		c.ChannelMonitorRequestTemplate, c.ErrorPassthroughRule, c.Group,
+		c.ChannelMonitorRequestTemplate, c.CodexDeviceAuditLog, c.CodexDeviceToken,
+		c.CodexManagedDevice, c.CodexSetupGrant, c.ErrorPassthroughRule, c.Group,
 		c.IdempotencyRecord, c.IdentityAdoptionDecision, c.PaymentAuditLog,
 		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
 		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
@@ -438,6 +464,14 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.ChannelMonitorHistory.mutate(ctx, m)
 	case *ChannelMonitorRequestTemplateMutation:
 		return c.ChannelMonitorRequestTemplate.mutate(ctx, m)
+	case *CodexDeviceAuditLogMutation:
+		return c.CodexDeviceAuditLog.mutate(ctx, m)
+	case *CodexDeviceTokenMutation:
+		return c.CodexDeviceToken.mutate(ctx, m)
+	case *CodexManagedDeviceMutation:
+		return c.CodexManagedDevice.mutate(ctx, m)
+	case *CodexSetupGrantMutation:
+		return c.CodexSetupGrant.mutate(ctx, m)
 	case *ErrorPassthroughRuleMutation:
 		return c.ErrorPassthroughRule.mutate(ctx, m)
 	case *GroupMutation:
@@ -2256,6 +2290,682 @@ func (c *ChannelMonitorRequestTemplateClient) mutate(ctx context.Context, m *Cha
 		return (&ChannelMonitorRequestTemplateDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown ChannelMonitorRequestTemplate mutation op: %q", m.Op())
+	}
+}
+
+// CodexDeviceAuditLogClient is a client for the CodexDeviceAuditLog schema.
+type CodexDeviceAuditLogClient struct {
+	config
+}
+
+// NewCodexDeviceAuditLogClient returns a client for the CodexDeviceAuditLog from the given config.
+func NewCodexDeviceAuditLogClient(c config) *CodexDeviceAuditLogClient {
+	return &CodexDeviceAuditLogClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `codexdeviceauditlog.Hooks(f(g(h())))`.
+func (c *CodexDeviceAuditLogClient) Use(hooks ...Hook) {
+	c.hooks.CodexDeviceAuditLog = append(c.hooks.CodexDeviceAuditLog, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `codexdeviceauditlog.Intercept(f(g(h())))`.
+func (c *CodexDeviceAuditLogClient) Intercept(interceptors ...Interceptor) {
+	c.inters.CodexDeviceAuditLog = append(c.inters.CodexDeviceAuditLog, interceptors...)
+}
+
+// Create returns a builder for creating a CodexDeviceAuditLog entity.
+func (c *CodexDeviceAuditLogClient) Create() *CodexDeviceAuditLogCreate {
+	mutation := newCodexDeviceAuditLogMutation(c.config, OpCreate)
+	return &CodexDeviceAuditLogCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of CodexDeviceAuditLog entities.
+func (c *CodexDeviceAuditLogClient) CreateBulk(builders ...*CodexDeviceAuditLogCreate) *CodexDeviceAuditLogCreateBulk {
+	return &CodexDeviceAuditLogCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *CodexDeviceAuditLogClient) MapCreateBulk(slice any, setFunc func(*CodexDeviceAuditLogCreate, int)) *CodexDeviceAuditLogCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &CodexDeviceAuditLogCreateBulk{err: fmt.Errorf("calling to CodexDeviceAuditLogClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*CodexDeviceAuditLogCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &CodexDeviceAuditLogCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for CodexDeviceAuditLog.
+func (c *CodexDeviceAuditLogClient) Update() *CodexDeviceAuditLogUpdate {
+	mutation := newCodexDeviceAuditLogMutation(c.config, OpUpdate)
+	return &CodexDeviceAuditLogUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *CodexDeviceAuditLogClient) UpdateOne(_m *CodexDeviceAuditLog) *CodexDeviceAuditLogUpdateOne {
+	mutation := newCodexDeviceAuditLogMutation(c.config, OpUpdateOne, withCodexDeviceAuditLog(_m))
+	return &CodexDeviceAuditLogUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *CodexDeviceAuditLogClient) UpdateOneID(id int64) *CodexDeviceAuditLogUpdateOne {
+	mutation := newCodexDeviceAuditLogMutation(c.config, OpUpdateOne, withCodexDeviceAuditLogID(id))
+	return &CodexDeviceAuditLogUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for CodexDeviceAuditLog.
+func (c *CodexDeviceAuditLogClient) Delete() *CodexDeviceAuditLogDelete {
+	mutation := newCodexDeviceAuditLogMutation(c.config, OpDelete)
+	return &CodexDeviceAuditLogDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *CodexDeviceAuditLogClient) DeleteOne(_m *CodexDeviceAuditLog) *CodexDeviceAuditLogDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *CodexDeviceAuditLogClient) DeleteOneID(id int64) *CodexDeviceAuditLogDeleteOne {
+	builder := c.Delete().Where(codexdeviceauditlog.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &CodexDeviceAuditLogDeleteOne{builder}
+}
+
+// Query returns a query builder for CodexDeviceAuditLog.
+func (c *CodexDeviceAuditLogClient) Query() *CodexDeviceAuditLogQuery {
+	return &CodexDeviceAuditLogQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeCodexDeviceAuditLog},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a CodexDeviceAuditLog entity by its id.
+func (c *CodexDeviceAuditLogClient) Get(ctx context.Context, id int64) (*CodexDeviceAuditLog, error) {
+	return c.Query().Where(codexdeviceauditlog.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *CodexDeviceAuditLogClient) GetX(ctx context.Context, id int64) *CodexDeviceAuditLog {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryUser queries the user edge of a CodexDeviceAuditLog.
+func (c *CodexDeviceAuditLogClient) QueryUser(_m *CodexDeviceAuditLog) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexdeviceauditlog.Table, codexdeviceauditlog.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, codexdeviceauditlog.UserTable, codexdeviceauditlog.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryDevice queries the device edge of a CodexDeviceAuditLog.
+func (c *CodexDeviceAuditLogClient) QueryDevice(_m *CodexDeviceAuditLog) *CodexManagedDeviceQuery {
+	query := (&CodexManagedDeviceClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexdeviceauditlog.Table, codexdeviceauditlog.FieldID, id),
+			sqlgraph.To(codexmanageddevice.Table, codexmanageddevice.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, codexdeviceauditlog.DeviceTable, codexdeviceauditlog.DeviceColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *CodexDeviceAuditLogClient) Hooks() []Hook {
+	return c.hooks.CodexDeviceAuditLog
+}
+
+// Interceptors returns the client interceptors.
+func (c *CodexDeviceAuditLogClient) Interceptors() []Interceptor {
+	return c.inters.CodexDeviceAuditLog
+}
+
+func (c *CodexDeviceAuditLogClient) mutate(ctx context.Context, m *CodexDeviceAuditLogMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&CodexDeviceAuditLogCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&CodexDeviceAuditLogUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&CodexDeviceAuditLogUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&CodexDeviceAuditLogDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown CodexDeviceAuditLog mutation op: %q", m.Op())
+	}
+}
+
+// CodexDeviceTokenClient is a client for the CodexDeviceToken schema.
+type CodexDeviceTokenClient struct {
+	config
+}
+
+// NewCodexDeviceTokenClient returns a client for the CodexDeviceToken from the given config.
+func NewCodexDeviceTokenClient(c config) *CodexDeviceTokenClient {
+	return &CodexDeviceTokenClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `codexdevicetoken.Hooks(f(g(h())))`.
+func (c *CodexDeviceTokenClient) Use(hooks ...Hook) {
+	c.hooks.CodexDeviceToken = append(c.hooks.CodexDeviceToken, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `codexdevicetoken.Intercept(f(g(h())))`.
+func (c *CodexDeviceTokenClient) Intercept(interceptors ...Interceptor) {
+	c.inters.CodexDeviceToken = append(c.inters.CodexDeviceToken, interceptors...)
+}
+
+// Create returns a builder for creating a CodexDeviceToken entity.
+func (c *CodexDeviceTokenClient) Create() *CodexDeviceTokenCreate {
+	mutation := newCodexDeviceTokenMutation(c.config, OpCreate)
+	return &CodexDeviceTokenCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of CodexDeviceToken entities.
+func (c *CodexDeviceTokenClient) CreateBulk(builders ...*CodexDeviceTokenCreate) *CodexDeviceTokenCreateBulk {
+	return &CodexDeviceTokenCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *CodexDeviceTokenClient) MapCreateBulk(slice any, setFunc func(*CodexDeviceTokenCreate, int)) *CodexDeviceTokenCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &CodexDeviceTokenCreateBulk{err: fmt.Errorf("calling to CodexDeviceTokenClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*CodexDeviceTokenCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &CodexDeviceTokenCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for CodexDeviceToken.
+func (c *CodexDeviceTokenClient) Update() *CodexDeviceTokenUpdate {
+	mutation := newCodexDeviceTokenMutation(c.config, OpUpdate)
+	return &CodexDeviceTokenUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *CodexDeviceTokenClient) UpdateOne(_m *CodexDeviceToken) *CodexDeviceTokenUpdateOne {
+	mutation := newCodexDeviceTokenMutation(c.config, OpUpdateOne, withCodexDeviceToken(_m))
+	return &CodexDeviceTokenUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *CodexDeviceTokenClient) UpdateOneID(id int64) *CodexDeviceTokenUpdateOne {
+	mutation := newCodexDeviceTokenMutation(c.config, OpUpdateOne, withCodexDeviceTokenID(id))
+	return &CodexDeviceTokenUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for CodexDeviceToken.
+func (c *CodexDeviceTokenClient) Delete() *CodexDeviceTokenDelete {
+	mutation := newCodexDeviceTokenMutation(c.config, OpDelete)
+	return &CodexDeviceTokenDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *CodexDeviceTokenClient) DeleteOne(_m *CodexDeviceToken) *CodexDeviceTokenDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *CodexDeviceTokenClient) DeleteOneID(id int64) *CodexDeviceTokenDeleteOne {
+	builder := c.Delete().Where(codexdevicetoken.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &CodexDeviceTokenDeleteOne{builder}
+}
+
+// Query returns a query builder for CodexDeviceToken.
+func (c *CodexDeviceTokenClient) Query() *CodexDeviceTokenQuery {
+	return &CodexDeviceTokenQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeCodexDeviceToken},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a CodexDeviceToken entity by its id.
+func (c *CodexDeviceTokenClient) Get(ctx context.Context, id int64) (*CodexDeviceToken, error) {
+	return c.Query().Where(codexdevicetoken.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *CodexDeviceTokenClient) GetX(ctx context.Context, id int64) *CodexDeviceToken {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryDevice queries the device edge of a CodexDeviceToken.
+func (c *CodexDeviceTokenClient) QueryDevice(_m *CodexDeviceToken) *CodexManagedDeviceQuery {
+	query := (&CodexManagedDeviceClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexdevicetoken.Table, codexdevicetoken.FieldID, id),
+			sqlgraph.To(codexmanageddevice.Table, codexmanageddevice.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, codexdevicetoken.DeviceTable, codexdevicetoken.DeviceColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *CodexDeviceTokenClient) Hooks() []Hook {
+	return c.hooks.CodexDeviceToken
+}
+
+// Interceptors returns the client interceptors.
+func (c *CodexDeviceTokenClient) Interceptors() []Interceptor {
+	return c.inters.CodexDeviceToken
+}
+
+func (c *CodexDeviceTokenClient) mutate(ctx context.Context, m *CodexDeviceTokenMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&CodexDeviceTokenCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&CodexDeviceTokenUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&CodexDeviceTokenUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&CodexDeviceTokenDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown CodexDeviceToken mutation op: %q", m.Op())
+	}
+}
+
+// CodexManagedDeviceClient is a client for the CodexManagedDevice schema.
+type CodexManagedDeviceClient struct {
+	config
+}
+
+// NewCodexManagedDeviceClient returns a client for the CodexManagedDevice from the given config.
+func NewCodexManagedDeviceClient(c config) *CodexManagedDeviceClient {
+	return &CodexManagedDeviceClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `codexmanageddevice.Hooks(f(g(h())))`.
+func (c *CodexManagedDeviceClient) Use(hooks ...Hook) {
+	c.hooks.CodexManagedDevice = append(c.hooks.CodexManagedDevice, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `codexmanageddevice.Intercept(f(g(h())))`.
+func (c *CodexManagedDeviceClient) Intercept(interceptors ...Interceptor) {
+	c.inters.CodexManagedDevice = append(c.inters.CodexManagedDevice, interceptors...)
+}
+
+// Create returns a builder for creating a CodexManagedDevice entity.
+func (c *CodexManagedDeviceClient) Create() *CodexManagedDeviceCreate {
+	mutation := newCodexManagedDeviceMutation(c.config, OpCreate)
+	return &CodexManagedDeviceCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of CodexManagedDevice entities.
+func (c *CodexManagedDeviceClient) CreateBulk(builders ...*CodexManagedDeviceCreate) *CodexManagedDeviceCreateBulk {
+	return &CodexManagedDeviceCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *CodexManagedDeviceClient) MapCreateBulk(slice any, setFunc func(*CodexManagedDeviceCreate, int)) *CodexManagedDeviceCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &CodexManagedDeviceCreateBulk{err: fmt.Errorf("calling to CodexManagedDeviceClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*CodexManagedDeviceCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &CodexManagedDeviceCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for CodexManagedDevice.
+func (c *CodexManagedDeviceClient) Update() *CodexManagedDeviceUpdate {
+	mutation := newCodexManagedDeviceMutation(c.config, OpUpdate)
+	return &CodexManagedDeviceUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *CodexManagedDeviceClient) UpdateOne(_m *CodexManagedDevice) *CodexManagedDeviceUpdateOne {
+	mutation := newCodexManagedDeviceMutation(c.config, OpUpdateOne, withCodexManagedDevice(_m))
+	return &CodexManagedDeviceUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *CodexManagedDeviceClient) UpdateOneID(id int64) *CodexManagedDeviceUpdateOne {
+	mutation := newCodexManagedDeviceMutation(c.config, OpUpdateOne, withCodexManagedDeviceID(id))
+	return &CodexManagedDeviceUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for CodexManagedDevice.
+func (c *CodexManagedDeviceClient) Delete() *CodexManagedDeviceDelete {
+	mutation := newCodexManagedDeviceMutation(c.config, OpDelete)
+	return &CodexManagedDeviceDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *CodexManagedDeviceClient) DeleteOne(_m *CodexManagedDevice) *CodexManagedDeviceDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *CodexManagedDeviceClient) DeleteOneID(id int64) *CodexManagedDeviceDeleteOne {
+	builder := c.Delete().Where(codexmanageddevice.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &CodexManagedDeviceDeleteOne{builder}
+}
+
+// Query returns a query builder for CodexManagedDevice.
+func (c *CodexManagedDeviceClient) Query() *CodexManagedDeviceQuery {
+	return &CodexManagedDeviceQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeCodexManagedDevice},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a CodexManagedDevice entity by its id.
+func (c *CodexManagedDeviceClient) Get(ctx context.Context, id int64) (*CodexManagedDevice, error) {
+	return c.Query().Where(codexmanageddevice.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *CodexManagedDeviceClient) GetX(ctx context.Context, id int64) *CodexManagedDevice {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryUser queries the user edge of a CodexManagedDevice.
+func (c *CodexManagedDeviceClient) QueryUser(_m *CodexManagedDevice) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexmanageddevice.Table, codexmanageddevice.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, codexmanageddevice.UserTable, codexmanageddevice.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAPIKey queries the api_key edge of a CodexManagedDevice.
+func (c *CodexManagedDeviceClient) QueryAPIKey(_m *CodexManagedDevice) *APIKeyQuery {
+	query := (&APIKeyClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexmanageddevice.Table, codexmanageddevice.FieldID, id),
+			sqlgraph.To(apikey.Table, apikey.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, codexmanageddevice.APIKeyTable, codexmanageddevice.APIKeyColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryTokens queries the tokens edge of a CodexManagedDevice.
+func (c *CodexManagedDeviceClient) QueryTokens(_m *CodexManagedDevice) *CodexDeviceTokenQuery {
+	query := (&CodexDeviceTokenClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexmanageddevice.Table, codexmanageddevice.FieldID, id),
+			sqlgraph.To(codexdevicetoken.Table, codexdevicetoken.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, codexmanageddevice.TokensTable, codexmanageddevice.TokensColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAuditLogs queries the audit_logs edge of a CodexManagedDevice.
+func (c *CodexManagedDeviceClient) QueryAuditLogs(_m *CodexManagedDevice) *CodexDeviceAuditLogQuery {
+	query := (&CodexDeviceAuditLogClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexmanageddevice.Table, codexmanageddevice.FieldID, id),
+			sqlgraph.To(codexdeviceauditlog.Table, codexdeviceauditlog.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, codexmanageddevice.AuditLogsTable, codexmanageddevice.AuditLogsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *CodexManagedDeviceClient) Hooks() []Hook {
+	return c.hooks.CodexManagedDevice
+}
+
+// Interceptors returns the client interceptors.
+func (c *CodexManagedDeviceClient) Interceptors() []Interceptor {
+	return c.inters.CodexManagedDevice
+}
+
+func (c *CodexManagedDeviceClient) mutate(ctx context.Context, m *CodexManagedDeviceMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&CodexManagedDeviceCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&CodexManagedDeviceUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&CodexManagedDeviceUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&CodexManagedDeviceDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown CodexManagedDevice mutation op: %q", m.Op())
+	}
+}
+
+// CodexSetupGrantClient is a client for the CodexSetupGrant schema.
+type CodexSetupGrantClient struct {
+	config
+}
+
+// NewCodexSetupGrantClient returns a client for the CodexSetupGrant from the given config.
+func NewCodexSetupGrantClient(c config) *CodexSetupGrantClient {
+	return &CodexSetupGrantClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `codexsetupgrant.Hooks(f(g(h())))`.
+func (c *CodexSetupGrantClient) Use(hooks ...Hook) {
+	c.hooks.CodexSetupGrant = append(c.hooks.CodexSetupGrant, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `codexsetupgrant.Intercept(f(g(h())))`.
+func (c *CodexSetupGrantClient) Intercept(interceptors ...Interceptor) {
+	c.inters.CodexSetupGrant = append(c.inters.CodexSetupGrant, interceptors...)
+}
+
+// Create returns a builder for creating a CodexSetupGrant entity.
+func (c *CodexSetupGrantClient) Create() *CodexSetupGrantCreate {
+	mutation := newCodexSetupGrantMutation(c.config, OpCreate)
+	return &CodexSetupGrantCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of CodexSetupGrant entities.
+func (c *CodexSetupGrantClient) CreateBulk(builders ...*CodexSetupGrantCreate) *CodexSetupGrantCreateBulk {
+	return &CodexSetupGrantCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *CodexSetupGrantClient) MapCreateBulk(slice any, setFunc func(*CodexSetupGrantCreate, int)) *CodexSetupGrantCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &CodexSetupGrantCreateBulk{err: fmt.Errorf("calling to CodexSetupGrantClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*CodexSetupGrantCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &CodexSetupGrantCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for CodexSetupGrant.
+func (c *CodexSetupGrantClient) Update() *CodexSetupGrantUpdate {
+	mutation := newCodexSetupGrantMutation(c.config, OpUpdate)
+	return &CodexSetupGrantUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *CodexSetupGrantClient) UpdateOne(_m *CodexSetupGrant) *CodexSetupGrantUpdateOne {
+	mutation := newCodexSetupGrantMutation(c.config, OpUpdateOne, withCodexSetupGrant(_m))
+	return &CodexSetupGrantUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *CodexSetupGrantClient) UpdateOneID(id int64) *CodexSetupGrantUpdateOne {
+	mutation := newCodexSetupGrantMutation(c.config, OpUpdateOne, withCodexSetupGrantID(id))
+	return &CodexSetupGrantUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for CodexSetupGrant.
+func (c *CodexSetupGrantClient) Delete() *CodexSetupGrantDelete {
+	mutation := newCodexSetupGrantMutation(c.config, OpDelete)
+	return &CodexSetupGrantDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *CodexSetupGrantClient) DeleteOne(_m *CodexSetupGrant) *CodexSetupGrantDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *CodexSetupGrantClient) DeleteOneID(id int64) *CodexSetupGrantDeleteOne {
+	builder := c.Delete().Where(codexsetupgrant.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &CodexSetupGrantDeleteOne{builder}
+}
+
+// Query returns a query builder for CodexSetupGrant.
+func (c *CodexSetupGrantClient) Query() *CodexSetupGrantQuery {
+	return &CodexSetupGrantQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeCodexSetupGrant},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a CodexSetupGrant entity by its id.
+func (c *CodexSetupGrantClient) Get(ctx context.Context, id int64) (*CodexSetupGrant, error) {
+	return c.Query().Where(codexsetupgrant.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *CodexSetupGrantClient) GetX(ctx context.Context, id int64) *CodexSetupGrant {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryUser queries the user edge of a CodexSetupGrant.
+func (c *CodexSetupGrantClient) QueryUser(_m *CodexSetupGrant) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexsetupgrant.Table, codexsetupgrant.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, codexsetupgrant.UserTable, codexsetupgrant.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAPIKey queries the api_key edge of a CodexSetupGrant.
+func (c *CodexSetupGrantClient) QueryAPIKey(_m *CodexSetupGrant) *APIKeyQuery {
+	query := (&APIKeyClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(codexsetupgrant.Table, codexsetupgrant.FieldID, id),
+			sqlgraph.To(apikey.Table, apikey.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, codexsetupgrant.APIKeyTable, codexsetupgrant.APIKeyColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *CodexSetupGrantClient) Hooks() []Hook {
+	return c.hooks.CodexSetupGrant
+}
+
+// Interceptors returns the client interceptors.
+func (c *CodexSetupGrantClient) Interceptors() []Interceptor {
+	return c.inters.CodexSetupGrant
+}
+
+func (c *CodexSetupGrantClient) mutate(ctx context.Context, m *CodexSetupGrantMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&CodexSetupGrantCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&CodexSetupGrantUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&CodexSetupGrantUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&CodexSetupGrantDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown CodexSetupGrant mutation op: %q", m.Op())
 	}
 }
 
@@ -6020,7 +6730,8 @@ type (
 	hooks struct {
 		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
 		AuthIdentityChannel, ChannelMonitor, ChannelMonitorDailyRollup,
-		ChannelMonitorHistory, ChannelMonitorRequestTemplate, ErrorPassthroughRule,
+		ChannelMonitorHistory, ChannelMonitorRequestTemplate, CodexDeviceAuditLog,
+		CodexDeviceToken, CodexManagedDevice, CodexSetupGrant, ErrorPassthroughRule,
 		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
 		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,
 		PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
@@ -6030,7 +6741,8 @@ type (
 	inters struct {
 		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
 		AuthIdentityChannel, ChannelMonitor, ChannelMonitorDailyRollup,
-		ChannelMonitorHistory, ChannelMonitorRequestTemplate, ErrorPassthroughRule,
+		ChannelMonitorHistory, ChannelMonitorRequestTemplate, CodexDeviceAuditLog,
+		CodexDeviceToken, CodexManagedDevice, CodexSetupGrant, ErrorPassthroughRule,
 		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
 		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,
 		PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,

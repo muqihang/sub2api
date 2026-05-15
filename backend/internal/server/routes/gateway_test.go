@@ -297,6 +297,65 @@ func TestGatewayRoutesResponsesAcceptsAugmentSessionBearer(t *testing.T) {
 	require.Equal(t, "Bearer "+gatewayKey.Key, observedAuthorization)
 }
 
+func TestGatewayRoutesManagedHeadersDoNotBypassOrdinaryGatewayAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	rawAuthCalls := 0
+	observedAuthorization := ""
+	observedManagedSession := ""
+
+	RegisterGatewayRoutes(
+		router,
+		&handler.Handlers{
+			Auth: handler.NewAuthHandler(
+				&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				service.NewAugmentPluginService(nil, nil, nil, nil, nil, nil),
+			),
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			rawAuthCalls++
+			observedAuthorization = c.GetHeader("Authorization")
+			observedManagedSession = c.GetHeader("X-Zhumeng-Managed-Session")
+			if observedAuthorization != "Bearer normal-key" {
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
+			}
+			c.AbortWithStatus(http.StatusNoContent)
+		}),
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{},
+	)
+
+	for _, path := range []string{"/responses", "/openai/v1/responses", "/v1/responses"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5.5","input":"hello"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer normal-key")
+			req.Header.Set("X-Zhumeng-Device-ID", "9")
+			req.Header.Set("X-Zhumeng-Managed-Session", "sess-1")
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, http.StatusNoContent, w.Code)
+			require.Equal(t, "Bearer normal-key", observedAuthorization)
+			require.Equal(t, "sess-1", observedManagedSession)
+		})
+	}
+	require.Equal(t, 3, rawAuthCalls)
+}
+
 func TestAugmentOfficialRoutePolicyGatewayRoutesFailClosedWhenPolicyEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -494,10 +553,10 @@ func TestGatewayRoutesCodexDirectRequiresCodexScopedKey(t *testing.T) {
 	t.Parallel()
 
 	router := newGatewayRoutesCodexScopeTestRouter(&service.APIKey{
-		ID:     101,
-		UserID: 202,
-		Key:    "sk-generic",
-		Status: service.StatusActive,
+		ID:      101,
+		UserID:  202,
+		Key:     "sk-generic",
+		Status:  service.StatusActive,
 		GroupID: testInt64Ptr(1),
 		Group: &service.Group{
 			ID:                   1,

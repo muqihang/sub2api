@@ -569,6 +569,29 @@ export interface ApiKey {
   reset_7d_at: string | null
 }
 
+export interface CodexSetupGrantResponse {
+  code: string
+  expires_at: string
+  deeplink: string
+}
+
+export type CodexManagedDeviceStatus = 'active' | 'revoked' | 'reauthorization_required'
+
+export interface CodexManagedDevice {
+  id: number
+  user_id: number
+  api_key_id: number
+  name: string
+  platform: string
+  arch: string
+  manager_version: string
+  status: CodexManagedDeviceStatus
+  last_seen_at: string | null
+  revoked_at: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface CreateApiKeyRequest {
   name: string
   group_id?: number | null
