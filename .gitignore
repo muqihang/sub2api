@@ -118,6 +118,10 @@ backend/.installed
 # 其他
 # ===================
 tests
+!tools/zhumeng-agent/tests/
+!tools/zhumeng-agent/tests/**
+tools/zhumeng-agent/tests/__pycache__/
+tools/zhumeng-agent/tests/**/*.pyc
 CLAUDE.md
 .claude
 scripts

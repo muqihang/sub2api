@@ -1,17 +1,32 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
 
 from .adapters.codex.config_manager import CodexConfigManager, choose_local_proxy_port
+from .adapters.codex.capture_baseline import generate_capture_baseline
+from .adapters.codex.capture_config import CodexDesktopCaptureConfig
+from .adapters.codex.capture_config import CorrelationHasher
+from .adapters.codex.capture_injector import install_capture_hook, uninstall_capture_hook
+from .adapters.codex.capture_injector import capture_installation_enabled, inject_capture_hook_via_cdp
+from .adapters.codex.capture_injector import attach_capture_bridge_via_cdp
+from .adapters.codex.capture_injector import route_capture_event
+from .adapters.codex.capture_linker import load_jsonl
+from .adapters.codex.capture_linker import link_traces, write_trace_links
 from .adapters.codex.detect import resolve_codex_home
 from .adapters.codex.launcher import build_codex_launch_command, detect_codex_app_path, select_cdp_port
+from .adapters.codex.model_picker import ModelPickerPatchError, patch_model_picker_app
+from .adapters.codex.model_picker import inspect_model_picker_app, restore_latest_model_picker_backup
+from .adapters.codex.model_picker import inspect_plugin_auth_gate_app, patch_plugin_auth_gate_app
+from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup
 from .adapters.base import BaseAdapter
 from .doctor import codex_doctor_report
 from .http_client import AgentHTTPClient
@@ -59,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     proxy_parser = subparsers.add_parser("proxy-serve")
     proxy_parser.add_argument("--state-file", required=True)
 
+    capture_serve_parser = subparsers.add_parser("capture-serve")
+    capture_serve_parser.add_argument("--trace-dir", required=True)
+    capture_serve_parser.add_argument("--port", required=True, type=int)
+    capture_serve_parser.add_argument("--correlation-hash-key-file")
+
     return parser
 
 
@@ -73,6 +93,11 @@ def emit(payload: dict[str, object]) -> int:
     return 0
 
 
+def emit_failed(payload: dict[str, object]) -> int:
+    print(json.dumps(payload))
+    return 1
+
+
 def default_state_store() -> JsonStateStore:
     return JsonStateStore(state_dir() / "state.json")
 
@@ -85,12 +110,33 @@ def default_config_manager() -> CodexConfigManager:
     return CodexConfigManager()
 
 
+def default_capture_config(correlation_hash_key_file: Path | None = None) -> CodexDesktopCaptureConfig:
+    env_key = os.environ.get("ZHUMENG_CODEX_DESKTOP_CAPTURE_CORRELATION_HASH_KEY_FILE")
+    return CodexDesktopCaptureConfig.defaults(
+        correlation_hash_key_file=correlation_hash_key_file or (Path(env_key).expanduser() if env_key else None)
+    )
+
+
 def run_codex_process(args: list[str], env: dict[str, str]) -> int:
     return subprocess.call(["codex", *args], env=env)
 
 
 def launch_codex_process(command: list[str]) -> None:
     subprocess.Popen(command)
+
+
+def default_codex_app_path() -> Path | None:
+    return detect_codex_app_path(
+        search_roots=[Path("/Applications"), Path.home() / "Applications"],
+        platform=platform.system().lower().replace("windows", "win32"),
+    )
+
+
+def patch_detected_codex_model_picker() -> dict[str, object]:
+    app_path = default_codex_app_path()
+    if app_path is None:
+        return {"status": "app_not_found"}
+    return patch_model_picker_app(app_path)
 
 
 def is_process_alive(pid: int | None) -> bool:
@@ -226,17 +272,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             str(state.get("loopback_secret", generate_loopback_secret())),
         )
         ensure_proxy_running(store)
+        model_picker = {"status": "not_modified", "reason": "use codex model-picker patch explicitly"}
         search_roots = [Path("/Applications"), Path.home() / "Applications"]
         app_path = detect_codex_app_path(search_roots=search_roots, platform=platform.system().lower().replace("windows", "win32"))
         if app_path is not None:
-            command = build_codex_launch_command(app_path, select_cdp_port())
+            cdp_port = select_cdp_port()
+            command = build_codex_launch_command(app_path, cdp_port)
             launch_codex_process(command)
+            capture_status: dict[str, object] = {"status": "not_installed"}
+            capture_config = default_capture_config()
+            if capture_installation_enabled(app_path, capture_config):
+                capture_status = ensure_capture_bridge_running(capture_config, cdp_port)
             return emit({
                 "command": "launch",
                 "client": args.client,
-                "status": "degraded",
+                "status": "launched",
                 "launch_command": command,
-                "injection": "not_implemented",
+                "injection": "enabled",
+                "model_picker": model_picker,
+                "capture": capture_status,
             })
         result = adapter.launch(dry_run=False)
         return emit({
@@ -245,6 +299,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         })
 
     if args.command == "codex":
+        if args.args and args.args[0] == "model-picker":
+            return handle_codex_model_picker(args.args[1:])
+        if args.args and args.args[0] == "plugin-auth-gate":
+            return handle_codex_plugin_auth_gate(args.args[1:])
+        if args.args and args.args[0] == "capture":
+            return handle_codex_capture(args.args[1:])
         store = default_state_store()
         try:
             state = load_managed_state(store)
@@ -288,7 +348,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         })
 
     if args.command == "doctor":
-        report = codex_doctor_report(resolve_codex_home())
+        report = codex_doctor_report(resolve_codex_home(), codex_app_path=default_codex_app_path())
         report["command"] = "doctor"
         report["format"] = "json" if args.json else "text"
         return emit(report)
@@ -316,10 +376,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             str(state.get("loopback_secret", generate_loopback_secret())),
         )
         ensure_proxy_running(store)
+        model_picker = {"status": "not_modified", "reason": "use codex model-picker patch explicitly"}
         return emit({
             "command": "repair",
             "client": args.client,
             "status": "repaired",
+            "model_picker": model_picker,
         })
 
     if args.command == "logout":
@@ -391,12 +453,378 @@ def main(argv: Sequence[str] | None = None) -> int:
             refresh_token=str(state.get("refresh_token", "")) or None,
             state_store=store,
         ))
-        import asyncio
         asyncio.run(proxy.serve_forever(int(state["proxy_port"])))
+        return 0
+
+    if args.command == "capture-serve":
+        config = default_capture_config(Path(args.correlation_hash_key_file).expanduser() if args.correlation_hash_key_file else None)
+        asyncio.run(serve_capture_receiver(Path(args.trace_dir), int(args.port), config))
         return 0
 
     parser.error("unknown command")
     return 2
+
+
+def handle_codex_capture(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="zhumeng-agent codex capture")
+    parser.add_argument("--correlation-hash-key-file")
+    subparsers = parser.add_subparsers(dest="capture_command", required=True)
+    subparsers.add_parser("status")
+
+    baseline_parser = subparsers.add_parser("baseline")
+    baseline_parser.add_argument("--out", required=True)
+    baseline_parser.add_argument("--app")
+
+    install_parser = subparsers.add_parser("install")
+    install_parser.add_argument("--app", required=True)
+
+    uninstall_parser = subparsers.add_parser("uninstall")
+    uninstall_parser.add_argument("--app", required=True)
+
+    report_parser = subparsers.add_parser("report")
+    report_parser.add_argument("--trace-dir", required=True)
+    report_parser.add_argument("--gateway-trace-dir")
+
+    attach_parser = subparsers.add_parser("attach")
+    attach_parser.add_argument("--cdp-port", required=True, type=int)
+    attach_parser.add_argument("--trace-dir", required=True)
+    attach_parser.add_argument("--capture-port", type=int, default=0)
+    attach_parser.add_argument("--timeout-seconds", type=float, default=600)
+    attach_parser.add_argument("--target-wait-seconds", type=float, default=10)
+    attach_parser.add_argument("--once", action="store_true")
+
+    parsed = parser.parse_args(argv)
+    config = default_capture_config(Path(parsed.correlation_hash_key_file).expanduser() if parsed.correlation_hash_key_file else None)
+    if parsed.capture_command == "status":
+        return emit({
+            "command": "codex capture status",
+            "config": config.public_dict(),
+        })
+    if parsed.capture_command == "baseline":
+        app_path = Path(parsed.app) if parsed.app else default_codex_app_path()
+        if app_path is None:
+            return emit({
+                "command": "codex capture baseline",
+                "status": "app_not_found",
+            })
+        result = generate_capture_baseline(Path(parsed.out), app_path, config)
+        return emit({
+            "command": "codex capture baseline",
+            **result,
+        })
+    if parsed.capture_command == "install":
+        result = install_capture_hook(Path(parsed.app), config)
+        return emit({
+            "command": "codex capture install",
+            **result,
+        })
+    if parsed.capture_command == "uninstall":
+        result = uninstall_capture_hook(Path(parsed.app), config)
+        return emit({
+            "command": "codex capture uninstall",
+            **result,
+        })
+    if parsed.capture_command == "report":
+        result = generate_capture_report(
+            Path(parsed.trace_dir),
+            config,
+            gateway_trace_dir=Path(parsed.gateway_trace_dir) if parsed.gateway_trace_dir else None,
+        )
+        return emit({
+            "command": "codex capture report",
+            **result,
+        })
+    if parsed.capture_command == "attach":
+        result = attach_capture_bridge_via_cdp(
+            int(parsed.cdp_port),
+            Path(parsed.trace_dir),
+            config,
+            capture_port=int(parsed.capture_port),
+            timeout_seconds=float(parsed.timeout_seconds),
+            target_wait_seconds=float(parsed.target_wait_seconds),
+            once=bool(parsed.once),
+        )
+        return emit({
+            "command": "codex capture attach",
+            **result,
+        })
+    parser.error("unknown capture command")
+    return 2
+
+
+def ensure_capture_receiver_running(config: CodexDesktopCaptureConfig) -> dict[str, object]:
+    trace_dir = config.base_dir / "runtime"
+    port = select_cdp_port()
+    subprocess.Popen([
+        sys.executable,
+        "-m",
+        "zhumeng_agent",
+        "capture-serve",
+        "--trace-dir",
+        str(trace_dir),
+        "--port",
+        str(port),
+        *(
+            [
+                "--correlation-hash-key-file",
+                str(config.correlation_hash_key_file),
+            ]
+            if config.correlation_hash_key_file
+            else []
+        ),
+    ])
+    return {
+        "status": "running",
+        "port": port,
+        "trace_dir_hash": CorrelationHasher.from_key_file(config.correlation_hash_key_file).hash_identifier(str(trace_dir)),
+    }
+
+
+def ensure_capture_bridge_running(config: CodexDesktopCaptureConfig, cdp_port: int) -> dict[str, object]:
+    trace_dir = config.base_dir / "runtime"
+    command = [
+        sys.executable,
+        "-m",
+        "zhumeng_agent",
+        "codex",
+        "capture",
+        *(
+            [
+                "--correlation-hash-key-file",
+                str(config.correlation_hash_key_file),
+            ]
+            if config.correlation_hash_key_file
+            else []
+        ),
+        "attach",
+        "--cdp-port",
+        str(cdp_port),
+        "--trace-dir",
+        str(trace_dir),
+        "--timeout-seconds",
+        "21600",
+        "--target-wait-seconds",
+        "30",
+    ]
+    process = subprocess.Popen(command)
+    return {
+        "status": "running",
+        "bridge": "cdp_binding",
+        "pid": process.pid,
+        "cdp_port": cdp_port,
+        "trace_dir_hash": CorrelationHasher.from_key_file(config.correlation_hash_key_file).hash_identifier(str(trace_dir)),
+    }
+
+
+def capture_receiver_cors_headers(origin: str | None) -> dict[str, str]:
+    allowed_origins = {
+        "app://-",
+        "null",
+        "http://127.0.0.1",
+        "https://127.0.0.1",
+        "http://localhost",
+        "https://localhost",
+    }
+    allow_origin = origin if origin in allowed_origins else "null"
+    return {
+        "Access-Control-Allow-Origin": allow_origin,
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "content-type",
+        "Access-Control-Max-Age": "600",
+    }
+
+
+def create_capture_receiver_app(trace_dir: Path, config: CodexDesktopCaptureConfig | None = None):
+    from aiohttp import WSMsgType, web
+    config = config or default_capture_config()
+
+    def route_json_payload(text: str) -> None:
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                route_capture_event(payload, trace_dir, config)
+        except Exception:
+            pass
+
+    async def handle_options(request):
+        return web.Response(status=204, headers=capture_receiver_cors_headers(request.headers.get("Origin")))
+
+    async def handle(request):
+        try:
+            route_json_payload((await request.read()).decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+        return web.json_response({"ok": True}, headers=capture_receiver_cors_headers(request.headers.get("Origin")))
+
+    async def handle_websocket(request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                route_json_payload(msg.data)
+        return ws
+
+    app = web.Application()
+    app.router.add_options("/codex-desktop-capture-v2", handle_options)
+    app.router.add_post("/codex-desktop-capture-v2", handle)
+    app.router.add_get("/codex-desktop-capture-v2/ws", handle_websocket)
+    return app
+
+
+async def serve_capture_receiver(trace_dir: Path, port: int, config: CodexDesktopCaptureConfig | None = None) -> None:
+    from aiohttp import web
+    config = config or default_capture_config()
+    app = create_capture_receiver_app(trace_dir, config)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", port)
+    await site.start()
+    while True:
+        await asyncio.sleep(3600)
+
+
+def handle_codex_model_picker(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="zhumeng-agent codex model-picker")
+    subparsers = parser.add_subparsers(dest="model_picker_command", required=True)
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--app", required=True)
+    patch_parser = subparsers.add_parser("patch")
+    patch_parser.add_argument("--app", required=True)
+    restore_parser = subparsers.add_parser("restore")
+    restore_parser.add_argument("--app", required=True)
+    parsed = parser.parse_args(argv)
+    app_path = Path(parsed.app)
+    try:
+        if parsed.model_picker_command == "status":
+            return emit({"command": "codex model-picker status", **inspect_model_picker_app(app_path)})
+        if parsed.model_picker_command == "patch":
+            return emit({"command": "codex model-picker patch", **patch_model_picker_app(app_path)})
+        if parsed.model_picker_command == "restore":
+            return emit({"command": "codex model-picker restore", **restore_latest_model_picker_backup(app_path)})
+    except ModelPickerPatchError as err:
+        return emit_failed({
+            "command": f"codex model-picker {parsed.model_picker_command}",
+            "status": "failed",
+            "message": str(err),
+            "recovery_hint": "Run status to inspect the app. If a patch write failed, restore from the reported backup before retrying.",
+        })
+    parser.error("unknown model-picker command")
+    return 2
+
+
+def handle_codex_plugin_auth_gate(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="zhumeng-agent codex plugin-auth-gate")
+    subparsers = parser.add_subparsers(dest="plugin_auth_gate_command", required=True)
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--app", required=True)
+    patch_parser = subparsers.add_parser("patch")
+    patch_parser.add_argument("--app", required=True)
+    restore_parser = subparsers.add_parser("restore")
+    restore_parser.add_argument("--app", required=True)
+    parsed = parser.parse_args(argv)
+    app_path = Path(parsed.app)
+    try:
+        if parsed.plugin_auth_gate_command == "status":
+            return emit({"command": "codex plugin-auth-gate status", **inspect_plugin_auth_gate_app(app_path)})
+        if parsed.plugin_auth_gate_command == "patch":
+            return emit({"command": "codex plugin-auth-gate patch", **patch_plugin_auth_gate_app(app_path)})
+        if parsed.plugin_auth_gate_command == "restore":
+            return emit({"command": "codex plugin-auth-gate restore", **restore_latest_plugin_auth_gate_backup(app_path)})
+    except ModelPickerPatchError as err:
+        return emit_failed({
+            "command": f"codex plugin-auth-gate {parsed.plugin_auth_gate_command}",
+            "status": "failed",
+            "message": str(err),
+            "recovery_hint": "Quit Codex Desktop, run status, and retry only if the app still has a supported patch point.",
+        })
+    parser.error("unknown plugin-auth-gate command")
+    return 2
+
+
+def generate_capture_report(
+    trace_dir: Path,
+    config: CodexDesktopCaptureConfig | None = None,
+    *,
+    gateway_trace_dir: Path | None = None,
+) -> dict[str, object]:
+    config = config or default_capture_config()
+    hasher = CorrelationHasher.from_key_file(config.correlation_hash_key_file)
+    app_server_events = load_jsonl(trace_dir / "app_server_v2.jsonl")
+    gateway_root = gateway_trace_dir or trace_dir
+    gateway_events = load_gateway_trace_events(gateway_root)
+    tool_events = load_jsonl(trace_dir / "tool_lifecycle.jsonl")
+    model_events = load_jsonl(trace_dir / "model_picker.jsonl")
+    link_path = trace_dir / "trace_link.jsonl"
+    link_events = load_jsonl(link_path)
+    if not link_events and gateway_events:
+        link_events = link_traces(app_server_events, gateway_events)
+        write_trace_links(link_path, link_events)
+    methods = sorted({str(event.get("method")) for event in app_server_events if event.get("method")})
+    policy_violations = detect_policy_violations([*app_server_events, *tool_events, *model_events])
+    return {
+        "status": "reported",
+        "trace_dir_hash": hasher.hash_identifier(str(trace_dir)),
+        "app_server_methods": methods,
+        "model_picker_events": len(model_events),
+        "tool_lifecycle_events": len(tool_events),
+        "gateway_trace_links": len(link_events),
+        "content_policy_violations": len(policy_violations),
+        "low_confidence_links": sum(1 for event in link_events if event.get("confidence") == "low"),
+        "hook_mode": "renderer_readonly",
+        "app_asar_modified": False,
+        "correlation_hash_key_file": "set" if config.correlation_hash_key_file else "unset",
+    }
+
+
+def load_gateway_trace_events(gateway_root: Path) -> list[dict[str, object]]:
+    direct = gateway_root / "gateway_trace.jsonl"
+    if direct.exists():
+        return load_jsonl(direct)
+    if gateway_root.is_file():
+        return load_jsonl(gateway_root)
+    events: list[dict[str, object]] = []
+    if gateway_root.exists():
+        for path in sorted(gateway_root.rglob("gateway_trace.jsonl")):
+            events.extend(load_jsonl(path))
+    return events
+
+
+def detect_policy_violations(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    violations: list[dict[str, object]] = []
+    for event in events:
+        if has_sensitive_capture_content(event):
+            violations.append(event)
+    return violations
+
+
+HASH_VALUE_RE = re.compile(r"^(hmac-sha256|sha256):[a-f0-9]{64}$", re.IGNORECASE)
+SENSITIVE_VALUE_RE = re.compile(
+    r"(/Users/|/Applications/|https?://|git@|Cookie\s*=|Bearer\s+|api[_-]?key|refs/heads/|feature/[A-Za-z0-9_./-]+|(?<!sha256:)[A-Fa-f0-9]{40}(?![A-Fa-f0-9]))",
+    re.IGNORECASE,
+)
+SENSITIVE_FIELD_RE = re.compile(r"(authorization|cookie|api[_-]?key|token|secret|remote_?url|repo_?url|branch|commit|revision)", re.IGNORECASE)
+
+
+def has_sensitive_capture_content(value: object, field_name: str = "") -> bool:
+    if field_name.endswith("_hash") or field_name == "hash":
+        return False
+    if isinstance(value, dict):
+        if value.get("raw_payload") or value.get("raw_content"):
+            return True
+        for key, child in value.items():
+            key_text = str(key)
+            if SENSITIVE_FIELD_RE.search(key_text) and not key_text.endswith("_hash"):
+                return True
+            if has_sensitive_capture_content(child, key_text):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(has_sensitive_capture_content(item, field_name) for item in value)
+    if isinstance(value, str):
+        if HASH_VALUE_RE.match(value):
+            return False
+        return bool(SENSITIVE_VALUE_RE.search(value))
+    return False
 
 
 def merge_env_no_proxy(env: dict[str, str]) -> dict[str, str]:

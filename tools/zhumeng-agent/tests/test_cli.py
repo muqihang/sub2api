@@ -2,9 +2,16 @@ import json
 from pathlib import Path
 
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 
 import zhumeng_agent.cli as cli
+from zhumeng_agent.adapters.codex.model_picker import ModelPickerPatchError
 from zhumeng_agent.cli import main
+
+ORIGINAL_DEFAULT_CAPTURE_CONFIG = cli.default_capture_config
+ORIGINAL_GENERATE_CAPTURE_REPORT = cli.generate_capture_report
+ORIGINAL_ENSURE_CAPTURE_RECEIVER_RUNNING = cli.ensure_capture_receiver_running
+ORIGINAL_ENSURE_CAPTURE_BRIDGE_RUNNING = cli.ensure_capture_bridge_running
 
 
 def parse_output(capsys):
@@ -131,6 +138,192 @@ def test_repair_requires_configured_state(capsys):
     assert data["status"] == "not_configured"
 
 
+def test_repair_codex_does_not_patch_model_picker_when_app_is_detected(capsys):
+    class FakeManager:
+        def repair(self, *args, **kwargs):
+            return None
+
+    cli.default_state_store = lambda: type("Store", (), {
+        "read": lambda self: {
+            "proxy_port": 18081,
+            "config_profile": {"model_provider": "zhumeng-managed"},
+            "loopback_secret": "loopback-secret",
+        }
+    })()
+    cli.default_config_manager = lambda: FakeManager()
+    cli.ensure_proxy_running = lambda store: 9999
+    cli.detect_codex_app_path = lambda **kwargs: Path("/Applications/Codex.app")
+    cli.patch_model_picker_app = lambda app_path: (_ for _ in ()).throw(AssertionError("repair codex must not patch model picker"))
+
+    exit_code = main(["repair", "codex"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "repair"
+    assert data["status"] == "repaired"
+    assert data["model_picker"]["status"] == "not_modified"
+
+
+def test_repair_codex_does_not_require_desktop_app_for_model_picker(capsys):
+    class FakeManager:
+        def repair(self, *args, **kwargs):
+            return None
+
+    cli.default_state_store = lambda: type("Store", (), {
+        "read": lambda self: {
+            "proxy_port": 18081,
+            "config_profile": {"model_provider": "zhumeng-managed"},
+            "loopback_secret": "loopback-secret",
+        }
+    })()
+    cli.default_config_manager = lambda: FakeManager()
+    cli.ensure_proxy_running = lambda store: 9999
+    cli.detect_codex_app_path = lambda **kwargs: None
+
+    exit_code = main(["repair", "codex"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "repair"
+    assert data["status"] == "repaired"
+    assert data["model_picker"]["status"] == "not_modified"
+
+
+def test_launch_codex_does_not_patch_model_picker(capsys):
+    class FakeManager:
+        def repair(self, *args, **kwargs):
+            return None
+
+    cli.default_state_store = lambda: type("Store", (), {
+        "read": lambda self: {
+            "proxy_port": 18081,
+            "config_profile": {"model_provider": "zhumeng-managed"},
+            "loopback_secret": "loopback-secret",
+        }
+    })()
+    cli.default_config_manager = lambda: FakeManager()
+    cli.ensure_proxy_running = lambda store: 9999
+    cli.detect_codex_app_path = lambda **kwargs: Path("/Applications/Codex.app")
+
+    def fail_patch(app_path):
+        raise ModelPickerPatchError("integrity invalid")
+
+    cli.patch_model_picker_app = fail_patch
+    launched = {}
+    cli.launch_codex_process = lambda command: launched.setdefault("command", command)
+
+    exit_code = main(["launch", "codex"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "launch"
+    assert data["status"] == "launched"
+    assert data["model_picker"]["status"] == "not_modified"
+    assert launched["command"]
+
+
+@pytest.mark.asyncio
+async def test_capture_receiver_accepts_cors_preflight_for_desktop_renderer(tmp_path: Path):
+    app = cli.create_capture_receiver_app(tmp_path, cli.default_capture_config())
+    server = TestServer(app)
+    await server.start_server()
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.options(
+            "/codex-desktop-capture-v2",
+            headers={
+                "Origin": "app://-",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+        assert response.status == 204
+        assert response.headers["Access-Control-Allow-Origin"] == "app://-"
+        assert "POST" in response.headers["Access-Control-Allow-Methods"]
+        assert "content-type" in response.headers["Access-Control-Allow-Headers"].lower()
+    finally:
+        await client.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_capture_receiver_posts_with_desktop_origin_and_writes_shape_only_trace(tmp_path: Path):
+    key = tmp_path / "correlation.key"
+    key.write_bytes(b"shared")
+    config = cli.CodexDesktopCaptureConfig.defaults(correlation_hash_key_file=key)
+    app = cli.create_capture_receiver_app(tmp_path, config)
+    server = TestServer(app)
+    await server.start_server()
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/codex-desktop-capture-v2",
+            json={
+                "type": "app_server_frame",
+                "direction": "desktop_to_app_server",
+                "frame_text": '{"id":1,"method":"model/list","params":{"x-client-request-id":"request-1"}}',
+            },
+            headers={"Origin": "app://-"},
+        )
+
+        assert response.status == 200
+        assert response.headers["Access-Control-Allow-Origin"] == "app://-"
+        dumped = (tmp_path / "app_server_v2.jsonl").read_text(encoding="utf-8")
+        assert "request-1" not in dumped
+        assert "x_client_request_id_hash" in dumped
+    finally:
+        await client.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_capture_receiver_accepts_text_plain_beacon_payload(tmp_path: Path):
+    app = cli.create_capture_receiver_app(tmp_path, cli.default_capture_config())
+    server = TestServer(app)
+    await server.start_server()
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/codex-desktop-capture-v2",
+            data='{"type":"model_picker","selected_model":"beacon-smoke"}',
+            headers={
+                "Origin": "app://-",
+                "Content-Type": "text/plain;charset=UTF-8",
+            },
+        )
+
+        assert response.status == 200
+        assert response.headers["Access-Control-Allow-Origin"] == "app://-"
+        dumped = (tmp_path / "model_picker.jsonl").read_text(encoding="utf-8")
+        assert "beacon-smoke" in dumped
+    finally:
+        await client.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_capture_receiver_accepts_websocket_events(tmp_path: Path):
+    app = cli.create_capture_receiver_app(tmp_path, cli.default_capture_config())
+    server = TestServer(app)
+    await server.start_server()
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        ws = await client.ws_connect("/codex-desktop-capture-v2/ws", headers={"Origin": "app://-"})
+        await ws.send_str('{"type":"model_picker","selected_model":"websocket-smoke"}')
+        await ws.close()
+
+        dumped = (tmp_path / "model_picker.jsonl").read_text(encoding="utf-8")
+        assert "websocket-smoke" in dumped
+    finally:
+        await client.close()
+        await server.close()
+
+
 def test_launch_codex_dry_run_returns_not_implemented_status(capsys):
     cli.default_state_store = lambda: type("Store", (), {"read": lambda self: {"proxy_port": 18081}})()
     exit_code = main(["launch", "codex", "--dry-run"])
@@ -170,6 +363,395 @@ def test_codex_wrapper_parses_passthrough_args_without_launching(capsys):
     assert data["command"] == "codex"
     assert data["args"] == ["--version"]
     assert data["status"] == "not_configured"
+
+
+def test_codex_capture_status_reports_config(capsys, tmp_path: Path):
+    cli.default_capture_config = lambda *args: __import__("zhumeng_agent.adapters.codex.capture_config", fromlist=["CodexDesktopCaptureConfig"]).CodexDesktopCaptureConfig.defaults(base_dir=tmp_path, correlation_hash_key_file=args[0] if args else None)
+
+    exit_code = main(["codex", "capture", "status"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "codex capture status"
+    assert data["config"]["enabled"] is False
+    assert data["config"]["raw_payloads"] is False
+
+
+def test_codex_capture_baseline_delegates_to_baseline_generator(capsys, tmp_path: Path):
+    cli.default_capture_config = lambda *args: __import__("zhumeng_agent.adapters.codex.capture_config", fromlist=["CodexDesktopCaptureConfig"]).CodexDesktopCaptureConfig.defaults(base_dir=tmp_path / "captures", correlation_hash_key_file=args[0] if args else None)
+    cli.default_codex_app_path = lambda: tmp_path / "Codex.app"
+    cli.generate_capture_baseline = lambda out_dir, app_path, config: {"status": "baseline_created", "out_dir": str(out_dir), "desktop_app_path_hash": "hmac-sha256:x"}
+
+    exit_code = main(["codex", "capture", "baseline", "--out", str(tmp_path / "out")])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "codex capture baseline"
+    assert data["status"] == "baseline_created"
+    assert "/Codex.app" not in json.dumps(data)
+
+
+def test_codex_capture_install_and_uninstall_do_not_patch_model_picker(capsys, tmp_path: Path):
+    cli.default_capture_config = lambda *args: __import__("zhumeng_agent.adapters.codex.capture_config", fromlist=["CodexDesktopCaptureConfig"]).CodexDesktopCaptureConfig.defaults(base_dir=tmp_path / "captures", correlation_hash_key_file=args[0] if args else None)
+    cli.install_capture_hook = lambda app_path, config: {"status": "installed", "app_asar_modified": False, "hook_mode": "renderer_readonly"}
+    cli.uninstall_capture_hook = lambda app_path, config: {"status": "uninstalled", "app_asar_modified": False}
+    cli.patch_model_picker_app = lambda app_path: (_ for _ in ()).throw(AssertionError("capture install must not patch model picker"))
+
+    assert main(["codex", "capture", "install", "--app", str(tmp_path / "Codex.app")]) == 0
+    install_data = parse_output(capsys)
+    assert install_data["status"] == "installed"
+    assert install_data["app_asar_modified"] is False
+
+    assert main(["codex", "capture", "uninstall", "--app", str(tmp_path / "Codex.app")]) == 0
+    uninstall_data = parse_output(capsys)
+    assert uninstall_data["status"] == "uninstalled"
+
+
+def test_codex_capture_report_reads_trace_dir(capsys, tmp_path: Path):
+    cli.generate_capture_report = lambda trace_dir, config=None, gateway_trace_dir=None: {"status": "reported", "trace_dir_hash": "hmac-sha256:x", "app_server_methods": ["model/list"]}
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(tmp_path / "traces")])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "codex capture report"
+    assert data["status"] == "reported"
+    assert "model/list" in data["app_server_methods"]
+
+
+def test_codex_capture_attach_uses_cdp_binding_bridge(capsys, tmp_path: Path):
+    seen = {}
+
+    def fake_attach(cdp_port, trace_dir, config, *, capture_port, timeout_seconds, target_wait_seconds, once):
+        seen["cdp_port"] = cdp_port
+        seen["trace_dir"] = trace_dir
+        seen["capture_port"] = capture_port
+        seen["timeout_seconds"] = timeout_seconds
+        seen["target_wait_seconds"] = target_wait_seconds
+        seen["once"] = once
+        return {
+            "status": "attached",
+            "bridge": "cdp_binding",
+            "targets_attached": 2,
+            "events_written": 1,
+        }
+
+    cli.attach_capture_bridge_via_cdp = fake_attach
+
+    exit_code = main([
+        "codex", "capture", "attach",
+        "--cdp-port", "65031",
+        "--trace-dir", str(tmp_path / "traces"),
+        "--capture-port", "65030",
+        "--timeout-seconds", "1.5",
+        "--once",
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "codex capture attach"
+    assert data["bridge"] == "cdp_binding"
+    assert data["targets_attached"] == 2
+    assert seen["cdp_port"] == 65031
+    assert seen["trace_dir"] == tmp_path / "traces"
+    assert seen["capture_port"] == 65030
+    assert seen["timeout_seconds"] == 1.5
+    assert seen["target_wait_seconds"] == 10
+    assert seen["once"] is True
+
+
+def test_codex_capture_report_flags_serialized_sensitive_content(capsys, tmp_path: Path):
+    cli.default_capture_config = ORIGINAL_DEFAULT_CAPTURE_CONFIG
+    cli.generate_capture_report = ORIGINAL_GENERATE_CAPTURE_REPORT
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    (trace_dir / "app_server_v2.jsonl").write_text('{"payload_shape":{"/Users/alice/secret.py":"str"}}\n', encoding="utf-8")
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["content_policy_violations"] == 1
+
+
+def test_codex_capture_report_flags_bearer_and_cookie(capsys, tmp_path: Path):
+    cli.default_capture_config = ORIGINAL_DEFAULT_CAPTURE_CONFIG
+    cli.generate_capture_report = ORIGINAL_GENERATE_CAPTURE_REPORT
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    (trace_dir / "app_server_v2.jsonl").write_text(
+        '{"headers":{"Authorization":"Bearer sk-test","Cookie":"abc"}}\n',
+        encoding="utf-8",
+    )
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["content_policy_violations"] == 1
+
+
+def test_codex_capture_report_generates_trace_links(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    shared = {"x_client_request_id_hash": "hmac-sha256:abc"}
+    (trace_dir / "app_server_v2.jsonl").write_text(json.dumps({
+        "desktop_trace_id": "cd_1",
+        "ts": "2026-05-14T00:00:00.000Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+    (trace_dir / "gateway_trace.jsonl").write_text(json.dumps({
+        "gateway_trace_id": "trace_1",
+        "ts": "2026-05-14T00:00:00.010Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["gateway_trace_links"] == 1
+    assert (trace_dir / "trace_link.jsonl").exists()
+    assert "request-1" not in (trace_dir / "trace_link.jsonl").read_text(encoding="utf-8")
+
+
+def test_codex_capture_report_accepts_separate_gateway_trace_dir(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "desktop"
+    gateway_dir = tmp_path / "gateway"
+    trace_dir.mkdir()
+    gateway_dir.mkdir()
+    shared = {"x_client_request_id_hash": "hmac-sha256:abc"}
+    (trace_dir / "app_server_v2.jsonl").write_text(json.dumps({
+        "desktop_trace_id": "cd_1",
+        "ts": "2026-05-14T00:00:00.000Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+    (gateway_dir / "gateway_trace.jsonl").write_text(json.dumps({
+        "gateway_trace_id": "trace_1",
+        "ts": "2026-05-14T00:00:00.010Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+
+    exit_code = main([
+        "codex", "capture", "report",
+        "--trace-dir", str(trace_dir),
+        "--gateway-trace-dir", str(gateway_dir),
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["gateway_trace_links"] == 1
+    assert (trace_dir / "trace_link.jsonl").exists()
+
+
+def test_codex_capture_report_discovers_gateway_trace_files_recursively(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "desktop"
+    gateway_dir = tmp_path / "gateway" / "2026-05-14" / "trace_1"
+    trace_dir.mkdir()
+    gateway_dir.mkdir(parents=True)
+    shared = {"x_client_request_id_hash": "hmac-sha256:abc"}
+    (trace_dir / "app_server_v2.jsonl").write_text(json.dumps({
+        "desktop_trace_id": "cd_1",
+        "ts": "2026-05-14T00:00:00.000Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+    (gateway_dir / "gateway_trace.jsonl").write_text(json.dumps({
+        "gateway_trace_id": "trace_1",
+        "ts": "2026-05-14T00:00:00.010Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+
+    exit_code = main([
+        "codex", "capture", "report",
+        "--trace-dir", str(trace_dir),
+        "--gateway-trace-dir", str(tmp_path / "gateway"),
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["gateway_trace_links"] == 1
+
+
+def test_codex_capture_status_accepts_correlation_key_file(capsys, tmp_path: Path):
+    cli.default_capture_config = ORIGINAL_DEFAULT_CAPTURE_CONFIG
+    key = tmp_path / "key"
+    key.write_text("shared", encoding="utf-8")
+
+    exit_code = main(["codex", "capture", "--correlation-hash-key-file", str(key), "status"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["config"]["correlation_hash_key_file"] == "set"
+
+
+def test_codex_capture_report_uses_cli_correlation_key_file(capsys, tmp_path: Path):
+    key = tmp_path / "key"
+    key.write_text("shared", encoding="utf-8")
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+
+    exit_code = main(["codex", "capture", "--correlation-hash-key-file", str(key), "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["correlation_hash_key_file"] == "set"
+
+
+def test_codex_capture_report_does_not_flag_hash_fields_as_commit_hashes(capsys, tmp_path: Path):
+    cli.default_capture_config = ORIGINAL_DEFAULT_CAPTURE_CONFIG
+    cli.generate_capture_report = ORIGINAL_GENERATE_CAPTURE_REPORT
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    (trace_dir / "app_server_v2.jsonl").write_text(json.dumps({
+        "payload_hash": "sha256:" + "a" * 64,
+        "schema_hash": "hmac-sha256:" + "b" * 64,
+        "result_hash": "sha256:" + "c" * 64,
+    }) + "\n", encoding="utf-8")
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["content_policy_violations"] == 0
+
+
+def test_launch_codex_starts_cdp_binding_bridge_when_capture_is_installed(capsys, tmp_path: Path):
+    cli.default_capture_config = ORIGINAL_DEFAULT_CAPTURE_CONFIG
+    class FakeManager:
+        def repair(self, *args, **kwargs):
+            return None
+
+    installed = {}
+    cli.default_state_store = lambda: type("Store", (), {
+        "read": lambda self: {
+            "proxy_port": 18081,
+            "config_profile": {"model_provider": "zhumeng-managed"},
+            "loopback_secret": "loopback-secret",
+        }
+    })()
+    cli.default_config_manager = lambda: FakeManager()
+    cli.ensure_proxy_running = lambda store: 9999
+    cli.detect_codex_app_path = lambda **kwargs: tmp_path / "Codex.app"
+    cli.patch_model_picker_app = lambda app_path: (_ for _ in ()).throw(AssertionError("launch capture path must not patch model picker"))
+    cli.select_cdp_port = lambda: 9333
+    cli.launch_codex_process = lambda command: None
+    cli.capture_installation_enabled = lambda app_path, config: True
+    cli.ensure_capture_receiver_running = lambda config: (_ for _ in ()).throw(AssertionError("launch capture path must not use renderer network receiver"))
+    cli.inject_capture_hook_via_cdp = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launch capture path must use cdp binding bridge"))
+    cli.ensure_capture_bridge_running = lambda config, cdp_port: installed.setdefault("bridge", {
+        "status": "running",
+        "bridge": "cdp_binding",
+        "cdp_port": cdp_port,
+        "trace_dir_hash": "hmac-sha256:x",
+    })
+
+    exit_code = main(["launch", "codex"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["capture"]["status"] == "running"
+    assert data["capture"]["bridge"] == "cdp_binding"
+    assert data["model_picker"]["status"] == "not_modified"
+    assert installed["bridge"]["cdp_port"] == 9333
+
+
+def test_capture_receiver_process_receives_correlation_key_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cli.ensure_capture_receiver_running = ORIGINAL_ENSURE_CAPTURE_RECEIVER_RUNNING
+    key = tmp_path / "key"
+    key.write_bytes(b"shared")
+    config = __import__("zhumeng_agent.adapters.codex.capture_config", fromlist=["CodexDesktopCaptureConfig"]).CodexDesktopCaptureConfig.defaults(
+        base_dir=tmp_path / "captures",
+        correlation_hash_key_file=key,
+    )
+    captured = {}
+    cli.select_cdp_port = lambda: 18765
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda command: captured.setdefault("command", command))
+
+    result = cli.ensure_capture_receiver_running(config)
+
+    assert result["port"] == 18765
+    assert "--correlation-hash-key-file" in captured["command"]
+    assert str(key) in captured["command"]
+
+
+def test_capture_bridge_process_receives_correlation_key_and_cdp_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cli.ensure_capture_bridge_running = ORIGINAL_ENSURE_CAPTURE_BRIDGE_RUNNING
+    key = tmp_path / "key"
+    key.write_bytes(b"shared")
+    config = __import__("zhumeng_agent.adapters.codex.capture_config", fromlist=["CodexDesktopCaptureConfig"]).CodexDesktopCaptureConfig.defaults(
+        base_dir=tmp_path / "captures",
+        correlation_hash_key_file=key,
+    )
+    captured = {}
+
+    class FakeProcess:
+        pid = 12345
+
+    def fake_popen(command):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    result = cli.ensure_capture_bridge_running(config, 65031)
+
+    assert result["status"] == "running"
+    assert result["bridge"] == "cdp_binding"
+    assert "--correlation-hash-key-file" in captured["command"]
+    assert str(key) in captured["command"]
+    assert "--cdp-port" in captured["command"]
+    assert "65031" in captured["command"]
+    assert "--target-wait-seconds" in captured["command"]
+
+
+def test_codex_model_picker_patch_is_separate_from_capture(capsys, tmp_path: Path):
+    cli.patch_model_picker_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
+
+    exit_code = main(["codex", "model-picker", "patch", "--app", str(tmp_path / "Codex.app")])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "codex model-picker patch"
+    assert data["status"] == "patched"
+
+
+def test_codex_plugin_auth_gate_patch_is_explicit(capsys, tmp_path: Path):
+    cli.patch_plugin_auth_gate_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
+
+    exit_code = main(["codex", "plugin-auth-gate", "patch", "--app", str(tmp_path / "Codex.app")])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "codex plugin-auth-gate patch"
+    assert data["status"] == "patched"
+
+
+def test_codex_plugin_auth_gate_patch_failure_returns_json(capsys, tmp_path: Path):
+    def fail_patch(app_path):
+        raise ModelPickerPatchError("unsupported desktop build")
+
+    cli.patch_plugin_auth_gate_app = fail_patch
+
+    exit_code = main(["codex", "plugin-auth-gate", "patch", "--app", str(tmp_path / "Codex.app")])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["command"] == "codex plugin-auth-gate patch"
+    assert data["status"] == "failed"
+    assert "unsupported desktop build" in data["message"]
+    assert data["recovery_hint"]
 
 
 def test_logout_local_only_removes_managed_auth_when_no_prior_auth(tmp_path: Path, capsys):
