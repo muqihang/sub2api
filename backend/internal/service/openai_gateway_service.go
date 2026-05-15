@@ -109,6 +109,34 @@ var codexCLIOnlyDebugHeaderWhitelist = []string{
 	"X-Real-IP",
 }
 
+var codexGatewayAllowedOpenAIRequestHeaders = map[string]bool{
+	"accept":                true,
+	"accept-language":       true,
+	"content-type":          true,
+	"conversation_id":       true,
+	"openai-beta":           true,
+	"originator":            true,
+	"session_id":            true,
+	"user-agent":            true,
+	"x-codex-turn-metadata": true,
+	"x-codex-turn-state":    true,
+}
+
+func codexGatewayAllowedOpenAIResponseHeader(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "content-type",
+		"x-request-id",
+		"x-codex-turn-state",
+		"x-reasoning-included",
+		"x-models-etag",
+		"openai-model",
+		"x-openai-model":
+		return true
+	default:
+		return false
+	}
+}
+
 // OpenAICodexUsageSnapshot represents Codex API usage limits from response headers
 type OpenAICodexUsageSnapshot struct {
 	PrimaryUsedPercent          *float64 `json:"primary_used_percent,omitempty"`
@@ -213,6 +241,8 @@ type OpenAIUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation5mTokens    int `json:"cache_creation_5m_tokens,omitempty"`
+	CacheCreation1hTokens    int `json:"cache_creation_1h_tokens,omitempty"`
 	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
 }
 
@@ -2389,7 +2419,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 			return "", "", err
 		}
 		return accessToken, "oauth", nil
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		apiKey, err := credentials.OpenAIAPIKey(account)
 		if err != nil {
 			return "", "", err
@@ -2398,6 +2428,94 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 	default:
 		return "", "", fmt.Errorf("unsupported account type: %s", account.Type)
 	}
+}
+
+func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, account *Account, clientHeaders http.Header, body []byte, stream bool) (*http.Response, error) {
+	if s == nil || s.httpUpstream == nil {
+		return nil, fmt.Errorf("openai gateway upstream is not configured")
+	}
+	if account == nil {
+		return nil, fmt.Errorf("native responses request requires selected account")
+	}
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	targetURL := openaiPlatformAPIURL
+	switch account.Type {
+	case AccountTypeOAuth:
+		targetURL = chatgptCodexURL
+	case AccountTypeAPIKey, AccountTypeUpstream:
+		baseURL := account.GetOpenAIBaseURL()
+		if baseURL != "" {
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return nil, err
+			}
+			targetURL = buildOpenAIResponsesURL(validatedURL)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+	for key, values := range clientHeaders {
+		normalizedKey := strings.ToLower(strings.TrimSpace(key))
+		if !codexGatewayAllowedOpenAIRequestHeaders[normalizedKey] {
+			continue
+		}
+		if normalizedKey == "content-type" || normalizedKey == "accept" {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	if account.Type == AccountTypeOAuth {
+		req.Host = "chatgpt.com"
+		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
+			req.Header.Set("chatgpt-account-id", chatgptAccountID)
+		}
+	}
+	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+		req.Header.Set("User-Agent", customUA)
+	}
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	return s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+}
+
+func (s *OpenAIGatewayService) FilterNativeResponsesResponseHeaders(src http.Header) http.Header {
+	out := http.Header{}
+	if src == nil {
+		return out
+	}
+	for key, values := range src {
+		if !codexGatewayAllowedOpenAIResponseHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			out.Add(key, value)
+		}
+	}
+	if out.Get("Content-Type") == "" {
+		if contentType := strings.TrimSpace(src.Get("Content-Type")); contentType != "" {
+			out.Set("Content-Type", contentType)
+		}
+	}
+	return out
 }
 
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
@@ -2417,8 +2535,18 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 }
 
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
+	if resp == nil {
+		return
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+	s.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
+}
+
+func (s *OpenAIGatewayService) handleFailoverSideEffectsWithBody(ctx context.Context, statusCode int, headers http.Header, body []byte, account *Account) {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return
+	}
+	s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body)
 }
 
 // Forward forwards request to OpenAI API
@@ -3651,7 +3779,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	switch account.Type {
 	case AccountTypeOAuth:
 		targetURL = chatgptCodexURL
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL != "" {
 			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
@@ -4438,7 +4566,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	case AccountTypeOAuth:
 		// OAuth accounts use ChatGPT internal API
 		targetURL = chatgptCodexURL
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeUpstream:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL == "" {
@@ -5334,12 +5462,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 	// For OAuth accounts, also fall back to a body-content heuristic because
 	// the upstream may omit the Content-Type header while still sending SSE.
-	// This heuristic is NOT applied to API-key accounts to avoid false
-	// positives on JSON responses that coincidentally contain "data:" or
-	// "event:" in their text content.
+	// This heuristic is NOT applied to API-key accounts.
 	if account.Type == AccountTypeOAuth {
-		bodyLooksLikeSSE := bytes.Contains(body, []byte("data:")) || bytes.Contains(body, []byte("event:"))
-		if bodyLooksLikeSSE {
+		if looksLikeSSEPayload(body) {
 			return s.handleSSEToJSON(resp, c, body, originalModel, mappedModel)
 		}
 	}
@@ -5494,7 +5619,7 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 			return
 		}
 		eventType := gjson.GetBytes(data, "type").String()
-		if eventType == "response.done" || eventType == "response.completed" {
+		if eventType == "response.done" || eventType == "response.completed" || eventType == "response.failed" || eventType == "response.incomplete" || eventType == "response.cancelled" || eventType == "response.canceled" {
 			if response := gjson.GetBytes(data, "response"); response.Exists() && response.Type == gjson.JSON && response.Raw != "" {
 				finalResponse = []byte(response.Raw)
 			}
@@ -5504,6 +5629,16 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 		return finalResponse, true
 	}
 	return nil, false
+}
+
+func looksLikeSSEPayload(body []byte) bool {
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data:") || strings.HasPrefix(trimmed, "event:") {
+			return true
+		}
+	}
+	return false
 }
 
 // reconstructResponseOutputFromSSE scans raw SSE body text for delta events and
@@ -5884,11 +6019,13 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	// Calculate cost
 	tokens := UsageTokens{
-		InputTokens:         actualInputTokens,
-		OutputTokens:        result.Usage.OutputTokens,
-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
-		ImageOutputTokens:   result.Usage.ImageOutputTokens,
+		InputTokens:           actualInputTokens,
+		OutputTokens:          result.Usage.OutputTokens,
+		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:       result.Usage.CacheReadInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
+		ImageOutputTokens:     result.Usage.ImageOutputTokens,
 	}
 
 	// Get rate multiplier
@@ -5953,25 +6090,27 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	usageLog := &UsageLog{
-		UserID:              user.ID,
-		APIKeyID:            apiKey.ID,
-		AccountID:           account.ID,
-		RequestID:           requestID,
-		Model:               result.Model,
-		RequestedModel:      requestedModel,
-		UpstreamModel:       optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
-		ServiceTier:         result.ServiceTier,
-		ReasoningEffort:     result.ReasoningEffort,
-		InboundEndpoint:     optionalTrimmedStringPtr(input.InboundEndpoint),
-		UpstreamEndpoint:    optionalTrimmedStringPtr(input.UpstreamEndpoint),
-		InputTokens:         actualInputTokens,
-		OutputTokens:        result.Usage.OutputTokens,
-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
-		ImageOutputTokens:   result.Usage.ImageOutputTokens,
-		ImageCount:          result.ImageCount,
-		ImageSize:           optionalTrimmedStringPtr(result.ImageSize),
-		AugmentUsageFields:  input.AugmentUsageFields,
+		UserID:                user.ID,
+		APIKeyID:              apiKey.ID,
+		AccountID:             account.ID,
+		RequestID:             requestID,
+		Model:                 result.Model,
+		RequestedModel:        requestedModel,
+		UpstreamModel:         optionalNonEqualStringPtr(result.UpstreamModel, result.Model),
+		ServiceTier:           result.ServiceTier,
+		ReasoningEffort:       result.ReasoningEffort,
+		InboundEndpoint:       optionalTrimmedStringPtr(input.InboundEndpoint),
+		UpstreamEndpoint:      optionalTrimmedStringPtr(input.UpstreamEndpoint),
+		InputTokens:           actualInputTokens,
+		OutputTokens:          result.Usage.OutputTokens,
+		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:       result.Usage.CacheReadInputTokens,
+		CacheCreation5mTokens: result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: result.Usage.CacheCreation1hTokens,
+		ImageOutputTokens:     result.Usage.ImageOutputTokens,
+		ImageCount:            result.ImageCount,
+		ImageSize:             optionalTrimmedStringPtr(result.ImageSize),
+		AugmentUsageFields:    input.AugmentUsageFields,
 	}
 	usageLog.ApplyEntityAuditFromContext(ctx)
 	if cost != nil {

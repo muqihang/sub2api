@@ -73,6 +73,9 @@ func (Group) Fields() []ent.Field {
 		field.Bool("augment_gateway_entitled").
 			Default(false).
 			Comment("是否为 Augment Gateway 用户授权分组"),
+		field.Bool("codex_gateway_entitled").
+			Default(false).
+			Comment("是否为 Codex Gateway 用户授权分组"),
 		field.Int("default_validity_days").
 			Default(30),
 

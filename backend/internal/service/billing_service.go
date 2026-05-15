@@ -205,17 +205,17 @@ func (s *BillingService) initFallbackPricing() {
 
 	// DeepSeek V4 Flash
 	s.fallbackPrices["deepseek-v4-flash"] = &ModelPricing{
-		InputPricePerToken:     0.14e-6,  // $0.14 per MTok cache miss input
-		OutputPricePerToken:    0.28e-6,  // $0.28 per MTok output
-		CacheReadPricePerToken: 0.028e-6, // $0.028 per MTok cache hit input
+		InputPricePerToken:     0.14e-6,   // $0.14 per MTok cache miss input
+		OutputPricePerToken:    0.28e-6,   // $0.28 per MTok output
+		CacheReadPricePerToken: 0.0028e-6, // $0.0028 per MTok cache hit input
 		SupportsCacheBreakdown: false,
 	}
 
 	// DeepSeek V4 Pro
 	s.fallbackPrices["deepseek-v4-pro"] = &ModelPricing{
-		InputPricePerToken:     1.74e-6,  // $1.74 per MTok cache miss input
-		OutputPricePerToken:    3.48e-6,  // $3.48 per MTok output
-		CacheReadPricePerToken: 0.145e-6, // $0.145 per MTok cache hit input
+		InputPricePerToken:     0.435e-6,    // $0.435 per MTok cache miss input
+		OutputPricePerToken:    0.87e-6,     // $0.87 per MTok output
+		CacheReadPricePerToken: 0.003625e-6, // $0.003625 per MTok cache hit input
 		SupportsCacheBreakdown: false,
 	}
 

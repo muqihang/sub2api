@@ -1,0 +1,41 @@
+{
+  "name": "simple_text_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "hello"
+          }
+        ]
+      }
+    ]
+  },
+  "upstream": {
+    "status_code": 200,
+    "headers": {
+      "Content-Type": "text/event-stream",
+      "X-Request-Id": "rid_simple_text"
+    },
+    "body": "data: {\"id\":\"chatcmpl_simple_text\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"plan \"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_simple_text\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_simple_text\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl_simple_text\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9,\"prompt_cache_hit_tokens\":3}}\n\ndata: [DONE]\n\n"
+  },
+  "expect": {
+    "terminal_event": "response.completed",
+    "response_status": "completed",
+    "usage": {
+      "input_tokens": 7,
+      "output_tokens": 2,
+      "total_tokens": 9,
+      "cached_tokens": 3
+    },
+    "output_text": "hello world",
+    "output_types": [
+      "message"
+    ]
+  }
+}

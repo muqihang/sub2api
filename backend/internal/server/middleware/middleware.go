@@ -111,6 +111,11 @@ func OpenAIErrorWriter(c *gin.Context, status int, message string) {
 	})
 }
 
+// CodexGatewayErrorWriter writes a Responses-compatible authentication envelope.
+func CodexGatewayErrorWriter(c *gin.Context, status int, message string) {
+	service.WriteCodexGatewayErrorJSON(c.Writer, status, service.CodexGatewayErrorTypeAuthentication, "invalid_api_key", message)
+}
+
 // RequireGroupAssignment 检查 API Key 是否已分配到分组，
 // 如果未分组且系统设置不允许未分组 Key 调度则返回 403。
 func RequireGroupAssignment(settingService *service.SettingService, writeError GatewayErrorWriter) gin.HandlerFunc {

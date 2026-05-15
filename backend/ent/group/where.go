@@ -125,6 +125,11 @@ func AugmentGatewayEntitled(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldAugmentGatewayEntitled, v))
 }
 
+// CodexGatewayEntitled applies equality check predicate on the "codex_gateway_entitled" field. It's identical to CodexGatewayEntitledEQ.
+func CodexGatewayEntitled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldCodexGatewayEntitled, v))
+}
+
 // DefaultValidityDays applies equality check predicate on the "default_validity_days" field. It's identical to DefaultValidityDaysEQ.
 func DefaultValidityDays(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldDefaultValidityDays, v))
@@ -888,6 +893,16 @@ func AugmentGatewayEntitledEQ(v bool) predicate.Group {
 // AugmentGatewayEntitledNEQ applies the NEQ predicate on the "augment_gateway_entitled" field.
 func AugmentGatewayEntitledNEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldNEQ(FieldAugmentGatewayEntitled, v))
+}
+
+// CodexGatewayEntitledEQ applies the EQ predicate on the "codex_gateway_entitled" field.
+func CodexGatewayEntitledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldCodexGatewayEntitled, v))
+}
+
+// CodexGatewayEntitledNEQ applies the NEQ predicate on the "codex_gateway_entitled" field.
+func CodexGatewayEntitledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldCodexGatewayEntitled, v))
 }
 
 // DefaultValidityDaysEQ applies the EQ predicate on the "default_validity_days" field.

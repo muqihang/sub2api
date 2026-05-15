@@ -68,11 +68,23 @@ func (k *APIKey) IsActive() bool {
 	return k.Status == StatusActive
 }
 
-func (k *APIKey) IsAugmentOnly() bool {
+func (k *APIKey) ClientProduct() string {
 	if k == nil || k.RestrictedClientProduct == nil {
-		return false
+		return ""
 	}
-	return strings.TrimSpace(*k.RestrictedClientProduct) == AugmentClientProductZhumeng
+	return strings.TrimSpace(*k.RestrictedClientProduct)
+}
+
+func (k *APIKey) IsClientProduct(product string) bool {
+	return k.ClientProduct() == strings.TrimSpace(product)
+}
+
+func (k *APIKey) IsAugmentOnly() bool {
+	return k.IsClientProduct(AugmentClientProductZhumeng)
+}
+
+func (k *APIKey) IsCodexOnly() bool {
+	return k.IsClientProduct(CodexUsageClientProduct)
 }
 
 // HasRateLimits returns true if any rate limit window is configured

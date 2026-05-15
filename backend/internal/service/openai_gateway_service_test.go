@@ -2959,6 +2959,46 @@ func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCompactPath(t *test
 	require.NotEmpty(t, req.Header.Get("Session_Id"))
 }
 
+func TestOpenAIBuildUpstreamRequestOpenAIPassthroughUsesUpstreamBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5.4"}`)))
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"base_url": "https://openai-compatible.example",
+		},
+	}
+
+	req, err := svc.buildUpstreamRequestOpenAIPassthrough(c.Request.Context(), c, account, []byte(`{"model":"gpt-5.4"}`), "token")
+	require.NoError(t, err)
+	require.Equal(t, "https://openai-compatible.example/v1/responses", req.URL.String())
+}
+
+func TestOpenAIBuildUpstreamRequestUsesUpstreamBaseURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5.4"}`)))
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"base_url": "https://openai-compatible.example",
+		},
+	}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, []byte(`{"model":"gpt-5.4"}`), "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://openai-compatible.example/v1/responses", req.URL.String())
+}
+
 func TestOpenAIBuildUpstreamRequestCompactForcesJSONAcceptForOAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

@@ -100,6 +100,9 @@ func RegisterAdminRoutes(
 
 		// Augment Gateway 管理
 		registerAugmentGatewayAdminRoutes(admin, h)
+
+		// Codex Gateway 管理
+		registerCodexGatewayAdminRoutes(admin, h)
 	}
 }
 

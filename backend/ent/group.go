@@ -47,6 +47,8 @@ type Group struct {
 	MonthlyLimitUsd *float64 `json:"monthly_limit_usd,omitempty"`
 	// 是否为 Augment Gateway 用户授权分组
 	AugmentGatewayEntitled bool `json:"augment_gateway_entitled,omitempty"`
+	// 是否为 Codex Gateway 用户授权分组
+	CodexGatewayEntitled bool `json:"codex_gateway_entitled,omitempty"`
 	// DefaultValidityDays holds the value of the "default_validity_days" field.
 	DefaultValidityDays int `json:"default_validity_days,omitempty"`
 	// 是否允许该分组使用图片生成能力
@@ -197,7 +199,7 @@ func (*Group) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case group.FieldModelRouting, group.FieldSupportedModelScopes, group.FieldMessagesDispatchModelConfig:
 			values[i] = new([]byte)
-		case group.FieldIsExclusive, group.FieldAugmentGatewayEntitled, group.FieldAllowImageGeneration, group.FieldImageRateIndependent, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet:
+		case group.FieldIsExclusive, group.FieldAugmentGatewayEntitled, group.FieldCodexGatewayEntitled, group.FieldAllowImageGeneration, group.FieldImageRateIndependent, group.FieldClaudeCodeOnly, group.FieldModelRoutingEnabled, group.FieldMcpXMLInject, group.FieldAllowMessagesDispatch, group.FieldRequireOauthOnly, group.FieldRequirePrivacySet:
 			values[i] = new(sql.NullBool)
 		case group.FieldRateMultiplier, group.FieldDailyLimitUsd, group.FieldWeeklyLimitUsd, group.FieldMonthlyLimitUsd, group.FieldImageRateMultiplier, group.FieldImagePrice1k, group.FieldImagePrice2k, group.FieldImagePrice4k:
 			values[i] = new(sql.NullFloat64)
@@ -316,6 +318,12 @@ func (_m *Group) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field augment_gateway_entitled", values[i])
 			} else if value.Valid {
 				_m.AugmentGatewayEntitled = value.Bool
+			}
+		case group.FieldCodexGatewayEntitled:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field codex_gateway_entitled", values[i])
+			} else if value.Valid {
+				_m.CodexGatewayEntitled = value.Bool
 			}
 		case group.FieldDefaultValidityDays:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -581,6 +589,9 @@ func (_m *Group) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("augment_gateway_entitled=")
 	builder.WriteString(fmt.Sprintf("%v", _m.AugmentGatewayEntitled))
+	builder.WriteString(", ")
+	builder.WriteString("codex_gateway_entitled=")
+	builder.WriteString(fmt.Sprintf("%v", _m.CodexGatewayEntitled))
 	builder.WriteString(", ")
 	builder.WriteString("default_validity_days=")
 	builder.WriteString(fmt.Sprintf("%v", _m.DefaultValidityDays))

@@ -217,6 +217,20 @@ func (_c *GroupCreate) SetNillableAugmentGatewayEntitled(v *bool) *GroupCreate {
 	return _c
 }
 
+// SetCodexGatewayEntitled sets the "codex_gateway_entitled" field.
+func (_c *GroupCreate) SetCodexGatewayEntitled(v bool) *GroupCreate {
+	_c.mutation.SetCodexGatewayEntitled(v)
+	return _c
+}
+
+// SetNillableCodexGatewayEntitled sets the "codex_gateway_entitled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableCodexGatewayEntitled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetCodexGatewayEntitled(*v)
+	}
+	return _c
+}
+
 // SetDefaultValidityDays sets the "default_validity_days" field.
 func (_c *GroupCreate) SetDefaultValidityDays(v int) *GroupCreate {
 	_c.mutation.SetDefaultValidityDays(v)
@@ -660,6 +674,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultAugmentGatewayEntitled
 		_c.mutation.SetAugmentGatewayEntitled(v)
 	}
+	if _, ok := _c.mutation.CodexGatewayEntitled(); !ok {
+		v := group.DefaultCodexGatewayEntitled
+		_c.mutation.SetCodexGatewayEntitled(v)
+	}
 	if _, ok := _c.mutation.DefaultValidityDays(); !ok {
 		v := group.DefaultDefaultValidityDays
 		_c.mutation.SetDefaultValidityDays(v)
@@ -771,6 +789,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.AugmentGatewayEntitled(); !ok {
 		return &ValidationError{Name: "augment_gateway_entitled", err: errors.New(`ent: missing required field "Group.augment_gateway_entitled"`)}
+	}
+	if _, ok := _c.mutation.CodexGatewayEntitled(); !ok {
+		return &ValidationError{Name: "codex_gateway_entitled", err: errors.New(`ent: missing required field "Group.codex_gateway_entitled"`)}
 	}
 	if _, ok := _c.mutation.DefaultValidityDays(); !ok {
 		return &ValidationError{Name: "default_validity_days", err: errors.New(`ent: missing required field "Group.default_validity_days"`)}
@@ -904,6 +925,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.AugmentGatewayEntitled(); ok {
 		_spec.SetField(group.FieldAugmentGatewayEntitled, field.TypeBool, value)
 		_node.AugmentGatewayEntitled = value
+	}
+	if value, ok := _c.mutation.CodexGatewayEntitled(); ok {
+		_spec.SetField(group.FieldCodexGatewayEntitled, field.TypeBool, value)
+		_node.CodexGatewayEntitled = value
 	}
 	if value, ok := _c.mutation.DefaultValidityDays(); ok {
 		_spec.SetField(group.FieldDefaultValidityDays, field.TypeInt, value)
@@ -1352,6 +1377,18 @@ func (u *GroupUpsert) SetAugmentGatewayEntitled(v bool) *GroupUpsert {
 // UpdateAugmentGatewayEntitled sets the "augment_gateway_entitled" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateAugmentGatewayEntitled() *GroupUpsert {
 	u.SetExcluded(group.FieldAugmentGatewayEntitled)
+	return u
+}
+
+// SetCodexGatewayEntitled sets the "codex_gateway_entitled" field.
+func (u *GroupUpsert) SetCodexGatewayEntitled(v bool) *GroupUpsert {
+	u.Set(group.FieldCodexGatewayEntitled, v)
+	return u
+}
+
+// UpdateCodexGatewayEntitled sets the "codex_gateway_entitled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateCodexGatewayEntitled() *GroupUpsert {
+	u.SetExcluded(group.FieldCodexGatewayEntitled)
 	return u
 }
 
@@ -1984,6 +2021,20 @@ func (u *GroupUpsertOne) SetAugmentGatewayEntitled(v bool) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateAugmentGatewayEntitled() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAugmentGatewayEntitled()
+	})
+}
+
+// SetCodexGatewayEntitled sets the "codex_gateway_entitled" field.
+func (u *GroupUpsertOne) SetCodexGatewayEntitled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetCodexGatewayEntitled(v)
+	})
+}
+
+// UpdateCodexGatewayEntitled sets the "codex_gateway_entitled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateCodexGatewayEntitled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateCodexGatewayEntitled()
 	})
 }
 
@@ -2839,6 +2890,20 @@ func (u *GroupUpsertBulk) SetAugmentGatewayEntitled(v bool) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateAugmentGatewayEntitled() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAugmentGatewayEntitled()
+	})
+}
+
+// SetCodexGatewayEntitled sets the "codex_gateway_entitled" field.
+func (u *GroupUpsertBulk) SetCodexGatewayEntitled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetCodexGatewayEntitled(v)
+	})
+}
+
+// UpdateCodexGatewayEntitled sets the "codex_gateway_entitled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateCodexGatewayEntitled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateCodexGatewayEntitled()
 	})
 }
 

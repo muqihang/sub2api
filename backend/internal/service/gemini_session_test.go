@@ -281,6 +281,7 @@ func TestGeminiThoughtSignatureSessionPolicy_RejectsUntrustedStickyFallbackInPro
 
 	cfg := &config.Config{}
 	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
 
 	decision := EvaluateGeminiThoughtSignatureSessionPolicy(cfg, GeminiStickySessionSourceBodyFirstPartText, true, 42)
 	require.True(t, decision.VisibleDegraded)
@@ -294,6 +295,7 @@ func TestGeminiThoughtSignatureSessionPolicy_RequiresVisibleScrubWhenBindingMiss
 
 	cfg := &config.Config{}
 	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
 
 	decision := EvaluateGeminiThoughtSignatureSessionPolicy(cfg, GeminiStickySessionSourceGeminiCLI, true, 0)
 	require.True(t, decision.VisibleDegraded)

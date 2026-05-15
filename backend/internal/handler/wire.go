@@ -42,6 +42,7 @@ func ProvideAdminHandlers(
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
 	augmentGatewayHandler *admin.AugmentGatewayHandler,
+	codexGatewayHandler *admin.CodexGatewayHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -76,6 +77,7 @@ func ProvideAdminHandlers(
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
 		AugmentGateway:         augmentGatewayHandler,
+		CodexGateway:           codexGatewayHandler,
 	}
 }
 
@@ -90,6 +92,12 @@ func ProvideAugmentGatewayHandler(
 	usageSvc *service.AugmentGatewayUsageService,
 ) *admin.AugmentGatewayHandler {
 	return admin.NewAugmentGatewayHandler(settingsSvc, sessionSvc, usageSvc)
+}
+
+func ProvideCodexGatewayAdminHandler(
+	adminSvc *service.CodexGatewayAdminService,
+) *admin.CodexGatewayHandler {
+	return admin.NewCodexGatewayHandler(adminSvc)
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
@@ -149,6 +157,10 @@ func ProvideOpenAIGatewayHandler(
 	)
 }
 
+func ProvideCodexGatewayHandler(codexGatewayService *service.CodexGatewayService) *CodexGatewayHandler {
+	return NewCodexGatewayHandler(codexGatewayService)
+}
+
 // ProvideHandlers creates the Handlers struct
 func ProvideHandlers(
 	authHandler *AuthHandler,
@@ -161,6 +173,7 @@ func ProvideHandlers(
 	channelMonitorUserHandler *ChannelMonitorUserHandler,
 	adminHandlers *AdminHandlers,
 	gatewayHandler *GatewayHandler,
+	codexGatewayHandler *CodexGatewayHandler,
 	openaiGatewayHandler *OpenAIGatewayHandler,
 	settingHandler *SettingHandler,
 	totpHandler *TotpHandler,
@@ -181,6 +194,7 @@ func ProvideHandlers(
 		ChannelMonitor:   channelMonitorUserHandler,
 		Admin:            adminHandlers,
 		Gateway:          gatewayHandler,
+		CodexGateway:     codexGatewayHandler,
 		OpenAIGateway:    openaiGatewayHandler,
 		Setting:          settingHandler,
 		Totp:             totpHandler,
@@ -202,6 +216,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementHandler,
 	NewChannelMonitorUserHandler,
 	NewGatewayHandler,
+	ProvideCodexGatewayHandler,
 	ProvideOpenAIGatewayHandler,
 	NewTotpHandler,
 	ProvideSettingHandler,
@@ -242,6 +257,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewPaymentHandler,
 	admin.NewAffiliateHandler,
 	ProvideAugmentGatewayHandler,
+	ProvideCodexGatewayAdminHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

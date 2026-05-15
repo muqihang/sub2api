@@ -546,3 +546,155 @@ func TestAPIKeyServiceUpdateClearsRestrictedClientProductWhenAugmentOnlyDisabled
 	require.NotNil(t, repo.updated)
 	require.Nil(t, repo.updated.RestrictedClientProduct)
 }
+
+func TestAPIKeyServiceCreateRejectsScopedFlagConflict(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	groupID := int64(15)
+	svc, _ := newAPIKeyAugmentService(user, &Group{
+		ID:                     groupID,
+		Name:                   "entitled-both",
+		Status:                 StatusActive,
+		Hydrated:               true,
+		Platform:               PlatformOpenAI,
+		AugmentGatewayEntitled: true,
+		CodexGatewayEntitled:   true,
+	})
+
+	key, err := svc.Create(context.Background(), user.ID, CreateAPIKeyRequest{
+		Name:        "conflict",
+		GroupID:     &groupID,
+		AugmentOnly: true,
+		CodexOnly:   true,
+	})
+	require.Nil(t, key)
+	require.ErrorIs(t, err, ErrAPIKeyClientProductConflict)
+}
+
+func TestAPIKeyServiceCreateRejectsCodexOnlyWithoutGroup(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	svc, _ := newAPIKeyAugmentService(user)
+
+	key, err := svc.Create(context.Background(), user.ID, CreateAPIKeyRequest{
+		Name:      "codex",
+		CodexOnly: true,
+	})
+	require.Nil(t, key)
+	require.ErrorIs(t, err, ErrCodexGroupRequired)
+}
+
+func TestAPIKeyServiceCreateRejectsCodexOnlyForNonEntitledGroup(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	groupID := int64(16)
+	svc, _ := newAPIKeyAugmentService(user, &Group{
+		ID:       groupID,
+		Name:     "generic",
+		Status:   StatusActive,
+		Hydrated: true,
+		Platform: PlatformOpenAI,
+	})
+
+	key, err := svc.Create(context.Background(), user.ID, CreateAPIKeyRequest{
+		Name:      "codex",
+		GroupID:   &groupID,
+		CodexOnly: true,
+	})
+	require.Nil(t, key)
+	require.ErrorIs(t, err, ErrCodexGroupNotEntitled)
+}
+
+func TestAPIKeyServiceCreateSetsRestrictedClientProductForCodexOnlyKey(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	groupID := int64(17)
+	svc, repo := newAPIKeyAugmentService(user, &Group{
+		ID:                   groupID,
+		Name:                 "codex",
+		Status:               StatusActive,
+		Hydrated:             true,
+		Platform:             PlatformOpenAI,
+		CodexGatewayEntitled: true,
+	})
+
+	key, err := svc.Create(context.Background(), user.ID, CreateAPIKeyRequest{
+		Name:      "codex",
+		GroupID:   &groupID,
+		CodexOnly: true,
+	})
+	require.NoError(t, err)
+	require.True(t, key.IsCodexOnly())
+	require.NotNil(t, repo.created)
+	require.NotNil(t, repo.created.RestrictedClientProduct)
+	require.Equal(t, CodexUsageClientProduct, *repo.created.RestrictedClientProduct)
+}
+
+func TestAPIKeyServiceUpdateRevalidatesEntitlementWhenTogglingCodexOnlyOn(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	groupID := int64(18)
+	svc, repo := newAPIKeyAugmentService(user, &Group{
+		ID:       groupID,
+		Name:     "generic",
+		Status:   StatusActive,
+		Hydrated: true,
+		Platform: PlatformOpenAI,
+	})
+	repo.current = &APIKey{
+		ID:        101,
+		UserID:    user.ID,
+		Key:       "sk-generic",
+		Name:      "generic",
+		GroupID:   &groupID,
+		Status:    StatusActive,
+		CreatedAt: time.Now(),
+	}
+	codexOnly := true
+
+	key, err := svc.Update(context.Background(), 101, user.ID, UpdateAPIKeyRequest{
+		CodexOnly: &codexOnly,
+	})
+	require.Nil(t, key)
+	require.ErrorIs(t, err, ErrCodexGroupNotEntitled)
+}
+
+func TestAPIKeyServiceUpdateClearsRestrictedClientProductWhenCodexOnlyDisabled(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	groupID := int64(19)
+	product := CodexUsageClientProduct
+	svc, repo := newAPIKeyAugmentService(user, &Group{
+		ID:                   groupID,
+		Name:                 "codex",
+		Status:               StatusActive,
+		Hydrated:             true,
+		Platform:             PlatformOpenAI,
+		CodexGatewayEntitled: true,
+	})
+	repo.current = &APIKey{
+		ID:                      102,
+		UserID:                  user.ID,
+		Key:                     "sk-codex",
+		Name:                    "codex",
+		GroupID:                 &groupID,
+		Status:                  StatusActive,
+		RestrictedClientProduct: &product,
+		CreatedAt:               time.Now(),
+	}
+	codexOnly := false
+
+	key, err := svc.Update(context.Background(), 102, user.ID, UpdateAPIKeyRequest{
+		CodexOnly: &codexOnly,
+	})
+	require.NoError(t, err)
+	require.False(t, key.IsCodexOnly())
+	require.NotNil(t, repo.updated)
+	require.Nil(t, repo.updated.RestrictedClientProduct)
+}

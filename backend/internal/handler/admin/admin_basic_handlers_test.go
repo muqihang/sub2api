@@ -243,6 +243,43 @@ func TestGroupHandlerMapsAugmentGatewayEntitled(t *testing.T) {
 	require.False(t, *adminSvc.updatedGroups[0].input.AugmentGatewayEntitled)
 }
 
+func TestGroupHandlerMapsCodexGatewayEntitled(t *testing.T) {
+	router, adminSvc := setupAdminRouter()
+
+	body, err := json.Marshal(map[string]any{
+		"name":                     "codex-group",
+		"platform":                 "openai",
+		"subscription_type":        "standard",
+		"codex_gateway_entitled":   true,
+		"augment_gateway_entitled": false,
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/groups", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.createdGroups, 1)
+	require.True(t, adminSvc.createdGroups[0].CodexGatewayEntitled)
+
+	updateBody, err := json.Marshal(map[string]any{
+		"codex_gateway_entitled": false,
+	})
+	require.NoError(t, err)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/admin/groups/2", bytes.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.updatedGroups, 1)
+	require.NotNil(t, adminSvc.updatedGroups[0].input.CodexGatewayEntitled)
+	require.False(t, *adminSvc.updatedGroups[0].input.CodexGatewayEntitled)
+}
+
 func TestProxyHandlerEndpoints(t *testing.T) {
 	router, _ := setupAdminRouter()
 

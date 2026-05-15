@@ -21,6 +21,12 @@ func TestAugmentGatewayExplicitPricingChecker_FirstBatchModelsRemainExplicit(t *
 	}
 }
 
+func TestAugmentGatewayExplicitPricingChecker_GeminiContextTierCachePricingCountsAsExplicit(t *testing.T) {
+	checker := newAugmentGatewayEmbeddedExplicitPricingCatalog(resources.ModelPricingCatalogJSON)
+
+	require.True(t, checker.HasExplicitPricing("gemini-2.5-pro"))
+}
+
 func TestAugmentGatewayExplicitPricingChecker_RejectsPartialCatalogRows(t *testing.T) {
 	checker := newAugmentGatewayEmbeddedExplicitPricingCatalog([]byte(`{
 		"gpt-5.4": {

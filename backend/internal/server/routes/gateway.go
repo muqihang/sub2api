@@ -6,6 +6,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -216,7 +217,7 @@ func RegisterGatewayRoutes(
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 	codexDirect := r.Group("/backend-api/codex")
-	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic)
+	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireCodexScopedAPIKeyAccess(), requireGroupAnthropic)
 	{
 		codexDirect.POST("/responses", responsesHandler)
 		codexDirect.POST("/responses/*subpath", responsesHandler)
@@ -333,5 +334,26 @@ func augmentGatewayAPIKeyAuth(apiKeyAuth middleware.APIKeyAuthMiddleware, authHa
 		if originalAuthorization != "" {
 			c.Request.Header.Set("Authorization", originalAuthorization)
 		}
+	}
+}
+
+func requireCodexScopedAPIKeyAccess() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		apiKey, ok := middleware.GetAPIKeyFromContext(c)
+		if !ok || apiKey == nil {
+			c.Next()
+			return
+		}
+		if err := service.ValidateCodexScopedAPIKeyAccess(apiKey, c.Request.URL.Path); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": pkgerrors.Message(err),
+				},
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
 	}
 }

@@ -1,0 +1,35 @@
+{
+  "name": "missing_reasoning_invalid_state_request",
+  "mode": "request_replay",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "previous_response_id": "resp_missing_reasoning",
+    "input": [
+      {
+        "type": "function_call_output",
+        "call_id": "call_shell",
+        "output": "pwd"
+      }
+    ]
+  },
+  "seed_state": {
+    "key": {
+      "response_id": "resp_missing_reasoning",
+      "session_key": "fixture-session",
+      "isolation_key": "fixture-isolation",
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-pro"
+    },
+    "tool_calls": [
+      {
+        "id": "call_shell",
+        "type": "custom",
+        "name": "shell",
+        "arguments": "pwd"
+      }
+    ]
+  },
+  "expect": {
+    "error_contains": "missing reasoning_content for deepseek tool loop"
+  }
+}

@@ -73,14 +73,21 @@ func newOpenAIGatewayRouteMatrixRouter(platform string, coreEnabled bool, client
 			OpenAIGateway: handler.NewOpenAIGatewayHandler(nil, core, nil, nil, nil, nil, nil, cfg),
 		},
 		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
-			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+			groupCopy := *group
+			apiKey := &service.APIKey{
 				ID:      11,
 				UserID:  user.ID,
 				User:    user,
 				GroupID: &groupID,
-				Group:   group,
+				Group:   &groupCopy,
 				Status:  service.StatusActive,
-			})
+			}
+			if strings.HasPrefix(c.Request.URL.Path, "/backend-api/codex/responses") {
+				product := service.CodexUsageClientProduct
+				apiKey.RestrictedClientProduct = &product
+				apiKey.Group.CodexGatewayEntitled = true
+			}
+			c.Set(string(servermiddleware.ContextKeyAPIKey), apiKey)
 			c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{
 				UserID:      user.ID,
 				Concurrency: user.Concurrency,

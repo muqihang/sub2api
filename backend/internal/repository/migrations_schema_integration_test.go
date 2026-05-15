@@ -123,6 +123,8 @@ func TestAugmentMigrationSchemaIncludesDedicatedGroupIsolationColumns(t *testing
 
 	requireColumn(t, tx, "groups", "augment_gateway_entitled", "boolean", 0, false)
 	requireColumnDefaultContains(t, tx, "groups", "augment_gateway_entitled", "false")
+	requireColumn(t, tx, "groups", "codex_gateway_entitled", "boolean", 0, false)
+	requireColumnDefaultContains(t, tx, "groups", "codex_gateway_entitled", "false")
 
 	requireColumn(t, tx, "api_keys", "restricted_client_product", "text", 0, true)
 }

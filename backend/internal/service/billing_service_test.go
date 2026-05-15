@@ -175,8 +175,8 @@ func TestGetModelPricing_DeepSeekV4Fallbacks(t *testing.T) {
 		outputPrice float64
 		cacheRead   float64
 	}{
-		{model: "deepseek-v4-flash", inputPrice: 0.14e-6, outputPrice: 0.28e-6, cacheRead: 0.028e-6},
-		{model: "deepseek-v4-pro", inputPrice: 1.74e-6, outputPrice: 3.48e-6, cacheRead: 0.145e-6},
+		{model: "deepseek-v4-flash", inputPrice: 0.14e-6, outputPrice: 0.28e-6, cacheRead: 0.0028e-6},
+		{model: "deepseek-v4-pro", inputPrice: 0.435e-6, outputPrice: 0.87e-6, cacheRead: 0.003625e-6},
 	}
 
 	for _, tt := range tests {

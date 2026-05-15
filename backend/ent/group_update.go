@@ -268,6 +268,20 @@ func (_u *GroupUpdate) SetNillableAugmentGatewayEntitled(v *bool) *GroupUpdate {
 	return _u
 }
 
+// SetCodexGatewayEntitled sets the "codex_gateway_entitled" field.
+func (_u *GroupUpdate) SetCodexGatewayEntitled(v bool) *GroupUpdate {
+	_u.mutation.SetCodexGatewayEntitled(v)
+	return _u
+}
+
+// SetNillableCodexGatewayEntitled sets the "codex_gateway_entitled" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableCodexGatewayEntitled(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetCodexGatewayEntitled(*v)
+	}
+	return _u
+}
+
 // SetDefaultValidityDays sets the "default_validity_days" field.
 func (_u *GroupUpdate) SetDefaultValidityDays(v int) *GroupUpdate {
 	_u.mutation.ResetDefaultValidityDays()
@@ -1022,6 +1036,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AugmentGatewayEntitled(); ok {
 		_spec.SetField(group.FieldAugmentGatewayEntitled, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.CodexGatewayEntitled(); ok {
+		_spec.SetField(group.FieldCodexGatewayEntitled, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.DefaultValidityDays(); ok {
 		_spec.SetField(group.FieldDefaultValidityDays, field.TypeInt, value)
 	}
@@ -1677,6 +1694,20 @@ func (_u *GroupUpdateOne) SetAugmentGatewayEntitled(v bool) *GroupUpdateOne {
 func (_u *GroupUpdateOne) SetNillableAugmentGatewayEntitled(v *bool) *GroupUpdateOne {
 	if v != nil {
 		_u.SetAugmentGatewayEntitled(*v)
+	}
+	return _u
+}
+
+// SetCodexGatewayEntitled sets the "codex_gateway_entitled" field.
+func (_u *GroupUpdateOne) SetCodexGatewayEntitled(v bool) *GroupUpdateOne {
+	_u.mutation.SetCodexGatewayEntitled(v)
+	return _u
+}
+
+// SetNillableCodexGatewayEntitled sets the "codex_gateway_entitled" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableCodexGatewayEntitled(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetCodexGatewayEntitled(*v)
 	}
 	return _u
 }
@@ -2464,6 +2495,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AugmentGatewayEntitled(); ok {
 		_spec.SetField(group.FieldAugmentGatewayEntitled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.CodexGatewayEntitled(); ok {
+		_spec.SetField(group.FieldCodexGatewayEntitled, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.DefaultValidityDays(); ok {
 		_spec.SetField(group.FieldDefaultValidityDays, field.TypeInt, value)
