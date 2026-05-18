@@ -91,6 +91,77 @@ func TestCodexAgentServiceExchangeSetupGrantRejectsNonHTTPSOrigin(t *testing.T) 
 	require.ErrorIs(t, err, ErrCodexSetupGrantOriginInvalid)
 }
 
+func TestCodexAgentServiceCreateSetupGrantAllowsLocalLoopbackOrigin(t *testing.T) {
+	var captured CreateCodexSetupGrantParams
+	svc := newTestCodexAgentService(
+		&codexAgentRepositoryStub{
+			createSetupGrant: func(ctx context.Context, params CreateCodexSetupGrantParams) (*dbent.CodexSetupGrant, error) {
+				captured = params
+				return &dbent.CodexSetupGrant{ID: 1, CodeHash: params.CodeHash}, nil
+			},
+		},
+		&codexAPIKeyReaderStub{
+			verifyOwnership: func(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error) {
+				return apiKeyIDs, nil
+			},
+		},
+	)
+
+	resp, err := svc.CreateSetupGrant(context.Background(), CreateCodexSetupGrantRequest{
+		UserID:       7,
+		APIKeyID:     42,
+		ServerOrigin: "http://127.0.0.1:3000",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.Code)
+	require.Contains(t, resp.DeepLink, "server=http%3A%2F%2F127.0.0.1%3A3000")
+	require.Equal(t, "http://127.0.0.1:3000", captured.ServerOrigin)
+}
+
+func TestCodexAgentServiceExchangeSetupGrantAllowsLocalLoopbackOrigin(t *testing.T) {
+	svc := newTestCodexAgentService(
+		&codexAgentRepositoryStub{
+			consumeSetupGrant: func(ctx context.Context, codeHash string, now time.Time) (*dbent.CodexSetupGrant, error) {
+				return &dbent.CodexSetupGrant{
+					ID:            1,
+					UserID:        7,
+					APIKeyID:      42,
+					ServerOrigin:  "http://localhost:3000",
+					GatewayOrigin: "http://localhost:3000",
+				}, nil
+			},
+			createManagedDevice: func(ctx context.Context, params CreateCodexManagedDeviceParams) (*dbent.CodexManagedDevice, error) {
+				return &dbent.CodexManagedDevice{
+					ID:       99,
+					UserID:   params.UserID,
+					APIKeyID: params.APIKeyID,
+					Status:   codexmanageddevice.StatusActive,
+				}, nil
+			},
+			createDeviceToken: func(ctx context.Context, params CreateCodexDeviceTokenParams) (*dbent.CodexDeviceToken, error) {
+				return &dbent.CodexDeviceToken{ID: 5, DeviceID: params.DeviceID}, nil
+			},
+		},
+		&codexAPIKeyReaderStub{
+			getByID: func(ctx context.Context, id int64) (*APIKey, error) {
+				return &APIKey{
+					ID:     id,
+					Status: StatusActive,
+					User:   &User{ID: 7, Status: StatusActive},
+				}, nil
+			},
+		},
+	)
+
+	resp, err := svc.ExchangeSetupGrant(context.Background(), ExchangeCodexSetupGrantRequest{
+		Code:         "abc",
+		ServerOrigin: "http://localhost:3000",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "http://localhost:3000", resp.ServerBaseURL)
+	require.Equal(t, "http://localhost:3000", resp.GatewayBaseURL)
+}
+
 func TestCodexAgentServiceCreateSetupGrantRejectsMalformedOrigin(t *testing.T) {
 	svc := newTestCodexAgentService(&codexAgentRepositoryStub{}, &codexAPIKeyReaderStub{})
 
@@ -196,8 +267,10 @@ func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t
 	require.Equal(t, int64(99), resp.DeviceID)
 	require.Equal(t, "https://sub2api.example.com", resp.ServerBaseURL)
 	require.Equal(t, "https://gateway.example.com", resp.GatewayBaseURL)
+	require.Equal(t, "zhumeng-codex", resp.ConfigProfile.ModelProvider)
+	require.Equal(t, "responses", resp.ConfigProfile.WireAPI)
 	require.True(t, resp.ConfigProfile.RequiresOpenAIAuth)
-	require.True(t, resp.ConfigProfile.SupportsWebsockets)
+	require.False(t, resp.ConfigProfile.SupportsWebsockets)
 	require.Equal(t, hashManagedSecret(resp.RefreshToken), createdToken.RefreshTokenHash)
 
 	claims, err := svc.parseManagedAccessToken(resp.AccessToken)

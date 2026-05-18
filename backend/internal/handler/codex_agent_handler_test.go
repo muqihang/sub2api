@@ -20,6 +20,7 @@ func TestCodexAgentHandlerCreateSetupGrant(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/codex/setup-grants", strings.NewReader(`{"api_key_id":42,"client":"codex","mode":"managed_proxy"}`))
+	c.Request.Host = "127.0.0.1:18081"
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Request.Header.Set("Origin", "https://sub2api.example.com")
 	c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: 7})
@@ -43,6 +44,7 @@ func TestCodexAgentHandlerCreateSetupGrant(t *testing.T) {
 	require.Equal(t, int64(7), got.UserID)
 	require.Equal(t, int64(42), got.APIKeyID)
 	require.Equal(t, "https://sub2api.example.com", got.ServerOrigin)
+	require.Equal(t, "http://127.0.0.1:18081", got.GatewayOrigin)
 }
 
 func TestCodexAgentHandlerListDevicesRejectsBadAPIKeyID(t *testing.T) {

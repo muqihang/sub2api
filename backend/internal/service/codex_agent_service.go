@@ -28,7 +28,7 @@ const (
 
 var (
 	ErrCodexSetupGrantNotActive          = infraerrors.BadRequest("CODEX_SETUP_GRANT_NOT_ACTIVE", "setup grant is invalid, expired, or already used")
-	ErrCodexSetupGrantOriginInvalid      = infraerrors.BadRequest("CODEX_SETUP_GRANT_ORIGIN_INVALID", "server origin must be a trusted https origin")
+	ErrCodexSetupGrantOriginInvalid      = infraerrors.BadRequest("CODEX_SETUP_GRANT_ORIGIN_INVALID", "server origin must be a trusted https or local loopback origin")
 	ErrCodexSetupGrantOriginMismatch     = infraerrors.BadRequest("CODEX_SETUP_GRANT_ORIGIN_MISMATCH", "server origin does not match setup grant")
 	ErrCodexManagedDeviceNotFound        = infraerrors.NotFound("CODEX_MANAGED_DEVICE_NOT_FOUND", "managed device not found")
 	ErrCodexManagedDeviceRevoked         = infraerrors.Forbidden("CODEX_MANAGED_DEVICE_REVOKED", "managed device has been revoked")
@@ -468,10 +468,10 @@ func (s *CodexAgentService) ValidateManagedDeviceAccess(ctx context.Context, req
 
 func (s *CodexAgentService) DefaultCodexConfigProfile() CodexConfigProfile {
 	return CodexConfigProfile{
-		ModelProvider:      "zhumeng-managed",
+		ModelProvider:      "zhumeng-codex",
 		WireAPI:            "responses",
 		RequiresOpenAIAuth: true,
-		SupportsWebsockets: true,
+		SupportsWebsockets: false,
 	}
 }
 
@@ -548,9 +548,6 @@ func validateTrustedHTTPSOrigin(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !strings.EqualFold(parsed.Scheme, "https") {
-		return "", fmt.Errorf("origin must use https")
-	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("origin must not include query or fragment")
 	}
@@ -564,13 +561,22 @@ func validateTrustedHTTPSOrigin(raw string) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("origin host is required")
 	}
-	if strings.EqualFold(host, "localhost") {
-		return "", fmt.Errorf("localhost is not allowed")
-	}
 	if ipAddr := net.ParseIP(host); ipAddr != nil {
+		if strings.EqualFold(parsed.Scheme, "http") && ipAddr.IsLoopback() {
+			return strings.TrimRight(parsed.String(), "/"), nil
+		}
 		if ipAddr.IsLoopback() || ipAddr.IsPrivate() || ipAddr.IsLinkLocalUnicast() || ipAddr.IsLinkLocalMulticast() {
 			return "", fmt.Errorf("private or loopback ip is not allowed")
 		}
+	}
+	if strings.EqualFold(parsed.Scheme, "http") && strings.EqualFold(host, "localhost") {
+		return strings.TrimRight(parsed.String(), "/"), nil
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return "", fmt.Errorf("origin must use https")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return "", fmt.Errorf("localhost is not allowed")
 	}
 	return strings.TrimRight(parsed.String(), "/"), nil
 }

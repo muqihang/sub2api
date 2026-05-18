@@ -77,6 +77,7 @@ func (h *CodexAgentHandler) CreateSetupGrant(c *gin.Context) {
 		Client:       req.Client,
 		Mode:         req.Mode,
 		ServerOrigin: codexAgentRequestOrigin(c),
+		GatewayOrigin: codexAgentGatewayOrigin(c),
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -212,6 +213,23 @@ func codexAgentRequestOrigin(c *gin.Context) string {
 		host = c.Request.Host
 	}
 
+	u := url.URL{Scheme: scheme, Host: host}
+	return strings.TrimRight(u.String(), "/")
+}
+
+func codexAgentGatewayOrigin(c *gin.Context) string {
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); forwarded != "" {
+		scheme = forwarded
+	}
+
+	host := strings.TrimSpace(c.GetHeader("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(c.Request.Host)
+	}
 	u := url.URL{Scheme: scheme, Host: host}
 	return strings.TrimRight(u.String(), "/")
 }
