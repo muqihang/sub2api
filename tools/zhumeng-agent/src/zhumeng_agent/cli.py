@@ -654,6 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             refresh_token=str(state.get("refresh_token", "")) or None,
             source_root=AGENT_SOURCE_ROOT,
             state_store=store,
+            codex_home=default_config_manager().codex_home,
         ))
         asyncio.run(proxy.serve_forever(int(state["proxy_port"])))
         return 0

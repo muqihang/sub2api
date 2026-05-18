@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
@@ -9,6 +12,7 @@ import httpx
 from aiohttp import ClientSession, WSMsgType, WSServerHandshakeError, web
 from aiohttp.client_exceptions import ClientPayloadError
 
+from ..adapters.codex.config_manager import CodexConfigManager
 from ..state import JsonStateStore
 from .upstream import build_upstream_headers, map_upstream_path
 
@@ -25,6 +29,7 @@ HOP_BY_HOP_RESPONSE_HEADERS = {
 }
 
 MANAGED_PROXY_CLIENT_MAX_SIZE = 128 * 1024 * 1024
+MODEL_CATALOG_SYNC_INTERVAL_SECONDS = 60
 
 
 @dataclass(slots=True)
@@ -41,6 +46,7 @@ class ManagedProxyConfig:
     server_base_url: str | None = None
     refresh_token: str | None = None
     source_root: str | None = None
+    codex_home: Path | None = None
 
 
 class ManagedProxyServer:
@@ -48,9 +54,13 @@ class ManagedProxyServer:
         self.config = config
         self.host = "127.0.0.1"
         self._session: ClientSession | None = None
+        self._catalog_sync_task: asyncio.Task | None = None
+        self._catalog_sync_lock = asyncio.Lock()
+        self._catalog_last_sync_at = 0.0
 
     def create_app(self) -> web.Application:
         app = web.Application(client_max_size=MANAGED_PROXY_CLIENT_MAX_SIZE)
+        app["proxy_server"] = self
         app.router.add_route("*", "/v1/responses", self.handle_request)
         app.router.add_route("*", "/v1/responses/{tail:.*}", self.handle_request)
         app.router.add_route("*", "/v1/models", self.handle_request)
@@ -73,13 +83,20 @@ class ManagedProxyServer:
         await runner.setup()
         site = web.TCPSite(runner, self.host, port)
         await site.start()
+        self._catalog_sync_task = asyncio.create_task(self._catalog_sync_loop())
         try:
             await asyncio.Event().wait()
         finally:
+            if self._catalog_sync_task is not None:
+                self._catalog_sync_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._catalog_sync_task
+                self._catalog_sync_task = None
             await runner.cleanup()
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         self._sync_credentials_from_state()
+        await self._maybe_sync_model_catalog()
 
         if request.method == "OPTIONS":
             raise web.HTTPNotFound()
@@ -291,6 +308,58 @@ class ManagedProxyServer:
             return
         if state.get("status") != "configured":
             self.config.state_store.update({"status": "configured"})
+
+    async def _maybe_sync_model_catalog(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._catalog_last_sync_at < MODEL_CATALOG_SYNC_INTERVAL_SECONDS:
+            return
+        async with self._catalog_sync_lock:
+            now = time.monotonic()
+            if not force and now - self._catalog_last_sync_at < MODEL_CATALOG_SYNC_INTERVAL_SECONDS:
+                return
+            self._catalog_last_sync_at = now
+            await self._sync_model_catalog_once()
+
+    async def _catalog_sync_loop(self) -> None:
+        await self._maybe_sync_model_catalog(force=True)
+        while True:
+            await asyncio.sleep(MODEL_CATALOG_SYNC_INTERVAL_SECONDS)
+            await self._maybe_sync_model_catalog(force=True)
+
+    async def _sync_model_catalog_once(self) -> None:
+        try:
+            state = self.config.state_store.read()
+        except Exception:
+            return
+        gateway_base_url = str(state.get("gateway_base_url", "") or "").strip()
+        if gateway_base_url == "":
+            gateway_base_url = self.config.upstream_base_url.rstrip("/")
+        if gateway_base_url == "":
+            return
+        catalog_home = self.config.codex_home
+        if catalog_home is None:
+            return
+        profile = state.get("config_profile", {}) if isinstance(state.get("config_profile"), dict) else {}
+        manager = CodexConfigManager(catalog_home)
+        try:
+            session = await self._get_session()
+            async with session.get(
+                urljoin(gateway_base_url.rstrip("/") + "/", "codex/v1/models"),
+                headers={
+                    "Authorization": f"Bearer {self.config.access_token}",
+                    "X-Zhumeng-Managed-Session": self.config.managed_session_id,
+                    "X-Zhumeng-Device-ID": str(self.config.device_id),
+                    "X-Zhumeng-Agent-Version": self.config.agent_version,
+                },
+                timeout=30,
+            ) as response:
+                if response.status >= 400:
+                    return
+                payload = await response.json()
+            data = payload.get("data", payload)
+            manager.write_model_catalog(profile, data if isinstance(data, dict) else {"models": []})
+        except Exception:
+            return
 
 
 def merge_no_proxy(env: dict[str, str]) -> dict[str, str]:

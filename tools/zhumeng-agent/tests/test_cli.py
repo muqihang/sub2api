@@ -315,13 +315,18 @@ def test_repair_codex_patches_desktop_when_app_is_detected(capsys):
         def read_existing_model_catalog(self, *args, **kwargs):
             return {"models": []}
 
-    cli.default_state_store = lambda: type("Store", (), {
-        "read": lambda self: {
-            "proxy_port": 18081,
-            "config_profile": {"model_provider": "zhumeng-managed"},
-            "loopback_secret": "loopback-secret",
-        }
-    })()
+    class FakeStore:
+        def read(self):
+            return {
+                "proxy_port": 18081,
+                "config_profile": {"model_provider": "zhumeng-managed"},
+                "loopback_secret": "loopback-secret",
+            }
+
+        def update(self, patch):
+            return patch
+
+    cli.default_state_store = lambda: FakeStore()
     cli.default_config_manager = lambda: FakeManager()
     cli.ensure_proxy_running = lambda store: 9999
     cli.detect_codex_app_path = lambda **kwargs: Path("/Applications/Codex.app")
@@ -348,13 +353,18 @@ def test_repair_codex_does_not_require_desktop_app_for_model_picker(capsys):
         def read_existing_model_catalog(self, *args, **kwargs):
             return {"models": []}
 
-    cli.default_state_store = lambda: type("Store", (), {
-        "read": lambda self: {
-            "proxy_port": 18081,
-            "config_profile": {"model_provider": "zhumeng-managed"},
-            "loopback_secret": "loopback-secret",
-        }
-    })()
+    class FakeStore:
+        def read(self):
+            return {
+                "proxy_port": 18081,
+                "config_profile": {"model_provider": "zhumeng-managed"},
+                "loopback_secret": "loopback-secret",
+            }
+
+        def update(self, patch):
+            return patch
+
+    cli.default_state_store = lambda: FakeStore()
     cli.default_config_manager = lambda: FakeManager()
     cli.ensure_proxy_running = lambda store: 9999
     cli.detect_codex_app_path = lambda **kwargs: None
@@ -546,13 +556,18 @@ def test_launch_codex_patches_desktop_before_launch(capsys):
         def repair(self, *args, **kwargs):
             return None
 
-    cli.default_state_store = lambda: type("Store", (), {
-        "read": lambda self: {
-            "proxy_port": 18081,
-            "config_profile": {"model_provider": "zhumeng-managed"},
-            "loopback_secret": "loopback-secret",
-        }
-    })()
+    class FakeStore:
+        def read(self):
+            return {
+                "proxy_port": 18081,
+                "config_profile": {"model_provider": "zhumeng-managed"},
+                "loopback_secret": "loopback-secret",
+            }
+
+        def update(self, patch):
+            return patch
+
+    cli.default_state_store = lambda: FakeStore()
     cli.default_config_manager = lambda: FakeManager()
     cli.ensure_proxy_running = lambda store: 9999
     cli.detect_codex_app_path = lambda **kwargs: Path("/Applications/Codex.app")
@@ -751,15 +766,26 @@ def test_codex_capture_install_and_uninstall_do_not_patch_model_picker(capsys, t
     cli.install_capture_hook = lambda app_path, config: {"status": "installed", "app_asar_modified": False, "hook_mode": "renderer_readonly"}
     cli.uninstall_capture_hook = lambda app_path, config: {"status": "uninstalled", "app_asar_modified": False}
     cli.patch_model_picker_app = lambda app_path: (_ for _ in ()).throw(AssertionError("capture install must not patch model picker"))
+    updates = {}
+    cli.default_state_store = lambda: type(
+        "Store",
+        (),
+        {
+            "read": lambda self: {},
+            "update": lambda self, patch: updates.update(patch) or patch,
+        },
+    )()
 
     assert main(["codex", "capture", "install", "--app", str(tmp_path / "Codex.app")]) == 0
     install_data = parse_output(capsys)
     assert install_data["status"] == "installed"
     assert install_data["app_asar_modified"] is False
+    assert updates["desktop_capture_enabled"] is True
 
     assert main(["codex", "capture", "uninstall", "--app", str(tmp_path / "Codex.app")]) == 0
     uninstall_data = parse_output(capsys)
     assert uninstall_data["status"] == "uninstalled"
+    assert updates["desktop_capture_enabled"] is False
 
 
 def test_codex_capture_report_reads_trace_dir(capsys, tmp_path: Path):

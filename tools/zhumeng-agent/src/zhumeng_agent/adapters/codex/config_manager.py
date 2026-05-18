@@ -50,6 +50,10 @@ class CodexConfigManager:
         self.auth_path = self.codex_home / "auth.json"
         self.backup_dir = self.codex_home / "backups"
 
+    def catalog_path_for_profile(self, profile: dict[str, object] | None = None) -> Path:
+        profile = profile or {}
+        return self.codex_home / str(profile.get("model_catalog_file", CODEX_MODEL_CATALOG_FILE) or CODEX_MODEL_CATALOG_FILE)
+
     def read_state(self) -> dict[str, object]:
         return {
             "codex_home": str(self.codex_home),
@@ -67,7 +71,7 @@ class CodexConfigManager:
         provider = normalize_provider_id(str(profile.get("model_provider", CODEX_PROVIDER_ID) or CODEX_PROVIDER_ID))
         provider_name = str(profile.get("provider_display_name", CODEX_PROVIDER_NAME) or CODEX_PROVIDER_NAME)
         default_model = str(profile.get("default_model", CODEX_DEFAULT_MODEL) or CODEX_DEFAULT_MODEL)
-        catalog_path = self.codex_home / str(profile.get("model_catalog_file", CODEX_MODEL_CATALOG_FILE) or CODEX_MODEL_CATALOG_FILE)
+        catalog_path = self.catalog_path_for_profile(profile)
         catalog_payload = model_catalog_payload or {"models": []}
         supports_websockets = CODEX_SUPPORTS_WEBSOCKETS
         config_text = (
@@ -101,6 +105,11 @@ class CodexConfigManager:
         self._write_text_atomic(self.config_path, plan.config_text)
         self._write_json_atomic(self.auth_path, plan.auth_payload)
 
+    def write_model_catalog(self, profile: dict[str, object] | None, gateway_models_payload: dict[str, object]) -> dict[str, object]:
+        catalog_payload = self.build_model_catalog(gateway_models_payload)
+        self._write_json_atomic(self.catalog_path_for_profile(profile), catalog_payload)
+        return catalog_payload
+
     def repair(
         self,
         profile: dict[str, object],
@@ -123,8 +132,7 @@ class CodexConfigManager:
         return {"models": [self._catalog_model(model) for model in models if isinstance(model, dict)]}
 
     def read_existing_model_catalog(self, profile: dict[str, object] | None = None) -> dict[str, object]:
-        profile = profile or {}
-        catalog_path = self.codex_home / str(profile.get("model_catalog_file", CODEX_MODEL_CATALOG_FILE) or CODEX_MODEL_CATALOG_FILE)
+        catalog_path = self.catalog_path_for_profile(profile)
         if not catalog_path.exists():
             return {"models": []}
         try:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
@@ -12,6 +14,21 @@ from zhumeng_agent.state import JsonStateStore
 async def make_proxy(tmp_path, status_code: int = 200, response_body: dict | None = None, ws_status: int = 200):
     seen: dict[str, object] = {}
     response_counter = {"count": 0}
+    default_models_payload = {
+        "models": [
+            {
+                "slug": "deepseek-v4-pro",
+                "display_name": "DeepSeek V4 Pro",
+                "visibility": "visible",
+                "supported_in_api": True,
+                "input_modalities": ["text", "image"],
+                "supports_search_tool": True,
+                "supported_reasoning_levels": ["high", "xhigh"],
+                "context_window": 262144,
+                "max_context_window": 262144,
+            }
+        ]
+    }
 
     async def upstream_handler(request: web.Request):
         response_counter["count"] += 1
@@ -31,7 +48,10 @@ async def make_proxy(tmp_path, status_code: int = 200, response_body: dict | Non
             else:
                 status, body = status_code, result
         else:
-            status, body = status_code, response_body or {"ok": True}
+            if request.path == "/codex/v1/models" and response_body is None:
+                status, body = 200, default_models_payload
+            else:
+                status, body = status_code, response_body or {"ok": True}
         return web.json_response(body, status=status)
 
     async def upstream_ws(request: web.Request):
@@ -274,6 +294,26 @@ async def test_proxy_reloads_latest_credentials_from_state_before_forwarding(tmp
         assert resp.status == 200
         assert seen["authorization"] == "Bearer fresh-access-token-from-state"
         assert seen["managed_session"] == "fresh-session-from-state"
+    await upstream.close()
+
+
+@pytest.mark.asyncio
+async def test_proxy_syncs_model_catalog_from_gateway_models(tmp_path):
+    upstream, proxy_client, _, state_store = await make_proxy(tmp_path)
+    state_store.write({
+        "gateway_base_url": str(upstream.make_url("")).rstrip("/"),
+        "config_profile": {"model_provider": "zhumeng-codex"},
+        "status": "configured",
+    })
+    proxy_client.server.app["proxy_server"].config.codex_home = tmp_path / ".codex"
+
+    async with proxy_client:
+        await proxy_client.server.app["proxy_server"]._maybe_sync_model_catalog(force=True)
+
+    catalog_path = tmp_path / ".codex" / "zhumeng-codex-models.json"
+    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    deepseek = next(model for model in payload["models"] if model["slug"] == "deepseek-v4-pro")
+    assert deepseek["input_modalities"] == ["text", "image"]
     await upstream.close()
 
 

@@ -85,6 +85,7 @@ def test_proxy_marks_reauthorization_without_dropping_state(tmp_path: Path):
         access_token="access-token",
         loopback_secret="loopback-secret",
         agent_version="0.1.0",
+        runtime_signature="sig-1",
         state_store=store,
     )
     config.state_store.update({"status": "reauthorization_required"})
