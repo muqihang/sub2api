@@ -4,6 +4,7 @@ from zhumeng_agent.adapters.codex.plugins import (
     STATUS_AVAILABLE,
     STATUS_CONFIGURED,
     STATUS_MISSING_BUNDLE,
+    STATUS_UNSUPPORTED_OS,
     STATUS_USER_ACTION_REQUIRED,
     inspect_codex_plugins,
 )
@@ -28,6 +29,44 @@ def test_computer_use_reports_configured_when_helper_exists(tmp_path: Path):
     helper.mkdir(parents=True, exist_ok=True)
     report = inspect_codex_plugins(tmp_path)
     assert report["computer-use"]["status"] == STATUS_CONFIGURED
+
+
+def test_computer_use_reports_unsupported_os_when_mcp_client_requires_newer_macos(tmp_path: Path):
+    write_plugin_manifest(tmp_path, "computer-use", "1.0.791")
+    client = (
+        tmp_path
+        / "computer-use"
+        / "Codex Computer Use.app"
+        / "Contents"
+        / "SharedSupport"
+        / "SkyComputerUseClient.app"
+        / "Contents"
+        / "MacOS"
+        / "SkyComputerUseClient"
+    )
+    client.parent.mkdir(parents=True, exist_ok=True)
+    client.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def fake_runner(*args, **kwargs):
+        class Result:
+            returncode = 0
+            stdout = """
+Load command 11
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform 1
+    minos 15.0
+      sdk 26.4
+"""
+            stderr = ""
+
+        return Result()
+
+    report = inspect_codex_plugins(tmp_path, macos_version="14.5", runner=fake_runner)
+
+    assert report["computer-use"]["status"] == STATUS_UNSUPPORTED_OS
+    assert report["computer-use"]["current_macos"] == "14.5"
+    assert report["computer-use"]["required_macos"] == "15.0"
 
 
 def test_browser_use_missing_bundle_reports_missing_bundle(tmp_path: Path):

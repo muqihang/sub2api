@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import platform
 import re
+import signal
+import socket
+import urllib.request
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +30,7 @@ from .adapters.codex.launcher import build_codex_launch_command, detect_codex_ap
 from .adapters.codex.model_picker import ModelPickerPatchError, patch_model_picker_app
 from .adapters.codex.model_picker import inspect_model_picker_app, restore_latest_model_picker_backup
 from .adapters.codex.model_picker import inspect_plugin_auth_gate_app, patch_plugin_auth_gate_app
+from .adapters.codex.model_picker import inspect_plugin_mention_marketplace_app, patch_plugin_mention_marketplace_app
 from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup
 from .adapters.base import BaseAdapter
 from .doctor import codex_doctor_report
@@ -35,6 +40,27 @@ from .proxy.server import ManagedProxyConfig, ManagedProxyServer
 from .security import generate_loopback_secret
 from .deeplink import parse_zhumeng_deeplink
 from .state import JsonStateStore, ensure_revoke_device_ready, logout_local_state
+
+DEFAULT_CODEX_CONFIG_PROFILE = {
+    "model_provider": "zhumeng-codex",
+    "wire_api": "responses",
+    "requires_openai_auth": True,
+    "supports_websockets": False,
+}
+
+AGENT_VERSION = "0.1.0"
+AGENT_SOURCE_ROOT = str(Path(__file__).resolve().parents[2])
+
+
+def compute_runtime_signature() -> str:
+    digest = hashlib.sha256()
+    for path in sorted((Path(__file__).resolve().parents[1]).rglob("*.py")):
+        digest.update(str(path.relative_to(Path(__file__).resolve().parents[1])).encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+AGENT_RUNTIME_SIGNATURE = compute_runtime_signature()
 
 
 class CodexAdapterPlaceholder(BaseAdapter):
@@ -112,8 +138,16 @@ def default_config_manager() -> CodexConfigManager:
 
 def default_capture_config(correlation_hash_key_file: Path | None = None) -> CodexDesktopCaptureConfig:
     env_key = os.environ.get("ZHUMENG_CODEX_DESKTOP_CAPTURE_CORRELATION_HASH_KEY_FILE")
+    env_enabled = os.environ.get("ZHUMENG_CODEX_DESKTOP_CAPTURE_ENABLED")
+    state = default_state_store().read()
+    enabled = bool(state.get("desktop_capture_enabled", False))
+    if env_enabled is not None:
+        enabled = env_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    state_key = state.get("desktop_capture_correlation_hash_key_file")
+    configured_key = correlation_hash_key_file or (Path(str(state_key)).expanduser() if state_key else None)
     return CodexDesktopCaptureConfig.defaults(
-        correlation_hash_key_file=correlation_hash_key_file or (Path(env_key).expanduser() if env_key else None)
+        enabled=enabled,
+        correlation_hash_key_file=configured_key or (Path(env_key).expanduser() if env_key else None),
     )
 
 
@@ -139,6 +173,33 @@ def patch_detected_codex_model_picker() -> dict[str, object]:
     return patch_model_picker_app(app_path)
 
 
+def patch_detected_codex_desktop() -> dict[str, object]:
+    app_path = default_codex_app_path()
+    if app_path is None:
+        return {
+            "app_path": None,
+            "model_picker": {"status": "app_not_found"},
+            "plugin_auth_gate": {"status": "app_not_found"},
+            "plugin_mention_marketplace": {"status": "app_not_found"},
+        }
+    return {
+        "app_path": str(app_path),
+        "model_picker": run_desktop_patch(lambda: patch_model_picker_app(app_path)),
+        "plugin_auth_gate": run_desktop_patch(lambda: patch_plugin_auth_gate_app(app_path)),
+        "plugin_mention_marketplace": run_desktop_patch(lambda: patch_plugin_mention_marketplace_app(app_path)),
+    }
+
+
+def run_desktop_patch(operation) -> dict[str, object]:
+    try:
+        return operation()
+    except ModelPickerPatchError as err:
+        return {
+            "status": "failed",
+            "message": str(err),
+        }
+
+
 def is_process_alive(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
@@ -149,6 +210,23 @@ def is_process_alive(pid: int | None) -> bool:
         return False
 
 
+def is_loopback_port_accepting_connections(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def terminate_proxy_process(pid: int | None) -> None:
+    if not pid or pid <= 0:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+
+
 def ensure_proxy_running(store: JsonStateStore) -> int:
     state = store.read()
     required = ("gateway_base_url", "device_id", "managed_session_id", "access_token", "loopback_secret", "proxy_port")
@@ -157,8 +235,13 @@ def ensure_proxy_running(store: JsonStateStore) -> int:
         raise ValueError(f"proxy state is incomplete: missing {', '.join(missing)}")
 
     pid = int(state.get("proxy_pid", 0) or 0)
-    if is_process_alive(pid):
+    if is_process_alive(pid) and proxy_matches_current_runtime(proxy_port := int(state["proxy_port"])):
         return pid
+    proxy_port = int(state["proxy_port"])
+    if is_process_alive(pid):
+        terminate_proxy_process(pid)
+    if is_loopback_port_accepting_connections(proxy_port) and proxy_matches_current_runtime(proxy_port):
+        return 0
 
     process = subprocess.Popen([
         sys.executable,
@@ -167,9 +250,22 @@ def ensure_proxy_running(store: JsonStateStore) -> int:
         "proxy-serve",
         "--state-file",
         str(store.path),
-    ])
+    ], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     store.update({"proxy_pid": process.pid})
     return int(process.pid)
+
+
+def proxy_matches_current_runtime(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/__zhumeng/health", timeout=0.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return False
+    return (
+        payload.get("agent_version") == AGENT_VERSION
+        and payload.get("runtime_signature") == AGENT_RUNTIME_SIGNATURE
+        and str(payload.get("source_root", "")) == AGENT_SOURCE_ROOT
+    )
 
 
 def load_managed_state(store: JsonStateStore) -> dict[str, object]:
@@ -181,8 +277,88 @@ def load_managed_state(store: JsonStateStore) -> dict[str, object]:
     return state
 
 
+def fetch_codex_model_catalog(client, config_manager: CodexConfigManager, state: dict[str, object], store=None) -> tuple[dict[str, object], dict[str, object]]:
+    def existing_catalog() -> dict[str, object]:
+        read_existing = getattr(config_manager, "read_existing_model_catalog", None)
+        if read_existing is None:
+            return {"models": []}
+        return read_existing(state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE))
+
+    def persist_refreshed_state(patch: dict[str, object]) -> None:
+        if store is None:
+            return
+        update = getattr(store, "update", None)
+        if update is not None:
+            update(patch)
+            return
+        write = getattr(store, "write", None)
+        read = getattr(store, "read", None)
+        if write is not None and read is not None:
+            current = dict(read() or {})
+            current.update(patch)
+            write(current)
+
+    def try_list_models() -> dict[str, object]:
+        return list_models(
+            gateway_base_url=str(state["gateway_base_url"]),
+            access_token=str(state["access_token"]),
+            managed_session_id=str(state["managed_session_id"]),
+            device_id=int(state["device_id"]),
+        )
+
+    list_models = getattr(client, "list_codex_models", None)
+    if list_models is None:
+        return existing_catalog(), {"source": "existing", "reason": "list_models_unavailable"}
+    required = ("gateway_base_url", "access_token", "managed_session_id", "device_id")
+    if any(not state.get(key) for key in required):
+        return existing_catalog(), {"source": "existing", "reason": "managed_state_incomplete"}
+    try:
+        payload = try_list_models()
+    except Exception as err:
+        response = getattr(err, "response", None)
+        if getattr(response, "status_code", None) in {401, 403}:
+            refresh_device_token = getattr(client, "refresh_device_token", None)
+            refresh_token = str(state.get("refresh_token", "") or "")
+            if refresh_device_token is not None and refresh_token:
+                try:
+                    refreshed = refresh_device_token(
+                        device_id=int(state["device_id"]),
+                        refresh_token=refresh_token,
+                    )
+                    patch = {
+                        "access_token": refreshed["access_token"],
+                        "refresh_token": refreshed["refresh_token"],
+                        "managed_session_id": refreshed["managed_session_id"],
+                        "status": "configured",
+                    }
+                    state.update(patch)
+                    persist_refreshed_state(patch)
+                    payload = try_list_models()
+                    return config_manager.build_model_catalog(payload), {
+                        "source": "gateway",
+                        "refreshed": True,
+                    }
+                except Exception as refresh_err:
+                    refresh_response = getattr(refresh_err, "response", None)
+                    return existing_catalog(), {
+                        "source": "existing",
+                        "reason": "upstream_unauthorized",
+                        "status_code": getattr(response, "status_code", None),
+                        "refresh_status_code": getattr(refresh_response, "status_code", None),
+                        "refresh_error": str(refresh_err),
+                    }
+            return existing_catalog(), {"source": "existing", "reason": "upstream_unauthorized", "status_code": getattr(response, "status_code", None)}
+        return existing_catalog(), {
+            "source": "existing",
+            "reason": "upstream_fetch_failed",
+            "status_code": getattr(response, "status_code", None),
+            "error": str(err),
+        }
+    return config_manager.build_model_catalog(payload), {"source": "gateway"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    argv_list = list(argv) if argv is not None else None
+    argv_list = list(argv) if argv is not None else list(sys.argv[1:])
     if argv_list and len(argv_list) == 1 and argv_list[0].startswith("zhumeng-agent://"):
         deeplink = parse_zhumeng_deeplink(argv_list[0])
         argv_list = [
@@ -204,10 +380,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         prior_auth_json = None
         if config_manager.auth_path.exists():
             prior_auth_json = config_manager.auth_path.read_text(encoding="utf-8")
+        setup_state = {
+            "gateway_base_url": exchanged["gateway_base_url"],
+            "device_id": exchanged["device_id"],
+            "managed_session_id": exchanged["managed_session_id"],
+            "access_token": exchanged["access_token"],
+        }
+        model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, setup_state)
         plan = config_manager.plan_configure(
             exchanged["config_profile"],
             proxy_port,
             loopback_secret,
+            model_catalog,
         )
         config_manager.apply_configure(plan)
         store = default_state_store()
@@ -224,6 +408,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "loopback_secret": loopback_secret,
             "backup_paths": [str(path) for path in plan.backup_paths],
             "prior_auth_json": prior_auth_json,
+            "desktop_capture_enabled": False,
+            "model_catalog_meta": model_catalog_meta,
             "status": "configured",
         })
         ensure_proxy_running(store)
@@ -235,6 +421,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "status": "configured",
             "proxy_port": proxy_port,
             "device_id": exchanged["device_id"],
+            "model_catalog": model_catalog_meta,
         })
 
     if args.command == "launch":
@@ -261,18 +448,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "injection": True,
             })
         config_manager = default_config_manager()
+        client = default_http_client(str(state.get("server_base_url", "")))
+        model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, state, store)
         config_manager.repair(
-            state.get("config_profile", {
-                "model_provider": "zhumeng-managed",
-                "wire_api": "responses",
-                "requires_openai_auth": True,
-                "supports_websockets": True,
-            }),
+            state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE),
             int(state.get("proxy_port", choose_local_proxy_port())),
             str(state.get("loopback_secret", generate_loopback_secret())),
+            model_catalog,
         )
-        ensure_proxy_running(store)
-        model_picker = {"status": "not_modified", "reason": "use codex model-picker patch explicitly"}
+        proxy_pid = ensure_proxy_running(store)
+        store.update({"status": "configured", "proxy_pid": proxy_pid})
+        desktop_patches = patch_detected_codex_desktop()
         search_roots = [Path("/Applications"), Path.home() / "Applications"]
         app_path = detect_codex_app_path(search_roots=search_roots, platform=platform.system().lower().replace("windows", "win32"))
         if app_path is not None:
@@ -281,7 +467,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             launch_codex_process(command)
             capture_status: dict[str, object] = {"status": "not_installed"}
             capture_config = default_capture_config()
-            if capture_installation_enabled(app_path, capture_config):
+            capture_installed = capture_installation_enabled(app_path, capture_config)
+            if not capture_config.enabled and capture_installed:
+                capture_status = {"status": "installed_but_disabled"}
+            elif not capture_config.enabled:
+                capture_status = {"status": "disabled"}
+            elif capture_config.enabled and capture_installed:
                 capture_status = ensure_capture_bridge_running(capture_config, cdp_port)
             return emit({
                 "command": "launch",
@@ -289,8 +480,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": "launched",
                 "launch_command": command,
                 "injection": "enabled",
-                "model_picker": model_picker,
+                "desktop_patches": desktop_patches,
+                "model_picker": desktop_patches["model_picker"],
+                "plugin_auth_gate": desktop_patches["plugin_auth_gate"],
+                "plugin_mention_marketplace": desktop_patches["plugin_mention_marketplace"],
                 "capture": capture_status,
+                "model_catalog": model_catalog_meta,
             })
         result = adapter.launch(dry_run=False)
         return emit({
@@ -303,6 +498,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return handle_codex_model_picker(args.args[1:])
         if args.args and args.args[0] == "plugin-auth-gate":
             return handle_codex_plugin_auth_gate(args.args[1:])
+        if args.args and args.args[0] == "plugin-mention-marketplace":
+            return handle_codex_plugin_mention_marketplace(args.args[1:])
         if args.args and args.args[0] == "capture":
             return handle_codex_capture(args.args[1:])
         store = default_state_store()
@@ -317,17 +514,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             })
         env = merge_env_no_proxy(dict(os.environ))
         config_manager = default_config_manager()
+        client = default_http_client(str(state.get("server_base_url", "")))
+        model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, state, store)
         config_manager.repair(
-            state.get("config_profile", {
-                "model_provider": "zhumeng-managed",
-                "wire_api": "responses",
-                "requires_openai_auth": True,
-                "supports_websockets": True,
-            }),
+            state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE),
             int(state.get("proxy_port", choose_local_proxy_port())),
             str(state.get("loopback_secret", generate_loopback_secret())),
+            model_catalog,
         )
-        ensure_proxy_running(store)
+        proxy_pid = ensure_proxy_running(store)
+        store.update({"status": "configured", "proxy_pid": proxy_pid})
         passthrough_args = normalize_passthrough(args.args)
         return_code = run_codex_process(passthrough_args, env)
         return emit({
@@ -337,6 +533,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "returncode": return_code,
             "proxy_port": state.get("proxy_port"),
             "NO_PROXY": env.get("NO_PROXY"),
+            "model_catalog": model_catalog_meta,
         })
 
     if args.command == "status":
@@ -365,23 +562,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "message": str(err),
             })
         config_manager = default_config_manager()
+        client = default_http_client(str(state.get("server_base_url", "")))
+        model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, state, store)
         config_manager.repair(
-            state.get("config_profile", {
-                "model_provider": "zhumeng-managed",
-                "wire_api": "responses",
-                "requires_openai_auth": True,
-                "supports_websockets": True,
-            }),
+            state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE),
             int(state.get("proxy_port", choose_local_proxy_port())),
             str(state.get("loopback_secret", generate_loopback_secret())),
+            model_catalog,
         )
-        ensure_proxy_running(store)
-        model_picker = {"status": "not_modified", "reason": "use codex model-picker patch explicitly"}
+        proxy_pid = ensure_proxy_running(store)
+        store.update({"status": "configured", "proxy_pid": proxy_pid})
+        desktop_patches = patch_detected_codex_desktop()
         return emit({
             "command": "repair",
             "client": args.client,
             "status": "repaired",
-            "model_picker": model_picker,
+            "desktop_patches": desktop_patches,
+            "model_picker": desktop_patches["model_picker"],
+            "plugin_auth_gate": desktop_patches["plugin_auth_gate"],
+            "plugin_mention_marketplace": desktop_patches["plugin_mention_marketplace"],
+            "model_catalog": model_catalog_meta,
         })
 
     if args.command == "logout":
@@ -447,10 +647,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             managed_session_id=str(state["managed_session_id"]),
             access_token=str(state["access_token"]),
             loopback_secret=str(state["loopback_secret"]),
-            agent_version="0.1.0",
+            agent_version=AGENT_VERSION,
+            runtime_signature=AGENT_RUNTIME_SIGNATURE,
             config_hash=state.get("config_hash"),
             server_base_url=str(state.get("server_base_url", "")) or None,
             refresh_token=str(state.get("refresh_token", "")) or None,
+            source_root=AGENT_SOURCE_ROOT,
             state_store=store,
         ))
         asyncio.run(proxy.serve_forever(int(state["proxy_port"])))
@@ -499,6 +701,7 @@ def handle_codex_capture(argv: list[str]) -> int:
         return emit({
             "command": "codex capture status",
             "config": config.public_dict(),
+            "installation": __import__("zhumeng_agent.doctor", fromlist=["capture_install_manifest_state"]).capture_install_manifest_state(config),
         })
     if parsed.capture_command == "baseline":
         app_path = Path(parsed.app) if parsed.app else default_codex_app_path()
@@ -514,12 +717,20 @@ def handle_codex_capture(argv: list[str]) -> int:
         })
     if parsed.capture_command == "install":
         result = install_capture_hook(Path(parsed.app), config)
+        default_state_store().update({
+            "desktop_capture_enabled": True,
+            "desktop_capture_correlation_hash_key_file": str(config.correlation_hash_key_file) if config.correlation_hash_key_file else "",
+        })
         return emit({
             "command": "codex capture install",
             **result,
         })
     if parsed.capture_command == "uninstall":
         result = uninstall_capture_hook(Path(parsed.app), config)
+        default_state_store().update({
+            "desktop_capture_enabled": False,
+            "desktop_capture_correlation_hash_key_file": str(config.correlation_hash_key_file) if config.correlation_hash_key_file else "",
+        })
         return emit({
             "command": "codex capture uninstall",
             **result,
@@ -738,6 +949,37 @@ def handle_codex_plugin_auth_gate(argv: list[str]) -> int:
             "recovery_hint": "Quit Codex Desktop, run status, and retry only if the app still has a supported patch point.",
         })
     parser.error("unknown plugin-auth-gate command")
+    return 2
+
+
+def handle_codex_plugin_mention_marketplace(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="zhumeng-agent codex plugin-mention-marketplace")
+    subparsers = parser.add_subparsers(dest="plugin_mention_marketplace_command", required=True)
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--app", required=True)
+    patch_parser = subparsers.add_parser("patch")
+    patch_parser.add_argument("--app", required=True)
+    parsed = parser.parse_args(argv)
+    app_path = Path(parsed.app)
+    try:
+        if parsed.plugin_mention_marketplace_command == "status":
+            return emit({
+                "command": "codex plugin-mention-marketplace status",
+                **inspect_plugin_mention_marketplace_app(app_path),
+            })
+        if parsed.plugin_mention_marketplace_command == "patch":
+            return emit({
+                "command": "codex plugin-mention-marketplace patch",
+                **patch_plugin_mention_marketplace_app(app_path),
+            })
+    except ModelPickerPatchError as err:
+        return emit_failed({
+            "command": f"codex plugin-mention-marketplace {parsed.plugin_mention_marketplace_command}",
+            "status": "failed",
+            "message": str(err),
+            "recovery_hint": "Quit Codex Desktop, run status, and retry only if the app still has a supported @ menu patch point.",
+        })
+    parser.error("unknown plugin-mention-marketplace command")
     return 2
 
 

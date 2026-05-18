@@ -4,7 +4,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
-from zhumeng_agent.proxy.server import ManagedProxyConfig, ManagedProxyServer, merge_no_proxy
+from zhumeng_agent.proxy.server import ManagedProxyConfig, ManagedProxyServer, merge_no_proxy, sanitize_response_headers
 from zhumeng_agent.state import JsonStateStore
 
 
@@ -16,6 +16,8 @@ async def make_proxy(tmp_path, status_code: int = 200, response_body: dict | Non
     async def upstream_handler(request: web.Request):
         response_counter["count"] += 1
         seen["path"] = request.path
+        body = await request.read()
+        seen["body_size"] = len(body)
         seen["authorization"] = request.headers.get("Authorization")
         seen["managed_session"] = request.headers.get("X-Zhumeng-Managed-Session")
         seen["device_id"] = request.headers.get("X-Zhumeng-Device-ID")
@@ -46,7 +48,7 @@ async def make_proxy(tmp_path, status_code: int = 200, response_body: dict | Non
         await ws.close()
         return ws
 
-    upstream_app = web.Application()
+    upstream_app = web.Application(client_max_size=4 * 1024 * 1024)
     upstream_app.router.add_post("/codex/v1/responses", upstream_handler)
     upstream_app.router.add_post("/codex/v1/responses/{tail:.*}", upstream_handler)
     upstream_app.router.add_get("/codex/v1/models", upstream_handler)
@@ -63,6 +65,8 @@ async def make_proxy(tmp_path, status_code: int = 200, response_body: dict | Non
       access_token="access-token",
       loopback_secret="loopback-secret",
       agent_version="0.1.0",
+      runtime_signature="sig-1",
+      source_root="/tmp/zhumeng-agent",
       config_hash="cfg-hash",
       server_base_url=str(upstream_server.make_url("")).rstrip("/"),
       refresh_token="refresh-token",
@@ -94,6 +98,40 @@ async def test_only_codex_gateway_paths_are_accepted(tmp_path):
             headers={"Authorization": "Bearer zhumeng-local-managed-loopback-secret"},
         )
         assert unknown.status == 404
+    await upstream.close()
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_reports_runtime_identity(tmp_path):
+    upstream, proxy_client, _, _ = await make_proxy(tmp_path)
+    async with proxy_client:
+        resp = await proxy_client.get("/__zhumeng/health")
+        assert resp.status == 200
+        payload = await resp.json()
+        assert payload["ok"] is True
+        assert payload["agent_version"] == "0.1.0"
+        assert payload["runtime_signature"] == "sig-1"
+        assert payload["source_root"] == "/tmp/zhumeng-agent"
+    await upstream.close()
+
+
+@pytest.mark.asyncio
+async def test_large_image_payload_is_forwarded(tmp_path):
+    upstream, proxy_client, seen, _ = await make_proxy(tmp_path)
+    payload = b'{"model":"gpt-5.4","input":"' + (b"x" * (1024 * 1024 + 256 * 1024)) + b'"}'
+
+    async with proxy_client:
+        resp = await proxy_client.post(
+            "/v1/responses",
+            data=payload,
+            headers={
+                "Authorization": "Bearer zhumeng-local-managed-loopback-secret",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status == 200
+        assert seen["path"] == "/codex/v1/responses"
+        assert seen["body_size"] == len(payload)
     await upstream.close()
 
 
@@ -212,7 +250,30 @@ async def test_upstream_401_refreshes_and_retries(tmp_path, monkeypatch):
         assert state["access_token"] == "fresh-access-token"
         assert state["managed_session_id"] == "fresh-session"
         assert state["refresh_token"] == "fresh-refresh-token"
+        assert state["status"] == "configured"
         assert seen["authorization"] == "Bearer fresh-access-token"
+    await upstream.close()
+
+
+@pytest.mark.asyncio
+async def test_proxy_reloads_latest_credentials_from_state_before_forwarding(tmp_path):
+    upstream, proxy_client, seen, state_store = await make_proxy(tmp_path)
+    state_store.write({
+        "access_token": "fresh-access-token-from-state",
+        "managed_session_id": "fresh-session-from-state",
+        "refresh_token": "fresh-refresh-token-from-state",
+        "status": "configured",
+    })
+
+    async with proxy_client:
+        resp = await proxy_client.post(
+            "/v1/responses",
+            json={"model": "gpt-5.4", "input": "hello"},
+            headers={"Authorization": "Bearer zhumeng-local-managed-loopback-secret"},
+        )
+        assert resp.status == 200
+        assert seen["authorization"] == "Bearer fresh-access-token-from-state"
+        assert seen["managed_session"] == "fresh-session-from-state"
     await upstream.close()
 
 
@@ -267,6 +328,21 @@ def test_merge_no_proxy_preserves_existing_entries():
     assert merged["HTTP_PROXY"] == "http://127.0.0.1:7890"
 
 
+def test_sanitize_response_headers_drops_hop_by_hop_headers():
+    headers = sanitize_response_headers({
+        "Content-Type": "application/json",
+        "Transfer-Encoding": "chunked",
+        "Content-Length": "42",
+        "Connection": "keep-alive",
+        "X-Request-ID": "req_123",
+    })
+
+    assert headers == {
+        "Content-Type": "application/json",
+        "X-Request-ID": "req_123",
+    }
+
+
 def test_proxy_binds_loopback_only(tmp_path):
     config = ManagedProxyConfig(
       upstream_base_url="https://example.com",
@@ -275,6 +351,7 @@ def test_proxy_binds_loopback_only(tmp_path):
       access_token="access-token",
       loopback_secret="loopback-secret",
       agent_version="0.1.0",
+      runtime_signature="sig-1",
       state_store=JsonStateStore(tmp_path / "state.json"),
     )
     proxy = ManagedProxyServer(config)

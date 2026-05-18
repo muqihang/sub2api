@@ -14,9 +14,18 @@ from typing import Any
 
 OLD_MODEL_PICKER_EXPR = "if(l?a.has(e.model):!e.hidden){"
 NEW_MODEL_PICKER_EXPR = "if(!e.hidden|l&a.has(e.model)){"
+CURRENT_MODEL_PICKER_EXPR = "if(d?a.has(e.model):!e.hidden){"
+CURRENT_PATCHED_MODEL_PICKER_EXPR = "if(!e.hidden|d&a.has(e.model)){"
 READABLE_PATCHED_MODEL_PICKER_EXPR = "if(!e.hidden||l&&a.has(e.model)){"
 OLD_PLUGIN_AUTH_GATE_EXPR = "function e(e){return e!==`chatgpt`}"
 NEW_PLUGIN_AUTH_GATE_EXPR = "function e(e){return!1&&e!==`xxxx`}"
+OLD_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:[`shared-with-me`]"
+NEW_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:void 0/*zhumeng*/ "
+
+MODEL_PICKER_REPLACEMENTS = (
+    (OLD_MODEL_PICKER_EXPR, NEW_MODEL_PICKER_EXPR),
+    (CURRENT_MODEL_PICKER_EXPR, CURRENT_PATCHED_MODEL_PICKER_EXPR),
+)
 
 
 class ModelPickerPatchError(RuntimeError):
@@ -97,6 +106,43 @@ def inspect_plugin_auth_gate_app(app_path: Path) -> dict[str, object]:
     }
 
 
+def inspect_plugin_mention_marketplace_app(app_path: Path) -> dict[str, object]:
+    asar_path = app_path / "Contents" / "Resources" / "app.asar"
+    plist_path = app_path / "Contents" / "Info.plist"
+    if not asar_path.exists():
+        return {"status": "missing_asar", "integrity_ok": False}
+
+    archive = read_asar(asar_path)
+    counts = plugin_mention_marketplace_counts(archive.data)
+    status = plugin_mention_marketplace_status(counts)
+    target_file = None
+    target_files: list[str] = []
+    integrity_ok = False
+    expression = None
+    if status == "unpatched":
+        expression = OLD_PLUGIN_MENTION_MARKETPLACE_EXPR
+    elif status == "patched":
+        expression = NEW_PLUGIN_MENTION_MARKETPLACE_EXPR
+    if expression is not None:
+        entry_matches = find_plugin_mention_marketplace_entries(archive, expression)
+        if entry_matches:
+            target_file = entry_matches[0]["path"]
+            target_files = [entry_match["path"] for entry_match in entry_matches]
+            integrity_ok = all(entry_integrity_ok(archive, entry_match) for entry_match in entry_matches)
+    if integrity_ok:
+        integrity_ok = plist_hash_ok(plist_path, archive.header_bytes)
+    return {
+        "status": status,
+        "integrity_ok": integrity_ok,
+        "old_expression_count": counts["old"],
+        "new_expression_count": counts["new"],
+        "outside_candidate_expression_count": counts["outside"],
+        "target_file": target_file,
+        "target_files": target_files,
+        "candidate_files": candidate_plugin_mention_marketplace_files(archive),
+    }
+
+
 def patch_model_picker_app(
     app_path: Path,
     *,
@@ -138,8 +184,9 @@ def patch_model_picker_app(
             f"old={counts['old']} new={counts['new']} readable={counts['readable']}"
         )
 
-    old_bytes = OLD_MODEL_PICKER_EXPR.encode("utf-8")
-    new_bytes = NEW_MODEL_PICKER_EXPR.encode("utf-8")
+    old_expr, new_expr = model_picker_replacement_for_data(archive.data)
+    old_bytes = old_expr.encode("utf-8")
+    new_bytes = new_expr.encode("utf-8")
     if len(old_bytes) != len(new_bytes):
         raise ModelPickerPatchError(f"replacement length mismatch {len(old_bytes)} != {len(new_bytes)}")
 
@@ -254,6 +301,89 @@ def patch_plugin_auth_gate_app(
         "target_file": entry_match["path"],
         "backup_path": str(backup_path),
         "patched_offset": offset,
+        "restart_required": True,
+        "running_app_detected": codex_app_is_running(app_path),
+    }
+
+
+def patch_plugin_mention_marketplace_app(
+    app_path: Path,
+    *,
+    backup_root: Path | None = None,
+    sign: bool = True,
+    verify_signature: bool = True,
+) -> dict[str, object]:
+    asar_path = app_path / "Contents" / "Resources" / "app.asar"
+    plist_path = app_path / "Contents" / "Info.plist"
+    require_plist_asar_integrity(plist_path)
+    archive = read_asar(asar_path)
+    counts = plugin_mention_marketplace_counts(archive.data)
+
+    if counts["old"] == 0 and counts["new"] > 0 and counts["outside"] == 0:
+        entry_matches = find_plugin_mention_marketplace_entries(archive, NEW_PLUGIN_MENTION_MARKETPLACE_EXPR)
+        if not entry_matches:
+            raise ModelPickerPatchError("cannot locate existing plugin mention marketplace patch")
+        return ensure_existing_multi_entry_patch_integrity(
+            app_path,
+            asar_path,
+            plist_path,
+            archive,
+            status="patched",
+            entry_matches=entry_matches,
+            backup_root=backup_root,
+            backup_label="plugin-mention-marketplace",
+            sign=sign,
+            verify_signature=verify_signature,
+        )
+    if counts["old"] < 1 or counts["new"] != 0 or counts["outside"] != 0:
+        raise ModelPickerPatchError(
+            "unexpected plugin mention marketplace expression counts "
+            f"old={counts['old']} new={counts['new']} outside={counts['outside']}"
+        )
+
+    old_bytes = OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
+    new_bytes = NEW_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
+    if len(old_bytes) != len(new_bytes):
+        raise ModelPickerPatchError(f"replacement length mismatch {len(old_bytes)} != {len(new_bytes)}")
+
+    patched = bytearray(archive.data)
+    entry_matches = find_plugin_mention_marketplace_entries(archive, OLD_PLUGIN_MENTION_MARKETPLACE_EXPR)
+    offsets = []
+    for entry_match in entry_matches:
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        offset = entry_match["start"] + content.index(old_bytes)
+        offsets.append(offset)
+        patched[offset : offset + len(old_bytes)] = new_bytes
+    patched_archive = AsarArchive(
+        path=archive.path,
+        data=patched,
+        header=archive.header,
+        header_json_size=archive.header_json_size,
+        header_start=archive.header_start,
+        file_data_start=archive.file_data_start,
+    )
+    for entry_match in entry_matches:
+        update_entry_integrity(patched_archive, entry_match)
+    write_updated_header(patched_archive)
+
+    backup_path = create_backup(asar_path, app_path=app_path, backup_root=backup_root, label="plugin-mention-marketplace")
+    write_archive_with_rollback(
+        app_path,
+        asar_path,
+        plist_path,
+        patched_archive,
+        backup_path,
+        sign=sign,
+        verify_signature=verify_signature,
+    )
+    return {
+        "status": "patched",
+        "app_path": str(app_path),
+        "target_file": entry_matches[0]["path"],
+        "target_files": [entry_match["path"] for entry_match in entry_matches],
+        "backup_path": str(backup_path),
+        "patched_offset": offsets[0],
+        "patched_offsets": offsets,
         "restart_required": True,
         "running_app_detected": codex_app_is_running(app_path),
     }
@@ -470,7 +600,7 @@ def ensure_existing_byte_patch_integrity(
             "app_path": str(app_path),
             "target_file": entry_match["path"],
         }
-        if backup_label == "plugin-auth-gate":
+        if backup_label in {"plugin-auth-gate", "plugin-mention-marketplace"}:
             result["restart_required"] = True
             result["running_app_detected"] = codex_app_is_running(app_path)
         return result
@@ -495,10 +625,66 @@ def ensure_existing_byte_patch_integrity(
         "target_file": entry_match["path"],
         "backup_path": str(backup_path),
     }
-    if backup_label == "plugin-auth-gate":
+    if backup_label in {"plugin-auth-gate", "plugin-mention-marketplace"}:
         result["restart_required"] = True
         result["running_app_detected"] = codex_app_is_running(app_path)
     return result
+
+
+def ensure_existing_multi_entry_patch_integrity(
+    app_path: Path,
+    asar_path: Path,
+    plist_path: Path,
+    archive: AsarArchive,
+    *,
+    status: str,
+    entry_matches: list[dict[str, Any]],
+    backup_root: Path | None,
+    backup_label: str,
+    sign: bool,
+    verify_signature: bool,
+) -> dict[str, object]:
+    for entry_match in entry_matches:
+        if not isinstance(entry_match["entry"].get("integrity"), dict):
+            raise ModelPickerPatchError(f"asar file entry has no integrity metadata: {entry_match['path']}")
+    if all(entry_integrity_ok(archive, entry_match) for entry_match in entry_matches) and plist_hash_ok(
+        plist_path,
+        archive.header_bytes,
+    ):
+        return {
+            "status": "already_patched",
+            "mode": status,
+            "app_path": str(app_path),
+            "target_file": entry_matches[0]["path"],
+            "target_files": [entry_match["path"] for entry_match in entry_matches],
+            "restart_required": True,
+            "running_app_detected": codex_app_is_running(app_path),
+        }
+
+    require_plist_asar_integrity(plist_path)
+    for entry_match in entry_matches:
+        update_entry_integrity(archive, entry_match)
+    write_updated_header(archive)
+    backup_path = create_backup(asar_path, app_path=app_path, backup_root=backup_root, label=backup_label)
+    write_archive_with_rollback(
+        app_path,
+        asar_path,
+        plist_path,
+        archive,
+        backup_path,
+        sign=sign,
+        verify_signature=verify_signature,
+    )
+    return {
+        "status": "integrity_repaired",
+        "mode": status,
+        "app_path": str(app_path),
+        "target_file": entry_matches[0]["path"],
+        "target_files": [entry_match["path"] for entry_match in entry_matches],
+        "backup_path": str(backup_path),
+        "restart_required": True,
+        "running_app_detected": codex_app_is_running(app_path),
+    }
 
 
 def read_asar(asar_path: Path) -> AsarArchive:
@@ -533,8 +719,8 @@ def read_asar_from_data(data: bytes | bytearray) -> AsarArchive:
 
 def expression_counts(data: bytes | bytearray) -> dict[str, int]:
     return {
-        "old": bytes(data).count(OLD_MODEL_PICKER_EXPR.encode("utf-8")),
-        "new": bytes(data).count(NEW_MODEL_PICKER_EXPR.encode("utf-8")),
+        "old": sum(bytes(data).count(old.encode("utf-8")) for old, _ in MODEL_PICKER_REPLACEMENTS),
+        "new": sum(bytes(data).count(new.encode("utf-8")) for _, new in MODEL_PICKER_REPLACEMENTS),
         "readable": bytes(data).count(READABLE_PATCHED_MODEL_PICKER_EXPR.encode("utf-8")),
     }
 
@@ -575,6 +761,42 @@ def plugin_auth_gate_offset_for_status(data: bytes | bytearray, status: str) -> 
     return None
 
 
+def plugin_mention_marketplace_counts(data: bytes | bytearray) -> dict[str, int]:
+    archive = read_asar_from_data(data)
+    old_expr = OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
+    new_expr = NEW_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
+    counts = {"old": 0, "new": 0, "outside": 0}
+    for entry_match in file_entries(archive):
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        old_count = content.count(old_expr)
+        new_count = content.count(new_expr)
+        if is_plugin_mention_marketplace_candidate(entry_match["path"]):
+            counts["old"] += old_count
+            counts["new"] += new_count
+        else:
+            counts["outside"] += old_count + new_count
+    return counts
+
+
+def plugin_mention_marketplace_status(counts: dict[str, int]) -> str:
+    if counts.get("outside", 0) != 0:
+        return "unknown"
+    if counts["old"] >= 1 and counts["new"] == 0:
+        return "unpatched"
+    if counts["old"] == 0 and counts["new"] >= 1:
+        return "patched"
+    return "unknown"
+
+
+def plugin_mention_marketplace_offset_for_status(data: bytes | bytearray, status: str) -> int | None:
+    archive = read_asar_from_data(data)
+    if status == "unpatched":
+        return find_plugin_mention_marketplace_offset(archive, OLD_PLUGIN_MENTION_MARKETPLACE_EXPR)
+    if status == "patched":
+        return find_plugin_mention_marketplace_offset(archive, NEW_PLUGIN_MENTION_MARKETPLACE_EXPR)
+    return None
+
+
 def expression_status(counts: dict[str, int]) -> str:
     if counts["old"] == 1 and counts["new"] == 0 and counts["readable"] == 0:
         return "unpatched"
@@ -588,12 +810,27 @@ def expression_status(counts: dict[str, int]) -> str:
 def expression_offset_for_status(data: bytes | bytearray, status: str) -> int | None:
     haystack = bytes(data)
     if status == "unpatched":
-        return haystack.index(OLD_MODEL_PICKER_EXPR.encode("utf-8"))
+        return first_expression_offset(haystack, [old for old, _ in MODEL_PICKER_REPLACEMENTS])
     if status == "patched":
-        return haystack.index(NEW_MODEL_PICKER_EXPR.encode("utf-8"))
+        return first_expression_offset(haystack, [new for _, new in MODEL_PICKER_REPLACEMENTS])
     if status == "patched_readable":
         return haystack.index(READABLE_PATCHED_MODEL_PICKER_EXPR.encode("utf-8"))
     return None
+
+
+def model_picker_replacement_for_data(data: bytes | bytearray) -> tuple[str, str]:
+    haystack = bytes(data)
+    matches = [(old, new) for old, new in MODEL_PICKER_REPLACEMENTS if haystack.count(old.encode("utf-8")) == 1]
+    if len(matches) != 1:
+        raise ModelPickerPatchError(f"expected one model picker replacement candidate, found {len(matches)}")
+    return matches[0]
+
+
+def first_expression_offset(haystack: bytes, expressions: list[str]) -> int | None:
+    offsets = [haystack.index(expr.encode("utf-8")) for expr in expressions if expr.encode("utf-8") in haystack]
+    if not offsets:
+        return None
+    return min(offsets)
 
 
 def find_entry_covering_offset(archive: AsarArchive, offset: int) -> dict[str, Any] | None:
@@ -712,8 +949,19 @@ def candidate_plugin_auth_gate_files(archive: AsarArchive) -> list[str]:
     return [entry["path"] for entry in file_entries(archive) if is_plugin_auth_gate_candidate(entry["path"])]
 
 
+def candidate_plugin_mention_marketplace_files(archive: AsarArchive) -> list[str]:
+    return [entry["path"] for entry in file_entries(archive) if is_plugin_mention_marketplace_candidate(entry["path"])]
+
+
 def is_plugin_auth_gate_candidate(file_path: str) -> bool:
     return file_path.startswith("webview/assets/gradient-") and file_path.endswith(".js")
+
+
+def is_plugin_mention_marketplace_candidate(file_path: str) -> bool:
+    return (
+        file_path.startswith("webview/assets/prosemirror-")
+        or file_path.startswith("webview/assets/reply-")
+    ) and file_path.endswith(".js")
 
 
 def find_plugin_auth_gate_entry(archive: AsarArchive, expression: str) -> dict[str, Any]:
@@ -733,11 +981,52 @@ def find_plugin_auth_gate_entry(archive: AsarArchive, expression: str) -> dict[s
     return entry_match
 
 
+def find_plugin_mention_marketplace_entry(archive: AsarArchive, expression: str) -> dict[str, Any]:
+    matches = find_plugin_mention_marketplace_entries(archive, expression)
+    if len(matches) != 1:
+        raise ModelPickerPatchError(f"expected one plugin mention marketplace candidate match, found {len(matches)}")
+    return matches[0]
+
+
+def find_plugin_mention_marketplace_entries(archive: AsarArchive, expression: str) -> list[dict[str, Any]]:
+    expression_bytes = expression.encode("utf-8")
+    matches = []
+    for entry_match in file_entries(archive):
+        if not is_plugin_mention_marketplace_candidate(entry_match["path"]):
+            continue
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        if content.count(expression_bytes) > 0:
+            if content.count(expression_bytes) != 1:
+                raise ModelPickerPatchError(
+                    f"expected one plugin mention marketplace expression in {entry_match['path']}, "
+                    f"found {content.count(expression_bytes)}"
+                )
+            if not isinstance(entry_match["entry"].get("integrity"), dict):
+                raise ModelPickerPatchError(f"asar file entry has no integrity metadata: {entry_match['path']}")
+            matches.append(entry_match)
+    return matches
+
+
 def find_plugin_auth_gate_offset(archive: AsarArchive, expression: str) -> int | None:
     expression_bytes = expression.encode("utf-8")
     offsets = []
     for entry_match in file_entries(archive):
         if not is_plugin_auth_gate_candidate(entry_match["path"]):
+            continue
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        index = content.find(expression_bytes)
+        if index >= 0:
+            offsets.append(entry_match["start"] + index)
+    if len(offsets) != 1:
+        return None
+    return offsets[0]
+
+
+def find_plugin_mention_marketplace_offset(archive: AsarArchive, expression: str) -> int | None:
+    expression_bytes = expression.encode("utf-8")
+    offsets = []
+    for entry_match in file_entries(archive):
+        if not is_plugin_mention_marketplace_candidate(entry_match["path"]):
             continue
         content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
         index = content.find(expression_bytes)

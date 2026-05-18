@@ -26,6 +26,18 @@ def test_setup_writes_managed_state_and_codex_config(tmp_path: Path, capsys):
                 },
             }
 
+        def list_codex_models(self, **kwargs):
+            return {
+                "models": [
+                    {
+                        "slug": "deepseek-v4-pro",
+                        "display_name": "DeepSeek V4 Pro",
+                        "visibility": "visible",
+                        "supported_reasoning_levels": ["high", "xhigh"],
+                    }
+                ]
+            }
+
     state_store = JsonStateStore(tmp_path / "state" / "state.json")
     cli.default_http_client = lambda server: FakeClient()
     cli.default_state_store = lambda: state_store
@@ -47,9 +59,13 @@ def test_setup_writes_managed_state_and_codex_config(tmp_path: Path, capsys):
 
     config_text = (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8")
     auth_text = (tmp_path / ".codex" / "auth.json").read_text(encoding="utf-8")
-    assert 'model_provider = "zhumeng-managed"' in config_text
+    assert 'model_provider = "zhumeng-codex"' in config_text
+    assert 'name = "Zhumeng Codex"' in config_text
+    assert 'model_catalog_json = "' in config_text
     assert "sk-" not in auth_text
     assert "zhumeng-local-managed-loopback-secret" in auth_text
+    catalog = (tmp_path / ".codex" / "zhumeng-codex-models.json").read_text(encoding="utf-8")
+    assert "deepseek-v4-pro" in catalog
     assert "grant-1" not in capsys.readouterr().out
 
 

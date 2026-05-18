@@ -38,6 +38,29 @@ class AgentHTTPClient:
         payload = response.json()
         return payload.get("data", payload)
 
+    def list_codex_models(
+        self,
+        *,
+        gateway_base_url: str,
+        access_token: str,
+        managed_session_id: str,
+        device_id: int,
+    ) -> dict[str, object]:
+        url = urljoin(gateway_base_url.rstrip("/") + "/", "codex/v1/models")
+        response = httpx.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "X-Zhumeng-Managed-Session": managed_session_id,
+                "X-Zhumeng-Device-ID": str(device_id),
+                "X-Zhumeng-Agent-Version": "0.1.0",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload.get("data", payload)
+
     def revoke_managed_device(self, *, device_id: int, access_token: str, managed_session_id: str) -> dict[str, object]:
         url = urljoin(self.server_origin, "api/v1/codex/devices/revoke-managed")
         response = httpx.post(

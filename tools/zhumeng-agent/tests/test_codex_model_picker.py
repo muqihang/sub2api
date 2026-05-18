@@ -8,15 +8,19 @@ from pathlib import Path
 import pytest
 
 from zhumeng_agent.adapters.codex.model_picker import (
+    NEW_PLUGIN_MENTION_MARKETPLACE_EXPR,
     NEW_MODEL_PICKER_EXPR,
     NEW_PLUGIN_AUTH_GATE_EXPR,
+    OLD_PLUGIN_MENTION_MARKETPLACE_EXPR,
     OLD_MODEL_PICKER_EXPR,
     OLD_PLUGIN_AUTH_GATE_EXPR,
     READABLE_PATCHED_MODEL_PICKER_EXPR,
     ModelPickerPatchError,
     inspect_model_picker_app,
+    inspect_plugin_mention_marketplace_app,
     inspect_plugin_auth_gate_app,
     patch_model_picker_app,
+    patch_plugin_mention_marketplace_app,
     patch_plugin_auth_gate_app,
     restore_latest_model_picker_backup,
     restore_latest_plugin_auth_gate_backup,
@@ -202,6 +206,22 @@ def test_patch_rewrites_model_picker_and_updates_integrity(tmp_path: Path):
     assert status["status"] == "patched"
     assert status["integrity_ok"] is True
     assert status["target_file"] == "webview/assets/model-queries-test.js"
+
+
+def test_patch_rewrites_current_model_picker_expression(tmp_path: Path):
+    current_expression = "if(d?a.has(e.model):!e.hidden){"
+    expected_expression = "if(!e.hidden|d&a.has(e.model)){"
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + current_expression.encode("utf-8") + b" suffix",
+    )
+
+    result = patch_model_picker_app(app, backup_root=tmp_path / "backups", sign=False, verify_signature=False)
+
+    assert result["status"] == "patched"
+    data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
+    assert data.count(current_expression.encode("utf-8")) == 0
+    assert data.count(expected_expression.encode("utf-8")) == 1
 
 
 def test_patch_is_idempotent_when_expression_is_already_patched(tmp_path: Path):
@@ -479,3 +499,105 @@ def test_plugin_auth_gate_patch_rolls_back_when_codesign_fails(tmp_path: Path, m
 
     assert asar.read_bytes() == before_asar
     assert plist_path.read_bytes() == before_plist
+
+
+def test_plugin_mention_marketplace_patch_enables_default_marketplaces_and_updates_integrity(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+        filename="prosemirror-test.js",
+    )
+
+    result = patch_plugin_mention_marketplace_app(
+        app,
+        backup_root=tmp_path / "backups",
+        sign=False,
+        verify_signature=False,
+    )
+
+    assert result["status"] == "patched"
+    assert result["target_file"] == "webview/assets/prosemirror-test.js"
+    asar = app / "Contents" / "Resources" / "app.asar"
+    data = asar.read_bytes()
+    assert data.count(OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")) == 0
+    assert data.count(NEW_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")) == 1
+
+    header, header_bytes = read_asar_header(asar)
+    entry = model_entry(header, filename="prosemirror-test.js")
+    integrity = entry["integrity"]
+    assert isinstance(integrity, dict)
+    content_start = 16 + len(header_bytes)
+    content = data[content_start:]
+    assert integrity["hash"] == sha256(content)
+    assert integrity["blocks"] == [sha256(content)]
+
+    status = inspect_plugin_mention_marketplace_app(app)
+    assert status["status"] == "patched"
+    assert status["integrity_ok"] is True
+    assert status["target_file"] == "webview/assets/prosemirror-test.js"
+
+
+def test_plugin_mention_marketplace_patch_is_idempotent(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + NEW_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+        filename="prosemirror-test.js",
+    )
+
+    result = patch_plugin_mention_marketplace_app(
+        app,
+        backup_root=tmp_path / "backups",
+        sign=False,
+        verify_signature=False,
+    )
+
+    assert result["status"] == "already_patched"
+    assert not (tmp_path / "backups").exists()
+
+
+def test_plugin_mention_marketplace_patch_updates_reply_and_at_menu_chunks(tmp_path: Path):
+    app = make_codex_app_files(
+        tmp_path,
+        {
+            "prosemirror-test.js": b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+            "reply-test.js": b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+        },
+    )
+
+    result = patch_plugin_mention_marketplace_app(
+        app,
+        backup_root=tmp_path / "backups",
+        sign=False,
+        verify_signature=False,
+    )
+
+    assert result["status"] == "patched"
+    assert result["target_files"] == [
+        "webview/assets/prosemirror-test.js",
+        "webview/assets/reply-test.js",
+    ]
+    status = inspect_plugin_mention_marketplace_app(app)
+    assert status["status"] == "patched"
+    assert status["old_expression_count"] == 0
+    assert status["new_expression_count"] == 2
+    assert status["integrity_ok"] is True
+
+
+def test_plugin_mention_marketplace_patch_refuses_non_candidate_expression_without_writing(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+        filename="composer-test.js",
+    )
+    asar = app / "Contents" / "Resources" / "app.asar"
+    before = asar.read_bytes()
+
+    with pytest.raises(ModelPickerPatchError, match="outside=1"):
+        patch_plugin_mention_marketplace_app(
+            app,
+            backup_root=tmp_path / "backups",
+            sign=False,
+            verify_signature=False,
+        )
+
+    assert asar.read_bytes() == before

@@ -4,8 +4,16 @@
 <dict>
   <key>CFBundleIdentifier</key>
   <string>com.zhumeng.agent</string>
+  <key>CFBundleExecutable</key>
+  <string>Zhumeng Agent</string>
   <key>CFBundleName</key>
   <string>Zhumeng Agent</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.1.0</string>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>

@@ -2,13 +2,29 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
 from aiohttp import ClientSession, WSMsgType, WSServerHandshakeError, web
+from aiohttp.client_exceptions import ClientPayloadError
 
 from ..state import JsonStateStore
 from .upstream import build_upstream_headers, map_upstream_path
+
+HOP_BY_HOP_RESPONSE_HEADERS = {
+    "connection",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+MANAGED_PROXY_CLIENT_MAX_SIZE = 128 * 1024 * 1024
 
 
 @dataclass(slots=True)
@@ -19,10 +35,12 @@ class ManagedProxyConfig:
     access_token: str
     loopback_secret: str
     agent_version: str
+    runtime_signature: str
     state_store: JsonStateStore
     config_hash: str | None = None
     server_base_url: str | None = None
     refresh_token: str | None = None
+    source_root: str | None = None
 
 
 class ManagedProxyServer:
@@ -32,10 +50,11 @@ class ManagedProxyServer:
         self._session: ClientSession | None = None
 
     def create_app(self) -> web.Application:
-        app = web.Application()
+        app = web.Application(client_max_size=MANAGED_PROXY_CLIENT_MAX_SIZE)
         app.router.add_route("*", "/v1/responses", self.handle_request)
         app.router.add_route("*", "/v1/responses/{tail:.*}", self.handle_request)
         app.router.add_route("*", "/v1/models", self.handle_request)
+        app.router.add_get("/__zhumeng/health", self.handle_health)
         app.on_cleanup.append(self._close_session)
         return app
 
@@ -60,6 +79,8 @@ class ManagedProxyServer:
             await runner.cleanup()
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
+        self._sync_credentials_from_state()
+
         if request.method == "OPTIONS":
             raise web.HTTPNotFound()
 
@@ -78,6 +99,15 @@ class ManagedProxyServer:
             return await self._proxy_websocket(request)
 
         return await self._proxy_http(request)
+
+    async def handle_health(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "ok": True,
+            "agent_version": self.config.agent_version,
+            "runtime_signature": self.config.runtime_signature,
+            "source_root": self.config.source_root or "",
+            "proxy_port": request.url.port,
+        })
 
     async def _proxy_http(self, request: web.Request) -> web.Response:
         session = await self._get_session()
@@ -150,6 +180,7 @@ class ManagedProxyServer:
                             break
 
                 await asyncio.gather(client_to_upstream(), upstream_to_client())
+                self._mark_state_configured()
             finally:
                 await upstream_ws.close()
         except WSServerHandshakeError as err:
@@ -178,7 +209,12 @@ class ManagedProxyServer:
             inbound_headers=inbound_headers,
         )
         async with session.request(method, upstream_url, data=body, headers=headers) as response:
-            payload = await response.read()
+            try:
+                payload = await response.read()
+            except ClientPayloadError:
+                payload = b""
+                if response.status < 400:
+                    return web.Response(status=502, text="upstream response payload was truncated")
             if response.status in {401, 403} and await self._refresh_credentials():
                 headers = build_upstream_headers(
                     access_token=self.config.access_token,
@@ -189,13 +225,21 @@ class ManagedProxyServer:
                     inbound_headers=inbound_headers,
                 )
                 async with session.request(method, upstream_url, data=body, headers=headers) as retried:
-                    retried_payload = await retried.read()
+                    try:
+                        retried_payload = await retried.read()
+                    except ClientPayloadError:
+                        retried_payload = b""
+                        return web.Response(status=502, text="upstream response payload was truncated")
                     if retried.status in {401, 403}:
                         self.config.state_store.update({"status": "reauthorization_required"})
-                    return web.Response(status=retried.status, body=retried_payload, headers=retried.headers)
+                    elif retried.status < 400:
+                        self._mark_state_configured()
+                    return web.Response(status=retried.status, body=retried_payload, headers=sanitize_response_headers(retried.headers))
             if response.status in {401, 403}:
                 self.config.state_store.update({"status": "reauthorization_required"})
-            return web.Response(status=response.status, body=payload, headers=response.headers)
+            elif response.status < 400:
+                self._mark_state_configured()
+            return web.Response(status=response.status, body=payload, headers=sanitize_response_headers(response.headers))
 
     async def _refresh_credentials(self) -> bool:
         if not self.config.server_base_url or not self.config.refresh_token:
@@ -219,10 +263,34 @@ class ManagedProxyServer:
                 "access_token": self.config.access_token,
                 "managed_session_id": self.config.managed_session_id,
                 "refresh_token": self.config.refresh_token,
+                "status": "configured",
             })
             return True
         except Exception:
             return False
+
+    def _sync_credentials_from_state(self) -> None:
+        try:
+            state = self.config.state_store.read()
+        except Exception:
+            return
+        access_token = str(state.get("access_token", "") or "")
+        managed_session_id = str(state.get("managed_session_id", "") or "")
+        refresh_token = str(state.get("refresh_token", "") or "")
+        if access_token:
+            self.config.access_token = access_token
+        if managed_session_id:
+            self.config.managed_session_id = managed_session_id
+        if refresh_token:
+            self.config.refresh_token = refresh_token
+
+    def _mark_state_configured(self) -> None:
+        try:
+            state = self.config.state_store.read()
+        except Exception:
+            return
+        if state.get("status") != "configured":
+            self.config.state_store.update({"status": "configured"})
 
 
 def merge_no_proxy(env: dict[str, str]) -> dict[str, str]:
@@ -235,3 +303,12 @@ def merge_no_proxy(env: dict[str, str]) -> dict[str, str]:
                 current.append(item)
         merged[key] = ",".join(current)
     return merged
+
+
+def sanitize_response_headers(headers) -> dict[str, str]:
+    sanitized: dict[str, str] = {}
+    for key, value in headers.items():
+        if key.lower() in HOP_BY_HOP_RESPONSE_HEADERS:
+            continue
+        sanitized[key] = value
+    return sanitized

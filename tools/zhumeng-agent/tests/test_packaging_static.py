@@ -5,6 +5,8 @@ import plistlib
 def test_macos_info_plist_contains_protocol_registration():
     path = Path(__file__).resolve().parents[1] / "packaging" / "macos" / "Info.plist"
     data = plistlib.loads(path.read_bytes())
+    assert data["CFBundleExecutable"] == "Zhumeng Agent"
+    assert data["CFBundlePackageType"] == "APPL"
     url_types = data["CFBundleURLTypes"][0]
     assert "zhumeng-agent" in url_types["CFBundleURLSchemes"]
 
