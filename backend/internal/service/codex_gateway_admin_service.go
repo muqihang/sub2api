@@ -110,6 +110,7 @@ type CodexGatewayAdminService struct {
 	versions        map[string]int64
 	pricingChecker  CodexGatewayPricingReadyChecker
 	protocolChecker CodexGatewayProtocolReadyChecker
+	variantChecker  CodexGatewayVariantReadyChecker
 }
 
 func NewCodexGatewayAdminService(cfg config.GatewayCodexConfig, stateStore *CodexGatewayStateStore) *CodexGatewayAdminService {
@@ -124,6 +125,7 @@ func NewCodexGatewayAdminService(cfg config.GatewayCodexConfig, stateStore *Code
 		versions:        make(map[string]int64),
 		pricingChecker:  defaultCodexGatewayPricingReadyChecker,
 		protocolChecker: defaultCodexGatewayProtocolReadyChecker,
+		variantChecker:  codexGatewayVariantReadyAllowAll{},
 	}
 }
 
@@ -230,7 +232,7 @@ func (s *CodexGatewayAdminService) ListModels(context.Context) ([]CodexGatewayMa
 		}
 		provider := normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider))
 		providerRuntime := s.providerGroups[provider]
-		effectiveModel := codexGatewayApplyVisibilityGates(model, mutation, providerRuntime, s.pricingChecker, s.protocolChecker)
+		effectiveModel := codexGatewayApplyVisibilityGates(model, mutation, providerRuntime, s.pricingChecker, s.protocolChecker, s.variantChecker)
 		rows = append(rows, CodexGatewayManagedModel{
 			Model:           effectiveModel,
 			Namespace:       CodexGatewayEnabledModelsNamespace,
@@ -268,7 +270,7 @@ func (s *CodexGatewayAdminService) UpdateModel(_ context.Context, modelID string
 	s.versions[CodexGatewayEnabledModelsNamespace]++
 
 	providerRuntime := s.providerGroups[normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider))]
-	effectiveModel := codexGatewayApplyVisibilityGates(model, current, providerRuntime, s.pricingChecker, s.protocolChecker)
+	effectiveModel := codexGatewayApplyVisibilityGates(model, current, providerRuntime, s.pricingChecker, s.protocolChecker, s.variantChecker)
 	result := CodexGatewayManagedModel{
 		Model:           effectiveModel,
 		Namespace:       CodexGatewayEnabledModelsNamespace,

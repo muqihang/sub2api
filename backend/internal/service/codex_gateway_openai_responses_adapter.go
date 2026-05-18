@@ -242,7 +242,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		if !clientOutputStarted {
 			return CodexGatewayProviderResult{}, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte("missing terminal event")}
 		}
-		return CodexGatewayProviderResult{}, fmt.Errorf("codex gateway openai stream ended without terminal event")
+		return result, nil
 	}
 	if !clientOutputStarted && preOutput.Len() > 0 {
 		writeStreamHeaders()

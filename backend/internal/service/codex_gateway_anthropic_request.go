@@ -14,13 +14,11 @@ func BuildCodexGatewayAnthropicRequest(model CodexGatewayModel, req CodexGateway
 	if strings.TrimSpace(model.Provider) != "" && !strings.EqualFold(strings.TrimSpace(model.Provider), "anthropic") {
 		return CodexGatewayPreparedAnthropicRequest{}, fmt.Errorf("codex anthropic request requires an anthropic model")
 	}
-	upstreamModel := strings.TrimSpace(model.UpstreamModel)
-	if upstreamModel == "" {
-		upstreamModel = strings.TrimSpace(model.Slug)
-	}
+	upstreamModel := codexGatewayAnthropicResolveUpstreamModel(req.Reasoning, model)
 	if upstreamModel == "" {
 		return CodexGatewayPreparedAnthropicRequest{}, fmt.Errorf("codex anthropic request requires an upstream model")
 	}
+	stateModelKey := codexGatewayAnthropicStateModelKey(model, upstreamModel)
 
 	toolMapping, err := BuildCodexGatewayToolMapping(req.Tools, cfg.ToolMappingConfig)
 	if err != nil {
@@ -69,7 +67,7 @@ func BuildCodexGatewayAnthropicRequest(model CodexGatewayModel, req CodexGateway
 		}
 	}
 
-	messages, err := buildCodexGatewayAnthropicMessages(req, stateStore, ctx, toolMapping, cfg, upstreamModel)
+	messages, err := buildCodexGatewayAnthropicMessages(req, stateStore, ctx, toolMapping, cfg, stateModelKey)
 	if err != nil {
 		return CodexGatewayPreparedAnthropicRequest{}, err
 	}
@@ -164,7 +162,7 @@ func codexGatewayAnthropicCacheControl(cfg CodexGatewayAnthropicRequestConfig) m
 	return map[string]any{"type": "ephemeral", "ttl": ttl}
 }
 
-func buildCodexGatewayAnthropicMessages(req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayAnthropicRequestContext, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayAnthropicRequestConfig, upstreamModel string) ([]any, error) {
+func buildCodexGatewayAnthropicMessages(req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayAnthropicRequestContext, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayAnthropicRequestConfig, stateModelKey string) ([]any, error) {
 	items, err := decodeCodexGatewayInputItems(req.Input)
 	if err != nil {
 		return nil, err
@@ -180,7 +178,7 @@ func buildCodexGatewayAnthropicMessages(req CodexGatewayResponsesCreateRequest, 
 			SessionKey:    ctx.SessionKey,
 			IsolationKey:  ctx.IsolationKey,
 			Provider:      "anthropic",
-			UpstreamModel: upstreamModel,
+			UpstreamModel: stateModelKey,
 		})
 		if err != nil {
 			return nil, err
@@ -460,13 +458,14 @@ func convertCodexGatewayFunctionCallItemToAnthropic(m map[string]any, toolMappin
 		alias = sanitizeCodexGatewayToolName(name)
 	}
 	args := normalizeCodexGatewayToolArguments(firstCodexGatewayToolValue(m["arguments"], m["input"]))
+	input := codexGatewayAnthropicToolInputRawMessage(args)
 	return map[string]any{
 		"role": "assistant",
 		"content": []any{map[string]any{
 			"type":  "tool_use",
 			"id":    callID,
 			"name":  alias,
-			"input": json.RawMessage(args),
+			"input": input,
 		}},
 	}, nil
 }
@@ -582,9 +581,7 @@ func codexGatewayAnthropicThinkingConfig(raw json.RawMessage, model CodexGateway
 		}
 	}
 	if !strings.Contains(strings.ToLower(model.Slug), "thinking") {
-		if effort == "none" || effort == "minimal" || effort == "" {
-			return map[string]any{"type": "disabled"}, nil
-		}
+		return map[string]any{"type": "disabled"}, nil
 	}
 	switch effort {
 	case "none", "minimal":
@@ -599,6 +596,41 @@ func codexGatewayAnthropicThinkingConfig(raw json.RawMessage, model CodexGateway
 		}
 		return map[string]any{"type": "disabled"}, nil
 	}
+}
+
+func codexGatewayAnthropicReasoningEffort(raw json.RawMessage, model CodexGatewayModel) string {
+	effort := strings.TrimSpace(strings.ToLower(model.DefaultReasoningLevel))
+	if effort == "" {
+		effort = "high"
+	}
+	if len(raw) == 0 {
+		return effort
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return effort
+	}
+	rawEffort, _ := parsed["effort"].(string)
+	rawEffort = strings.TrimSpace(strings.ToLower(rawEffort))
+	if rawEffort == "" {
+		return effort
+	}
+	return rawEffort
+}
+
+func codexGatewayAnthropicResolveUpstreamModel(raw json.RawMessage, model CodexGatewayModel) string {
+	fallback := strings.TrimSpace(model.UpstreamModel)
+	if fallback == "" {
+		fallback = strings.TrimSpace(model.Slug)
+	}
+	return fallback
+}
+
+func codexGatewayAnthropicStateModelKey(model CodexGatewayModel, upstreamModel string) string {
+	if strings.TrimSpace(model.Slug) != "" {
+		return strings.TrimSpace(model.Slug)
+	}
+	return strings.TrimSpace(upstreamModel)
 }
 
 func resolveCodexGatewayAnthropicToolAlias(mapping CodexGatewayToolMappingResult, name string) (string, error) {
@@ -651,7 +683,7 @@ func codexGatewayAnthropicAssistantMessageFromState(state CodexGatewayResponseSt
 			"type":  "tool_use",
 			"id":    call.ID,
 			"name":  codexGatewayAnthropicStoredToolCallAlias(call, state.ToolNameMap),
-			"input": json.RawMessage(args),
+			"input": codexGatewayAnthropicToolInputRawMessage(args),
 		})
 	}
 	if len(content) == 0 {
@@ -681,6 +713,29 @@ func codexGatewayAnthropicMessagesFromState(state CodexGatewayResponseState) ([]
 		}
 	}
 	return []any{codexGatewayAnthropicAssistantMessageFromState(state)}, nil
+}
+
+func codexGatewayAnthropicToolInputRawMessage(args string) json.RawMessage {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid([]byte(args)) {
+		var value any
+		if err := json.Unmarshal([]byte(args), &value); err == nil {
+			if _, ok := value.(map[string]any); ok {
+				return json.RawMessage(args)
+			}
+			if raw, err := json.Marshal(map[string]any{"value": value}); err == nil {
+				return raw
+			}
+		}
+	}
+	raw, err := json.Marshal(map[string]any{"text": args})
+	if err != nil {
+		return json.RawMessage(`{"text":""}`)
+	}
+	return raw
 }
 
 func codexGatewayAnthropicRawMessages(messages []any) []json.RawMessage {

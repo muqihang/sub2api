@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -291,6 +292,301 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, "need tools", stored.ReasoningContent)
 		require.Len(t, stored.ToolCalls, 2)
 		require.Equal(t, "custom__shell", stored.ToolCalls[1].Alias)
+	})
+
+	t.Run("does not expose hosted web search as client function call", func(t *testing.T) {
+		origSearch := codexGatewayExecuteHostedWebSearchFunc
+		t.Cleanup(func() { codexGatewayExecuteHostedWebSearchFunc = origSearch })
+		codexGatewayExecuteHostedWebSearchFunc = func(_ context.Context, query string) (string, error) {
+			return `{"results":[]}`, nil
+		}
+
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"search current news"}]}
+			]`),
+			Tools: json.RawMessage(`[
+				{"type":"web_search"},
+				{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}
+			]`),
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if strings.Contains(string(mustReadCodexGatewayRequestBody(t, r)), `"tool_call_id":"call_search"`) {
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_hosted_search_final","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+				return
+			}
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_hosted_search","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"current news\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_hosted_search", IsolationKey: "iso_hosted_search"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+
+		stream := buf.String()
+		require.NotContains(t, stream, `"name":"web_search"`)
+		require.NotContains(t, stream, "event: response.function_call_arguments.done")
+		require.Len(t, result.ProviderResult.ToolCalls, 0)
+	})
+
+	t.Run("executes hosted web search and resumes model without client tool call", func(t *testing.T) {
+		origSearch := codexGatewayExecuteHostedWebSearchFunc
+		t.Cleanup(func() { codexGatewayExecuteHostedWebSearchFunc = origSearch })
+		var searchedQueries []string
+		var buf bytes.Buffer
+		codexGatewayExecuteHostedWebSearchFunc = func(_ context.Context, query string) (string, error) {
+			searchedQueries = append(searchedQueries, query)
+			streamSoFar := buf.String()
+			require.Contains(t, streamSoFar, `"type":"web_search_call"`)
+			require.Contains(t, streamSoFar, `"status":"in_progress"`)
+			require.NotContains(t, streamSoFar, `"status":"completed"`)
+			return `{"results":[{"title":"Result","url":"https://example.test","snippet":"Found from gateway search"}]}`, nil
+		}
+
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"search current news"}]}
+			]`),
+			Tools: json.RawMessage(`[
+				{"type":"web_search"},
+				{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}
+			]`),
+		}
+
+		var requestBodies [][]byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			requestBodies = append(requestBodies, body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			switch len(requestBodies) {
+			case 1:
+				require.Equal(t, "web_search", gjson.GetBytes(body, `tools.#(function.name=="web_search").function.name`).String())
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_hosted_search","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"current news\"}"}}]},"finish_reason":"tool_calls"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+			case 2:
+				require.Equal(t, "assistant", gjson.GetBytes(body, "messages.1.role").String())
+				require.Equal(t, "tool", gjson.GetBytes(body, "messages.2.role").String())
+				require.Equal(t, "call_search", gjson.GetBytes(body, "messages.2.tool_call_id").String())
+				require.Contains(t, string(body), "Found from gateway search")
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_hosted_search_final","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"Search result says Found from gateway search."},"finish_reason":"stop"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+			default:
+				t.Fatalf("unexpected extra upstream request %d", len(requestBodies))
+			}
+		}))
+		defer server.Close()
+
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_hosted_search_resume", IsolationKey: "iso_hosted_search_resume"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, []string{"current news"}, searchedQueries)
+		require.Len(t, requestBodies, 2)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+		stream := buf.String()
+		require.NotContains(t, stream, `"name":"web_search"`)
+		require.NotContains(t, stream, "event: response.function_call_arguments.done")
+		require.Contains(t, stream, `"type":"web_search_call"`)
+		require.Contains(t, stream, `"status":"completed"`)
+		require.Contains(t, stream, "event: response.web_search_call.in_progress")
+		require.Contains(t, stream, "event: response.web_search_call.searching")
+		require.Contains(t, stream, "event: response.web_search_call.completed")
+		require.Equal(t, 2, countCodexGatewayEvent(parseCodexGatewayOrderedEvents(t, stream), "response.output_item.added"))
+		require.Contains(t, stream, "Search result says Found from gateway search.")
+	})
+
+	t.Run("reuses hosted web search result for repeated query instead of exceeding loop limit", func(t *testing.T) {
+		origSearch := codexGatewayExecuteHostedWebSearchFunc
+		t.Cleanup(func() { codexGatewayExecuteHostedWebSearchFunc = origSearch })
+		var searchedQueries []string
+		codexGatewayExecuteHostedWebSearchFunc = func(_ context.Context, query string) (string, error) {
+			searchedQueries = append(searchedQueries, query)
+			return `{"results":[{"title":"Result","url":"https://example.test","snippet":"cached search result"}]}`, nil
+		}
+
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"search current news"}]}
+			]`),
+			Tools: json.RawMessage(`[{"type":"web_search"}]`),
+		}
+
+		var requestBodies [][]byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			requestBodies = append(requestBodies, body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			switch len(requestBodies) {
+			case 1, 2:
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_repeat_search","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_search_` + string(rune('0'+len(requestBodies))) + `","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"current news\"}"}}]},"finish_reason":"tool_calls"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+			case 3:
+				require.Empty(t, gjson.GetBytes(body, `tools.#(function.name=="web_search").function.name`).String())
+				require.Contains(t, string(body), "already been executed")
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_repeat_search_final","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"Final answer from cached search."},"finish_reason":"stop"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+			default:
+				t.Fatalf("unexpected extra upstream request %d", len(requestBodies))
+			}
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_repeat_search", IsolationKey: "iso_repeat_search"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+		require.Equal(t, []string{"current news"}, searchedQueries)
+		require.Len(t, requestBodies, 3)
+		require.Contains(t, buf.String(), `"type":"web_search_call"`)
+		require.Contains(t, buf.String(), "Final answer from cached search.")
+	})
+
+	t.Run("continues hosted web search through multiple turns without hard stop", func(t *testing.T) {
+		origSearch := codexGatewayExecuteHostedWebSearchFunc
+		t.Cleanup(func() { codexGatewayExecuteHostedWebSearchFunc = origSearch })
+		calls := 0
+		codexGatewayExecuteHostedWebSearchFunc = func(_ context.Context, query string) (string, error) {
+			calls++
+			return `{"results":[{"title":"Result","url":"https://example.test","snippet":"` + query + `"}]}`, nil
+		}
+
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"search repeatedly"}]}
+			]`),
+			Tools: json.RawMessage(`[{"type":"web_search"}]`),
+		}
+
+		requestBodies := make([][]byte, 0, 5)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			requestBodies = append(requestBodies, body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			if len(requestBodies) <= 4 {
+				query := fmt.Sprintf("turn-%d", len(requestBodies))
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_multi_search_` + fmt.Sprint(len(requestBodies)) + `","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_` + fmt.Sprint(len(requestBodies)) + `","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"` + query + `\"}"}}]},"finish_reason":"tool_calls"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+				return
+			}
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_multi_search_final","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_multi_search", IsolationKey: "iso_multi_search"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, 4, calls)
+		require.Len(t, requestBodies, 5)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+		require.Contains(t, buf.String(), `"type":"web_search_call"`)
+		require.Contains(t, buf.String(), "done")
 	})
 
 	t.Run("streams unwrapped custom tool input and custom done event", func(t *testing.T) {
@@ -954,6 +1250,14 @@ func indexCodexGatewayEvent(events []codexGatewayOrderedEvent, name string) int 
 		}
 	}
 	return -1
+}
+
+func mustReadCodexGatewayRequestBody(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	body, err := io.ReadAll(r.Body)
+	require.NoError(t, err)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body
 }
 
 type failingCodexGatewayStreamWriter struct {

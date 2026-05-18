@@ -81,6 +81,7 @@ func doCodexGatewayAnthropicMessagesRequest(ctx context.Context, client *http.Cl
 		return nil, nil, fmt.Errorf("build codex anthropic request: %w", err)
 	}
 	setCodexGatewayAnthropicHeaders(httpReq, apiKey, false)
+	setCodexGatewayAnthropicWebSearchBetaHeader(httpReq, rawBody)
 	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "anthropic", httpReq.Header, rawBody)
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -107,6 +108,13 @@ func setCodexGatewayAnthropicHeaders(req *http.Request, apiKey string, stream bo
 	if strings.TrimSpace(apiKey) != "" {
 		req.Header.Set("x-api-key", strings.TrimSpace(apiKey))
 	}
+}
+
+func setCodexGatewayAnthropicWebSearchBetaHeader(req *http.Request, body []byte) {
+	if req == nil || !bytes.Contains(body, []byte(`"web_search_20250305"`)) {
+		return
+	}
+	req.Header.Set("Anthropic-Beta", "web-search-2025-03-05")
 }
 
 func buildAnthropicMessagesURL(baseURL string) string {
@@ -197,7 +205,7 @@ func codexGatewayAnthropicMapMessageResponse(raw []byte, upstreamRequestID strin
 	result.ToolCalls = stored
 	result.Response = response
 	if response.Status == "completed" && len(stored) > 0 {
-		if err := codexGatewayAnthropicPersistState(stateStore, responseID, upstreamModel, reqCtx, strings.Join(textParts, "\n"), len(textParts) > 0, result.ReasoningContent, result.ReasoningContentPresent, thinkingBlocks, stored, toolNameMap, replayMessages); err != nil {
+		if err := codexGatewayAnthropicPersistState(stateStore, responseID, codexGatewayAnthropicStateModelKey(model, upstreamModel), reqCtx, strings.Join(textParts, "\n"), len(textParts) > 0, result.ReasoningContent, result.ReasoningContentPresent, thinkingBlocks, stored, toolNameMap, replayMessages); err != nil {
 			return CodexGatewayProviderResult{}, err
 		}
 	}
@@ -420,13 +428,12 @@ func codexGatewayAnthropicPersistState(stateStore *CodexGatewayStateStore, respo
 }
 
 func codexGatewayAnthropicStateReplayMessages(base []json.RawMessage, state CodexGatewayResponseState) []json.RawMessage {
-	out := cloneCodexGatewayRawMessages(base)
 	assistant := codexGatewayAnthropicAssistantMessageFromState(state)
 	raw, err := json.Marshal(assistant)
 	if err == nil && len(raw) > 0 {
-		out = append(out, raw)
+		return []json.RawMessage{raw}
 	}
-	return out
+	return nil
 }
 
 func codexGatewayAnthropicFinishStatus(reason string) string {

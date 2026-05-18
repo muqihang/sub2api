@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/tidwall/gjson"
 )
 
 type CodexGatewayProviderUnavailableKind string
@@ -85,8 +86,14 @@ func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGa
 		usageRecorder:            openaiGateway,
 	}
 	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: openaiGateway}
-	executor.deepseek = &codexGatewayDeepSeekProviderAdapter{stateStore: stateStore}
-	executor.anthropic = &codexGatewayAnthropicProviderAdapter{stateStore: stateStore}
+	executor.deepseek = &codexGatewayDeepSeekProviderAdapter{
+		stateStore:      stateStore,
+		hostedWebSearch: executor.executeOpenAIHostedWebSearch,
+	}
+	executor.anthropic = &codexGatewayAnthropicProviderAdapter{
+		stateStore:      stateStore,
+		hostedWebSearch: executor.executeOpenAIHostedWebSearch,
+	}
 	return executor
 }
 
@@ -297,6 +304,176 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 	return account, nil
 }
 
+const codexGatewayHostedWebSearchOpenAIModel = "gpt-5.4-mini"
+
+func (e *CodexGatewayProviderExecutor) executeOpenAIHostedWebSearch(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error) {
+	if e == nil || e.openaiGateway == nil || e.accountSelector == nil {
+		return "", fmt.Errorf("codex gateway hosted web search requires OpenAI provider")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", fmt.Errorf("codex gateway hosted web search requires a query")
+	}
+	runtime := e.providerRuntime(ctx, string(CodexGatewayProviderOpenAI))
+	if runtime.GroupID <= 0 || !runtime.Healthy {
+		return "", &CodexGatewayProviderUnavailableError{
+			ModelID:  codexGatewayHostedWebSearchOpenAIModel,
+			Provider: string(CodexGatewayProviderOpenAI),
+			Kind:     CodexGatewayProviderUnavailableNoProviderGroup,
+		}
+	}
+	searchModel := e.openAIHostedSearchModel(ctx)
+	searchReq := req
+	searchReq.Model = CodexGatewayModel{
+		Slug:          searchModel,
+		Provider:      string(CodexGatewayProviderOpenAI),
+		UpstreamModel: searchModel,
+	}
+	searchReq.SessionKey = strings.TrimSpace(req.SessionKey) + ":codex_gateway:hosted_web_search"
+	account, err := e.selectAccount(ctx, runtime.GroupID, searchReq, map[int64]struct{}{})
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]any{
+		"model": searchModel,
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "input_text",
+						"text": "Use web search for the query below. Return concise findings with source URLs when available.\n\nQuery: " + query,
+					},
+				},
+			},
+		},
+		"tools": []any{map[string]any{"type": "web_search"}},
+		"store": false,
+	})
+	if err != nil {
+		return "", err
+	}
+	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
+	resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, respBody)
+	if resp.StatusCode >= 400 {
+		msg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return "", fmt.Errorf("codex gateway hosted web search failed: status=%d message=%s", resp.StatusCode, msg)
+	}
+	return codexGatewayOpenAIHostedWebSearchOutput(query, respBody), nil
+}
+
+func (e *CodexGatewayProviderExecutor) openAIHostedSearchModel(ctx context.Context) string {
+	preferred := []string{codexGatewayHostedWebSearchOpenAIModel, "gpt-5.4", "gpt-5.5", "gpt-5.3-codex"}
+	enabled := make(map[string]struct{}, len(preferred))
+	if e != nil && e.cfg != nil {
+		for _, model := range e.cfg.Gateway.Codex.EnabledModels {
+			model = strings.TrimSpace(model)
+			if model != "" {
+				enabled[model] = struct{}{}
+			}
+		}
+	}
+	if e != nil && e.stateSource != nil {
+		if state, err := e.stateSource.LoadCodexGatewayRegistryState(ctx); err == nil && state != nil {
+			for model, mutation := range state.Models {
+				model = strings.TrimSpace(model)
+				if model == "" || !mutation.Enabled {
+					continue
+				}
+				enabled[model] = struct{}{}
+			}
+		}
+	}
+	if len(enabled) == 0 {
+		return codexGatewayHostedWebSearchOpenAIModel
+	}
+	for _, model := range preferred {
+		if _, ok := enabled[model]; ok {
+			return model
+		}
+	}
+	for model := range enabled {
+		if strings.HasPrefix(model, "gpt-") {
+			return model
+		}
+	}
+	return codexGatewayHostedWebSearchOpenAIModel
+}
+
+func codexGatewayOpenAIHostedWebSearchOutput(query string, body []byte) string {
+	body = codexGatewayNormalizeOpenAIHostedWebSearchBody(body)
+	text := strings.TrimSpace(codexGatewayOpenAIHostedWebSearchText(body))
+	payload := map[string]any{
+		"query":    query,
+		"provider": "openai_responses",
+		"summary":  text,
+	}
+	if text == "" {
+		payload["summary"] = "OpenAI Responses completed the web search, but no output text was returned."
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		if text != "" {
+			return text
+		}
+		return string(body)
+	}
+	return string(raw)
+}
+
+func codexGatewayNormalizeOpenAIHostedWebSearchBody(body []byte) []byte {
+	if len(body) == 0 || !looksLikeSSEPayload(body) {
+		return body
+	}
+	normalized, err := codexGatewayOpenAIStreamJSONResponse(body)
+	if err != nil || len(normalized) == 0 {
+		return body
+	}
+	return normalized
+}
+
+func codexGatewayOpenAIHostedWebSearchText(body []byte) string {
+	if text := strings.TrimSpace(gjson.GetBytes(body, "output_text").String()); text != "" {
+		return text
+	}
+	output := gjson.GetBytes(body, "output")
+	if !output.IsArray() {
+		return ""
+	}
+	var parts []string
+	for _, item := range output.Array() {
+		if item.Get("type").String() != "message" {
+			continue
+		}
+		content := item.Get("content")
+		if !content.IsArray() {
+			continue
+		}
+		for _, block := range content.Array() {
+			switch block.Get("type").String() {
+			case "output_text", "text":
+				if text := strings.TrimSpace(block.Get("text").String()); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func codexGatewayProviderSelectionSessionKey(req CodexGatewayProviderRequest) string {
 	sessionKey := strings.TrimSpace(req.SessionKey)
 	if sessionKey == "" {
@@ -320,16 +497,24 @@ func codexGatewayProviderSelectionSessionKey(req CodexGatewayProviderRequest) st
 }
 
 type codexGatewayDeepSeekProviderAdapter struct {
-	stateStore *CodexGatewayStateStore
+	stateStore      *CodexGatewayStateStore
+	hostedWebSearch func(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error)
 }
 
 type codexGatewayAnthropicProviderAdapter struct {
-	stateStore *CodexGatewayStateStore
+	stateStore      *CodexGatewayStateStore
+	hostedWebSearch func(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error)
 }
 
 func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
 	if account == nil {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex gateway deepseek adapter requires selected account")
+	}
+	cfg := CodexGatewayDeepSeekRequestConfig{}
+	if a.hostedWebSearch != nil {
+		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
+			return a.hostedWebSearch(ctx, req, query)
+		}
 	}
 	return ExecuteCodexGatewayDeepSeekAdapter(
 		ctx,
@@ -344,7 +529,7 @@ func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, acco
 			IsolationKey: req.IsolationKey,
 			CaptureTrace: req.CaptureTrace,
 		},
-		CodexGatewayDeepSeekRequestConfig{},
+		cfg,
 	)
 }
 
@@ -360,6 +545,12 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 	if req.Request.WriteStatus != nil {
 		req.Request.WriteStatus(http.StatusOK)
 	}
+	cfg := CodexGatewayDeepSeekRequestConfig{}
+	if a.hostedWebSearch != nil {
+		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
+			return a.hostedWebSearch(ctx, req, query)
+		}
+	}
 	result, err := ExecuteCodexGatewayDeepSeekStream(
 		ctx,
 		http.DefaultClient,
@@ -373,7 +564,7 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 			IsolationKey: req.IsolationKey,
 			CaptureTrace: req.CaptureTrace,
 		},
-		CodexGatewayDeepSeekRequestConfig{},
+		cfg,
 		req.Request.StreamWriter,
 	)
 	if err != nil {
@@ -416,6 +607,12 @@ func (a *codexGatewayAnthropicProviderAdapter) Stream(ctx context.Context, accou
 	if req.Request.WriteStatus != nil {
 		req.Request.WriteStatus(http.StatusOK)
 	}
+	cfg := CodexGatewayAnthropicRequestConfig{}
+	if a.hostedWebSearch != nil {
+		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
+			return a.hostedWebSearch(ctx, req, query)
+		}
+	}
 	result, err := ExecuteCodexGatewayAnthropicStream(
 		ctx,
 		http.DefaultClient,
@@ -429,7 +626,7 @@ func (a *codexGatewayAnthropicProviderAdapter) Stream(ctx context.Context, accou
 			IsolationKey: req.IsolationKey,
 			CaptureTrace: req.CaptureTrace,
 		},
-		CodexGatewayAnthropicRequestConfig{},
+		cfg,
 		req.Request.StreamWriter,
 	)
 	if err != nil {

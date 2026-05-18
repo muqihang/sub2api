@@ -180,6 +180,20 @@ func TestCodexGatewayProviderExecutor_StreamDoesNotFailoverAfterVisibleOutput(t 
 	require.Equal(t, "data: visible\n\n", out.String())
 }
 
+func TestCodexGatewayOpenAIHostedWebSearchOutput_ReconstructsTextFromSSE(t *testing.T) {
+	body := []byte("" +
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_1\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_1\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\" world\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_tokens\":4}}}\n\n" +
+		"data: [DONE]\n\n")
+
+	got := codexGatewayOpenAIHostedWebSearchOutput("latest news", body)
+	require.Contains(t, got, `"provider":"openai_responses"`)
+	require.Contains(t, got, `"summary":"hello world"`)
+	require.NotContains(t, got, "completed the web search, but no output text was returned")
+}
+
 func testBoolPtr(v bool) *bool {
 	return &v
 }

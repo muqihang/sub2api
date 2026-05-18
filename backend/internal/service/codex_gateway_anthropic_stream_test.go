@@ -4,14 +4,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T) {
 	var gotBody []byte
@@ -117,6 +128,293 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 	require.True(t, ok)
 	require.Equal(t, float64(23), usage["input_tokens"])
 	require.Equal(t, float64(32), usage["total_tokens"])
+}
+
+func TestExecuteCodexGatewayAnthropicStream_DoesNotUseAnthropicWebSearchBetaHeader(t *testing.T) {
+	var gotBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBeta = r.Header.Get("Anthropic-Beta")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_search","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"input":[{"type":"message","role":"user","content":"search"}],
+		"tools":[{"type":"web_search"},{"type":"function","name":"get_weather","parameters":{"type":"object"}}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	var dst bytes.Buffer
+	_, err = ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Empty(t, gotBeta)
+}
+
+func TestExecuteCodexGatewayAnthropicStream_ConnectionRefusedReturnsFailoverError(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"input":[{"type":"message","role":"user","content":"ping"}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	var dst bytes.Buffer
+	_, err = ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, &net.OpError{
+				Op:  "dial",
+				Net: "tcp",
+				Err: syscall.ECONNREFUSED,
+			}
+		})},
+		"http://127.0.0.1:8990",
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr))
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.Contains(t, string(failoverErr.ResponseBody), "connection refused")
+	require.Contains(t, string(failoverErr.ResponseBody), "upstream_disconnected")
+	require.Empty(t, dst.String())
+}
+
+func TestExecuteCodexGatewayAnthropicStream_ExecutesHostedWebSearchAndResumesModel(t *testing.T) {
+	var searchedQueries []string
+	var requestBodies [][]byte
+	var dst bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		requestBodies = append(requestBodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(requestBodies) {
+		case 1:
+			require.Equal(t, "web_search", gjson.GetBytes(body, `tools.#(name=="web_search").name`).String())
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_search","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_search","name":"web_search","input":{}}}`,
+				``,
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"current news\"}"}}`,
+				``,
+				`event: content_block_stop`,
+				`data: {"type":"content_block_stop","index":0}`,
+				``,
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+		case 2:
+			require.Equal(t, "assistant", gjson.GetBytes(body, "messages.1.role").String())
+			require.Equal(t, "tool_use", gjson.GetBytes(body, "messages.1.content.0.type").String())
+			require.Equal(t, "user", gjson.GetBytes(body, "messages.2.role").String())
+			require.Equal(t, "tool_result", gjson.GetBytes(body, "messages.2.content.0.type").String())
+			require.Contains(t, string(body), "Found from OpenAI Responses search")
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_search_final","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":2}}}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				``,
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Search result says Found from OpenAI Responses search."}}`,
+				``,
+				`event: content_block_stop`,
+				`data: {"type":"content_block_stop","index":0}`,
+				``,
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+		default:
+			t.Fatalf("unexpected extra upstream request %d", len(requestBodies))
+		}
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"input":[{"type":"message","role":"user","content":"search"}],
+		"tools":[{"type":"web_search"},{"type":"function","name":"get_weather","parameters":{"type":"object"}}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{HostedWebSearch: func(_ context.Context, query string) (string, error) {
+			searchedQueries = append(searchedQueries, query)
+			streamSoFar := dst.String()
+			require.Contains(t, streamSoFar, `"type":"web_search_call"`)
+			require.Contains(t, streamSoFar, `"status":"in_progress"`)
+			require.NotContains(t, streamSoFar, `"status":"completed"`)
+			return `{"provider":"openai_responses","summary":"Found from OpenAI Responses search"}`, nil
+		}},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"current news"}, searchedQueries)
+	require.Len(t, requestBodies, 2)
+	require.Equal(t, "completed", result.ProviderResult.Response.Status)
+	stream := dst.String()
+	require.NotContains(t, stream, `"name":"web_search"`)
+	require.NotContains(t, stream, "response.function_call_arguments.done")
+	require.Contains(t, stream, `"type":"web_search_call"`)
+	require.Contains(t, stream, `"status":"completed"`)
+	require.Contains(t, stream, "event: response.web_search_call.in_progress")
+	require.Contains(t, stream, "event: response.web_search_call.searching")
+	require.Contains(t, stream, "event: response.web_search_call.completed")
+	require.Contains(t, stream, "Search result says Found from OpenAI Responses search.")
+}
+
+func TestExecuteCodexGatewayAnthropicStream_ContinuesHostedWebSearchAcrossMultipleTurns(t *testing.T) {
+	var searchedQueries []string
+	var requestBodies [][]byte
+	var dst bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		requestBodies = append(requestBodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(requestBodies) {
+		case 1, 2, 3, 4:
+			query := "query-" + strconv.Itoa(len(requestBodies))
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_multi_` + strconv.Itoa(len(requestBodies)) + `","type":"message","role":"assistant","model":"claude-opus-4-7-thinking","content":[],"usage":{"input_tokens":1}}}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_` + strconv.Itoa(len(requestBodies)) + `","name":"web_search","input":{}}}`,
+				``,
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"` + query + `\"}"}}`,
+				``,
+				`event: content_block_stop`,
+				`data: {"type":"content_block_stop","index":0}`,
+				``,
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+		case 5:
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_multi_final","type":"message","role":"assistant","model":"claude-opus-4-7-thinking","content":[],"usage":{"input_tokens":1}}}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				``,
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}`,
+				``,
+				`event: content_block_stop`,
+				`data: {"type":"content_block_stop","index":0}`,
+				``,
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+		default:
+			t.Fatalf("unexpected extra upstream request %d", len(requestBodies))
+		}
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"input":[{"type":"message","role":"user","content":"search"}],
+		"tools":[{"type":"web_search"}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{HostedWebSearch: func(_ context.Context, query string) (string, error) {
+			searchedQueries = append(searchedQueries, query)
+			return `{"provider":"openai_responses","summary":"` + query + `"}`, nil
+		}},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 4, len(searchedQueries))
+	require.Len(t, requestBodies, 5)
+	require.Equal(t, "completed", result.ProviderResult.Response.Status)
+	require.NotContains(t, dst.String(), `"name":"web_search"`)
+	require.Contains(t, dst.String(), `"type":"web_search_call"`)
+	require.Contains(t, dst.String(), "done")
 }
 
 func TestExecuteCodexGatewayAnthropicStream_NormalizesWaitAgentArguments(t *testing.T) {
@@ -258,12 +556,14 @@ func TestExecuteCodexGatewayAnthropicStream_PersistsThinkingSignatureForToolRepl
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, state.ReplayMessages)
+	require.Len(t, state.ReplayMessages, 1)
 	rawReplay, err := json.Marshal(state.ReplayMessages)
 	require.NoError(t, err)
 	require.Contains(t, string(rawReplay), `"type":"thinking"`)
 	require.Contains(t, string(rawReplay), `"thinking":"Need inspect."`)
 	require.Contains(t, string(rawReplay), `"signature":"sig_thinking_1"`)
 	require.Contains(t, string(rawReplay), `"type":"tool_use"`)
+	require.NotContains(t, string(rawReplay), `"role":"user"`)
 }
 
 func TestExecuteCodexGatewayAnthropicStream_RetriesZeroEventToolReplayWithThinkingDisabled(t *testing.T) {

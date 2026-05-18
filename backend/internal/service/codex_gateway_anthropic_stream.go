@@ -16,6 +16,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const codexGatewayAnthropicHostedToolMaxTurns = 12
+
 func ExecuteCodexGatewayAnthropicStream(
 	ctx context.Context,
 	client *http.Client,
@@ -28,8 +30,32 @@ func ExecuteCodexGatewayAnthropicStream(
 	cfg CodexGatewayAnthropicRequestConfig,
 	dst io.Writer,
 ) (CodexGatewayDeepSeekAdapterResult, error) {
+	return executeCodexGatewayAnthropicStreamWithHostedToolTurns(ctx, client, baseURL, apiKey, model, req, stateStore, reqCtx, cfg, dst, 0)
+}
+
+func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	apiKey string,
+	model CodexGatewayModel,
+	req CodexGatewayResponsesCreateRequest,
+	stateStore *CodexGatewayStateStore,
+	reqCtx CodexGatewayAnthropicRequestContext,
+	cfg CodexGatewayAnthropicRequestConfig,
+	dst io.Writer,
+	turn int,
+) (CodexGatewayDeepSeekAdapterResult, error) {
 	if dst == nil {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex anthropic stream requires destination writer")
+	}
+	if cfg.HostedToolContext == nil {
+		cfg.HostedToolContext = &codexGatewayHostedToolContext{WebSearchResults: make(map[string]string)}
+	} else if cfg.HostedToolContext.WebSearchResults == nil {
+		cfg.HostedToolContext.WebSearchResults = make(map[string]string)
+	}
+	if turn > codexGatewayAnthropicHostedToolMaxTurns {
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex anthropic hosted tool loop exceeded %d turns", codexGatewayAnthropicHostedToolMaxTurns)
 	}
 	prepared, err := BuildCodexGatewayAnthropicRequest(model, req, stateStore, reqCtx, cfg)
 	if err != nil {
@@ -49,11 +75,23 @@ func ExecuteCodexGatewayAnthropicStream(
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("build codex anthropic stream request: %w", err)
 	}
 	setCodexGatewayAnthropicHeaders(httpReq, apiKey, true)
+	setCodexGatewayAnthropicWebSearchBetaHeader(httpReq, rawBody)
 	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "anthropic", httpReq.Header, rawBody)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("send codex anthropic stream request: %w", err)
+		body, _ := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]string{
+				"type":    "upstream_disconnected",
+				"message": "upstream stream disconnected: " + sanitizeStreamError(err),
+			},
+		})
+		return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{
+			StatusCode:             http.StatusBadGateway,
+			ResponseBody:           body,
+			RetryableOnSameAccount: true,
+		}
 	}
 	defer resp.Body.Close()
 
@@ -64,8 +102,8 @@ func ExecuteCodexGatewayAnthropicStream(
 		},
 	}
 	codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, nil)
-	writer := NewCodexGatewayResponseEventWriter(dst)
 	if resp.StatusCode >= 400 {
+		writer := NewCodexGatewayResponseEventWriter(dst)
 		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		if readErr != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, readErr
@@ -99,6 +137,8 @@ func ExecuteCodexGatewayAnthropicStream(
 	}
 
 	state := newCodexGatewayAnthropicStreamState(model, prepared.ToolNameMap, prepared.ReplayMessages)
+	deferredWriter := newCodexGatewayDeferredStreamWriter(dst)
+	writer := NewCodexGatewayResponseEventWriter(deferredWriter)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), defaultMaxLineSize)
 	dataLines := make([]string, 0, 4)
@@ -120,7 +160,13 @@ func ExecuteCodexGatewayAnthropicStream(
 			eventType = "anthropic.message"
 		}
 		codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, eventType, payloadBytes)
-		return state.consumePayload(payloadBytes, writer)
+		if err := state.consumePayload(payloadBytes, writer); err != nil {
+			return err
+		}
+		if state.hasClientVisibleOutputStarted() {
+			return deferredWriter.Flush()
+		}
+		return nil
 	}
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -142,6 +188,23 @@ func ExecuteCodexGatewayAnthropicStream(
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
 
+	if calls := state.serverHandledHostedToolCalls(); len(calls) > 0 {
+		if deferredWriter.Flushed() {
+			return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex anthropic hosted tool call appeared after client-visible output")
+		}
+		if err := deferredWriter.Flush(); err != nil {
+			return CodexGatewayDeepSeekAdapterResult{}, err
+		}
+		writer := NewCodexGatewayResponseEventWriter(dst)
+		cfg.HostedToolContext.VisibleEventSink = func(event codexGatewayHostedToolVisibleEvent) error {
+			return codexGatewayWriteVisibleHostedWebSearchEvent(writer, state.responseID, state.nextOutputIndex, event)
+		}
+		nextReq, err := codexGatewayDeepSeekRequestWithHostedToolResults(ctx, req, calls, cfg.HostedWebSearch, cfg.HostedToolContext)
+		if err != nil {
+			return CodexGatewayDeepSeekAdapterResult{}, err
+		}
+		return executeCodexGatewayAnthropicStreamWithHostedToolTurns(ctx, client, baseURL, apiKey, model, nextReq, stateStore, reqCtx, cfg, dst, turn+1)
+	}
 	if state.terminalSeen {
 		if _, err := state.finish(writer); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
@@ -153,8 +216,11 @@ func ExecuteCodexGatewayAnthropicStream(
 	} else if _, err := state.finishEarly(writer); err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
+	if err := deferredWriter.Flush(); err != nil {
+		return CodexGatewayDeepSeekAdapterResult{}, err
+	}
 	if state.shouldPersistToolLoopState() {
-		if err := codexGatewayAnthropicPersistState(stateStore, state.responseID, state.upstreamModel, reqCtx, state.messageText.String(), state.messageAdded, state.reasoningText.String(), state.reasoningPresent, state.storedThinkingBlocks(), state.storedToolCalls(), prepared.ToolNameMap, state.replayMessages); err != nil {
+		if err := codexGatewayAnthropicPersistState(stateStore, state.responseID, codexGatewayAnthropicStateModelKey(model, state.upstreamModel), reqCtx, state.messageText.String(), state.messageAdded, state.reasoningText.String(), state.reasoningPresent, state.storedThinkingBlocks(), state.storedToolCalls(), prepared.ToolNameMap, state.replayMessages); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
 	}
@@ -378,6 +444,9 @@ func (s *codexGatewayAnthropicStreamState) startToolUse(index int, block gjson.R
 	}
 	if input := strings.TrimSpace(block.Get("input").Raw); input != "" && input != "{}" {
 		call.Buffer.WriteString(input)
+	}
+	if codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
+		return nil
 	}
 	if call.CallID == "" || call.Name == "" || call.ItemEmitted {
 		return nil
@@ -845,11 +914,53 @@ func (s *codexGatewayAnthropicStreamState) hasPartialState() bool {
 }
 
 func (s *codexGatewayAnthropicStreamState) shouldPersistToolLoopState() bool {
-	return s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_use" && len(s.toolCalls) > 0
+	return s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_use" && s.hasExposedToolCall()
 }
 
 func (s *codexGatewayAnthropicStreamState) shouldExposeToolCall(call *codexGatewayAnthropicStreamToolCall) bool {
-	return call != nil && call.ItemEmitted && call.CallID != "" && call.Name != "" && s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_use"
+	if call == nil || codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
+		return false
+	}
+	return call.ItemEmitted && call.CallID != "" && call.Name != "" && s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_use"
+}
+
+func (s *codexGatewayAnthropicStreamState) hasExposedToolCall() bool {
+	for _, call := range s.toolCalls {
+		if s.shouldExposeToolCall(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *codexGatewayAnthropicStreamState) hasClientVisibleOutputStarted() bool {
+	if s.messageAdded {
+		return true
+	}
+	for _, call := range s.toolCalls {
+		if call != nil && call.ItemEmitted {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *codexGatewayAnthropicStreamState) serverHandledHostedToolCalls() []codexGatewayHostedToolCall {
+	if !s.terminalSeen || strings.TrimSpace(s.finishReason) != "tool_use" {
+		return nil
+	}
+	out := make([]codexGatewayHostedToolCall, 0, len(s.toolCalls))
+	for _, call := range s.sortedToolCallsByOutputIndex() {
+		if call == nil || !codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
+			continue
+		}
+		out = append(out, codexGatewayHostedToolCall{
+			CallID:    call.CallID,
+			Name:      call.Name,
+			Arguments: call.Buffer.String(),
+		})
+	}
+	return out
 }
 
 func (s *codexGatewayAnthropicStreamState) sortedOutputIndexes() []int {

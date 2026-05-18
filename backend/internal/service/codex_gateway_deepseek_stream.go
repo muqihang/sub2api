@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,8 +13,28 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/tidwall/gjson"
 )
+
+const codexGatewayDeepSeekHostedToolMaxTurns = 12
+
+var codexGatewayExecuteHostedWebSearchFunc = codexGatewayExecuteHostedWebSearch
+
+type codexGatewayHostedToolContext struct {
+	WebSearchResults map[string]string
+	VisibleEventSink func(codexGatewayHostedToolVisibleEvent) error
+}
+
+type codexGatewayHostedToolVisibleEvent struct {
+	Phase     string
+	CallID    string
+	Name      string
+	Arguments string
+	Query     string
+	Output    string
+	Reused    bool
+}
 
 func ExecuteCodexGatewayDeepSeekStream(
 	ctx context.Context,
@@ -27,8 +48,32 @@ func ExecuteCodexGatewayDeepSeekStream(
 	cfg CodexGatewayDeepSeekRequestConfig,
 	dst io.Writer,
 ) (CodexGatewayDeepSeekAdapterResult, error) {
+	return executeCodexGatewayDeepSeekStreamWithHostedToolTurns(ctx, client, baseURL, apiKey, model, req, stateStore, reqCtx, cfg, dst, 0)
+}
+
+func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	apiKey string,
+	model CodexGatewayModel,
+	req CodexGatewayResponsesCreateRequest,
+	stateStore *CodexGatewayStateStore,
+	reqCtx CodexGatewayDeepSeekRequestContext,
+	cfg CodexGatewayDeepSeekRequestConfig,
+	dst io.Writer,
+	turn int,
+) (CodexGatewayDeepSeekAdapterResult, error) {
 	if dst == nil {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek stream requires destination writer")
+	}
+	if cfg.HostedToolContext == nil {
+		cfg.HostedToolContext = &codexGatewayHostedToolContext{WebSearchResults: make(map[string]string)}
+	} else if cfg.HostedToolContext.WebSearchResults == nil {
+		cfg.HostedToolContext.WebSearchResults = make(map[string]string)
+	}
+	if turn > codexGatewayDeepSeekHostedToolMaxTurns {
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek hosted tool loop exceeded %d turns", codexGatewayDeepSeekHostedToolMaxTurns)
 	}
 	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, stateStore, reqCtx, cfg)
 	if err != nil {
@@ -69,9 +114,8 @@ func ExecuteCodexGatewayDeepSeekStream(
 		},
 	}
 	codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, nil)
-	writer := NewCodexGatewayResponseEventWriter(dst)
-
 	if resp.StatusCode >= 400 {
+		writer := NewCodexGatewayResponseEventWriter(dst)
 		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		if readErr != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, readErr
@@ -101,6 +145,8 @@ func ExecuteCodexGatewayDeepSeekStream(
 	}
 
 	state := newCodexGatewayDeepSeekStreamState(model, prepared.ToolNameMap)
+	deferredWriter := newCodexGatewayDeferredStreamWriter(dst)
+	writer := NewCodexGatewayResponseEventWriter(deferredWriter)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), defaultMaxLineSize)
 	dataLines := make([]string, 0, 4)
@@ -119,7 +165,13 @@ func ExecuteCodexGatewayDeepSeekStream(
 		}
 		payloadBytes := []byte(payload)
 		codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, "chat.completion.chunk", payloadBytes)
-		return state.consumePayload(payloadBytes, writer)
+		if err := state.consumePayload(payloadBytes, writer); err != nil {
+			return err
+		}
+		if state.hasClientVisibleOutputStarted() {
+			return deferredWriter.Flush()
+		}
+		return nil
 	}
 
 	for scanner.Scan() {
@@ -142,6 +194,24 @@ func ExecuteCodexGatewayDeepSeekStream(
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
 
+	if calls := state.serverHandledHostedToolCalls(); len(calls) > 0 {
+		if deferredWriter.Flushed() {
+			return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek hosted tool call appeared after client-visible output")
+		}
+		if err := deferredWriter.Flush(); err != nil {
+			return CodexGatewayDeepSeekAdapterResult{}, err
+		}
+		writer := NewCodexGatewayResponseEventWriter(dst)
+		cfg.HostedToolContext.VisibleEventSink = func(event codexGatewayHostedToolVisibleEvent) error {
+			return codexGatewayWriteVisibleHostedWebSearchEvent(writer, state.responseID, state.nextOutputIndex, event)
+		}
+		nextReq, err := codexGatewayDeepSeekRequestWithHostedToolResults(ctx, req, calls, cfg.HostedWebSearch, cfg.HostedToolContext)
+		if err != nil {
+			return CodexGatewayDeepSeekAdapterResult{}, err
+		}
+		return executeCodexGatewayDeepSeekStreamWithHostedToolTurns(ctx, client, baseURL, apiKey, model, nextReq, stateStore, reqCtx, cfg, dst, turn+1)
+	}
+
 	finalEvent := ""
 	var finishErr error
 	if state.terminalSeen {
@@ -152,6 +222,10 @@ func ExecuteCodexGatewayDeepSeekStream(
 	_ = finalEvent
 	if finishErr != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, finishErr
+	}
+
+	if err := deferredWriter.Flush(); err != nil {
+		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
 
 	if state.shouldPersistToolLoopState() {
@@ -209,6 +283,12 @@ type codexGatewayDeepSeekStreamToolCall struct {
 	Added       bool
 	ItemEmitted bool
 	EmittedLen  int
+}
+
+type codexGatewayHostedToolCall struct {
+	CallID    string
+	Name      string
+	Arguments string
 }
 
 func (c *codexGatewayDeepSeekStreamToolCall) toolNameMapEntry() CodexGatewayToolNameMapEntry {
@@ -344,7 +424,7 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 	if !call.Added && call.CallID != "" && call.Name != "" {
 		call.Added = true
 	}
-	if call.Added && !call.ItemEmitted {
+	if call.Added && !call.ItemEmitted && !codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
 		if call.OutputIndex < 0 {
 			call.OutputIndex = s.nextOutputIndex
 			s.nextOutputIndex++
@@ -644,6 +724,9 @@ func (s *codexGatewayDeepSeekStreamState) shouldPersistToolLoopState() bool {
 	if len(s.toolCalls) == 0 {
 		return false
 	}
+	if !s.hasExposedToolCall() {
+		return false
+	}
 	return s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_calls"
 }
 
@@ -654,7 +737,283 @@ func (s *codexGatewayDeepSeekStreamState) shouldExposeToolCall(call *codexGatewa
 	if strings.TrimSpace(call.CallID) == "" || strings.TrimSpace(call.Name) == "" {
 		return false
 	}
+	if codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
+		return false
+	}
 	return s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_calls"
+}
+
+func (s *codexGatewayDeepSeekStreamState) hasExposedToolCall() bool {
+	for _, call := range s.toolCalls {
+		if s.shouldExposeToolCall(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *codexGatewayDeepSeekStreamState) hasClientVisibleOutputStarted() bool {
+	if s.messageAdded {
+		return true
+	}
+	for _, call := range s.toolCalls {
+		if call != nil && call.ItemEmitted {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *codexGatewayDeepSeekStreamState) serverHandledHostedToolCalls() []codexGatewayHostedToolCall {
+	if !s.terminalSeen || strings.TrimSpace(s.finishReason) != "tool_calls" {
+		return nil
+	}
+	out := make([]codexGatewayHostedToolCall, 0, len(s.toolCalls))
+	for _, call := range s.sortedToolCallsByOutputIndex() {
+		if call == nil || !call.Added {
+			continue
+		}
+		if !codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
+			continue
+		}
+		out = append(out, codexGatewayHostedToolCall{
+			CallID:    call.CallID,
+			Name:      call.Name,
+			Arguments: call.Buffer.String(),
+		})
+	}
+	return out
+}
+
+func codexGatewayDeepSeekRequestWithHostedToolResults(ctx context.Context, req CodexGatewayResponsesCreateRequest, calls []codexGatewayHostedToolCall, search func(context.Context, string) (string, error), toolCtx *codexGatewayHostedToolContext) (CodexGatewayResponsesCreateRequest, error) {
+	if len(calls) == 0 {
+		return req, nil
+	}
+	if search == nil {
+		search = codexGatewayExecuteHostedWebSearchFunc
+	}
+	if toolCtx == nil {
+		toolCtx = &codexGatewayHostedToolContext{}
+	}
+	if toolCtx.WebSearchResults == nil {
+		toolCtx.WebSearchResults = make(map[string]string)
+	}
+	items, err := decodeCodexGatewayInputItems(req.Input)
+	if err != nil {
+		return CodexGatewayResponsesCreateRequest{}, err
+	}
+	reusedAny := false
+	for _, call := range calls {
+		if !strings.EqualFold(strings.TrimSpace(call.Name), "web_search") {
+			continue
+		}
+		query := codexGatewayHostedWebSearchQuery(call.Arguments)
+		if query == "" {
+			query = "web search"
+		}
+		if toolCtx.VisibleEventSink != nil {
+			if err := toolCtx.VisibleEventSink(codexGatewayHostedToolVisibleEvent{
+				Phase:     "started",
+				CallID:    call.CallID,
+				Name:      call.Name,
+				Arguments: call.Arguments,
+				Query:     query,
+			}); err != nil {
+				return CodexGatewayResponsesCreateRequest{}, err
+			}
+		}
+		normalizedQuery := normalizeCodexGatewayHostedWebSearchQuery(query)
+		output, reused := toolCtx.WebSearchResults[normalizedQuery]
+		if !reused {
+			output, err = search(ctx, query)
+			if err != nil {
+				return CodexGatewayResponsesCreateRequest{}, err
+			}
+			toolCtx.WebSearchResults[normalizedQuery] = output
+		} else {
+			reusedAny = true
+			output = codexGatewayHostedWebSearchRepeatedOutput(query, output)
+		}
+		if toolCtx.VisibleEventSink != nil {
+			if err := toolCtx.VisibleEventSink(codexGatewayHostedToolVisibleEvent{
+				Phase:     "completed",
+				CallID:    call.CallID,
+				Name:      call.Name,
+				Arguments: call.Arguments,
+				Query:     query,
+				Output:    output,
+				Reused:    reused,
+			}); err != nil {
+				return CodexGatewayResponsesCreateRequest{}, err
+			}
+		}
+		items = append(items,
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   call.CallID,
+				"name":      call.Name,
+				"arguments": call.Arguments,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": call.CallID,
+				"output":  output,
+			},
+		)
+	}
+	rawInput, err := json.Marshal(items)
+	if err != nil {
+		return CodexGatewayResponsesCreateRequest{}, err
+	}
+	next := req
+	next.Input = rawInput
+	if reusedAny {
+		next.Tools = codexGatewayRemoveHostedWebSearchTool(next.Tools)
+		next.ToolChoice = nil
+	}
+	return next, nil
+}
+
+func codexGatewayHostedWebSearchQuery(arguments string) string {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &parsed); err != nil {
+		return strings.TrimSpace(arguments)
+	}
+	for _, key := range []string{"query", "q", "search_query"} {
+		if value := strings.TrimSpace(firstCodexGatewayToolString(parsed[key])); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(arguments)
+}
+
+func normalizeCodexGatewayHostedWebSearchQuery(query string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(query)), " "))
+}
+
+func codexGatewayHostedWebSearchRepeatedOutput(query, previousOutput string) string {
+	payload := map[string]any{
+		"query":           query,
+		"note":            "This exact web search query has already been executed in this response. Use the previous search result below and continue the answer without requesting the same search again.",
+		"previous_result": previousOutput,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "This exact web search query has already been executed. Use the previous search result and continue without requesting the same search again.\n\n" + previousOutput
+	}
+	return string(raw)
+}
+
+func codexGatewayRemoveHostedWebSearchTool(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var tools []any
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return raw
+	}
+	filtered := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		if !codexGatewayToolIsHostedWebSearch(tool) {
+			filtered = append(filtered, tool)
+		}
+	}
+	next, err := json.Marshal(filtered)
+	if err != nil {
+		return raw
+	}
+	return next
+}
+
+func codexGatewayToolIsHostedWebSearch(raw any) bool {
+	tool, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	toolType := strings.TrimSpace(firstCodexGatewayToolString(tool["type"]))
+	if toolType == "" {
+		return false
+	}
+	return normalizeCodexGatewayHostedToolName(toolType) == "web_search" && isCodexGatewayHostedResponsesToolType(toolType)
+}
+
+func codexGatewayWriteVisibleHostedWebSearchEvent(writer *CodexGatewayResponseEventWriter, responseID string, outputIndex int, event codexGatewayHostedToolVisibleEvent) error {
+	if writer == nil {
+		return nil
+	}
+	phase := strings.TrimSpace(event.Phase)
+	status := "completed"
+	if phase == "started" {
+		status = "in_progress"
+	}
+	itemID := codexGatewayHostedWebSearchItemID(event.CallID, event.Query)
+	item := map[string]any{
+		"id":      itemID,
+		"type":    "web_search_call",
+		"status":  status,
+		"call_id": event.CallID,
+		"action": map[string]any{
+			"type":  "search",
+			"query": event.Query,
+		},
+	}
+	rawItem, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	switch phase {
+	case "started":
+		if err := writer.WriteOutputItemAdded(responseID, outputIndex, rawItem); err != nil {
+			return err
+		}
+		if err := writer.WriteWebSearchCallEvent("in_progress", responseID, itemID, outputIndex, outputIndex); err != nil {
+			return err
+		}
+		return writer.WriteWebSearchCallEvent("searching", responseID, itemID, outputIndex, outputIndex)
+	case "completed":
+		if err := writer.WriteWebSearchCallEvent("completed", responseID, itemID, outputIndex, outputIndex); err != nil {
+			return err
+		}
+		return writer.WriteOutputItemDone(responseID, outputIndex, rawItem)
+	}
+	if err := writer.WriteOutputItemAdded(responseID, outputIndex, rawItem); err != nil {
+		return err
+	}
+	return writer.WriteOutputItemDone(responseID, outputIndex, rawItem)
+}
+
+func codexGatewayHostedWebSearchItemID(callID, query string) string {
+	base := strings.TrimSpace(callID)
+	if base != "" {
+		return "ws_" + sanitizeCodexGatewayToolName(base)
+	}
+	sum := sha1.Sum([]byte(strings.TrimSpace(query)))
+	return "ws_" + fmt.Sprintf("%x", sum[:6])
+}
+
+func codexGatewayExecuteHostedWebSearch(ctx context.Context, query string) (string, error) {
+	resp, provider, err := doWebSearch(ctx, nil, query)
+	if err != nil {
+		return "", err
+	}
+	return codexGatewayHostedWebSearchOutput(query, provider, resp), nil
+}
+
+func codexGatewayHostedWebSearchOutput(query, provider string, resp *websearch.SearchResponse) string {
+	if resp == nil {
+		return "No search results found for: " + query
+	}
+	payload := map[string]any{
+		"query":    query,
+		"provider": provider,
+		"results":  resp.Results,
+		"summary":  buildTextSummary(query, resp.Results),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return buildTextSummary(query, resp.Results)
+	}
+	return string(raw)
 }
 
 func (s *codexGatewayDeepSeekStreamState) sortedToolOrder() []int {
@@ -736,4 +1095,37 @@ func codexGatewayDeepSeekFinishReasonIncompleteReason(reason string, terminalSee
 		return codexGatewayDeepSeekStreamClosedReason
 	}
 	return ""
+}
+
+type codexGatewayDeferredStreamWriter struct {
+	target  io.Writer
+	buffer  bytes.Buffer
+	flushed bool
+}
+
+func newCodexGatewayDeferredStreamWriter(target io.Writer) *codexGatewayDeferredStreamWriter {
+	return &codexGatewayDeferredStreamWriter{target: target}
+}
+
+func (w *codexGatewayDeferredStreamWriter) Write(p []byte) (int, error) {
+	if w.flushed {
+		return w.target.Write(p)
+	}
+	return w.buffer.Write(p)
+}
+
+func (w *codexGatewayDeferredStreamWriter) Flush() error {
+	if w.flushed {
+		return nil
+	}
+	w.flushed = true
+	if w.buffer.Len() == 0 {
+		return nil
+	}
+	_, err := io.Copy(w.target, &w.buffer)
+	return err
+}
+
+func (w *codexGatewayDeferredStreamWriter) Flushed() bool {
+	return w != nil && w.flushed
 }

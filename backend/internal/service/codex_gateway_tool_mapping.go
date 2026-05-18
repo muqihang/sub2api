@@ -74,7 +74,11 @@ func flattenCodexGatewayTool(raw any, namespacePrefix, parentKind string, cfg Co
 		toolType = CodexGatewayToolKindFunction
 	}
 	if isCodexGatewayHostedResponsesToolType(toolType) {
-		return nil, []string{toolType}, nil
+		record, err := flattenCodexGatewayHostedTool(tool, toolType)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []codexGatewayToolMappingRecord{record}, nil, nil
 	}
 
 	switch toolType {
@@ -93,6 +97,34 @@ func flattenCodexGatewayTool(raw any, namespacePrefix, parentKind string, cfg Co
 		}
 		return []codexGatewayToolMappingRecord{record}, nil, nil
 	}
+}
+
+func flattenCodexGatewayHostedTool(tool map[string]any, toolType string) (codexGatewayToolMappingRecord, error) {
+	name := normalizeCodexGatewayHostedToolName(toolType)
+	if override := strings.TrimSpace(firstCodexGatewayToolString(tool["name"])); override != "" && strings.HasPrefix(name, "web_search") {
+		name = "web_search"
+	}
+	alias := sanitizeCodexGatewayToolName(name)
+	if alias == "" {
+		return codexGatewayToolMappingRecord{}, fmt.Errorf("hosted tool %q produced empty alias", toolType)
+	}
+	function := map[string]any{
+		"name":        alias,
+		"description": codexGatewayHostedToolDescription(alias),
+		"parameters":  codexGatewayHostedToolParameters(alias),
+	}
+	return codexGatewayToolMappingRecord{
+		alias: alias,
+		entry: CodexGatewayToolNameMapEntry{
+			Alias: alias,
+			Kind:  CodexGatewayToolKindHosted,
+			Name:  alias,
+		},
+		tool: map[string]any{
+			"type":     "function",
+			"function": function,
+		},
+	}, nil
 }
 
 func flattenCodexGatewayNamespaceTool(tool map[string]any, parentNamespace string, cfg CodexGatewayToolMappingConfig) ([]codexGatewayToolMappingRecord, []string, error) {
@@ -300,6 +332,60 @@ func isCodexGatewayHostedResponsesToolType(toolType string) bool {
 	}
 	_, ok := codexGatewayHostedResponsesToolTypes[normalized]
 	return ok
+}
+
+func normalizeCodexGatewayHostedToolName(toolType string) string {
+	normalized := strings.TrimSpace(toolType)
+	switch {
+	case normalized == "google_search" || strings.HasPrefix(normalized, "web_search"):
+		return "web_search"
+	case normalized == "computer_use_preview":
+		return "computer_use_preview"
+	case normalized == "file_search":
+		return "file_search"
+	case normalized == "image_generation":
+		return "image_generation"
+	default:
+		return normalized
+	}
+}
+
+func codexGatewayHostedToolDescription(name string) string {
+	switch name {
+	case "web_search":
+		return "Search the web for current information."
+	case "computer_use_preview":
+		return "Use the computer environment when the client provides computer-use capability."
+	case "file_search":
+		return "Search indexed files when the client provides file-search capability."
+	case "image_generation":
+		return "Generate or edit images when the client provides image-generation capability."
+	default:
+		return "Use hosted tool capability " + name + " when available."
+	}
+}
+
+func codexGatewayHostedToolParameters(name string) map[string]any {
+	switch name {
+	case "web_search":
+		return map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+			},
+			"required": []any{"query"},
+		}
+	default:
+		return map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": true,
+		}
+	}
+}
+
+func codexGatewayIsServerHandledHostedTool(kind, name string) bool {
+	return strings.TrimSpace(kind) == CodexGatewayToolKindHosted && strings.TrimSpace(name) == "web_search"
 }
 
 func toolMappingOriginalKey(kind, namespace, name string) string {

@@ -672,6 +672,22 @@ func ProvideCodexGatewayModelRegistry(cfg *config.Config, adminService *CodexGat
 	)
 }
 
+func ProvideCodexGatewayModelRegistryWithVariantChecker(cfg *config.Config, adminService *CodexGatewayAdminService, gatewayService *GatewayService) *CodexGatewayModelRegistry {
+	options := []CodexGatewayModelRegistryOption{
+		WithCodexGatewayRegistryStateSource(adminService),
+		WithCodexGatewayVariantReadyChecker(newCodexGatewayAnthropicVariantReadyChecker(gatewayService)),
+	}
+	if cfg == nil {
+		return NewCodexGatewayModelRegistry(
+			config.GatewayCodexConfig{
+				EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+			},
+			options...,
+		)
+	}
+	return NewCodexGatewayModelRegistry(cfg.Gateway.Codex, options...)
+}
+
 func ProvideCodexGatewayStateStore(cfg *config.Config) *CodexGatewayStateStore {
 	storeCfg := CodexGatewayStateStoreConfig{}
 	if cfg != nil {
@@ -702,13 +718,31 @@ func ProvideCodexGatewayService(registry *CodexGatewayModelRegistry, executor *C
 }
 
 func ProvideCodexGatewayAdminService(cfg *config.Config, stateStore *CodexGatewayStateStore) *CodexGatewayAdminService {
-	if cfg == nil {
-		return NewCodexGatewayAdminService(config.GatewayCodexConfig{
+	adminCfg := config.GatewayCodexConfig{
+		Enabled:       true,
+		EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+	}
+	if cfg != nil {
+		adminCfg = cfg.Gateway.Codex
+	}
+	admin := NewCodexGatewayAdminService(adminCfg, stateStore)
+	if cfg != nil {
+		admin.variantChecker = newCodexGatewayAnthropicVariantReadyChecker(nil)
+	}
+	return admin
+}
+
+func ProvideCodexGatewayAdminServiceWithVariantChecker(cfg *config.Config, stateStore *CodexGatewayStateStore, gatewayService *GatewayService) *CodexGatewayAdminService {
+	adminCfg := config.GatewayCodexConfig{
 			Enabled:       true,
 			EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
-		}, stateStore)
 	}
-	return NewCodexGatewayAdminService(cfg.Gateway.Codex, stateStore)
+	if cfg != nil {
+		adminCfg = cfg.Gateway.Codex
+	}
+	admin := NewCodexGatewayAdminService(adminCfg, stateStore)
+	admin.variantChecker = newCodexGatewayAnthropicVariantReadyChecker(gatewayService)
+	return admin
 }
 
 func ProvideAugmentGatewayRouter(registry *AugmentGatewayModelRegistry) *AugmentGatewayRouter {
@@ -739,12 +773,12 @@ var ProviderSet = wire.NewSet(
 	ProvideAugmentGatewayAdminService,
 	ProvideAugmentGatewayModelRegistry,
 	ProvideAugmentGatewayRouter,
-	ProvideCodexGatewayModelRegistry,
+	ProvideCodexGatewayModelRegistryWithVariantChecker,
 	ProvideCodexGatewayStateStore,
 	ProvideCodexGatewayProviderExecutor,
 	ProvideCodexGatewayCaptureManager,
 	ProvideCodexGatewayService,
-	ProvideCodexGatewayAdminService,
+	ProvideCodexGatewayAdminServiceWithVariantChecker,
 	NewAugmentGatewayReasoningTurnStore,
 	NewAugmentGatewayProviderExecutor,
 	NewAugmentGatewayService,

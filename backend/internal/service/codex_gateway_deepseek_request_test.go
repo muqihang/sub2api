@@ -74,7 +74,7 @@ func TestCodexGatewayDeepSeekRequest_BuildsMessagesToolsAndUserID(t *testing.T) 
 	require.True(t, regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`).MatchString(userID))
 }
 
-func TestCodexGatewayDeepSeekRequest_IgnoresHostedToolsAndParallelToolFlag(t *testing.T) {
+func TestCodexGatewayDeepSeekRequest_ExposesHostedToolsAndParallelToolFlag(t *testing.T) {
 	parallel := true
 	req := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
@@ -84,6 +84,8 @@ func TestCodexGatewayDeepSeekRequest_IgnoresHostedToolsAndParallelToolFlag(t *te
 		Tools: json.RawMessage(`[
 			{"type":"web_search"},
 			{"type":"image_generation"},
+			{"type":"computer_use_preview"},
+			{"type":"file_search"},
 			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
 		]`),
 		ToolChoice:        json.RawMessage(`"auto"`),
@@ -103,11 +105,15 @@ func TestCodexGatewayDeepSeekRequest_IgnoresHostedToolsAndParallelToolFlag(t *te
 	require.NoError(t, err)
 	require.NotContains(t, prepared.Body, "parallel_tool_calls")
 	require.NotContains(t, prepared.Body, "tool_choice")
-	require.Contains(t, prepared.Body["messages"].([]any)[0].(map[string]any)["content"], "OpenAI hosted tools are not available")
+	require.NotContains(t, prepared.Body["messages"].([]any)[0].(map[string]any)["content"], "OpenAI hosted tools are not available")
 
 	tools := prepared.Body["tools"].([]any)
-	require.Len(t, tools, 1)
-	require.Equal(t, "exec_command", tools[0].(map[string]any)["function"].(map[string]any)["name"])
+	require.Len(t, tools, 5)
+	require.Equal(t, "web_search", tools[0].(map[string]any)["function"].(map[string]any)["name"])
+	require.Equal(t, "image_generation", tools[1].(map[string]any)["function"].(map[string]any)["name"])
+	require.Equal(t, "computer_use_preview", tools[2].(map[string]any)["function"].(map[string]any)["name"])
+	require.Equal(t, "file_search", tools[3].(map[string]any)["function"].(map[string]any)["name"])
+	require.Equal(t, "exec_command", tools[4].(map[string]any)["function"].(map[string]any)["name"])
 }
 
 func TestCodexGatewayDeepSeekRequest_DefaultUserIDIsStableAcrossSessionsWithinIsolation(t *testing.T) {
@@ -143,7 +149,7 @@ func TestCodexGatewayDeepSeekRequest_DefaultUserIDIsStableAcrossSessionsWithinIs
 	require.NotEqual(t, first.Body["user_id"], third.Body["user_id"])
 }
 
-func TestCodexGatewayDeepSeekRequest_HostedToolNoticeIsStableAcrossHostedToolOrder(t *testing.T) {
+func TestCodexGatewayDeepSeekRequest_HostedToolMappingIsStableAcrossHostedToolOrder(t *testing.T) {
 	reqA := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
 		Input: json.RawMessage(`[
@@ -176,10 +182,11 @@ func TestCodexGatewayDeepSeekRequest_HostedToolNoticeIsStableAcrossHostedToolOrd
 	second, err := BuildCodexGatewayDeepSeekRequest(model, reqB, nil, ctx, CodexGatewayDeepSeekRequestConfig{})
 	require.NoError(t, err)
 
-	firstNotice := first.Body["messages"].([]any)[0].(map[string]any)["content"]
-	secondNotice := second.Body["messages"].([]any)[0].(map[string]any)["content"]
-	require.Equal(t, firstNotice, secondNotice)
-	require.Contains(t, firstNotice, "image_generation, web_search")
+	firstTools := first.Body["tools"].([]any)
+	secondTools := second.Body["tools"].([]any)
+	require.Equal(t, "web_search", firstTools[0].(map[string]any)["function"].(map[string]any)["name"])
+	require.Equal(t, "web_search", secondTools[1].(map[string]any)["function"].(map[string]any)["name"])
+	require.NotContains(t, first.Body["messages"].([]any)[0].(map[string]any)["content"], "OpenAI hosted tools are not available")
 }
 
 func TestCodexGatewayDeepSeekRequest_BodyIsDeterministicForCachePrefix(t *testing.T) {

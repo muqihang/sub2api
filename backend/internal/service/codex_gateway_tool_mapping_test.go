@@ -88,10 +88,12 @@ func TestCodexGatewayToolMapping_CustomFormatBecomesInputSchema(t *testing.T) {
 	require.Contains(t, input["description"], "freeform payload")
 }
 
-func TestCodexGatewayToolMapping_IgnoresHostedResponsesTools(t *testing.T) {
+func TestCodexGatewayToolMapping_ExposesHostedResponsesTools(t *testing.T) {
 	raw := json.RawMessage(`[
 		{"type":"web_search"},
 		{"type":"image_generation","size":"1024x1024"},
+		{"type":"computer_use_preview"},
+		{"type":"file_search"},
 		{
 			"type":"namespace",
 			"name":"mcp__computer_use__",
@@ -108,9 +110,17 @@ func TestCodexGatewayToolMapping_IgnoresHostedResponsesTools(t *testing.T) {
 
 	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
 	require.NoError(t, err)
-	require.Equal(t, []string{"web_search", "image_generation"}, result.IgnoredHostedToolTypes)
-	require.Len(t, result.Tools, 1)
-	alias := result.Tools[0]["function"].(map[string]any)["name"].(string)
+	require.Empty(t, result.IgnoredHostedToolTypes)
+	require.Len(t, result.Tools, 5)
+	require.Equal(t, "web_search", result.Tools[0]["function"].(map[string]any)["name"])
+	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["web_search"].Kind)
+	require.Equal(t, "image_generation", result.Tools[1]["function"].(map[string]any)["name"])
+	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["image_generation"].Kind)
+	require.Equal(t, "computer_use_preview", result.Tools[2]["function"].(map[string]any)["name"])
+	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["computer_use_preview"].Kind)
+	require.Equal(t, "file_search", result.Tools[3]["function"].(map[string]any)["name"])
+	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["file_search"].Kind)
+	alias := result.Tools[4]["function"].(map[string]any)["name"].(string)
 	require.Contains(t, alias, "mcp_computer_use")
 	require.Contains(t, alias, "__click")
 	require.Equal(t, CodexGatewayToolKindNamespace, result.NameMap[alias].Kind)

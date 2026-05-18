@@ -14,6 +14,7 @@ type CodexGatewayModelRegistry struct {
 	stateSource     CodexGatewayRegistryStateSource
 	pricingChecker  CodexGatewayPricingReadyChecker
 	protocolChecker CodexGatewayProtocolReadyChecker
+	variantChecker  CodexGatewayVariantReadyChecker
 }
 
 func NewDefaultCodexGatewayModelRegistry() *CodexGatewayModelRegistry {
@@ -30,6 +31,10 @@ type CodexGatewayRegistryStateSource interface {
 }
 
 type CodexGatewayModelRegistryOption func(*CodexGatewayModelRegistry)
+
+type CodexGatewayVariantReadyChecker interface {
+	IsReady(ctx context.Context, model CodexGatewayModel, providerRuntime CodexGatewayProviderRuntime) bool
+}
 
 type CodexGatewayRegistryState struct {
 	ProviderGroups map[CodexGatewayProvider]CodexGatewayProviderRuntime `json:"provider_groups"`
@@ -110,6 +115,12 @@ func WithCodexGatewayProtocolReadyChecker(checker CodexGatewayProtocolReadyCheck
 	}
 }
 
+func WithCodexGatewayVariantReadyChecker(checker CodexGatewayVariantReadyChecker) CodexGatewayModelRegistryOption {
+	return func(registry *CodexGatewayModelRegistry) {
+		registry.variantChecker = checker
+	}
+}
+
 func NewCodexGatewayModelRegistry(cfg config.GatewayCodexConfig, options ...CodexGatewayModelRegistryOption) *CodexGatewayModelRegistry {
 	if len(cfg.EnabledModels) == 0 {
 		cfg.EnabledModels = defaultCodexGatewayEnabledModelSlugs()
@@ -126,6 +137,7 @@ func NewCodexGatewayModelRegistry(cfg config.GatewayCodexConfig, options ...Code
 		orderedSlugs:    orderedSlugs,
 		pricingChecker:  defaultCodexGatewayPricingReadyChecker,
 		protocolChecker: defaultCodexGatewayProtocolReadyChecker,
+		variantChecker:  codexGatewayVariantReadyAllowAll{},
 	}
 	for _, option := range options {
 		if option != nil {
@@ -190,6 +202,7 @@ func (r *CodexGatewayModelRegistry) computeState() codexGatewayRegistryComputedS
 			registryState.ProviderGroups[provider],
 			r.pricingChecker,
 			r.protocolChecker,
+			r.variantChecker,
 		)
 		state.models = append(state.models, model)
 		state.index[model.Slug] = model
@@ -251,6 +264,10 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 	if truncationLimit <= 0 {
 		truncationLimit = int(float64(contextWindow) * 0.75)
 	}
+	effectiveContextWindowPercent := model.EffectiveContextWindowPercent
+	if effectiveContextWindowPercent <= 0 {
+		effectiveContextWindowPercent = 95
+	}
 	description := model.DisplayName + " via Sub2API Codex Gateway."
 	if normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) == CodexGatewayProviderOpenAI {
 		description = model.DisplayName + " via the configured OpenAI Responses upstream."
@@ -269,7 +286,7 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 		ModelMessages:                 codexGatewayDefaultCLIModelMessages(),
 		ContextWindow:                 contextWindow,
 		MaxContextWindow:              maxContextWindow,
-		EffectiveContextWindowPercent: 95,
+		EffectiveContextWindowPercent: effectiveContextWindowPercent,
 		MaxOutputTokens:               model.MaxOutputTokens,
 		SupportVerbosity:              model.SupportVerbosity,
 		DefaultVerbosity:              codexGatewayDefaultVerbosity(model),
@@ -279,7 +296,7 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 		SupportsImageDetailOriginal:   model.SupportsImageDetailOriginal,
 		SupportsReasoningSummaries:    true,
 		DefaultReasoningSummary:       "none",
-		ExperimentalSupportedTools:    []string{},
+		ExperimentalSupportedTools:    append([]string(nil), model.ExperimentalSupportedTools...),
 		InputModalities:               append([]string(nil), model.InputModalities...),
 		SupportsSearchTool:            model.SupportsSearchTool,
 	}
@@ -376,30 +393,74 @@ func codexGatewayReasoningLevelDescription(level string) string {
 	}
 }
 
+func codexGatewayDisplayNameWithSource(baseName, sourceName string) string {
+	baseName = strings.TrimSpace(baseName)
+	sourceName = strings.TrimSpace(sourceName)
+	if baseName == "" || sourceName == "" {
+		return baseName
+	}
+	return baseName + " " + sourceName
+}
+
+func codexGatewayAnthropicDisplayName(baseName, providerVariant string) string {
+	baseName = strings.TrimSpace(baseName)
+	switch strings.TrimSpace(providerVariant) {
+	case "kiro_claude":
+		return codexGatewayDisplayNameWithSource(baseName, "Kiro")
+	case "kiro_claude_thinking":
+		return codexGatewayDisplayNameWithSource(baseName, "Thinking Kiro")
+	case "antigravity_claude":
+		return codexGatewayDisplayNameWithSource(baseName, "AG")
+	case "antigravity_claude_thinking":
+		return codexGatewayDisplayNameWithSource(baseName, "Thinking AG")
+	case "claude_code_max":
+		return codexGatewayDisplayNameWithSource(baseName, "Max")
+	default:
+		return baseName
+	}
+}
+
 func defaultCodexGatewayModels() []CodexGatewayModel {
 	openAIModel := func(slug, displayName string, priority int) CodexGatewayModel {
+		contextWindow := 400000
+		autoCompactTokenLimit := 300000
+		effectiveContextWindowPercent := 95
+		switch slug {
+		case "gpt-5.5":
+			contextWindow = 1_050_000
+			autoCompactTokenLimit = 900_000
+			effectiveContextWindowPercent = 92
+		case "gpt-5.4":
+			contextWindow = 1_050_000
+			autoCompactTokenLimit = 900_000
+			effectiveContextWindowPercent = 92
+		case "gpt-5.4-mini":
+			contextWindow = 400_000
+			autoCompactTokenLimit = 300_000
+		}
 		return CodexGatewayModel{
-			Slug:                        slug,
-			DisplayName:                 displayName,
-			Provider:                    "openai",
-			UpstreamModel:               slug,
-			Visibility:                  "visible",
-			SupportedInAPI:              true,
-			Priority:                    priority,
-			DefaultReasoningLevel:       "medium",
-			SupportedReasoningLevels:    []string{"low", "medium", "high", "xhigh"},
-			SupportVerbosity:            true,
-			SupportsParallelToolCalls:   true,
-			ContextWindow:               400000,
-			AutoCompactTokenLimit:       300000,
-			MaxOutputTokens:             128000,
-			InputModalities:             []string{"text", "image"},
-			SupportsImageDetailOriginal: true,
-			SupportsSearchTool:          true,
-			ExperimentalSupportedTools:  []string{"function", "namespace", "custom"},
-			ShellType:                   "local",
-			WebSearchToolType:           "openai",
-			ImageGenerationToolType:     "openai",
+			Slug:                          slug,
+			DisplayName:                   displayName,
+			Provider:                      "openai",
+			UpstreamModel:                 slug,
+			Visibility:                    "visible",
+			SupportedInAPI:                true,
+			Priority:                      priority,
+			DefaultReasoningLevel:         "medium",
+			SupportedReasoningLevels:      []string{"low", "medium", "high", "xhigh"},
+			SupportVerbosity:              true,
+			SupportsParallelToolCalls:     true,
+			ContextWindow:                 contextWindow,
+			AutoCompactTokenLimit:         autoCompactTokenLimit,
+			EffectiveContextWindowPercent: effectiveContextWindowPercent,
+			MaxOutputTokens:               128000,
+			InputModalities:               []string{"text", "image"},
+			SupportsImageDetailOriginal:   true,
+			SupportsSearchTool:            true,
+			ExperimentalSupportedTools:    []string{"function", "namespace", "custom"},
+			ShellType:                     "local",
+			WebSearchToolType:             "openai",
+			ImageGenerationToolType:       "openai",
 		}
 	}
 
@@ -421,37 +482,45 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 			MaxOutputTokens:             384_000,
 			InputModalities:             []string{"text"},
 			SupportsImageDetailOriginal: false,
-			SupportsSearchTool:          false,
+			SupportsSearchTool:          true,
 			ExperimentalSupportedTools:  []string{"function", "namespace", "custom"},
 			ShellType:                   "local",
-			WebSearchToolType:           "none",
+			WebSearchToolType:           "openai",
 			ImageGenerationToolType:     "none",
 		}
 	}
 
-	anthropicModel := func(slug, displayName, defaultReasoning string, priority int) CodexGatewayModel {
+	anthropicModel := func(slug, baseDisplayName, providerVariant, upstreamModel, defaultReasoning string, supportedReasoning []string, priority int) CodexGatewayModel {
+		upstreamModel = strings.TrimSpace(upstreamModel)
+		if upstreamModel == "" {
+			upstreamModel = strings.TrimSpace(slug)
+		}
 		return CodexGatewayModel{
-			Slug:                        slug,
-			DisplayName:                 displayName,
-			Provider:                    "anthropic",
-			UpstreamModel:               slug,
-			Visibility:                  "visible",
-			SupportedInAPI:              true,
-			Priority:                    priority,
-			DefaultReasoningLevel:       defaultReasoning,
-			SupportedReasoningLevels:    []string{"none", "low", "medium", "high", "xhigh"},
-			SupportVerbosity:            false,
-			SupportsParallelToolCalls:   true,
-			ContextWindow:               1_000_000,
-			AutoCompactTokenLimit:       850_000,
-			MaxOutputTokens:             64_000,
-			InputModalities:             []string{"text", "image"},
-			SupportsImageDetailOriginal: true,
-			SupportsSearchTool:          false,
-			ExperimentalSupportedTools:  []string{"function", "namespace", "custom"},
-			ShellType:                   "local",
-			WebSearchToolType:           "none",
-			ImageGenerationToolType:     "none",
+			Slug:                          slug,
+			DisplayName:                   codexGatewayAnthropicDisplayName(baseDisplayName, providerVariant),
+			Provider:                      "anthropic",
+			ProviderVariant:               providerVariant,
+			UpstreamModel:                 upstreamModel,
+			UpstreamBaseModel:             upstreamModel,
+			UpstreamThinkingModel:         upstreamModel,
+			Visibility:                    "visible",
+			SupportedInAPI:                true,
+			Priority:                      priority,
+			DefaultReasoningLevel:         defaultReasoning,
+			SupportedReasoningLevels:      append([]string(nil), supportedReasoning...),
+			SupportVerbosity:              false,
+			SupportsParallelToolCalls:     true,
+			ContextWindow:                 1_000_000,
+			AutoCompactTokenLimit:         850_000,
+			EffectiveContextWindowPercent: 95,
+			MaxOutputTokens:               64_000,
+			InputModalities:               []string{"text", "image"},
+			SupportsImageDetailOriginal:   true,
+			SupportsSearchTool:            true,
+			ExperimentalSupportedTools:    []string{"function", "namespace", "custom"},
+			ShellType:                     "local",
+			WebSearchToolType:             "openai",
+			ImageGenerationToolType:       "none",
 		}
 	}
 
@@ -462,13 +531,30 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		openAIModel("gpt-5.3-codex", "GPT-5.3 Codex", 70),
 		deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro", 60),
 		deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash", 50),
-		anthropicModel("claude-opus-4-6", "Claude Opus 4.6", "none", 45),
-		anthropicModel("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", "xhigh", 44),
-		anthropicModel("claude-sonnet-4-6", "Claude Sonnet 4.6", "none", 43),
+		anthropicModel("claude-opus-4-7", "Claude Opus 4.7", "kiro_claude", "claude-opus-4-7", "high", []string{"high"}, 49),
+		anthropicModel("claude-opus-4-7-thinking", "Claude Opus 4.7", "kiro_claude_thinking", "claude-opus-4-7-thinking", "high", []string{"low", "high", "xhigh"}, 48),
+		anthropicModel("claude-opus-4-7-ag", "Claude Opus 4.7", "antigravity_claude", "claude-opus-4-7", "high", []string{"high"}, 47),
+		anthropicModel("claude-opus-4-7-thinking-ag", "Claude Opus 4.7", "antigravity_claude_thinking", "claude-opus-4-7-thinking", "high", []string{"low", "high", "xhigh"}, 46),
+		anthropicModel("claude-opus-4-7-max", "Claude Opus 4.7", "claude_code_max", "claude-opus-4-7-thinking", "xhigh", []string{"xhigh"}, 45),
+		anthropicModel("claude-opus-4-6", "Claude Opus 4.6", "kiro_claude", "claude-opus-4-6", "high", []string{"high"}, 44),
+		anthropicModel("claude-opus-4-6-thinking", "Claude Opus 4.6", "kiro_claude_thinking", "claude-opus-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 43),
+		anthropicModel("claude-opus-4-6-ag", "Claude Opus 4.6", "antigravity_claude", "claude-opus-4-6", "high", []string{"high"}, 42),
+		anthropicModel("claude-opus-4-6-thinking-ag", "Claude Opus 4.6", "antigravity_claude_thinking", "claude-opus-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 41),
+		anthropicModel("claude-opus-4-6-max", "Claude Opus 4.6", "claude_code_max", "claude-opus-4-6-thinking", "xhigh", []string{"xhigh"}, 40),
+		anthropicModel("claude-sonnet-4-6", "Claude Sonnet 4.6", "kiro_claude", "claude-sonnet-4-6", "high", []string{"high"}, 39),
+		anthropicModel("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6", "kiro_claude_thinking", "claude-sonnet-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 38),
+		anthropicModel("claude-sonnet-4-6-ag", "Claude Sonnet 4.6", "antigravity_claude", "claude-sonnet-4-6", "high", []string{"high"}, 37),
+		anthropicModel("claude-sonnet-4-6-thinking-ag", "Claude Sonnet 4.6", "antigravity_claude_thinking", "claude-sonnet-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 36),
+		anthropicModel("claude-sonnet-4-6-max", "Claude Sonnet 4.6", "claude_code_max", "claude-sonnet-4-6-thinking", "xhigh", []string{"xhigh"}, 35),
+		anthropicModel("claude-haiku-4-5-20251001", "Claude Haiku 4.5", "kiro_claude", "claude-haiku-4-5-20251001", "high", []string{"high"}, 34),
+		anthropicModel("claude-haiku-4-5-20251001-thinking", "Claude Haiku 4.5", "kiro_claude_thinking", "claude-haiku-4-5-20251001-thinking", "high", []string{"low", "high", "xhigh"}, 33),
+		anthropicModel("claude-haiku-4-5-20251001-ag", "Claude Haiku 4.5", "antigravity_claude", "claude-haiku-4-5-20251001", "high", []string{"high"}, 32),
+		anthropicModel("claude-haiku-4-5-20251001-thinking-ag", "Claude Haiku 4.5", "antigravity_claude_thinking", "claude-haiku-4-5-20251001-thinking", "high", []string{"low", "high", "xhigh"}, 31),
+		anthropicModel("claude-haiku-4-5-20251001-max", "Claude Haiku 4.5", "claude_code_max", "claude-haiku-4-5-20251001-thinking", "xhigh", []string{"xhigh"}, 30),
 	}
 }
 
-func codexGatewayApplyVisibilityGates(model CodexGatewayModel, mutation CodexGatewayModelMutation, providerRuntime CodexGatewayProviderRuntime, pricingChecker CodexGatewayPricingReadyChecker, protocolChecker CodexGatewayProtocolReadyChecker) CodexGatewayModel {
+func codexGatewayApplyVisibilityGates(model CodexGatewayModel, mutation CodexGatewayModelMutation, providerRuntime CodexGatewayProviderRuntime, pricingChecker CodexGatewayPricingReadyChecker, protocolChecker CodexGatewayProtocolReadyChecker, variantChecker CodexGatewayVariantReadyChecker) CodexGatewayModel {
 	out := model
 	if !mutation.Enabled || codexGatewayModelExplicitlyHidden(mutation) {
 		out.Visibility = "hidden"
@@ -476,6 +562,11 @@ func codexGatewayApplyVisibilityGates(model CodexGatewayModel, mutation CodexGat
 		return out
 	}
 	if providerRuntime.GroupID <= 0 || !providerRuntime.Healthy {
+		out.Visibility = "hidden"
+		out.SupportedInAPI = false
+		return out
+	}
+	if variantChecker != nil && !variantChecker.IsReady(context.Background(), out, providerRuntime) {
 		out.Visibility = "hidden"
 		out.SupportedInAPI = false
 		return out

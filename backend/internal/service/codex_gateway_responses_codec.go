@@ -289,6 +289,17 @@ func (w *CodexGatewayResponseEventWriter) WriteOutputItemDone(responseID string,
 	})
 }
 
+func (w *CodexGatewayResponseEventWriter) WriteWebSearchCallEvent(name, responseID, itemID string, outputIndex, sequenceNumber int) error {
+	eventName := "response.web_search_call." + strings.TrimSpace(name)
+	return w.write(eventName, map[string]any{
+		"type":            eventName,
+		"response_id":     responseID,
+		"item_id":         itemID,
+		"output_index":    outputIndex,
+		"sequence_number": sequenceNumber,
+	})
+}
+
 func (w *CodexGatewayResponseEventWriter) WriteResponseCompleted(response CodexGatewayResponse) error {
 	return w.write("response.completed", map[string]any{
 		"type":     "response.completed",

@@ -367,6 +367,30 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamDoesNotFailoverAfterClientOutp
 	require.Contains(t, out.String(), `"type":"response.failed"`)
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_StreamAllowsMissingTerminalAfterClientOutputStarts(t *testing.T) {
+	streamBody := "" +
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_1\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}, nil)
+	var out bytes.Buffer
+
+	result, err := adapter.Stream(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body:         []byte(`{"model":"gpt-5.5","stream":true}`),
+			StreamWriter: &out,
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.NoError(t, err)
+	require.Empty(t, result.ResponseID)
+	require.Contains(t, out.String(), `"type":"response.output_text.delta"`)
+	require.NotContains(t, out.String(), `[DONE]`)
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_StreamFlushesPreOutputTerminalFailure(t *testing.T) {
 	streamBody := "" +
 		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
