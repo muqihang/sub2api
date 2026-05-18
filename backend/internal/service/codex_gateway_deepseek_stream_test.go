@@ -589,6 +589,83 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Contains(t, buf.String(), "done")
 	})
 
+	t.Run("does not fail when hosted web search appears after visible output already flushed", func(t *testing.T) {
+		origSearch := codexGatewayExecuteHostedWebSearchFunc
+		t.Cleanup(func() { codexGatewayExecuteHostedWebSearchFunc = origSearch })
+		searchCalls := 0
+		codexGatewayExecuteHostedWebSearchFunc = func(_ context.Context, query string) (string, error) {
+			searchCalls++
+			return `{"results":[{"title":"Late Result","url":"https://example.test","snippet":"late hosted search"}]}`, nil
+		}
+
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"search after text"}]}
+			]`),
+			Tools: json.RawMessage(`[{"type":"web_search"}]`),
+		}
+
+		requestBodies := make([][]byte, 0, 2)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			requestBodies = append(requestBodies, body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			switch len(requestBodies) {
+			case 1:
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_late_hosted_search","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"I will search this."},"finish_reason":null}]}`,
+					"",
+					`data: {"id":"chatcmpl_stream_late_hosted_search","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"late search\"}"}}]},"finish_reason":"tool_calls"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+			case 2:
+				require.Contains(t, string(body), "late hosted search")
+				_, _ = io.WriteString(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_stream_late_hosted_search_final","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"Search finished."},"finish_reason":"stop"}]}`,
+					"",
+					`data: [DONE]`,
+					"",
+				}, "\n"))
+			default:
+				t.Fatalf("unexpected extra upstream request %d", len(requestBodies))
+			}
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_late_hosted_search", IsolationKey: "iso_late_hosted_search"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, 1, searchCalls)
+		require.Len(t, requestBodies, 2)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+		stream := buf.String()
+		require.Contains(t, stream, "I will search this.")
+		require.Contains(t, stream, `"type":"web_search_call"`)
+		require.Contains(t, stream, `"status":"completed"`)
+		require.Contains(t, stream, "Search finished.")
+	})
+
 	t.Run("streams unwrapped custom tool input and custom done event", func(t *testing.T) {
 		model := CodexGatewayModel{
 			Slug:          "deepseek-v4-pro",

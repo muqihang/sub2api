@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -72,6 +73,104 @@ func TestCodexGatewayDeepSeekRequest_BuildsMessagesToolsAndUserID(t *testing.T) 
 
 	userID := prepared.Body["user_id"].(string)
 	require.True(t, regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`).MatchString(userID))
+}
+
+func TestCodexGatewayDeepSeekRequestWithVisionProxy_RewritesImageToHostedVisionText(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{
+				"type":"message",
+				"role":"user",
+				"content":[
+					{"type":"input_text","text":"请看这张图"},
+					{"type":"input_image","image_url":"data:image/png;base64,AAAA"}
+				]
+			}
+		]`),
+	}
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			require.Equal(t, "data:image/png;base64,AAAA", imageURL)
+			return "这是一张终端截图，主要内容是目录树。", nil
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, cfg)
+	require.NoError(t, err)
+	require.JSONEq(t, `[
+		{
+			"type":"message",
+			"role":"user",
+			"content":[
+				{"type":"input_text","text":"请看这张图"},
+				{"type":"input_text","text":"[hosted_image_vision]\n这是一张终端截图，主要内容是目录树。"}
+			]
+		}
+	]`, string(rewritten.Input))
+}
+
+func TestCodexGatewayDeepSeekRequestWithVisionProxy_SkipsRequestsWithoutImages(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{
+				"type":"message",
+				"role":"user",
+				"content":[
+					{"type":"input_text","text":"只是一段文字"}
+				]
+			}
+		]`),
+	}
+	called := false
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			called = true
+			return "unexpected", nil
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, cfg)
+	require.NoError(t, err)
+	require.False(t, called)
+	require.JSONEq(t, string(req.Input), string(rewritten.Input))
+}
+
+func TestCodexGatewayDeepSeekRequestWithVisionProxy_FallsBackToPlaceholderOnVisionError(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{
+				"type":"message",
+				"role":"user",
+				"content":[
+					{"type":"input_text","text":"请看这张图"},
+					{"type":"input_image","image_url":"data:image/png;base64,AAAA"}
+				]
+			}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		ImageInputMode: CodexGatewayDeepSeekImageInputModePlaceholder,
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			return "", errors.New("vision unavailable")
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, cfg)
+	require.NoError(t, err)
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, rewritten, nil, CodexGatewayDeepSeekRequestContext{}, cfg)
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 1)
+	require.Contains(t, messages[0].(map[string]any)["content"].(string), codexGatewayDeepSeekImagePlaceholder())
 }
 
 func TestCodexGatewayDeepSeekRequest_ExposesHostedToolsAndParallelToolFlag(t *testing.T) {

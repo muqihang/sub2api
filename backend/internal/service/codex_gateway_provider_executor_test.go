@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,6 +42,21 @@ type codexGatewayUsageRecorderStub struct {
 	inputs  []*OpenAIRecordUsageInput
 	ctxErrs []error
 	err     error
+}
+
+type codexGatewayProviderExecutorHTTPUpstreamStub struct {
+	doFn func(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error)
+}
+
+func (s *codexGatewayProviderExecutorHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
+	if s != nil && s.doFn != nil {
+		return s.doFn(req, proxyURL, accountID, concurrency)
+	}
+	return nil, errors.New("unexpected HTTP upstream call")
+}
+
+func (s *codexGatewayProviderExecutorHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, concurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return s.Do(req, proxyURL, accountID, concurrency)
 }
 
 func (s *codexGatewayUsageRecorderStub) RecordUsage(ctx context.Context, input *OpenAIRecordUsageInput) error {
@@ -178,6 +196,201 @@ func TestCodexGatewayProviderExecutor_StreamDoesNotFailoverAfterVisibleOutput(t 
 	require.EqualError(t, err, "stream closed after output flush")
 	require.Equal(t, 1, selectionCalls)
 	require.Equal(t, "data: visible\n\n", out.String())
+}
+
+func TestCodexGatewayProviderExecutor_ExecuteOpenAIHostedWebSearch_FailsOverAcrossAccountsAndModels(t *testing.T) {
+	executor := newCodexGatewayProviderExecutorForTest()
+	flakyMini := &Account{
+		ID:          123,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"base_url": "https://api.openai-mini.example",
+			"api_key":  "sk-mini",
+		},
+	}
+	stableFallback := &Account{
+		ID:          124,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeUpstream,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key": "sk-real-upstream",
+			"base_url": "https://api.fallback.example",
+		},
+	}
+
+	selectionCalls := 0
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(101), *groupID)
+			require.Equal(t, "user_session:codex_gateway:hosted_web_search", sessionHash)
+			selectionCalls++
+			switch selectionCalls {
+			case 1:
+				require.Empty(t, excludedIDs)
+				require.Equal(t, codexGatewayHostedWebSearchOpenAIModel, requestedModel)
+				return flakyMini, nil
+			case 2:
+				_, excluded := excludedIDs[flakyMini.ID]
+				require.True(t, excluded)
+				require.Equal(t, codexGatewayHostedWebSearchOpenAIModel, requestedModel)
+				return stableFallback, nil
+			default:
+				t.Fatalf("unexpected selector call %d", selectionCalls)
+				return nil, nil
+			}
+		},
+	}
+	executor.openaiGateway = &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{
+					Enabled:           false,
+					AllowInsecureHTTP: true,
+				},
+			},
+		},
+		httpUpstream: &codexGatewayProviderExecutorHTTPUpstreamStub{
+			doFn: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+				switch req.Header.Get("Authorization") {
+				case "Bearer sk-mini":
+					require.Equal(t, "https://api.openai-mini.example/v1/responses", req.URL.String())
+					return &http.Response{
+						StatusCode: http.StatusTooManyRequests,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
+					}, nil
+				case "Bearer sk-real-upstream":
+					require.Equal(t, "https://api.fallback.example/v1/responses", req.URL.String())
+				default:
+					t.Fatalf("unexpected auth header %q", req.Header.Get("Authorization"))
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(`{
+						"id":"resp_hosted_search",
+						"object":"response",
+						"status":"completed",
+						"output":[
+							{
+								"id":"msg_1",
+								"type":"message",
+								"role":"assistant",
+								"content":[
+									{"type":"output_text","text":"found result from hosted search"}
+								]
+							}
+						]
+					}`)),
+				}, nil
+			},
+		},
+	}
+
+	out, err := executor.executeOpenAIHostedWebSearch(context.Background(), CodexGatewayProviderRequest{
+		SessionKey: "user_session",
+		Model: CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+	}, "latest news")
+	require.NoError(t, err)
+	require.Equal(t, 2, selectionCalls)
+	require.Contains(t, out, `"provider":"openai_responses"`)
+	require.Contains(t, out, `"summary":"found result from hosted search"`)
+}
+
+func TestCodexGatewayProviderExecutor_ExecuteOpenAIHostedWebSearch_TriesNextSearchModelWhenCurrentModelHasNoAccounts(t *testing.T) {
+	executor := newCodexGatewayProviderExecutorForTest()
+	fallbackAccount := &Account{
+		ID:          202,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeUpstream,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"base_url": "https://api.fallback.example",
+			"api_key":  "sk-fallback",
+		},
+	}
+
+	selectionCalls := 0
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(101), *groupID)
+			require.Equal(t, "user_session:codex_gateway:hosted_web_search", sessionHash)
+			selectionCalls++
+			switch selectionCalls {
+			case 1:
+				require.Empty(t, excludedIDs)
+				require.Equal(t, codexGatewayHostedWebSearchOpenAIModel, requestedModel)
+				return nil, ErrNoAvailableAccounts
+			case 2:
+				require.Empty(t, excludedIDs)
+				require.Equal(t, "gpt-5.4", requestedModel)
+				return fallbackAccount, nil
+			default:
+				t.Fatalf("unexpected selector call %d", selectionCalls)
+				return nil, nil
+			}
+		},
+	}
+	executor.openaiGateway = &OpenAIGatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{
+					Enabled:           false,
+					AllowInsecureHTTP: true,
+				},
+			},
+		},
+		httpUpstream: &codexGatewayProviderExecutorHTTPUpstreamStub{},
+	}
+	executor.openaiGateway.httpUpstream = &codexGatewayProviderExecutorHTTPUpstreamStub{
+		doFn: func(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+			require.Equal(t, "https://api.fallback.example/v1/responses", req.URL.String())
+			require.Equal(t, "Bearer sk-fallback", req.Header.Get("Authorization"))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{
+					"id":"resp_hosted_search",
+					"object":"response",
+					"status":"completed",
+					"output":[
+						{
+							"id":"msg_1",
+							"type":"message",
+							"role":"assistant",
+							"content":[
+								{"type":"output_text","text":"fallback model search worked"}
+							]
+						}
+					]
+				}`)),
+			}, nil
+		},
+	}
+
+	out, err := executor.executeOpenAIHostedWebSearch(context.Background(), CodexGatewayProviderRequest{
+		SessionKey: "user_session",
+		Model: CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+	}, "latest news")
+	require.NoError(t, err)
+	require.Contains(t, out, `"summary":"fallback model search worked"`)
+	require.Equal(t, 2, selectionCalls)
 }
 
 func TestCodexGatewayOpenAIHostedWebSearchOutput_ReconstructsTextFromSSE(t *testing.T) {

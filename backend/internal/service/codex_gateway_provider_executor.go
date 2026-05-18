@@ -87,8 +87,9 @@ func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGa
 	}
 	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: openaiGateway}
 	executor.deepseek = &codexGatewayDeepSeekProviderAdapter{
-		stateStore:      stateStore,
-		hostedWebSearch: executor.executeOpenAIHostedWebSearch,
+		stateStore:        stateStore,
+		hostedWebSearch:   executor.executeOpenAIHostedWebSearch,
+		hostedImageVision: executor.executeOpenAIHostedImageVision,
 	}
 	executor.anthropic = &codexGatewayAnthropicProviderAdapter{
 		stateStore:      stateStore,
@@ -304,7 +305,10 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 	return account, nil
 }
 
-const codexGatewayHostedWebSearchOpenAIModel = "gpt-5.4-mini"
+const (
+	codexGatewayHostedWebSearchOpenAIModel   = "gpt-5.4-mini"
+	codexGatewayHostedImageVisionOpenAIModel = "gpt-5.4-mini"
+)
 
 func (e *CodexGatewayProviderExecutor) executeOpenAIHostedWebSearch(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error) {
 	if e == nil || e.openaiGateway == nil || e.accountSelector == nil {
@@ -322,18 +326,82 @@ func (e *CodexGatewayProviderExecutor) executeOpenAIHostedWebSearch(ctx context.
 			Kind:     CodexGatewayProviderUnavailableNoProviderGroup,
 		}
 	}
-	searchModel := e.openAIHostedSearchModel(ctx)
-	searchReq := req
-	searchReq.Model = CodexGatewayModel{
-		Slug:          searchModel,
-		Provider:      string(CodexGatewayProviderOpenAI),
-		UpstreamModel: searchModel,
-	}
-	searchReq.SessionKey = strings.TrimSpace(req.SessionKey) + ":codex_gateway:hosted_web_search"
-	account, err := e.selectAccount(ctx, runtime.GroupID, searchReq, map[int64]struct{}{})
-	if err != nil {
+	var lastErr error
+	for _, searchModel := range e.openAIHostedSearchModels(ctx) {
+		searchReq := req
+		searchReq.Model = CodexGatewayModel{
+			Slug:          searchModel,
+			Provider:      string(CodexGatewayProviderOpenAI),
+			UpstreamModel: searchModel,
+		}
+		searchReq.SessionKey = strings.TrimSpace(req.SessionKey) + ":codex_gateway:hosted_web_search"
+
+		output, handled, err := e.executeOpenAIHostedWebSearchWithModel(ctx, runtime.GroupID, searchReq, searchModel, query)
+		if err == nil {
+			return output, nil
+		}
+		lastErr = err
+		if handled {
+			continue
+		}
 		return "", err
 	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", &CodexGatewayProviderUnavailableError{
+		ModelID:  codexGatewayHostedWebSearchOpenAIModel,
+		Provider: string(CodexGatewayProviderOpenAI),
+		Kind:     CodexGatewayProviderUnavailableNoAccounts,
+	}
+}
+
+func (e *CodexGatewayProviderExecutor) executeOpenAIHostedImageVision(ctx context.Context, req CodexGatewayProviderRequest, imageURL string) (string, error) {
+	if e == nil || e.openaiGateway == nil || e.accountSelector == nil {
+		return "", fmt.Errorf("codex gateway hosted image vision requires OpenAI provider")
+	}
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return "", fmt.Errorf("codex gateway hosted image vision requires an image URL")
+	}
+	runtime := e.providerRuntime(ctx, string(CodexGatewayProviderOpenAI))
+	if runtime.GroupID <= 0 || !runtime.Healthy {
+		return "", &CodexGatewayProviderUnavailableError{
+			ModelID:  codexGatewayHostedImageVisionOpenAIModel,
+			Provider: string(CodexGatewayProviderOpenAI),
+			Kind:     CodexGatewayProviderUnavailableNoProviderGroup,
+		}
+	}
+	var lastErr error
+	for _, visionModel := range e.openAIHostedSearchModels(ctx) {
+		visionReq := req
+		visionReq.Model = CodexGatewayModel{
+			Slug:          visionModel,
+			Provider:      string(CodexGatewayProviderOpenAI),
+			UpstreamModel: visionModel,
+		}
+		visionReq.SessionKey = strings.TrimSpace(req.SessionKey) + ":codex_gateway:hosted_image_vision"
+		output, handled, err := e.executeOpenAIHostedImageVisionWithModel(ctx, runtime.GroupID, visionReq, visionModel, imageURL)
+		if err == nil {
+			return output, nil
+		}
+		lastErr = err
+		if handled {
+			continue
+		}
+		return "", err
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", &CodexGatewayProviderUnavailableError{
+		ModelID:  codexGatewayHostedImageVisionOpenAIModel,
+		Provider: string(CodexGatewayProviderOpenAI),
+		Kind:     CodexGatewayProviderUnavailableNoAccounts,
+	}
+}
+
+func (e *CodexGatewayProviderExecutor) executeOpenAIHostedWebSearchWithModel(ctx context.Context, groupID int64, req CodexGatewayProviderRequest, searchModel string, query string) (string, bool, error) {
 	body, err := json.Marshal(map[string]any{
 		"model": searchModel,
 		"input": []any{
@@ -352,30 +420,152 @@ func (e *CodexGatewayProviderExecutor) executeOpenAIHostedWebSearch(ctx context.
 		"store": false,
 	})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
-	resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return "", err
-	}
-	codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, respBody)
-	if resp.StatusCode >= 400 {
-		msg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
-		if msg == "" {
-			msg = http.StatusText(resp.StatusCode)
+
+	excluded := make(map[int64]struct{})
+	for {
+		account, err := e.selectHostedWebSearchAccount(ctx, groupID, req, excluded)
+		if err != nil {
+			return "", true, err
 		}
-		return "", fmt.Errorf("codex gateway hosted web search failed: status=%d message=%s", resp.StatusCode, msg)
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
+		resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
+		if err != nil {
+			excluded[account.ID] = struct{}{}
+			continue
+		}
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			excluded[account.ID] = struct{}{}
+			continue
+		}
+		codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, respBody)
+		if resp.StatusCode >= 400 {
+			msg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			if msg == "" {
+				msg = http.StatusText(resp.StatusCode)
+			}
+			failErr := fmt.Errorf("codex gateway hosted web search failed: status=%d message=%s", resp.StatusCode, msg)
+			if e.openaiGateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, respBody) {
+				excluded[account.ID] = struct{}{}
+				continue
+			}
+			return "", false, failErr
+		}
+		return codexGatewayOpenAIHostedWebSearchOutput(query, respBody), true, nil
 	}
-	return codexGatewayOpenAIHostedWebSearchOutput(query, respBody), nil
 }
 
-func (e *CodexGatewayProviderExecutor) openAIHostedSearchModel(ctx context.Context) string {
+func (e *CodexGatewayProviderExecutor) executeOpenAIHostedImageVisionWithModel(ctx context.Context, groupID int64, req CodexGatewayProviderRequest, visionModel string, imageURL string) (string, bool, error) {
+	body, err := json.Marshal(map[string]any{
+		"model": visionModel,
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "input_text",
+						"text": "You are a vision preprocessing layer for another model. Describe the image concisely in plain text. Include the main subject, visible text, UI/code clues, and any uncertainty. Do not answer the user's task. Do not mention policies or your own process.",
+					},
+					map[string]any{
+						"type":      "input_image",
+						"image_url": imageURL,
+					},
+				},
+			},
+		},
+		"max_output_tokens": 400,
+		"store":             false,
+	})
+	if err != nil {
+		return "", false, err
+	}
+
+	excluded := make(map[int64]struct{})
+	for {
+		account, err := e.selectHostedWebSearchAccount(ctx, groupID, req, excluded)
+		if err != nil {
+			return "", true, err
+		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_image_vision", http.Header{}, body)
+		resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
+		if err != nil {
+			excluded[account.ID] = struct{}{}
+			continue
+		}
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			excluded[account.ID] = struct{}{}
+			continue
+		}
+		codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, respBody)
+		if resp.StatusCode >= 400 {
+			msg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+			if msg == "" {
+				msg = http.StatusText(resp.StatusCode)
+			}
+			failErr := fmt.Errorf("codex gateway hosted image vision failed: status=%d message=%s", resp.StatusCode, msg)
+			if e.openaiGateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, respBody) {
+				excluded[account.ID] = struct{}{}
+				continue
+			}
+			return "", false, failErr
+		}
+		return strings.TrimSpace(codexGatewayOpenAIResponsesOutputText(respBody)), true, nil
+	}
+}
+
+func (e *CodexGatewayProviderExecutor) selectHostedWebSearchAccount(ctx context.Context, groupID int64, req CodexGatewayProviderRequest, excluded map[int64]struct{}) (*Account, error) {
+	effectiveExcluded := make(map[int64]struct{}, len(excluded))
+	for id := range excluded {
+		effectiveExcluded[id] = struct{}{}
+	}
+	for {
+		account, err := e.selectAccount(ctx, groupID, req, effectiveExcluded)
+		if err != nil {
+			return nil, err
+		}
+		if codexGatewayHostedWebSearchAccountEligible(account, req.Model.UpstreamModel) {
+			return account, nil
+		}
+		if account != nil {
+			effectiveExcluded[account.ID] = struct{}{}
+			continue
+		}
+		return nil, &CodexGatewayProviderUnavailableError{
+			ModelID:  req.Model.Slug,
+			Provider: req.Model.Provider,
+			Kind:     CodexGatewayProviderUnavailableNoAccounts,
+		}
+	}
+}
+
+func codexGatewayHostedWebSearchAccountEligible(account *Account, requestedModel string) bool {
+	if account == nil || !account.IsOpenAI() || !account.IsSchedulable() {
+		return false
+	}
+	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+		return false
+	}
+	switch account.Type {
+	case AccountTypeOAuth:
+		supported, known := account.OpenAICompactSupportKnown()
+		if known && !supported {
+			return false
+		}
+		return account.getExtraBool("openai_responses_write_capable") || !known
+	case AccountTypeAPIKey, AccountTypeUpstream:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *CodexGatewayProviderExecutor) openAIHostedSearchModels(ctx context.Context) []string {
 	preferred := []string{codexGatewayHostedWebSearchOpenAIModel, "gpt-5.4", "gpt-5.5", "gpt-5.3-codex"}
 	enabled := make(map[string]struct{}, len(preferred))
 	if e != nil && e.cfg != nil {
@@ -398,24 +588,45 @@ func (e *CodexGatewayProviderExecutor) openAIHostedSearchModel(ctx context.Conte
 		}
 	}
 	if len(enabled) == 0 {
-		return codexGatewayHostedWebSearchOpenAIModel
+		return append([]string(nil), preferred...)
 	}
+	out := make([]string, 0, len(preferred))
 	for _, model := range preferred {
 		if _, ok := enabled[model]; ok {
-			return model
+			out = append(out, model)
 		}
 	}
 	for model := range enabled {
 		if strings.HasPrefix(model, "gpt-") {
-			return model
+			out = append(out, model)
 		}
 	}
-	return codexGatewayHostedWebSearchOpenAIModel
+	if len(out) == 0 {
+		return append([]string(nil), preferred...)
+	}
+	return uniqueCodexGatewayStringList(out)
+}
+
+func uniqueCodexGatewayStringList(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func codexGatewayOpenAIHostedWebSearchOutput(query string, body []byte) string {
 	body = codexGatewayNormalizeOpenAIHostedWebSearchBody(body)
-	text := strings.TrimSpace(codexGatewayOpenAIHostedWebSearchText(body))
+	text := strings.TrimSpace(codexGatewayOpenAIResponsesOutputText(body))
 	payload := map[string]any{
 		"query":    query,
 		"provider": "openai_responses",
@@ -445,7 +656,7 @@ func codexGatewayNormalizeOpenAIHostedWebSearchBody(body []byte) []byte {
 	return normalized
 }
 
-func codexGatewayOpenAIHostedWebSearchText(body []byte) string {
+func codexGatewayOpenAIResponsesOutputText(body []byte) string {
 	if text := strings.TrimSpace(gjson.GetBytes(body, "output_text").String()); text != "" {
 		return text
 	}
@@ -497,8 +708,9 @@ func codexGatewayProviderSelectionSessionKey(req CodexGatewayProviderRequest) st
 }
 
 type codexGatewayDeepSeekProviderAdapter struct {
-	stateStore      *CodexGatewayStateStore
-	hostedWebSearch func(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error)
+	stateStore        *CodexGatewayStateStore
+	hostedWebSearch   func(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error)
+	hostedImageVision func(ctx context.Context, req CodexGatewayProviderRequest, imageURL string) (string, error)
 }
 
 type codexGatewayAnthropicProviderAdapter struct {
@@ -514,6 +726,11 @@ func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, acco
 	if a.hostedWebSearch != nil {
 		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
 			return a.hostedWebSearch(ctx, req, query)
+		}
+	}
+	if a.hostedImageVision != nil {
+		cfg.HostedImageVision = func(ctx context.Context, imageURL string) (string, error) {
+			return a.hostedImageVision(ctx, req, imageURL)
 		}
 	}
 	return ExecuteCodexGatewayDeepSeekAdapter(
@@ -549,6 +766,11 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 	if a.hostedWebSearch != nil {
 		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
 			return a.hostedWebSearch(ctx, req, query)
+		}
+	}
+	if a.hostedImageVision != nil {
+		cfg.HostedImageVision = func(ctx context.Context, imageURL string) (string, error) {
+			return a.hostedImageVision(ctx, req, imageURL)
 		}
 	}
 	result, err := ExecuteCodexGatewayDeepSeekStream(

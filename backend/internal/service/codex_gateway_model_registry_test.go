@@ -70,6 +70,8 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 	require.Equal(t, 384_000, pro.MaxOutputTokens)
 	require.Equal(t, "xhigh", pro.DefaultReasoningLevel)
 	require.False(t, pro.SupportsParallelToolCalls)
+	require.Equal(t, []string{"text", "image"}, pro.InputModalities)
+	require.False(t, pro.SupportsImageDetailOriginal)
 	require.True(t, pro.SupportsSearchTool)
 	require.Equal(t, "openai", pro.WebSearchToolType)
 	require.Equal(t, "none", pro.ImageGenerationToolType)
@@ -151,12 +153,13 @@ func TestCodexGatewayModelRegistry_ExportCatalogJSON(t *testing.T) {
 
 func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 	type codexCLICatalogModelForTest struct {
-		Slug                      string `json:"slug"`
-		Visibility                string `json:"visibility"`
-		ShellType                 string `json:"shell_type"`
-		WebSearchToolType         string `json:"web_search_tool_type,omitempty"`
-		SupportsSearchTool        bool   `json:"supports_search_tool"`
-		SupportsParallelToolCalls bool   `json:"supports_parallel_tool_calls"`
+		Slug                      string   `json:"slug"`
+		Visibility                string   `json:"visibility"`
+		ShellType                 string   `json:"shell_type"`
+		WebSearchToolType         string   `json:"web_search_tool_type,omitempty"`
+		InputModalities           []string `json:"input_modalities"`
+		SupportsSearchTool        bool     `json:"supports_search_tool"`
+		SupportsParallelToolCalls bool     `json:"supports_parallel_tool_calls"`
 		SupportedReasoningLevels  []struct {
 			Effort      string `json:"effort"`
 			Description string `json:"description"`
@@ -223,6 +226,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 	require.Equal(t, "deepseek-v4-pro", deepseek.Slug)
 	require.True(t, deepseek.SupportsSearchTool)
 	require.NotEmpty(t, deepseek.WebSearchToolType)
+	require.Equal(t, []string{"text", "image"}, deepseek.InputModalities)
 	require.False(t, deepseek.SupportsParallelToolCalls)
 }
 
@@ -285,47 +289,47 @@ func TestCodexGatewayModelRegistry_AnthropicVisibleWhenProviderGroupIsHealthy(t 
 					},
 				},
 				Models: map[string]CodexGatewayModelMutation{
-					"claude-opus-4-7":                    {Enabled: true},
-					"claude-opus-4-7-thinking":           {Enabled: true},
-					"claude-opus-4-7-ag":                 {Enabled: true},
-					"claude-opus-4-7-thinking-ag":        {Enabled: true},
-					"claude-opus-4-7-max":                {Enabled: true},
-					"claude-opus-4-6":                    {Enabled: true},
-					"claude-opus-4-6-thinking":           {Enabled: true},
-					"claude-opus-4-6-ag":                 {Enabled: true},
-					"claude-opus-4-6-thinking-ag":        {Enabled: true},
-					"claude-opus-4-6-max":                {Enabled: true},
-					"claude-sonnet-4-6":                  {Enabled: true},
-					"claude-sonnet-4-6-thinking":         {Enabled: true},
-					"claude-sonnet-4-6-ag":               {Enabled: true},
-					"claude-sonnet-4-6-thinking-ag":      {Enabled: true},
-					"claude-sonnet-4-6-max":              {Enabled: true},
-					"claude-haiku-4-5-20251001":          {Enabled: true},
-					"claude-haiku-4-5-20251001-thinking": {Enabled: true},
-					"claude-haiku-4-5-20251001-ag":       {Enabled: true},
+					"claude-opus-4-7":                       {Enabled: true},
+					"claude-opus-4-7-thinking":              {Enabled: true},
+					"claude-opus-4-7-ag":                    {Enabled: true},
+					"claude-opus-4-7-thinking-ag":           {Enabled: true},
+					"claude-opus-4-7-max":                   {Enabled: true},
+					"claude-opus-4-6":                       {Enabled: true},
+					"claude-opus-4-6-thinking":              {Enabled: true},
+					"claude-opus-4-6-ag":                    {Enabled: true},
+					"claude-opus-4-6-thinking-ag":           {Enabled: true},
+					"claude-opus-4-6-max":                   {Enabled: true},
+					"claude-sonnet-4-6":                     {Enabled: true},
+					"claude-sonnet-4-6-thinking":            {Enabled: true},
+					"claude-sonnet-4-6-ag":                  {Enabled: true},
+					"claude-sonnet-4-6-thinking-ag":         {Enabled: true},
+					"claude-sonnet-4-6-max":                 {Enabled: true},
+					"claude-haiku-4-5-20251001":             {Enabled: true},
+					"claude-haiku-4-5-20251001-thinking":    {Enabled: true},
+					"claude-haiku-4-5-20251001-ag":          {Enabled: true},
 					"claude-haiku-4-5-20251001-thinking-ag": {Enabled: true},
-					"claude-haiku-4-5-20251001-max":      {Enabled: true},
+					"claude-haiku-4-5-20251001-max":         {Enabled: true},
 				},
 			},
 		}),
 		WithCodexGatewayVariantReadyChecker(codexGatewayVariantReadyCheckerStub{
 			ready: map[string]bool{
-				"claude-opus-4-7-ag":                 true,
-				"claude-opus-4-7-thinking":           true,
-				"claude-opus-4-7-thinking-ag":        true,
-				"claude-opus-4-7-max":                false,
-				"claude-opus-4-6-ag":                 true,
-				"claude-opus-4-6-thinking":           true,
-				"claude-opus-4-6-thinking-ag":        true,
-				"claude-opus-4-6-max":                false,
-				"claude-sonnet-4-6-ag":               true,
-				"claude-sonnet-4-6-thinking":         true,
-				"claude-sonnet-4-6-thinking-ag":      true,
-				"claude-sonnet-4-6-max":              false,
-				"claude-haiku-4-5-20251001-ag":       true,
-				"claude-haiku-4-5-20251001-thinking": true,
+				"claude-opus-4-7-ag":                    true,
+				"claude-opus-4-7-thinking":              true,
+				"claude-opus-4-7-thinking-ag":           true,
+				"claude-opus-4-7-max":                   false,
+				"claude-opus-4-6-ag":                    true,
+				"claude-opus-4-6-thinking":              true,
+				"claude-opus-4-6-thinking-ag":           true,
+				"claude-opus-4-6-max":                   false,
+				"claude-sonnet-4-6-ag":                  true,
+				"claude-sonnet-4-6-thinking":            true,
+				"claude-sonnet-4-6-thinking-ag":         true,
+				"claude-sonnet-4-6-max":                 false,
+				"claude-haiku-4-5-20251001-ag":          true,
+				"claude-haiku-4-5-20251001-thinking":    true,
 				"claude-haiku-4-5-20251001-thinking-ag": true,
-				"claude-haiku-4-5-20251001-max":      false,
+				"claude-haiku-4-5-20251001-max":         false,
 			},
 		}),
 	)

@@ -28,6 +28,10 @@ func ExecuteCodexGatewayDeepSeekAdapter(
 	reqCtx CodexGatewayDeepSeekRequestContext,
 	cfg CodexGatewayDeepSeekRequestConfig,
 ) (CodexGatewayDeepSeekAdapterResult, error) {
+	req, err := codexGatewayDeepSeekRequestWithHostedVision(ctx, req, cfg)
+	if err != nil {
+		return CodexGatewayDeepSeekAdapterResult{}, err
+	}
 	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, stateStore, reqCtx, cfg)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err

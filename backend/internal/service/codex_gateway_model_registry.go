@@ -480,7 +480,7 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 			ContextWindow:               1_000_000,
 			AutoCompactTokenLimit:       850_000,
 			MaxOutputTokens:             384_000,
-			InputModalities:             []string{"text"},
+			InputModalities:             []string{"text", "image"},
 			SupportsImageDetailOriginal: false,
 			SupportsSearchTool:          true,
 			ExperimentalSupportedTools:  []string{"function", "namespace", "custom"},

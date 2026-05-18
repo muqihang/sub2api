@@ -75,6 +75,10 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	if turn > codexGatewayDeepSeekHostedToolMaxTurns {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek hosted tool loop exceeded %d turns", codexGatewayDeepSeekHostedToolMaxTurns)
 	}
+	req, err := codexGatewayDeepSeekRequestWithHostedVision(ctx, req, cfg)
+	if err != nil {
+		return CodexGatewayDeepSeekAdapterResult{}, err
+	}
 	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, stateStore, reqCtx, cfg)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
@@ -195,9 +199,6 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	}
 
 	if calls := state.serverHandledHostedToolCalls(); len(calls) > 0 {
-		if deferredWriter.Flushed() {
-			return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek hosted tool call appeared after client-visible output")
-		}
 		if err := deferredWriter.Flush(); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
