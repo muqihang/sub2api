@@ -326,10 +326,12 @@ func codexGatewayDefaultCLIModelMessages() CodexGatewayCodexCLIModelMessages {
 
 func codexGatewayCLIShellType(shellType string) string {
 	switch strings.TrimSpace(shellType) {
+	case "local":
+		return "local"
 	case "shell_command":
 		return "shell_command"
 	default:
-		return "shell_command"
+		return "local"
 	}
 }
 

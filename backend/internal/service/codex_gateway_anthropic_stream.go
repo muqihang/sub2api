@@ -138,7 +138,7 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 
 	state := newCodexGatewayAnthropicStreamState(model, prepared.ToolNameMap, prepared.ReplayMessages)
 	deferredWriter := newCodexGatewayDeferredStreamWriter(dst)
-	writer := NewCodexGatewayResponseEventWriter(deferredWriter)
+	writer := NewCodexGatewayResponseEventWriterWithSequence(deferredWriter, cfg.StreamSequenceNumber)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), defaultMaxLineSize)
 	dataLines := make([]string, 0, 4)
@@ -195,7 +195,6 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 		if err := deferredWriter.Flush(); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
-		writer := NewCodexGatewayResponseEventWriter(dst)
 		cfg.HostedToolContext.VisibleEventSink = func(event codexGatewayHostedToolVisibleEvent) error {
 			return codexGatewayWriteVisibleHostedWebSearchEvent(writer, state.responseID, state.nextOutputIndex, event)
 		}
@@ -203,6 +202,7 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 		if err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
+		cfg.StreamSequenceNumber = writer.NextSequenceNumber()
 		return executeCodexGatewayAnthropicStreamWithHostedToolTurns(ctx, client, baseURL, apiKey, model, nextReq, stateStore, reqCtx, cfg, dst, turn+1)
 	}
 	if state.terminalSeen {
@@ -384,6 +384,9 @@ func (s *codexGatewayAnthropicStreamState) ensureCreated(writer *CodexGatewayRes
 		Output: []json.RawMessage{},
 	}
 	if err := writer.WriteResponseCreated(created); err != nil {
+		return err
+	}
+	if err := writer.WriteResponseInProgress(created); err != nil {
 		return err
 	}
 	s.createdSent = true

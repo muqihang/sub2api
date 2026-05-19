@@ -86,6 +86,7 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	item := json.RawMessage(`{"id":"msg_1","type":"message","role":"assistant","content":[]}`)
 
 	require.NoError(t, writer.WriteResponseCreated(response))
+	require.NoError(t, writer.WriteResponseInProgress(response))
 	require.NoError(t, writer.WriteOutputItemAdded("resp_123", 0, item))
 	require.NoError(t, writer.WriteOutputTextDelta("resp_123", "msg_1", 0, 0, "hel"))
 	require.NoError(t, writer.WriteFunctionCallArgumentsDelta("resp_123", "fc_call_1", 1, "{\"cmd\":\"ls"))
@@ -119,6 +120,7 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	stream := buf.String()
 	for _, eventName := range []string{
 		"response.created",
+		"response.in_progress",
 		"response.output_item.added",
 		"response.output_text.delta",
 		"response.function_call_arguments.delta",
@@ -135,13 +137,16 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 
 	events := parseCodexGatewayEventPayloads(t, stream)
 	created := events["response.created"]
+	inProgress := events["response.in_progress"]
 	completed := events["response.completed"]
 	failed := events["response.failed"]
 	incomplete := events["response.incomplete"]
 
-	for _, payload := range []map[string]any{created, completed, failed, incomplete} {
+	for _, payload := range []map[string]any{created, inProgress, completed, failed, incomplete} {
 		require.Contains(t, payload, "response")
 	}
+
+	requireSequentialCodexGatewaySequenceNumbers(t, stream)
 
 	createdResponse, ok := created["response"].(map[string]any)
 	require.True(t, ok)
@@ -216,4 +221,24 @@ func parseCodexGatewayEventPayloads(t *testing.T, stream string) map[string]map[
 		result[eventName] = payload
 	}
 	return result
+}
+
+func requireSequentialCodexGatewaySequenceNumbers(t *testing.T, stream string) {
+	t.Helper()
+
+	blocks := strings.Split(strings.TrimSpace(stream), "\n\n")
+	expected := 0
+	for _, block := range blocks {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		lines := strings.Split(block, "\n")
+		require.Len(t, lines, 2)
+		raw := strings.TrimPrefix(lines[1], "data: ")
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+		require.Equal(t, float64(expected), payload["sequence_number"])
+		expected++
+	}
+	require.Greater(t, expected, 0)
 }

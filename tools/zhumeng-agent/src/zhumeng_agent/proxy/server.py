@@ -126,12 +126,12 @@ class ManagedProxyServer:
             "proxy_port": request.url.port,
         })
 
-    async def _proxy_http(self, request: web.Request) -> web.Response:
+    async def _proxy_http(self, request: web.Request) -> web.StreamResponse:
         session = await self._get_session()
         upstream_url = urljoin(self.config.upstream_base_url.rstrip("/") + "/", map_upstream_path(request.path).lstrip("/"))
         body = await request.read()
         inbound_headers = dict(request.headers)
-        return await self._forward_http_with_optional_refresh(session, request.method, upstream_url, body, inbound_headers)
+        return await self._forward_http_with_optional_refresh(session, request, request.method, upstream_url, body, inbound_headers)
 
     async def _proxy_websocket(self, request: web.Request) -> web.StreamResponse:
         session = await self._get_session()
@@ -212,11 +212,12 @@ class ManagedProxyServer:
     async def _forward_http_with_optional_refresh(
         self,
         session: ClientSession,
+        request: web.Request,
         method: str,
         upstream_url: str,
         body: bytes,
         inbound_headers: dict[str, str],
-    ) -> web.Response:
+    ) -> web.StreamResponse:
         headers = build_upstream_headers(
             access_token=self.config.access_token,
             managed_session_id=self.config.managed_session_id,
@@ -226,6 +227,9 @@ class ManagedProxyServer:
             inbound_headers=inbound_headers,
         )
         async with session.request(method, upstream_url, data=body, headers=headers) as response:
+            if response.status < 400 and is_event_stream_response(response.headers):
+                self._mark_state_configured()
+                return await self._stream_upstream_response(request, response)
             try:
                 payload = await response.read()
             except ClientPayloadError:
@@ -242,6 +246,9 @@ class ManagedProxyServer:
                     inbound_headers=inbound_headers,
                 )
                 async with session.request(method, upstream_url, data=body, headers=headers) as retried:
+                    if retried.status < 400 and is_event_stream_response(retried.headers):
+                        self._mark_state_configured()
+                        return await self._stream_upstream_response(request, retried)
                     try:
                         retried_payload = await retried.read()
                     except ClientPayloadError:
@@ -257,6 +264,17 @@ class ManagedProxyServer:
             elif response.status < 400:
                 self._mark_state_configured()
             return web.Response(status=response.status, body=payload, headers=sanitize_response_headers(response.headers))
+
+    async def _stream_upstream_response(self, request: web.Request, response) -> web.StreamResponse:
+        stream = web.StreamResponse(status=response.status, headers=sanitize_response_headers(response.headers))
+        await stream.prepare(request)
+        try:
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                await stream.write(chunk)
+        except ClientPayloadError:
+            return stream
+        await stream.write_eof()
+        return stream
 
     async def _refresh_credentials(self) -> bool:
         if not self.config.server_base_url or not self.config.refresh_token:
@@ -381,3 +399,7 @@ def sanitize_response_headers(headers) -> dict[str, str]:
             continue
         sanitized[key] = value
     return sanitized
+
+
+def is_event_stream_response(headers) -> bool:
+    return "text/event-stream" in str(headers.get("Content-Type", "")).lower()

@@ -101,11 +101,16 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 
 	events := dst.String()
 	require.Contains(t, events, "event: response.created")
+	require.Contains(t, events, "event: response.in_progress")
 	require.Contains(t, events, "event: response.output_text.delta")
 	require.Contains(t, events, "event: response.function_call_arguments.delta")
 	require.Contains(t, events, "event: response.function_call_arguments.done")
 	require.Contains(t, events, "event: response.completed")
 	require.NotContains(t, events, "response.reasoning_text.delta")
+	orderedEvents := parseCodexGatewayOrderedEvents(t, events)
+	require.Equal(t, "response.created", orderedEvents[0].Event)
+	require.Equal(t, "response.in_progress", orderedEvents[1].Event)
+	requireSequentialCodexGatewayOrderedSequenceNumbers(t, orderedEvents)
 
 	var completed map[string]any
 	for _, block := range strings.Split(events, "\n\n") {
@@ -387,6 +392,7 @@ func TestExecuteCodexGatewayAnthropicStream_ExecutesHostedWebSearchAndResumesMod
 	require.Contains(t, stream, "event: response.web_search_call.in_progress")
 	require.Contains(t, stream, "event: response.web_search_call.searching")
 	require.Contains(t, stream, "event: response.web_search_call.completed")
+	requireSequentialCodexGatewayOrderedSequenceNumbers(t, parseCodexGatewayOrderedEvents(t, stream))
 	require.Contains(t, stream, "Search result says Found from OpenAI Responses search.")
 }
 

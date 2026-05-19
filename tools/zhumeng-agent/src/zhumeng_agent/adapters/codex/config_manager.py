@@ -190,7 +190,7 @@ class CodexConfigManager:
             "description": str(model.get("description") or f"{display_name} via Zhumeng Codex."),
             "default_reasoning_level": str(model.get("default_reasoning_level") or "medium"),
             "supported_reasoning_levels": normalize_reasoning_levels(model.get("supported_reasoning_levels")),
-            "shell_type": "shell_command",
+            "shell_type": normalize_shell_type(model.get("shell_type")),
             "visibility": normalize_visibility(model.get("visibility")),
             "supported_in_api": bool(model.get("supported_in_api", True)),
             "priority": safe_int(model.get("priority"), 0),
@@ -264,6 +264,13 @@ def normalize_visibility(raw: object) -> str:
     if str(raw).lower() in {"hidden", "hide"}:
         return "hidden"
     return "list"
+
+
+def normalize_shell_type(raw: object) -> str:
+    shell_type = str(raw or "").strip()
+    if shell_type in {"local", "shell_command"}:
+        return shell_type
+    return "local"
 
 
 def normalize_web_search_tool_type(model: dict[str, object]) -> str | None:

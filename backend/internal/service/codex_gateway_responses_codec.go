@@ -76,11 +76,26 @@ func ValidateCodexGatewayResponsesCreateRequest(req CodexGatewayResponsesCreateR
 }
 
 type CodexGatewayResponseEventWriter struct {
-	w io.Writer
+	w              io.Writer
+	sequenceNumber int
 }
 
 func NewCodexGatewayResponseEventWriter(w io.Writer) *CodexGatewayResponseEventWriter {
 	return &CodexGatewayResponseEventWriter{w: w}
+}
+
+func NewCodexGatewayResponseEventWriterWithSequence(w io.Writer, sequenceNumber int) *CodexGatewayResponseEventWriter {
+	if sequenceNumber < 0 {
+		sequenceNumber = 0
+	}
+	return &CodexGatewayResponseEventWriter{w: w, sequenceNumber: sequenceNumber}
+}
+
+func (w *CodexGatewayResponseEventWriter) NextSequenceNumber() int {
+	if w == nil {
+		return 0
+	}
+	return w.sequenceNumber
 }
 
 func (r CodexGatewayResponse) MarshalJSON() ([]byte, error) {
@@ -160,6 +175,13 @@ func (e CodexGatewayResponseError) MarshalJSON() ([]byte, error) {
 func (w *CodexGatewayResponseEventWriter) WriteResponseCreated(response CodexGatewayResponse) error {
 	return w.write("response.created", map[string]any{
 		"type":     "response.created",
+		"response": response,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteResponseInProgress(response CodexGatewayResponse) error {
+	return w.write("response.in_progress", map[string]any{
+		"type":     "response.in_progress",
 		"response": response,
 	})
 }
@@ -289,14 +311,13 @@ func (w *CodexGatewayResponseEventWriter) WriteOutputItemDone(responseID string,
 	})
 }
 
-func (w *CodexGatewayResponseEventWriter) WriteWebSearchCallEvent(name, responseID, itemID string, outputIndex, sequenceNumber int) error {
+func (w *CodexGatewayResponseEventWriter) WriteWebSearchCallEvent(name, responseID, itemID string, outputIndex int) error {
 	eventName := "response.web_search_call." + strings.TrimSpace(name)
 	return w.write(eventName, map[string]any{
-		"type":            eventName,
-		"response_id":     responseID,
-		"item_id":         itemID,
-		"output_index":    outputIndex,
-		"sequence_number": sequenceNumber,
+		"type":         eventName,
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
 	})
 }
 
@@ -322,7 +343,21 @@ func (w *CodexGatewayResponseEventWriter) WriteResponseIncomplete(response Codex
 }
 
 func (w *CodexGatewayResponseEventWriter) write(name string, payload any) error {
-	data, err := json.Marshal(payload)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	var eventPayload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &eventPayload); err != nil {
+		return err
+	}
+	sequenceNumber, err := json.Marshal(w.sequenceNumber)
+	if err != nil {
+		return err
+	}
+	eventPayload["sequence_number"] = sequenceNumber
+	w.sequenceNumber++
+	data, err := json.Marshal(eventPayload)
 	if err != nil {
 		return err
 	}

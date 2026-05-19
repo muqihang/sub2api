@@ -150,7 +150,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 
 	state := newCodexGatewayDeepSeekStreamState(model, prepared.ToolNameMap)
 	deferredWriter := newCodexGatewayDeferredStreamWriter(dst)
-	writer := NewCodexGatewayResponseEventWriter(deferredWriter)
+	writer := NewCodexGatewayResponseEventWriterWithSequence(deferredWriter, cfg.StreamSequenceNumber)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), defaultMaxLineSize)
 	dataLines := make([]string, 0, 4)
@@ -202,7 +202,6 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		if err := deferredWriter.Flush(); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
-		writer := NewCodexGatewayResponseEventWriter(dst)
 		cfg.HostedToolContext.VisibleEventSink = func(event codexGatewayHostedToolVisibleEvent) error {
 			return codexGatewayWriteVisibleHostedWebSearchEvent(writer, state.responseID, state.nextOutputIndex, event)
 		}
@@ -210,6 +209,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		if err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
+		cfg.StreamSequenceNumber = writer.NextSequenceNumber()
 		return executeCodexGatewayDeepSeekStreamWithHostedToolTurns(ctx, client, baseURL, apiKey, model, nextReq, stateStore, reqCtx, cfg, dst, turn+1)
 	}
 
@@ -336,6 +336,9 @@ func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer 
 			Output: []json.RawMessage{},
 		}
 		if err := writer.WriteResponseCreated(created); err != nil {
+			return err
+		}
+		if err := writer.WriteResponseInProgress(created); err != nil {
 			return err
 		}
 		s.createdSent = true
@@ -976,12 +979,12 @@ func codexGatewayWriteVisibleHostedWebSearchEvent(writer *CodexGatewayResponseEv
 		if err := writer.WriteOutputItemAdded(responseID, outputIndex, rawItem); err != nil {
 			return err
 		}
-		if err := writer.WriteWebSearchCallEvent("in_progress", responseID, itemID, outputIndex, outputIndex); err != nil {
+		if err := writer.WriteWebSearchCallEvent("in_progress", responseID, itemID, outputIndex); err != nil {
 			return err
 		}
-		return writer.WriteWebSearchCallEvent("searching", responseID, itemID, outputIndex, outputIndex)
+		return writer.WriteWebSearchCallEvent("searching", responseID, itemID, outputIndex)
 	case "completed":
-		if err := writer.WriteWebSearchCallEvent("completed", responseID, itemID, outputIndex, outputIndex); err != nil {
+		if err := writer.WriteWebSearchCallEvent("completed", responseID, itemID, outputIndex); err != nil {
 			return err
 		}
 		return writer.WriteOutputItemDone(responseID, outputIndex, rawItem)

@@ -211,7 +211,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 	for _, model := range envelope.Models {
 		bySlug[model.Slug] = model
 		require.Equal(t, "list", model.Visibility)
-		require.Equal(t, "shell_command", model.ShellType)
+		require.Equal(t, "local", model.ShellType)
 		require.NotEmpty(t, model.BaseInstructions)
 		require.NotEmpty(t, model.SupportedReasoningLevels)
 		require.NotEmpty(t, model.SupportedReasoningLevels[0].Description)

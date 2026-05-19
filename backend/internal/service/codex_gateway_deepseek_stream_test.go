@@ -102,6 +102,9 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		events := parseCodexGatewayOrderedEvents(t, stream)
 		require.NotEmpty(t, events)
 		require.Equal(t, 1, countCodexGatewayEvent(events, "response.created"))
+		require.Equal(t, 1, countCodexGatewayEvent(events, "response.in_progress"))
+		requireSequentialCodexGatewayOrderedSequenceNumbers(t, events)
+		require.Equal(t, "response.in_progress", events[1].Event)
 		require.Equal(t, "response.completed", events[len(events)-1].Event)
 		require.Contains(t, stream, "event: response.output_item.added")
 		require.Contains(t, stream, "event: response.content_part.added")
@@ -257,6 +260,9 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.NotContains(t, stream, "正在使用工具继续推进")
 		events := parseCodexGatewayOrderedEvents(t, stream)
 		require.Equal(t, 1, countCodexGatewayEvent(events, "response.created"))
+		require.Equal(t, 1, countCodexGatewayEvent(events, "response.in_progress"))
+		requireSequentialCodexGatewayOrderedSequenceNumbers(t, events)
+		require.Equal(t, "response.in_progress", events[1].Event)
 		require.Equal(t, "response.completed", events[len(events)-1].Event)
 		addedPayload := firstCodexGatewayEventPayload(t, events, "response.output_item.added")
 		require.Equal(t, "in_progress", gjson.GetBytes(addedPayload, "item.status").String())
@@ -445,7 +451,9 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Contains(t, stream, "event: response.web_search_call.in_progress")
 		require.Contains(t, stream, "event: response.web_search_call.searching")
 		require.Contains(t, stream, "event: response.web_search_call.completed")
-		require.Equal(t, 2, countCodexGatewayEvent(parseCodexGatewayOrderedEvents(t, stream), "response.output_item.added"))
+		events := parseCodexGatewayOrderedEvents(t, stream)
+		requireSequentialCodexGatewayOrderedSequenceNumbers(t, events)
+		require.Equal(t, 2, countCodexGatewayEvent(events, "response.output_item.added"))
 		require.Contains(t, stream, "Search result says Found from gateway search.")
 	})
 
@@ -1321,6 +1329,14 @@ func firstCodexGatewayEventPayload(t *testing.T, events []codexGatewayOrderedEve
 	}
 	t.Fatalf("event %s not found", name)
 	return nil
+}
+
+func requireSequentialCodexGatewayOrderedSequenceNumbers(t *testing.T, events []codexGatewayOrderedEvent) {
+	t.Helper()
+	require.NotEmpty(t, events)
+	for index, event := range events {
+		require.Equal(t, int64(index), gjson.GetBytes(event.Payload, "sequence_number").Int())
+	}
 }
 
 func indexCodexGatewayEvent(events []codexGatewayOrderedEvent, name string) int {

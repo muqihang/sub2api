@@ -125,6 +125,7 @@ def test_model_catalog_is_generated_from_gateway_models(tmp_path: Path):
                 "auto_compact_token_limit": 100000,
                 "max_output_tokens": 4096,
                 "input_modalities": ["text"],
+                "shell_type": "local",
                 "experimental_supported_tools": ["function", "namespace", "custom"],
                 "supports_search_tool": True,
                 "web_search_tool_type": "openai",
@@ -152,6 +153,7 @@ def test_model_catalog_is_generated_from_gateway_models(tmp_path: Path):
     assert model["auto_compact_token_limit"] == 100000
     assert model["max_context_window"] == 123456
     assert model["effective_context_window_percent"] == 95
+    assert model["shell_type"] == "local"
     assert model["experimental_supported_tools"] == ["function", "namespace", "custom"]
     assert model["supports_search_tool"] is True
     assert model["web_search_tool_type"] == "text"
@@ -182,6 +184,7 @@ def test_model_catalog_tolerates_invalid_numeric_fields(tmp_path: Path):
     assert model["max_context_window"] == 0
     assert model["effective_context_window_percent"] == 95
     assert model["max_output_tokens"] == 128000
+    assert model["shell_type"] == "local"
 
 
 def test_common_proxy_ports_are_avoided():

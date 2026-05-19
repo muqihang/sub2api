@@ -180,6 +180,7 @@ type CodexGatewayDeepSeekRequestConfig struct {
 	HostedWebSearch       func(ctx context.Context, query string) (string, error)
 	HostedImageVision     func(ctx context.Context, imageURL string) (string, error)
 	HostedToolContext     *codexGatewayHostedToolContext
+	StreamSequenceNumber  int
 }
 
 type CodexGatewayPreparedDeepSeekRequest struct {
@@ -200,6 +201,7 @@ type CodexGatewayAnthropicRequestConfig struct {
 	ForceDisableThinking bool
 	HostedWebSearch      func(ctx context.Context, query string) (string, error)
 	HostedToolContext    *codexGatewayHostedToolContext
+	StreamSequenceNumber int
 }
 
 type CodexGatewayPreparedAnthropicRequest struct {

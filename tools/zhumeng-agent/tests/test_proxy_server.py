@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 
 from aiohttp import web
@@ -153,6 +155,73 @@ async def test_large_image_payload_is_forwarded(tmp_path):
         assert seen["path"] == "/codex/v1/responses"
         assert seen["body_size"] == len(payload)
     await upstream.close()
+
+
+@pytest.mark.asyncio
+async def test_event_stream_response_is_forwarded_before_upstream_finishes(tmp_path):
+    first_chunk_sent = asyncio.Event()
+    allow_finish = asyncio.Event()
+
+    async def upstream_sse(request: web.Request):
+        await request.read()
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(
+            b'event: response.created\n'
+            b'data: {"type":"response.created","response":{"id":"resp_stream"}}\n\n'
+        )
+        first_chunk_sent.set()
+        await allow_finish.wait()
+        await response.write(
+            b'event: response.completed\n'
+            b'data: {"type":"response.completed","response":{"id":"resp_stream","status":"completed"}}\n\n'
+        )
+        await response.write_eof()
+        return response
+
+    upstream_app = web.Application(client_max_size=4 * 1024 * 1024)
+    upstream_app.router.add_post("/codex/v1/responses", upstream_sse)
+    upstream_server = TestServer(upstream_app)
+    await upstream_server.start_server()
+
+    state_store = JsonStateStore(tmp_path / "state.json")
+    config = ManagedProxyConfig(
+      upstream_base_url=str(upstream_server.make_url("")).rstrip("/"),
+      device_id=9,
+      managed_session_id="sess-1",
+      access_token="access-token",
+      loopback_secret="loopback-secret",
+      agent_version="0.1.0",
+      runtime_signature="sig-1",
+      source_root="/tmp/zhumeng-agent",
+      state_store=state_store,
+    )
+    proxy = ManagedProxyServer(config)
+    proxy_server = TestServer(proxy.create_app())
+    await proxy_server.start_server()
+    proxy_client = TestClient(proxy_server)
+    await proxy_client.start_server()
+
+    response_task: asyncio.Task | None = None
+    try:
+        async with proxy_client:
+            response_task = asyncio.create_task(proxy_client.post(
+                "/v1/responses",
+                json={"model": "gpt-5.4", "input": "hello", "stream": True},
+                headers={"Authorization": "Bearer zhumeng-local-managed-loopback-secret"},
+            ))
+            await asyncio.wait_for(first_chunk_sent.wait(), timeout=1)
+            response = await asyncio.wait_for(asyncio.shield(response_task), timeout=0.5)
+            assert response.status == 200
+            assert response.headers["Content-Type"].startswith("text/event-stream")
+            first_line = await asyncio.wait_for(response.content.readline(), timeout=0.5)
+            assert first_line == b"event: response.created\n"
+    finally:
+        allow_finish.set()
+        if response_task is not None and not response_task.done():
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(response_task, timeout=1)
+        await upstream_server.close()
 
 
 @pytest.mark.asyncio
