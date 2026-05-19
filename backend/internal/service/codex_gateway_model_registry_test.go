@@ -166,6 +166,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 		} `json:"supported_reasoning_levels"`
 		BaseInstructions              string `json:"base_instructions"`
 		ContextWindow                 int    `json:"context_window,omitempty"`
+		AutoCompactTokenLimit         int    `json:"auto_compact_token_limit,omitempty"`
 		MaxContextWindow              int    `json:"max_context_window,omitempty"`
 		EffectiveContextWindowPercent int    `json:"effective_context_window_percent,omitempty"`
 	}
@@ -220,6 +221,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 
 	gpt55 := bySlug["gpt-5.5"]
 	require.Equal(t, 1_050_000, gpt55.ContextWindow)
+	require.Equal(t, 900_000, gpt55.AutoCompactTokenLimit)
 	require.Equal(t, 92, gpt55.EffectiveContextWindowPercent)
 
 	deepseek := envelope.Models[1]

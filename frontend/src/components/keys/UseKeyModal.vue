@@ -227,6 +227,19 @@ const activeTab = ref<string>('unix')
 const activeClientTab = ref<string>('claude')
 const selectedOpenAIModel = ref<'gpt-5.4' | 'gpt-5.5'>('gpt-5.5')
 const openAIModelOptions: Array<'gpt-5.4' | 'gpt-5.5'> = ['gpt-5.4', 'gpt-5.5']
+const openAIModelContextWindows: Record<'gpt-5.4' | 'gpt-5.5', {
+  contextWindow: number
+  autoCompactTokenLimit: number
+}> = {
+  'gpt-5.4': {
+    contextWindow: 1_050_000,
+    autoCompactTokenLimit: 900_000
+  },
+  'gpt-5.5': {
+    contextWindow: 1_050_000,
+    autoCompactTokenLimit: 900_000
+  }
+}
 
 // Reset tabs when platform changes
 const defaultClientTab = computed(() => {
@@ -588,6 +601,7 @@ ${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model
 function generateOpenAIFiles(baseUrl: string, apiKey: string, model: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
+  const limits = openAIModelContextWindows[model as 'gpt-5.4' | 'gpt-5.5'] ?? openAIModelContextWindows['gpt-5.5']
 
   // config.toml content
   const configContent = `model_provider = "OpenAI"
@@ -597,8 +611,8 @@ model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
-model_context_window = 1000000
-model_auto_compact_token_limit = 900000
+model_context_window = ${limits.contextWindow}
+model_auto_compact_token_limit = ${limits.autoCompactTokenLimit}
 
 [model_providers.OpenAI]
 name = "OpenAI"
@@ -627,6 +641,7 @@ requires_openai_auth = true`
 function generateOpenAIWsFiles(baseUrl: string, apiKey: string, model: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
+  const limits = openAIModelContextWindows[model as 'gpt-5.4' | 'gpt-5.5'] ?? openAIModelContextWindows['gpt-5.5']
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
@@ -636,8 +651,8 @@ model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
-model_context_window = 1000000
-model_auto_compact_token_limit = 900000
+model_context_window = ${limits.contextWindow}
+model_auto_compact_token_limit = ${limits.autoCompactTokenLimit}
 
 [model_providers.OpenAI]
 name = "OpenAI"

@@ -73,10 +73,13 @@ class CodexConfigManager:
         default_model = str(profile.get("default_model", CODEX_DEFAULT_MODEL) or CODEX_DEFAULT_MODEL)
         catalog_path = self.catalog_path_for_profile(profile)
         catalog_payload = model_catalog_payload or {"models": []}
+        default_limits = self._default_model_limits(catalog_payload, default_model)
         supports_websockets = CODEX_SUPPORTS_WEBSOCKETS
         config_text = (
             f'model_provider = "{provider}"\n\n'
             f'model = "{default_model}"\n'
+            f'model_context_window = {default_limits["context_window"]}\n'
+            f'model_auto_compact_token_limit = {default_limits["auto_compact_token_limit"]}\n'
             f'model_catalog_json = "{catalog_path}"\n\n'
             '[features]\n'
             f'responses_websockets_v2 = {str(supports_websockets).lower()}\n\n'
@@ -197,6 +200,7 @@ class CodexConfigManager:
                 "instructions_variables": {},
             },
             "context_window": context_window,
+            "auto_compact_token_limit": safe_int(model.get("auto_compact_token_limit"), int(context_window * 0.85) if context_window > 0 else 0),
             "max_context_window": safe_int(model.get("max_context_window"), context_window),
             "effective_context_window_percent": safe_int(model.get("effective_context_window_percent"), 95),
             "max_output_tokens": safe_int(model.get("max_output_tokens"), 128000),
@@ -211,6 +215,32 @@ class CodexConfigManager:
             "input_modalities": model.get("input_modalities") or ["text"],
             "supports_search_tool": bool(model.get("supports_search_tool", False)),
             "web_search_tool_type": normalize_web_search_tool_type(model),
+        }
+
+    def _default_model_limits(self, catalog_payload: dict[str, object], default_model: str) -> dict[str, int]:
+        context_window = 200000
+        auto_compact_token_limit = 150000
+        models = catalog_payload.get("models", [])
+        if isinstance(models, list):
+            for model in models:
+                if not isinstance(model, dict):
+                    continue
+                slug = str(model.get("slug") or model.get("id") or model.get("model") or "")
+                if slug != default_model:
+                    continue
+                context_window = safe_int(model.get("context_window") or model.get("max_context_window"), context_window)
+                auto_compact_token_limit = safe_int(
+                    model.get("auto_compact_token_limit"),
+                    int(context_window * 0.85),
+                )
+                break
+        if context_window <= 0:
+            context_window = 200000
+        if auto_compact_token_limit <= 0 or auto_compact_token_limit >= context_window:
+            auto_compact_token_limit = int(context_window * 0.85)
+        return {
+            "context_window": context_window,
+            "auto_compact_token_limit": auto_compact_token_limit,
         }
 
 

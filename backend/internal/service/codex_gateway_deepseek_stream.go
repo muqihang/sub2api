@@ -412,6 +412,15 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 	if strings.TrimSpace(delta.Function.Name) != "" {
 		call.Alias = strings.TrimSpace(delta.Function.Name)
 		entry, ok := s.toolNameMap[call.Alias]
+		if !ok {
+			if compatAlias := resolveCodexGatewayToolAliasCompat(
+				CodexGatewayToolMappingResult{NameMap: s.toolNameMap},
+				call.Alias,
+			); compatAlias != "" {
+				call.Alias = compatAlias
+				entry, ok = s.toolNameMap[call.Alias]
+			}
+		}
 		if ok {
 			call.Name = entry.Name
 			call.Namespace = entry.Namespace

@@ -361,6 +361,130 @@ func TestBuildCodexGatewayAnthropicRequest_DisablesThinkingForForcedToolChoice(t
 	require.False(t, gjson.GetBytes(raw, "output_config.effort").Exists())
 }
 
+func TestBuildCodexGatewayAnthropicRequest_NormalizesLegacyToolChoiceNames(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-6-thinking",
+		"input":[{"type":"message","role":"user","content":"edit files"}],
+		"tools":[
+			{
+				"type":"custom",
+				"name":"edit",
+				"description":"edit files",
+				"format":{"type":"grammar","syntax":"lark","definition":"start: value\nvalue: /.+/"}
+			},
+			{
+				"type":"function",
+				"name":"todowrite",
+				"parameters":{"type":"object"}
+			},
+			{
+				"type":"function",
+				"name":"read",
+				"parameters":{"type":"object"}
+			},
+			{
+				"type":"function",
+				"name":"write",
+				"parameters":{"type":"object"}
+			},
+			{
+				"type":"function",
+				"name":"bash",
+				"parameters":{"type":"object"}
+			}
+		],
+		"tool_choice":"apply_patch",
+		"reasoning":{"effort":"xhigh"}
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-6-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-6-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "tool", gjson.GetBytes(raw, "tool_choice.type").String())
+	require.Equal(t, "custom__edit", gjson.GetBytes(raw, "tool_choice.name").String())
+	require.Equal(t, "disabled", gjson.GetBytes(raw, "thinking.type").String())
+
+	cases := []struct {
+		name       string
+		toolChoice string
+		wantAlias  string
+	}{
+		{name: "update_plan", toolChoice: "update_plan", wantAlias: "todowrite"},
+		{name: "read_file", toolChoice: "read_file", wantAlias: "read"},
+		{name: "write_file", toolChoice: "write_file", wantAlias: "write"},
+		{name: "execute_bash", toolChoice: "execute_bash", wantAlias: "bash"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+				"model":"claude-opus-4-6-thinking",
+				"input":[{"type":"message","role":"user","content":"legacy tool choice"}],
+				"tools":[
+					{"type":"function","name":"todowrite","parameters":{"type":"object"}},
+					{"type":"function","name":"read","parameters":{"type":"object"}},
+					{"type":"function","name":"write","parameters":{"type":"object"}},
+					{"type":"function","name":"bash","parameters":{"type":"object"}}
+				],
+				"tool_choice":"` + tc.toolChoice + `"
+			}`))
+			require.NoError(t, err)
+
+			prepared, err := BuildCodexGatewayAnthropicRequest(
+				CodexGatewayModel{Slug: "claude-opus-4-6-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-6-thinking"},
+				req,
+				nil,
+				CodexGatewayAnthropicRequestContext{},
+				CodexGatewayAnthropicRequestConfig{},
+			)
+			require.NoError(t, err)
+
+			raw, err := json.Marshal(prepared.Body)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantAlias, gjson.GetBytes(raw, "tool_choice.name").String())
+		})
+	}
+
+	t.Run("object_tool_choice_and_nested_function_name", func(t *testing.T) {
+		req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+			"model":"claude-opus-4-6-thinking",
+			"input":[{"type":"message","role":"user","content":"legacy object tool choice"}],
+			"tools":[
+				{
+					"type":"custom",
+					"name":"edit",
+					"description":"edit files",
+					"format":{"type":"grammar","syntax":"lark","definition":"start: value\nvalue: /.+/"}
+				}
+			],
+			"tool_choice":{"type":"custom","function":{"name":"apply_patch"}}
+		}`))
+		require.NoError(t, err)
+
+		prepared, err := BuildCodexGatewayAnthropicRequest(
+			CodexGatewayModel{Slug: "claude-opus-4-6-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-6-thinking"},
+			req,
+			nil,
+			CodexGatewayAnthropicRequestContext{},
+			CodexGatewayAnthropicRequestConfig{},
+		)
+		require.NoError(t, err)
+
+		raw, err := json.Marshal(prepared.Body)
+		require.NoError(t, err)
+		require.Equal(t, "tool", gjson.GetBytes(raw, "tool_choice.type").String())
+		require.Equal(t, "custom__edit", gjson.GetBytes(raw, "tool_choice.name").String())
+	})
+}
+
 func TestCodexGatewayAnthropicMapErrorBody_SanitizesCloudflareHTML(t *testing.T) {
 	raw := []byte(`<!DOCTYPE html><html><head><title>zivv.pro | 524: A timeout occurred</title></head><body>Error code 524</body></html>`)
 	body := codexGatewayAnthropicMapErrorBody(524, raw)
@@ -420,4 +544,80 @@ func TestBuildCodexGatewayAnthropicRequest_ReplaysPreviousToolUseBeforeToolResul
 	require.Equal(t, "user", gjson.GetBytes(raw, "messages.1.role").String())
 	require.Equal(t, "tool_result", gjson.GetBytes(raw, "messages.1.content.0.type").String())
 	require.Equal(t, "toolu_1", gjson.GetBytes(raw, "messages.1.content.0.tool_use_id").String())
+}
+
+func TestBuildCodexGatewayAnthropicRequest_DropsStaleToolChoiceWhenReplayRequestHasNoTools(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_prev",
+			SessionKey:    "session-a",
+			IsolationKey:  "isolation-a",
+			Provider:      "anthropic",
+			UpstreamModel: "claude-opus-4-7-thinking",
+		},
+		AssistantContent:        "I will edit the file.",
+		AssistantContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{{
+			ID:        "toolu_1",
+			Type:      CodexGatewayToolKindCustom,
+			Alias:     "custom__edit",
+			Name:      "edit",
+			Arguments: `{"input":"*** Begin Patch\n*** End Patch\n"}`,
+		}},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"custom__edit": {Alias: "custom__edit", Kind: CodexGatewayToolKindCustom, Name: "edit"},
+		},
+	}))
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"previous_response_id":"resp_prev",
+		"tool_choice":"edit",
+		"input":[{"type":"function_call_output","call_id":"toolu_1","output":"patch applied"}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		store,
+		CodexGatewayAnthropicRequestContext{SessionKey: "session-a", IsolationKey: "isolation-a"},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "tool_choice").Exists())
+	require.Equal(t, "custom__edit", gjson.GetBytes(raw, "messages.0.content.1.name").String())
+}
+
+func TestBuildCodexGatewayAnthropicRequest_ReplaysLegacyCustomToolCallWithoutCurrentTools(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"tool_choice":"edit",
+		"input":[
+			{"type":"custom_tool_call","call_id":"toolu_legacy","name":"edit","input":"*** Begin Patch\n*** End Patch\n"},
+			{"type":"custom_tool_call_output","call_id":"toolu_legacy","output":"patch applied"}
+		]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "tool_choice").Exists())
+	require.Equal(t, "assistant", gjson.GetBytes(raw, "messages.0.role").String())
+	require.Equal(t, "tool_use", gjson.GetBytes(raw, "messages.0.content.0.type").String())
+	require.Equal(t, "custom__edit", gjson.GetBytes(raw, "messages.0.content.0.name").String())
+	require.Equal(t, "user", gjson.GetBytes(raw, "messages.1.role").String())
+	require.Equal(t, "tool_result", gjson.GetBytes(raw, "messages.1.content.0.type").String())
 }

@@ -63,6 +63,7 @@ type CodexGatewayCodexCLIModel struct {
 	BaseInstructions              string                            `json:"base_instructions"`
 	ModelMessages                 CodexGatewayCodexCLIModelMessages `json:"model_messages"`
 	ContextWindow                 int                               `json:"context_window,omitempty"`
+	AutoCompactTokenLimit         int                               `json:"auto_compact_token_limit,omitempty"`
 	MaxContextWindow              int                               `json:"max_context_window,omitempty"`
 	EffectiveContextWindowPercent int                               `json:"effective_context_window_percent,omitempty"`
 	MaxOutputTokens               int                               `json:"max_output_tokens,omitempty"`
@@ -285,6 +286,7 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 		BaseInstructions:              codexGatewayDefaultBaseInstructions,
 		ModelMessages:                 codexGatewayDefaultCLIModelMessages(),
 		ContextWindow:                 contextWindow,
+		AutoCompactTokenLimit:         truncationLimit,
 		MaxContextWindow:              maxContextWindow,
 		EffectiveContextWindowPercent: effectiveContextWindowPercent,
 		MaxOutputTokens:               model.MaxOutputTokens,

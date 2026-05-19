@@ -69,6 +69,33 @@ describe('UseKeyModal', () => {
     expect(code).toContain('review_model = "gpt-5.4"')
   })
 
+  it('uses backend-aligned OpenAI context window limits in generated configs', async () => {
+    listCodexManagedDevices.mockResolvedValue([])
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKeyId: 42,
+        apiKey: 'sk-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const code = wrapper.find('pre code').text()
+    expect(code).toContain('model_context_window = 1050000')
+    expect(code).toContain('model_auto_compact_token_limit = 900000')
+  })
+
   it('renders updated GPT-5.4 mini/nano names in OpenCode config', async () => {
     listCodexManagedDevices.mockResolvedValue([])
     const wrapper = mount(UseKeyModal, {

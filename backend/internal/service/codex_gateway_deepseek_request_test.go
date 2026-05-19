@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestCodexGatewayDeepSeekRequest_BuildsMessagesToolsAndUserID(t *testing.T) {
@@ -575,9 +576,132 @@ func TestCodexGatewayDeepSeekRequest_ConvertsInlineCustomToolCallsAndOutputs(t *
 	require.Len(t, messages, 2)
 	assistant := messages[0].(map[string]any)
 	require.Equal(t, "assistant", assistant["role"])
-	require.Equal(t, "custom__apply_patch", assistant["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
+	require.Equal(t, "custom__edit", assistant["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
 	require.Equal(t, "*** Begin Patch\n*** End Patch\n", assistant["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["arguments"])
 	require.Equal(t, `{"ok":true}`, messages[1].(map[string]any)["content"])
+}
+
+func TestCodexGatewayDeepSeekRequest_DropsStaleToolChoiceWhenReplayRequestHasNoTools(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_custom",
+			SessionKey:    "session_1",
+			IsolationKey:  "user_1",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "",
+		AssistantContentPresent: true,
+		ReasoningContent:        "need to patch",
+		ReasoningContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{
+			{ID: "call_patch", Type: CodexGatewayToolKindCustom, Alias: "custom__edit", Name: "edit", Arguments: "*** Begin Patch\n*** End Patch\n"},
+		},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"custom__edit": {Alias: "custom__edit", Kind: CodexGatewayToolKindCustom, Name: "edit"},
+		},
+	}))
+
+	req := CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_custom"),
+		ToolChoice:         json.RawMessage(`"edit"`),
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call_output","call_id":"call_patch","name":"edit","output":"patch applied"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "tool_choice").Exists())
+	require.Equal(t, "custom__edit", gjson.GetBytes(raw, "messages.0.tool_calls.0.function.name").String())
+}
+
+func TestCodexGatewayDeepSeekRequest_ReplaysLegacyCustomToolCallWithoutCurrentTools(t *testing.T) {
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:      "deepseek-v4-pro",
+		ToolChoice: json.RawMessage(`"edit"`),
+		Input: json.RawMessage(`[
+			{"type":"custom_tool_call","call_id":"call_legacy_custom","name":"edit","input":"*** Begin Patch\n*** End Patch\n"},
+			{"type":"custom_tool_call_output","call_id":"call_legacy_custom","output":"patch applied"}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "tool_choice").Exists())
+	require.Equal(t, "custom__edit", gjson.GetBytes(raw, "messages.0.tool_calls.0.function.name").String())
+	require.Equal(t, "tool", gjson.GetBytes(raw, "messages.1.role").String())
+	require.Equal(t, "call_legacy_custom", gjson.GetBytes(raw, "messages.1.tool_call_id").String())
+}
+
+func TestCodexGatewayDeepSeekRequest_NormalizesLegacyDottedNamespaceToolNames(t *testing.T) {
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	preparedStringChoice, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[{"type":"function_call","call_id":"call_ns","name":"shell.exec","arguments":"{\"cmd\":\"pwd\"}"}]`),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"shell","tools":[{"type":"function","name":"exec","parameters":{"type":"object"}}]}
+		]`),
+		ToolChoice: json.RawMessage(`"shell.exec"`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	rawStringChoice, err := json.Marshal(preparedStringChoice.Body)
+	require.NoError(t, err)
+	require.Equal(t, "shell__exec", gjson.GetBytes(rawStringChoice, "tool_choice.function.name").String())
+	require.Equal(t, "shell__exec", gjson.GetBytes(rawStringChoice, "messages.0.tool_calls.0.function.name").String())
+
+	preparedObjectChoice, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[{"type":"function_call","call_id":"call_ns_obj","name":"shell.exec","arguments":"{\"cmd\":\"pwd\"}"}]`),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"shell","tools":[{"type":"function","name":"exec","parameters":{"type":"object"}}]}
+		]`),
+		ToolChoice: json.RawMessage(`{"type":"function","name":"shell.exec"}`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	rawObjectChoice, err := json.Marshal(preparedObjectChoice.Body)
+	require.NoError(t, err)
+	require.Equal(t, "shell__exec", gjson.GetBytes(rawObjectChoice, "tool_choice.function.name").String())
+	require.Equal(t, "shell__exec", gjson.GetBytes(rawObjectChoice, "messages.0.tool_calls.0.function.name").String())
 }
 
 func TestCodexGatewayDeepSeekRequest_MapsAssistantToolCallsAndBackfillsReasoningContent(t *testing.T) {
@@ -853,6 +977,91 @@ func TestCodexGatewayDeepSeekRequest_FunctionCallsToolChoiceAndReasoningDisableP
 	}, CodexGatewayDeepSeekRequestConfig{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
+
+	preparedLegacyPatch, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-flash",
+		Input: json.RawMessage(`[{"type":"function_call","call_id":"call_legacy_patch","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** End Patch\\n\"}"}]`),
+		Tools: json.RawMessage(`[
+			{"type":"custom","name":"edit","custom":{"input_schema":{"type":"object"}}}
+		]`),
+		ToolChoice: json.RawMessage(`"apply_patch"`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	toolChoiceLegacyPatch := preparedLegacyPatch.Body["tool_choice"].(map[string]any)
+	require.Equal(t, "function", toolChoiceLegacyPatch["type"])
+	require.Equal(t, "custom__edit", toolChoiceLegacyPatch["function"].(map[string]any)["name"])
+	legacyMessages := preparedLegacyPatch.Body["messages"].([]any)
+	require.Equal(t, "custom__edit", legacyMessages[0].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
+
+	legacyCases := []struct {
+		name       string
+		toolChoice string
+		tools      string
+		wantAlias  string
+	}{
+		{
+			name:       "update_plan",
+			toolChoice: "update_plan",
+			tools:      `[{"type":"function","name":"todowrite","parameters":{"type":"object"}}]`,
+			wantAlias:  "todowrite",
+		},
+		{
+			name:       "read_file",
+			toolChoice: "read_file",
+			tools:      `[{"type":"function","name":"read","parameters":{"type":"object"}}]`,
+			wantAlias:  "read",
+		},
+		{
+			name:       "write_file",
+			toolChoice: "write_file",
+			tools:      `[{"type":"function","name":"write","parameters":{"type":"object"}}]`,
+			wantAlias:  "write",
+		},
+		{
+			name:       "execute_bash",
+			toolChoice: "execute_bash",
+			tools:      `[{"type":"function","name":"bash","parameters":{"type":"object"}}]`,
+			wantAlias:  "bash",
+		},
+	}
+	for _, tc := range legacyCases {
+		t.Run("legacy_"+tc.name, func(t *testing.T) {
+			preparedLegacy, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+				Model:      "deepseek-v4-flash",
+				Input:      json.RawMessage(`[{"type":"function_call","call_id":"call_legacy","name":"` + tc.toolChoice + `","arguments":"{}"}]`),
+				Tools:      json.RawMessage(tc.tools),
+				ToolChoice: json.RawMessage(`"` + tc.toolChoice + `"`),
+			}, nil, CodexGatewayDeepSeekRequestContext{
+				SessionKey:   "session_1",
+				IsolationKey: "user_1",
+			}, CodexGatewayDeepSeekRequestConfig{})
+			require.NoError(t, err)
+			toolChoiceLegacy := preparedLegacy.Body["tool_choice"].(map[string]any)
+			require.Equal(t, tc.wantAlias, toolChoiceLegacy["function"].(map[string]any)["name"])
+			legacyMessages := preparedLegacy.Body["messages"].([]any)
+			require.Equal(t, tc.wantAlias, legacyMessages[0].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
+		})
+	}
+
+	preparedLegacyObjectChoice, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-flash",
+		Input: json.RawMessage(`[{"type":"custom_tool_call","call_id":"call_legacy_custom","name":"apply_patch","input":"*** Begin Patch\n*** End Patch\n"}]`),
+		Tools: json.RawMessage(`[
+			{"type":"custom","name":"edit","custom":{"input_schema":{"type":"object"}}}
+		]`),
+		ToolChoice: json.RawMessage(`{"type":"custom","function":{"name":"apply_patch"}}`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	toolChoiceLegacyObject := preparedLegacyObjectChoice.Body["tool_choice"].(map[string]any)
+	require.Equal(t, "custom__edit", toolChoiceLegacyObject["function"].(map[string]any)["name"])
+	legacyObjectMessages := preparedLegacyObjectChoice.Body["messages"].([]any)
+	require.Equal(t, "custom__edit", legacyObjectMessages[0].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
 
 	_, err = BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
 		Model:      "deepseek-v4-flash",

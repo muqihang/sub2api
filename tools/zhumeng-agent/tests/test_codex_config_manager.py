@@ -28,6 +28,8 @@ SAMPLE_MODEL_CATALOG = {
                 {"effort": "high", "description": "Greater reasoning depth"},
                 {"effort": "xhigh", "description": "Extra high reasoning"},
             ],
+            "context_window": 1000000,
+            "auto_compact_token_limit": 850000,
         }
     ]
 }
@@ -44,6 +46,8 @@ def test_no_existing_config_creates_managed_config(tmp_path: Path):
 
     assert 'model_provider = "zhumeng-codex"' in config_text
     assert 'model = "deepseek-v4-pro"' in config_text
+    assert "model_context_window = 1000000" in config_text
+    assert "model_auto_compact_token_limit = 850000" in config_text
     assert 'model_catalog_json = "' in config_text
     assert '[model_providers.zhumeng-codex]' in config_text
     assert 'name = "Zhumeng Codex"' in config_text
@@ -118,6 +122,7 @@ def test_model_catalog_is_generated_from_gateway_models(tmp_path: Path):
                 "default_reasoning_level": "high",
                 "supported_reasoning_levels": ["high", "xhigh"],
                 "context_window": 123456,
+                "auto_compact_token_limit": 100000,
                 "max_output_tokens": 4096,
                 "input_modalities": ["text"],
                 "experimental_supported_tools": ["function", "namespace", "custom"],
@@ -144,6 +149,7 @@ def test_model_catalog_is_generated_from_gateway_models(tmp_path: Path):
     assert model["visibility"] == "list"
     assert model["supported_reasoning_levels"][0]["effort"] == "high"
     assert model["context_window"] == 123456
+    assert model["auto_compact_token_limit"] == 100000
     assert model["max_context_window"] == 123456
     assert model["effective_context_window_percent"] == 95
     assert model["experimental_supported_tools"] == ["function", "namespace", "custom"]
@@ -172,6 +178,7 @@ def test_model_catalog_tolerates_invalid_numeric_fields(tmp_path: Path):
     assert model["slug"] == "unknown-model"
     assert model["priority"] == 0
     assert model["context_window"] == 0
+    assert model["auto_compact_token_limit"] == 0
     assert model["max_context_window"] == 0
     assert model["effective_context_window_percent"] == 95
     assert model["max_output_tokens"] == 128000

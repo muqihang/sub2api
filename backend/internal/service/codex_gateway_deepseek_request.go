@@ -13,6 +13,9 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	if strings.TrimSpace(model.Provider) != "" && !strings.EqualFold(strings.TrimSpace(model.Provider), "deepseek") {
 		return CodexGatewayPreparedDeepSeekRequest{}, fmt.Errorf("codex deepseek request requires a deepseek model")
 	}
+	if err := normalizeCodexGatewayLegacyToolRefs(&req); err != nil {
+		return CodexGatewayPreparedDeepSeekRequest{}, err
+	}
 	upstreamModel := strings.TrimSpace(model.UpstreamModel)
 	if upstreamModel == "" {
 		upstreamModel = strings.TrimSpace(model.Slug)
@@ -459,6 +462,12 @@ func convertCodexGatewayCustomToolCallItem(m map[string]any, toolMapping CodexGa
 	name := strings.TrimSpace(firstCodexGatewayToolString(m["name"]))
 	alias, err := resolveCodexGatewayToolChoiceAlias(toolMapping, CodexGatewayToolKindCustom, name)
 	if err != nil {
+		if fallback, ok := codexGatewayFallbackLegacyCustomToolAlias(name); ok {
+			alias = fallback
+			err = nil
+		}
+	}
+	if err != nil {
 		return nil, nil, err
 	}
 	arguments := normalizeCodexGatewayToolArguments(m["input"])
@@ -736,6 +745,9 @@ func resolveCodexGatewayToolAlias(mapping CodexGatewayToolMappingResult, name st
 	if name == "" {
 		return "", nil
 	}
+	if alias := resolveCodexGatewayToolAliasCompat(mapping, name); alias != "" {
+		return alias, nil
+	}
 	matches := make([]string, 0, 1)
 	for alias, entry := range mapping.NameMap {
 		if entry.Name == name || entry.Alias == name || codexGatewayOriginalToolPath(entry) == name {
@@ -750,6 +762,47 @@ func resolveCodexGatewayToolAlias(mapping CodexGatewayToolMappingResult, name st
 	default:
 		return "", fmt.Errorf("ambiguous tool name %q", name)
 	}
+}
+
+func resolveCodexGatewayToolAliasCompat(mapping CodexGatewayToolMappingResult, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if strings.Contains(name, ".") {
+		if alias := resolveCodexGatewayToolAliasByExactForms(mapping, name, strings.ReplaceAll(name, ".", "__")); alias != "" {
+			return alias
+		}
+	}
+	if strings.HasPrefix(name, "custom__") {
+		legacyName := strings.TrimPrefix(name, "custom__")
+		if normalized := codexGatewayCanonicalToolName(legacyName); normalized != legacyName {
+			if alias := resolveCodexGatewayToolAliasByExactForms(mapping, buildCodexGatewayToolAlias("", "custom", normalized), normalized); alias != "" {
+				return alias
+			}
+		}
+	}
+	if normalized := codexGatewayCanonicalToolName(name); normalized != name {
+		if alias := resolveCodexGatewayToolAliasByExactForms(mapping, normalized, buildCodexGatewayToolAlias("", "custom", normalized)); alias != "" {
+			return alias
+		}
+	}
+	return ""
+}
+
+func resolveCodexGatewayToolAliasByExactForms(mapping CodexGatewayToolMappingResult, forms ...string) string {
+	for _, form := range forms {
+		form = strings.TrimSpace(form)
+		if form == "" {
+			continue
+		}
+		for alias, entry := range mapping.NameMap {
+			if entry.Name == form || entry.Alias == form || codexGatewayOriginalToolPath(entry) == form {
+				return alias
+			}
+		}
+	}
+	return ""
 }
 
 func codexGatewayOriginalToolPath(entry CodexGatewayToolNameMapEntry) string {

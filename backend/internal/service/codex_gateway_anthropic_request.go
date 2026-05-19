@@ -14,6 +14,9 @@ func BuildCodexGatewayAnthropicRequest(model CodexGatewayModel, req CodexGateway
 	if strings.TrimSpace(model.Provider) != "" && !strings.EqualFold(strings.TrimSpace(model.Provider), "anthropic") {
 		return CodexGatewayPreparedAnthropicRequest{}, fmt.Errorf("codex anthropic request requires an anthropic model")
 	}
+	if err := normalizeCodexGatewayLegacyToolRefs(&req); err != nil {
+		return CodexGatewayPreparedAnthropicRequest{}, err
+	}
 	upstreamModel := codexGatewayAnthropicResolveUpstreamModel(req.Reasoning, model)
 	if upstreamModel == "" {
 		return CodexGatewayPreparedAnthropicRequest{}, fmt.Errorf("codex anthropic request requires an upstream model")
@@ -448,6 +451,12 @@ func convertCodexGatewayFunctionCallItemToAnthropic(m map[string]any, toolMappin
 	var err error
 	if kind == CodexGatewayToolKindCustom {
 		alias, err = resolveCodexGatewayToolChoiceAlias(toolMapping, CodexGatewayToolKindCustom, name)
+		if err != nil {
+			if fallback, ok := codexGatewayFallbackLegacyCustomToolAlias(name); ok {
+				alias = fallback
+				err = nil
+			}
+		}
 	} else {
 		alias, err = resolveCodexGatewayAnthropicToolAlias(toolMapping, name)
 	}
