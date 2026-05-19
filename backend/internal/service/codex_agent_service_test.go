@@ -610,6 +610,13 @@ func (s *codexAgentRepositoryStub) InsertAuditLog(ctx context.Context, params In
 	return nil, nil
 }
 
+func (s *codexAgentRepositoryStub) GetSetupGrantByID(ctx context.Context, id int64) (*dbent.CodexSetupGrant, error) {
+	return nil, ErrCodexSetupSessionNotFound
+}
+func (s *codexAgentRepositoryStub) ListPendingSetupGrantsByUser(ctx context.Context, userID int64, now time.Time) ([]*dbent.CodexSetupGrant, error) {
+	return nil, nil
+}
+
 type codexAPIKeyReaderStub struct {
 	verifyOwnership func(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error)
 	getByID         func(ctx context.Context, id int64) (*APIKey, error)

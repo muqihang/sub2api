@@ -291,6 +291,14 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, configConfig)
 	handlers := handler.ProvideHandlers(authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, codexAgentHandler, adminHandlers, gatewayHandler, handlerCodexGatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, idempotencyCoordinator, idempotencyCleanupService)
+	// Codex Entry Center (manually wired)
+	codexEntryCenterConfig := &service.CodexEntryCenterConfig{
+		ServerOrigin:  configConfig.Server.FrontendURL,
+		GatewayOrigin: "",
+	}
+	codexEntryCenterService := service.NewCodexEntryCenterService(codexAgentRepository, apiKeyService, apiKeyService, codexEntryCenterConfig)
+	codexEntryCenterHandler := handler.NewCodexEntryCenterHandler(codexEntryCenterService)
+	handlers.CodexEntryCenter = codexEntryCenterHandler
 	jwtAuthMiddleware := middleware.NewJWTAuthMiddleware(authService, userService)
 	adminAuthMiddleware := middleware.NewAdminAuthMiddleware(authService, userService, settingService)
 	apiKeyAuthMiddleware := middleware.NewAPIKeyAuthMiddleware(apiKeyService, subscriptionService, configConfig)

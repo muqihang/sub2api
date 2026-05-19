@@ -238,3 +238,25 @@ func (r *codexAgentRepository) beginTx(ctx context.Context) (*dbent.Tx, *dbent.C
 	}
 	return tx, tx.Client(), nil
 }
+
+func (r *codexAgentRepository) ListPendingSetupGrantsByUser(ctx context.Context, userID int64, now time.Time) ([]*dbent.CodexSetupGrant, error) {
+	return clientFromContext(ctx, r.client).CodexSetupGrant.Query().
+		Where(
+			codexsetupgrant.UserIDEQ(userID),
+			codexsetupgrant.ConsumedAtIsNil(),
+			codexsetupgrant.ExpiresAtGT(now),
+		).
+		Order(dbent.Desc(codexsetupgrant.FieldID)).
+		All(ctx)
+}
+
+func (r *codexAgentRepository) GetSetupGrantByID(ctx context.Context, id int64) (*dbent.CodexSetupGrant, error) {
+	grant, err := clientFromContext(ctx, r.client).CodexSetupGrant.Get(ctx, id)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrCodexSetupSessionNotFound
+		}
+		return nil, err
+	}
+	return grant, nil
+}

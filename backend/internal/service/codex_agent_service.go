@@ -51,6 +51,8 @@ type CodexAgentRepository interface {
 	RotateDeviceToken(ctx context.Context, params RotateCodexDeviceTokenParams) (*dbent.CodexDeviceToken, error)
 	FindActiveTokenByHash(ctx context.Context, refreshTokenHash string, now time.Time) (*dbent.CodexDeviceToken, error)
 	InsertAuditLog(ctx context.Context, params InsertCodexDeviceAuditLogParams) (*dbent.CodexDeviceAuditLog, error)
+	ListPendingSetupGrantsByUser(ctx context.Context, userID int64, now time.Time) ([]*dbent.CodexSetupGrant, error)
+	GetSetupGrantByID(ctx context.Context, id int64) (*dbent.CodexSetupGrant, error)
 }
 
 type CreateCodexSetupGrantParams struct {

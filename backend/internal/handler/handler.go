@@ -51,6 +51,7 @@ type Handlers struct {
 	Subscription     *SubscriptionHandler
 	Announcement     *AnnouncementHandler
 	CodexAgent       *CodexAgentHandler
+	CodexEntryCenter *CodexEntryCenterHandler
 	ChannelMonitor   *ChannelMonitorUserHandler
 	Admin            *AdminHandlers
 	Gateway          *GatewayHandler

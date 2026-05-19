@@ -118,4 +118,5 @@ func registerRoutes(
 	codexGatewayAuth := middleware2.APIKeyAuthMiddleware(middleware2.ManagedDeviceOrAPIKeyAuth(codexAgentService, codexGatewayAPIKeyAuth, apiKeyService, subscriptionService, cfg))
 	routes.RegisterCodexGatewayRoutes(r, h, codexGatewayAuth, opsService, settingService, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, settingService)
+	routes.RegisterCodexEntryCenterRoutes(v1, h, jwtAuth, settingService)
 }
