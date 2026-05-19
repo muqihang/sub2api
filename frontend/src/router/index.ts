@@ -174,6 +174,18 @@ export const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/codex',
+    name: 'CodexEntry',
+    component: () => import('@/views/plugin/zhumeng-codex/CodexEntryView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Codex',
+      titleKey: 'codex.title',
+      descriptionKey: 'codex.description'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),

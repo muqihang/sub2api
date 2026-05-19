@@ -1802,3 +1802,90 @@ export interface UpdateScheduledTestPlanRequest {
 
 // Payment types
 export type { SubscriptionPlan, PaymentOrder, CheckoutInfoResponse } from './payment'
+
+// ─── Codex Entry Center Types ───
+
+export type CodexPageState = 'onboarding_credential' | 'onboarding_attach' | 'onboarding_verify' | 'console'
+export type CodexWizardStep = 1 | 2 | 3 | null
+export type CodexDeviceState = 'healthy' | 'catalog_stale' | 'device_offline' | 'credential_revoked' | 'client_outdated'
+export type CodexAttachmentMode = 'independent_credential' | 'reused_key'
+export type CodexSetupSessionPresentation = 'wizard' | 'console_banner'
+export type CodexCatalogErrorKind = 'none' | 'timeout' | 'auth' | 'server' | 'unknown'
+
+export interface CodexSetupSessionDTO {
+  id: string
+  credential_label: string
+  attachment_mode: CodexAttachmentMode
+  reuse_api_key_id: number | null
+  launch_url: string | null
+  cli_command: string | null
+  expires_at: string
+  first_seen_at: string | null
+  first_catalog_synced_at: string | null
+}
+
+export interface CodexDeviceDTO {
+  device_id: number
+  device_name: string
+  attachment_mode: CodexAttachmentMode
+  device_state: CodexDeviceState
+  last_seen_at: string | null
+  client_version: string | null
+  min_supported_client_version: string | null
+  catalog_synced_at: string | null
+  catalog_last_error_kind: CodexCatalogErrorKind
+  revoked_at: string | null
+}
+
+export interface CodexEntrySummary {
+  page_state: CodexPageState
+  wizard_step: CodexWizardStep
+  attachment_mode: CodexAttachmentMode | null
+  setup_session_presentation: CodexSetupSessionPresentation | null
+  setup_session: CodexSetupSessionDTO | null
+  focus_device_id: number | null
+  devices: CodexDeviceDTO[]
+}
+
+export interface CodexCreateSetupSessionRequest {
+  attachment_mode: CodexAttachmentMode
+  credential_label?: string
+  reuse_api_key_id?: number
+}
+
+export interface CodexCreateSetupSessionResponse {
+  setup_session: CodexSetupSessionDTO
+  page_state: CodexPageState
+  setup_session_presentation: CodexSetupSessionPresentation
+}
+
+export interface CodexRegenerateSetupSessionResponse {
+  setup_session: {
+    id: string
+    launch_url: string | null
+    cli_command: string | null
+    expires_at: string
+  }
+}
+
+export interface CodexDiagnoseRequest {
+  setup_session_id?: string
+  device_id?: number
+}
+
+export interface CodexDiagnoseCheck {
+  name: string
+  status: 'ok' | 'warn' | 'fail'
+  hint: string
+}
+
+export interface CodexDiagnoseReport {
+  ok: boolean
+  target_kind: 'setup_session' | 'device'
+  checks: CodexDiagnoseCheck[]
+}
+
+export interface CodexDeviceActionResponse {
+  device_id: number
+  accepted: boolean
+}

@@ -37,3 +37,11 @@ describe('AppSidebar Augment Gateway admin navigation', () => {
     expect(componentSource).not.toContain("{ path: '/admin/augment-gateway', label: t('admin.augmentGateway.title'), icon: GlobeIcon, hideInSimpleMode: true },")
   })
 })
+
+
+describe('AppSidebar Codex entry center user navigation', () => {
+  it('exposes /codex in the same user sidebar as Augment Quick Login', () => {
+    expect(componentSource).toContain("{ path: '/plugin/augment/quick-login', label: t('plugin.augment.quickLogin.title'), icon: GlobeIcon },")
+    expect(componentSource).toContain("{ path: '/codex', label: t('codex.title'), icon: ")
+  })
+})

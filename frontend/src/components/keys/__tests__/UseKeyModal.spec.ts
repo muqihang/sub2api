@@ -191,7 +191,7 @@ describe('UseKeyModal', () => {
     })
 
     const setupButton = wrapper.findAll('button').find((button) =>
-      button.text().includes('keys.zhumengAgent.setup')
+      button.text().includes('keys.zhumengAgent.quickSetup')
     )
     expect(setupButton).toBeDefined()
     await setupButton!.trigger('click')
@@ -201,6 +201,7 @@ describe('UseKeyModal', () => {
     expect(JSON.stringify(createCodexSetupGrant.mock.calls)).not.toContain('sk-secret')
     expect(JSON.stringify(window.open.mock.calls)).not.toContain('sk-secret')
     await vi.advanceTimersByTimeAsync(1500)
-    expect(wrapper.text()).toContain('keys.zhumengAgent.fallbackHelp')
+    // Slimmed panel no longer shows fallback help; verify link to entry page instead
+    expect(wrapper.text()).toContain('keys.zhumengAgent.goToEntryPage')
   })
 })
