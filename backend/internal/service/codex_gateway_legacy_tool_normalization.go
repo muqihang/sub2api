@@ -232,6 +232,14 @@ func codexGatewayCanonicalToolName(name string) string {
 	return trimmed
 }
 
+func codexGatewayClientVisibleToolName(entry CodexGatewayToolNameMapEntry) string {
+	name := strings.TrimSpace(entry.Name)
+	if entry.Kind == CodexGatewayToolKindCustom && name == "edit" {
+		return "apply_patch"
+	}
+	return name
+}
+
 func normalizeCodexGatewayToolChoiceForAvailableTools(toolChoiceRaw, toolsRaw json.RawMessage) (json.RawMessage, bool, error) {
 	if len(toolChoiceRaw) == 0 {
 		return nil, false, nil

@@ -60,7 +60,7 @@ const augmentLegacyGatewayCodebaseRetrievalPolicy = `Augment Gateway tool policy
 - 如果第一次检索证据不足，最多再发起一次更聚焦的补充查询，然后基于已有证据回答并明确缺口。`
 
 const augmentLegacyGatewayWorkspaceFileToolPolicy = `Augment Gateway tool policy for workspace file access:
-- read-file、save-file、edit-file、remove-files、apply_patch 这类文件工具，只能操作当前打开的 workspace folders 内的路径。
+- read-file、save-file、edit-file、remove-files、edit 这类文件工具，只能操作当前打开的 workspace folders 内的路径。
 - 在调用文件工具前，先判断目标路径是否位于 workspace folders 内；优先使用 workspace 内的相对路径。
 - 如果 current_terminal_cwd 或目标绝对路径位于 workspace folders 之外，不要继续对那个路径调用文件工具；先改用终端工具做只读检查，或提示用户把对应 worktree/目录加入工作区后再写文件。`
 
@@ -2928,7 +2928,7 @@ func augmentLegacyBuildWorkspaceFileToolPolicy(defs []augmentLegacyToolDefinitio
 }
 
 func augmentLegacyHasWorkspaceFileToolDefinition(defs []augmentLegacyToolDefinition) bool {
-	for _, name := range []string{"read-file", "save-file", "edit-file", "remove-files", "apply_patch"} {
+	for _, name := range []string{"read-file", "save-file", "edit-file", "remove-files", "edit"} {
 		if augmentLegacyHasNamedToolDefinition(defs, name) {
 			return true
 		}

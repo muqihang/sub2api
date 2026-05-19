@@ -251,14 +251,14 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 		ID:        callID,
 		Type:      entry.Kind,
 		Alias:     alias,
-		Name:      entry.Name,
+		Name:      codexGatewayClientVisibleToolName(entry),
 		Arguments: toolCall.Function.Arguments,
 	}
 
 	item := map[string]any{
 		"id":      codexGatewayDeepSeekToolItemID(callID),
 		"call_id": callID,
-		"name":    entry.Name,
+		"name":    stored.Name,
 		"status":  "completed",
 	}
 	if entry.Kind == CodexGatewayToolKindCustom {

@@ -215,7 +215,7 @@ func TestAugmentGatewayAddsWorkspaceFileToolPolicyForWorktreeMismatch(t *testing
 		"tool_definitions":[
 			{"name":"read-file","description":"read file","input_schema":{"type":"object"}},
 			{"name":"save-file","description":"save file","input_schema":{"type":"object"}},
-			{"name":"apply_patch","description":"apply patch","input_schema":{"type":"object"}}
+			{"name":"edit","description":"edit file","input_schema":{"type":"object"}}
 		],
 		"request_nodes":[
 			{

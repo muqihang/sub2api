@@ -435,7 +435,7 @@ func (s *codexGatewayAnthropicStreamState) startToolUse(index int, block gjson.R
 	call.Alias = strings.TrimSpace(block.Get("name").String())
 	entry, ok := s.toolNameMap[call.Alias]
 	if ok {
-		call.Name = entry.Name
+		call.Name = codexGatewayClientVisibleToolName(entry)
 		call.Namespace = entry.Namespace
 		call.Kind = entry.Kind
 	} else {

@@ -45,6 +45,25 @@ func TestNormalizeCodexGatewayLegacyToolRefs_KeepsToolChoiceWhenToolIsAvailable(
 	require.JSONEq(t, `"edit"`, string(req.RawFields["tool_choice"]))
 }
 
+func TestNormalizeCodexGatewayLegacyToolRefs_RewritesToolChoiceFunctionName(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Tools: json.RawMessage(`[
+			{"type":"custom","name":"apply_patch","description":"edit files","format":{"type":"grammar"}}
+		]`),
+		ToolChoice: json.RawMessage(`{"type":"custom","function":{"name":"apply_patch"}}`),
+		RawFields: map[string]json.RawMessage{
+			"tools": json.RawMessage(`[
+				{"type":"custom","name":"apply_patch","description":"edit files","format":{"type":"grammar"}}
+			]`),
+			"tool_choice": json.RawMessage(`{"type":"custom","function":{"name":"apply_patch"}}`),
+		},
+	}
+
+	require.NoError(t, normalizeCodexGatewayLegacyToolRefs(&req))
+	require.JSONEq(t, `{"type":"custom","function":{"name":"edit"}}`, string(req.ToolChoice))
+	require.JSONEq(t, `{"type":"custom","function":{"name":"edit"}}`, string(req.RawFields["tool_choice"]))
+}
+
 func TestNormalizeCodexGatewayLegacyToolRefs_KeepsOrdinaryUnknownToolChoiceForValidation(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		ToolChoice: json.RawMessage(`"missing_tool"`),

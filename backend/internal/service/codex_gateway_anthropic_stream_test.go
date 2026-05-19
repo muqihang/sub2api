@@ -130,6 +130,70 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 	require.Equal(t, float64(32), usage["total_tokens"])
 }
 
+func TestExecuteCodexGatewayAnthropicStream_ExposesCustomPatchAsApplyPatch(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_patch","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":1}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_patch","name":"custom__edit","input":{}}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"input\":\"*** Begin Patch\\n*** End Patch\\n\"}"}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7",
+		"input":[{"type":"message","role":"user","content":"patch a file"}],
+		"tools":[{"type":"custom","name":"apply_patch","description":"edit files","format":{"type":"grammar"}}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	var dst bytes.Buffer
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", UpstreamModel: "claude-opus-4-7"},
+		req,
+		NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{}),
+		CodexGatewayAnthropicRequestContext{SessionKey: "s", IsolationKey: "i"},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Contains(t, string(gotBody), `"name":"custom__edit"`)
+	require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+	events := parseCodexGatewayOrderedEvents(t, dst.String())
+	addedPayload := firstCodexGatewayEventPayload(t, events, "response.output_item.added")
+	require.Equal(t, "custom_tool_call", gjson.GetBytes(addedPayload, "item.type").String())
+	require.Equal(t, "apply_patch", gjson.GetBytes(addedPayload, "item.name").String())
+	donePayload := firstCodexGatewayEventPayload(t, events, "response.custom_tool_call_input.done")
+	require.Equal(t, "*** Begin Patch\n*** End Patch\n", gjson.GetBytes(donePayload, "input").String())
+	terminal := events[len(events)-1].Payload
+	require.Equal(t, "apply_patch", gjson.GetBytes(terminal, "response.output.0.name").String())
+	require.Equal(t, "*** Begin Patch\n*** End Patch\n", gjson.GetBytes(terminal, "response.output.0.input").String())
+}
+
 func TestExecuteCodexGatewayAnthropicStream_DoesNotUseAnthropicWebSearchBetaHeader(t *testing.T) {
 	var gotBeta string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

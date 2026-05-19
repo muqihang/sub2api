@@ -204,17 +204,60 @@ func applyToolNameRewriteToBody(body []byte, rw *ToolNameRewrite) []byte {
 		})
 	}
 
-	if tc := gjson.GetBytes(body, "tool_choice"); tc.Exists() && tc.Get("type").String() == "tool" {
-		name := tc.Get("name").String()
-		if fake, ok := rw.Forward[name]; ok {
-			if next, err := sjson.SetBytes(body, "tool_choice.name", fake); err == nil {
-				body = next
-			}
-		}
+	if next := applyToolChoiceNameRewrite(body, rw); len(next) > 0 {
+		body = next
 	}
 
 	body = applyToolsLastCacheBreakpoint(body)
 	return body
+}
+
+func applyToolChoiceNameRewrite(body []byte, rw *ToolNameRewrite) []byte {
+	if len(body) == 0 || rw == nil || len(rw.Forward) == 0 {
+		return nil
+	}
+	tc := gjson.GetBytes(body, "tool_choice")
+	if !tc.Exists() || tc.Type == gjson.Null {
+		return nil
+	}
+
+	switch tc.Type {
+	case gjson.String:
+		choiceName := strings.TrimSpace(tc.String())
+		if choiceName == "" {
+			return nil
+		}
+		switch strings.ToLower(choiceName) {
+		case "auto", "none", "required", "any":
+			return nil
+		}
+		if fake, ok := rw.Forward[choiceName]; ok {
+			if next, err := sjson.SetBytes(body, "tool_choice", fake); err == nil {
+				return next
+			}
+		}
+		return nil
+	default:
+		if !tc.IsObject() {
+			return nil
+		}
+	}
+
+	name := strings.TrimSpace(tc.Get("name").String())
+	namePath := "tool_choice.name"
+	if name == "" {
+		name = strings.TrimSpace(tc.Get("function.name").String())
+		namePath = "tool_choice.function.name"
+	}
+	if name == "" {
+		return nil
+	}
+	if fake, ok := rw.Forward[name]; ok {
+		if next, err := sjson.SetBytes(body, namePath, fake); err == nil {
+			return next
+		}
+	}
+	return nil
 }
 
 // applyToolsLastCacheBreakpoint 在 tools 数组最后一个工具上注入 cache_control

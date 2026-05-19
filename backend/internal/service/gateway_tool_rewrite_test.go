@@ -84,6 +84,25 @@ func TestApplyToolNameRewriteToBody_RenamesToolsAndToolChoice(t *testing.T) {
 	require.Equal(t, "tool", gjson.GetBytes(out, "tool_choice.type").String())
 }
 
+func TestApplyToolNameRewriteToBody_RewritesStringToolChoice(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"sessions_list","input_schema":{}},{"name":"session_get","input_schema":{}}],"tool_choice":"sessions_list"}`)
+	rw := buildToolNameRewriteFromBody(body)
+	require.NotNil(t, rw)
+
+	out := applyToolNameRewriteToBody(body, rw)
+	require.Equal(t, "cc_sess_list", gjson.GetBytes(out, "tool_choice").String())
+}
+
+func TestApplyToolNameRewriteToBody_RewritesFunctionToolChoiceName(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"session_get","input_schema":{}}],"tool_choice":{"type":"tool","function":{"name":"session_get"}}}`)
+	rw := buildToolNameRewriteFromBody(body)
+	require.NotNil(t, rw)
+
+	out := applyToolNameRewriteToBody(body, rw)
+	require.Equal(t, "cc_ses_get", gjson.GetBytes(out, "tool_choice.function.name").String())
+	require.Equal(t, "tool", gjson.GetBytes(out, "tool_choice.type").String())
+}
+
 func TestApplyToolsLastCacheBreakpoint_InjectsDefault(t *testing.T) {
 	body := []byte(`{"tools":[{"name":"a","input_schema":{}},{"name":"b","input_schema":{}}]}`)
 	out := applyToolsLastCacheBreakpoint(body)

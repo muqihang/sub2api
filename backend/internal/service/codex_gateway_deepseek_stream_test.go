@@ -721,6 +721,8 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, 1, countCodexGatewayEvent(events, "response.custom_tool_call_input.done"))
 		require.Equal(t, 0, countCodexGatewayEvent(events, "response.function_call_arguments.done"))
 
+		addedPayload := firstCodexGatewayEventPayload(t, events, "response.output_item.added")
+		require.Equal(t, "apply_patch", gjson.GetBytes(addedPayload, "item.name").String())
 		customDeltaPayload := firstCodexGatewayEventPayload(t, events, "response.custom_tool_call_input.delta")
 		require.Equal(t, "fc_call_patch", gjson.GetBytes(customDeltaPayload, "item_id").String())
 		require.Equal(t, "*** Begin Patch\n*** End Patch", gjson.GetBytes(customDeltaPayload, "delta").String())
@@ -731,6 +733,7 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		terminal := events[len(events)-1].Payload
 		require.NotContains(t, buf.String(), "正在使用工具继续推进")
 		require.Equal(t, "custom_tool_call", gjson.GetBytes(terminal, "response.output.0.type").String())
+		require.Equal(t, "apply_patch", gjson.GetBytes(terminal, "response.output.0.name").String())
 		require.Equal(t, "*** Begin Patch\n*** End Patch", gjson.GetBytes(terminal, "response.output.0.input").String())
 	})
 

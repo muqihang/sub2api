@@ -368,13 +368,13 @@ func codexGatewayAnthropicToolUseOutputItem(raw string, toolNameMap map[string]C
 		ID:        callID,
 		Type:      entry.Kind,
 		Alias:     alias,
-		Name:      entry.Name,
+		Name:      codexGatewayClientVisibleToolName(entry),
 		Arguments: args,
 	}
 	item := map[string]any{
 		"id":      codexGatewayAnthropicToolItemID(callID),
 		"call_id": callID,
-		"name":    entry.Name,
+		"name":    stored.Name,
 		"status":  "completed",
 	}
 	if entry.Kind == CodexGatewayToolKindCustom {

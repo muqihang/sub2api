@@ -422,7 +422,7 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 			}
 		}
 		if ok {
-			call.Name = entry.Name
+			call.Name = codexGatewayClientVisibleToolName(entry)
 			call.Namespace = entry.Namespace
 			call.Kind = entry.Kind
 		} else {
