@@ -304,6 +304,9 @@ export interface SystemSettings {
   password_reset_enabled: boolean;
   frontend_url: string;
   invitation_code_enabled: boolean;
+  auth_agreement_enabled?: boolean;
+  auth_agreement_version?: string;
+  auth_agreement_prompt_on_first_visit?: boolean;
   totp_enabled: boolean; // TOTP 双因素认证
   totp_encryption_key_configured: boolean; // TOTP 加密密钥是否已配置
   // Default settings
@@ -498,6 +501,9 @@ export interface UpdateSettingsRequest {
   password_reset_enabled?: boolean;
   frontend_url?: string;
   invitation_code_enabled?: boolean;
+  auth_agreement_enabled?: boolean;
+  auth_agreement_version?: string;
+  auth_agreement_prompt_on_first_visit?: boolean;
   totp_enabled?: boolean; // TOTP 双因素认证
   default_balance?: number;
   affiliate_rebate_rate?: number;

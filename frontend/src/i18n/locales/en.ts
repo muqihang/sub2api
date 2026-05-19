@@ -5030,6 +5030,15 @@ export default {
         enableRegistrationHint: 'Allow new users to register',
         emailVerification: 'Email Verification',
         emailVerificationHint: 'Require email verification for new registrations',
+        authAgreement: {
+          enabled: 'Authentication Agreement',
+          enabledHint: 'Require users to accept the authentication agreement before signing in or registering',
+          version: 'Agreement Version',
+          versionPlaceholder: 'e.g. 2026-01',
+          versionHint: 'Used to identify which version of the agreement is currently active',
+          promptOnFirstVisit: 'Prompt on First Visit',
+          promptOnFirstVisitHint: 'Show the agreement prompt to users on their first visit',
+        },
         emailSuffixWhitelist: 'Email Domain Whitelist',
         emailSuffixWhitelistHint:
           "Only email addresses from the specified domains can register (for example, {'@'}qq.com, {'@'}gmail.com)",

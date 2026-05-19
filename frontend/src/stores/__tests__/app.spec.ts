@@ -261,6 +261,9 @@ describe('useAppStore', () => {
         contact_info: 'test@test.com',
         api_base_url: 'https://api.test.com',
         doc_url: 'https://docs.test.com',
+        auth_agreement_enabled: true,
+        auth_agreement_version: '2026-01',
+        auth_agreement_prompt_on_first_visit: true,
       }
 
       const store = useAppStore()
@@ -271,6 +274,9 @@ describe('useAppStore', () => {
       expect(store.siteLogo).toBe('/logo.png')
       expect(store.siteVersion).toBe('1.0.0')
       expect(store.publicSettingsLoaded).toBe(true)
+      expect(store.cachedPublicSettings?.auth_agreement_enabled).toBe(true)
+      expect(store.cachedPublicSettings?.auth_agreement_version).toBe('2026-01')
+      expect(store.cachedPublicSettings?.auth_agreement_prompt_on_first_visit).toBe(true)
     })
 
     it('无注入配置时返回 false', () => {
@@ -295,10 +301,27 @@ describe('useAppStore', () => {
       expect(store.cachedPublicSettings).toBeNull()
     })
 
+    it('fetchPublicSettings() 的 fallback settings 包含认证协议字段', async () => {
+      const store = useAppStore()
+      store.publicSettingsLoaded = true
+      store.cachedPublicSettings = null
+      const settings = await store.fetchPublicSettings()
+
+      expect(settings).toMatchObject({
+        auth_agreement_enabled: false,
+        auth_agreement_version: '',
+        auth_agreement_prompt_on_first_visit: false,
+      })
+    })
+
     it('fetchPublicSettings(force) 会同步更新运行时注入配置', async () => {
       vi.mocked(getPublicSettings).mockResolvedValue({
         registration_enabled: false,
         email_verify_enabled: false,
+        force_email_on_third_party_signup: false,
+        auth_agreement_enabled: false,
+        auth_agreement_version: '',
+        auth_agreement_prompt_on_first_visit: false,
         registration_email_suffix_whitelist: [],
         promo_code_enabled: true,
         password_reset_enabled: false,

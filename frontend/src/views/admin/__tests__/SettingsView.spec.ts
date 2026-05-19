@@ -131,10 +131,17 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.wechatConnect.redirectUrlPlaceholder": "https://your-site.com/api/v1/auth/oauth/wechat/callback",
     "admin.settings.wechatConnect.generateAndCopy": "使用当前站点生成并复制",
     "admin.settings.wechatConnect.redirectUrlSetAndCopied": "已使用当前站点生成回调地址并复制到剪贴板",
-    "admin.settings.wechatConnect.frontendRedirectUrlLabel": "前端回调地址",
-    "admin.settings.wechatConnect.frontendRedirectUrlPlaceholder": "/auth/wechat/callback",
-    "admin.settings.wechatConnect.frontendRedirectUrlHint": "通常用于前端路由回调地址，需与后端配置保持一致。",
-    "admin.settings.authSourceDefaults.title": "认证来源默认值",
+  "admin.settings.wechatConnect.frontendRedirectUrlLabel": "前端回调地址",
+  "admin.settings.wechatConnect.frontendRedirectUrlPlaceholder": "/auth/wechat/callback",
+  "admin.settings.wechatConnect.frontendRedirectUrlHint": "通常用于前端路由回调地址，需与后端配置保持一致。",
+  "admin.settings.registration.authAgreement.enabled": "认证协议",
+  "admin.settings.registration.authAgreement.enabledHint": "在用户登录或注册前要求同意认证协议",
+  "admin.settings.registration.authAgreement.version": "协议版本",
+  "admin.settings.registration.authAgreement.versionPlaceholder": "例如：2026-01",
+  "admin.settings.registration.authAgreement.versionHint": "用于标识当前生效的协议版本",
+  "admin.settings.registration.authAgreement.promptOnFirstVisit": "首次访问时提示",
+  "admin.settings.registration.authAgreement.promptOnFirstVisitHint": "用户首次访问时显示认证协议提示",
+  "admin.settings.authSourceDefaults.title": "认证来源默认值",
     "admin.settings.authSourceDefaults.description": "按注册来源配置新用户默认余额、并发、订阅与授权策略。",
     "admin.settings.authSourceDefaults.requireEmailLabel": "第三方注册强制补充邮箱",
     "admin.settings.authSourceDefaults.requireEmailHint": "启用后，Linux DO、OIDC、微信注册缺少邮箱时必须先补充邮箱地址。",
@@ -285,6 +292,9 @@ const baseSettingsResponse = {
   registration_email_suffix_whitelist: [],
   promo_code_enabled: true,
   invitation_code_enabled: false,
+  auth_agreement_enabled: false,
+  auth_agreement_version: "",
+  auth_agreement_prompt_on_first_visit: false,
   password_reset_enabled: false,
   totp_enabled: false,
   totp_encryption_key_configured: false,
@@ -815,6 +825,57 @@ describe("admin SettingsView wechat connect controls", () => {
           .element as HTMLInputElement
       ).value,
     ).toBe("/auth/wechat/callback");
+  });
+
+  it("loads and saves authentication agreement settings", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      auth_agreement_enabled: true,
+      auth_agreement_version: "2026-01",
+      auth_agreement_prompt_on_first_visit: true,
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    expect(
+      (
+        wrapper.get('[data-testid="auth-agreement-enabled"]')
+          .element as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    expect(
+      (
+        wrapper.get('[data-testid="auth-agreement-version"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe("2026-01");
+    expect(
+      (
+        wrapper.get('[data-testid="auth-agreement-prompt-on-first-visit"]')
+          .element as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+
+    await wrapper
+      .get('[data-testid="auth-agreement-version"]')
+      .setValue("2026-02");
+    await wrapper
+      .get('[data-testid="auth-agreement-prompt-on-first-visit"]')
+      .setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        auth_agreement_enabled: true,
+        auth_agreement_version: "2026-02",
+        auth_agreement_prompt_on_first_visit: false,
+      }),
+    );
   });
 
   it("saves WeChat Connect fields using the backend contract and clears the secret after save", async () => {

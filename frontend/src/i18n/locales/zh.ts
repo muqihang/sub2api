@@ -5193,6 +5193,15 @@ export default {
         enableRegistrationHint: '允许新用户注册',
         emailVerification: '邮箱验证',
         emailVerificationHint: '新用户注册时需要验证邮箱',
+        authAgreement: {
+          enabled: '认证协议',
+          enabledHint: '在用户登录或注册前要求同意认证协议',
+          version: '协议版本',
+          versionPlaceholder: '例如：2026-01',
+          versionHint: '用于标识当前生效的协议版本',
+          promptOnFirstVisit: '首次访问时提示',
+          promptOnFirstVisitHint: '用户首次访问时显示认证协议提示',
+        },
         emailSuffixWhitelist: '邮箱域名白名单',
         emailSuffixWhitelistHint:
           "仅允许使用指定域名的邮箱注册账号（例如 {'@'}qq.com, {'@'}gmail.com）",

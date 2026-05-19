@@ -1383,6 +1383,83 @@
                 <Toggle v-model="form.email_verify_enabled" />
               </div>
 
+              <!-- Authentication Agreement -->
+              <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{
+                      t("admin.settings.registration.authAgreement.enabled")
+                    }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{
+                        t("admin.settings.registration.authAgreement.enabledHint")
+                      }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.auth_agreement_enabled"
+                    data-testid="auth-agreement-enabled"
+                  />
+                </div>
+                <div
+                  v-if="form.auth_agreement_enabled"
+                  class="mt-4 space-y-4"
+                >
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        t("admin.settings.registration.authAgreement.version")
+                      }}
+                    </label>
+                    <input
+                      v-model="form.auth_agreement_version"
+                      data-testid="auth-agreement-version"
+                      type="text"
+                      class="input font-mono text-sm"
+                      :placeholder="
+                        t(
+                          'admin.settings.registration.authAgreement.versionPlaceholder',
+                        )
+                      "
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        t("admin.settings.registration.authAgreement.versionHint")
+                      }}
+                    </p>
+                  </div>
+
+                  <div
+                    class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
+                  >
+                    <div>
+                      <label
+                        class="font-medium text-gray-900 dark:text-white"
+                      >
+                        {{
+                          t(
+                            "admin.settings.registration.authAgreement.promptOnFirstVisit",
+                          )
+                        }}
+                      </label>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        {{
+                          t(
+                            "admin.settings.registration.authAgreement.promptOnFirstVisitHint",
+                          )
+                        }}
+                      </p>
+                    </div>
+                    <Toggle
+                      v-model="form.auth_agreement_prompt_on_first_visit"
+                      data-testid="auth-agreement-prompt-on-first-visit"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <!-- Email Suffix Whitelist -->
               <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
                 <label class="font-medium text-gray-900 dark:text-white">{{
@@ -5785,6 +5862,9 @@ type SettingsForm = Omit<
   | "wechat_connect_mp_enabled"
   | "wechat_connect_mobile_enabled"
 > & {
+  auth_agreement_enabled: boolean;
+  auth_agreement_version: string;
+  auth_agreement_prompt_on_first_visit: boolean;
   smtp_password: string;
   turnstile_secret_key: string;
   linuxdo_connect_client_secret: string;
@@ -5806,6 +5886,9 @@ const form = reactive<SettingsForm>({
   registration_email_suffix_whitelist: [],
   promo_code_enabled: true,
   invitation_code_enabled: false,
+  auth_agreement_enabled: false,
+  auth_agreement_version: "",
+  auth_agreement_prompt_on_first_visit: false,
   password_reset_enabled: false,
   totp_enabled: false,
   totp_encryption_key_configured: false,
@@ -6478,6 +6561,10 @@ async function loadSettings() {
       normalizeRegistrationEmailSuffixDomains(
         settings.registration_email_suffix_whitelist,
       );
+    form.auth_agreement_enabled = settings.auth_agreement_enabled ?? false;
+    form.auth_agreement_version = settings.auth_agreement_version ?? "";
+    form.auth_agreement_prompt_on_first_visit =
+      settings.auth_agreement_prompt_on_first_visit ?? false;
     tablePageSizeOptionsInput.value = formatTablePageSizeOptions(
       Array.isArray(settings.table_page_size_options)
         ? settings.table_page_size_options
@@ -6747,6 +6834,10 @@ async function saveSettings() {
     const payload: UpdateSettingsRequest = {
       registration_enabled: form.registration_enabled,
       email_verify_enabled: form.email_verify_enabled,
+      auth_agreement_enabled: form.auth_agreement_enabled,
+      auth_agreement_version: form.auth_agreement_version,
+      auth_agreement_prompt_on_first_visit:
+        form.auth_agreement_prompt_on_first_visit,
       registration_email_suffix_whitelist:
         registrationEmailSuffixWhitelistTags.value.map(
           (suffix) => `@${suffix}`,
