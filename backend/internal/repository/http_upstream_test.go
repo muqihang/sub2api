@@ -66,6 +66,30 @@ func (s *HTTPUpstreamSuite) TestCustomResponseHeaderTimeout() {
 	require.Equal(s.T(), 7*time.Second, transport.ResponseHeaderTimeout, "ResponseHeaderTimeout mismatch")
 }
 
+func (s *HTTPUpstreamSuite) TestBuildUpstreamTransport_DisablesCompression() {
+	transport, err := buildUpstreamTransport(poolSettings{
+		maxIdleConns:          10,
+		maxIdleConnsPerHost:   5,
+		maxConnsPerHost:       10,
+		idleConnTimeout:       time.Minute,
+		responseHeaderTimeout: 5 * time.Second,
+	}, nil)
+	require.NoError(s.T(), err)
+	require.True(s.T(), transport.DisableCompression, "transport must disable Go's automatic Accept-Encoding injection")
+}
+
+func (s *HTTPUpstreamSuite) TestBuildUpstreamTransportWithTLSFingerprint_DisablesCompression() {
+	transport, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{
+		maxIdleConns:          10,
+		maxIdleConnsPerHost:   5,
+		maxConnsPerHost:       10,
+		idleConnTimeout:       time.Minute,
+		responseHeaderTimeout: 5 * time.Second,
+	}, nil, &tlsfingerprint.Profile{Name: "test-profile"})
+	require.NoError(s.T(), err)
+	require.True(s.T(), transport.DisableCompression, "TLS fingerprint transport must disable Go's automatic Accept-Encoding injection")
+}
+
 // TestGetOrCreateClient_InvalidURLReturnsError 测试无效代理 URL 返回错误
 // 验证解析失败时拒绝回退到直连模式
 func (s *HTTPUpstreamSuite) TestGetOrCreateClient_InvalidURLReturnsError() {
@@ -106,6 +130,7 @@ func (s *HTTPUpstreamSuite) TestAcquireClient_OverLimitReturnsError() {
 func (s *HTTPUpstreamSuite) TestDo_WithoutProxy_GoesDirect() {
 	// 创建模拟上游服务器
 	upstream := newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Empty(s.T(), r.Header.Get("Accept-Encoding"), "wire request must not auto-add Accept-Encoding")
 		_, _ = io.WriteString(w, "direct")
 	}))
 	s.T().Cleanup(upstream.Close)

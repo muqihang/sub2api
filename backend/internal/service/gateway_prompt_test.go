@@ -28,7 +28,7 @@ func TestIsClaudeCodeClient(t *testing.T) {
 		},
 		{
 			name:           "Claude Code client with JSON user_id",
-			userAgent:      "claude-cli/2.1.92 (external, cli)",
+			userAgent:      "claude-cli/2.1.145 (external, sdk-cli)",
 			metadataUserID: jsonUserID,
 			want:           true,
 		},
@@ -70,7 +70,7 @@ func TestIsClaudeCodeClient(t *testing.T) {
 		},
 		{
 			name:           "Opencode spoofing UA with arbitrary user_id",
-			userAgent:      "claude-cli/2.1.92",
+			userAgent:      "claude-cli/2.1.145",
 			metadataUserID: "session_abc",
 			want:           false,
 		},
@@ -401,22 +401,12 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 			err := json.Unmarshal(result, &parsed)
 			require.NoError(t, err)
 
-			// system 应为 array 格式，对齐真实 Claude Code CLI 的 2-block 形态：
-			//   [0] billing attribution block (x-anthropic-billing-header: cc_version=...;)
-			//   [1] Claude Code prompt block (带 cache_control)
+			// system 应为 array 格式；mimicry 路径只保留 Claude Code prompt block。
 			systemArr, ok := parsed["system"].([]any)
 			require.True(t, ok, "system should be an array, got %T", parsed["system"])
-			require.Len(t, systemArr, 2, "system array should have exactly 2 blocks (billing + cc prompt)")
+			require.Len(t, systemArr, 1, "system array should have exactly 1 block (cc prompt only)")
 
-			billingBlock, ok := systemArr[0].(map[string]any)
-			require.True(t, ok)
-			require.Equal(t, "text", billingBlock["type"])
-			require.Contains(t, billingBlock["text"], "x-anthropic-billing-header:")
-			require.Contains(t, billingBlock["text"], "cc_version=")
-			require.Contains(t, billingBlock["text"], "cc_entrypoint=cli")
-			require.Contains(t, billingBlock["text"], "cch=00000")
-
-			systemBlock, ok := systemArr[1].(map[string]any)
+			systemBlock, ok := systemArr[0].(map[string]any)
 			require.True(t, ok)
 			require.Equal(t, "text", systemBlock["type"])
 			require.Equal(t, tt.wantSystemText, systemBlock["text"])

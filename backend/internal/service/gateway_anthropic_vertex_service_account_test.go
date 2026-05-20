@@ -22,6 +22,7 @@ func TestGatewayService_BuildAnthropicVertexServiceAccountRequest(t *testing.T) 
 	c.Request.Header.Set("X-Api-Key", "inbound-api-key")
 	c.Request.Header.Set("Anthropic-Version", "2023-06-01")
 	c.Request.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14")
+	c.Request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 
 	account := &Account{
 		ID:       301,
@@ -45,6 +46,7 @@ func TestGatewayService_BuildAnthropicVertexServiceAccountRequest(t *testing.T) 
 		"claude-sonnet-4-5@20250929",
 		false,
 		false,
+		false,
 	)
 	require.NoError(t, err)
 	require.Equal(t, "https://us-east5-aiplatform.googleapis.com/v1/projects/vertex-proj/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5@20250929:rawPredict", req.URL.String())
@@ -52,6 +54,7 @@ func TestGatewayService_BuildAnthropicVertexServiceAccountRequest(t *testing.T) 
 	require.Empty(t, getHeaderRaw(req.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(req.Header, "anthropic-version"))
 	require.Equal(t, "interleaved-thinking-2025-05-14", getHeaderRaw(req.Header, "anthropic-beta"))
+	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
 
 	got := readRequestBodyForTest(t, req)
 	require.Equal(t, "", gjson.GetBytes(got, "model").String())

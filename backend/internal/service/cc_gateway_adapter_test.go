@@ -65,6 +65,7 @@ func ccGatewayTestContext(path string) *gin.Context {
 	c.Request = httptest.NewRequest(http.MethodPost, path, nil)
 	c.Request.Header.Set("User-Agent", "claude-cli/2.1.131 (external, cli)")
 	c.Request.Header.Set("Anthropic-Beta", "client-beta")
+	c.Request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	return c
 }
 
@@ -97,7 +98,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	req, err := svc.buildUpstreamRequest(context.Background(), ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false)
+	req, err := svc.buildUpstreamRequest(context.Background(), ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", req.URL.String())
@@ -107,6 +108,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 	require.Equal(t, "42", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Equal(t, "anthropic", getHeaderRaw(req.Header, "x-cc-provider"))
 	require.Equal(t, "oauth", getHeaderRaw(req.Header, "x-cc-token-type"))
+	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
 	require.Equal(t, "user@example.com", getHeaderRaw(req.Header, "x-cc-account-email"))
 	require.Equal(t, "acct-uuid", getHeaderRaw(req.Header, "x-cc-account-uuid"))
 	require.Equal(t, "org-uuid", getHeaderRaw(req.Header, "x-cc-organization-uuid"))
@@ -126,7 +128,7 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	req, err := svc.buildCountTokensRequest(context.Background(), ccGatewayTestContext("/v1/messages/count_tokens"), account, []byte(`{"model":"claude-3-7-sonnet-20250219"}`), "setup-token", "oauth", "claude-3-7-sonnet-20250219", false)
+	req, err := svc.buildCountTokensRequest(context.Background(), ccGatewayTestContext("/v1/messages/count_tokens"), account, []byte(`{"model":"claude-3-7-sonnet-20250219"}`), "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages/count_tokens?beta=true", req.URL.String())
@@ -134,6 +136,7 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 	require.Equal(t, "oauth", getHeaderRaw(req.Header, "x-cc-token-type"))
 	require.Equal(t, "43", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Contains(t, getHeaderRaw(req.Header, "anthropic-beta"), "token-counting")
+	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
 	require.Equal(t, "", getHeaderRaw(req.Header, "x-stainless-os"))
 }
 
