@@ -14,33 +14,38 @@ import (
 // the trailing message-derived suffix (e.g. ".c02") if present.
 var ccVersionInBillingRe = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+`)
 
+// ccEntrypointInBillingRe matches the cc_entrypoint segment in billing headers.
+var ccEntrypointInBillingRe = regexp.MustCompile(`cc_entrypoint=[^;]+`)
+
 // cchPlaceholderRe matches the cch=00000 placeholder in billing header text,
 // scoped to x-anthropic-billing-header to avoid touching user content.
 var cchPlaceholderRe = regexp.MustCompile(`(x-anthropic-billing-header:[^"]*?\bcch=)(00000)(;)`)
 
 const cchSeed uint64 = 0x6E52736AC806831E
 
-// syncBillingHeaderVersion rewrites cc_version in x-anthropic-billing-header
-// system text blocks to match the version extracted from userAgent.
+// syncBillingHeaderVersion rewrites legacy x-anthropic-billing-header fields to match
+// current Claude Code billing conventions:
+//   - cc_version tracks the version extracted from userAgent when available
+//   - cc_entrypoint is always normalized to sdk-cli
+//
 // Only touches system array blocks whose text starts with "x-anthropic-billing-header".
 func syncBillingHeaderVersion(body []byte, userAgent string) []byte {
 	version := ExtractCLIVersion(userAgent)
-	if version == "" {
-		return body
-	}
 
 	systemResult := gjson.GetBytes(body, "system")
 	if !systemResult.Exists() || !systemResult.IsArray() {
 		return body
 	}
 
-	replacement := "cc_version=" + version
 	idx := 0
 	systemResult.ForEach(func(_, item gjson.Result) bool {
 		text := item.Get("text")
 		if text.Exists() && text.Type == gjson.String &&
 			strings.HasPrefix(text.String(), "x-anthropic-billing-header") {
-			newText := ccVersionInBillingRe.ReplaceAllString(text.String(), replacement)
+			newText := ccEntrypointInBillingRe.ReplaceAllString(text.String(), "cc_entrypoint=sdk-cli")
+			if version != "" {
+				newText = ccVersionInBillingRe.ReplaceAllString(newText, "cc_version="+version)
+			}
 			if newText != text.String() {
 				if updated, err := sjson.SetBytes(body, fmt.Sprintf("system.%d.text", idx), newText); err == nil {
 					body = updated
@@ -54,6 +59,10 @@ func syncBillingHeaderVersion(body []byte, userAgent string) []byte {
 	return body
 }
 
+// Deprecated: signBillingHeaderCCH is a legacy placeholder signer retained only for
+// fallback/rollback paths. Strict passthrough and final OAuth mimicry paths must not
+// rely on it.
+//
 // signBillingHeaderCCH computes the xxHash64-based CCH signature for the request
 // body and replaces the cch=00000 placeholder with the computed 5-hex-char hash.
 // The body must contain the placeholder when this function is called.

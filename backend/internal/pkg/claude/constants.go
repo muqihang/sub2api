@@ -31,22 +31,17 @@ const (
 // 这些 token 是客户端特有的，不应透传给上游 API。
 var DroppedBetas = []string{}
 
-// DefaultBetaHeader Claude Code 客户端默认的 anthropic-beta header
-const DefaultBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+// DefaultBetaHeader Claude Code 标准 /v1/messages 请求默认的 anthropic-beta header。
+const DefaultBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaContextManagement + "," + BetaPromptCachingScope
 
-// MessageBetaHeaderNoTools /v1/messages 在无工具时的 beta header
-//
-// NOTE: Claude Code OAuth credentials are scoped to Claude Code. When we "mimic"
-// Claude Code for non-Claude-Code clients, we must include the claude-code beta
-// even if the request doesn't use tools, otherwise upstream may reject the
-// request as a non-Claude-Code API request.
-const MessageBetaHeaderNoTools = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking
+// MessageBetaHeaderNoTools /v1/messages 在无工具时的 beta header。
+const MessageBetaHeaderNoTools = DefaultBetaHeader
 
-// MessageBetaHeaderWithTools /v1/messages 在有工具时的 beta header
-const MessageBetaHeaderWithTools = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking
+// MessageBetaHeaderWithTools /v1/messages 在有工具时的 beta header。
+const MessageBetaHeaderWithTools = DefaultBetaHeader
 
-// CountTokensBetaHeader count_tokens 请求使用的 anthropic-beta header
-const CountTokensBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaTokenCounting
+// CountTokensBetaHeader count_tokens OAuth 请求使用的 anthropic-beta header。
+const CountTokensBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaContextManagement + "," + BetaOAuth + "," + BetaTokenCounting
 
 // HaikuBetaHeader Haiku 模型使用的 anthropic-beta header（不需要 claude-code beta）
 const HaikuBetaHeader = BetaOAuth + "," + BetaInterleavedThinking
@@ -65,27 +60,43 @@ const DefaultCacheControlTTL = "5m"
 // CLICurrentVersion 是 sub2api 当前对外伪装的 Claude Code CLI 版本号（三段 semver）。
 // 用于 billing attribution block 中的 cc_version=X.Y.Z.{fp} 前缀以及 fingerprint 计算。
 // 必须与 DefaultHeaders["User-Agent"] 中的版本号严格一致；不一致会被 Anthropic 判第三方。
-const CLICurrentVersion = "2.1.92"
+const CLICurrentVersion = "2.1.145"
 
-// FullClaudeCodeMimicryBetas 返回最"像"真实 Claude Code CLI 的完整 beta 列表，
-// 用于 OAuth 账号伪装成 Claude Code 时使用。
-// 顺序与真实 CLI 抓包一致。
-//
-// 使用建议：
-//   - OAuth 账号 + 非 haiku：追加这整份列表，再按需保留 client 带来的 beta。
-//   - OAuth 账号 + haiku：Anthropic 对 haiku 不做 third-party 判定，使用 HaikuBetaHeader 即可。
-//   - API-key 账号：不要使用本函数，参见 APIKeyBetaHeader。
-func FullClaudeCodeMimicryBetas() []string {
+// ClaudeCodeMessagesBetas returns the real Claude Code /v1/messages beta tokens.
+func ClaudeCodeMessagesBetas() []string {
 	return []string{
 		BetaClaudeCode,
-		BetaOAuth,
 		BetaInterleavedThinking,
-		BetaPromptCachingScope,
-		BetaEffort,
-		BetaRedactThinking,
 		BetaContextManagement,
-		BetaExtendedCacheTTL,
+		BetaPromptCachingScope,
 	}
+}
+
+// ClaudeCodeMessagesOAuthBetas returns the OAuth /v1/messages beta tokens.
+func ClaudeCodeMessagesOAuthBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaOAuth,
+	}
+}
+
+// ClaudeCodeCountTokensOAuthBetas returns the OAuth /v1/messages/count_tokens beta tokens.
+func ClaudeCodeCountTokensOAuthBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaOAuth,
+		BetaTokenCounting,
+	}
+}
+
+// Deprecated: prefer endpoint-specific helpers such as ClaudeCodeMessagesOAuthBetas.
+func FullClaudeCodeMimicryBetas() []string {
+	return ClaudeCodeMessagesOAuthBetas()
 }
 
 // DefaultHeaders 是 Claude Code 客户端默认请求头。
@@ -93,15 +104,14 @@ var DefaultHeaders = map[string]string{
 	// Keep these in sync with recent Claude CLI traffic to reduce the chance
 	// that Claude Code-scoped OAuth credentials are rejected as "non-CLI" usage.
 	// 版本参考：对齐 Parrot (src/transform/cc_mimicry.py:49) 的 CLI_USER_AGENT。
-	"User-Agent":                                "claude-cli/2.1.92 (external, cli)",
+	"User-Agent":                                "claude-cli/2.1.145 (external, sdk-cli)",
 	"X-Stainless-Lang":                          "js",
-	"X-Stainless-Package-Version":               "0.70.0",
+	"X-Stainless-Package-Version":               "0.94.0",
 	"X-Stainless-OS":                            "Linux",
 	"X-Stainless-Arch":                          "arm64",
 	"X-Stainless-Runtime":                       "node",
-	"X-Stainless-Runtime-Version":               "v24.13.0",
+	"X-Stainless-Runtime-Version":               "v24.3.0",
 	"X-Stainless-Retry-Count":                   "0",
-	"X-Stainless-Timeout":                       "600",
 	"X-App":                                     "cli",
 	"Anthropic-Dangerous-Direct-Browser-Access": "true",
 }
