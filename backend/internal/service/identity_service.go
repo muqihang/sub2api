@@ -71,6 +71,91 @@ func NewIdentityService(cache IdentityCache) *IdentityService {
 	return &IdentityService{cache: cache}
 }
 
+func cloneFingerprint(fp *Fingerprint) *Fingerprint {
+	if fp == nil {
+		return nil
+	}
+	cp := *fp
+	return &cp
+}
+
+func fillFingerprintDefaults(fp *Fingerprint) bool {
+	if fp == nil {
+		return false
+	}
+	changed := false
+	if strings.TrimSpace(fp.ClientID) == "" {
+		fp.ClientID = generateClientID()
+		changed = true
+	}
+	if strings.TrimSpace(fp.UserAgent) == "" {
+		fp.UserAgent = defaultFingerprint.UserAgent
+		changed = true
+	}
+	if strings.TrimSpace(fp.StainlessLang) == "" {
+		fp.StainlessLang = defaultFingerprint.StainlessLang
+		changed = true
+	}
+	if strings.TrimSpace(fp.StainlessPackageVersion) == "" {
+		fp.StainlessPackageVersion = defaultFingerprint.StainlessPackageVersion
+		changed = true
+	}
+	if strings.TrimSpace(fp.StainlessOS) == "" {
+		fp.StainlessOS = defaultFingerprint.StainlessOS
+		changed = true
+	}
+	if strings.TrimSpace(fp.StainlessArch) == "" {
+		fp.StainlessArch = defaultFingerprint.StainlessArch
+		changed = true
+	}
+	if strings.TrimSpace(fp.StainlessRuntime) == "" {
+		fp.StainlessRuntime = defaultFingerprint.StainlessRuntime
+		changed = true
+	}
+	if strings.TrimSpace(fp.StainlessRuntimeVersion) == "" {
+		fp.StainlessRuntimeVersion = defaultFingerprint.StainlessRuntimeVersion
+		changed = true
+	}
+	return changed
+}
+
+// GetOrCreateMimicryFingerprint returns a safe fingerprint for non-Claude-Code OAuth mimicry.
+// It MUST NOT derive values from client request headers. Cached fingerprints win; on cache miss
+// it synthesizes a Claude Code 2.1.145 default fingerprint with a fresh client_id.
+func (s *IdentityService) GetOrCreateMimicryFingerprint(ctx context.Context, accountID int64) (*Fingerprint, error) {
+	if s == nil || s.cache == nil {
+		return nil, fmt.Errorf("identity cache unavailable")
+	}
+
+	cached, err := s.cache.GetFingerprint(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if cached != nil {
+		out := cloneFingerprint(cached)
+		needWrite := fillFingerprintDefaults(out)
+		if out.UpdatedAt == 0 || time.Since(time.Unix(out.UpdatedAt, 0)) > 24*time.Hour {
+			out.UpdatedAt = time.Now().Unix()
+			needWrite = true
+		}
+		if needWrite {
+			if err := s.cache.SetFingerprint(ctx, accountID, out); err != nil {
+				logger.LegacyPrintf("service.identity", "Warning: failed to refresh mimicry fingerprint for account %d: %v", accountID, err)
+			}
+		}
+		return out, nil
+	}
+
+	fp := cloneFingerprint(&defaultFingerprint)
+	fp.ClientID = generateClientID()
+	fp.UpdatedAt = time.Now().Unix()
+	if err := s.cache.SetFingerprint(ctx, accountID, fp); err != nil {
+		logger.LegacyPrintf("service.identity", "Warning: failed to cache mimicry fingerprint for account %d: %v", accountID, err)
+	}
+	logger.LegacyPrintf("service.identity", "Created safe default mimicry fingerprint for account %d with client_id: %s", accountID, fp.ClientID)
+	return fp, nil
+}
+
 // GetOrCreateFingerprint 获取或创建账号的指纹
 // 如果缓存存在，检测user-agent版本，新版本则更新
 // 如果缓存不存在，生成随机ClientID并从请求头创建指纹，然后缓存

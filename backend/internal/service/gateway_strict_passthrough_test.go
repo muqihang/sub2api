@@ -171,6 +171,69 @@ func TestMimicry_OverridesFakeMetadataUserIDAndSetsSessionHeader(t *testing.T) {
 	require.Equal(t, parsedUID.SessionID, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
 }
 
+func TestMimicry_ForwardHeadersUseSafeDefaultFingerprintOnCacheMiss(t *testing.T) {
+	upstream := &anthropicHTTPUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	cache := &identityCacheStub{}
+	seedGatewayForwardingSettingsForTest()
+	svc := &GatewayService{
+		cfg:             &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		identityService: NewIdentityService(cache),
+		httpUpstream:    upstream,
+	}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	c, ctx := newAnthropicForwardTestContext("/v1/messages", false)
+	c.Request.Header.Set("User-Agent", "claude-cli/99.9.9 (external, sdk-cli)")
+	c.Request.Header.Set("X-Stainless-OS", "Windows")
+	c.Request.Header.Set("X-Stainless-Arch", "x64")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.Equal(t, defaultFingerprint.UserAgent, getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.Equal(t, defaultFingerprint.StainlessOS, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-OS"))
+	require.Equal(t, defaultFingerprint.StainlessArch, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Arch"))
+	require.NotNil(t, cache.setFingerprint, "cache miss should synthesize and persist a safe default fingerprint")
+	require.Equal(t, defaultFingerprint.UserAgent, cache.setFingerprint.UserAgent)
+	require.Equal(t, defaultFingerprint.StainlessOS, cache.setFingerprint.StainlessOS)
+	require.Equal(t, defaultFingerprint.StainlessArch, cache.setFingerprint.StainlessArch)
+}
+
+func TestMimicry_ForwardHeadersUseCachedFingerprintInsteadOfSpoofedClientHeaders(t *testing.T) {
+	upstream := &anthropicHTTPUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	cache := &identityCacheStub{
+		fingerprint: &Fingerprint{
+			ClientID:                "cached-client-id",
+			UserAgent:               "claude-cli/2.1.145 (external, sdk-cli)",
+			StainlessLang:           "js",
+			StainlessPackageVersion: "0.94.0",
+			StainlessOS:             "MacOS",
+			StainlessArch:           "x64",
+			StainlessRuntime:        "node",
+			StainlessRuntimeVersion: "v24.3.0",
+			UpdatedAt:               time.Now().Unix(),
+		},
+	}
+	seedGatewayForwardingSettingsForTest()
+	svc := &GatewayService{
+		cfg:             &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		identityService: NewIdentityService(cache),
+		httpUpstream:    upstream,
+	}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	c, ctx := newAnthropicForwardTestContext("/v1/messages", false)
+	c.Request.Header.Set("User-Agent", "claude-cli/99.9.9 (external, sdk-cli)")
+	c.Request.Header.Set("X-Stainless-OS", "Windows")
+	c.Request.Header.Set("X-Stainless-Arch", "armv7")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.Equal(t, cache.fingerprint.UserAgent, getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.Equal(t, "MacOS", getHeaderRaw(upstream.lastReq.Header, "X-Stainless-OS"))
+	require.Equal(t, "x64", getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Arch"))
+	require.Nil(t, cache.setFingerprint, "cached mimicry fingerprint must not be rewritten from client headers")
+}
+
 func TestApplyClaudeCodeOAuthMimicryToBody_OverridesFakeMetadataUserIDAndRemovesBillingBlock(t *testing.T) {
 	seedGatewayForwardingSettingsForTest()
 	svc := &GatewayService{
@@ -215,6 +278,30 @@ func TestOpenAICompatMimicry_MetadataFailClosedWhenIdentityUnavailable(t *testin
 	_, err := svc.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, body, "Be terse", "claude-3-7-sonnet-20250319")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "generated metadata.user_id")
+}
+
+func TestApplyClaudeCodeOAuthMimicryToBody_UsesSafeDefaultFingerprintOnCacheMiss(t *testing.T) {
+	cache := &identityCacheStub{}
+	svc := &GatewayService{
+		identityService: NewIdentityService(cache),
+	}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	c, ctx := newAnthropicForwardTestContext("/v1/messages", false)
+	c.Request.Header.Set("User-Agent", "claude-cli/99.9.9 (external, sdk-cli)")
+	c.Request.Header.Set("X-Stainless-OS", "Windows")
+	c.Request.Header.Set("X-Stainless-Arch", "x64")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","system":"Be terse","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	out, err := svc.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, body, "Be terse", "claude-3-7-sonnet-20250219")
+	require.NoError(t, err)
+	require.NotNil(t, cache.setFingerprint)
+	require.Equal(t, defaultFingerprint.UserAgent, cache.setFingerprint.UserAgent)
+	require.Equal(t, defaultFingerprint.StainlessOS, cache.setFingerprint.StainlessOS)
+	require.Equal(t, defaultFingerprint.StainlessArch, cache.setFingerprint.StainlessArch)
+	uidRaw := gjson.GetBytes(out, "metadata.user_id").String()
+	parsedUID := ParseMetadataUserID(uidRaw)
+	require.NotNil(t, parsedUID)
+	require.Equal(t, cache.setFingerprint.ClientID, parsedUID.DeviceID)
 }
 
 func TestStrictPassthrough_CountTokensBodyBytesUnchangedAndNoAcceptEncoding(t *testing.T) {

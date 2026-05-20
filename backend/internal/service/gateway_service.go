@@ -1295,7 +1295,7 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 	var fp *Fingerprint
 	if s.identityService != nil && c != nil && c.Request != nil {
 		var err error
-		fp, err = s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
+		fp, err = s.identityService.GetOrCreateMimicryFingerprint(ctx, account.ID)
 		if err != nil {
 			logger.LegacyPrintf("service.gateway", "Warning: failed to get fingerprint for OAuth mimicry helper account %d: %v", account.ID, err)
 		}
@@ -4460,7 +4460,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		var fp *Fingerprint
 		if s.identityService != nil && c != nil && c.Request != nil {
 			var err error
-			fp, err = s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
+			fp, err = s.identityService.GetOrCreateMimicryFingerprint(ctx, account.ID)
 			if err != nil {
 				logger.LegacyPrintf("service.gateway", "Warning: failed to get fingerprint for OAuth mimicry account %d: %v", account.ID, err)
 			}
@@ -6042,8 +6042,14 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	var fingerprint *Fingerprint
 	enableFP, enableMPT, enableCCH := s.gatewayForwardingSettings(ctx)
 	if !strictPassthrough && !useCCGateway && account.IsOAuth() && s.identityService != nil {
-		// 1. 获取或创建指纹（包含随机生成的ClientID）
-		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
+		var fp *Fingerprint
+		var err error
+		if mimicClaudeCode {
+			fp, err = s.identityService.GetOrCreateMimicryFingerprint(ctx, account.ID)
+		} else {
+			// strict passthrough 已在更上层排除，这里只有非 mimic OAuth 路径会从真实客户端 headers 刷新 fingerprint。
+			fp, err = s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
+		}
 		if err != nil {
 			logger.LegacyPrintf("service.gateway", "Warning: failed to get fingerprint for account %d: %v", account.ID, err)
 			// 失败时降级为透传原始headers
@@ -8892,7 +8898,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		var fp *Fingerprint
 		if s.identityService != nil && c != nil && c.Request != nil {
 			var err error
-			fp, err = s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
+			fp, err = s.identityService.GetOrCreateMimicryFingerprint(ctx, account.ID)
 			if err != nil {
 				logger.LegacyPrintf("service.gateway", "Warning: failed to get fingerprint for count_tokens OAuth mimicry account %d: %v", account.ID, err)
 			}
@@ -9279,7 +9285,13 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	ctEnableFP, ctEnableMPT, ctEnableCCH := s.gatewayForwardingSettings(ctx)
 	var ctFingerprint *Fingerprint
 	if !strictPassthrough && !useCCGateway && account.IsOAuth() && s.identityService != nil {
-		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
+		var fp *Fingerprint
+		var err error
+		if mimicClaudeCode {
+			fp, err = s.identityService.GetOrCreateMimicryFingerprint(ctx, account.ID)
+		} else {
+			fp, err = s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
+		}
 		if err == nil {
 			ctFingerprint = fp
 			if !mimicClaudeCode && !ctEnableMPT {
