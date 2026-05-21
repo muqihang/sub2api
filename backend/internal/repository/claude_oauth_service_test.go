@@ -391,6 +391,94 @@ func (s *ClaudeOAuthServiceSuite) TestRefreshToken() {
 	}
 }
 
+func (s *ClaudeOAuthServiceSuite) TestOAuthErrorBodiesAreRedacted() {
+	secretBody := `{"error":"invalid_grant","code":"auth-secret","state":"state-secret","access_token":"access-secret","refresh_token":"refresh-secret","redirect_uri":"https://platform.claude.com/oauth/code/callback?code=query-code-secret&state=query-state-secret"}`
+
+	s.Run("get_organization_uuid_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.baseURL = "http://in-process"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.GetOrganizationUUID(context.Background(), "sess", "")
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+
+	s.Run("get_authorization_code_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.baseURL = "http://in-process"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.GetAuthorizationCode(context.Background(), "sess", "org-1", oauth.ScopeInference, "cc", "st", "")
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+
+	s.Run("exchange_code_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.tokenURL = "http://in-process/token"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.ExchangeCodeForToken(context.Background(), "AUTH", "verifier-secret", "", "", false)
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+
+	s.Run("refresh_token_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.tokenURL = "http://in-process/token"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.RefreshToken(context.Background(), "refresh-secret", "")
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+}
+
+func assertNoOAuthSecretLeak(t *testing.T, text string) {
+	t.Helper()
+	for _, secret := range []string{
+		"auth-secret",
+		"state-secret",
+		"access-secret",
+		"refresh-secret",
+		"query-code-secret",
+		"query-state-secret",
+		"verifier-secret",
+	} {
+		require.NotContains(t, text, secret)
+	}
+	require.Contains(t, text, "***")
+}
+
 func TestClaudeOAuthServiceSuite(t *testing.T) {
 	suite.Run(t, new(ClaudeOAuthServiceSuite))
 }
