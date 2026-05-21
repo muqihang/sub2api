@@ -26,7 +26,7 @@ var (
 
 // 默认指纹值（当客户端未提供时使用）
 var defaultFingerprint = Fingerprint{
-	UserAgent:               "claude-cli/2.1.145 (external, sdk-cli)",
+	UserAgent:               "claude-cli/2.1.146 (external, sdk-cli)",
 	StainlessLang:           "js",
 	StainlessPackageVersion: "0.94.0",
 	StainlessOS:             "Linux",
@@ -121,7 +121,7 @@ func fillFingerprintDefaults(fp *Fingerprint) bool {
 
 // GetOrCreateMimicryFingerprint returns a safe fingerprint for non-Claude-Code OAuth mimicry.
 // It MUST NOT derive values from client request headers. Cached fingerprints win; on cache miss
-// it synthesizes a Claude Code 2.1.145 default fingerprint with a fresh client_id.
+// it synthesizes a Claude Code 2.1.146 default fingerprint with a fresh client_id.
 func (s *IdentityService) GetOrCreateMimicryFingerprint(ctx context.Context, accountID int64) (*Fingerprint, error) {
 	if s == nil || s.cache == nil {
 		return nil, fmt.Errorf("identity cache unavailable")

@@ -228,7 +228,7 @@ func TestMimicry_ForwardHeadersUseCachedFingerprintInsteadOfSpoofedClientHeaders
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.NoError(t, err)
-	require.Equal(t, cache.fingerprint.UserAgent, getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.Equal(t, defaultFingerprint.UserAgent, getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
 	require.Equal(t, "MacOS", getHeaderRaw(upstream.lastReq.Header, "X-Stainless-OS"))
 	require.Equal(t, "x64", getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Arch"))
 	require.Nil(t, cache.setFingerprint, "cached mimicry fingerprint must not be rewritten from client headers")
