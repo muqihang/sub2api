@@ -17,6 +17,9 @@ func TestClaudeCodePersonaDefaultsTrack2145(t *testing.T) {
 }
 
 func TestClaudeCodeEndpointSpecificBetas(t *testing.T) {
+	shortMessagesBody := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[],"metadata":{"user_id":"{}"}}`)
+	mainMessagesBody := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[],"thinking":{"type":"enabled","budget_tokens":1024},"context_management":{"edits":[]}}`)
+
 	require.Equal(t, []string{
 		BetaClaudeCode,
 		BetaInterleavedThinking,
@@ -31,6 +34,28 @@ func TestClaudeCodeEndpointSpecificBetas(t *testing.T) {
 		BetaPromptCachingScope,
 		BetaOAuth,
 	}, ClaudeCodeMessagesOAuthBetas())
+
+	require.Equal(t, []string{
+		BetaClaudeCode,
+		BetaOAuth,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaAdvisorTool,
+		BetaEffort,
+		BetaStructuredOutputs,
+	}, ClaudeCodeMessagesOAuthBetasForBody(shortMessagesBody))
+
+	require.Equal(t, []string{
+		BetaClaudeCode,
+		BetaOAuth,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaAdvisorTool,
+		BetaEffort,
+		BetaExtendedCacheTTL,
+	}, ClaudeCodeMessagesOAuthBetasForBody(mainMessagesBody))
 
 	require.Equal(t, []string{
 		BetaClaudeCode,

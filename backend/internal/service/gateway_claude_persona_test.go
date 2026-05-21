@@ -96,25 +96,43 @@ func TestApplyClaudeCodeMimicHeaders_SetsNonStreamingTimeout(t *testing.T) {
 }
 
 func TestBuildUpstreamRequest_MimicUsesMessagesOAuthBetas(t *testing.T) {
-	svc := newClaudePersonaTestService()
-	account := newClaudePersonaOAuthAccount()
-	ctx := newClaudePersonaTestContext("/v1/messages")
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "short body uses structured outputs beta",
+			body: []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"123e4567-e89b-12d3-a456-426614174000\"}"},"messages":[]}`),
+		},
+		{
+			name: "main body uses extended cache ttl beta",
+			body: []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"123e4567-e89b-12d3-a456-426614174000\"}"},"thinking":{"type":"enabled","budget_tokens":1024},"context_management":{"edits":[]},"messages":[]}`),
+		},
+	}
 
-	req, err := svc.buildUpstreamRequest(
-		context.Background(),
-		ctx,
-		account,
-		[]byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"123e4567-e89b-12d3-a456-426614174000\"}"},"messages":[]}`),
-		"oauth-token",
-		"oauth",
-		"claude-3-7-sonnet-20250219",
-		true,
-		true,
-		false,
-	)
-	require.NoError(t, err)
-	require.Equal(t, strings.Join(claude.ClaudeCodeMessagesOAuthBetas(), ","), getHeaderRaw(req.Header, "anthropic-beta"))
-	require.Empty(t, getHeaderRaw(req.Header, "x-stainless-helper-method"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newClaudePersonaTestService()
+			account := newClaudePersonaOAuthAccount()
+			ctx := newClaudePersonaTestContext("/v1/messages")
+
+			req, err := svc.buildUpstreamRequest(
+				context.Background(),
+				ctx,
+				account,
+				tt.body,
+				"oauth-token",
+				"oauth",
+				"claude-3-7-sonnet-20250219",
+				true,
+				true,
+				false,
+			)
+			require.NoError(t, err)
+			require.Equal(t, strings.Join(claude.ClaudeCodeMessagesOAuthBetasForBody(tt.body), ","), getHeaderRaw(req.Header, "anthropic-beta"))
+			require.Empty(t, getHeaderRaw(req.Header, "x-stainless-helper-method"))
+		})
+	}
 }
 
 func TestBuildCountTokensRequest_MimicUsesCountTokensOAuthBetas(t *testing.T) {

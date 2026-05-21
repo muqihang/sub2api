@@ -6139,7 +6139,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// - 使用网关生成的精确 beta 集，不继承客户端伪装值
 			applyClaudeCodeMimicHeaders(req, reqStream)
 
-			requiredBetas := claude.ClaudeCodeMessagesOAuthBetas()
+			requiredBetas := claude.ClaudeCodeMessagesOAuthBetasForBody(body)
 			setHeaderRaw(req.Header, "anthropic-beta", stripBetaTokensWithSet(strings.Join(requiredBetas, ","), effectiveDropSet))
 		} else {
 			// Claude Code 客户端：尽量透传原始 header，仅补齐 oauth beta

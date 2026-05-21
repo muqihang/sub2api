@@ -159,7 +159,7 @@ func TestMimicry_OverridesFakeMetadataUserIDAndSetsSessionHeader(t *testing.T) {
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.NoError(t, err)
 	require.Equal(t, claude.DefaultHeaders["User-Agent"], getHeaderRaw(upstream.lastReq.Header, "User-Agent"), "legacy detector hit must still go mimic, not strict")
-	require.Equal(t, strings.Join(claude.ClaudeCodeMessagesOAuthBetas(), ","), getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
+	require.Equal(t, strings.Join(claude.ClaudeCodeMessagesOAuthBetasForBody(upstream.lastBody), ","), getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
 	require.NotContains(t, string(upstream.lastBody), "x-anthropic-billing-header")
 
 	uidRaw := gjson.GetBytes(upstream.lastBody, "metadata.user_id").String()

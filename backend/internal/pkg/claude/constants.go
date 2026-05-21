@@ -1,6 +1,8 @@
 // Package claude provides constants and helpers for Claude API integration.
 package claude
 
+import "github.com/tidwall/gjson"
+
 // Claude Code 客户端相关常量
 
 // Beta header 常量
@@ -22,6 +24,8 @@ const (
 	// 新增（对齐官方 CLI 2.1.9x 以来的流量）
 	BetaPromptCachingScope = "prompt-caching-scope-2026-01-05"
 	BetaEffort             = "effort-2025-11-24"
+	BetaAdvisorTool        = "advisor-tool-2026-03-01"
+	BetaStructuredOutputs  = "structured-outputs-2025-12-15"
 	BetaRedactThinking     = "redact-thinking-2026-02-12"
 	BetaContextManagement  = "context-management-2025-06-27"
 	BetaExtendedCacheTTL   = "extended-cache-ttl-2025-04-11"
@@ -81,6 +85,24 @@ func ClaudeCodeMessagesOAuthBetas() []string {
 		BetaPromptCachingScope,
 		BetaOAuth,
 	}
+}
+
+// ClaudeCodeMessagesOAuthBetasForBody returns the observed Claude Code CLI 2.1.145
+// OAuth /v1/messages beta sequence for a specific request shape.
+func ClaudeCodeMessagesOAuthBetasForBody(body []byte) []string {
+	betas := []string{
+		BetaClaudeCode,
+		BetaOAuth,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaAdvisorTool,
+		BetaEffort,
+	}
+	if gjson.GetBytes(body, "thinking").Exists() || gjson.GetBytes(body, "context_management").Exists() {
+		return append(betas, BetaExtendedCacheTTL)
+	}
+	return append(betas, BetaStructuredOutputs)
 }
 
 // ClaudeCodeCountTokensOAuthBetas returns the OAuth /v1/messages/count_tokens beta tokens.
