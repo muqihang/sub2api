@@ -1,10 +1,45 @@
 package oauth
 
 import (
+	"net/url"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestBuildAuthorizationURL_TracksClaudeCode2146EndpointAndClient(t *testing.T) {
+	state := "state-123"
+	challenge := "challenge-123"
+	authURL := BuildAuthorizationURL(state, challenge, ScopeOAuth)
+
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parse auth url: %v", err)
+	}
+
+	if got := parsed.Scheme + "://" + parsed.Host + parsed.Path; got != "https://platform.claude.com/oauth/authorize" {
+		t.Fatalf("authorize endpoint mismatch: got=%q", got)
+	}
+	q := parsed.Query()
+	if got := q.Get("client_id"); got != ClientID {
+		t.Fatalf("client_id mismatch: got=%q want=%q", got, ClientID)
+	}
+	if got := q.Get("redirect_uri"); got != RedirectURI {
+		t.Fatalf("redirect_uri mismatch: got=%q want=%q", got, RedirectURI)
+	}
+	if got := q.Get("scope"); got != ScopeOAuth {
+		t.Fatalf("scope mismatch: got=%q want=%q", got, ScopeOAuth)
+	}
+	if got := q.Get("code_challenge"); got != challenge {
+		t.Fatalf("code_challenge mismatch: got=%q", got)
+	}
+	if got := q.Get("code_challenge_method"); got != "S256" {
+		t.Fatalf("code_challenge_method mismatch: got=%q", got)
+	}
+	if got := q.Get("state"); got != state {
+		t.Fatalf("state mismatch: got=%q", got)
+	}
+}
 
 func TestSessionStore_Stop_Idempotent(t *testing.T) {
 	store := NewSessionStore()

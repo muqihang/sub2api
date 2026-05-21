@@ -27,6 +27,17 @@ func TestRedactText_QueryLike(t *testing.T) {
 	}
 }
 
+func TestRedactJSON_RedactsQuerySecretsInsideStringValues(t *testing.T) {
+	in := []byte(`{"redirect_uri":"https://platform.claude.com/oauth/code/callback?code=auth-secret&state=state-secret","other":"ok"}`)
+	out := RedactJSON(in)
+	if strings.Contains(out, "auth-secret") || strings.Contains(out, "state-secret") {
+		t.Fatalf("expected nested query secrets redacted, got %q", out)
+	}
+	if !strings.Contains(out, "code=***") || !strings.Contains(out, "state=***") {
+		t.Fatalf("expected code/state redaction markers, got %q", out)
+	}
+}
+
 func TestRedactText_GOCSPX(t *testing.T) {
 	in := "client_secret=GOCSPX-your-client-secret"
 	out := RedactText(in)
