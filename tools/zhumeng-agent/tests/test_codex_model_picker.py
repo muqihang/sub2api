@@ -636,3 +636,60 @@ def test_plugin_mention_marketplace_patch_refuses_non_candidate_expression_witho
         )
 
     assert asar.read_bytes() == before
+
+
+def test_plugin_mention_marketplace_restore_reverts_patch(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+        filename="prosemirror-test.js",
+    )
+    backup_root = tmp_path / "backups"
+    patch_plugin_mention_marketplace_app(app, backup_root=backup_root, sign=False, verify_signature=False)
+
+    from zhumeng_agent.adapters.codex.model_picker import restore_latest_plugin_mention_marketplace_backup
+
+    result = restore_latest_plugin_mention_marketplace_backup(app, backup_root=backup_root, sign=False, verify_signature=False)
+
+    assert result["status"] == "restored"
+    data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
+    assert data.count(OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")) == 1
+    assert data.count(NEW_PLUGIN_MENTION_MARKPLACE_EXPR.encode("utf-8") if False else NEW_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")) == 0
+
+
+def test_plugin_mention_marketplace_restore_handles_current_flag_gated_chunks(tmp_path: Path):
+    app = make_codex_app_files(
+        tmp_path,
+        {
+            "prosemirror-test.js": b"prefix " + CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR.encode("utf-8") + b" suffix",
+            "reply-test.js": b"prefix " + CURRENT_PLUGIN_MENTION_MARKETPLACE_U_EXPR.encode("utf-8") + b" suffix",
+        },
+    )
+    backup_root = tmp_path / "backups"
+    patch_plugin_mention_marketplace_app(app, backup_root=backup_root, sign=False, verify_signature=False)
+
+    from zhumeng_agent.adapters.codex.model_picker import restore_latest_plugin_mention_marketplace_backup
+
+    result = restore_latest_plugin_mention_marketplace_backup(app, backup_root=backup_root, sign=False, verify_signature=False)
+
+    assert result["status"] == "restored"
+    data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
+    assert CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR.encode("utf-8") in data
+    assert CURRENT_PLUGIN_MENTION_MARKETPLACE_U_EXPR.encode("utf-8") in data
+    assert CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_C_EXPR.encode("utf-8") not in data
+    assert CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_U_EXPR.encode("utf-8") not in data
+
+
+def test_codex_enhancement_aggregate_refuses_running_app_without_patching(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from zhumeng_agent.adapters.codex import enhancements
+
+    app = tmp_path / "Codex.app"
+    (app / "Contents" / "Resources").mkdir(parents=True)
+    (app / "Contents" / "Resources" / "app.asar").write_bytes(b"dummy")
+    monkeypatch.setattr(enhancements, "codex_app_is_running", lambda app_path: True)
+    monkeypatch.setattr(enhancements, "patch_model_picker_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
+
+    result = enhancements.patch_codex_enhancements(app, item="all")
+
+    assert result["status"] == "app_running_blocking_change"
+    assert result["restart_required"] is False

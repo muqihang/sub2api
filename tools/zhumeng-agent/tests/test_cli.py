@@ -330,9 +330,16 @@ def test_repair_codex_patches_desktop_when_app_is_detected(capsys):
     cli.default_config_manager = lambda: FakeManager()
     cli.ensure_proxy_running = lambda store: 9999
     cli.detect_codex_app_path = lambda **kwargs: Path("/Applications/Codex.app")
-    cli.patch_model_picker_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
-    cli.patch_plugin_auth_gate_app = lambda app_path: {"status": "already_patched", "app_path": str(app_path)}
-    cli.patch_plugin_mention_marketplace_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
+    cli.patch_codex_enhancements = lambda app_path, item="all": {
+        "status": "patched",
+        "app_path": str(app_path),
+        "restart_required": True,
+        "items": {
+            "model-picker": {"status": "patched", "app_path": str(app_path)},
+            "plugin-auth-gate": {"status": "already_patched", "app_path": str(app_path)},
+            "plugin-mention-marketplace": {"status": "patched", "app_path": str(app_path)},
+        },
+    }
 
     exit_code = main(["repair", "codex"])
 
@@ -571,9 +578,16 @@ def test_launch_codex_patches_desktop_before_launch(capsys):
     cli.default_config_manager = lambda: FakeManager()
     cli.ensure_proxy_running = lambda store: 9999
     cli.detect_codex_app_path = lambda **kwargs: Path("/Applications/Codex.app")
-    cli.patch_model_picker_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
-    cli.patch_plugin_auth_gate_app = lambda app_path: {"status": "already_patched", "app_path": str(app_path)}
-    cli.patch_plugin_mention_marketplace_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
+    cli.patch_codex_enhancements = lambda app_path, item="all": {
+        "status": "patched",
+        "app_path": str(app_path),
+        "restart_required": True,
+        "items": {
+            "model-picker": {"status": "patched", "app_path": str(app_path)},
+            "plugin-auth-gate": {"status": "already_patched", "app_path": str(app_path)},
+            "plugin-mention-marketplace": {"status": "patched", "app_path": str(app_path)},
+        },
+    }
     launched = {}
     cli.launch_codex_process = lambda command: launched.setdefault("command", command)
 
@@ -1069,9 +1083,16 @@ def test_launch_codex_starts_cdp_binding_bridge_when_capture_is_installed(capsys
     cli.default_http_client = lambda server: FakeClient()
     cli.ensure_proxy_running = lambda store: 9999
     cli.detect_codex_app_path = lambda **kwargs: tmp_path / "Codex.app"
-    cli.patch_model_picker_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
-    cli.patch_plugin_auth_gate_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
-    cli.patch_plugin_mention_marketplace_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
+    cli.patch_codex_enhancements = lambda app_path, item="all": {
+        "status": "patched",
+        "app_path": str(app_path),
+        "restart_required": True,
+        "items": {
+            "model-picker": {"status": "patched", "app_path": str(app_path)},
+            "plugin-auth-gate": {"status": "patched", "app_path": str(app_path)},
+            "plugin-mention-marketplace": {"status": "patched", "app_path": str(app_path)},
+        },
+    }
     cli.select_cdp_port = lambda: 9333
     cli.launch_codex_process = lambda command: None
     cli.default_capture_config = lambda: __import__(
@@ -1140,9 +1161,16 @@ def test_launch_codex_reports_installed_but_disabled_capture(capsys, tmp_path: P
     cli.default_http_client = lambda server: FakeClient()
     cli.ensure_proxy_running = lambda store: 9999
     cli.detect_codex_app_path = lambda **kwargs: tmp_path / "Codex.app"
-    cli.patch_model_picker_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
-    cli.patch_plugin_auth_gate_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
-    cli.patch_plugin_mention_marketplace_app = lambda app_path: {"status": "patched", "app_path": str(app_path)}
+    cli.patch_codex_enhancements = lambda app_path, item="all": {
+        "status": "patched",
+        "app_path": str(app_path),
+        "restart_required": True,
+        "items": {
+            "model-picker": {"status": "patched", "app_path": str(app_path)},
+            "plugin-auth-gate": {"status": "patched", "app_path": str(app_path)},
+            "plugin-mention-marketplace": {"status": "patched", "app_path": str(app_path)},
+        },
+    }
     cli.select_cdp_port = lambda: 9333
     cli.launch_codex_process = lambda command: None
     cli.default_capture_config = lambda: capture_config
@@ -1327,3 +1355,186 @@ def test_logout_revoke_device_calls_backend_and_cleans_local_state(tmp_path: Pat
     data = parse_output(capsys)
     assert data["status"] == "completed"
     assert not (codex_home / "auth.json").exists()
+
+
+def test_plugin_mention_marketplace_restore_command(capsys, tmp_path: Path):
+    cli.restore_latest_plugin_mention_marketplace_backup = lambda app_path: {"status": "restored", "app_path": str(app_path)}
+
+    exit_code = main(["codex", "plugin-mention-marketplace", "restore", "--app", str(tmp_path / "Codex.app")])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "codex plugin-mention-marketplace restore"
+    assert data["status"] == "restored"
+
+
+def test_logout_detects_config_restore_conflict(capsys, tmp_path: Path):
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True)
+    manager.config_path.write_text('model_provider = "zhumeng-codex"\n# user changed after setup\n', encoding="utf-8")
+    manager.auth_path.write_text('{"OPENAI_API_KEY":"zhumeng-local-managed-secret"}', encoding="utf-8")
+    catalog = manager.catalog_path_for_profile({"model_provider": "zhumeng-codex"})
+    catalog.write_text('{"models":[]}', encoding="utf-8")
+
+    class Store:
+        def __init__(self):
+            self.deleted = False
+        def read(self):
+            return {
+                "backup_paths": [],
+                "prior_auth_json": None,
+                "config_hash_after": "not-current",
+                "auth_hash_after": cli.file_sha256(manager.auth_path),
+                "catalog_hash_after": cli.file_sha256(catalog),
+                "catalog_path": str(catalog),
+                "catalog_preexisting": False,
+                "config_profile": {"model_provider": "zhumeng-codex"},
+            }
+        def delete(self):
+            self.deleted = True
+
+    store = Store()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: manager
+
+    exit_code = main(["logout", "--local-only"])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "restore_conflict"
+    assert store.deleted is False
+    assert "user changed after setup" in manager.config_path.read_text(encoding="utf-8")
+
+
+def test_logout_restores_catalog_or_removes_managed_catalog(capsys, tmp_path: Path):
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    plan = manager.plan_configure({"model_provider": "zhumeng-codex"}, 18081, "secret", {"models": []})
+    manager.apply_configure(plan)
+    catalog = manager.catalog_path_for_profile({"model_provider": "zhumeng-codex"})
+
+    class Store:
+        def __init__(self):
+            self.deleted = False
+        def read(self):
+            return {
+                "backup_paths": [],
+                "prior_auth_json": None,
+                "config_hash_after": cli.file_sha256(manager.config_path),
+                "auth_hash_after": cli.file_sha256(manager.auth_path),
+                "catalog_hash_after": cli.file_sha256(catalog),
+                "catalog_path": str(catalog),
+                "catalog_preexisting": False,
+                "config_profile": {"model_provider": "zhumeng-codex"},
+            }
+        def delete(self):
+            self.deleted = True
+
+    store = Store()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: manager
+
+    exit_code = main(["logout", "--local-only"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["status"] == "completed"
+    assert store.deleted is True
+    assert not catalog.exists()
+
+
+def test_logout_treats_enhancement_running_as_restore_failed(capsys, tmp_path: Path):
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True)
+    manager.config_path.write_text('model_provider = "zhumeng-codex"\n', encoding="utf-8")
+    manager.auth_path.write_text('{"OPENAI_API_KEY":"zhumeng-local-managed-secret"}', encoding="utf-8")
+
+    class Store:
+        def __init__(self):
+            self.deleted = False
+            self.patch = None
+        def read(self):
+            return {
+                "config_hash_after": cli.file_sha256(manager.config_path),
+                "auth_hash_after": cli.file_sha256(manager.auth_path),
+                "prior_auth_json": None,
+                "backup_paths": [],
+                "codex_app_path": str(tmp_path / "Codex.app"),
+            }
+        def update(self, patch):
+            self.patch = patch
+        def delete(self):
+            self.deleted = True
+
+    store = Store()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: manager
+    cli.restore_codex_enhancements = lambda app_path, item="all": {"status": "app_running_blocking_change"}
+
+    exit_code = main(["logout", "--local-only"])
+
+    data = parse_output(capsys)
+    assert exit_code == 1
+    assert data["status"] == "error_restore_failed"
+    assert store.deleted is False
+    assert store.patch == {"restore_status": "error_restore_failed"}
+
+
+def test_logout_missing_config_backup_is_restore_failed(capsys, tmp_path: Path):
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True)
+    manager.config_path.write_text('model_provider = "zhumeng-codex"\n', encoding="utf-8")
+    manager.auth_path.write_text('{"OPENAI_API_KEY":"zhumeng-local-managed-secret"}', encoding="utf-8")
+
+    class Store:
+        def __init__(self):
+            self.deleted = False
+        def read(self):
+            return {
+                "config_hash_after": cli.file_sha256(manager.config_path),
+                "auth_hash_after": cli.file_sha256(manager.auth_path),
+                "backup_paths": [str(tmp_path / "config.toml.missing.bak")],
+            }
+        def update(self, patch):
+            self.patch = patch
+        def delete(self):
+            self.deleted = True
+
+    store = Store()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: manager
+
+    exit_code = main(["logout", "--local-only"])
+
+    data = parse_output(capsys)
+    assert exit_code == 1
+    assert data["status"] == "error_restore_failed"
+    assert store.deleted is False
+    assert manager.config_path.exists()
+
+
+def test_logout_missing_managed_file_is_restore_conflict(capsys, tmp_path: Path):
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True)
+    manager.config_path.write_text('model_provider = "zhumeng-codex"\n', encoding="utf-8")
+    config_hash = cli.file_sha256(manager.config_path)
+    manager.config_path.unlink()
+
+    class Store:
+        def __init__(self):
+            self.deleted = False
+        def read(self):
+            return {"config_hash_after": config_hash, "backup_paths": []}
+        def update(self, patch):
+            self.patch = patch
+        def delete(self):
+            self.deleted = True
+
+    store = Store()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: manager
+
+    main(["logout", "--local-only"])
+
+    data = parse_output(capsys)
+    assert data["status"] == "restore_conflict"
+    assert store.deleted is False

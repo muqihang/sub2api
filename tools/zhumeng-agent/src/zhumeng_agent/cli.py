@@ -31,9 +31,13 @@ from .adapters.codex.model_picker import ModelPickerPatchError, patch_model_pick
 from .adapters.codex.model_picker import inspect_model_picker_app, restore_latest_model_picker_backup
 from .adapters.codex.model_picker import inspect_plugin_auth_gate_app, patch_plugin_auth_gate_app
 from .adapters.codex.model_picker import inspect_plugin_mention_marketplace_app, patch_plugin_mention_marketplace_app
-from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup
+from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup, restore_latest_plugin_mention_marketplace_backup
+from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
 from .doctor import codex_doctor_report
+from .desktop import run_desktop_command
+from .diagnostics import desktop_diagnostic_report, public_state
+from .adapters.codex.enhancements import inspect_codex_enhancements, patch_codex_enhancements, restore_codex_enhancements
 from .http_client import AgentHTTPClient
 from .platform_paths import state_dir
 from .proxy.server import ManagedProxyConfig, ManagedProxyServer
@@ -105,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     capture_serve_parser.add_argument("--port", required=True, type=int)
     capture_serve_parser.add_argument("--correlation-hash-key-file")
 
+    desktop_parser = subparsers.add_parser("desktop")
+    desktop_parser.add_argument("args", nargs=argparse.REMAINDER)
+
     return parser
 
 
@@ -171,6 +178,17 @@ def default_codex_app_path() -> Path | None:
     )
 
 
+
+def remember_desktop_enhancement_state(store: JsonStateStore, desktop_patches: dict[str, object]) -> None:
+    app_path = desktop_patches.get("app_path")
+    if not app_path:
+        return
+    patch: dict[str, object] = {"codex_app_path": str(app_path), "desktop_enhancements": desktop_patches}
+    if desktop_patches.get("restart_required"):
+        patch["restart_required"] = True
+    if hasattr(store, "update"):
+        store.update(patch)
+
 def patch_detected_codex_model_picker() -> dict[str, object]:
     app_path = default_codex_app_path()
     if app_path is None:
@@ -183,15 +201,20 @@ def patch_detected_codex_desktop() -> dict[str, object]:
     if app_path is None:
         return {
             "app_path": None,
+            "status": "app_not_found",
+            "restart_required": False,
             "model_picker": {"status": "app_not_found"},
             "plugin_auth_gate": {"status": "app_not_found"},
             "plugin_mention_marketplace": {"status": "app_not_found"},
         }
+    aggregate = patch_codex_enhancements(app_path, item="all")
+    items = aggregate.get("items", {}) if isinstance(aggregate.get("items"), dict) else {}
     return {
+        **aggregate,
         "app_path": str(app_path),
-        "model_picker": run_desktop_patch(lambda: patch_model_picker_app(app_path)),
-        "plugin_auth_gate": run_desktop_patch(lambda: patch_plugin_auth_gate_app(app_path)),
-        "plugin_mention_marketplace": run_desktop_patch(lambda: patch_plugin_mention_marketplace_app(app_path)),
+        "model_picker": items.get("model-picker", {"status": aggregate.get("status", "failed")}),
+        "plugin_auth_gate": items.get("plugin-auth-gate", {"status": aggregate.get("status", "failed")}),
+        "plugin_mention_marketplace": items.get("plugin-mention-marketplace", {"status": aggregate.get("status", "failed")}),
     }
 
 
@@ -363,72 +386,283 @@ def fetch_codex_model_catalog(client, config_manager: CodexConfigManager, state:
     return config_manager.build_model_catalog(payload), {"source": "gateway"}
 
 
+
+def file_sha256(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
+    if client_name != "codex":
+        raise ValueError(f"unsupported client: {client_name}")
+    client = default_http_client(server)
+    exchanged = client.exchange_setup_grant(code=code, server_origin=server, client=client_name)
+    loopback_secret = generate_loopback_secret()
+    proxy_port = choose_local_proxy_port()
+    config_manager = default_config_manager()
+    prior_auth_json = config_manager.auth_path.read_text(encoding="utf-8") if config_manager.auth_path.exists() else None
+    catalog_path = config_manager.catalog_path_for_profile(exchanged.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE))
+    prior_catalog_json = catalog_path.read_text(encoding="utf-8") if catalog_path.exists() else None
+    setup_state = {
+        "gateway_base_url": exchanged["gateway_base_url"],
+        "device_id": exchanged["device_id"],
+        "managed_session_id": exchanged["managed_session_id"],
+        "access_token": exchanged["access_token"],
+    }
+    model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, setup_state)
+    plan = config_manager.plan_configure(
+        exchanged["config_profile"],
+        proxy_port,
+        loopback_secret,
+        model_catalog,
+        trusted_project_paths=current_trusted_project_paths(),
+    )
+    config_hash_before = file_sha256(config_manager.config_path)
+    auth_hash_before = file_sha256(config_manager.auth_path)
+    catalog_hash_before = file_sha256(plan.model_catalog_path)
+    config_manager.apply_configure(plan)
+    config_hash_after = file_sha256(config_manager.config_path)
+    auth_hash_after = file_sha256(config_manager.auth_path)
+    catalog_hash_after = file_sha256(plan.model_catalog_path)
+    store = default_state_store()
+    state_payload = {
+        "client": client_name,
+        "server_base_url": exchanged["server_base_url"],
+        "gateway_base_url": exchanged["gateway_base_url"],
+        "device_id": exchanged["device_id"],
+        "managed_session_id": exchanged["managed_session_id"],
+        "access_token": exchanged["access_token"],
+        "refresh_token": exchanged["refresh_token"],
+        "config_profile": exchanged["config_profile"],
+        "proxy_port": proxy_port,
+        "loopback_secret": loopback_secret,
+        "backup_paths": [str(path) for path in plan.backup_paths],
+        "prior_auth_json": prior_auth_json,
+        "prior_catalog_json": prior_catalog_json,
+        "catalog_path": str(plan.model_catalog_path),
+        "catalog_preexisting": prior_catalog_json is not None,
+        "config_hash_before": config_hash_before,
+        "auth_hash_before": auth_hash_before,
+        "catalog_hash_before": catalog_hash_before,
+        "config_hash_after": config_hash_after,
+        "auth_hash_after": auth_hash_after,
+        "catalog_hash_after": catalog_hash_after,
+        "desktop_capture_enabled": False,
+        "model_catalog_meta": model_catalog_meta,
+        "status": "configured",
+    }
+    store.write(state_payload)
+    proxy_pid = ensure_proxy_running(store)
+    state_payload["proxy_pid"] = proxy_pid
+    return {
+        "client": client_name,
+        "server": server,
+        "code_redacted": True,
+        "status": "configured",
+        "proxy_port": proxy_port,
+        "proxy_pid": proxy_pid,
+        "device_id": exchanged["device_id"],
+        "model_catalog": model_catalog_meta,
+        **build_desktop_status(state_payload),
+    }
+
+
+
+def build_desktop_status(state: dict[str, object]) -> dict[str, object]:
+    status = str(state.get("status", "not_configured"))
+    return {
+        "status": status,
+        "global_status": status,
+        "proxy": {
+            "status": "configured" if state.get("proxy_port") else "not_configured",
+            "port": state.get("proxy_port"),
+            "pid": state.get("proxy_pid"),
+        },
+        "backend": {
+            "server_base_url": state.get("server_base_url"),
+            "gateway_base_url": state.get("gateway_base_url"),
+        },
+        "authorization": {
+            "status": status,
+            "device_id": state.get("device_id"),
+            "managed_session_id_redacted": public_state(state).get("managed_session_id_redacted"),
+        },
+        "adapters": {
+            "codex": {
+                "status": status if state.get("client") == "codex" else "not_configured",
+                "enhancements": state.get("desktop_enhancements", {}),
+                "restart_required": bool(state.get("restart_required")),
+            }
+        },
+        "model_catalog": state.get("model_catalog_meta", {}),
+        "state": public_state(state),
+    }
+
+
+def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
+    if client_name != "codex":
+        raise ValueError(f"unsupported client: {client_name}")
+    store = default_state_store()
+    current = store.read()
+    if not current:
+        raise ValueError("managed setup is incomplete: missing existing state")
+    client = default_http_client(server)
+    exchanged = client.exchange_setup_grant(code=code, server_origin=server, client=client_name)
+    config_manager = default_config_manager()
+    profile = exchanged.get("config_profile") or current.get("config_profile") or DEFAULT_CODEX_CONFIG_PROFILE
+    setup_state = {
+        "gateway_base_url": exchanged["gateway_base_url"],
+        "device_id": exchanged["device_id"],
+        "managed_session_id": exchanged["managed_session_id"],
+        "access_token": exchanged["access_token"],
+    }
+    model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, setup_state)
+    proxy_port = int(current.get("proxy_port", choose_local_proxy_port()))
+    loopback_secret = str(current.get("loopback_secret") or generate_loopback_secret())
+    config_manager.repair(profile, proxy_port, loopback_secret, model_catalog, trusted_project_paths=current_trusted_project_paths())
+    patch = {
+        "client": client_name,
+        "server_base_url": exchanged["server_base_url"],
+        "gateway_base_url": exchanged["gateway_base_url"],
+        "device_id": exchanged["device_id"],
+        "managed_session_id": exchanged["managed_session_id"],
+        "access_token": exchanged["access_token"],
+        "refresh_token": exchanged["refresh_token"],
+        "config_profile": profile,
+        "proxy_port": proxy_port,
+        "loopback_secret": loopback_secret,
+        "model_catalog_meta": model_catalog_meta,
+        "config_hash_after": file_sha256(config_manager.config_path),
+        "auth_hash_after": file_sha256(config_manager.auth_path),
+        "catalog_hash_after": file_sha256(config_manager.catalog_path_for_profile(profile)),
+        "status": "configured",
+    }
+    updated = store.update(patch)
+    proxy_pid = ensure_proxy_running(store)
+    updated.update({"proxy_pid": proxy_pid})
+    return {"status": "reauthorized", **build_desktop_status(updated)}
+
+def desktop_status_data() -> dict[str, object]:
+    store = default_state_store()
+    state = store.read()
+    if hasattr(store, "path"):
+        state["state_file"] = str(store.path)
+    return build_desktop_status(state)
+
+
+def desktop_diagnose_data() -> dict[str, object]:
+    store = default_state_store()
+    state = store.read()
+    if hasattr(store, "path"):
+        state["state_file"] = str(store.path)
+    codex_home = resolve_codex_home()
+    return desktop_diagnostic_report(
+        state=state,
+        doctor=codex_doctor_report(codex_home, codex_app_path=default_codex_app_path()),
+        codex_home=codex_home,
+    )
+
+
+def desktop_open_app(app: str) -> dict[str, object]:
+    if app != "codex":
+        raise ValueError(f"unsupported app: {app}")
+    app_path = default_codex_app_path()
+    if app_path is None:
+        return {"status": "app_not_found", "app": app}
+    command = build_codex_launch_command(app_path, select_cdp_port())
+    launch_codex_process(command)
+    return {"status": "launched", "app": app, "app_path": str(app_path), "launch_command": command}
+
+
+
+def desktop_patch_enhancements(app_path: Path, item: str) -> dict[str, object]:
+    result = patch_codex_enhancements(app_path, item=item)
+    remember_desktop_enhancement_state(default_state_store(), result)
+    return result
+
+
+def desktop_restore_enhancements(app_path: Path, item: str) -> dict[str, object]:
+    result = restore_codex_enhancements(app_path, item=item)
+    if result.get("status") == "restored" and hasattr(default_state_store(), "update"):
+        default_state_store().update({"desktop_enhancements_restored": True, "restart_required": bool(result.get("restart_required"))})
+    return result
+
+def desktop_repair_client(client_name: str) -> dict[str, object]:
+    if client_name != "codex":
+        raise ValueError(f"unsupported client: {client_name}")
+    store = default_state_store()
+    state = load_managed_state(store)
+    config_manager = default_config_manager()
+    client = default_http_client(str(state.get("server_base_url", "")))
+    model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, state, store)
+    config_manager.repair(
+        state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE),
+        int(state.get("proxy_port", choose_local_proxy_port())),
+        str(state.get("loopback_secret", generate_loopback_secret())),
+        model_catalog,
+        trusted_project_paths=current_trusted_project_paths(),
+    )
+    proxy_pid = ensure_proxy_running(store)
+    patch = {"status": "configured", "proxy_pid": proxy_pid}
+    app_path = default_codex_app_path()
+    enhancements = None
+    if app_path is not None:
+        enhancements = patch_codex_enhancements(app_path, item="all")
+        patch["desktop_enhancements"] = enhancements
+        patch["restart_required"] = bool(enhancements.get("restart_required"))
+    updated = store.update(patch)
+    status = "repaired"
+    if enhancements and enhancements.get("status") in {"app_running_blocking_change", "app_bundle_not_writable", "failed"}:
+        status = str(enhancements.get("status"))
+    status_data = build_desktop_status(updated)
+    status_data["status"] = status
+    return {**status_data, "client": client_name, "proxy_pid": proxy_pid, "model_catalog": model_catalog_meta, "enhancements": enhancements}
+
 def main(argv: Sequence[str] | None = None) -> int:
     argv_list = list(argv) if argv is not None else list(sys.argv[1:])
     if argv_list and len(argv_list) == 1 and argv_list[0].startswith("zhumeng-agent://"):
         deeplink = parse_zhumeng_deeplink(argv_list[0])
-        argv_list = [
-            "setup",
-            "--client", deeplink["client"],
-            "--code", deeplink["code"],
-            "--server", deeplink["server"],
-        ]
+        action = deeplink.get("action", "setup")
+        if action == "setup":
+            argv_list = [
+                "setup",
+                "--client", deeplink["client"],
+                "--code", deeplink["code"],
+                "--server", deeplink["server"],
+            ]
+        elif action == "reauth":
+            argv_list = [
+                "desktop", "reauth",
+                "--client", deeplink["client"],
+                "--code", deeplink["code"],
+                "--server", deeplink["server"],
+                "--json",
+            ]
+        elif action == "open":
+            argv_list = ["desktop", "open", "--app", deeplink["app"], "--json"]
 
     parser = build_parser()
     args = parser.parse_args(argv_list)
 
-    if args.command == "setup":
-        client = default_http_client(args.server)
-        exchanged = client.exchange_setup_grant(code=args.code, server_origin=args.server, client=args.client)
-        loopback_secret = generate_loopback_secret()
-        proxy_port = choose_local_proxy_port()
-        config_manager = default_config_manager()
-        prior_auth_json = None
-        if config_manager.auth_path.exists():
-            prior_auth_json = config_manager.auth_path.read_text(encoding="utf-8")
-        setup_state = {
-            "gateway_base_url": exchanged["gateway_base_url"],
-            "device_id": exchanged["device_id"],
-            "managed_session_id": exchanged["managed_session_id"],
-            "access_token": exchanged["access_token"],
-        }
-        model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, setup_state)
-        plan = config_manager.plan_configure(
-            exchanged["config_profile"],
-            proxy_port,
-            loopback_secret,
-            model_catalog,
-            trusted_project_paths=current_trusted_project_paths(),
-        )
-        config_manager.apply_configure(plan)
-        store = default_state_store()
-        store.write({
-            "client": args.client,
-            "server_base_url": exchanged["server_base_url"],
-            "gateway_base_url": exchanged["gateway_base_url"],
-            "device_id": exchanged["device_id"],
-            "managed_session_id": exchanged["managed_session_id"],
-            "access_token": exchanged["access_token"],
-            "refresh_token": exchanged["refresh_token"],
-            "config_profile": exchanged["config_profile"],
-            "proxy_port": proxy_port,
-            "loopback_secret": loopback_secret,
-            "backup_paths": [str(path) for path in plan.backup_paths],
-            "prior_auth_json": prior_auth_json,
-            "desktop_capture_enabled": False,
-            "model_catalog_meta": model_catalog_meta,
-            "status": "configured",
+    if args.command == "desktop":
+        return run_desktop_command(args.args, {
+            "status": desktop_status_data,
+            "setup": setup_managed_client,
+            "reauth": reauth_managed_client,
+            "open": desktop_open_app,
+            "repair": desktop_repair_client,
+            "diagnose": desktop_diagnose_data,
+            "enhancements_status": inspect_codex_enhancements,
+            "enhancements_patch": desktop_patch_enhancements,
+            "enhancements_restore": desktop_restore_enhancements,
         })
-        ensure_proxy_running(store)
+
+    if args.command == "setup":
+        result = setup_managed_client(args.client, args.code, args.server)
         return emit({
             "command": "setup",
-            "client": args.client,
-            "server": args.server,
-            "code_redacted": True,
-            "status": "configured",
-            "proxy_port": proxy_port,
-            "device_id": exchanged["device_id"],
-            "model_catalog": model_catalog_meta,
+            **result,
         })
 
     if args.command == "launch":
@@ -467,6 +701,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         proxy_pid = ensure_proxy_running(store)
         store.update({"status": "configured", "proxy_pid": proxy_pid})
         desktop_patches = patch_detected_codex_desktop()
+        remember_desktop_enhancement_state(store, desktop_patches)
         search_roots = [Path("/Applications"), Path.home() / "Applications"]
         app_path = detect_codex_app_path(search_roots=search_roots, platform=platform.system().lower().replace("windows", "win32"))
         if app_path is not None:
@@ -583,6 +818,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         proxy_pid = ensure_proxy_running(store)
         store.update({"status": "configured", "proxy_pid": proxy_pid})
         desktop_patches = patch_detected_codex_desktop()
+        remember_desktop_enhancement_state(store, desktop_patches)
         return emit({
             "command": "repair",
             "client": args.client,
@@ -598,17 +834,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         store = default_state_store()
         state = store.read()
         if args.local_only:
-            if not restore_local_managed_config(default_config_manager(), state):
-                return emit({
+            restore_result = restore_local_managed_config(default_config_manager(), state)
+            if not restore_result.get("ok"):
+                store.update({"restore_status": restore_result.get("status")}) if hasattr(store, "update") else None
+                return emit_failed({
                     "command": "logout",
                     "mode": "local_only",
-                    "status": "manual_restore_required",
+                    **restore_result,
                 })
             logout_local_state(store)
             return emit({
                 "command": "logout",
                 "mode": "local_only",
-                "status": "completed",
+                **restore_result,
             })
         ensure_revoke_device_ready(state)
         client = default_http_client(str(state["server_base_url"]))
@@ -635,17 +873,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 access_token=f'Bearer {refreshed["access_token"]}',
                 managed_session_id=str(refreshed["managed_session_id"]),
             )
-        if not restore_local_managed_config(default_config_manager(), state):
-            return emit({
+        restore_result = restore_local_managed_config(default_config_manager(), state)
+        if not restore_result.get("ok"):
+            store.update({"restore_status": restore_result.get("status")}) if hasattr(store, "update") else None
+            return emit_failed({
                 "command": "logout",
                 "mode": "revoke_device",
-                "status": "manual_restore_required",
+                **restore_result,
             })
         logout_local_state(store)
         return emit({
             "command": "logout",
             "mode": "revoke_device",
-            "status": "completed",
+            **restore_result,
         })
 
     if args.command == "proxy-serve":
@@ -922,7 +1162,13 @@ def handle_codex_model_picker(argv: list[str]) -> int:
         if parsed.model_picker_command == "patch":
             return emit({"command": "codex model-picker patch", **patch_model_picker_app(app_path)})
         if parsed.model_picker_command == "restore":
+            if codex_app_is_running(app_path):
+                return emit_failed({"command": "codex model-picker restore", "status": "app_running_blocking_change", "message": "Codex App is running; quit it before restoring model picker."})
             return emit({"command": "codex model-picker restore", **restore_latest_model_picker_backup(app_path)})
+    except PermissionError as err:
+        return emit_failed({"command": f"codex model-picker {parsed.model_picker_command}", "status": "app_bundle_not_writable", "message": str(err)})
+    except OSError as err:
+        return emit_failed({"command": f"codex model-picker {parsed.model_picker_command}", "status": "app_bundle_not_writable" if getattr(err, "errno", None) in {13, 30} else "failed", "message": str(err)})
     except ModelPickerPatchError as err:
         return emit_failed({
             "command": f"codex model-picker {parsed.model_picker_command}",
@@ -951,7 +1197,13 @@ def handle_codex_plugin_auth_gate(argv: list[str]) -> int:
         if parsed.plugin_auth_gate_command == "patch":
             return emit({"command": "codex plugin-auth-gate patch", **patch_plugin_auth_gate_app(app_path)})
         if parsed.plugin_auth_gate_command == "restore":
+            if codex_app_is_running(app_path):
+                return emit_failed({"command": "codex plugin-auth-gate restore", "status": "app_running_blocking_change", "message": "Codex App is running; quit it before restoring plugin auth gate."})
             return emit({"command": "codex plugin-auth-gate restore", **restore_latest_plugin_auth_gate_backup(app_path)})
+    except PermissionError as err:
+        return emit_failed({"command": f"codex plugin-auth-gate {parsed.plugin_auth_gate_command}", "status": "app_bundle_not_writable", "message": str(err)})
+    except OSError as err:
+        return emit_failed({"command": f"codex plugin-auth-gate {parsed.plugin_auth_gate_command}", "status": "app_bundle_not_writable" if getattr(err, "errno", None) in {13, 30} else "failed", "message": str(err)})
     except ModelPickerPatchError as err:
         return emit_failed({
             "command": f"codex plugin-auth-gate {parsed.plugin_auth_gate_command}",
@@ -970,6 +1222,8 @@ def handle_codex_plugin_mention_marketplace(argv: list[str]) -> int:
     status_parser.add_argument("--app", required=True)
     patch_parser = subparsers.add_parser("patch")
     patch_parser.add_argument("--app", required=True)
+    restore_parser = subparsers.add_parser("restore")
+    restore_parser.add_argument("--app", required=True)
     parsed = parser.parse_args(argv)
     app_path = Path(parsed.app)
     try:
@@ -983,6 +1237,21 @@ def handle_codex_plugin_mention_marketplace(argv: list[str]) -> int:
                 "command": "codex plugin-mention-marketplace patch",
                 **patch_plugin_mention_marketplace_app(app_path),
             })
+        if parsed.plugin_mention_marketplace_command == "restore":
+            if codex_app_is_running(app_path):
+                return emit_failed({
+                    "command": "codex plugin-mention-marketplace restore",
+                    "status": "app_running_blocking_change",
+                    "message": "Codex App is running; quit it before restoring plugin mention marketplace.",
+                })
+            return emit({
+                "command": "codex plugin-mention-marketplace restore",
+                **restore_latest_plugin_mention_marketplace_backup(app_path),
+            })
+    except PermissionError as err:
+        return emit_failed({"command": f"codex plugin-mention-marketplace {parsed.plugin_mention_marketplace_command}", "status": "app_bundle_not_writable", "message": str(err)})
+    except OSError as err:
+        return emit_failed({"command": f"codex plugin-mention-marketplace {parsed.plugin_mention_marketplace_command}", "status": "app_bundle_not_writable" if getattr(err, "errno", None) in {13, 30} else "failed", "message": str(err)})
     except ModelPickerPatchError as err:
         return emit_failed({
             "command": f"codex plugin-mention-marketplace {parsed.plugin_mention_marketplace_command}",
@@ -1086,28 +1355,77 @@ def merge_env_no_proxy(env: dict[str, str]) -> dict[str, str]:
     return merge_no_proxy(env)
 
 
-def restore_local_managed_config(config_manager: CodexConfigManager, state: dict[str, object]) -> bool:
-    restored = False
-    config_restored = False
-    for backup_path in state.get("backup_paths", []):
-        backup = Path(str(backup_path))
-        if backup.exists():
+def restore_local_managed_config(config_manager: CodexConfigManager, state: dict[str, object]) -> dict[str, object]:
+    try:
+        conflict = managed_restore_conflict(config_manager, state)
+        if conflict:
+            return {"ok": False, "status": "restore_conflict", "conflicts": conflict}
+
+        restored: list[str] = []
+        declared_config_backups = [Path(str(path)) for path in state.get("backup_paths", []) if Path(str(path)).name.startswith("config.toml")]
+        for backup in declared_config_backups:
+            if not backup.exists():
+                return {"ok": False, "status": "error_restore_failed", "message": f"missing config backup: {backup}"}
+
+        app_path_value = state.get("codex_app_path") or state.get("app_path")
+        enhancements: dict[str, object] | None = None
+        # Restore app bundle patches before local config, after all local restore preflight checks pass.
+        if app_path_value:
+            enhancements = restore_codex_enhancements(Path(str(app_path_value)), item="all")
+            if enhancements.get("status") != "restored":
+                return {"ok": False, "status": "error_restore_failed", "restored": restored, "enhancements": enhancements}
+
+        config_restored = False
+        for backup in declared_config_backups:
             config_manager.restore_backup(backup)
-            restored = True
-            if backup.name.startswith("config.toml"):
-                config_restored = True
-    if not config_restored and config_manager.config_path.exists():
-        config_text = config_manager.config_path.read_text(encoding="utf-8")
-        if 'model_provider = "zhumeng-managed"' in config_text:
-            config_manager.config_path.unlink()
-            restored = True
-    prior_auth_json = state.get("prior_auth_json")
-    if prior_auth_json:
-        config_manager._write_text_atomic(config_manager.auth_path, str(prior_auth_json))
-        restored = True
-    elif config_manager.auth_path.exists():
-        auth_text = config_manager.auth_path.read_text(encoding="utf-8")
-        if "zhumeng-local-managed-" in auth_text:
-            config_manager.auth_path.unlink()
-            restored = True
-    return restored
+            restored.append(str(backup))
+            config_restored = True
+        for backup_path in state.get("backup_paths", []):
+            backup = Path(str(backup_path))
+            if backup in declared_config_backups:
+                continue
+            if backup.exists():
+                config_manager.restore_backup(backup)
+                restored.append(str(backup))
+        if not config_restored and config_manager.config_path.exists():
+            config_text = config_manager.config_path.read_text(encoding="utf-8")
+            if 'model_provider = "zhumeng-managed"' in config_text or 'model_provider = "zhumeng-codex"' in config_text:
+                config_manager.config_path.unlink()
+                restored.append(str(config_manager.config_path))
+        prior_auth_json = state.get("prior_auth_json")
+        if prior_auth_json is not None:
+            config_manager._write_text_atomic(config_manager.auth_path, str(prior_auth_json))
+            restored.append(str(config_manager.auth_path))
+        elif config_manager.auth_path.exists():
+            auth_text = config_manager.auth_path.read_text(encoding="utf-8")
+            if "zhumeng-local-managed-" in auth_text:
+                config_manager.auth_path.unlink()
+                restored.append(str(config_manager.auth_path))
+        catalog_path = Path(str(state.get("catalog_path") or config_manager.catalog_path_for_profile(state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE))))
+        prior_catalog_json = state.get("prior_catalog_json")
+        if prior_catalog_json is not None:
+            config_manager._write_text_atomic(catalog_path, str(prior_catalog_json))
+            restored.append(str(catalog_path))
+        elif catalog_path.exists() and state.get("catalog_preexisting") is False:
+            catalog_path.unlink()
+            restored.append(str(catalog_path))
+        return {"ok": True, "status": "completed", "restored": restored, "enhancements": enhancements}
+    except Exception as err:
+        return {"ok": False, "status": "error_restore_failed", "message": str(err)}
+
+def managed_restore_conflict(config_manager: CodexConfigManager, state: dict[str, object]) -> list[dict[str, object]]:
+    checks = [
+        ("config", config_manager.config_path, state.get("config_hash_after")),
+        ("auth", config_manager.auth_path, state.get("auth_hash_after")),
+    ]
+    catalog_path = state.get("catalog_path")
+    if catalog_path:
+        checks.append(("catalog", Path(str(catalog_path)), state.get("catalog_hash_after")))
+    conflicts: list[dict[str, object]] = []
+    for name, path, expected_hash in checks:
+        if not expected_hash:
+            continue
+        current_hash = file_sha256(path) if path.exists() else None
+        if current_hash != expected_hash:
+            conflicts.append({"target": name, "path": str(path), "expected_hash": expected_hash, "current_hash": current_hash})
+    return conflicts
