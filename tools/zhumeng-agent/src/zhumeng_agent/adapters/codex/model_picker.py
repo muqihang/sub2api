@@ -236,6 +236,7 @@ def patch_model_picker_app(
         "target_file": entry_match["path"],
         "backup_path": str(backup_path),
         "patched_offset": offset,
+        "restart_required": True,
     }
 
 
@@ -541,6 +542,92 @@ def restore_latest_plugin_auth_gate_backup(
         "running_app_detected": codex_app_is_running(app_path),
     }
 
+
+
+def restore_latest_plugin_mention_marketplace_backup(
+    app_path: Path,
+    *,
+    backup_root: Path | None = None,
+    sign: bool = True,
+    verify_signature: bool = True,
+) -> dict[str, object]:
+    asar_path = app_path / "Contents" / "Resources" / "app.asar"
+    plist_path = app_path / "Contents" / "Info.plist"
+    backup = latest_backup(app_path=app_path, backup_root=backup_root, label="plugin-mention-marketplace")
+    if codex_app_is_running(app_path):
+        raise ModelPickerPatchError("app_running_blocking_change: Codex App is running")
+    if backup is None:
+        raise ModelPickerPatchError("no plugin mention marketplace backup found")
+    require_plist_asar_integrity(plist_path)
+    archive = read_asar(asar_path)
+    counts = plugin_mention_marketplace_counts(archive.data)
+    if counts["new"] == 0 and counts["old"] > 0:
+        return {"status": "not_patched", "app_path": str(app_path), "backup_path": str(backup), "restart_required": False}
+    if counts["new"] < 1 or counts["old"] != 0 or counts["outside"] != 0:
+        raise ModelPickerPatchError(
+            "unexpected plugin mention marketplace expression counts "
+            f"old={counts['old']} new={counts['new']} outside={counts['outside']}"
+        )
+
+    patched_exprs = [new for _, new in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS]
+    entry_matches = find_plugin_mention_marketplace_entries_for_expressions(archive, patched_exprs)
+    if not entry_matches:
+        raise ModelPickerPatchError("cannot locate plugin mention marketplace patch")
+
+    restored = bytearray(archive.data)
+    restored_offsets: list[int] = []
+    for entry_match in entry_matches:
+        start = archive.file_data_start + int(entry_match["entry"]["offset"])
+        size = int(entry_match["entry"]["size"])
+        content = bytes(restored[start : start + size])
+        old_expr, new_expr = plugin_mention_marketplace_restore_replacement_for_content(content)
+        old_bytes = old_expr.encode("utf-8")
+        new_bytes = new_expr.encode("utf-8")
+        if len(old_bytes) != len(new_bytes):
+            raise ModelPickerPatchError(f"restore length mismatch {len(old_bytes)} != {len(new_bytes)}")
+        offset = start + content.index(new_bytes)
+        restored[offset : offset + len(new_bytes)] = old_bytes
+        restored_offsets.append(offset)
+
+    restored_archive = AsarArchive(
+        path=archive.path,
+        data=restored,
+        header=archive.header,
+        header_json_size=archive.header_json_size,
+        header_start=archive.header_start,
+        file_data_start=archive.file_data_start,
+    )
+    for entry_match in entry_matches:
+        update_entry_integrity(restored_archive, entry_match)
+    write_updated_header(restored_archive)
+
+    restore_backup_path = create_backup(
+        asar_path,
+        app_path=app_path,
+        backup_root=backup_root,
+        label="plugin-mention-marketplace-restore",
+    )
+    write_archive_with_rollback(
+        app_path,
+        asar_path,
+        plist_path,
+        restored_archive,
+        restore_backup_path,
+        sign=sign,
+        verify_signature=verify_signature,
+    )
+    return {
+        "status": "restored",
+        "backup_path": str(backup),
+        "restore_backup_path": str(restore_backup_path),
+        "restored_offset": restored_offsets[0],
+        "restored_offsets": restored_offsets,
+        "target_file": entry_matches[0]["path"],
+        "target_files": [entry_match["path"] for entry_match in entry_matches],
+        "running_app_detected": codex_app_is_running(app_path),
+        "app_path": str(app_path),
+        "restart_required": True,
+    }
 
 def ensure_existing_patch_integrity(
     app_path: Path,
@@ -1047,6 +1134,13 @@ def plugin_mention_marketplace_replacement_for_content(content: bytes) -> tuple[
         raise ModelPickerPatchError(f"expected one plugin mention marketplace replacement candidate, found {len(matches)}")
     return matches[0]
 
+
+
+def plugin_mention_marketplace_restore_replacement_for_content(content: bytes) -> tuple[str, str]:
+    for old_expr, new_expr in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS:
+        if new_expr.encode("utf-8") in content:
+            return old_expr, new_expr
+    raise ModelPickerPatchError("cannot determine plugin mention marketplace restore replacement")
 
 def first_plugin_mention_marketplace_offset(archive: AsarArchive, expressions: list[str]) -> int | None:
     offsets = []
