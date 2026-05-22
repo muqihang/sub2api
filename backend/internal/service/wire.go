@@ -657,25 +657,27 @@ func ProvideAugmentGatewayModelRegistry(cfg *config.Config, adminService *Augmen
 	return NewAugmentGatewayModelRegistry(cfg.Gateway.Augment, WithAugmentGatewayRegistryStateSource(adminService))
 }
 
-func ProvideCodexGatewayModelRegistry(cfg *config.Config, adminService *CodexGatewayAdminService) *CodexGatewayModelRegistry {
+func ProvideCodexGatewayModelRegistry(cfg *config.Config, adminService *CodexGatewayAdminService, pricingResolver *ModelPricingResolver) *CodexGatewayModelRegistry {
+	options := []CodexGatewayModelRegistryOption{
+		WithCodexGatewayRegistryStateSource(adminService),
+		WithCodexGatewayModelPricingResolver(NewCodexGatewayDatabaseModelPricingResolver(pricingResolver)),
+	}
 	if cfg == nil {
 		return NewCodexGatewayModelRegistry(
 			config.GatewayCodexConfig{
 				EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
 			},
-			WithCodexGatewayRegistryStateSource(adminService),
+			options...,
 		)
 	}
-	return NewCodexGatewayModelRegistry(
-		cfg.Gateway.Codex,
-		WithCodexGatewayRegistryStateSource(adminService),
-	)
+	return NewCodexGatewayModelRegistry(cfg.Gateway.Codex, options...)
 }
 
-func ProvideCodexGatewayModelRegistryWithVariantChecker(cfg *config.Config, adminService *CodexGatewayAdminService, gatewayService *GatewayService) *CodexGatewayModelRegistry {
+func ProvideCodexGatewayModelRegistryWithVariantChecker(cfg *config.Config, adminService *CodexGatewayAdminService, gatewayService *GatewayService, pricingResolver *ModelPricingResolver) *CodexGatewayModelRegistry {
 	options := []CodexGatewayModelRegistryOption{
 		WithCodexGatewayRegistryStateSource(adminService),
 		WithCodexGatewayVariantReadyChecker(newCodexGatewayAnthropicVariantReadyChecker(gatewayService)),
+		WithCodexGatewayModelPricingResolver(NewCodexGatewayDatabaseModelPricingResolver(pricingResolver)),
 	}
 	if cfg == nil {
 		return NewCodexGatewayModelRegistry(
@@ -734,8 +736,8 @@ func ProvideCodexGatewayAdminService(cfg *config.Config, stateStore *CodexGatewa
 
 func ProvideCodexGatewayAdminServiceWithVariantChecker(cfg *config.Config, stateStore *CodexGatewayStateStore, gatewayService *GatewayService) *CodexGatewayAdminService {
 	adminCfg := config.GatewayCodexConfig{
-			Enabled:       true,
-			EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+		Enabled:       true,
+		EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
 	}
 	if cfg != nil {
 		adminCfg = cfg.Gateway.Codex

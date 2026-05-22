@@ -525,3 +525,107 @@ func (s codexGatewayVariantReadyCheckerStub) IsReady(_ context.Context, model Co
 	}
 	return ready
 }
+
+type codexGatewayModelPricingResolverStub struct {
+	pricing map[string]*CodexGatewayModelPricing
+}
+
+func (s codexGatewayModelPricingResolverStub) ResolveCodexGatewayModelPricing(ctx context.Context, model CodexGatewayModel, groupID *int64) *CodexGatewayModelPricing {
+	if s.pricing == nil {
+		return nil
+	}
+	return s.pricing[model.Slug]
+}
+
+func TestCodexGatewayModelRegistry_ModelsResponseIncludesCapabilitiesAndPricing(t *testing.T) {
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{EnabledModels: []string{"gpt-5.5"}},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderOpenAI: {Provider: CodexGatewayProviderOpenAI, GroupID: 1001, Healthy: true},
+				},
+			},
+		}),
+		WithCodexGatewayModelPricingResolver(codexGatewayModelPricingResolverStub{pricing: map[string]*CodexGatewayModelPricing{
+			"gpt-5.5": {
+				InputPrice:       stringPtr("2.50"),
+				OutputPrice:      stringPtr("15.00"),
+				CachedInputPrice: stringPtr("0.25"),
+				CacheWritePrice:  stringPtr("2.50"),
+				Currency:         "USD",
+				Unit:             "per_1m_tokens",
+				UpdatedAt:        stringPtr("2026-05-21T00:00:00Z"),
+				Source:           "database_model_pricing",
+			},
+		}}),
+	)
+
+	payload := reg.ModelsResponse(nil)
+	require.Len(t, payload.Models, 1)
+	model := payload.Models[0]
+	require.Equal(t, "zhumeng", model.Origin)
+	require.Equal(t, "zhumeng", model.ProviderID)
+	require.True(t, model.Capabilities.Responses)
+	require.True(t, model.Capabilities.Streaming)
+	require.True(t, model.Capabilities.ToolCalls)
+	require.True(t, model.Capabilities.ImageInput)
+	require.True(t, model.Capabilities.ContextContinuation)
+	require.NotNil(t, model.Pricing)
+	require.Equal(t, "2.50", *model.Pricing.InputPrice)
+	require.Equal(t, "0.25", *model.Pricing.CachedInputPrice)
+	require.Equal(t, "database_model_pricing", model.Pricing.Source)
+}
+
+func TestCodexGatewayModelRegistry_CodexCLICatalogPreservesDesktopModelContract(t *testing.T) {
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{EnabledModels: []string{"gpt-5.5"}},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderOpenAI: {Provider: CodexGatewayProviderOpenAI, GroupID: 1001, Healthy: true},
+				},
+			},
+		}),
+		WithCodexGatewayModelPricingResolver(codexGatewayModelPricingResolverStub{pricing: map[string]*CodexGatewayModelPricing{
+			"gpt-5.5": {InputPrice: stringPtr("2.50"), Currency: "USD", Unit: "per_1m_tokens", Source: "database_model_pricing"},
+		}}),
+	)
+
+	raw, err := reg.ExportCodexCLICatalogJSON(nil)
+	require.NoError(t, err)
+	var payload struct {
+		Models []struct {
+			Slug          string                        `json:"slug"`
+			Origin        string                        `json:"origin"`
+			ProviderID    string                        `json:"provider_id"`
+			Capabilities  CodexGatewayModelCapabilities `json:"capabilities"`
+			Pricing       *CodexGatewayModelPricing     `json:"pricing"`
+			ContextWindow int                           `json:"context_window"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &payload))
+	require.Len(t, payload.Models, 1)
+	require.Equal(t, "gpt-5.5", payload.Models[0].Slug)
+	require.Equal(t, "zhumeng", payload.Models[0].Origin)
+	require.Equal(t, "zhumeng", payload.Models[0].ProviderID)
+	require.True(t, payload.Models[0].Capabilities.ToolCalls)
+	require.NotNil(t, payload.Models[0].Pricing)
+	require.Equal(t, "2.50", *payload.Models[0].Pricing.InputPrice)
+	require.Equal(t, 1_050_000, payload.Models[0].ContextWindow)
+}
+
+func TestCodexGatewayModelRegistryProviderWiresDatabasePricingResolver(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.Codex.EnabledModels = []string{"gpt-5.5"}
+	cfg.Gateway.Codex.ProviderGroups.OpenAI = 100
+	resolver := NewModelPricingResolver(nil, NewBillingService(nil, nil))
+	registry := ProvideCodexGatewayModelRegistryWithVariantChecker(
+		cfg,
+		NewCodexGatewayAdminService(cfg.Gateway.Codex, nil),
+		nil,
+		resolver,
+	)
+
+	require.NotNil(t, registry.modelPricingResolver)
+}

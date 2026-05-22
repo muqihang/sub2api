@@ -441,3 +441,34 @@ func TestCodexGatewayService_ModelsReturnsVisibleCatalog(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Body, &payload))
 	require.Equal(t, []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"}, codexGatewayModelSlugs(payload.Models))
 }
+
+func TestCodexGatewayService_ModelsReturnsCapabilitiesAndPricing(t *testing.T) {
+	groupID := int64(1001)
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{EnabledModels: []string{"gpt-5.5"}},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderOpenAI: {Provider: CodexGatewayProviderOpenAI, GroupID: groupID, Healthy: true},
+				},
+			},
+		}),
+		WithCodexGatewayModelPricingResolver(codexGatewayModelPricingResolverStub{pricing: map[string]*CodexGatewayModelPricing{
+			"gpt-5.5": {InputPrice: stringPtr("2.50"), OutputPrice: stringPtr("15.00"), Currency: "USD", Unit: "per_1m_tokens", Source: "database_model_pricing"},
+		}}),
+	)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{})
+	apiKey := validCodexGatewayAPIKeyForTest()
+	apiKey.GroupID = &groupID
+
+	resp, err := svc.Models(context.Background(), CodexGatewayModelsRequest{APIKey: apiKey})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var payload CodexGatewayModelsResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &payload))
+	require.Len(t, payload.Models, 1)
+	require.True(t, payload.Models[0].Capabilities.ToolCalls)
+	require.NotNil(t, payload.Models[0].Pricing)
+	require.Equal(t, "database_model_pricing", payload.Models[0].Pricing.Source)
+}
