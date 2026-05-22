@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from .adapters.codex.config_manager import CodexConfigManager, choose_local_proxy_port
+from .adapters.codex.config_manager import CodexConfigManager, choose_local_proxy_port, discover_git_project_path
 from .adapters.codex.capture_baseline import generate_capture_baseline
 from .adapters.codex.capture_config import CodexDesktopCaptureConfig
 from .adapters.codex.capture_config import CorrelationHasher
@@ -134,6 +134,11 @@ def default_http_client(server: str) -> AgentHTTPClient:
 
 def default_config_manager() -> CodexConfigManager:
     return CodexConfigManager()
+
+
+def current_trusted_project_paths() -> list[Path]:
+    project = discover_git_project_path()
+    return [project] if project is not None else []
 
 
 def default_capture_config(correlation_hash_key_file: Path | None = None) -> CodexDesktopCaptureConfig:
@@ -304,6 +309,7 @@ def fetch_codex_model_catalog(client, config_manager: CodexConfigManager, state:
             access_token=str(state["access_token"]),
             managed_session_id=str(state["managed_session_id"]),
             device_id=int(state["device_id"]),
+            catalog_format="codex_cli",
         )
 
     list_models = getattr(client, "list_codex_models", None)
@@ -392,6 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             proxy_port,
             loopback_secret,
             model_catalog,
+            trusted_project_paths=current_trusted_project_paths(),
         )
         config_manager.apply_configure(plan)
         store = default_state_store()
@@ -455,6 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             int(state.get("proxy_port", choose_local_proxy_port())),
             str(state.get("loopback_secret", generate_loopback_secret())),
             model_catalog,
+            trusted_project_paths=current_trusted_project_paths(),
         )
         proxy_pid = ensure_proxy_running(store)
         store.update({"status": "configured", "proxy_pid": proxy_pid})
@@ -521,6 +529,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             int(state.get("proxy_port", choose_local_proxy_port())),
             str(state.get("loopback_secret", generate_loopback_secret())),
             model_catalog,
+            trusted_project_paths=current_trusted_project_paths(),
         )
         proxy_pid = ensure_proxy_running(store)
         store.update({"status": "configured", "proxy_pid": proxy_pid})
@@ -569,6 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             int(state.get("proxy_port", choose_local_proxy_port())),
             str(state.get("loopback_secret", generate_loopback_secret())),
             model_catalog,
+            trusted_project_paths=current_trusted_project_paths(),
         )
         proxy_pid = ensure_proxy_running(store)
         store.update({"status": "configured", "proxy_pid": proxy_pid})

@@ -48,9 +48,10 @@ def test_list_codex_models_uses_managed_device_headers(monkeypatch):
         access_token="access-token",
         managed_session_id="sess-1",
         device_id=9,
+        catalog_format="codex_cli",
     )
 
-    assert captured["args"][0] == "https://gateway.example.com/codex/v1/models"
+    assert captured["args"][0] == "https://gateway.example.com/codex/v1/models?catalog_format=codex_cli"
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer access-token"
     assert captured["kwargs"]["headers"]["X-Zhumeng-Managed-Session"] == "sess-1"
     assert captured["kwargs"]["headers"]["X-Zhumeng-Device-ID"] == "9"

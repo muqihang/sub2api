@@ -8,7 +8,10 @@ from pathlib import Path
 
 BUNDLE_NAME = "Zhumeng Agent.app"
 BUNDLE_EXECUTABLE = "Zhumeng Agent"
-DEFAULT_REPO_TOOL_ROOT = Path("/Users/muqihang/chelingxi_workspace/sub2api/.worktrees/main-merge-sub2api/tools/zhumeng-agent")
+
+
+def default_repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
 
 
 def build_macos_app_bundle(
@@ -65,7 +68,7 @@ exec "$PYTHON_BIN" -m zhumeng_agent "$@"
 
 def build_from_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="build_app_bundle")
-    parser.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_TOOL_ROOT.parent.parent)
+    parser.add_argument("--repo-root", type=Path, default=default_repo_root())
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--python-bin", type=Path, default=None)
     args = parser.parse_args(argv)

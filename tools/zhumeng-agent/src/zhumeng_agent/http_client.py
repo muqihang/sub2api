@@ -45,8 +45,12 @@ class AgentHTTPClient:
         access_token: str,
         managed_session_id: str,
         device_id: int,
+        catalog_format: str | None = None,
     ) -> dict[str, object]:
-        url = urljoin(gateway_base_url.rstrip("/") + "/", "codex/v1/models")
+        suffix = "codex/v1/models"
+        if catalog_format:
+            suffix += f"?catalog_format={catalog_format}"
+        url = urljoin(gateway_base_url.rstrip("/") + "/", suffix)
         response = httpx.get(
             url,
             headers={
