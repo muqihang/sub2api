@@ -35,6 +35,7 @@ async def make_proxy(tmp_path, status_code: int = 200, response_body: dict | Non
     async def upstream_handler(request: web.Request):
         response_counter["count"] += 1
         seen["path"] = request.path
+        seen["query_string"] = request.query_string
         body = await request.read()
         seen["body_size"] = len(body)
         seen["authorization"] = request.headers.get("Authorization")
@@ -225,6 +226,19 @@ async def test_event_stream_response_is_forwarded_before_upstream_finishes(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_proxy_upstream_session_disables_total_timeout_for_long_streams(tmp_path):
+    upstream, proxy_client, _, _ = await make_proxy(tmp_path)
+    try:
+        async with proxy_client:
+            proxy_server = proxy_client.server.app["proxy_server"]
+            session = await proxy_server._get_session()
+            assert session.timeout.total is None
+            assert session.timeout.sock_read is None
+    finally:
+        await upstream.close()
+
+
+@pytest.mark.asyncio
 async def test_missing_loopback_secret_is_rejected(tmp_path):
     upstream, proxy_client, _, _ = await make_proxy(tmp_path)
     async with proxy_client:
@@ -368,7 +382,7 @@ async def test_proxy_reloads_latest_credentials_from_state_before_forwarding(tmp
 
 @pytest.mark.asyncio
 async def test_proxy_syncs_model_catalog_from_gateway_models(tmp_path):
-    upstream, proxy_client, _, state_store = await make_proxy(tmp_path)
+    upstream, proxy_client, seen, state_store = await make_proxy(tmp_path)
     state_store.write({
         "gateway_base_url": str(upstream.make_url("")).rstrip("/"),
         "config_profile": {"model_provider": "zhumeng-codex"},
@@ -383,6 +397,7 @@ async def test_proxy_syncs_model_catalog_from_gateway_models(tmp_path):
     payload = json.loads(catalog_path.read_text(encoding="utf-8"))
     deepseek = next(model for model in payload["models"] if model["slug"] == "deepseek-v4-pro")
     assert deepseek["input_modalities"] == ["text", "image"]
+    assert seen["query_string"] == "catalog_format=codex_cli"
     await upstream.close()
 
 

@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 
 import httpx
 from aiohttp import ClientSession, WSMsgType, WSServerHandshakeError, web
+from aiohttp import ClientTimeout
 from aiohttp.client_exceptions import ClientPayloadError
 
 from ..adapters.codex.config_manager import CodexConfigManager
@@ -70,7 +71,8 @@ class ManagedProxyServer:
 
     async def _get_session(self) -> ClientSession:
         if self._session is None:
-            self._session = ClientSession()
+            # Long-running Codex / hosted search streams must not be cut off by aiohttp's default 300s total timeout.
+            self._session = ClientSession(timeout=ClientTimeout(total=None, sock_read=None))
         return self._session
 
     async def _close_session(self, app: web.Application) -> None:
@@ -362,7 +364,7 @@ class ManagedProxyServer:
         try:
             session = await self._get_session()
             async with session.get(
-                urljoin(gateway_base_url.rstrip("/") + "/", "codex/v1/models"),
+                urljoin(gateway_base_url.rstrip("/") + "/", "codex/v1/models?catalog_format=codex_cli"),
                 headers={
                     "Authorization": f"Bearer {self.config.access_token}",
                     "X-Zhumeng-Managed-Session": self.config.managed_session_id,
