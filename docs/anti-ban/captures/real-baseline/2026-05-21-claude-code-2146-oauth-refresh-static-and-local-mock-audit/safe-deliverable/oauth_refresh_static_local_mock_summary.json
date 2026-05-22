@@ -1,0 +1,78 @@
+{
+  "static_sources": {
+    "cc_gateway_oauth_ts": "/Users/muqihang/chelingxi_workspace/cc-gateway/src/oauth.ts",
+    "claude_code_cli_binary": "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+    "static_cli_strings": [
+      "/v1/oauth/token",
+      "https://platform.claude.com/v1/oauth/token",
+      "https://platform.claude.com/oauth/authorize",
+      "https://platform.claude.com/oauth/code/callback"
+    ]
+  },
+  "local_mock": {
+    "request_count": 2,
+    "first_request": {
+      "url": "/success",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "content-length": "213",
+        "host": "127.0.0.1:62433",
+        "connection": "keep-alive"
+      },
+      "bodyKeys": [
+        "client_id",
+        "grant_type",
+        "refresh_token",
+        "scope"
+      ],
+      "bodyGrantType": "refresh_token",
+      "scopeWordCount": 5,
+      "refreshTokenHash": "sha256:154f43e8c9b56a01e25dcba6f7aef62d23a3e91264e818124f6adf721d6a8e33",
+      "bodyHash": "sha256:998e545af7c71458a3b4d2087cfab75173d680edefee88750cd7188f5b50619d",
+      "bodyClientIdPresent": true,
+      "bodyClientIdHash": "sha256:473668f2b13c71009d028ff0ef74c2cf76e71cbdd33b76e69fcc42d7e59aca4b"
+    },
+    "second_request": {
+      "url": "/failure",
+      "method": "POST",
+      "headers": {
+        "content-type": "application/json",
+        "content-length": "213",
+        "host": "127.0.0.1:62433",
+        "connection": "keep-alive"
+      },
+      "bodyKeys": [
+        "client_id",
+        "grant_type",
+        "refresh_token",
+        "scope"
+      ],
+      "bodyGrantType": "refresh_token",
+      "scopeWordCount": 5,
+      "refreshTokenHash": "sha256:154f43e8c9b56a01e25dcba6f7aef62d23a3e91264e818124f6adf721d6a8e33",
+      "bodyHash": "sha256:998e545af7c71458a3b4d2087cfab75173d680edefee88750cd7188f5b50619d",
+      "bodyClientIdPresent": true,
+      "bodyClientIdHash": "sha256:473668f2b13c71009d028ff0ef74c2cf76e71cbdd33b76e69fcc42d7e59aca4b"
+    },
+    "success_result": {
+      "accessTokenPresent": true,
+      "accessTokenHash": "sha256:d7492899fcde7799bf5d9b4d1888301eabd28bd0df448583789b43a8ce6b68bf",
+      "refreshTokenHash": "sha256:66524e44bdb2499118df7d282373a5e8d22e25aa99bd7a7aa6851abbef4f6588",
+      "expiresAtType": "number"
+    },
+    "failure_contains_401": true,
+    "failure_hash": "sha256:47a0bf30aa4be4adc44d25fbd0a1cb0f37f237aefc6fff5d755a16267ae1a9f7"
+  },
+  "observations": [
+    "CC Gateway source defines TOKEN_URL as https://platform.claude.com/v1/oauth/token and uses POST application/json.",
+    "Refresh request body keys are grant_type, refresh_token, client_id, scope.",
+    "Success path maps access_token/refresh_token/expires_in to accessToken/refreshToken/expiresAt.",
+    "Failure path throws on non-200 responses; inline refreshOAuthToken has no retry loop. scheduleRefresh handles delayed retry separately in source.",
+    "Local mock executed an extracted-equivalent refresh function against localhost HTTPS only; no real platform.claude.com call was made."
+  ],
+  "safety": [
+    "No raw access token or raw refresh token is written to the safe deliverable.",
+    "NODE_TLS_REJECT_UNAUTHORIZED=0 was scoped to the local mock process only."
+  ]
+}

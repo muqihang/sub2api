@@ -29,7 +29,28 @@
 | [05-improvement-roadmap.md](./05-improvement-roadmap.md) | 从属路线图 | 任务拆分参考，服从 09 |
 | [10-claude-pre-launch-audit.md](./10-claude-pre-launch-audit.md) | Claude 上线前审查 | 上线 Claude 订阅前必读 |
 | [13-claude-oauth-onboarding-sop.md](./13-claude-oauth-onboarding-sop.md) | Claude OAuth 添加账号 SOP | sub2api 添加 Claude OAuth 账号 / 首次 canary 前必读 |
+| [14-cc-gateway-shared-pool-compatibility-plan.md](./14-cc-gateway-shared-pool-compatibility-plan.md) | CC Gateway 共享账号池实施计划 | Sub2API + CC Gateway 分工与 checkpoint |
+| [15-cch-algorithm-validation-and-usage-plan.md](./15-cch-algorithm-validation-and-usage-plan.md) | CCH 算法验证 / 使用决策 | 已离线验证；定位为 verifier 与受控 fallback |
+| [16-no-cch-upstream-acceptance-validation.md](./16-no-cch-upstream-acceptance-validation.md) | 真实上游 no-CCH 验收 SOP | Phase A/B 已 PASS（最小 messages） |
+| [17-account-lifecycle-and-tiering.md](./17-account-lifecycle-and-tiering.md) | 账号生命周期与分层 | cold / warm / hot / cooling / quarantine / dead + 分层池 |
+| [18-behavioral-shaping-and-session-affinity.md](./18-behavioral-shaping-and-session-affinity.md) | 行为整形与 session 亲和 | 软席位、并发、jitter、token 整形 |
+| [19-soft-signal-monitoring-and-canary.md](./19-soft-signal-monitoring-and-canary.md) | 软信号监控与 canary | 信号分级、decoy/canary、健康分、自愈 |
+| [20-cch-cc-version-stability-regression.md](./20-cch-cc-version-stability-regression.md) | CCH/cc_version 跨版本回归 | 多 fixture、独立交叉、回归节奏 |
+| [21-cross-account-correlation-controls.md](./21-cross-account-correlation-controls.md) | 跨账号相关性控制 | persona 变体、bucket 隔离、上号节奏 |
+| [22-scheduler-state-model-and-distributed-consistency.md](./22-scheduler-state-model-and-distributed-consistency.md) | 调度状态模型与分布式一致性 | Redis lease / semaphore / fencing / tombstone |
+| [23-audit-budget-retention-and-compliance.md](./23-audit-budget-retention-and-compliance.md) | 审计、预算、留存与合规治理 | 日志脱敏、预算上限、失败分类、证据留存 |
+| [24-disaster-recovery-and-policy-rollout.md](./24-disaster-recovery-and-policy-rollout.md) | 灾备与策略发布 Runbook | feature flag、canary、rollback、禁止静默 fallback |
+| [25-claude-code-2146-reverse-coverage-and-signing-readiness-gates.md](./25-claude-code-2146-reverse-coverage-and-signing-readiness-gates.md) | Claude Code 2.1.146 逆向覆盖与 signing readiness gate | count_tokens / refresh / session / Linux parity / Sub2API+CC Gateway signing 阻断项 |
+| [26-signing-readiness-gap-closure-plan.md](./26-signing-readiness-gap-closure-plan.md) | Signing readiness gap closure 执行计划 | 把 14/15/20/25 与 A/B 审计中的 P0/P1 转为可执行闭环；通过后才写 final signing-mode design |
 ---
+
+### 共享账号池设计包（17-24）的边界
+
+17-25 是 `14-cc-gateway-shared-pool-compatibility-plan.md` 的二层治理设计包，不替代 14 号文档的 P0 阻断项。后续代理如果要落地共享账号池，必须先确认：
+
+1. 14 号文档 P0-1..P0-6 有明确 pass/fail 证据；
+2. 17-25 中所有 hard gate / fail-closed / tombstone / policy-version / reverse-coverage / signing-readiness 要求已转成实现任务；
+3. 未通过联合 capture、scheduler consistency、redaction/budget、rollback 验收前，不进入真实生产流量。
 
 ## 当前修正后的核心判断（简版）
 
