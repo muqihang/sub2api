@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from zhumeng_agent.adapters.codex.model_picker import (
+    CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR,
+    CURRENT_PLUGIN_MENTION_MARKETPLACE_U_EXPR,
     NEW_PLUGIN_MENTION_MARKETPLACE_EXPR,
+    CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_C_EXPR,
+    CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_U_EXPR,
     NEW_MODEL_PICKER_EXPR,
     NEW_PLUGIN_AUTH_GATE_EXPR,
     OLD_PLUGIN_MENTION_MARKETPLACE_EXPR,
@@ -576,6 +580,37 @@ def test_plugin_mention_marketplace_patch_updates_reply_and_at_menu_chunks(tmp_p
         "webview/assets/prosemirror-test.js",
         "webview/assets/reply-test.js",
     ]
+    status = inspect_plugin_mention_marketplace_app(app)
+    assert status["status"] == "patched"
+    assert status["old_expression_count"] == 0
+    assert status["new_expression_count"] == 2
+    assert status["integrity_ok"] is True
+
+
+def test_plugin_mention_marketplace_patch_handles_current_flag_gated_chunks(tmp_path: Path):
+    app = make_codex_app_files(
+        tmp_path,
+        {
+            "prosemirror-test.js": b"prefix " + CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR.encode("utf-8") + b" suffix",
+            "reply-test.js": b"prefix " + CURRENT_PLUGIN_MENTION_MARKETPLACE_U_EXPR.encode("utf-8") + b" suffix",
+        },
+    )
+
+    result = patch_plugin_mention_marketplace_app(
+        app,
+        backup_root=tmp_path / "backups",
+        sign=False,
+        verify_signature=False,
+    )
+
+    assert result["status"] == "patched"
+    asar = app / "Contents" / "Resources" / "app.asar"
+    data = asar.read_bytes()
+    assert CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR.encode("utf-8") not in data
+    assert CURRENT_PLUGIN_MENTION_MARKETPLACE_U_EXPR.encode("utf-8") not in data
+    assert CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_C_EXPR.encode("utf-8") in data
+    assert CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_U_EXPR.encode("utf-8") in data
+
     status = inspect_plugin_mention_marketplace_app(app)
     assert status["status"] == "patched"
     assert status["old_expression_count"] == 0

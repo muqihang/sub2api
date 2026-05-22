@@ -21,10 +21,20 @@ OLD_PLUGIN_AUTH_GATE_EXPR = "function e(e){return e!==`chatgpt`}"
 NEW_PLUGIN_AUTH_GATE_EXPR = "function e(e){return!1&&e!==`xxxx`}"
 OLD_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:[`shared-with-me`]"
 NEW_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:void 0/*zhumeng*/ "
+CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR = "c={additionalMarketplaceKinds:s?[`shared-with-me`]:[]}"
+CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_C_EXPR = "c={additionalMarketplaceKinds:void 0/*zhumeng2*/     }"
+CURRENT_PLUGIN_MENTION_MARKETPLACE_U_EXPR = "u={additionalMarketplaceKinds:l?[`shared-with-me`]:[]}"
+CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_U_EXPR = "u={additionalMarketplaceKinds:void 0/*zhumeng2*/     }"
 
 MODEL_PICKER_REPLACEMENTS = (
     (OLD_MODEL_PICKER_EXPR, NEW_MODEL_PICKER_EXPR),
     (CURRENT_MODEL_PICKER_EXPR, CURRENT_PATCHED_MODEL_PICKER_EXPR),
+)
+
+PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS = (
+    (OLD_PLUGIN_MENTION_MARKETPLACE_EXPR, NEW_PLUGIN_MENTION_MARKETPLACE_EXPR),
+    (CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR, CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_C_EXPR),
+    (CURRENT_PLUGIN_MENTION_MARKETPLACE_U_EXPR, CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_U_EXPR),
 )
 
 
@@ -118,13 +128,13 @@ def inspect_plugin_mention_marketplace_app(app_path: Path) -> dict[str, object]:
     target_file = None
     target_files: list[str] = []
     integrity_ok = False
-    expression = None
+    expressions: list[str] = []
     if status == "unpatched":
-        expression = OLD_PLUGIN_MENTION_MARKETPLACE_EXPR
+        expressions = [old for old, _ in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS]
     elif status == "patched":
-        expression = NEW_PLUGIN_MENTION_MARKETPLACE_EXPR
-    if expression is not None:
-        entry_matches = find_plugin_mention_marketplace_entries(archive, expression)
+        expressions = [new for _, new in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS]
+    if expressions:
+        entry_matches = find_plugin_mention_marketplace_entries_for_expressions(archive, expressions)
         if entry_matches:
             target_file = entry_matches[0]["path"]
             target_files = [entry_match["path"] for entry_match in entry_matches]
@@ -320,7 +330,10 @@ def patch_plugin_mention_marketplace_app(
     counts = plugin_mention_marketplace_counts(archive.data)
 
     if counts["old"] == 0 and counts["new"] > 0 and counts["outside"] == 0:
-        entry_matches = find_plugin_mention_marketplace_entries(archive, NEW_PLUGIN_MENTION_MARKETPLACE_EXPR)
+        entry_matches = find_plugin_mention_marketplace_entries_for_expressions(
+            archive,
+            [new for _, new in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS],
+        )
         if not entry_matches:
             raise ModelPickerPatchError("cannot locate existing plugin mention marketplace patch")
         return ensure_existing_multi_entry_patch_integrity(
@@ -341,16 +354,19 @@ def patch_plugin_mention_marketplace_app(
             f"old={counts['old']} new={counts['new']} outside={counts['outside']}"
         )
 
-    old_bytes = OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
-    new_bytes = NEW_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
-    if len(old_bytes) != len(new_bytes):
-        raise ModelPickerPatchError(f"replacement length mismatch {len(old_bytes)} != {len(new_bytes)}")
-
     patched = bytearray(archive.data)
-    entry_matches = find_plugin_mention_marketplace_entries(archive, OLD_PLUGIN_MENTION_MARKETPLACE_EXPR)
+    entry_matches = find_plugin_mention_marketplace_entries_for_expressions(
+        archive,
+        [old for old, _ in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS],
+    )
     offsets = []
     for entry_match in entry_matches:
         content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        old_expr, new_expr = plugin_mention_marketplace_replacement_for_content(content)
+        old_bytes = old_expr.encode("utf-8")
+        new_bytes = new_expr.encode("utf-8")
+        if len(old_bytes) != len(new_bytes):
+            raise ModelPickerPatchError(f"replacement length mismatch {len(old_bytes)} != {len(new_bytes)}")
         offset = entry_match["start"] + content.index(old_bytes)
         offsets.append(offset)
         patched[offset : offset + len(old_bytes)] = new_bytes
@@ -763,13 +779,13 @@ def plugin_auth_gate_offset_for_status(data: bytes | bytearray, status: str) -> 
 
 def plugin_mention_marketplace_counts(data: bytes | bytearray) -> dict[str, int]:
     archive = read_asar_from_data(data)
-    old_expr = OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
-    new_expr = NEW_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8")
+    old_exprs = [old.encode("utf-8") for old, _ in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS]
+    new_exprs = [new.encode("utf-8") for _, new in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS]
     counts = {"old": 0, "new": 0, "outside": 0}
     for entry_match in file_entries(archive):
         content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
-        old_count = content.count(old_expr)
-        new_count = content.count(new_expr)
+        old_count = sum(content.count(expr) for expr in old_exprs)
+        new_count = sum(content.count(expr) for expr in new_exprs)
         if is_plugin_mention_marketplace_candidate(entry_match["path"]):
             counts["old"] += old_count
             counts["new"] += new_count
@@ -791,9 +807,15 @@ def plugin_mention_marketplace_status(counts: dict[str, int]) -> str:
 def plugin_mention_marketplace_offset_for_status(data: bytes | bytearray, status: str) -> int | None:
     archive = read_asar_from_data(data)
     if status == "unpatched":
-        return find_plugin_mention_marketplace_offset(archive, OLD_PLUGIN_MENTION_MARKETPLACE_EXPR)
+        return first_plugin_mention_marketplace_offset(
+            archive,
+            [old for old, _ in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS],
+        )
     if status == "patched":
-        return find_plugin_mention_marketplace_offset(archive, NEW_PLUGIN_MENTION_MARKETPLACE_EXPR)
+        return first_plugin_mention_marketplace_offset(
+            archive,
+            [new for _, new in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS],
+        )
     return None
 
 
@@ -989,6 +1011,59 @@ def find_plugin_mention_marketplace_entry(archive: AsarArchive, expression: str)
 
 
 def find_plugin_mention_marketplace_entries(archive: AsarArchive, expression: str) -> list[dict[str, Any]]:
+    return find_plugin_mention_marketplace_entries_for_expressions(archive, [expression])
+
+
+def find_plugin_mention_marketplace_entries_for_expressions(
+    archive: AsarArchive,
+    expressions: list[str],
+) -> list[dict[str, Any]]:
+    expression_bytes = [expression.encode("utf-8") for expression in expressions]
+    matches = []
+    for entry_match in file_entries(archive):
+        if not is_plugin_mention_marketplace_candidate(entry_match["path"]):
+            continue
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        match_count = sum(content.count(expr) for expr in expression_bytes)
+        if match_count > 0:
+            if match_count != 1:
+                raise ModelPickerPatchError(
+                    f"expected one plugin mention marketplace expression in {entry_match['path']}, "
+                    f"found {match_count}"
+                )
+            if not isinstance(entry_match["entry"].get("integrity"), dict):
+                raise ModelPickerPatchError(f"asar file entry has no integrity metadata: {entry_match['path']}")
+            matches.append(entry_match)
+    return matches
+
+
+def plugin_mention_marketplace_replacement_for_content(content: bytes) -> tuple[str, str]:
+    matches = [
+        (old, new)
+        for old, new in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS
+        if content.count(old.encode("utf-8")) == 1
+    ]
+    if len(matches) != 1:
+        raise ModelPickerPatchError(f"expected one plugin mention marketplace replacement candidate, found {len(matches)}")
+    return matches[0]
+
+
+def first_plugin_mention_marketplace_offset(archive: AsarArchive, expressions: list[str]) -> int | None:
+    offsets = []
+    expression_bytes = [expression.encode("utf-8") for expression in expressions]
+    for entry_match in file_entries(archive):
+        if not is_plugin_mention_marketplace_candidate(entry_match["path"]):
+            continue
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        for expr in expression_bytes:
+            if expr in content:
+                offsets.append(entry_match["start"] + content.index(expr))
+    if len(offsets) != 1:
+        return None
+    return offsets[0]
+
+
+def find_plugin_mention_marketplace_entries_legacy(archive: AsarArchive, expression: str) -> list[dict[str, Any]]:
     expression_bytes = expression.encode("utf-8")
     matches = []
     for entry_match in file_entries(archive):
