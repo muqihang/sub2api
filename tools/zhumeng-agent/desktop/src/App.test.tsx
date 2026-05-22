@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -40,6 +40,7 @@ vi.mock("./lib/sidecar", () => ({
 describe("App visual shell", () => {
   beforeEach(() => {
     document.documentElement.dataset.theme = "";
+    window.localStorage.clear();
   });
 
   it("renders a macOS style window frame for web preview and Tauri", async () => {
@@ -49,5 +50,21 @@ describe("App visual shell", () => {
     expect(screen.getByTestId("mac-window-frame")).toBeInTheDocument();
     expect(screen.getByTestId("mac-window-titlebar")).toBeInTheDocument();
     expect(screen.getAllByTestId("mac-window-control")).toHaveLength(3);
+  });
+
+  it("defaults to Chinese and switches the full shell to English from settings", async () => {
+    render(<App />);
+
+    expect(await screen.findAllByText("概览")).toHaveLength(2);
+    expect(screen.getByText("设置")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("设置"));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+
+    expect(screen.getByText("Overview")).toBeInTheDocument();
+    expect(screen.getAllByText("Settings")).toHaveLength(2);
+    expect(screen.getByText("Language")).toBeInTheDocument();
+    expect(screen.queryByText("概览")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("zhumeng-agent-desktop-language")).toBe("en");
   });
 });

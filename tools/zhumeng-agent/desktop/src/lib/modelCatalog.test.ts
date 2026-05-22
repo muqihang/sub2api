@@ -69,4 +69,14 @@ describe("modelCatalog", () => {
     ]);
     expect(modelPriceRows(models[1])).toEqual([["价格", "未配置"]]);
   });
+
+  it("returns localized tooltip rows for English UI", () => {
+    expect(modelPriceRows(models[0], "en")).toEqual([
+      ["Input", "$2.50 / 1M tokens"],
+      ["Output", "$15.00 / 1M tokens"],
+      ["Cache hit", "$0.25 / 1M tokens"],
+      ["Cache write", "$3.00 / 1M tokens"]
+    ]);
+    expect(modelPriceRows(models[1], "en")).toEqual([["Price", "Not configured"]]);
+  });
 });

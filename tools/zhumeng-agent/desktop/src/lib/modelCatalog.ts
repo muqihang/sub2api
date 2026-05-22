@@ -1,4 +1,5 @@
 import type { CapabilityKey, CatalogModel, ModelCatalogSummary, ModelFilter, ModelPricing } from "./types";
+import { translations, type Language } from "./i18n";
 
 const REQUIRED_CAPABILITIES: CapabilityKey[] = ["responses", "streaming", "tool_calls", "context_continuation"];
 
@@ -73,25 +74,26 @@ export function providerOptions(models: CatalogModel[]): string[] {
   return Array.from(new Set(models.map((model) => model.provider_id).filter((provider): provider is string => Boolean(provider)))).sort();
 }
 
-export function modelPriceRows(model: CatalogModel): [string, string][] {
+export function modelPriceRows(model: CatalogModel, language: Language = "zh"): [string, string][] {
   const pricing = model.pricing;
+  const labels = translations[language].price;
   if (pricingMissing(pricing)) {
-    return [["价格", "未配置"]];
+    return [[labels.price, labels.notConfigured]];
   }
   const rows: [string, string][] = [];
-  addPriceRow(rows, "输入", pricing?.input_price, pricing);
-  addPriceRow(rows, "输出", pricing?.output_price, pricing);
-  addPriceRow(rows, "命中缓存", pricing?.cached_input_price, pricing);
-  addPriceRow(rows, "写入缓存", pricing?.cache_write_price, pricing);
-  return rows.length ? rows : [["价格", "未配置"]];
+  addPriceRow(rows, labels.input, pricing?.input_price, pricing, labels.perMillionTokens);
+  addPriceRow(rows, labels.output, pricing?.output_price, pricing, labels.perMillionTokens);
+  addPriceRow(rows, labels.cachedInput, pricing?.cached_input_price, pricing, labels.perMillionTokens);
+  addPriceRow(rows, labels.cacheWrite, pricing?.cache_write_price, pricing, labels.perMillionTokens);
+  return rows.length ? rows : [[labels.price, labels.notConfigured]];
 }
 
-function addPriceRow(rows: [string, string][], label: string, value: string | number | null | undefined, pricing?: ModelPricing | null) {
+function addPriceRow(rows: [string, string][], label: string, value: string | number | null | undefined, pricing: ModelPricing | null | undefined, perMillionTokens: string) {
   if (value === undefined || value === null || String(value).trim() === "") {
     return;
   }
   const currency = String(pricing?.currency || "USD").toUpperCase();
-  const unit = pricing?.unit === "per_1m_tokens" || !pricing?.unit ? "100万 tokens" : String(pricing.unit);
+  const unit = pricing?.unit === "per_1m_tokens" || !pricing?.unit ? perMillionTokens : String(pricing.unit);
   const prefix = currency === "USD" ? "$" : `${currency} `;
   rows.push([label, `${prefix}${value} / ${unit}`]);
 }

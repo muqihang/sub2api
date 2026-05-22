@@ -29,11 +29,14 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import { parseZhumengDeepLink } from "./lib/deeplink";
+import { isLanguage, translations, type Language, type Translation } from "./lib/i18n";
 import { filterCatalogModels, modelIsCompatible, modelPriceRows, providerOptions, summarizeCatalog } from "./lib/modelCatalog";
 import { sidecar, SidecarError } from "./lib/sidecar";
 import type { CatalogModel, DeepLinkRoute, DesktopStatus, ModelFilter } from "./lib/types";
 
 type PageId = "overview" | "apps" | "codex" | "wizard" | "diagnostics" | "settings" | "about";
+
+export const LANGUAGE_STORAGE_KEY = "zhumeng-agent-desktop-language";
 
 const emptyStatus: DesktopStatus = {
   status: "not_connected",
@@ -52,7 +55,9 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [deepLink, setDeepLink] = useState<DeepLinkRoute | null>(null);
   const [theme, setTheme] = useState<"system" | "dark" | "light">("system");
+  const [language, setLanguage] = useState<Language>(() => readInitialLanguage());
 
+  const t = translations[language];
   const visibleModels = models;
   const summary = useMemo(() => summarizeCatalog(visibleModels), [visibleModels]);
   const globalStatus = status.global_status || status.status || "not_connected";
@@ -94,6 +99,11 @@ function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+  }, [language]);
 
   async function refreshStatus(options: { quiet?: boolean } = {}) {
     try {
@@ -144,38 +154,38 @@ function App() {
             <span className="traffic-light minimize" data-testid="mac-window-control" />
             <span className="traffic-light zoom" data-testid="mac-window-control" />
           </div>
-          <div className="window-title">逐梦注入工具</div>
-          <div className="titlebar-meta">Mac MVP</div>
+          <div className="window-title">{t.app.name}</div>
+          <div className="titlebar-meta">{t.app.windowMeta}</div>
         </div>
         <div className="app-shell">
           <aside className="sidebar">
             <div className="brand">
-              <div className="brand-mark">逐</div>
+              <div className="brand-mark">{t.app.mark}</div>
               <div>
-                <div className="brand-title">逐梦注入工具</div>
-                <div className="brand-subtitle">桌面版 Mac MVP</div>
+                <div className="brand-title">{t.app.name}</div>
+                <div className="brand-subtitle">{t.app.subtitle}</div>
               </div>
             </div>
-            <NavButton icon={<Gauge />} label="概览" active={page === "overview"} onClick={() => setPage("overview")} />
-            <NavButton icon={<Boxes />} label="已接入应用" active={page === "apps"} onClick={() => setPage("apps")} />
-            <NavButton icon={<AppWindow />} label="Codex App" active={page === "codex"} onClick={() => setPage("codex")} badge={status.adapters?.codex?.restart_required ? "重启" : undefined} />
-            <NavButton icon={<ListChecks />} label="接入向导" active={page === "wizard"} onClick={() => setPage("wizard")} />
-            <NavButton icon={<FileWarning />} label="诊断与日志" active={page === "diagnostics"} onClick={() => setPage("diagnostics")} />
-            <NavButton icon={<Settings />} label="设置" active={page === "settings"} onClick={() => setPage("settings")} />
-            <NavButton icon={<ShieldCheck />} label="分发与安全" active={page === "about"} onClick={() => setPage("about")} />
-            <div className="sidebar-footer">官网下载安装 · 不走 Mac App Store</div>
+            <NavButton icon={<Gauge />} label={t.nav.overview} active={page === "overview"} onClick={() => setPage("overview")} />
+            <NavButton icon={<Boxes />} label={t.nav.apps} active={page === "apps"} onClick={() => setPage("apps")} />
+            <NavButton icon={<AppWindow />} label={t.nav.codex} active={page === "codex"} onClick={() => setPage("codex")} badge={status.adapters?.codex?.restart_required ? t.nav.restart : undefined} />
+            <NavButton icon={<ListChecks />} label={t.nav.wizard} active={page === "wizard"} onClick={() => setPage("wizard")} />
+            <NavButton icon={<FileWarning />} label={t.nav.diagnostics} active={page === "diagnostics"} onClick={() => setPage("diagnostics")} />
+            <NavButton icon={<Settings />} label={t.nav.settings} active={page === "settings"} onClick={() => setPage("settings")} />
+            <NavButton icon={<ShieldCheck />} label={t.nav.about} active={page === "about"} onClick={() => setPage("about")} />
+            <div className="sidebar-footer">{t.app.footer}</div>
           </aside>
 
           <main className="main-panel">
-            <GlobalStatusBar status={globalStatus} proxyPort={status.proxy?.port} busy={isBusy} onRefresh={() => void refreshStatus()} theme={theme} onTheme={setTheme} />
+            <GlobalStatusBar t={t} status={globalStatus} proxyPort={status.proxy?.port} busy={isBusy} onRefresh={() => void refreshStatus()} theme={theme} onTheme={setTheme} />
             {lastError ? <div className="error-strip"><AlertTriangle size={16} />{lastError}</div> : null}
-            {page === "overview" && <OverviewPage status={status} summary={summary} onRepair={() => runAction(() => sidecar.repair())} onOpenCodex={() => runAction(() => sidecar.openCodex())} />}
-            {page === "apps" && <ConnectedAppsPage status={status} onOpenCodex={() => setPage("codex")} />}
-            {page === "codex" && <CodexDetailPage status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} />}
-            {page === "wizard" && <SetupWizardPage deepLink={deepLink} status={status} onAuthorize={() => void handleDeepLinkAuth()} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} />}
-            {page === "diagnostics" && <DiagnosticsPage onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
-            {page === "settings" && <SettingsPage />}
-            {page === "about" && <AboutDistributionPage />}
+            {page === "overview" && <OverviewPage t={t} status={status} summary={summary} onRepair={() => runAction(() => sidecar.repair())} onOpenCodex={() => runAction(() => sidecar.openCodex())} />}
+            {page === "apps" && <ConnectedAppsPage t={t} status={status} onOpenCodex={() => setPage("codex")} />}
+            {page === "codex" && <CodexDetailPage t={t} language={language} status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} />}
+            {page === "wizard" && <SetupWizardPage t={t} deepLink={deepLink} status={status} onAuthorize={() => void handleDeepLinkAuth()} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} />}
+            {page === "diagnostics" && <DiagnosticsPage t={t} onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
+            {page === "settings" && <SettingsPage t={t} language={language} onLanguage={setLanguage} />}
+            {page === "about" && <AboutDistributionPage t={t} />}
           </main>
         </div>
       </div>
@@ -193,97 +203,97 @@ function NavButton({ icon, label, active, badge, onClick }: { icon: React.ReactN
   );
 }
 
-function GlobalStatusBar({ status, proxyPort, busy, theme, onTheme, onRefresh }: { status: string; proxyPort?: number; busy: boolean; theme: "system" | "dark" | "light"; onTheme: (theme: "system" | "dark" | "light") => void; onRefresh: () => void }) {
+function GlobalStatusBar({ t, status, proxyPort, busy, theme, onTheme, onRefresh }: { t: Translation; status: string; proxyPort?: number; busy: boolean; theme: "system" | "dark" | "light"; onTheme: (theme: "system" | "dark" | "light") => void; onRefresh: () => void }) {
   const tone = statusTone(status);
   return (
     <div className={`global-bar ${tone}`}>
       <span className={`status-dot ${tone}`} />
       <div>
-        <div className="global-title">{statusLabel(status)}</div>
-        <div className="global-subtitle">Codex App · 逐梦托管模型 · 本机代理</div>
+        <div className="global-title">{statusLabel(status, t)}</div>
+        <div className="global-subtitle">{t.global.subtitle}</div>
       </div>
       <div className="global-spacer" />
-      <span className="pill">代理端口 {proxyPort || "未启动"}</span>
-      <button className="icon-button" onClick={onRefresh} aria-label="刷新状态">
+      <span className="pill">{t.global.proxyPort} {proxyPort || t.global.proxyStopped}</span>
+      <button className="icon-button" onClick={onRefresh} aria-label={t.global.refresh}>
         <RefreshCw size={16} className={busy ? "spin" : ""} />
       </button>
-      <button className="icon-button" onClick={() => onTheme(theme === "dark" ? "light" : "dark")} aria-label="切换主题">
+      <button className="icon-button" onClick={() => onTheme(theme === "dark" ? "light" : "dark")} aria-label={t.global.toggleTheme}>
         {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
       </button>
     </div>
   );
 }
 
-function OverviewPage({ status, summary, onRepair, onOpenCodex }: { status: DesktopStatus; summary: ReturnType<typeof summarizeCatalog>; onRepair: () => void; onOpenCodex: () => void }) {
+function OverviewPage({ t, status, summary, onRepair, onOpenCodex }: { t: Translation; status: DesktopStatus; summary: ReturnType<typeof summarizeCatalog>; onRepair: () => void; onOpenCodex: () => void }) {
   return (
     <section className="content">
-      <PageHeader title="概览" subtitle="检查授权、代理、Codex 增强项和模型目录是否处于可用状态。" />
+      <PageHeader title={t.overview.title} subtitle={t.overview.subtitle} />
       <div className="metric-grid">
-        <Metric title="全局状态" value={statusLabel(status.global_status || status.status || "not_connected")} icon={<Activity />} />
-        <Metric title="模型目录" value={`${summary.modelCount} 个模型`} icon={<Boxes />} />
-        <Metric title="主列表模型" value={`${summary.mainListCount} 个`} icon={<BadgeCheck />} />
-        <Metric title="缺少定价" value={`${summary.missingPricingCount} 个`} icon={<AlertTriangle />} />
+        <Metric title={t.overview.globalStatus} value={statusLabel(status.global_status || status.status || "not_connected", t)} icon={<Activity />} />
+        <Metric title={t.overview.modelCatalog} value={modelCountText(summary.modelCount, t)} icon={<Boxes />} />
+        <Metric title={t.overview.mainListModels} value={modelCountText(summary.mainListCount, t)} icon={<BadgeCheck />} />
+        <Metric title={t.overview.missingPricing} value={modelCountText(summary.missingPricingCount, t)} icon={<AlertTriangle />} />
       </div>
       <div className="two-column">
-        <HealthCheckList status={status} />
+        <HealthCheckList t={t} status={status} />
         <div className="card">
-          <div className="card-title">快速操作</div>
-          <button className="primary-action" onClick={onRepair}><Wrench size={16} />一键修复 Codex 接入</button>
-          <button className="secondary-action" onClick={onOpenCodex}><ExternalLink size={16} />打开 Codex App</button>
-          <div className="hint">修复动作只调用 `zhumeng-agent desktop repair`，不会在桌面壳里直接改 `~/.codex` 或 `app.asar`。</div>
+          <div className="card-title">{t.overview.quickActions}</div>
+          <button className="primary-action" onClick={onRepair}><Wrench size={16} />{t.actions.repairCodex}</button>
+          <button className="secondary-action" onClick={onOpenCodex}><ExternalLink size={16} />{t.actions.openCodex}</button>
+          <div className="hint">{t.overview.repairHint}</div>
         </div>
       </div>
     </section>
   );
 }
 
-function ConnectedAppsPage({ status, onOpenCodex }: { status: DesktopStatus; onOpenCodex: () => void }) {
+function ConnectedAppsPage({ t, status, onOpenCodex }: { t: Translation; status: DesktopStatus; onOpenCodex: () => void }) {
   return (
     <section className="content">
-      <PageHeader title="已接入应用" subtitle="MVP 先支持 Codex App，后续 Adapter 可以接 Claude Desktop 和自研工具。" />
+      <PageHeader title={t.apps.title} subtitle={t.apps.subtitle} />
       <button className="app-card" onClick={onOpenCodex}>
         <div className="app-icon">C</div>
         <div>
           <div className="app-title">Codex App</div>
-          <div className="app-subtitle">{status.adapters?.codex?.status || "not_configured"}</div>
+          <div className="app-subtitle">{statusLabel(status.adapters?.codex?.status || "not_configured", t)}</div>
         </div>
         <ChevronRight size={18} />
       </button>
-      <div className="disabled-app"><div className="app-icon muted">A</div><div><div className="app-title">Claude Desktop</div><div className="app-subtitle">规划中</div></div></div>
-      <div className="disabled-app"><div className="app-icon muted">+</div><div><div className="app-title">自定义目标应用</div><div className="app-subtitle">第二版预留</div></div></div>
+      <div className="disabled-app"><div className="app-icon muted">A</div><div><div className="app-title">{t.apps.claude}</div><div className="app-subtitle">{t.apps.planned}</div></div></div>
+      <div className="disabled-app"><div className="app-icon muted">+</div><div><div className="app-title">{t.apps.custom}</div><div className="app-subtitle">{t.apps.v2Reserved}</div></div></div>
     </section>
   );
 }
 
-function CodexDetailPage({ status, models, onRepair, onPatch, onSyncModels }: { status: DesktopStatus; models: CatalogModel[]; onRepair: () => void; onPatch: () => void; onSyncModels: () => void }) {
+function CodexDetailPage({ t, language, status, models, onRepair, onPatch, onSyncModels }: { t: Translation; language: Language; status: DesktopStatus; models: CatalogModel[]; onRepair: () => void; onPatch: () => void; onSyncModels: () => void }) {
   return (
     <section className="content">
-      <PageHeader title="Codex App" subtitle="授权、代理、增强项和模型目录都在这里集中管理。" />
+      <PageHeader title={t.codex.title} subtitle={t.codex.subtitle} />
       <div className="two-column">
-        <CodexEnhancementsCard enhancements={status.adapters?.codex?.enhancements} restartRequired={Boolean(status.adapters?.codex?.restart_required)} onPatch={onPatch} />
-        <HealthCheckList status={status} />
+        <CodexEnhancementsCard t={t} enhancements={status.adapters?.codex?.enhancements} restartRequired={Boolean(status.adapters?.codex?.restart_required)} onPatch={onPatch} />
+        <HealthCheckList t={t} status={status} />
       </div>
-      <ModelCatalogTable models={models} onSyncModels={onSyncModels} />
+      <ModelCatalogTable t={t} language={language} models={models} onSyncModels={onSyncModels} />
       <div className="action-row">
-        <button className="primary-action inline" onClick={onRepair}><Wrench size={16} />修复接入</button>
+        <button className="primary-action inline" onClick={onRepair}><Wrench size={16} />{t.actions.repair}</button>
       </div>
     </section>
   );
 }
 
-function SetupWizardPage({ deepLink, status, onAuthorize, onPatch }: { deepLink: DeepLinkRoute | null; status: DesktopStatus; onAuthorize: () => void; onPatch: () => void }) {
+function SetupWizardPage({ t, deepLink, status, onAuthorize, onPatch }: { t: Translation; deepLink: DeepLinkRoute | null; status: DesktopStatus; onAuthorize: () => void; onPatch: () => void }) {
   const steps = [
-    ["收到网页授权", deepLink ? "done" : "pending"],
-    ["检测 Codex App", status.adapters?.codex?.status !== "not_configured" ? "done" : "pending"],
-    ["授权与配置注入", status.authorization?.status === "configured" || status.status === "configured" ? "done" : "pending"],
-    ["启动本机代理", status.proxy?.port ? "done" : "pending"],
-    ["启用 Codex 增强项", status.adapters?.codex?.enhancements ? "done" : "pending"],
-    ["健康检查", status.global_status === "running" || status.global_status === "configured" ? "done" : "pending"],
-    ["完成", status.status === "configured" ? "done" : "pending"]
+    [t.wizard.receivedAuth, deepLink ? "done" : "pending"],
+    [t.wizard.detectCodex, status.adapters?.codex?.status !== "not_configured" ? "done" : "pending"],
+    [t.wizard.injectAuth, status.authorization?.status === "configured" || status.status === "configured" ? "done" : "pending"],
+    [t.wizard.startProxy, status.proxy?.port ? "done" : "pending"],
+    [t.wizard.enableCodexEnhancements, status.adapters?.codex?.enhancements ? "done" : "pending"],
+    [t.wizard.healthCheck, status.global_status === "running" || status.global_status === "configured" ? "done" : "pending"],
+    [t.wizard.done, status.status === "configured" ? "done" : "pending"]
   ] as const;
   return (
     <section className="content">
-      <PageHeader title="接入向导" subtitle="深链会进入这里，重新授权和打开 Codex 也走同一套路由。" />
+      <PageHeader title={t.wizard.title} subtitle={t.wizard.subtitle} />
       <div className="wizard">
         {steps.map(([label, state], index) => (
           <div className={`wizard-step ${state}`} key={label}>
@@ -293,51 +303,52 @@ function SetupWizardPage({ deepLink, status, onAuthorize, onPatch }: { deepLink:
         ))}
       </div>
       <div className="action-row">
-        <button className="primary-action inline" disabled={!deepLink || deepLink.action === "open"} onClick={onAuthorize}><KeyRound size={16} />执行授权</button>
-        <button className="secondary-action inline" onClick={onPatch}><PlugZap size={16} />启用 Codex 增强项</button>
+        <button className="primary-action inline" disabled={!deepLink || deepLink.action === "open"} onClick={onAuthorize}><KeyRound size={16} />{t.actions.authorize}</button>
+        <button className="secondary-action inline" onClick={onPatch}><PlugZap size={16} />{t.actions.enableEnhancements}</button>
       </div>
     </section>
   );
 }
 
-function DiagnosticsPage({ status, onDiagnose }: { status: DesktopStatus; onDiagnose: () => void }) {
+function DiagnosticsPage({ t, status, onDiagnose }: { t: Translation; status: DesktopStatus; onDiagnose: () => void }) {
   return (
     <section className="content">
-      <PageHeader title="诊断与日志" subtitle="诊断报告由 sidecar 生成并脱敏，桌面壳不展示 token。" />
+      <PageHeader title={t.diagnostics.title} subtitle={t.diagnostics.subtitle} />
       <div className="card">
-        <div className="card-title">脱敏诊断报告</div>
+        <div className="card-title">{t.diagnostics.reportTitle}</div>
         <div className="code-block">{JSON.stringify({ status: status.status, proxy: status.proxy, authorization: status.authorization }, null, 2)}</div>
-        <button className="secondary-action inline" onClick={onDiagnose}><Copy size={16} />生成并复制报告</button>
+        <button className="secondary-action inline" onClick={onDiagnose}><Copy size={16} />{t.actions.copyDiagnostics}</button>
       </div>
     </section>
   );
 }
 
-function SettingsPage() {
+function SettingsPage({ t, language, onLanguage }: { t: Translation; language: Language; onLanguage: (language: Language) => void }) {
   return (
     <section className="content">
-      <PageHeader title="设置" subtitle="MVP 保留关键开关位置，真实策略由 sidecar 和后端控制。" />
+      <PageHeader title={t.settings.title} subtitle={t.settings.subtitle} />
       <div className="settings-list">
-        <SettingRow icon={<SlidersHorizontal />} title="代理端口策略" value="自动避开常见代理端口" />
-        <SettingRow icon={<LockKeyhole />} title="严格模型门禁" value="只展示兼容 Codex Agent 的模型" />
-        <SettingRow icon={<PackageCheck />} title="自动更新" value="第二版支持" disabled />
+        <LanguageSetting t={t} language={language} onLanguage={onLanguage} />
+        <SettingRow icon={<SlidersHorizontal />} title={t.settings.proxyPolicy} value={t.settings.proxyPolicyValue} />
+        <SettingRow icon={<LockKeyhole />} title={t.settings.strictGate} value={t.settings.strictGateValue} />
+        <SettingRow icon={<PackageCheck />} title={t.settings.autoUpdate} value={t.settings.autoUpdateValue} disabled />
       </div>
     </section>
   );
 }
 
-function AboutDistributionPage() {
+function AboutDistributionPage({ t }: { t: Translation }) {
   return (
     <section className="content">
-      <PageHeader title="分发与安全" subtitle="首版从官网下载，不上架 Mac App Store。" />
+      <PageHeader title={t.distribution.title} subtitle={t.distribution.subtitle} />
       <div className="two-column">
         <div className="card">
-          <div className="card-title">发布路径</div>
-          <p>内测包可以先未签名分发；正式官网发布前需要 `Developer ID` 签名、苹果公证和 `SHA256` 校验。</p>
+          <div className="card-title">{t.distribution.releasePath}</div>
+          <p>{t.distribution.releaseCopy}</p>
         </div>
         <div className="card">
-          <div className="card-title">安全边界</div>
-          <p>桌面壳只调用稳定 JSON 接口；写配置、启动代理、修补和恢复都由 Python sidecar 执行。</p>
+          <div className="card-title">{t.distribution.safetyBoundary}</div>
+          <p>{t.distribution.safetyCopy}</p>
         </div>
       </div>
     </section>
@@ -357,16 +368,16 @@ function Metric({ title, value, icon }: { title: string; value: string; icon: Re
   return <div className="metric"><div className="metric-icon">{icon}</div><div><div className="metric-title">{title}</div><div className="metric-value">{value}</div></div></div>;
 }
 
-function HealthCheckList({ status }: { status: DesktopStatus }) {
+function HealthCheckList({ t, status }: { t: Translation; status: DesktopStatus }) {
   const checks = [
-    ["授权", status.authorization?.device_id ? "ok" : "warn", status.authorization?.device_id ? `设备 ${status.authorization.device_id}` : "未接入"],
-    ["本机代理", status.proxy?.port ? "ok" : "warn", status.proxy?.port ? `127.0.0.1:${status.proxy.port}` : "未启动"],
-    ["后端网关", status.backend?.gateway_base_url ? "ok" : "warn", status.backend?.gateway_base_url || "未同步"],
-    ["模型目录", status.model_catalog?.model_count ? "ok" : "warn", `${status.model_catalog?.model_count || 0} 个模型`]
+    [t.health.authorization, status.authorization?.device_id ? "ok" : "warn", status.authorization?.device_id ? `${t.health.device} ${status.authorization.device_id}` : t.health.notConnected],
+    [t.health.proxy, status.proxy?.port ? "ok" : "warn", status.proxy?.port ? `127.0.0.1:${status.proxy.port}` : t.health.stopped],
+    [t.health.backendGateway, status.backend?.gateway_base_url ? "ok" : "warn", status.backend?.gateway_base_url || t.health.notSynced],
+    [t.health.modelCatalog, status.model_catalog?.model_count ? "ok" : "warn", modelCountText(status.model_catalog?.model_count || 0, t)]
   ] as const;
   return (
     <div className="card">
-      <div className="card-title">健康检查</div>
+      <div className="card-title">{t.health.title}</div>
       {checks.map(([label, state, detail]) => (
         <div className="check-row" key={label}>
           <span className={`status-dot small ${state}`} />
@@ -378,25 +389,25 @@ function HealthCheckList({ status }: { status: DesktopStatus }) {
   );
 }
 
-function CodexEnhancementsCard({ enhancements, restartRequired, onPatch }: { enhancements?: Record<string, unknown>; restartRequired: boolean; onPatch: () => void }) {
+function CodexEnhancementsCard({ t, enhancements, restartRequired, onPatch }: { t: Translation; enhancements?: Record<string, unknown>; restartRequired: boolean; onPatch: () => void }) {
   const items = (enhancements?.items || enhancements || {}) as Record<string, { status?: string }>;
   return (
     <div className="card">
-      <div className="card-title">Codex 增强项</div>
+      <div className="card-title">{t.enhancements.title}</div>
       {["model-picker", "plugin-auth-gate", "plugin-mention-marketplace"].map((item) => (
         <div className="enhancement-row" key={item}>
           <TerminalSquare size={16} />
-          <span>{enhancementName(item)}</span>
-          <em>{items[item]?.status || "unknown"}</em>
+          <span>{enhancementName(item, t)}</span>
+          <em>{statusLabel(items[item]?.status || "unknown", t)}</em>
         </div>
       ))}
-      {restartRequired ? <div className="warning-note"><AlertTriangle size={15} />需要重启 Codex App 后生效</div> : null}
-      <button className="secondary-action inline" onClick={onPatch}><PlugZap size={16} />启用全部增强项</button>
+      {restartRequired ? <div className="warning-note"><AlertTriangle size={15} />{t.enhancements.restartRequired}</div> : null}
+      <button className="secondary-action inline" onClick={onPatch}><PlugZap size={16} />{t.actions.enableAllEnhancements}</button>
     </div>
   );
 }
 
-function ModelCatalogTable({ models, onSyncModels }: { models: CatalogModel[]; onSyncModels: () => void }) {
+function ModelCatalogTable({ t, language, models, onSyncModels }: { t: Translation; language: Language; models: CatalogModel[]; onSyncModels: () => void }) {
   const [filter, setFilter] = useState<ModelFilter>({ query: "", provider: "all", capability: "all" });
   const filtered = useMemo(() => filterCatalogModels(models, filter), [models, filter]);
   const providers = providerOptions(models);
@@ -404,31 +415,31 @@ function ModelCatalogTable({ models, onSyncModels }: { models: CatalogModel[]; o
     <div className="card model-card">
       <div className="table-toolbar">
         <div>
-          <div className="card-title">模型目录</div>
-          <div className="muted-text">{filtered.length} / {models.length} 个模型</div>
+          <div className="card-title">{t.modelCatalog.title}</div>
+          <div className="muted-text">{filtered.length} / {models.length} {t.modelCatalog.modelUnit}</div>
         </div>
-        <label className="search-field"><Search size={15} /><input value={filter.query} onChange={(event) => setFilter({ ...filter, query: event.target.value })} placeholder="搜索模型" /></label>
+        <label className="search-field"><Search size={15} /><input value={filter.query} onChange={(event) => setFilter({ ...filter, query: event.target.value })} placeholder={t.modelCatalog.searchPlaceholder} /></label>
         <select value={filter.provider} onChange={(event) => setFilter({ ...filter, provider: event.target.value })}>
-          <option value="all">全部供应商</option>
+          <option value="all">{t.modelCatalog.allProviders}</option>
           {providers.map((provider) => <option value={provider} key={provider}>{provider}</option>)}
         </select>
         <select value={filter.capability} onChange={(event) => setFilter({ ...filter, capability: event.target.value as ModelFilter["capability"] })}>
-          <option value="all">全部能力</option>
-          <option value="responses">Responses</option>
-          <option value="streaming">流式</option>
-          <option value="tool_calls">工具调用</option>
-          <option value="context_continuation">上下文延续</option>
+          <option value="all">{t.modelCatalog.allCapabilities}</option>
+          <option value="responses">{t.modelCatalog.responses}</option>
+          <option value="streaming">{t.modelCatalog.streaming}</option>
+          <option value="tool_calls">{t.modelCatalog.toolCalls}</option>
+          <option value="context_continuation">{t.modelCatalog.contextContinuation}</option>
         </select>
-        <button className="secondary-action inline" onClick={onSyncModels}><RefreshCw size={16} />同步</button>
+        <button className="secondary-action inline" onClick={onSyncModels}><RefreshCw size={16} />{t.actions.sync}</button>
       </div>
       <div className="model-table-wrap">
         <table className="model-table">
           <thead>
-            <tr><th>模型</th><th>供应商</th><th>能力</th><th>定价</th><th>状态</th></tr>
+            <tr><th>{t.modelCatalog.model}</th><th>{t.modelCatalog.provider}</th><th>{t.modelCatalog.capabilities}</th><th>{t.modelCatalog.pricing}</th><th>{t.modelCatalog.status}</th></tr>
           </thead>
           <tbody>
-            {filtered.map((model) => <ModelRow model={model} key={model.slug} />)}
-            {!filtered.length ? <tr><td colSpan={5} className="empty-cell">暂无模型目录，请先同步或完成接入。</td></tr> : null}
+            {filtered.map((model) => <ModelRow t={t} language={language} model={model} key={model.slug} />)}
+            {!filtered.length ? <tr><td colSpan={5} className="empty-cell">{t.modelCatalog.empty}</td></tr> : null}
           </tbody>
         </table>
       </div>
@@ -436,28 +447,44 @@ function ModelCatalogTable({ models, onSyncModels }: { models: CatalogModel[]; o
   );
 }
 
-function ModelRow({ model }: { model: CatalogModel }) {
+function ModelRow({ t, language, model }: { t: Translation; language: Language; model: CatalogModel }) {
   const compatible = modelIsCompatible(model);
   return (
     <tr>
       <td><strong>{model.display_name || model.slug}</strong><span>{model.slug}</span></td>
       <td>{model.provider_id || model.origin || "unknown"}</td>
-      <td><div className="cap-list">{["responses", "streaming", "tool_calls", "context_continuation"].map((cap) => <span className={model.capabilities?.[cap] ? "on" : "off"} key={cap}>{capLabel(cap)}</span>)}</div></td>
-      <td><ModelPriceTooltip model={model} /></td>
-      <td><span className={`status-chip ${compatible ? "ok" : "warn"}`}>{compatible ? "可用" : "受限"}</span></td>
+      <td><div className="cap-list">{["responses", "streaming", "tool_calls", "context_continuation"].map((cap) => <span className={model.capabilities?.[cap] ? "on" : "off"} key={cap}>{capLabel(cap, t)}</span>)}</div></td>
+      <td><ModelPriceTooltip t={t} language={language} model={model} /></td>
+      <td><span className={`status-chip ${compatible ? "ok" : "warn"}`}>{compatible ? t.modelCatalog.available : t.modelCatalog.limited}</span></td>
     </tr>
   );
 }
 
-function ModelPriceTooltip({ model }: { model: CatalogModel }) {
-  const rows = modelPriceRows(model);
+function ModelPriceTooltip({ t, language, model }: { t: Translation; language: Language; model: CatalogModel }) {
+  const rows = modelPriceRows(model, language);
   return (
     <span className="price-cell">
-      按模型定价
+      {t.modelCatalog.pricingTrigger}
       <span className="price-popover">
         {rows.map(([label, value]) => <span key={label}><b>{label}</b><em>{value}</em></span>)}
       </span>
     </span>
+  );
+}
+
+function LanguageSetting({ t, language, onLanguage }: { t: Translation; language: Language; onLanguage: (language: Language) => void }) {
+  return (
+    <div className="setting-row language-setting">
+      <SlidersHorizontal />
+      <div>
+        <div>{t.settings.languageTitle}</div>
+        <span>{t.settings.languageDescription}</span>
+      </div>
+      <div className="segmented-control" aria-label={t.settings.languageTitle}>
+        <button className={language === "zh" ? "selected" : ""} onClick={() => onLanguage("zh")}>{t.settings.chinese}</button>
+        <button className={language === "en" ? "selected" : ""} onClick={() => onLanguage("en")}>{t.settings.english}</button>
+      </div>
+    </div>
   );
 }
 
@@ -471,37 +498,33 @@ function statusTone(status: string) {
   return "err";
 }
 
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    running: "运行中",
-    configured: "已配置",
-    repaired: "已修复",
-    reauthorized: "已重新授权",
-    not_connected: "未接入",
-    not_configured: "未配置",
-    degraded: "降级",
-    error: "错误"
-  };
-  return labels[status] || status;
+function statusLabel(status: string, t: Translation) {
+  if (status === "unknown") {
+    return t.enhancements.unknown;
+  }
+  return t.status[status as keyof Translation["status"]] || status;
 }
 
-function enhancementName(item: string) {
+function enhancementName(item: string, t: Translation) {
   const labels: Record<string, string> = {
-    "model-picker": "模型选择器",
-    "plugin-auth-gate": "插件授权门禁",
-    "plugin-mention-marketplace": "插件市场提及"
+    "model-picker": t.enhancements.modelPicker,
+    "plugin-auth-gate": t.enhancements.pluginAuthGate,
+    "plugin-mention-marketplace": t.enhancements.pluginMentionMarketplace
   };
   return labels[item] || item;
 }
 
-function capLabel(cap: string) {
-  const labels: Record<string, string> = {
-    responses: "响应",
-    streaming: "流式",
-    tool_calls: "工具",
-    context_continuation: "延续"
-  };
-  return labels[cap] || cap;
+function capLabel(cap: string, t: Translation) {
+  return t.capabilities[cap as keyof Translation["capabilities"]] || cap;
+}
+
+function modelCountText(count: number, t: Translation) {
+  return `${count} ${t.modelCatalog.modelUnit}`;
+}
+
+function readInitialLanguage(): Language {
+  const stored = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+  return isLanguage(stored) ? stored : "zh";
 }
 
 export default App;

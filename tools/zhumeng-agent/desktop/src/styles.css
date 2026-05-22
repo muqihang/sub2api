@@ -105,6 +105,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
   letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
 }
 
 button,
@@ -211,6 +212,7 @@ button {
   border-right: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel-sub) 88%, transparent);
   backdrop-filter: blur(20px);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI Variable", "PingFang SC", "Microsoft YaHei UI", sans-serif;
 }
 
 .brand {
@@ -237,7 +239,8 @@ button {
 .app-title {
   color: var(--text);
   font-size: 13px;
-  font-weight: 680;
+  font-weight: 620;
+  line-height: 1.25;
 }
 
 .brand-subtitle,
@@ -259,6 +262,9 @@ button {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  font-size: 13px;
+  font-weight: 520;
+  line-height: 1.2;
   text-align: left;
   transition: background 120ms ease, color 120ms ease;
 }
@@ -271,6 +277,7 @@ button {
 .nav-item.active {
   background: var(--selected);
   color: var(--text);
+  font-weight: 570;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
 }
 
@@ -286,6 +293,7 @@ button {
   background: rgba(209, 136, 34, 0.16);
   color: var(--warn);
   font-size: 10px;
+  font-weight: 580;
 }
 
 .sidebar-footer {
@@ -293,6 +301,8 @@ button {
   padding: 12px 10px 4px;
   color: var(--soft);
   font-size: 11px;
+  font-weight: 450;
+  line-height: 1.35;
 }
 
 .main-panel {
@@ -882,6 +892,48 @@ button {
   border-radius: 10px;
   background: var(--panel);
   box-shadow: var(--shadow-card);
+}
+
+.language-setting {
+  min-height: 68px;
+}
+
+.language-setting > div:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+}
+
+.segmented-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(72px, 1fr));
+  gap: 2px;
+  min-height: 30px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-sub) 86%, transparent);
+}
+
+.segmented-control button {
+  min-width: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 540;
+  line-height: 1;
+}
+
+.segmented-control button:hover {
+  color: var(--text);
+}
+
+.segmented-control button.selected {
+  background: var(--panel-solid);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(15, 17, 21, 0.08);
 }
 
 .setting-row svg {
