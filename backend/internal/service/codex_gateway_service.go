@@ -14,6 +14,51 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func codexGatewayMergeInstructions(existing string, injected string) string {
+	existing = strings.TrimSpace(existing)
+	injected = strings.TrimSpace(injected)
+	switch {
+	case existing == "":
+		return injected
+	case injected == "":
+		return existing
+	case strings.Contains(existing, injected):
+		return existing
+	default:
+		return injected + "\n\n" + existing
+	}
+}
+
+func codexGatewayShouldInjectBaseInstructions(model CodexGatewayModel) bool {
+	switch normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) {
+	case CodexGatewayProviderDeepSeek, CodexGatewayProviderAnthropic:
+		return true
+	default:
+		return false
+	}
+}
+
+func codexGatewayInjectBaseInstructions(req *CodexGatewayResponsesCreateRequest, model CodexGatewayModel) error {
+	if req == nil || !codexGatewayShouldInjectBaseInstructions(model) {
+		return nil
+	}
+	existing, _ := parseCodexGatewayJSONString(req.Instructions)
+	merged := codexGatewayMergeInstructions(existing, codexGatewayDefaultBaseInstructions)
+	if strings.TrimSpace(merged) == strings.TrimSpace(existing) {
+		return nil
+	}
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	req.Instructions = raw
+	if req.RawFields == nil {
+		req.RawFields = make(map[string]json.RawMessage)
+	}
+	req.RawFields["instructions"] = cloneCodexGatewayRawJSON(raw)
+	return nil
+}
+
 type codexGatewayStreamingHandledError struct{}
 
 func (e *codexGatewayStreamingHandledError) Error() string {
@@ -49,7 +94,15 @@ func (s *CodexGatewayService) Models(ctx context.Context, req CodexGatewayModels
 	if s == nil || s.registry == nil {
 		return codexGatewayHTTPErrorResponse(http.StatusServiceUnavailable, CodexGatewayErrorTypeAPI, "service_unavailable", "codex gateway model registry is not configured"), nil
 	}
-	body, err := json.Marshal(s.registry.ModelsResponse())
+	var (
+		body []byte
+		err  error
+	)
+	if strings.EqualFold(strings.TrimSpace(req.CatalogFormat), "codex_cli") {
+		body, err = s.registry.ExportCodexCLICatalogJSON()
+	} else {
+		body, err = json.Marshal(s.registry.ModelsResponse())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -104,9 +157,9 @@ func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayRes
 		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "model_visibility", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: fmt.Sprintf("model %q is not supported", parsed.Model)})
 		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, fmt.Sprintf("model %q is not supported", parsed.Model)), nil
 	}
-	if model.Provider == "deepseek" && parsed.PreviousResponseID != nil && strings.TrimSpace(*parsed.PreviousResponseID) != "" {
-		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "validate", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: "previous_response_id is not supported on the HTTP gateway path for DeepSeek models"})
-		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, "previous_response_id is not supported on the HTTP gateway path for DeepSeek models"), nil
+	if err := codexGatewayInjectBaseInstructions(&parsed, model); err != nil {
+		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "instructions", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeAPI, ErrorCode: "instructions_injection_failed", Message: err.Error()})
+		return codexGatewayHTTPErrorResponse(http.StatusInternalServerError, CodexGatewayErrorTypeAPI, "instructions_injection_failed", "failed to prepare model instructions"), nil
 	}
 	if trace != nil {
 		trace.Meta.Model = parsed.Model

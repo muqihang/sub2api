@@ -300,6 +300,177 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Equal(t, "custom__shell", stored.ToolCalls[1].Alias)
 	})
 
+	t.Run("emits shell namespace tools as executable function calls", func(t *testing.T) {
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"run pwd"}]}
+			]`),
+			Tools: json.RawMessage(`[
+				{"type":"namespace","name":"shell","tools":[{"type":"function","name":"exec","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}
+			]`),
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_shell","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_shell","type":"function","function":{"name":"shell__exec","arguments":"{\"cmd\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_shell", IsolationKey: "iso_shell"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+		events := parseCodexGatewayOrderedEvents(t, buf.String())
+		added := firstCodexGatewayEventPayload(t, events, "response.output_item.added")
+		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(added, "item.type").String())
+		require.Equal(t, "shell", gjson.GetBytes(added, "item.namespace").String())
+		require.Equal(t, "exec", gjson.GetBytes(added, "item.name").String())
+		doneArgs := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.done")
+		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(doneArgs, "item.type").String())
+		require.Equal(t, "shell", gjson.GetBytes(doneArgs, "item.namespace").String())
+		require.Equal(t, "exec", gjson.GetBytes(doneArgs, "item.name").String())
+		require.JSONEq(t, `{"cmd":"pwd"}`, gjson.GetBytes(doneArgs, "item.arguments").String())
+		done := firstCodexGatewayEventPayload(t, events, "response.output_item.done")
+		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(done, "item.type").String())
+		require.False(t, gjson.GetBytes(done, "item.action").Exists())
+		terminal := events[len(events)-1].Payload
+		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(terminal, "response.output.0.type").String())
+		require.Equal(t, "shell", gjson.GetBytes(terminal, "response.output.0.namespace").String())
+		require.Equal(t, "exec", gjson.GetBytes(terminal, "response.output.0.name").String())
+	})
+
+	t.Run("streams split shell function arguments without local_shell_call", func(t *testing.T) {
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"run pwd"}]}
+			]`),
+			Tools: json.RawMessage(`[
+				{"type":"namespace","name":"shell","tools":[{"type":"function","name":"exec","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}
+			]`),
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_shell_split","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_shell","type":"function","function":{"name":"shell__exec","arguments":"{\"cmd\""}}]},"finish_reason":null}]}`,
+				"",
+				`data: {"id":"chatcmpl_stream_shell_split","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_shell_split", IsolationKey: "iso_shell_split"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+		events := parseCodexGatewayOrderedEvents(t, buf.String())
+		added := firstCodexGatewayEventPayload(t, events, "response.output_item.added")
+		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(added, "item.type").String())
+		require.Equal(t, "shell", gjson.GetBytes(added, "item.namespace").String())
+		require.Equal(t, "exec", gjson.GetBytes(added, "item.name").String())
+		require.False(t, gjson.GetBytes(added, "item.action").Exists())
+		doneArgs := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.done")
+		require.JSONEq(t, `{"cmd":"pwd"}`, gjson.GetBytes(doneArgs, "item.arguments").String())
+	})
+
+	t.Run("hides assistant preamble when the same turn calls a tool", func(t *testing.T) {
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"run pwd"}]}
+			]`),
+			Tools: json.RawMessage(`[
+				{"type":"namespace","name":"shell","tools":[{"type":"function","name":"exec","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}
+			]`),
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_shell_preamble","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"我来执行命令。"},"finish_reason":null}]}`,
+				"",
+				`data: {"id":"chatcmpl_stream_shell_preamble","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_shell","type":"function","function":{"name":"shell__exec","arguments":"{\"cmd\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_shell_preamble", IsolationKey: "iso_shell_preamble"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+		stream := buf.String()
+		require.NotContains(t, stream, "event: response.output_text.delta")
+		require.NotContains(t, stream, "我来执行命令")
+		events := parseCodexGatewayOrderedEvents(t, stream)
+		terminal := events[len(events)-1].Payload
+		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(terminal, "response.output.0.type").String())
+		require.False(t, gjson.GetBytes(terminal, "response.output.1").Exists())
+	})
+
 	t.Run("does not expose hosted web search as client function call", func(t *testing.T) {
 		origSearch := codexGatewayExecuteHostedWebSearchFunc
 		t.Cleanup(func() { codexGatewayExecuteHostedWebSearchFunc = origSearch })
@@ -453,7 +624,20 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		require.Contains(t, stream, "event: response.web_search_call.completed")
 		events := parseCodexGatewayOrderedEvents(t, stream)
 		requireSequentialCodexGatewayOrderedSequenceNumbers(t, events)
+		require.Equal(t, 1, countCodexGatewayEvent(events, "response.created"))
+		require.Equal(t, 1, countCodexGatewayEvent(events, "response.in_progress"))
 		require.Equal(t, 2, countCodexGatewayEvent(events, "response.output_item.added"))
+		rootResponseID := gjson.GetBytes(events[0].Payload, "response.id").String()
+		require.NotEmpty(t, rootResponseID)
+		for _, event := range events {
+			if responseID := gjson.GetBytes(event.Payload, "response_id").String(); responseID != "" {
+				require.Equal(t, rootResponseID, responseID, "event %s should stay on the synthetic response", event.Event)
+			}
+		}
+		terminal := events[len(events)-1].Payload
+		require.Equal(t, rootResponseID, gjson.GetBytes(terminal, "response.id").String())
+		require.Equal(t, "web_search_call", gjson.GetBytes(terminal, "response.output.0.type").String())
+		require.Equal(t, "message", gjson.GetBytes(terminal, "response.output.1.type").String())
 		require.Contains(t, stream, "Search result says Found from gateway search.")
 	})
 
@@ -551,13 +735,14 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 			Tools: json.RawMessage(`[{"type":"web_search"}]`),
 		}
 
-		requestBodies := make([][]byte, 0, 5)
+		const searchTurns = 13
+		requestBodies := make([][]byte, 0, searchTurns+1)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
 			require.NoError(t, err)
 			requestBodies = append(requestBodies, body)
 			w.Header().Set("Content-Type", "text/event-stream")
-			if len(requestBodies) <= 4 {
+			if len(requestBodies) <= searchTurns {
 				query := fmt.Sprintf("turn-%d", len(requestBodies))
 				_, _ = io.WriteString(w, strings.Join([]string{
 					`data: {"id":"chatcmpl_stream_multi_search_` + fmt.Sprint(len(requestBodies)) + `","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_` + fmt.Sprint(len(requestBodies)) + `","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"` + query + `\"}"}}]},"finish_reason":"tool_calls"}]}`,
@@ -590,8 +775,8 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 			&buf,
 		)
 		require.NoError(t, err)
-		require.Equal(t, 4, calls)
-		require.Len(t, requestBodies, 5)
+		require.Equal(t, searchTurns, calls)
+		require.Len(t, requestBodies, searchTurns+1)
 		require.Equal(t, "completed", result.ProviderResult.Response.Status)
 		require.Contains(t, buf.String(), `"type":"web_search_call"`)
 		require.Contains(t, buf.String(), "done")
@@ -803,6 +988,71 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		terminal := events[len(events)-1].Payload
 		require.Equal(t, "function_call", gjson.GetBytes(terminal, "response.output.0.type").String())
 		require.Equal(t, `{"city":"SF"}`, gjson.GetBytes(terminal, "response.output.0.arguments").String())
+	})
+
+	t.Run("normalizes wait_agent arguments before exposing function call events", func(t *testing.T) {
+		model := CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		}
+		req := CodexGatewayResponsesCreateRequest{
+			Model: "deepseek-v4-pro",
+			Input: json.RawMessage(`[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"wait for subagent"}]}
+			]`),
+			Tools: json.RawMessage(`[
+				{"type":"function","name":"wait_agent","parameters":{"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"}},"timeout_ms":{"type":"number"}},"required":["targets"]}}
+			]`),
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, strings.Join([]string{
+				`data: {"id":"chatcmpl_stream_wait_agent","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_wait","type":"function","function":{"name":"wait_agent","arguments":"{\"targets\":\"agent-1\",\"timeout_ms\":\"30000\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				"",
+				`data: [DONE]`,
+				"",
+			}, "\n"))
+		}))
+		defer server.Close()
+
+		stateStore := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{})
+		var buf bytes.Buffer
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			stateStore,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_wait_agent", IsolationKey: "iso_wait_agent"},
+			CodexGatewayDeepSeekRequestConfig{},
+			&buf,
+		)
+		require.NoError(t, err)
+		require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+		events := parseCodexGatewayOrderedEvents(t, buf.String())
+		require.Equal(t, 1, countCodexGatewayEvent(events, "response.function_call_arguments.delta"))
+		funcDeltaPayload := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.delta")
+		require.Equal(t, `{"targets":["agent-1"],"timeout_ms":30000}`, gjson.GetBytes(funcDeltaPayload, "delta").String())
+		funcDonePayload := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.done")
+		require.Equal(t, `{"targets":["agent-1"],"timeout_ms":30000}`, gjson.GetBytes(funcDonePayload, "arguments").String())
+
+		terminal := events[len(events)-1].Payload
+		require.Equal(t, `{"targets":["agent-1"],"timeout_ms":30000}`, gjson.GetBytes(terminal, "response.output.0.arguments").String())
+		require.Equal(t, `{"targets":["agent-1"],"timeout_ms":30000}`, result.ProviderResult.ToolCalls[0].Arguments)
+		stored, err := stateStore.Get(CodexGatewayStateLookupKey{
+			ResponseID:    "chatcmpl_stream_wait_agent",
+			SessionKey:    "session_wait_agent",
+			IsolationKey:  "iso_wait_agent",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		})
+		require.NoError(t, err)
+		require.Equal(t, `{"targets":["agent-1"],"timeout_ms":30000}`, stored.ToolCalls[0].Arguments)
 	})
 
 	t.Run("buffers tool argument deltas until id and name are known", func(t *testing.T) {

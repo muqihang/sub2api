@@ -293,13 +293,26 @@ func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDone(responseI
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(responseID, itemID string, outputIndex int, item json.RawMessage) error {
-	return w.write("response.function_call_arguments.done", map[string]any{
+	payload := map[string]any{
 		"type":         "response.function_call_arguments.done",
 		"response_id":  responseID,
 		"item_id":      itemID,
 		"output_index": outputIndex,
 		"item":         json.RawMessage(item),
-	})
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(item, &parsed); err == nil {
+		if callID := strings.TrimSpace(firstCodexGatewayToolString(parsed["call_id"])); callID != "" {
+			payload["call_id"] = callID
+		}
+		if name := strings.TrimSpace(firstCodexGatewayToolString(parsed["name"])); name != "" {
+			payload["name"] = name
+		}
+		if arguments := strings.TrimSpace(firstCodexGatewayToolString(parsed["arguments"])); arguments != "" {
+			payload["arguments"] = arguments
+		}
+	}
+	return w.write("response.function_call_arguments.done", payload)
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteOutputItemDone(responseID string, outputIndex int, item json.RawMessage) error {

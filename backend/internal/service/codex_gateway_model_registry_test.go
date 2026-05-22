@@ -213,6 +213,10 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 		require.Equal(t, "list", model.Visibility)
 		require.Equal(t, "local", model.ShellType)
 		require.NotEmpty(t, model.BaseInstructions)
+		require.Contains(t, model.BaseInstructions, "You are Codex, based on GPT-5.")
+		require.Contains(t, model.BaseInstructions, "`rg`")
+		require.Contains(t, model.BaseInstructions, "Try to use `edit`")
+		require.Contains(t, model.BaseInstructions, "For multi-line file creation or rewrites")
 		require.NotEmpty(t, model.SupportedReasoningLevels)
 		require.NotEmpty(t, model.SupportedReasoningLevels[0].Description)
 	}

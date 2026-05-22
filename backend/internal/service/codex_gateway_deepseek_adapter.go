@@ -247,12 +247,18 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 			Name:  alias,
 		}
 	}
+	arguments := toolCall.Function.Arguments
+	if entry.Kind != CodexGatewayToolKindCustom && codexGatewayClientVisibleToolItemType(entry) != CodexGatewayOutputItemTypeLocalShellCall {
+		if next, changed := codexGatewayNormalizeFunctionToolArguments(codexGatewayClientVisibleToolName(entry), arguments); changed {
+			arguments = next
+		}
+	}
 	stored := CodexGatewayStoredToolCall{
 		ID:        callID,
 		Type:      entry.Kind,
 		Alias:     alias,
 		Name:      codexGatewayClientVisibleToolName(entry),
-		Arguments: toolCall.Function.Arguments,
+		Arguments: arguments,
 	}
 
 	item := map[string]any{
@@ -261,15 +267,18 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 		"name":    stored.Name,
 		"status":  "completed",
 	}
-	if entry.Kind == CodexGatewayToolKindCustom {
-		item["type"] = "custom_tool_call"
+	switch codexGatewayClientVisibleToolItemType(entry) {
+	case CodexGatewayOutputItemTypeCustomToolCall:
+		item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 		item["input"] = codexGatewayDeepSeekCustomToolInput(toolCall.Function.Arguments, entry)
-	} else {
-		item["type"] = "function_call"
+	case CodexGatewayOutputItemTypeLocalShellCall:
+		codexGatewayApplyLocalShellCallItemFields(item, callID, "completed", toolCall.Function.Arguments)
+	default:
+		item["type"] = codexGatewayClientVisibleToolItemType(entry)
 		if namespace := strings.TrimSpace(entry.Namespace); namespace != "" {
 			item["namespace"] = namespace
 		}
-		item["arguments"] = toolCall.Function.Arguments
+		item["arguments"] = arguments
 	}
 	return item, stored, true
 }

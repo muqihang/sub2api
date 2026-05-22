@@ -321,13 +321,19 @@ func convertCodexGatewayInputItemToAnthropicMessages(item any, toolMapping Codex
 			return nil, err
 		}
 		return []map[string]any{msg}, nil
+	case "local_shell_call":
+		msg, err := convertCodexGatewayFunctionCallItemToAnthropic(m, toolMapping, CodexGatewayToolKindFunction)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]any{msg}, nil
 	case "custom_tool_call":
 		msg, err := convertCodexGatewayFunctionCallItemToAnthropic(m, toolMapping, CodexGatewayToolKindCustom)
 		if err != nil {
 			return nil, err
 		}
 		return []map[string]any{msg}, nil
-	case "function_call_output", "custom_tool_call_output":
+	case "function_call_output", "local_shell_call_output", "custom_tool_call_output":
 		msg, err := convertCodexGatewayFunctionCallOutputItemToAnthropic(m)
 		if err != nil {
 			return nil, err
@@ -467,6 +473,9 @@ func convertCodexGatewayFunctionCallItemToAnthropic(m map[string]any, toolMappin
 		alias = sanitizeCodexGatewayToolName(name)
 	}
 	args := normalizeCodexGatewayToolArguments(firstCodexGatewayToolValue(m["arguments"], m["input"]))
+	if strings.TrimSpace(firstCodexGatewayToolString(m["type"])) == CodexGatewayOutputItemTypeLocalShellCall {
+		args = codexGatewayExtractShellArgumentsFromItem(m)
+	}
 	input := codexGatewayAnthropicToolInputRawMessage(args)
 	return map[string]any{
 		"role": "assistant",

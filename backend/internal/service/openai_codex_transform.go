@@ -1131,6 +1131,7 @@ func isCodexToolCallItemType(typ string) bool {
 		"custom_tool_call",
 		"mcp_tool_call",
 		"function_call_output",
+		"local_shell_call_output",
 		"mcp_tool_call_output",
 		"custom_tool_call_output",
 		"tool_search_output":

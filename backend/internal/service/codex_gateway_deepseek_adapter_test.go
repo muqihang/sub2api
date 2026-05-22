@@ -557,6 +557,30 @@ func TestCodexGatewayDeepSeekToolCallOutputItem_PreservesNamespaceForCodex(t *te
 	require.Equal(t, "click", stored.Name)
 }
 
+func TestCodexGatewayDeepSeekToolCallOutputItem_UsesFunctionCallForShellExec(t *testing.T) {
+	item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(apicompat.ChatToolCall{
+		ID: "call_shell",
+		Function: apicompat.ChatFunctionCall{
+			Name:      "shell__exec",
+			Arguments: `{"cmd":"pwd"}`,
+		},
+	}, map[string]CodexGatewayToolNameMapEntry{
+		"shell__exec": {
+			Alias:     "shell__exec",
+			Kind:      CodexGatewayToolKindNamespace,
+			Namespace: "shell",
+			Name:      "exec",
+		},
+	})
+	require.True(t, ok)
+	require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, item["type"])
+	require.Equal(t, "shell", item["namespace"])
+	require.Equal(t, "exec", item["name"])
+	require.Equal(t, `{"cmd":"pwd"}`, item["arguments"])
+	require.NotContains(t, item, "action")
+	require.Equal(t, "exec", stored.Name)
+}
+
 func TestCodexGatewayDeepSeekToolCallOutputItem_UnwrapsCustomToolInput(t *testing.T) {
 	rawArguments := `{"custom__apply_patch":"*** Begin Patch\n*** Add File: probe.txt\n+codex-gateway-custom\n*** End Patch\n"}`
 	item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(apicompat.ChatToolCall{

@@ -11,6 +11,7 @@ import (
 type CodexGatewayModelsRequest struct {
 	APIKey        *APIKey
 	ClientVersion string
+	CatalogFormat string
 }
 
 type CodexGatewayResponsesRequest struct {
@@ -99,11 +100,26 @@ type CodexGatewayResponseError struct {
 	RawFields map[string]json.RawMessage `json:"-"`
 }
 
+type CodexGatewayLocalShellAction struct {
+	Type             string            `json:"type"`
+	Command          []string          `json:"command"`
+	TimeoutMS        *int64            `json:"timeout_ms"`
+	WorkingDirectory *string           `json:"working_directory"`
+	Env              map[string]string `json:"env"`
+	User             *string           `json:"user"`
+}
+
 const (
 	CodexGatewayToolKindFunction  = "function"
 	CodexGatewayToolKindNamespace = "namespace"
 	CodexGatewayToolKindCustom    = "custom"
 	CodexGatewayToolKindHosted    = "hosted"
+)
+
+const (
+	CodexGatewayOutputItemTypeFunctionCall   = "function_call"
+	CodexGatewayOutputItemTypeCustomToolCall = "custom_tool_call"
+	CodexGatewayOutputItemTypeLocalShellCall = "local_shell_call"
 )
 
 type CodexGatewayStateStoreConfig struct {

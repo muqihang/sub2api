@@ -17,6 +17,7 @@ func TestNeedsToolContinuationSignals(t *testing.T) {
 		{name: "previous_response_id", body: map[string]any{"previous_response_id": "resp_1"}, want: true},
 		{name: "previous_response_id_blank", body: map[string]any{"previous_response_id": "  "}, want: false},
 		{name: "function_call_output", body: map[string]any{"input": []any{map[string]any{"type": "function_call_output"}}}, want: true},
+		{name: "local_shell_call_output", body: map[string]any{"input": []any{map[string]any{"type": "local_shell_call_output"}}}, want: true},
 		{name: "tool_search_output", body: map[string]any{"input": []any{map[string]any{"type": "tool_search_output"}}}, want: true},
 		{name: "custom_tool_call_output", body: map[string]any{"input": []any{map[string]any{"type": "custom_tool_call_output"}}}, want: true},
 		{name: "mcp_tool_call_output", body: map[string]any{"input": []any{map[string]any{"type": "mcp_tool_call_output"}}}, want: true},
@@ -57,6 +58,9 @@ func TestHasToolCallContext(t *testing.T) {
 	require.True(t, HasToolCallContext(map[string]any{
 		"input": []any{map[string]any{"type": "function_call", "call_id": "call_2"}},
 	}))
+	require.True(t, HasToolCallContext(map[string]any{
+		"input": []any{map[string]any{"type": "local_shell_call", "call_id": "call_3"}},
+	}))
 	require.False(t, HasToolCallContext(map[string]any{
 		"input": []any{map[string]any{"type": "tool_call"}},
 	}))
@@ -79,6 +83,9 @@ func TestHasFunctionCallOutputMissingCallID(t *testing.T) {
 	require.False(t, HasFunctionCallOutputMissingCallID(nil))
 	require.True(t, HasFunctionCallOutputMissingCallID(map[string]any{
 		"input": []any{map[string]any{"type": "function_call_output"}},
+	}))
+	require.True(t, HasFunctionCallOutputMissingCallID(map[string]any{
+		"input": []any{map[string]any{"type": "local_shell_call_output"}},
 	}))
 	require.False(t, HasFunctionCallOutputMissingCallID(map[string]any{
 		"input": []any{map[string]any{"type": "function_call_output", "call_id": "call_1"}},

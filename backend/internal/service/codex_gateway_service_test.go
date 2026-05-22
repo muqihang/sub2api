@@ -145,6 +145,49 @@ func TestCodexGatewayService_ResponsesDispatchesSynchronousRequest(t *testing.T)
 	require.Equal(t, codexGatewayIsolationKey(context.Background(), apiKey), captured.IsolationKey)
 }
 
+func TestCodexGatewayService_ResponsesInjectsBaseInstructionsForDeepSeek(t *testing.T) {
+	var captured CodexGatewayProviderRequest
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"deepseek-v4-pro"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderDeepSeek: {Provider: CodexGatewayProviderDeepSeek, GroupID: 2002, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"deepseek-v4-pro": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+	)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_deepseek"}`),
+			}, nil
+		},
+	})
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   []byte(`{"model":"deepseek-v4-pro","input":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	instructions, ok := parseCodexGatewayJSONString(captured.Parsed.Instructions)
+	require.True(t, ok)
+	require.Contains(t, instructions, "You are Codex, based on GPT-5.")
+	require.Contains(t, instructions, "Try to use `edit`")
+}
+
 func TestCodexGatewayService_ResponsesFailoverErrorUsesMappedBodyMessage(t *testing.T) {
 	registry := NewDefaultCodexGatewayModelRegistry()
 	mappedBody, err := MarshalCodexGatewayErrorJSON(CodexGatewayErrorTypeAPI, "upstream_timeout", "Anthropic upstream returned Cloudflare 524 timeout.")
@@ -211,7 +254,7 @@ func TestCodexGatewayService_ResponsesRejectsScopeMismatch(t *testing.T) {
 	require.Contains(t, string(resp.Body), `"type":"authentication_error"`)
 }
 
-func TestCodexGatewayService_ResponsesDeepSeekPreviousResponseIDReturns400(t *testing.T) {
+func TestCodexGatewayService_ResponsesDeepSeekPreviousResponseIDDispatchesToExecutor(t *testing.T) {
 	registry := NewCodexGatewayModelRegistry(
 		config.GatewayCodexConfig{
 			EnabledModels: []string{"deepseek-v4-pro"},
@@ -233,10 +276,15 @@ func TestCodexGatewayService_ResponsesDeepSeekPreviousResponseIDReturns400(t *te
 		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
 		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
 	)
+	var captured CodexGatewayProviderRequest
 	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
-		completeFn: func(_ context.Context, _ CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
-			t.Fatal("executor should not be called")
-			return nil, nil
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_next","output":[]}`),
+			}, nil
 		},
 	})
 
@@ -245,8 +293,10 @@ func TestCodexGatewayService_ResponsesDeepSeekPreviousResponseIDReturns400(t *te
 		Body:   []byte(`{"model":"deepseek-v4-pro","previous_response_id":"resp_prev"}`),
 	})
 	require.NoError(t, err)
-	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	require.Equal(t, "previous_response_id is not supported on the HTTP gateway path for DeepSeek models", gjson.GetBytes(resp.Body, "error.message").String())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotNil(t, captured.Parsed.PreviousResponseID)
+	require.Equal(t, "resp_prev", *captured.Parsed.PreviousResponseID)
+	require.Equal(t, "deepseek", captured.Model.Provider)
 }
 
 func TestCodexGatewayService_ResponsesRejectsHiddenModel(t *testing.T) {

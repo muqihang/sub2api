@@ -240,6 +240,17 @@ func codexGatewayClientVisibleToolName(entry CodexGatewayToolNameMapEntry) strin
 	return name
 }
 
+func codexGatewayClientVisibleToolItemType(entry CodexGatewayToolNameMapEntry) string {
+	if entry.Kind == CodexGatewayToolKindCustom {
+		return CodexGatewayOutputItemTypeCustomToolCall
+	}
+	return CodexGatewayOutputItemTypeFunctionCall
+}
+
+func codexGatewayIsClientVisibleLocalShellTool(entry CodexGatewayToolNameMapEntry) bool {
+	return codexGatewayClientVisibleToolItemType(entry) == CodexGatewayOutputItemTypeLocalShellCall
+}
+
 func normalizeCodexGatewayToolChoiceForAvailableTools(toolChoiceRaw, toolsRaw json.RawMessage) (json.RawMessage, bool, error) {
 	if len(toolChoiceRaw) == 0 {
 		return nil, false, nil

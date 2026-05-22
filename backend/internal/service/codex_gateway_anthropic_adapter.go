@@ -377,11 +377,14 @@ func codexGatewayAnthropicToolUseOutputItem(raw string, toolNameMap map[string]C
 		"name":    stored.Name,
 		"status":  "completed",
 	}
-	if entry.Kind == CodexGatewayToolKindCustom {
-		item["type"] = "custom_tool_call"
+	switch codexGatewayClientVisibleToolItemType(entry) {
+	case CodexGatewayOutputItemTypeCustomToolCall:
+		item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 		item["input"] = codexGatewayDeepSeekCustomToolInput(args, entry)
-	} else {
-		item["type"] = "function_call"
+	case CodexGatewayOutputItemTypeLocalShellCall:
+		codexGatewayApplyLocalShellCallItemFields(item, callID, "completed", args)
+	default:
+		item["type"] = codexGatewayClientVisibleToolItemType(entry)
 		if namespace := strings.TrimSpace(entry.Namespace); namespace != "" {
 			item["namespace"] = namespace
 		}

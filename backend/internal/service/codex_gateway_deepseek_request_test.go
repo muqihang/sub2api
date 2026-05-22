@@ -704,6 +704,31 @@ func TestCodexGatewayDeepSeekRequest_NormalizesLegacyDottedNamespaceToolNames(t 
 	require.Equal(t, "shell__exec", gjson.GetBytes(rawObjectChoice, "messages.0.tool_calls.0.function.name").String())
 }
 
+func TestCodexGatewayDeepSeekRequest_AcceptsLocalShellCallInput(t *testing.T) {
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[{"type":"local_shell_call","call_id":"call_ns","name":"shell.exec","action":{"type":"exec","command":["zsh","-lc","pwd"]}}]`),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"shell","tools":[{"type":"function","name":"exec","parameters":{"type":"object"}}]}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "shell__exec", gjson.GetBytes(raw, "messages.0.tool_calls.0.function.name").String())
+	require.Equal(t, `{"cmd":"pwd"}`, gjson.GetBytes(raw, "messages.0.tool_calls.0.function.arguments").String())
+}
+
 func TestCodexGatewayDeepSeekRequest_MapsAssistantToolCallsAndBackfillsReasoningContent(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",

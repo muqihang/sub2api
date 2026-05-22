@@ -320,7 +320,7 @@ func codexGatewayInputHasToolCallOutput(items []any) bool {
 			continue
 		}
 		switch strings.TrimSpace(firstCodexGatewayToolString(m["type"])) {
-		case "function_call_output", "custom_tool_call_output":
+		case "function_call_output", "local_shell_call_output", "custom_tool_call_output":
 			return true
 		}
 	}
@@ -353,9 +353,13 @@ func convertCodexGatewayInputItem(item any, toolMapping CodexGatewayToolMappingR
 		return convertCodexGatewayMessageItem(m, toolMapping, cfg)
 	case "function_call":
 		return convertCodexGatewayFunctionCallItem(m, toolMapping)
+	case "local_shell_call":
+		return convertCodexGatewayFunctionCallItem(m, toolMapping)
 	case "custom_tool_call":
 		return convertCodexGatewayCustomToolCallItem(m, toolMapping)
 	case "function_call_output":
+		return convertCodexGatewayFunctionCallOutputItem(m)
+	case "local_shell_call_output":
 		return convertCodexGatewayFunctionCallOutputItem(m)
 	case "custom_tool_call_output":
 		return convertCodexGatewayFunctionCallOutputItem(m)
@@ -432,6 +436,9 @@ func convertCodexGatewayFunctionCallItem(m map[string]any, toolMapping CodexGate
 		alias = sanitizeCodexGatewayToolName(name)
 	}
 	arguments := normalizeCodexGatewayToolArguments(m["arguments"])
+	if strings.TrimSpace(firstCodexGatewayToolString(m["type"])) == CodexGatewayOutputItemTypeLocalShellCall {
+		arguments = codexGatewayExtractShellArgumentsFromItem(m)
+	}
 	msg := map[string]any{
 		"role":    "assistant",
 		"content": "",

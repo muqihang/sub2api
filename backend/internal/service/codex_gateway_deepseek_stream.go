@@ -17,13 +17,17 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const codexGatewayDeepSeekHostedToolMaxTurns = 12
+const codexGatewayDeepSeekHostedToolMaxTurns = 64
 
 var codexGatewayExecuteHostedWebSearchFunc = codexGatewayExecuteHostedWebSearch
 
 type codexGatewayHostedToolContext struct {
 	WebSearchResults map[string]string
 	VisibleEventSink func(codexGatewayHostedToolVisibleEvent) error
+	RootResponseID   string
+	NextOutputIndex  int
+	OutputItems      map[int]json.RawMessage
+	OutputIndexes    map[string]int
 }
 
 type codexGatewayHostedToolVisibleEvent struct {
@@ -34,6 +38,80 @@ type codexGatewayHostedToolVisibleEvent struct {
 	Query     string
 	Output    string
 	Reused    bool
+}
+
+func (c *codexGatewayHostedToolContext) ensureSyntheticResponse(responseID string, nextOutputIndex int) {
+	if c == nil {
+		return
+	}
+	responseID = strings.TrimSpace(responseID)
+	if c.RootResponseID == "" && responseID != "" {
+		c.RootResponseID = responseID
+	}
+	if c.NextOutputIndex < nextOutputIndex {
+		c.NextOutputIndex = nextOutputIndex
+	}
+	if c.OutputItems == nil {
+		c.OutputItems = make(map[int]json.RawMessage)
+	}
+	if c.OutputIndexes == nil {
+		c.OutputIndexes = make(map[string]int)
+	}
+}
+
+func (c *codexGatewayHostedToolContext) hostedOutputIndex(callID, query string) int {
+	if c == nil {
+		return 0
+	}
+	if c.OutputIndexes == nil {
+		c.OutputIndexes = make(map[string]int)
+	}
+	key := codexGatewayHostedWebSearchItemID(callID, query)
+	if idx, ok := c.OutputIndexes[key]; ok {
+		return idx
+	}
+	idx := c.NextOutputIndex
+	c.NextOutputIndex++
+	c.OutputIndexes[key] = idx
+	return idx
+}
+
+func (c *codexGatewayHostedToolContext) rememberOutputItems(items map[int]json.RawMessage) {
+	if c == nil || len(items) == 0 {
+		return
+	}
+	if c.OutputItems == nil {
+		c.OutputItems = make(map[int]json.RawMessage, len(items))
+	}
+	for index, raw := range items {
+		c.OutputItems[index] = cloneCodexGatewayRawJSON(raw)
+	}
+}
+
+func (c *codexGatewayHostedToolContext) rememberHostedWebSearchItem(outputIndex int, event codexGatewayHostedToolVisibleEvent) {
+	if c == nil || strings.TrimSpace(event.Phase) != "completed" {
+		return
+	}
+	item := codexGatewayHostedWebSearchItem(event, "completed")
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return
+	}
+	if c.OutputItems == nil {
+		c.OutputItems = make(map[int]json.RawMessage)
+	}
+	c.OutputItems[outputIndex] = raw
+}
+
+func cloneCodexGatewayIndexedRawMessages(in map[int]json.RawMessage) map[int]json.RawMessage {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[int]json.RawMessage, len(in))
+	for index, raw := range in {
+		out[index] = cloneCodexGatewayRawJSON(raw)
+	}
+	return out
 }
 
 func ExecuteCodexGatewayDeepSeekStream(
@@ -149,6 +227,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	}
 
 	state := newCodexGatewayDeepSeekStreamState(model, prepared.ToolNameMap)
+	state.applyHostedToolContext(cfg.HostedToolContext)
 	deferredWriter := newCodexGatewayDeferredStreamWriter(dst)
 	writer := NewCodexGatewayResponseEventWriterWithSequence(deferredWriter, cfg.StreamSequenceNumber)
 	scanner := bufio.NewScanner(resp.Body)
@@ -199,11 +278,21 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	}
 
 	if calls := state.serverHandledHostedToolCalls(); len(calls) > 0 {
+		if err := state.writeDoneEvents(writer); err != nil {
+			return CodexGatewayDeepSeekAdapterResult{}, err
+		}
+		cfg.HostedToolContext.ensureSyntheticResponse(state.responseID, state.nextOutputIndex)
+		cfg.HostedToolContext.rememberOutputItems(state.outputItemsByIndex())
 		if err := deferredWriter.Flush(); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
 		cfg.HostedToolContext.VisibleEventSink = func(event codexGatewayHostedToolVisibleEvent) error {
-			return codexGatewayWriteVisibleHostedWebSearchEvent(writer, state.responseID, state.nextOutputIndex, event)
+			outputIndex := cfg.HostedToolContext.hostedOutputIndex(event.CallID, event.Query)
+			if err := codexGatewayWriteVisibleHostedWebSearchEvent(writer, cfg.HostedToolContext.RootResponseID, outputIndex, event); err != nil {
+				return err
+			}
+			cfg.HostedToolContext.rememberHostedWebSearchItem(outputIndex, event)
+			return nil
 		}
 		nextReq, err := codexGatewayDeepSeekRequestWithHostedToolResults(ctx, req, calls, cfg.HostedWebSearch, cfg.HostedToolContext)
 		if err != nil {
@@ -252,24 +341,26 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 }
 
 type codexGatewayDeepSeekStreamState struct {
-	model            CodexGatewayModel
-	toolNameMap      map[string]CodexGatewayToolNameMapEntry
-	responseID       string
-	upstreamModel    string
-	reasoningText    strings.Builder
-	reasoningPresent bool
-	messageText      strings.Builder
-	messageAdded     bool
-	messageID        string
-	messageIndex     int
-	nextOutputIndex  int
-	toolCalls        map[int]*codexGatewayDeepSeekStreamToolCall
-	toolOrder        []int
-	usage            CodexGatewayProviderUsage
-	usageRaw         json.RawMessage
-	finishReason     string
-	terminalSeen     bool
-	createdSent      bool
+	model             CodexGatewayModel
+	toolNameMap       map[string]CodexGatewayToolNameMapEntry
+	responseID        string
+	upstreamModel     string
+	reasoningText     strings.Builder
+	reasoningPresent  bool
+	messageText       strings.Builder
+	messageAdded      bool
+	messageEmitted    bool
+	messageID         string
+	messageIndex      int
+	nextOutputIndex   int
+	toolCalls         map[int]*codexGatewayDeepSeekStreamToolCall
+	toolOrder         []int
+	usage             CodexGatewayProviderUsage
+	usageRaw          json.RawMessage
+	finishReason      string
+	terminalSeen      bool
+	createdSent       bool
+	prefixOutputItems map[int]json.RawMessage
 }
 
 type codexGatewayDeepSeekStreamToolCall struct {
@@ -312,6 +403,17 @@ func newCodexGatewayDeepSeekStreamState(model CodexGatewayModel, toolNameMap map
 	}
 }
 
+func (s *codexGatewayDeepSeekStreamState) applyHostedToolContext(ctx *codexGatewayHostedToolContext) {
+	if s == nil || ctx == nil || strings.TrimSpace(ctx.RootResponseID) == "" {
+		return
+	}
+	s.responseID = strings.TrimSpace(ctx.RootResponseID)
+	s.messageID = codexGatewayDeepSeekMessageID(s.responseID, ctx.NextOutputIndex)
+	s.nextOutputIndex = ctx.NextOutputIndex
+	s.createdSent = true
+	s.prefixOutputItems = cloneCodexGatewayIndexedRawMessages(ctx.OutputItems)
+}
+
 func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer *CodexGatewayResponseEventWriter) error {
 	var chunk apicompat.ChatCompletionsChunk
 	if err := json.Unmarshal(payload, &chunk); err != nil {
@@ -352,32 +454,11 @@ func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer 
 		}
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 			if !s.messageAdded {
-				item := map[string]any{
-					"type":    "message",
-					"id":      s.messageID,
-					"role":    "assistant",
-					"status":  "in_progress",
-					"content": []map[string]any{},
-				}
-				rawItem, err := json.Marshal(item)
-				if err != nil {
-					return err
-				}
-				if err := writer.WriteOutputItemAdded(s.responseID, s.nextOutputIndex, rawItem); err != nil {
-					return err
-				}
-				part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
-				if err := writer.WriteContentPartAdded(s.responseID, s.messageID, s.nextOutputIndex, 0, part); err != nil {
-					return err
-				}
 				s.messageAdded = true
 				s.messageIndex = s.nextOutputIndex
 				s.nextOutputIndex++
 			}
 			s.messageText.WriteString(*choice.Delta.Content)
-			if err := writer.WriteOutputTextDelta(s.responseID, s.messageID, s.messageIndex, 0, *choice.Delta.Content); err != nil {
-				return err
-			}
 		}
 		for _, delta := range choice.Delta.ToolCalls {
 			if err := s.consumeToolCallDelta(delta, writer); err != nil {
@@ -437,7 +518,14 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 	if !call.Added && call.CallID != "" && call.Name != "" {
 		call.Added = true
 	}
+	if delta.Function.Arguments != "" {
+		call.Buffer.WriteString(delta.Function.Arguments)
+	}
+	itemType := codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
 	if call.Added && !call.ItemEmitted && !codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
+		if itemType == CodexGatewayOutputItemTypeLocalShellCall && strings.TrimSpace(codexGatewayExtractShellExecCmd(call.Buffer.String())) == "" {
+			return nil
+		}
 		if call.OutputIndex < 0 {
 			call.OutputIndex = s.nextOutputIndex
 			s.nextOutputIndex++
@@ -448,11 +536,14 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 			"name":    call.Name,
 			"status":  "in_progress",
 		}
-		if call.Kind == CodexGatewayToolKindCustom {
-			item["type"] = "custom_tool_call"
+		switch itemType {
+		case CodexGatewayOutputItemTypeCustomToolCall:
+			item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 			item["input"] = ""
-		} else {
-			item["type"] = "function_call"
+		case CodexGatewayOutputItemTypeLocalShellCall:
+			codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "in_progress", call.Buffer.String())
+		default:
+			item["type"] = codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
 			if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 				item["namespace"] = namespace
 			}
@@ -467,9 +558,6 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 		}
 		call.ItemEmitted = true
 	}
-	if delta.Function.Arguments != "" {
-		call.Buffer.WriteString(delta.Function.Arguments)
-	}
 	if call.ItemEmitted {
 		args := call.Buffer.String()
 		if call.Kind == CodexGatewayToolKindCustom {
@@ -482,6 +570,12 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 				call.EmittedLen = len(input)
 				return writer.WriteCustomToolCallInputDelta(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.CallID, call.OutputIndex, deltaText)
 			}
+			return nil
+		}
+		if codexGatewayDeepSeekShouldDelayFunctionArgumentDeltas(call) {
+			return nil
+		}
+		if itemType == CodexGatewayOutputItemTypeLocalShellCall {
 			return nil
 		}
 		if len(args) > call.EmittedLen {
@@ -546,28 +640,9 @@ func (s *codexGatewayDeepSeekStreamState) finishEarly(writer *CodexGatewayRespon
 func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayResponseEventWriter) error {
 	for _, index := range s.sortedOutputIndexes() {
 		switch {
-		case s.messageAdded && index == s.messageIndex:
-			if err := writer.WriteOutputTextDone(s.responseID, s.messageID, s.messageIndex, 0, s.messageText.String()); err != nil {
+		case s.shouldExposeMessage() && index == s.messageIndex:
+			if err := s.writeMessageEvents(writer); err != nil {
 				return err
-			}
-			part, _ := json.Marshal(map[string]any{"type": "output_text", "text": s.messageText.String()})
-			if err := writer.WriteContentPartDone(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
-				return err
-			}
-			item := map[string]any{
-				"type":   "message",
-				"id":     s.messageID,
-				"role":   "assistant",
-				"status": "completed",
-				"content": []map[string]any{{
-					"type": "output_text",
-					"text": s.messageText.String(),
-				}},
-			}
-			if rawItem, err := json.Marshal(item); err == nil {
-				if err := writer.WriteOutputItemDone(s.responseID, s.messageIndex, rawItem); err != nil {
-					return err
-				}
 			}
 		default:
 			call := s.toolCallByOutputIndex(index)
@@ -583,22 +658,36 @@ func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayRe
 				"name":    call.Name,
 				"status":  "completed",
 			}
-			if call.Kind == CodexGatewayToolKindCustom {
-				doneItem["type"] = "custom_tool_call"
+			itemType := codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
+			switch itemType {
+			case CodexGatewayOutputItemTypeCustomToolCall:
+				doneItem["type"] = CodexGatewayOutputItemTypeCustomToolCall
 				doneItem["input"] = codexGatewayDeepSeekCustomToolInput(call.Buffer.String(), call.toolNameMapEntry())
-			} else {
-				doneItem["type"] = "function_call"
+			case CodexGatewayOutputItemTypeLocalShellCall:
+				codexGatewayApplyLocalShellCallItemFields(doneItem, call.CallID, "completed", call.Buffer.String())
+			default:
+				doneItem["type"] = codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
 				if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 					doneItem["namespace"] = namespace
 				}
-				doneItem["arguments"] = call.Buffer.String()
+				doneItem["arguments"] = codexGatewayDeepSeekFunctionToolArguments(call)
 			}
 			if rawItem, err := json.Marshal(doneItem); err == nil {
 				if call.Kind == CodexGatewayToolKindCustom {
 					if err := writer.WriteCustomToolCallInputDone(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, firstCodexGatewayToolString(doneItem["input"])); err != nil {
 						return err
 					}
-				} else {
+				} else if itemType != CodexGatewayOutputItemTypeLocalShellCall {
+					if codexGatewayDeepSeekShouldDelayFunctionArgumentDeltas(call) {
+						args := codexGatewayDeepSeekFunctionToolArguments(call)
+						if len(args) > call.EmittedLen {
+							deltaText := args[call.EmittedLen:]
+							call.EmittedLen = len(args)
+							if err := writer.WriteFunctionCallArgumentsDelta(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, deltaText); err != nil {
+								return err
+							}
+						}
+					}
 					if err := writer.WriteFunctionCallArgumentsDone(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, rawItem); err != nil {
 						return err
 					}
@@ -609,6 +698,61 @@ func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayRe
 			}
 		}
 	}
+	return nil
+}
+
+func (s *codexGatewayDeepSeekStreamState) writeMessageEvents(writer *CodexGatewayResponseEventWriter) error {
+	if s.messageEmitted {
+		return nil
+	}
+	item := map[string]any{
+		"type":    "message",
+		"id":      s.messageID,
+		"role":    "assistant",
+		"status":  "in_progress",
+		"content": []map[string]any{},
+	}
+	rawItem, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	if err := writer.WriteOutputItemAdded(s.responseID, s.messageIndex, rawItem); err != nil {
+		return err
+	}
+	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
+	if err := writer.WriteContentPartAdded(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
+		return err
+	}
+	text := s.messageText.String()
+	if text != "" {
+		if err := writer.WriteOutputTextDelta(s.responseID, s.messageID, s.messageIndex, 0, text); err != nil {
+			return err
+		}
+	}
+	if err := writer.WriteOutputTextDone(s.responseID, s.messageID, s.messageIndex, 0, text); err != nil {
+		return err
+	}
+	part, _ = json.Marshal(map[string]any{"type": "output_text", "text": text})
+	if err := writer.WriteContentPartDone(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
+		return err
+	}
+	doneItem, err := json.Marshal(map[string]any{
+		"type":   "message",
+		"id":     s.messageID,
+		"role":   "assistant",
+		"status": "completed",
+		"content": []map[string]any{{
+			"type": "output_text",
+			"text": text,
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	if err := writer.WriteOutputItemDone(s.responseID, s.messageIndex, doneItem); err != nil {
+		return err
+	}
+	s.messageEmitted = true
 	return nil
 }
 
@@ -628,9 +772,27 @@ func (s *codexGatewayDeepSeekStreamState) finalResponse(status, incompleteReason
 }
 
 func (s *codexGatewayDeepSeekStreamState) outputItems() []json.RawMessage {
-	byIndex := make(map[int]json.RawMessage, 2+len(s.toolCalls))
-	indexes := make([]int, 0, 2+len(s.toolCalls))
-	if s.messageAdded {
+	byIndex := s.outputItemsByIndex()
+	indexes := make([]int, 0, len(byIndex))
+	for index := range byIndex {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	out := make([]json.RawMessage, 0, len(indexes))
+	for _, index := range indexes {
+		if rawItem, ok := byIndex[index]; ok {
+			out = append(out, rawItem)
+		}
+	}
+	return out
+}
+
+func (s *codexGatewayDeepSeekStreamState) outputItemsByIndex() map[int]json.RawMessage {
+	byIndex := cloneCodexGatewayIndexedRawMessages(s.prefixOutputItems)
+	if byIndex == nil {
+		byIndex = make(map[int]json.RawMessage, 2+len(s.toolCalls))
+	}
+	if s.shouldExposeMessage() {
 		item, _ := json.Marshal(map[string]any{
 			"type":   "message",
 			"id":     s.messageID,
@@ -642,7 +804,6 @@ func (s *codexGatewayDeepSeekStreamState) outputItems() []json.RawMessage {
 			}},
 		})
 		byIndex[s.messageIndex] = item
-		indexes = append(indexes, s.messageIndex)
 	}
 	for _, index := range s.sortedToolOrder() {
 		call := s.toolCalls[index]
@@ -658,28 +819,23 @@ func (s *codexGatewayDeepSeekStreamState) outputItems() []json.RawMessage {
 			"name":    call.Name,
 			"status":  "completed",
 		}
-		if call.Kind == CodexGatewayToolKindCustom {
-			item["type"] = "custom_tool_call"
+		switch codexGatewayClientVisibleToolItemType(call.toolNameMapEntry()) {
+		case CodexGatewayOutputItemTypeCustomToolCall:
+			item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 			item["input"] = codexGatewayDeepSeekCustomToolInput(call.Buffer.String(), call.toolNameMapEntry())
-		} else {
-			item["type"] = "function_call"
+		case CodexGatewayOutputItemTypeLocalShellCall:
+			codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "completed", call.Buffer.String())
+		default:
+			item["type"] = codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
 			if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 				item["namespace"] = namespace
 			}
-			item["arguments"] = call.Buffer.String()
+			item["arguments"] = codexGatewayDeepSeekFunctionToolArguments(call)
 		}
 		rawItem, _ := json.Marshal(item)
 		byIndex[call.OutputIndex] = rawItem
-		indexes = append(indexes, call.OutputIndex)
 	}
-	sort.Ints(indexes)
-	out := make([]json.RawMessage, 0, len(indexes))
-	for _, index := range indexes {
-		if rawItem, ok := byIndex[index]; ok {
-			out = append(out, rawItem)
-		}
-	}
-	return out
+	return byIndex
 }
 
 func (s *codexGatewayDeepSeekStreamState) storedToolCalls() []CodexGatewayStoredToolCall {
@@ -696,10 +852,41 @@ func (s *codexGatewayDeepSeekStreamState) storedToolCalls() []CodexGatewayStored
 			Type:      call.Kind,
 			Alias:     call.Alias,
 			Name:      call.Name,
-			Arguments: call.Buffer.String(),
+			Arguments: codexGatewayDeepSeekStoredToolArguments(call),
 		})
 	}
 	return out
+}
+
+func codexGatewayDeepSeekShouldDelayFunctionArgumentDeltas(call *codexGatewayDeepSeekStreamToolCall) bool {
+	if call == nil || call.Kind == CodexGatewayToolKindCustom {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(call.Name), "wait_agent")
+}
+
+func codexGatewayDeepSeekFunctionToolArguments(call *codexGatewayDeepSeekStreamToolCall) string {
+	if call == nil {
+		return ""
+	}
+	args := call.Buffer.String()
+	if call.Kind == CodexGatewayToolKindCustom {
+		return args
+	}
+	if next, changed := codexGatewayNormalizeFunctionToolArguments(call.Name, args); changed {
+		return next
+	}
+	return args
+}
+
+func codexGatewayDeepSeekStoredToolArguments(call *codexGatewayDeepSeekStreamToolCall) string {
+	if call == nil {
+		return ""
+	}
+	if call.Kind == CodexGatewayToolKindCustom || codexGatewayClientVisibleToolItemType(call.toolNameMapEntry()) == CodexGatewayOutputItemTypeLocalShellCall {
+		return call.Buffer.String()
+	}
+	return codexGatewayDeepSeekFunctionToolArguments(call)
 }
 
 func (s *codexGatewayDeepSeekStreamState) providerResult(upstreamRequestID string) CodexGatewayProviderResult {
@@ -756,6 +943,13 @@ func (s *codexGatewayDeepSeekStreamState) shouldExposeToolCall(call *codexGatewa
 	return s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_calls"
 }
 
+func (s *codexGatewayDeepSeekStreamState) shouldExposeMessage() bool {
+	if !s.messageAdded {
+		return false
+	}
+	return !(s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_calls" && s.hasExposedToolCall())
+}
+
 func (s *codexGatewayDeepSeekStreamState) hasExposedToolCall() bool {
 	for _, call := range s.toolCalls {
 		if s.shouldExposeToolCall(call) {
@@ -766,7 +960,7 @@ func (s *codexGatewayDeepSeekStreamState) hasExposedToolCall() bool {
 }
 
 func (s *codexGatewayDeepSeekStreamState) hasClientVisibleOutputStarted() bool {
-	if s.messageAdded {
+	if s.messageEmitted {
 		return true
 	}
 	for _, call := range s.toolCalls {
@@ -959,17 +1153,8 @@ func codexGatewayWriteVisibleHostedWebSearchEvent(writer *CodexGatewayResponseEv
 	if phase == "started" {
 		status = "in_progress"
 	}
-	itemID := codexGatewayHostedWebSearchItemID(event.CallID, event.Query)
-	item := map[string]any{
-		"id":      itemID,
-		"type":    "web_search_call",
-		"status":  status,
-		"call_id": event.CallID,
-		"action": map[string]any{
-			"type":  "search",
-			"query": event.Query,
-		},
-	}
+	item := codexGatewayHostedWebSearchItem(event, status)
+	itemID := firstCodexGatewayToolString(item["id"])
 	rawItem, err := json.Marshal(item)
 	if err != nil {
 		return err
@@ -993,6 +1178,19 @@ func codexGatewayWriteVisibleHostedWebSearchEvent(writer *CodexGatewayResponseEv
 		return err
 	}
 	return writer.WriteOutputItemDone(responseID, outputIndex, rawItem)
+}
+
+func codexGatewayHostedWebSearchItem(event codexGatewayHostedToolVisibleEvent, status string) map[string]any {
+	return map[string]any{
+		"id":      codexGatewayHostedWebSearchItemID(event.CallID, event.Query),
+		"type":    "web_search_call",
+		"status":  status,
+		"call_id": event.CallID,
+		"action": map[string]any{
+			"type":  "search",
+			"query": event.Query,
+		},
+	}
 }
 
 func codexGatewayHostedWebSearchItemID(callID, query string) string {
@@ -1061,7 +1259,7 @@ func (s *codexGatewayDeepSeekStreamState) sortedToolCallsByOutputIndex() []*code
 
 func (s *codexGatewayDeepSeekStreamState) sortedOutputIndexes() []int {
 	indexes := make([]int, 0, 2+len(s.toolCalls))
-	if s.messageAdded {
+	if s.shouldExposeMessage() {
 		indexes = append(indexes, s.messageIndex)
 	}
 	for _, call := range s.sortedToolCallsByOutputIndex() {

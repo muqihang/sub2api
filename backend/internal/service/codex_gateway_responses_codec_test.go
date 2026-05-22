@@ -177,6 +177,9 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	funcDone := events["response.function_call_arguments.done"]
 	require.Equal(t, "fc_call_1", funcDone["item_id"])
 	require.Equal(t, float64(1), funcDone["output_index"])
+	require.Equal(t, "call_1", funcDone["call_id"])
+	require.Equal(t, "shell", funcDone["name"])
+	require.Equal(t, `{"cmd":"ls"}`, funcDone["arguments"])
 	doneItem, ok := funcDone["item"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "fc_call_1", doneItem["id"])

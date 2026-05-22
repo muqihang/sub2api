@@ -298,6 +298,29 @@ func TestBuildCodexGatewayAnthropicRequest_NormalizesInvalidFunctionCallArgument
 	require.NotContains(t, string(raw), `"arguments":"*"`)
 }
 
+func TestBuildCodexGatewayAnthropicRequest_AcceptsLocalShellCallInput(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"input":[{"type":"local_shell_call","call_id":"call_1","name":"shell__exec","action":{"type":"exec","command":["zsh","-lc","pwd"]}}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "tool_use", gjson.GetBytes(raw, "messages.0.content.0.type").String())
+	require.Equal(t, "shell__exec", gjson.GetBytes(raw, "messages.0.content.0.name").String())
+	require.Equal(t, "pwd", gjson.GetBytes(raw, "messages.0.content.0.input.cmd").String())
+}
+
 func TestBuildCodexGatewayAnthropicRequest_PreservesThinkingForLargeToolReplay(t *testing.T) {
 	largeOutput := strings.Repeat("Forward branch line\n", 12000)
 	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{

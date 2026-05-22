@@ -102,7 +102,8 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 	events := dst.String()
 	require.Contains(t, events, "event: response.created")
 	require.Contains(t, events, "event: response.in_progress")
-	require.Contains(t, events, "event: response.output_text.delta")
+	require.NotContains(t, events, "event: response.output_text.delta")
+	require.NotContains(t, events, "准备调用工具")
 	require.Contains(t, events, "event: response.function_call_arguments.delta")
 	require.Contains(t, events, "event: response.function_call_arguments.done")
 	require.Contains(t, events, "event: response.completed")
@@ -111,6 +112,34 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 	require.Equal(t, "response.created", orderedEvents[0].Event)
 	require.Equal(t, "response.in_progress", orderedEvents[1].Event)
 	requireSequentialCodexGatewayOrderedSequenceNumbers(t, orderedEvents)
+	var shellAdded []byte
+	for _, event := range orderedEvents {
+		if event.Event != "response.output_item.added" {
+			continue
+		}
+		if gjson.GetBytes(event.Payload, "item.type").String() == CodexGatewayOutputItemTypeFunctionCall &&
+			gjson.GetBytes(event.Payload, "item.namespace").String() == "shell" &&
+			gjson.GetBytes(event.Payload, "item.name").String() == "exec" {
+			shellAdded = event.Payload
+			break
+		}
+	}
+	require.NotEmpty(t, shellAdded)
+	require.False(t, gjson.GetBytes(shellAdded, "item.action").Exists())
+
+	var shellDone []byte
+	for _, event := range orderedEvents {
+		if event.Event != "response.function_call_arguments.done" {
+			continue
+		}
+		if gjson.GetBytes(event.Payload, "item.namespace").String() == "shell" &&
+			gjson.GetBytes(event.Payload, "item.name").String() == "exec" {
+			shellDone = event.Payload
+			break
+		}
+	}
+	require.NotEmpty(t, shellDone)
+	require.JSONEq(t, `{"cmd":"pwd"}`, gjson.GetBytes(shellDone, "item.arguments").String())
 
 	var completed map[string]any
 	for _, block := range strings.Split(events, "\n\n") {
@@ -129,6 +158,14 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 	require.Equal(t, "response.completed", completed["type"])
 	response, ok := completed["response"].(map[string]any)
 	require.True(t, ok)
+	output, ok := response["output"].([]any)
+	require.True(t, ok)
+	firstTool, ok := output[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, firstTool["type"])
+	require.Equal(t, "shell", firstTool["namespace"])
+	require.Equal(t, "exec", firstTool["name"])
+	require.Len(t, output, 1)
 	usage, ok := response["usage"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, float64(23), usage["input_tokens"])
@@ -392,11 +429,25 @@ func TestExecuteCodexGatewayAnthropicStream_ExecutesHostedWebSearchAndResumesMod
 	require.Contains(t, stream, "event: response.web_search_call.in_progress")
 	require.Contains(t, stream, "event: response.web_search_call.searching")
 	require.Contains(t, stream, "event: response.web_search_call.completed")
-	requireSequentialCodexGatewayOrderedSequenceNumbers(t, parseCodexGatewayOrderedEvents(t, stream))
+	events := parseCodexGatewayOrderedEvents(t, stream)
+	requireSequentialCodexGatewayOrderedSequenceNumbers(t, events)
+	require.Equal(t, 1, countCodexGatewayEvent(events, "response.created"))
+	require.Equal(t, 1, countCodexGatewayEvent(events, "response.in_progress"))
+	rootResponseID := gjson.GetBytes(events[0].Payload, "response.id").String()
+	require.NotEmpty(t, rootResponseID)
+	for _, event := range events {
+		if responseID := gjson.GetBytes(event.Payload, "response_id").String(); responseID != "" {
+			require.Equal(t, rootResponseID, responseID, "event %s should stay on the synthetic response", event.Event)
+		}
+	}
+	terminal := events[len(events)-1].Payload
+	require.Equal(t, rootResponseID, gjson.GetBytes(terminal, "response.id").String())
+	require.Equal(t, "web_search_call", gjson.GetBytes(terminal, "response.output.0.type").String())
+	require.Equal(t, "message", gjson.GetBytes(terminal, "response.output.1.type").String())
 	require.Contains(t, stream, "Search result says Found from OpenAI Responses search.")
 }
 
-func TestExecuteCodexGatewayAnthropicStream_ContinuesHostedWebSearchAcrossMultipleTurns(t *testing.T) {
+func TestExecuteCodexGatewayAnthropicStream_HostedWebSearchAfterVisibleTextCompletes(t *testing.T) {
 	var searchedQueries []string
 	var requestBodies [][]byte
 	var dst bytes.Buffer
@@ -406,7 +457,112 @@ func TestExecuteCodexGatewayAnthropicStream_ContinuesHostedWebSearchAcrossMultip
 		requestBodies = append(requestBodies, body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch len(requestBodies) {
-		case 1, 2, 3, 4:
+		case 1:
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_late_search","type":"message","role":"assistant","model":"claude-opus-4-7-thinking","content":[],"usage":{"input_tokens":1}}}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				``,
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"我先搜索一下。"}}`,
+				``,
+				`event: content_block_stop`,
+				`data: {"type":"content_block_stop","index":0}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_late_search","name":"web_search","input":{}}}`,
+				``,
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"late search\"}"}}`,
+				``,
+				`event: content_block_stop`,
+				`data: {"type":"content_block_stop","index":1}`,
+				``,
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+		case 2:
+			require.Contains(t, string(body), "late hosted result")
+			_, _ = w.Write([]byte(strings.Join([]string{
+				`event: message_start`,
+				`data: {"type":"message_start","message":{"id":"msg_late_search_final","type":"message","role":"assistant","model":"claude-opus-4-7-thinking","content":[],"usage":{"input_tokens":1}}}`,
+				``,
+				`event: content_block_start`,
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				``,
+				`event: content_block_delta`,
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"搜索完成。"}}`,
+				``,
+				`event: content_block_stop`,
+				`data: {"type":"content_block_stop","index":0}`,
+				``,
+				`event: message_delta`,
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+				``,
+				`event: message_stop`,
+				`data: {"type":"message_stop"}`,
+				``,
+			}, "\n")))
+		default:
+			t.Fatalf("unexpected extra upstream request %d", len(requestBodies))
+		}
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7-thinking",
+		"input":[{"type":"message","role":"user","content":"search after text"}],
+		"tools":[{"type":"web_search"}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7-thinking", Provider: "anthropic", UpstreamModel: "claude-opus-4-7-thinking"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{HostedWebSearch: func(_ context.Context, query string) (string, error) {
+			searchedQueries = append(searchedQueries, query)
+			return `{"provider":"openai_responses","summary":"late hosted result"}`, nil
+		}},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"late search"}, searchedQueries)
+	require.Len(t, requestBodies, 2)
+	require.Equal(t, "completed", result.ProviderResult.Response.Status)
+	stream := dst.String()
+	require.Contains(t, stream, "我先搜索一下。")
+	require.Contains(t, stream, "event: response.web_search_call.in_progress")
+	require.Contains(t, stream, "event: response.web_search_call.searching")
+	require.Contains(t, stream, "event: response.web_search_call.completed")
+	require.Contains(t, stream, "搜索完成。")
+	require.NotContains(t, stream, "response.failed")
+}
+
+func TestExecuteCodexGatewayAnthropicStream_ContinuesHostedWebSearchAcrossMultipleTurns(t *testing.T) {
+	var searchedQueries []string
+	var requestBodies [][]byte
+	var dst bytes.Buffer
+	const searchTurns = 13
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		requestBodies = append(requestBodies, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(requestBodies) {
+		case 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13:
 			query := "query-" + strconv.Itoa(len(requestBodies))
 			_, _ = w.Write([]byte(strings.Join([]string{
 				`event: message_start`,
@@ -428,7 +584,7 @@ func TestExecuteCodexGatewayAnthropicStream_ContinuesHostedWebSearchAcrossMultip
 				`data: {"type":"message_stop"}`,
 				``,
 			}, "\n")))
-		case 5:
+		case searchTurns + 1:
 			_, _ = w.Write([]byte(strings.Join([]string{
 				`event: message_start`,
 				`data: {"type":"message_start","message":{"id":"msg_multi_final","type":"message","role":"assistant","model":"claude-opus-4-7-thinking","content":[],"usage":{"input_tokens":1}}}`,
@@ -479,8 +635,8 @@ func TestExecuteCodexGatewayAnthropicStream_ContinuesHostedWebSearchAcrossMultip
 		&dst,
 	)
 	require.NoError(t, err)
-	require.Equal(t, 4, len(searchedQueries))
-	require.Len(t, requestBodies, 5)
+	require.Equal(t, searchTurns, len(searchedQueries))
+	require.Len(t, requestBodies, searchTurns+1)
 	require.Equal(t, "completed", result.ProviderResult.Response.Status)
 	require.NotContains(t, dst.String(), `"name":"web_search"`)
 	require.Contains(t, dst.String(), `"type":"web_search_call"`)

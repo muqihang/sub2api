@@ -16,7 +16,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const codexGatewayAnthropicHostedToolMaxTurns = 12
+const codexGatewayAnthropicHostedToolMaxTurns = 64
 
 func ExecuteCodexGatewayAnthropicStream(
 	ctx context.Context,
@@ -137,6 +137,7 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 	}
 
 	state := newCodexGatewayAnthropicStreamState(model, prepared.ToolNameMap, prepared.ReplayMessages)
+	state.applyHostedToolContext(cfg.HostedToolContext)
 	deferredWriter := newCodexGatewayDeferredStreamWriter(dst)
 	writer := NewCodexGatewayResponseEventWriterWithSequence(deferredWriter, cfg.StreamSequenceNumber)
 	scanner := bufio.NewScanner(resp.Body)
@@ -189,14 +190,21 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 	}
 
 	if calls := state.serverHandledHostedToolCalls(); len(calls) > 0 {
-		if deferredWriter.Flushed() {
-			return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex anthropic hosted tool call appeared after client-visible output")
+		if err := state.writeDoneEvents(writer); err != nil {
+			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
+		cfg.HostedToolContext.ensureSyntheticResponse(state.responseID, state.nextOutputIndex)
+		cfg.HostedToolContext.rememberOutputItems(state.outputItemsByIndex())
 		if err := deferredWriter.Flush(); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
 		cfg.HostedToolContext.VisibleEventSink = func(event codexGatewayHostedToolVisibleEvent) error {
-			return codexGatewayWriteVisibleHostedWebSearchEvent(writer, state.responseID, state.nextOutputIndex, event)
+			outputIndex := cfg.HostedToolContext.hostedOutputIndex(event.CallID, event.Query)
+			if err := codexGatewayWriteVisibleHostedWebSearchEvent(writer, cfg.HostedToolContext.RootResponseID, outputIndex, event); err != nil {
+				return err
+			}
+			cfg.HostedToolContext.rememberHostedWebSearchItem(outputIndex, event)
+			return nil
 		}
 		nextReq, err := codexGatewayDeepSeekRequestWithHostedToolResults(ctx, req, calls, cfg.HostedWebSearch, cfg.HostedToolContext)
 		if err != nil {
@@ -229,27 +237,29 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 }
 
 type codexGatewayAnthropicStreamState struct {
-	model            CodexGatewayModel
-	toolNameMap      map[string]CodexGatewayToolNameMapEntry
-	responseID       string
-	upstreamModel    string
-	messageID        string
-	messageText      strings.Builder
-	messageAdded     bool
-	messageIndex     int
-	reasoningText    strings.Builder
-	reasoningPresent bool
-	nextOutputIndex  int
-	toolCalls        map[int]*codexGatewayAnthropicStreamToolCall
-	toolOrder        []int
-	usage            CodexGatewayProviderUsage
-	usageRaw         json.RawMessage
-	thinkingBlocks   map[int]*codexGatewayAnthropicStreamThinkingBlock
-	thinkingOrder    []int
-	finishReason     string
-	terminalSeen     bool
-	createdSent      bool
-	replayMessages   []json.RawMessage
+	model             CodexGatewayModel
+	toolNameMap       map[string]CodexGatewayToolNameMapEntry
+	responseID        string
+	upstreamModel     string
+	messageID         string
+	messageText       strings.Builder
+	messageAdded      bool
+	messageEmitted    bool
+	messageIndex      int
+	reasoningText     strings.Builder
+	reasoningPresent  bool
+	nextOutputIndex   int
+	toolCalls         map[int]*codexGatewayAnthropicStreamToolCall
+	toolOrder         []int
+	usage             CodexGatewayProviderUsage
+	usageRaw          json.RawMessage
+	thinkingBlocks    map[int]*codexGatewayAnthropicStreamThinkingBlock
+	thinkingOrder     []int
+	finishReason      string
+	terminalSeen      bool
+	createdSent       bool
+	replayMessages    []json.RawMessage
+	prefixOutputItems map[int]json.RawMessage
 }
 
 type codexGatewayAnthropicStreamThinkingBlock struct {
@@ -283,17 +293,32 @@ func newCodexGatewayAnthropicStreamState(model CodexGatewayModel, toolNameMap ma
 	}
 }
 
+func (s *codexGatewayAnthropicStreamState) applyHostedToolContext(ctx *codexGatewayHostedToolContext) {
+	if s == nil || ctx == nil || strings.TrimSpace(ctx.RootResponseID) == "" {
+		return
+	}
+	s.responseID = strings.TrimSpace(ctx.RootResponseID)
+	s.messageID = codexGatewayAnthropicMessageID(s.responseID, ctx.NextOutputIndex)
+	s.nextOutputIndex = ctx.NextOutputIndex
+	s.createdSent = true
+	s.prefixOutputItems = cloneCodexGatewayIndexedRawMessages(ctx.OutputItems)
+}
+
 func (s *codexGatewayAnthropicStreamState) consumePayload(payload []byte, writer *CodexGatewayResponseEventWriter) error {
 	eventType := gjson.GetBytes(payload, "type").String()
 	switch eventType {
 	case "message_start":
 		message := gjson.GetBytes(payload, "message")
-		s.responseID = strings.TrimSpace(message.Get("id").String())
 		if s.responseID == "" {
-			s.responseID = "msg_stream"
+			s.responseID = strings.TrimSpace(message.Get("id").String())
+			if s.responseID == "" {
+				s.responseID = "msg_stream"
+			}
 		}
 		s.upstreamModel = strings.TrimSpace(message.Get("model").String())
-		s.messageID = codexGatewayAnthropicMessageID(s.responseID, 0)
+		if s.messageID == "" {
+			s.messageID = codexGatewayAnthropicMessageID(s.responseID, s.nextOutputIndex)
+		}
 		s.mergeUsage(message.Get("usage"))
 		return s.ensureCreated(writer)
 	case "content_block_start":
@@ -323,7 +348,7 @@ func (s *codexGatewayAnthropicStreamState) consumePayload(payload []byte, writer
 			}
 			text := delta.Get("text").String()
 			s.messageText.WriteString(text)
-			return writer.WriteOutputTextDelta(s.responseID, s.messageID, s.messageIndex, 0, text)
+			return nil
 		case "thinking_delta":
 			s.reasoningPresent = true
 			text := delta.Get("thinking").String()
@@ -400,26 +425,8 @@ func (s *codexGatewayAnthropicStreamState) ensureMessage(writer *CodexGatewayRes
 	if err := s.ensureCreated(writer); err != nil {
 		return err
 	}
-	item := map[string]any{
-		"type":    "message",
-		"id":      s.messageID,
-		"role":    "assistant",
-		"status":  "in_progress",
-		"content": []map[string]any{},
-	}
-	rawItem, err := json.Marshal(item)
-	if err != nil {
-		return err
-	}
 	s.messageIndex = s.nextOutputIndex
 	s.nextOutputIndex++
-	if err := writer.WriteOutputItemAdded(s.responseID, s.messageIndex, rawItem); err != nil {
-		return err
-	}
-	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
-	if err := writer.WriteContentPartAdded(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
-		return err
-	}
 	s.messageAdded = true
 	return nil
 }
@@ -451,7 +458,28 @@ func (s *codexGatewayAnthropicStreamState) startToolUse(index int, block gjson.R
 	if codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
 		return nil
 	}
-	if call.CallID == "" || call.Name == "" || call.ItemEmitted {
+	if codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		Alias:     call.Alias,
+		Kind:      call.Kind,
+		Namespace: call.Namespace,
+		Name:      call.Name,
+	}) == CodexGatewayOutputItemTypeLocalShellCall && strings.TrimSpace(codexGatewayExtractShellExecCmd(call.Buffer.String())) == "" {
+		return nil
+	}
+	return s.emitToolUseItem(call, writer)
+}
+
+func (s *codexGatewayAnthropicStreamState) emitToolUseItem(call *codexGatewayAnthropicStreamToolCall, writer *CodexGatewayResponseEventWriter) error {
+	if s == nil || call == nil || call.CallID == "" || call.Name == "" || call.ItemEmitted {
+		return nil
+	}
+	itemType := codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		Alias:     call.Alias,
+		Kind:      call.Kind,
+		Namespace: call.Namespace,
+		Name:      call.Name,
+	})
+	if itemType == CodexGatewayOutputItemTypeLocalShellCall && strings.TrimSpace(codexGatewayExtractShellExecCmd(call.Buffer.String())) == "" {
 		return nil
 	}
 	call.OutputIndex = s.nextOutputIndex
@@ -462,11 +490,19 @@ func (s *codexGatewayAnthropicStreamState) startToolUse(index int, block gjson.R
 		"name":    call.Name,
 		"status":  "in_progress",
 	}
-	if call.Kind == CodexGatewayToolKindCustom {
-		item["type"] = "custom_tool_call"
+	switch itemType {
+	case CodexGatewayOutputItemTypeCustomToolCall:
+		item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 		item["input"] = ""
-	} else {
-		item["type"] = "function_call"
+	case CodexGatewayOutputItemTypeLocalShellCall:
+		codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "in_progress", call.Buffer.String())
+	default:
+		item["type"] = codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+			Alias:     call.Alias,
+			Kind:      call.Kind,
+			Namespace: call.Namespace,
+			Name:      call.Name,
+		})
 		if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 			item["namespace"] = namespace
 		}
@@ -541,6 +577,13 @@ func (s *codexGatewayAnthropicStreamState) consumeToolInputJSONDelta(index int, 
 	}
 	call.Buffer.WriteString(delta)
 	if !call.ItemEmitted {
+		if !codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
+			if err := s.emitToolUseItem(call, writer); err != nil {
+				return err
+			}
+		}
+	}
+	if !call.ItemEmitted {
 		return nil
 	}
 	args := call.Buffer.String()
@@ -556,7 +599,13 @@ func (s *codexGatewayAnthropicStreamState) consumeToolInputJSONDelta(index int, 
 		}
 		return nil
 	}
-	if codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) {
+	itemType := codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		Alias:     call.Alias,
+		Kind:      call.Kind,
+		Namespace: call.Namespace,
+		Name:      call.Name,
+	})
+	if codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) || itemType == CodexGatewayOutputItemTypeLocalShellCall {
 		return nil
 	}
 	if len(args) > call.EmittedLen {
@@ -570,6 +619,14 @@ func (s *codexGatewayAnthropicStreamState) consumeToolInputJSONDelta(index int, 
 func (s *codexGatewayAnthropicStreamState) stopContentBlock(index int, writer *CodexGatewayResponseEventWriter) error {
 	call := s.toolCalls[index]
 	if call == nil || !call.ItemEmitted || !codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) {
+		return nil
+	}
+	if codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		Alias:     call.Alias,
+		Kind:      call.Kind,
+		Namespace: call.Namespace,
+		Name:      call.Name,
+	}) == CodexGatewayOutputItemTypeLocalShellCall {
 		return nil
 	}
 	args := codexGatewayAnthropicFunctionToolArguments(call)
@@ -647,24 +704,10 @@ func (s *codexGatewayAnthropicStreamState) finishEarly(writer *CodexGatewayRespo
 func (s *codexGatewayAnthropicStreamState) writeDoneEvents(writer *CodexGatewayResponseEventWriter) error {
 	for _, index := range s.sortedOutputIndexes() {
 		if s.messageAdded && index == s.messageIndex {
-			if err := writer.WriteOutputTextDone(s.responseID, s.messageID, s.messageIndex, 0, s.messageText.String()); err != nil {
-				return err
+			if !s.shouldExposeMessage() {
+				continue
 			}
-			part, _ := json.Marshal(map[string]any{"type": "output_text", "text": s.messageText.String()})
-			if err := writer.WriteContentPartDone(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
-				return err
-			}
-			rawItem, _ := json.Marshal(map[string]any{
-				"type":   "message",
-				"id":     s.messageID,
-				"role":   "assistant",
-				"status": "completed",
-				"content": []map[string]any{{
-					"type": "output_text",
-					"text": s.messageText.String(),
-				}},
-			})
-			if err := writer.WriteOutputItemDone(s.responseID, s.messageIndex, rawItem); err != nil {
+			if err := s.writeMessageEvents(writer); err != nil {
 				return err
 			}
 			continue
@@ -675,11 +718,17 @@ func (s *codexGatewayAnthropicStreamState) writeDoneEvents(writer *CodexGatewayR
 		}
 		doneItem := s.toolCallDoneItem(call)
 		rawItem, _ := json.Marshal(doneItem)
+		itemType := codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+			Alias:     call.Alias,
+			Kind:      call.Kind,
+			Namespace: call.Namespace,
+			Name:      call.Name,
+		})
 		if call.Kind == CodexGatewayToolKindCustom {
 			if err := writer.WriteCustomToolCallInputDone(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, firstCodexGatewayToolString(doneItem["input"])); err != nil {
 				return err
 			}
-		} else {
+		} else if itemType != CodexGatewayOutputItemTypeLocalShellCall {
 			if err := writer.WriteFunctionCallArgumentsDone(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, rawItem); err != nil {
 				return err
 			}
@@ -688,6 +737,61 @@ func (s *codexGatewayAnthropicStreamState) writeDoneEvents(writer *CodexGatewayR
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *codexGatewayAnthropicStreamState) writeMessageEvents(writer *CodexGatewayResponseEventWriter) error {
+	if s.messageEmitted {
+		return nil
+	}
+	item := map[string]any{
+		"type":    "message",
+		"id":      s.messageID,
+		"role":    "assistant",
+		"status":  "in_progress",
+		"content": []map[string]any{},
+	}
+	rawItem, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	if err := writer.WriteOutputItemAdded(s.responseID, s.messageIndex, rawItem); err != nil {
+		return err
+	}
+	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
+	if err := writer.WriteContentPartAdded(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
+		return err
+	}
+	text := s.messageText.String()
+	if text != "" {
+		if err := writer.WriteOutputTextDelta(s.responseID, s.messageID, s.messageIndex, 0, text); err != nil {
+			return err
+		}
+	}
+	if err := writer.WriteOutputTextDone(s.responseID, s.messageID, s.messageIndex, 0, text); err != nil {
+		return err
+	}
+	part, _ = json.Marshal(map[string]any{"type": "output_text", "text": text})
+	if err := writer.WriteContentPartDone(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
+		return err
+	}
+	rawDone, err := json.Marshal(map[string]any{
+		"type":   "message",
+		"id":     s.messageID,
+		"role":   "assistant",
+		"status": "completed",
+		"content": []map[string]any{{
+			"type": "output_text",
+			"text": text,
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	if err := writer.WriteOutputItemDone(s.responseID, s.messageIndex, rawDone); err != nil {
+		return err
+	}
+	s.messageEmitted = true
 	return nil
 }
 
@@ -707,9 +811,25 @@ func (s *codexGatewayAnthropicStreamState) finalResponse(status, incompleteReaso
 }
 
 func (s *codexGatewayAnthropicStreamState) outputItems() []json.RawMessage {
-	byIndex := make(map[int]json.RawMessage, 1+len(s.toolCalls))
-	indexes := make([]int, 0, 1+len(s.toolCalls))
-	if s.messageAdded {
+	byIndex := s.outputItemsByIndex()
+	indexes := make([]int, 0, len(byIndex))
+	for index := range byIndex {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	out := make([]json.RawMessage, 0, len(indexes))
+	for _, index := range indexes {
+		out = append(out, byIndex[index])
+	}
+	return out
+}
+
+func (s *codexGatewayAnthropicStreamState) outputItemsByIndex() map[int]json.RawMessage {
+	byIndex := cloneCodexGatewayIndexedRawMessages(s.prefixOutputItems)
+	if byIndex == nil {
+		byIndex = make(map[int]json.RawMessage, 1+len(s.toolCalls))
+	}
+	if s.shouldExposeMessage() {
 		rawItem, _ := json.Marshal(map[string]any{
 			"type":   "message",
 			"id":     s.messageID,
@@ -721,7 +841,6 @@ func (s *codexGatewayAnthropicStreamState) outputItems() []json.RawMessage {
 			}},
 		})
 		byIndex[s.messageIndex] = rawItem
-		indexes = append(indexes, s.messageIndex)
 	}
 	for _, call := range s.sortedToolCallsByOutputIndex() {
 		if !s.shouldExposeToolCall(call) {
@@ -729,14 +848,8 @@ func (s *codexGatewayAnthropicStreamState) outputItems() []json.RawMessage {
 		}
 		rawItem, _ := json.Marshal(s.toolCallDoneItem(call))
 		byIndex[call.OutputIndex] = rawItem
-		indexes = append(indexes, call.OutputIndex)
 	}
-	sort.Ints(indexes)
-	out := make([]json.RawMessage, 0, len(indexes))
-	for _, index := range indexes {
-		out = append(out, byIndex[index])
-	}
-	return out
+	return byIndex
 }
 
 func (s *codexGatewayAnthropicStreamState) toolCallDoneItem(call *codexGatewayAnthropicStreamToolCall) map[string]any {
@@ -746,11 +859,24 @@ func (s *codexGatewayAnthropicStreamState) toolCallDoneItem(call *codexGatewayAn
 		"name":    call.Name,
 		"status":  "completed",
 	}
-	if call.Kind == CodexGatewayToolKindCustom {
-		item["type"] = "custom_tool_call"
+	switch codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		Alias:     call.Alias,
+		Kind:      call.Kind,
+		Namespace: call.Namespace,
+		Name:      call.Name,
+	}) {
+	case CodexGatewayOutputItemTypeCustomToolCall:
+		item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 		item["input"] = codexGatewayDeepSeekCustomToolInput(call.Buffer.String(), CodexGatewayToolNameMapEntry{Alias: call.Alias, Kind: call.Kind, Name: call.Name})
-	} else {
-		item["type"] = "function_call"
+	case CodexGatewayOutputItemTypeLocalShellCall:
+		codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "completed", call.Buffer.String())
+	default:
+		item["type"] = codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+			Alias:     call.Alias,
+			Kind:      call.Kind,
+			Namespace: call.Namespace,
+			Name:      call.Name,
+		})
 		if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 			item["namespace"] = namespace
 		}
@@ -927,6 +1053,13 @@ func (s *codexGatewayAnthropicStreamState) shouldExposeToolCall(call *codexGatew
 	return call.ItemEmitted && call.CallID != "" && call.Name != "" && s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_use"
 }
 
+func (s *codexGatewayAnthropicStreamState) shouldExposeMessage() bool {
+	if !s.messageAdded {
+		return false
+	}
+	return !(s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_use" && s.hasExposedToolCall())
+}
+
 func (s *codexGatewayAnthropicStreamState) hasExposedToolCall() bool {
 	for _, call := range s.toolCalls {
 		if s.shouldExposeToolCall(call) {
@@ -937,7 +1070,7 @@ func (s *codexGatewayAnthropicStreamState) hasExposedToolCall() bool {
 }
 
 func (s *codexGatewayAnthropicStreamState) hasClientVisibleOutputStarted() bool {
-	if s.messageAdded {
+	if s.messageEmitted {
 		return true
 	}
 	for _, call := range s.toolCalls {
@@ -968,7 +1101,7 @@ func (s *codexGatewayAnthropicStreamState) serverHandledHostedToolCalls() []code
 
 func (s *codexGatewayAnthropicStreamState) sortedOutputIndexes() []int {
 	indexes := make([]int, 0, 1+len(s.toolCalls))
-	if s.messageAdded {
+	if s.shouldExposeMessage() {
 		indexes = append(indexes, s.messageIndex)
 	}
 	for _, call := range s.sortedToolCallsByOutputIndex() {
