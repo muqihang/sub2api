@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { useCodexEntryStore } from '@/stores/codexEntry'
 import CodexEntryView from '../CodexEntryView.vue'
@@ -61,6 +61,7 @@ describe('CodexEntryView + CodexWizard', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.useRealTimers()
   })
 
   it('renders inside the main app layout instead of as a standalone page', async () => {
@@ -330,5 +331,53 @@ describe('CodexEntryView + CodexWizard', () => {
     expect(wrapper.find('[data-testid="mode-independent"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="mode-reused"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="start-setup-btn"]').exists()).toBe(true)
+  })
+
+  it('polls while waiting for local confirmation and advances when the device appears', async () => {
+    vi.useFakeTimers()
+    mockGetCodexSummary
+      .mockResolvedValueOnce({
+        page_state: 'onboarding_attach',
+        wizard_step: 2,
+        attachment_mode: 'independent_credential',
+        setup_session_presentation: 'wizard',
+        setup_session: {
+          id: 'sess-1',
+          credential_label: 'Codex',
+          attachment_mode: 'independent_credential',
+          reuse_api_key_id: null,
+          launch_url: 'zhumeng-agent://setup?code=abc',
+          cli_command: 'codex auth --code abc --server https://example.com',
+          expires_at: '2026-01-01T00:00:00Z',
+          first_seen_at: null,
+          first_catalog_synced_at: null,
+        },
+        focus_device_id: null,
+        devices: [],
+      })
+      .mockResolvedValueOnce({
+        page_state: 'console',
+        wizard_step: null,
+        attachment_mode: null,
+        setup_session_presentation: null,
+        setup_session: null,
+        focus_device_id: 1,
+        devices: [
+          { device_id: 1, device_name: 'MacBook', device_state: 'healthy', attachment_mode: 'reused_key', last_seen_at: '2026-01-01T00:00:00Z', client_version: '1.0.0', min_supported_client_version: '0.1.0', catalog_synced_at: null, catalog_last_error_kind: 'none', revoked_at: null },
+        ],
+      })
+
+    const wrapper = mount(CodexEntryView)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="wizard-step-2"]').exists()).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+
+    expect(mockGetCodexSummary).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="codex-console"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="codex-wizard"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

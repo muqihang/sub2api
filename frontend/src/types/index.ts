@@ -1837,6 +1837,36 @@ export interface CodexDeviceDTO {
   revoked_at: string | null
 }
 
+export interface CodexEntryPricingInterval {
+  min_tokens: number
+  max_tokens: number | null
+  tier_label?: string
+  input_price: number | null
+  output_price: number | null
+  cache_write_price: number | null
+  cache_read_price: number | null
+  per_request_price: number | null
+}
+
+export interface CodexEntryModelPricing {
+  billing_mode: 'token' | 'per_request' | 'image'
+  input_price: number | null
+  output_price: number | null
+  cache_write_price: number | null
+  cache_read_price: number | null
+  image_output_price: number | null
+  per_request_price: number | null
+  intervals: CodexEntryPricingInterval[]
+  source: string
+}
+
+export interface CodexEntryModelSummary {
+  name: string
+  display_name: string
+  platform: string
+  pricing?: CodexEntryModelPricing | null
+}
+
 export interface CodexEntrySummary {
   page_state: CodexPageState
   wizard_step: CodexWizardStep
@@ -1845,6 +1875,7 @@ export interface CodexEntrySummary {
   setup_session: CodexSetupSessionDTO | null
   focus_device_id: number | null
   devices: CodexDeviceDTO[]
+  model_catalog: CodexEntryModelSummary[]
 }
 
 export interface CodexCreateSetupSessionRequest {

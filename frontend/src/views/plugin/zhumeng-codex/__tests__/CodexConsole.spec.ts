@@ -191,17 +191,68 @@ describe('CodexConsole', () => {
     expect(wrapper.find('[data-testid="console-setup-banner"]').exists()).toBe(true)
   })
 
-  it('console does NOT depend on summary for model catalog or wallet data', async () => {
-    // The summary should only contain page_state, devices, setup_session.
-    // No model_catalog, wallet, or group fields.
-    const summary = makeConsoleSummary()
-    expect(summary).not.toHaveProperty('model_catalog')
-    expect(summary).not.toHaveProperty('wallet')
-    expect(summary).not.toHaveProperty('groups')
-    mockGetCodexSummary.mockResolvedValue(summary)
+  it('shows Codex gateway models from summary even when channel models are empty', async () => {
+    mockGetCodexSummary.mockResolvedValue(makeConsoleSummary({
+      model_catalog: [
+        { name: 'gpt-5.5', display_name: 'GPT-5.5', platform: 'openai' },
+        { name: 'deepseek-v4-pro', display_name: 'DeepSeek V4 Pro', platform: 'deepseek' },
+        { name: 'claude-opus-4-7', display_name: 'Claude Opus 4.7', platform: 'anthropic' },
+      ],
+    }))
     const store = useCodexEntryStore()
     await store.loadSummary()
-    // Store should not expose model/wallet from summary.
-    expect((store.summary as any)?.model_catalog).toBeUndefined()
+
+    const wrapper = mount(CodexEntryView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('GPT-5.5')
+    expect(wrapper.text()).toContain('DeepSeek V4 Pro')
+    expect(wrapper.text()).toContain('Claude Opus 4.7')
+    expect(wrapper.text()).not.toContain('codex.console.modelCatalogEmpty')
+  })
+
+  it('shows a scrollable model list and hover pricing details from summary pricing', async () => {
+    mockGetCodexSummary.mockResolvedValue(makeConsoleSummary({
+      model_catalog: [
+        {
+          name: 'gpt-5.5',
+          display_name: 'GPT-5.5',
+          platform: 'openai',
+          pricing: {
+            billing_mode: 'token',
+            input_price: 0.0000025,
+            output_price: 0.000015,
+            cache_write_price: 0.0000025,
+            cache_read_price: 0.00000025,
+            image_output_price: null,
+            per_request_price: null,
+            intervals: [],
+            source: 'fallback',
+          },
+        },
+      ],
+    }))
+    const store = useCodexEntryStore()
+    await store.loadSummary()
+
+    const wrapper = mount(CodexEntryView)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="model-list"]').classes()).toContain('model-list--scrollable')
+
+    const trigger = wrapper.find('[data-testid="model-pricing-trigger-gpt-5.5"]')
+    expect(trigger.exists()).toBe(true)
+    await trigger.trigger('mouseenter')
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('usage.inputTokenPrice')
+    expect(document.body.textContent).toContain('usage.outputTokenPrice')
+    expect(document.body.textContent).toContain('codex.console.cacheWritePrice')
+    expect(document.body.textContent).toContain('codex.console.cacheReadPrice')
+    expect(document.body.textContent).toContain('$2.5')
+    expect(document.body.textContent).toContain('$15')
+    expect(document.body.textContent).toContain('$0.25')
+
+    wrapper.unmount()
   })
 })

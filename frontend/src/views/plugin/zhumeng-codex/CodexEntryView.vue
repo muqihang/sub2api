@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useCodexEntryStore } from '@/stores/codexEntry'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -9,6 +9,14 @@ import StatusPill from './components/StatusPill.vue'
 
 const { t } = useI18n()
 const store = useCodexEntryStore()
+let summaryPollTimer: ReturnType<typeof setInterval> | null = null
+let summaryPollInFlight = false
+
+const shouldPollSummary = computed(() =>
+  store.pageState === 'onboarding_attach' ||
+  store.pageState === 'onboarding_verify' ||
+  store.setupSessionPresentation === 'console_banner',
+)
 
 const heroStatus = computed(() => {
   switch (store.pageState) {
@@ -34,6 +42,41 @@ onMounted(() => {
   store.loadSummary()
   store.loadSupportingData()
 })
+
+onBeforeUnmount(() => {
+  stopSummaryPolling()
+})
+
+watch(shouldPollSummary, (enabled) => {
+  if (enabled) {
+    startSummaryPolling()
+  } else {
+    stopSummaryPolling()
+  }
+}, { immediate: true })
+
+function startSummaryPolling() {
+  if (summaryPollTimer) return
+  summaryPollTimer = setInterval(() => {
+    void pollSummaryOnce()
+  }, 2000)
+}
+
+function stopSummaryPolling() {
+  if (!summaryPollTimer) return
+  clearInterval(summaryPollTimer)
+  summaryPollTimer = null
+}
+
+async function pollSummaryOnce() {
+  if (summaryPollInFlight) return
+  summaryPollInFlight = true
+  try {
+    await store.loadSummary({ silent: true })
+  } finally {
+    summaryPollInFlight = false
+  }
+}
 </script>
 
 <template>

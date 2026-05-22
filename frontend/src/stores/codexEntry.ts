@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import type {
   ApiKey,
   CodexEntrySummary,
+  CodexEntryModelSummary,
   CodexPageState,
   CodexWizardStep,
   CodexAttachmentMode,
@@ -33,6 +34,12 @@ export interface CodexAvailableModelSummary {
   pricing: UserSupportedModel['pricing']
 }
 
+export interface LoadCodexSummaryOptions {
+  silent?: boolean
+}
+
+export type CodexModelPreview = CodexEntryModelSummary | CodexAvailableModelSummary
+
 function uniqueModels(models: CodexAvailableModelSummary[]): CodexAvailableModelSummary[] {
   const seen = new Set<string>()
   return models.filter((model) => {
@@ -52,6 +59,7 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
   const error = ref<string | null>(null)
   const lastDiagnose = ref<CodexDiagnoseReport | null>(null)
   const diagnosing = ref(false)
+  const pendingSetupSessionLaunch = ref<Pick<CodexSetupSessionDTO, 'id' | 'launch_url' | 'cli_command' | 'expires_at'> | null>(null)
 
   const supportingDataLoading = ref(false)
   const supportingDataLoaded = ref(false)
@@ -81,13 +89,22 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
 
   const connectedDeviceCount = computed(() => devices.value.length)
 
-  const modelPreview = computed(() => availableModels.value.slice(0, 6))
+  const modelPreview = computed<CodexModelPreview[]>(() => {
+    const catalog = summary.value?.model_catalog ?? []
+    if (catalog.length > 0) {
+      return catalog
+    }
+    return availableModels.value
+  })
 
-  async function loadSummary() {
-    loading.value = true
-    error.value = null
+  async function loadSummary(options: LoadCodexSummaryOptions = {}) {
+    const silent = options.silent === true
+    if (!silent) {
+      loading.value = true
+      error.value = null
+    }
     try {
-      summary.value = await getCodexSummary()
+      summary.value = mergePendingSetupSessionLaunch(await getCodexSummary())
       if (summary.value?.attachment_mode) {
         selectedAttachmentMode.value = summary.value.attachment_mode
       }
@@ -95,9 +112,13 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
         credentialLabel.value = summary.value.setup_session.credential_label
       }
     } catch (e: any) {
-      error.value = e?.message ?? 'Failed to load summary'
+      if (!silent) {
+        error.value = e?.message ?? 'Failed to load summary'
+      }
     } finally {
-      loading.value = false
+      if (!silent) {
+        loading.value = false
+      }
     }
   }
 
@@ -154,11 +175,12 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
     loading.value = true
     error.value = null
     try {
-      await createCodexSetupSession({
+      const created = await createCodexSetupSession({
         attachment_mode: selectedAttachmentMode.value,
         credential_label: credentialLabel.value || 'Codex',
         reuse_api_key_id: selectedAttachmentMode.value === 'reused_key' ? selectedReuseKeyId.value! : undefined,
       })
+      rememberSetupSessionLaunch(created.setup_session)
       await loadSummary()
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to create setup session'
@@ -184,7 +206,8 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
     loading.value = true
     error.value = null
     try {
-      await regenerateCodexSetupSession(setupSession.value.id)
+      const regenerated = await regenerateCodexSetupSession(setupSession.value.id)
+      rememberSetupSessionLaunch(regenerated.setup_session)
       await loadSummary()
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to regenerate session'
@@ -273,6 +296,40 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
       error.value = e?.message ?? 'Remove failed'
     } finally {
       loading.value = false
+    }
+  }
+
+  function rememberSetupSessionLaunch(session: Pick<CodexSetupSessionDTO, 'id' | 'launch_url' | 'cli_command' | 'expires_at'>) {
+    if (!session.launch_url && !session.cli_command) return
+    pendingSetupSessionLaunch.value = {
+      id: session.id,
+      launch_url: session.launch_url,
+      cli_command: session.cli_command,
+      expires_at: session.expires_at,
+    }
+  }
+
+  function mergePendingSetupSessionLaunch(next: CodexEntrySummary): CodexEntrySummary {
+    const pending = pendingSetupSessionLaunch.value
+    const session = next.setup_session
+    if (!pending || !session) return next
+
+    const expiresAt = Date.parse(pending.expires_at)
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      pendingSetupSessionLaunch.value = null
+      return next
+    }
+
+    const sameSession = session.id === pending.id || session.expires_at === pending.expires_at
+    if (!sameSession) return next
+
+    return {
+      ...next,
+      setup_session: {
+        ...session,
+        launch_url: session.launch_url ?? pending.launch_url,
+        cli_command: session.cli_command ?? pending.cli_command,
+      },
     }
   }
 
