@@ -359,6 +359,8 @@ def test_desktop_models_status_summarizes_local_catalog(capsys, tmp_path: Path):
     assert payload["data"]["incompatible_count"] == 1
     assert payload["data"]["missing_pricing_count"] == 2
     assert payload["data"]["last_synced_at"] == "2026-05-21T00:00:00Z"
+    assert [model["slug"] for model in payload["data"]["models"]] == ["main-model", "incompatible-model", "restricted-model"]
+    assert payload["data"]["models"][0]["pricing"]["source"] == "database_model_pricing"
 
 
 def test_desktop_models_sync_fetches_and_writes_catalog(capsys, tmp_path: Path):

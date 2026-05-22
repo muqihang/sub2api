@@ -590,7 +590,14 @@ def desktop_restore_enhancements(app_path: Path, item: str) -> dict[str, object]
     return result
 
 
-def codex_model_catalog_summary(catalog: dict[str, object], *, catalog_path: Path, last_synced_at: object = None, source: str | None = None) -> dict[str, object]:
+def codex_model_catalog_summary(
+    catalog: dict[str, object],
+    *,
+    catalog_path: Path,
+    last_synced_at: object = None,
+    source: str | None = None,
+    include_models: bool = False,
+) -> dict[str, object]:
     models = catalog.get("models", [])
     if not isinstance(models, list):
         models = []
@@ -612,7 +619,7 @@ def codex_model_catalog_summary(catalog: dict[str, object], *, catalog_path: Pat
             restricted_count += 1
         if codex_model_pricing_missing(model.get("pricing")):
             missing_pricing_count += 1
-    return {
+    summary: dict[str, object] = {
         "status": "synced" if model_count else "empty",
         "model_count": model_count,
         "main_list_count": main_list_count,
@@ -623,6 +630,9 @@ def codex_model_catalog_summary(catalog: dict[str, object], *, catalog_path: Pat
         "catalog_path": str(catalog_path),
         "source": source,
     }
+    if include_models:
+        summary["models"] = [model for model in models if isinstance(model, dict)]
+    return summary
 
 
 def codex_model_in_main_list(model: dict[str, object]) -> bool:
@@ -657,6 +667,7 @@ def desktop_models_status(client_name: str) -> dict[str, object]:
         catalog_path=catalog_path,
         last_synced_at=state.get("model_catalog_synced_at"),
         source=str(state.get("model_catalog_meta", {}).get("source", "local")) if isinstance(state.get("model_catalog_meta"), dict) else "local",
+        include_models=True,
     )
 
 
