@@ -6,6 +6,7 @@
 - 记录时间：2026-05-22 06:51:18 PDT / 2026-05-22T13:51:18Z
 - 工作分支：`feature/zhumeng-agent-desktop-release-preflight`
 - 记录时提交：`035d3278fa6bbeb63cee0d5fd5798d729e0b2979`
+- 文档提交后最终验证提交：`dea6c911d30b99d3ed6f3f5d930d3f1e00e681b6`
 - Worktree：`/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/zhumeng-agent-desktop-release-preflight`
 
 ## 系统环境
@@ -82,7 +83,7 @@ PYTHONPATH="/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/
 
 | 命令 | 结果 | 说明 |
 | --- | --- | --- |
-| `npm run tauri build` | 通过 | 已新增 `tauri` npm script 并生成 macOS `.app` 与 `.dmg`。 |
+| `npm run tauri build` | 通过 | 已新增 `tauri` npm script 并生成 macOS `.app` 与 `.dmg`；最终验证时重新构建并刷新 SHA256。 |
 
 产物：
 
@@ -92,7 +93,7 @@ PYTHONPATH="/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/
 SHA256：
 
 ```text
-9fccf76bea61d67d47f720e7b31c5f77e0cbccb2327bd523f478577dbd175414  /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/zhumeng-agent-desktop-release-preflight/tools/zhumeng-agent/desktop/src-tauri/target/release/bundle/dmg/逐梦注入工具_0.1.0_aarch64.dmg
+74262c0a6ef82be8ed716bf9d134a82e790f7d12b75b48a9ea7f44d62475889c  /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/zhumeng-agent-desktop-release-preflight/tools/zhumeng-agent/desktop/src-tauri/target/release/bundle/dmg/逐梦注入工具_0.1.0_aarch64.dmg
 ```
 
 签名/门禁检查：
