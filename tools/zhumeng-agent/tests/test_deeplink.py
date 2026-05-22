@@ -41,7 +41,13 @@ def test_dev_mode_allows_local_origin():
 def test_parse_setup_deeplink():
     parsed = parse_zhumeng_deeplink("zhumeng-agent://setup?client=codex&code=abc&server=https%3A%2F%2Fexample.com")
     assert parsed == {
+        "action": "setup",
         "client": "codex",
         "code": "abc",
         "server": "https://example.com",
     }
+
+
+def test_parse_reauth_and_open_deeplinks():
+    assert parse_zhumeng_deeplink("zhumeng-agent://reauth?client=codex&code=abc&server=https%3A%2F%2Fexample.com")["action"] == "reauth"
+    assert parse_zhumeng_deeplink("zhumeng-agent://open?app=codex") == {"action": "open", "app": "codex"}

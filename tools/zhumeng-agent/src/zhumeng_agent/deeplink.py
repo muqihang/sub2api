@@ -48,15 +48,22 @@ def parse_zhumeng_deeplink(raw_url: str) -> dict[str, str]:
     parsed = urlparse(raw_url.strip())
     if parsed.scheme != "zhumeng-agent":
         raise ValueError("unsupported deeplink scheme")
-    if parsed.netloc != "setup":
+    action = parsed.netloc
+    if action not in {"setup", "reauth", "open"}:
         raise ValueError("unsupported deeplink action")
     query = parse_qs(parsed.query)
+    if action == "open":
+        app = query.get("app", [""])[0]
+        if not app:
+            raise ValueError("deeplink is missing required open parameters")
+        return {"action": action, "app": app}
     client = query.get("client", [""])[0]
     code = query.get("code", [""])[0]
     server = query.get("server", [""])[0]
     if not client or not code or not server:
         raise ValueError("deeplink is missing required setup parameters")
     return {
+        "action": action,
         "client": client,
         "code": code,
         "server": server,
