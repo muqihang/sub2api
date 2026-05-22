@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -519,6 +520,9 @@ func reserveFreePort(t *testing.T) int {
 }
 
 func ccGatewayRepoRoot() string {
+	if root := strings.TrimSpace(os.Getenv("CC_GATEWAY_REPO_ROOT")); root != "" {
+		return root
+	}
 	return "/Users/muqihang/chelingxi_workspace/cc-gateway"
 }
 
@@ -718,6 +722,73 @@ logging:
 `, upstreamURL, strings.Repeat("d", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("e", 64), ccGatewayAnthropicPolicyVersion, proxyURL)
 }
 
+func jointGatewayDisabledConfigYAML(upstreamURL, proxyURL string) string {
+	return fmt.Sprintf(`mode: sub2api
+server:
+  port: {{PORT}}
+  tls:
+    cert: ""
+    key: ""
+upstream:
+  url: %q
+providers:
+  anthropic: true
+auth:
+  gateway_token: gateway-token
+  tokens: []
+identity:
+  device_id: "%s"
+  email: canonical@example.com
+env:
+  platform: darwin
+  platform_raw: darwin
+  arch: arm64
+  node_version: v24.3.0
+  terminal: iTerm2.app
+  package_managers: npm,pnpm
+  runtimes: node
+  is_running_with_bun: false
+  is_ci: false
+  is_claude_ai_auth: true
+  version: "%s"
+  version_base: "%s"
+  build_time: "2026-05-21T00:00:00Z"
+  deployment_environment: unknown-darwin
+  vcs: git
+prompt_env:
+  platform: darwin
+  shell: zsh
+  os_version: "Darwin 24.4.0"
+  working_dir: "/Users/test/project"
+process:
+  constrained_memory: 34359738368
+  rss_range: [300000000, 500000000]
+  heap_total_range: [40000000, 80000000]
+  heap_used_range: [100000000, 200000000]
+shared_pool:
+  max_body_bytes: 2097152
+  billing_cch_mode: disabled
+account_identities:
+  "301":
+    device_id: "%s"
+    account_uuid_hash: "sha256:acct301"
+    email_hash: "sha256:email301"
+    account_hash: "sha256:account301"
+    persona_variant: "claude-code-2.1.146-macos-local"
+    session_policy: preserve_downstream_session_id
+    policy_version: "%s"
+egress_buckets:
+  bucket-a:
+    enabled: true
+    proxy_url: %q
+    proxy_identity_hash: "sha256:proxy-bucket-a"
+    allowed_account_ids: ["301"]
+logging:
+  level: error
+  audit: false
+`, upstreamURL, strings.Repeat("f", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("g", 64), ccGatewayAnthropicPolicyVersion, proxyURL)
+}
+
 func newJointCaptureService(baseURL string, upstream *jointGatewayRecordingUpstream) *GatewayService {
 	seedGatewayForwardingSettingsForTest()
 	cfg := ccGatewayTestConfig(PlatformAnthropic)
@@ -767,8 +838,10 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 	proxyServer := startConnectProxyServer(t)
 	stripGateway := startCCGatewayProcess(t, jointGatewayConfigYAML(captureServer.URL(), proxyServer.URL()))
 	signingGateway := startCCGatewayProcess(t, jointGatewaySigningConfigYAML(captureServer.URL(), proxyServer.URL()))
+	disabledGateway := startCCGatewayProcess(t, jointGatewayDisabledConfigYAML(captureServer.URL(), proxyServer.URL()))
 	gatewayUpstream := &jointGatewayRecordingUpstream{client: &http.Client{Timeout: 10 * time.Second}}
 	svc := newJointCaptureService(stripGateway.baseURL, gatewayUpstream)
+	signingSvc := newJointCaptureService(signingGateway.baseURL, gatewayUpstream)
 
 	report := jointCaptureReport{
 		ExecutedAt:  time.Now().Format(time.RFC3339),
@@ -860,6 +933,55 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			CCGatewayOwnsFinalOutput: true,
 			Passed:                   rec.Code == http.StatusForbidden && extractErrorCodeFromBody(rec.Body.Bytes()) == "count_tokens_deferred",
 			Notes:                    []string{"route is explicitly deferred in first wave; no upstream request observed"},
+		}
+	})
+
+	run("oauth_native_messages_sign_primary", func() jointCaptureScenario {
+		captureServer.reset()
+		gatewayUpstream.reset()
+		account := newJointOAuthAccount()
+		c, ctx, rec := newJointContext("/v1/messages")
+		body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello sign lane"}]}]}`)
+		result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Equal(t, http.StatusOK, rec.Code)
+		hop1 := gatewayUpstream.popSingle(t)
+		hop2 := captureServer.popSingle(t)
+		sub2apiSummary := summarizeGatewayHop(hop1, body)
+		upstreamSummary := summarizeRawCaptureHop(hop2)
+		upstreamBody := string(hop2.Body)
+		passed := sub2apiSummary.BodyUnchangedFromClient &&
+			!sub2apiSummary.Body.BillingHeaderPresent &&
+			!sub2apiSummary.Body.CCHPresent &&
+			upstreamSummary.Body.BillingHeaderPresent &&
+			upstreamSummary.Body.CCHPresent &&
+			!strings.Contains(upstreamBody, "cch=00000;") &&
+			regexp.MustCompile(`cc_version=2\.1\.146\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
+			upstreamSummary.HeaderValuesSummary["User-Agent"] == "claude-cli/2.1.146 (external, sdk-cli)"
+		return jointCaptureScenario{
+			Category:                 "sub2api_joint",
+			Route:                    "/v1/messages?beta=true",
+			PolicyDecision:           "forward_sign_primary",
+			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			EgressBucketID:           "bucket-a",
+			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
+			ResponseStatus:           rec.Code,
+			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
+			ClientBodySHA256:         jointSHA256Hex(body),
+			Sub2APIToGateway:         &sub2apiSummary,
+			GatewayToUpstream:        &upstreamSummary,
+			RequestCount:             hop2Count(hop1, hop2),
+			FailClosed:               false,
+			NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
+			NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
+			Sub2APIFinalMutation:     sub2apiSummary.BodyUnchangedFromClient,
+			CCGatewayOwnsFinalOutput: upstreamSummary.Body.BillingHeaderPresent && upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == "claude-cli/2.1.146 (external, sdk-cli)",
+			Passed:                   passed,
+			Notes: []string{
+				"sub2api->gateway body is pre-final with no billing/CCH material",
+				"cc gateway generated billing block, cc_version suffix, CCH, canonical persona, and post-sign verifier passed before localhost upstream capture",
+			},
 		}
 	})
 
@@ -1117,13 +1239,22 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		return directGatewayScenario("gateway_strip_verifier_failure_400", "/v1/messages?beta=true", "control_plane_400", "301", resp, captureServer.count() == 0)
 	})
 
-	run("gateway_signing_fixture_fail_closed_403", func() jointCaptureScenario {
+	run("gateway_signing_untrusted_cch_fail_closed_403", func() jointCaptureScenario {
 		captureServer.reset()
 		resp := doGatewayJSON(t, signingGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders("301", "oauth", false, false), map[string]any{
 			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
+			"messages": []map[string]any{{"role": "user", "content": "literal cch=12345 must fail closed"}},
+		})
+		return directGatewayScenario("gateway_signing_untrusted_cch_fail_closed_403", "/v1/messages?beta=true", "control_plane_403", "301", resp, captureServer.count() == 0)
+	})
+
+	run("gateway_billing_mode_disabled_403", func() jointCaptureScenario {
+		captureServer.reset()
+		resp := doGatewayJSON(t, disabledGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders("301", "oauth", false, false), map[string]any{
+			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
 			"messages": []map[string]any{{"role": "user", "content": "hello"}},
 		})
-		return directGatewayScenario("gateway_signing_fixture_fail_closed_403", "/v1/messages?beta=true", "control_plane_403", "301", resp, captureServer.count() == 0)
+		return directGatewayScenario("gateway_billing_mode_disabled_403", "/v1/messages?beta=true", "control_plane_403", "301", resp, captureServer.count() == 0)
 	})
 
 	report.NoRealUpstream = true
