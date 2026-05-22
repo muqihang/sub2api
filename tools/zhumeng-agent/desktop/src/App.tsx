@@ -136,36 +136,49 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">逐</div>
-          <div>
-            <div className="brand-title">逐梦注入工具</div>
-            <div className="brand-subtitle">桌面版 Mac MVP</div>
+    <div className="preview-stage">
+      <div className="mac-window" data-testid="mac-window-frame">
+        <div className="mac-titlebar" data-testid="mac-window-titlebar">
+          <div className="traffic-lights" aria-hidden="true">
+            <span className="traffic-light close" data-testid="mac-window-control" />
+            <span className="traffic-light minimize" data-testid="mac-window-control" />
+            <span className="traffic-light zoom" data-testid="mac-window-control" />
           </div>
+          <div className="window-title">逐梦注入工具</div>
+          <div className="titlebar-meta">Mac MVP</div>
         </div>
-        <NavButton icon={<Gauge />} label="概览" active={page === "overview"} onClick={() => setPage("overview")} />
-        <NavButton icon={<Boxes />} label="已接入应用" active={page === "apps"} onClick={() => setPage("apps")} />
-        <NavButton icon={<AppWindow />} label="Codex App" active={page === "codex"} onClick={() => setPage("codex")} badge={status.adapters?.codex?.restart_required ? "重启" : undefined} />
-        <NavButton icon={<ListChecks />} label="接入向导" active={page === "wizard"} onClick={() => setPage("wizard")} />
-        <NavButton icon={<FileWarning />} label="诊断与日志" active={page === "diagnostics"} onClick={() => setPage("diagnostics")} />
-        <NavButton icon={<Settings />} label="设置" active={page === "settings"} onClick={() => setPage("settings")} />
-        <NavButton icon={<ShieldCheck />} label="分发与安全" active={page === "about"} onClick={() => setPage("about")} />
-        <div className="sidebar-footer">官网下载安装 · 不走 Mac App Store</div>
-      </aside>
+        <div className="app-shell">
+          <aside className="sidebar">
+            <div className="brand">
+              <div className="brand-mark">逐</div>
+              <div>
+                <div className="brand-title">逐梦注入工具</div>
+                <div className="brand-subtitle">桌面版 Mac MVP</div>
+              </div>
+            </div>
+            <NavButton icon={<Gauge />} label="概览" active={page === "overview"} onClick={() => setPage("overview")} />
+            <NavButton icon={<Boxes />} label="已接入应用" active={page === "apps"} onClick={() => setPage("apps")} />
+            <NavButton icon={<AppWindow />} label="Codex App" active={page === "codex"} onClick={() => setPage("codex")} badge={status.adapters?.codex?.restart_required ? "重启" : undefined} />
+            <NavButton icon={<ListChecks />} label="接入向导" active={page === "wizard"} onClick={() => setPage("wizard")} />
+            <NavButton icon={<FileWarning />} label="诊断与日志" active={page === "diagnostics"} onClick={() => setPage("diagnostics")} />
+            <NavButton icon={<Settings />} label="设置" active={page === "settings"} onClick={() => setPage("settings")} />
+            <NavButton icon={<ShieldCheck />} label="分发与安全" active={page === "about"} onClick={() => setPage("about")} />
+            <div className="sidebar-footer">官网下载安装 · 不走 Mac App Store</div>
+          </aside>
 
-      <main className="main-panel">
-        <GlobalStatusBar status={globalStatus} proxyPort={status.proxy?.port} busy={isBusy} onRefresh={() => void refreshStatus()} theme={theme} onTheme={setTheme} />
-        {lastError ? <div className="error-strip"><AlertTriangle size={16} />{lastError}</div> : null}
-        {page === "overview" && <OverviewPage status={status} summary={summary} onRepair={() => runAction(() => sidecar.repair())} onOpenCodex={() => runAction(() => sidecar.openCodex())} />}
-        {page === "apps" && <ConnectedAppsPage status={status} onOpenCodex={() => setPage("codex")} />}
-        {page === "codex" && <CodexDetailPage status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} />}
-        {page === "wizard" && <SetupWizardPage deepLink={deepLink} status={status} onAuthorize={() => void handleDeepLinkAuth()} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} />}
-        {page === "diagnostics" && <DiagnosticsPage onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
-        {page === "settings" && <SettingsPage />}
-        {page === "about" && <AboutDistributionPage />}
-      </main>
+          <main className="main-panel">
+            <GlobalStatusBar status={globalStatus} proxyPort={status.proxy?.port} busy={isBusy} onRefresh={() => void refreshStatus()} theme={theme} onTheme={setTheme} />
+            {lastError ? <div className="error-strip"><AlertTriangle size={16} />{lastError}</div> : null}
+            {page === "overview" && <OverviewPage status={status} summary={summary} onRepair={() => runAction(() => sidecar.repair())} onOpenCodex={() => runAction(() => sidecar.openCodex())} />}
+            {page === "apps" && <ConnectedAppsPage status={status} onOpenCodex={() => setPage("codex")} />}
+            {page === "codex" && <CodexDetailPage status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} />}
+            {page === "wizard" && <SetupWizardPage deepLink={deepLink} status={status} onAuthorize={() => void handleDeepLinkAuth()} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} />}
+            {page === "diagnostics" && <DiagnosticsPage onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
+            {page === "settings" && <SettingsPage />}
+            {page === "about" && <AboutDistributionPage />}
+          </main>
+        </div>
+      </div>
     </div>
   );
 }
