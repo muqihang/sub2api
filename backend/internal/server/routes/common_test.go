@@ -24,3 +24,19 @@ func TestRegisterCommonRoutes_EventLoggingBatchEndpointsReturnOK(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code, "path=%s", path)
 	}
 }
+
+func TestRegisterCommonRoutes_UnknownEventLoggingEndpointsFailClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterCommonRoutes(router)
+
+	for _, path := range []string{
+		"/api/event_logging/unknown",
+		"/api/event_logging/v3/batch",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusNotFound, w.Code, "path=%s", path)
+	}
+}

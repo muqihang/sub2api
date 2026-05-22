@@ -90,6 +90,11 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 		Extra: map[string]any{
 			"account_uuid":             "acct-uuid",
 			"organization_uuid":        "org-uuid",
+			"cc_gateway_enabled":       "true",
+			"cc_gateway_canary_only":   "false",
+			"cc_gateway_policy_version": ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":        "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
 			"cc_gateway_egress_bucket": "bucket-a",
 		},
 	}
@@ -108,6 +113,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 	require.Equal(t, "42", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Equal(t, "anthropic", getHeaderRaw(req.Header, "x-cc-provider"))
 	require.Equal(t, "oauth", getHeaderRaw(req.Header, "x-cc-token-type"))
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
 	require.Equal(t, "user@example.com", getHeaderRaw(req.Header, "x-cc-account-email"))
 	require.Equal(t, "acct-uuid", getHeaderRaw(req.Header, "x-cc-account-uuid"))
@@ -122,6 +128,14 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 		ID:       43,
 		Platform: PlatformAnthropic,
 		Type:     AccountTypeSetupToken,
+		Extra: map[string]any{
+			"cc_gateway_enabled":            "true",
+			"cc_gateway_canary_only":        "false",
+			"cc_gateway_policy_version":     ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":             "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":      "bucket-a",
+		},
 	}
 	svc := &GatewayService{
 		cfg:             ccGatewayTestConfig(PlatformAnthropic),
@@ -135,6 +149,7 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 	require.Equal(t, "Bearer setup-token", getHeaderRaw(req.Header, "authorization"))
 	require.Equal(t, "oauth", getHeaderRaw(req.Header, "x-cc-token-type"))
 	require.Equal(t, "43", getHeaderRaw(req.Header, "x-cc-account-id"))
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Contains(t, getHeaderRaw(req.Header, "anthropic-beta"), "token-counting")
 	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
 	require.Equal(t, "", getHeaderRaw(req.Header, "x-stainless-os"))
@@ -145,6 +160,11 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughBuildsTransparentRequ
 	account.Credentials["base_url"] = "https://must-not-be-used.example"
 	account.Extra["cc_gateway_egress_bucket"] = ""
 	account.Extra["openai_gateway_egress_bucket"] = "legacy-bucket"
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 
 	req, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
 		buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), ccGatewayTestContext("/v1/messages"), account, []byte(`{"model":"x"}`), "selected-api-key")
@@ -157,11 +177,18 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughBuildsTransparentRequ
 	require.Equal(t, "201", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Equal(t, "anthropic", getHeaderRaw(req.Header, "x-cc-provider"))
 	require.Equal(t, "apikey", getHeaderRaw(req.Header, "x-cc-token-type"))
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Equal(t, "legacy-bucket", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
 }
 
 func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensBuildsTransparentRequest(t *testing.T) {
 	account := newAnthropicAPIKeyAccountForTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
 
 	req, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
 		buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), ccGatewayTestContext("/v1/messages/count_tokens"), account, []byte(`{"model":"x"}`), "selected-api-key")
@@ -172,6 +199,75 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensBuildsTran
 	require.Equal(t, "", getHeaderRaw(req.Header, "authorization"))
 	require.Equal(t, "apikey", getHeaderRaw(req.Header, "x-cc-token-type"))
 	require.Equal(t, "201", getHeaderRaw(req.Header, "x-cc-account-id"))
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
+}
+
+func TestGatewayService_SelectCCGatewayAnthropicRouteFailsClosedOnMissingGateState(t *testing.T) {
+	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+
+	useCCGateway, err := svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "disabled or missing")
+}
+
+func TestGatewayService_SelectCCGatewayAnthropicRouteRespectsPolicyAndCanaryFlags(t *testing.T) {
+	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages,chat_completions"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+
+	useCCGateway, err := svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	require.True(t, useCCGateway)
+	require.NoError(t, err)
+
+	account.Extra["cc_gateway_canary_only"] = "true"
+	useCCGateway, err = svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "canary-only")
+}
+
+func TestGatewayService_SelectCCGatewayAnthropicRouteFailsClosedOnRouteAndLifecycleRejects(t *testing.T) {
+	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+
+	useCCGateway, err := svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteResponses)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not allowed")
+
+	account.Extra["cc_gateway_routes"] = "native_messages,responses"
+	account.Extra["cc_gateway_routes_deny"] = "responses"
+	useCCGateway, err = svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteResponses)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "denied")
+
+	account.Extra["cc_gateway_routes_deny"] = ""
+	account.Extra["cc_gateway_policy_version"] = "mismatch"
+	useCCGateway, err = svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteResponses)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "policy version mismatch")
+
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Schedulable = false
+	useCCGateway, err = svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteResponses)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "lifecycle ineligible")
 }
 
 func TestAntigravityGatewayService_CCGatewayRetryLoopBuildsV1InternalRequest(t *testing.T) {

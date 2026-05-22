@@ -28,6 +28,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -4421,6 +4422,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	reqModel := parsed.Model
 	reqStream := parsed.Stream
 	originalModel := reqModel
+	useCCGateway, ccGatewayErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	if ccGatewayErr != nil {
+		return nil, ccGatewayErr
+	}
 
 	// === DEBUG: 打印客户端原始请求（headers + body 摘要）===
 	if c != nil {
@@ -4440,7 +4445,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if !isStrictClaudeCode && legacyLooksLikeClaudeCode {
 		logger.LegacyPrintf("service.gateway", "[WARN] validator_bypass_detected: UA/metadata matched legacy detector but strict validator failed")
 	}
-	shouldMimicClaudeCode := account != nil && account.IsOAuth() && !isStrictClaudeCode
+	shouldMimicClaudeCode := account != nil && account.IsOAuth() && !isStrictClaudeCode && !useCCGateway
 
 	if shouldMimicClaudeCode {
 		// 与 Parrot 对齐：OAuth 账号无条件重写 system（即使客户端已发了 Claude Code
@@ -4548,7 +4553,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	// 解析 TLS 指纹 profile（同一请求生命周期内不变，避免重试循环中重复解析）
-	tlsProfile := s.tlsFPProfileService.ResolveTLSProfile(account)
+	var tlsProfile *tlsfingerprint.Profile
+	if !useCCGateway {
+		tlsProfile = s.tlsFPProfileService.ResolveTLSProfile(account)
+	}
 
 	// 调试日志：记录即将转发的账号信息
 	logger.LegacyPrintf("service.gateway", "[Forward] Using account: ID=%d Name=%s Platform=%s Type=%s TLSFingerprint=%v Proxy=%s",
@@ -4599,6 +4607,25 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				},
 			})
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
+
+		if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			code := ccGatewayControlPlaneCode(resp, respBody)
+			msg := ccGatewayControlPlaneMessage(respBody)
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:               "cc_gateway_control_plane",
+				Message:            code + ": " + msg,
+			})
+			writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
+			return nil, fmt.Errorf("cc gateway control-plane error: %s", code)
 		}
 
 		// 优先检测thinking block签名错误（400）并重试一次
@@ -5029,6 +5056,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	account *Account,
 	input anthropicPassthroughForwardInput,
 ) (*ForwardResult, error) {
+	useCCGateway, ccGatewayErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	if ccGatewayErr != nil {
+		return nil, ccGatewayErr
+	}
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, err
@@ -5038,7 +5069,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 
 	proxyURL := ""
-	if !s.shouldUseCCGatewayAnthropic(account) && account.ProxyID != nil && account.Proxy != nil {
+	if !useCCGateway && account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
 
@@ -5056,6 +5087,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 	var resp *http.Response
 	retryStart := time.Now()
+	var tlsProfile *tlsfingerprint.Profile
+	if !useCCGateway {
+		tlsProfile = s.tlsFPProfileService.ResolveTLSProfile(account)
+	}
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
 		upstreamReq, err := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(upstreamCtx, c, account, input.Body, token)
@@ -5064,7 +5099,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, err
 		}
 
-		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 		if err != nil {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -5089,6 +5124,26 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				},
 			})
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
+
+		if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			code := ccGatewayControlPlaneCode(resp, respBody)
+			msg := ccGatewayControlPlaneMessage(respBody)
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Passthrough:        true,
+				Kind:               "cc_gateway_control_plane",
+				Message:            code + ": " + msg,
+			})
+			writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
+			return nil, fmt.Errorf("cc gateway control-plane error: %s", code)
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
@@ -5256,7 +5311,11 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	token string,
 ) (*http.Request, error) {
 	targetURL := claudeAPIURL
-	if s.shouldUseCCGatewayAnthropic(account) {
+	useCCGateway, err := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	if err != nil {
+		return nil, err
+	}
+	if useCCGateway {
 		var err error
 		targetURL, err = s.ccGatewayAnthropicRequestURL("/v1/messages?beta=true")
 		if err != nil {
@@ -5294,7 +5353,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
 	setHeaderRaw(req.Header, "x-api-key", token)
-	if s.shouldUseCCGatewayAnthropic(account) {
+	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
 	}
 
@@ -8877,6 +8936,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 	body := parsed.Body
 	reqModel := parsed.Model
+	useCCGateway, ccGatewayErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeCountTokens)
+	if ccGatewayErr != nil {
+		s.countTokensError(c, http.StatusBadGateway, "cc_gateway_control_plane", "CC Gateway route policy rejected request")
+		return ccGatewayErr
+	}
 
 	isStrictClaudeCode := account != nil && account.IsOAuth() && IsClaudeCodeClient(ctx)
 	legacyLooksLikeClaudeCode := false
@@ -8886,7 +8950,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if !isStrictClaudeCode && legacyLooksLikeClaudeCode {
 		logger.LegacyPrintf("service.gateway", "[WARN] validator_bypass_detected: UA/metadata matched legacy detector but strict validator failed")
 	}
-	shouldMimicClaudeCode := account != nil && account.IsOAuth() && !isStrictClaudeCode
+	shouldMimicClaudeCode := account != nil && account.IsOAuth() && !isStrictClaudeCode && !useCCGateway
 
 	if !isStrictClaudeCode {
 		// Pre-filter: strip empty text blocks to prevent upstream 400.
@@ -8977,7 +9041,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	// 发送请求
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	var tlsProfile *tlsfingerprint.Profile
+	if !useCCGateway {
+		tlsProfile = s.tlsFPProfileService.ResolveTLSProfile(account)
+	}
+	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 	if err != nil {
 		setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(err.Error()), "")
 		s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Request failed")
@@ -8997,6 +9065,23 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return err
 	}
 
+	if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
+		code := ccGatewayControlPlaneCode(resp, respBody)
+		msg := ccGatewayControlPlaneMessage(respBody)
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+			Kind:               "cc_gateway_control_plane",
+			Message:            code + ": " + msg,
+		})
+		writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
+		return fmt.Errorf("cc gateway control-plane error: %s", code)
+	}
+
 	// 检测 thinking block 签名错误（400）并重试一次（过滤 thinking blocks）
 	if !isStrictClaudeCode && resp.StatusCode == 400 && s.shouldRectifySignatureError(ctx, account, respBody) {
 		logger.LegacyPrintf("service.gateway", "Account %d: detected thinking block signature error on count_tokens, retrying with filtered thinking blocks", account.ID)
@@ -9004,7 +9089,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		filteredBody := FilterThinkingBlocksForRetry(body)
 		retryReq, buildErr := s.buildCountTokensRequest(ctx, c, account, filteredBody, token, tokenType, reqModel, shouldMimicClaudeCode, isStrictClaudeCode)
 		if buildErr == nil {
-			retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+			retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 			if retryErr == nil {
 				resp = retryResp
 				respBody, err = ReadUpstreamResponseBody(resp.Body, s.cfg, c, countTokensTooLarge)
@@ -9069,6 +9154,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 }
 
 func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx context.Context, c *gin.Context, account *Account, body []byte) error {
+	useCCGateway, ccGatewayErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeCountTokens)
+	if ccGatewayErr != nil {
+		s.countTokensError(c, http.StatusBadGateway, "cc_gateway_control_plane", "CC Gateway route policy rejected request")
+		return ccGatewayErr
+	}
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Failed to get access token")
@@ -9086,11 +9176,15 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 	}
 
 	proxyURL := ""
-	if !s.shouldUseCCGatewayAnthropic(account) && account.ProxyID != nil && account.Proxy != nil {
+	if !useCCGateway && account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	var tlsProfile *tlsfingerprint.Profile
+	if !useCCGateway {
+		tlsProfile = s.tlsFPProfileService.ResolveTLSProfile(account)
+	}
+	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 	if err != nil {
 		setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(err.Error()), "")
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -9117,6 +9211,24 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 			s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Failed to read response")
 		}
 		return err
+	}
+
+	if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
+		code := ccGatewayControlPlaneCode(resp, respBody)
+		msg := ccGatewayControlPlaneMessage(respBody)
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+			Passthrough:        true,
+			Kind:               "cc_gateway_control_plane",
+			Message:            code + ": " + msg,
+		})
+		writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
+		return fmt.Errorf("cc gateway control-plane error: %s", code)
 	}
 
 	if resp.StatusCode >= 400 {
@@ -9191,7 +9303,11 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	token string,
 ) (*http.Request, error) {
 	targetURL := claudeAPICountTokensURL
-	if s.shouldUseCCGatewayAnthropic(account) {
+	useCCGateway, err := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeCountTokens)
+	if err != nil {
+		return nil, err
+	}
+	if useCCGateway {
 		var err error
 		targetURL, err = s.ccGatewayAnthropicRequestURL("/v1/messages/count_tokens?beta=true")
 		if err != nil {
@@ -9228,7 +9344,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
 	req.Header.Set("x-api-key", token)
-	if s.shouldUseCCGatewayAnthropic(account) {
+	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
 	}
 
@@ -9431,6 +9547,17 @@ func (s *GatewayService) countTokensError(c *gin.Context, status int, errType, m
 		"type": "error",
 		"error": gin.H{
 			"type":    errType,
+			"message": message,
+		},
+	})
+}
+
+func writeCCGatewayControlPlaneError(c *gin.Context, statusCode int, code, message string) {
+	c.JSON(statusCode, gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    "cc_gateway_control_plane",
+			"code":    code,
 			"message": message,
 		},
 	})
