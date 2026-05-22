@@ -302,3 +302,100 @@ def test_desktop_repair_enhancement_failure_is_not_ok(capsys):
     assert exit_code == 1
     assert payload["ok"] is False
     assert payload["status"] == "app_running_blocking_change"
+
+def test_desktop_models_status_summarizes_local_catalog(capsys, tmp_path: Path):
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.write_model_catalog({"model_provider": "zhumeng-codex"}, {
+        "models": [
+            {
+                "slug": "main-model",
+                "display_name": "Main Model",
+                "visibility": "list",
+                "supported_in_api": True,
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": True, "context_continuation": True},
+                "pricing": {"input_price": "1.00", "output_price": "2.00", "currency": "USD", "unit": "per_1m_tokens", "source": "database_model_pricing"},
+            },
+            {
+                "slug": "incompatible-model",
+                "display_name": "Incompatible Model",
+                "visibility": "list",
+                "supported_in_api": True,
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": False, "context_continuation": True},
+                "pricing": None,
+            },
+            {
+                "slug": "restricted-model",
+                "display_name": "Restricted Model",
+                "visibility": "hide",
+                "supported_in_api": False,
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": True, "context_continuation": True},
+                "pricing": None,
+            },
+        ]
+    })
+    cli.default_config_manager = lambda: manager
+    cli.default_state_store = lambda: MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "config_profile": {"model_provider": "zhumeng-codex"},
+        "model_catalog_synced_at": "2026-05-21T00:00:00Z",
+    })
+
+    exit_code = main(["desktop", "models", "status", "--client", "codex", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "desktop models status"
+    assert payload["data"]["model_count"] == 3
+    assert payload["data"]["main_list_count"] == 1
+    assert payload["data"]["restricted_count"] == 1
+    assert payload["data"]["incompatible_count"] == 1
+    assert payload["data"]["missing_pricing_count"] == 2
+    assert payload["data"]["last_synced_at"] == "2026-05-21T00:00:00Z"
+
+
+def test_desktop_models_sync_fetches_and_writes_catalog(capsys, tmp_path: Path):
+    class FakeClient:
+        def list_codex_models(self, **kwargs):
+            return {"models": [{
+                "slug": "gpt-5.5",
+                "display_name": "GPT-5.5",
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": True, "context_continuation": True},
+                "pricing": {"input_price": "2.50", "output_price": "15.00", "currency": "USD", "unit": "per_1m_tokens", "source": "database_model_pricing"},
+            }]}
+
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "gateway_base_url": "https://gateway.example.com",
+        "server_base_url": "https://example.com",
+        "access_token": "access-token-secret",
+        "managed_session_id": "sess-1",
+        "device_id": 9,
+        "config_profile": {"model_provider": "zhumeng-codex"},
+    })
+    cli.default_config_manager = lambda: manager
+    cli.default_state_store = lambda: store
+    cli.default_http_client = lambda server: FakeClient()
+
+    exit_code = main(["desktop", "models", "sync", "--client", "codex", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "desktop models sync"
+    assert payload["data"]["model_count"] == 1
+    saved = json.loads((tmp_path / ".codex" / "zhumeng-codex-models.json").read_text(encoding="utf-8"))
+    assert saved["models"][0]["capabilities"]["tool_calls"] is True
+    assert saved["models"][0]["pricing"]["source"] == "database_model_pricing"
+    assert store.payload["model_catalog_synced_at"]

@@ -91,6 +91,8 @@ def _run_desktop_command(argv: list[str], handlers: dict[str, Callable[..., Any]
         return emit_envelope(envelope(command="desktop diagnose", ok=True, status="reported", data=data))
     if subcommand == "codex-enhancements":
         return _run_codex_enhancements(argv[1:], handlers)
+    if subcommand == "models":
+        return _run_models(argv[1:], handlers)
     return emit_envelope(error_envelope(f"desktop {subcommand}", "unknown_command", f"unknown desktop command: {subcommand}"))
 
 
@@ -118,4 +120,27 @@ def _run_codex_enhancements(argv: list[str], handlers: dict[str, Callable[..., A
         status=str(data.get("status", "ok")),
         data=data,
         error=None if ok else {"code": str(data.get("status")), "message": str(data.get("message", data.get("status")))},
+    ))
+
+
+def _run_models(argv: list[str], handlers: dict[str, Callable[..., Any]]) -> int:
+    parser = DesktopArgumentParser(prog="zhumeng-agent desktop models")
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    for action in ("sync", "status"):
+        action_parser = subparsers.add_parser(action)
+        action_parser.add_argument("--client", required=True)
+        action_parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    if args.action == "sync":
+        data = handlers["models_sync"](args.client)
+    else:
+        data = handlers["models_status"](args.client)
+    status = str(data.get("status", args.action))
+    ok = command_ok(status)
+    return emit_envelope(envelope(
+        command=f"desktop models {args.action}",
+        ok=ok,
+        status=status,
+        data=data,
+        error=None if ok else {"code": status, "message": str(data.get("message", status))},
     ))
