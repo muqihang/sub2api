@@ -5,8 +5,10 @@ from pathlib import Path
 
 from zhumeng_agent.adapters.codex.config_manager import (
     COMMON_PROXY_PORTS,
+    CODEX_BASE_INSTRUCTIONS,
     CodexConfigManager,
     choose_local_proxy_port,
+    discover_git_project_path,
 )
 
 
@@ -81,6 +83,116 @@ def test_existing_config_is_backed_up(tmp_path: Path):
 
     backups = list((tmp_path / "backups").glob("config.toml.*.bak"))
     assert backups
+
+
+def test_existing_project_trust_entries_are_preserved(tmp_path: Path):
+    current_repo = "/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main"
+    old_repo = "/Users/muqihang/chelingxi_workspace/sub2api"
+    (tmp_path / "config.toml").write_text(
+        "\n".join(
+            [
+                'model_provider = "legacy"',
+                "",
+                f'[projects."{current_repo}"]',
+                'trust_level = "trusted"',
+                "",
+                f'[projects."{old_repo}"]',
+                'trust_level = "trusted"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manager = CodexConfigManager(tmp_path)
+
+    plan = manager.plan_configure(DEFAULT_PROFILE, 18081, "loopback-secret", SAMPLE_MODEL_CATALOG)
+    manager.apply_configure(plan)
+
+    config_text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert 'model_provider = "zhumeng-codex"' in config_text
+    assert f'[projects."{current_repo}"]' in config_text
+    assert f'[projects."{old_repo}"]' in config_text
+    parsed = __import__("tomllib").loads(config_text)
+    assert parsed["projects"][current_repo]["trust_level"] == "trusted"
+    assert parsed["projects"][old_repo]["trust_level"] == "trusted"
+
+
+def test_requested_project_trust_entry_is_added(tmp_path: Path):
+    current_repo = "/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main"
+    manager = CodexConfigManager(tmp_path)
+
+    plan = manager.plan_configure(
+        DEFAULT_PROFILE,
+        18081,
+        "loopback-secret",
+        SAMPLE_MODEL_CATALOG,
+        trusted_project_paths=[current_repo],
+    )
+    manager.apply_configure(plan)
+
+    config_text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    parsed = __import__("tomllib").loads(config_text)
+    assert parsed["projects"][current_repo]["trust_level"] == "trusted"
+
+
+def test_configure_keeps_bundled_plugins_available_when_marketplace_exists(tmp_path: Path):
+    marketplace = tmp_path / ".tmp" / "bundled-marketplaces" / "openai-bundled"
+    marketplace.mkdir(parents=True)
+    (marketplace / ".agents" / "plugins").mkdir(parents=True)
+    (tmp_path / "config.toml").write_text(
+        "\n".join(
+            [
+                '[plugins."hyperframes@openai-curated"]',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manager = CodexConfigManager(tmp_path)
+
+    plan = manager.plan_configure(DEFAULT_PROFILE, 18081, "loopback-secret", SAMPLE_MODEL_CATALOG)
+    manager.apply_configure(plan)
+
+    parsed = __import__("tomllib").loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert parsed["features"]["plugins"] is True
+    assert parsed["marketplaces"]["openai-bundled"]["source"] == str(marketplace)
+    assert parsed["plugins"]["computer-use@openai-bundled"]["enabled"] is True
+    assert parsed["plugins"]["browser@openai-bundled"]["enabled"] is True
+    assert parsed["plugins"]["chrome@openai-bundled"]["enabled"] is True
+    assert parsed["plugins"]["hyperframes@openai-curated"]["enabled"] is True
+
+
+def test_repair_preserves_current_managed_model_selection(tmp_path: Path):
+    (tmp_path / "config.toml").write_text(
+        "\n".join(
+            [
+                'model_provider = "zhumeng-codex"',
+                'model = "deepseek-v4-flash"',
+                'model_reasoning_effort = "xhigh"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manager = CodexConfigManager(tmp_path)
+
+    manager.repair(DEFAULT_PROFILE, 18081, "loopback-secret", SAMPLE_MODEL_CATALOG)
+
+    config_text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    parsed = __import__("tomllib").loads(config_text)
+    assert parsed["model"] == "deepseek-v4-flash"
+    assert parsed["model_reasoning_effort"] == "xhigh"
+
+
+def test_discover_git_project_path_returns_repository_root(tmp_path: Path):
+    repo = tmp_path / "repo"
+    nested = repo / "a" / "b"
+    nested.mkdir(parents=True)
+    (repo / ".git").mkdir()
+
+    assert discover_git_project_path(nested) == repo
+    assert discover_git_project_path(tmp_path / "outside") is None
 
 
 def test_invalid_toml_is_backed_up_before_repair(tmp_path: Path):
@@ -158,6 +270,35 @@ def test_model_catalog_is_generated_from_gateway_models(tmp_path: Path):
     assert model["supports_search_tool"] is True
     assert model["web_search_tool_type"] == "text"
     assert saved["models"][1]["web_search_tool_type"] == "text_and_image"
+    assert "For multi-line file creation or rewrites" in saved["models"][0]["base_instructions"]
+    assert saved["models"][0]["base_instructions"] == CODEX_BASE_INSTRUCTIONS
+    assert saved["models"][0]["model_messages"]["instructions_template"] == CODEX_BASE_INSTRUCTIONS
+
+
+def test_model_catalog_preserves_gateway_cli_catalog_payload(tmp_path: Path):
+    manager = CodexConfigManager(tmp_path)
+    gateway_catalog = {
+        "models": [
+            {
+                "slug": "claude-opus-4-7",
+                "display_name": "Claude Opus 4.7",
+                "base_instructions": "You are Codex, based on GPT-5.",
+                "model_messages": {
+                    "instructions_template": "You are Codex, based on GPT-5.",
+                    "instructions_variables": {},
+                },
+                "supported_reasoning_levels": [{"effort": "high", "description": "Greater reasoning depth"}],
+                "visibility": "list",
+                "shell_type": "local",
+            }
+        ]
+    }
+
+    catalog = manager.build_model_catalog(gateway_catalog)
+
+    model = catalog["models"][0]
+    assert model["base_instructions"] == "You are Codex, based on GPT-5."
+    assert model["model_messages"]["instructions_template"] == "You are Codex, based on GPT-5."
 
 
 def test_model_catalog_tolerates_invalid_numeric_fields(tmp_path: Path):
