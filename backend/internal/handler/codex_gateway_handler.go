@@ -44,6 +44,7 @@ func (h *CodexGatewayHandler) Models(c *gin.Context) {
 	resp, err := h.service.Models(c.Request.Context(), service.CodexGatewayModelsRequest{
 		APIKey:        apiKey,
 		ClientVersion: strings.TrimSpace(c.Query("client_version")),
+		CatalogFormat: strings.TrimSpace(c.Query("catalog_format")),
 	})
 	if err != nil {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusInternalServerError, service.CodexGatewayErrorTypeAPI, "internal_error", err.Error())

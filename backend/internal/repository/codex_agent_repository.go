@@ -101,6 +101,25 @@ func (r *codexAgentRepository) GetManagedDevice(ctx context.Context, id int64) (
 	return device, nil
 }
 
+func (r *codexAgentRepository) TouchManagedDevice(ctx context.Context, id int64, seenAt time.Time) error {
+	updated, err := clientFromContext(ctx, r.client).CodexManagedDevice.Update().
+		Where(
+			codexmanageddevice.IDEQ(id),
+			codexmanageddevice.StatusEQ(codexmanageddevice.StatusActive),
+			codexmanageddevice.RevokedAtIsNil(),
+		).
+		SetLastSeenAt(seenAt).
+		SetUpdatedAt(seenAt).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return ErrCodexManagedDeviceNotFound
+	}
+	return nil
+}
+
 func (r *codexAgentRepository) ListManagedDevicesByUser(ctx context.Context, userID int64) ([]*dbent.CodexManagedDevice, error) {
 	return clientFromContext(ctx, r.client).CodexManagedDevice.Query().
 		Where(codexmanageddevice.UserIDEQ(userID)).

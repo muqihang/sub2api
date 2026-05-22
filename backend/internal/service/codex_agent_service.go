@@ -45,6 +45,7 @@ type CodexAgentRepository interface {
 	ConsumeSetupGrant(ctx context.Context, codeHash string, now time.Time) (*dbent.CodexSetupGrant, error)
 	CreateManagedDevice(ctx context.Context, params CreateCodexManagedDeviceParams) (*dbent.CodexManagedDevice, error)
 	GetManagedDevice(ctx context.Context, id int64) (*dbent.CodexManagedDevice, error)
+	TouchManagedDevice(ctx context.Context, id int64, seenAt time.Time) error
 	ListManagedDevicesByUser(ctx context.Context, userID int64) ([]*dbent.CodexManagedDevice, error)
 	RevokeManagedDevice(ctx context.Context, id int64, revokedAt time.Time) error
 	CreateDeviceToken(ctx context.Context, params CreateCodexDeviceTokenParams) (*dbent.CodexDeviceToken, error)
@@ -262,7 +263,8 @@ func (s *CodexAgentService) ExchangeSetupGrant(ctx context.Context, req Exchange
 		repoCtx = dbent.NewTxContext(ctx, tx)
 	}
 
-	grant, err := s.repo.ConsumeSetupGrant(repoCtx, hashManagedSecret(req.Code), time.Now())
+	now := time.Now()
+	grant, err := s.repo.ConsumeSetupGrant(repoCtx, hashManagedSecret(req.Code), now)
 	if err != nil {
 		if errors.Is(err, ErrCodexSetupGrantNotActive) {
 			return nil, ErrCodexSetupGrantNotActive
@@ -280,6 +282,7 @@ func (s *CodexAgentService) ExchangeSetupGrant(ctx context.Context, req Exchange
 		Platform:       firstNonEmpty(req.Platform, "unknown"),
 		Arch:           firstNonEmpty(req.Arch, "unknown"),
 		ManagerVersion: firstNonEmpty(req.ManagerVersion, "unknown"),
+		LastSeenAt:     &now,
 	})
 	if err != nil {
 		return nil, err
@@ -340,6 +343,11 @@ func (s *CodexAgentService) RefreshDeviceToken(ctx context.Context, req RefreshC
 		return nil, ErrCodexManagedDeviceRevoked
 	}
 
+	now := time.Now()
+	if err := s.repo.TouchManagedDevice(ctx, token.DeviceID, now); err != nil {
+		return nil, err
+	}
+
 	apiKey, err := s.apiKeyReader.GetByID(ctx, token.Edges.Device.APIKeyID)
 	if err != nil {
 		return nil, err
@@ -352,8 +360,8 @@ func (s *CodexAgentService) RefreshDeviceToken(ctx context.Context, req RefreshC
 	if _, err := s.repo.RotateDeviceToken(ctx, RotateCodexDeviceTokenParams{
 		CurrentRefreshTokenHash: hashManagedSecret(req.RefreshToken),
 		NewRefreshTokenHash:     hashManagedSecret(nextRefreshToken),
-		NewExpiresAt:            time.Now().Add(s.refreshTokenTTL()),
-		Now:                     time.Now(),
+		NewExpiresAt:            now.Add(s.refreshTokenTTL()),
+		Now:                     now,
 	}); err != nil {
 		if errors.Is(err, ErrCodexManagedRefreshTokenInvalid) {
 			return nil, ErrCodexManagedRefreshTokenInvalid
@@ -457,6 +465,10 @@ func (s *CodexAgentService) ValidateManagedDeviceAccess(ctx context.Context, req
 	}
 	if !apiKey.User.IsActive() {
 		return nil, ErrUserNotActive
+	}
+
+	if err := s.repo.TouchManagedDevice(ctx, device.ID, time.Now()); err != nil {
+		return nil, err
 	}
 
 	return &ManagedDeviceAccessContext{

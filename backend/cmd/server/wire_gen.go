@@ -296,7 +296,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		ServerOrigin:  configConfig.Server.FrontendURL,
 		GatewayOrigin: "",
 	}
-	codexEntryCenterService := service.NewCodexEntryCenterService(codexAgentRepository, apiKeyService, apiKeyService, codexEntryCenterConfig)
+	codexEntryCenterService := service.NewCodexEntryCenterService(codexAgentRepository, apiKeyService, apiKeyService, codexEntryCenterConfig, codexGatewayModelRegistry, modelPricingResolver)
 	codexEntryCenterHandler := handler.NewCodexEntryCenterHandler(codexEntryCenterService)
 	handlers.CodexEntryCenter = codexEntryCenterHandler
 	jwtAuthMiddleware := middleware.NewJWTAuthMiddleware(authService, userService)

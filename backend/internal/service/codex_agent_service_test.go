@@ -217,6 +217,7 @@ func TestCodexAgentServiceExchangeSetupGrantRejectsOriginMismatch(t *testing.T) 
 
 func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t *testing.T) {
 	var createdToken CreateCodexDeviceTokenParams
+	var createdDevice CreateCodexManagedDeviceParams
 	svc := newTestCodexAgentService(
 		&codexAgentRepositoryStub{
 			consumeSetupGrant: func(ctx context.Context, codeHash string, now time.Time) (*dbent.CodexSetupGrant, error) {
@@ -229,6 +230,7 @@ func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t
 				}, nil
 			},
 			createManagedDevice: func(ctx context.Context, params CreateCodexManagedDeviceParams) (*dbent.CodexManagedDevice, error) {
+				createdDevice = params
 				return &dbent.CodexManagedDevice{
 					ID:       99,
 					UserID:   params.UserID,
@@ -252,6 +254,7 @@ func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t
 		},
 	)
 
+	before := time.Now()
 	resp, err := svc.ExchangeSetupGrant(context.Background(), ExchangeCodexSetupGrantRequest{
 		Code:           "grant-code",
 		ServerOrigin:   "https://sub2api.example.com",
@@ -260,6 +263,7 @@ func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t
 		Arch:           "arm64",
 		ManagerVersion: "1.0.0",
 	})
+	after := time.Now()
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.AccessToken)
 	require.NotEmpty(t, resp.RefreshToken)
@@ -272,6 +276,9 @@ func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t
 	require.True(t, resp.ConfigProfile.RequiresOpenAIAuth)
 	require.False(t, resp.ConfigProfile.SupportsWebsockets)
 	require.Equal(t, hashManagedSecret(resp.RefreshToken), createdToken.RefreshTokenHash)
+	require.NotNil(t, createdDevice.LastSeenAt)
+	require.False(t, createdDevice.LastSeenAt.Before(before))
+	require.False(t, createdDevice.LastSeenAt.After(after))
 
 	claims, err := svc.parseManagedAccessToken(resp.AccessToken)
 	require.NoError(t, err)
@@ -325,6 +332,58 @@ func TestCodexAgentServiceRefreshDeviceTokenRotatesRefreshToken(t *testing.T) {
 	require.NotEmpty(t, resp.ManagedSessionID)
 	require.Equal(t, hashManagedSecret(rawRefreshToken), rotated.CurrentRefreshTokenHash)
 	require.Equal(t, hashManagedSecret(resp.RefreshToken), rotated.NewRefreshTokenHash)
+}
+
+func TestCodexAgentServiceRefreshDeviceTokenTouchesManagedDeviceHeartbeat(t *testing.T) {
+	var touchedAt time.Time
+	rawRefreshToken := "refresh-token-1"
+	svc := newTestCodexAgentService(
+		&codexAgentRepositoryStub{
+			findActiveTokenByHash: func(ctx context.Context, refreshTokenHash string, now time.Time) (*dbent.CodexDeviceToken, error) {
+				require.Equal(t, hashManagedSecret(rawRefreshToken), refreshTokenHash)
+				return &dbent.CodexDeviceToken{
+					ID:       1,
+					DeviceID: 9,
+					Edges: dbent.CodexDeviceTokenEdges{
+						Device: &dbent.CodexManagedDevice{
+							ID:       9,
+							APIKeyID: 42,
+							Status:   codexmanageddevice.StatusActive,
+						},
+					},
+				}, nil
+			},
+			rotateDeviceToken: func(ctx context.Context, params RotateCodexDeviceTokenParams) (*dbent.CodexDeviceToken, error) {
+				return &dbent.CodexDeviceToken{ID: 2, DeviceID: 9}, nil
+			},
+			touchManagedDevice: func(ctx context.Context, id int64, seenAt time.Time) error {
+				require.Equal(t, int64(9), id)
+				touchedAt = seenAt
+				return nil
+			},
+		},
+		&codexAPIKeyReaderStub{
+			getByID: func(ctx context.Context, id int64) (*APIKey, error) {
+				return &APIKey{
+					ID:     id,
+					Status: StatusActive,
+					User:   &User{ID: 7, Status: StatusActive},
+				}, nil
+			},
+		},
+	)
+
+	before := time.Now()
+	_, err := svc.RefreshDeviceToken(context.Background(), RefreshCodexDeviceTokenRequest{
+		DeviceID:     9,
+		RefreshToken: rawRefreshToken,
+	})
+	after := time.Now()
+
+	require.NoError(t, err)
+	require.False(t, touchedAt.IsZero())
+	require.False(t, touchedAt.Before(before))
+	require.False(t, touchedAt.After(after))
 }
 
 func TestCodexAgentServiceConcurrentRefreshAllowsExactlyOneSuccess(t *testing.T) {
@@ -527,11 +586,58 @@ func TestCodexAgentServiceValidateManagedDeviceAccessRejectsRevokedDevice(t *tes
 	require.ErrorIs(t, err, ErrCodexManagedDeviceRevoked)
 }
 
+func TestCodexAgentServiceValidateManagedDeviceAccessTouchesManagedDeviceHeartbeat(t *testing.T) {
+	var touchedAt time.Time
+	svc := newTestCodexAgentService(
+		&codexAgentRepositoryStub{
+			getManagedDevice: func(ctx context.Context, id int64) (*dbent.CodexManagedDevice, error) {
+				return &dbent.CodexManagedDevice{
+					ID:       id,
+					UserID:   7,
+					APIKeyID: 42,
+					Status:   codexmanageddevice.StatusActive,
+				}, nil
+			},
+			touchManagedDevice: func(ctx context.Context, id int64, seenAt time.Time) error {
+				require.Equal(t, int64(9), id)
+				touchedAt = seenAt
+				return nil
+			},
+		},
+		&codexAPIKeyReaderStub{
+			getByID: func(ctx context.Context, id int64) (*APIKey, error) {
+				return &APIKey{
+					ID:     id,
+					Status: StatusActive,
+					User:   &User{ID: 7, Status: StatusActive},
+				}, nil
+			},
+		},
+	)
+
+	accessToken, _, err := svc.signManagedAccessToken(9, 42, "session-a", &User{ID: 7, Status: StatusActive})
+	require.NoError(t, err)
+
+	before := time.Now()
+	_, err = svc.ValidateManagedDeviceAccess(context.Background(), ValidateManagedDeviceAccessRequest{
+		AccessToken:      "Bearer " + accessToken,
+		DeviceID:         9,
+		ManagedSessionID: "session-a",
+	})
+	after := time.Now()
+
+	require.NoError(t, err)
+	require.False(t, touchedAt.IsZero())
+	require.False(t, touchedAt.Before(before))
+	require.False(t, touchedAt.After(after))
+}
+
 type codexAgentRepositoryStub struct {
 	createSetupGrant      func(ctx context.Context, params CreateCodexSetupGrantParams) (*dbent.CodexSetupGrant, error)
 	consumeSetupGrant     func(ctx context.Context, codeHash string, now time.Time) (*dbent.CodexSetupGrant, error)
 	createManagedDevice   func(ctx context.Context, params CreateCodexManagedDeviceParams) (*dbent.CodexManagedDevice, error)
 	getManagedDevice      func(ctx context.Context, id int64) (*dbent.CodexManagedDevice, error)
+	touchManagedDevice    func(ctx context.Context, id int64, seenAt time.Time) error
 	listManagedDevices    func(ctx context.Context, userID int64) ([]*dbent.CodexManagedDevice, error)
 	revokeManagedDevice   func(ctx context.Context, id int64, revokedAt time.Time) error
 	createDeviceToken     func(ctx context.Context, params CreateCodexDeviceTokenParams) (*dbent.CodexDeviceToken, error)
@@ -566,6 +672,13 @@ func (s *codexAgentRepositoryStub) GetManagedDevice(ctx context.Context, id int6
 		return s.getManagedDevice(ctx, id)
 	}
 	return nil, ErrCodexManagedDeviceNotFound
+}
+
+func (s *codexAgentRepositoryStub) TouchManagedDevice(ctx context.Context, id int64, seenAt time.Time) error {
+	if s.touchManagedDevice != nil {
+		return s.touchManagedDevice(ctx, id, seenAt)
+	}
+	return nil
 }
 
 func (s *codexAgentRepositoryStub) ListManagedDevicesByUser(ctx context.Context, userID int64) ([]*dbent.CodexManagedDevice, error) {

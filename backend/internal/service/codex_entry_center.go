@@ -62,6 +62,37 @@ type CodexEntrySummary struct {
 	SetupSession             *CodexSetupSessionDTO          `json:"setup_session"`
 	FocusDeviceID            *int64                         `json:"focus_device_id"`
 	Devices                  []CodexDeviceDTO               `json:"devices"`
+	ModelCatalog             []CodexEntryModelSummary       `json:"model_catalog"`
+}
+
+type CodexEntryModelSummary struct {
+	Name        string                  `json:"name"`
+	DisplayName string                  `json:"display_name"`
+	Platform    string                  `json:"platform"`
+	Pricing     *CodexEntryModelPricing `json:"pricing,omitempty"`
+}
+
+type CodexEntryModelPricing struct {
+	BillingMode      string                      `json:"billing_mode"`
+	InputPrice       *float64                    `json:"input_price"`
+	OutputPrice      *float64                    `json:"output_price"`
+	CacheWritePrice  *float64                    `json:"cache_write_price"`
+	CacheReadPrice   *float64                    `json:"cache_read_price"`
+	ImageOutputPrice *float64                    `json:"image_output_price"`
+	PerRequestPrice  *float64                    `json:"per_request_price"`
+	Intervals        []CodexEntryPricingInterval `json:"intervals"`
+	Source           string                      `json:"source"`
+}
+
+type CodexEntryPricingInterval struct {
+	MinTokens       int      `json:"min_tokens"`
+	MaxTokens       *int     `json:"max_tokens"`
+	TierLabel       string   `json:"tier_label,omitempty"`
+	InputPrice      *float64 `json:"input_price"`
+	OutputPrice     *float64 `json:"output_price"`
+	CacheWritePrice *float64 `json:"cache_write_price"`
+	CacheReadPrice  *float64 `json:"cache_read_price"`
+	PerRequestPrice *float64 `json:"per_request_price"`
 }
 
 type CodexSetupSessionDTO struct {

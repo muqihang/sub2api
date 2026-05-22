@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,6 +50,10 @@ func (s *codexEntryCenterRepoStub) GetManagedDevice(ctx context.Context, id int6
 		}
 	}
 	return nil, ErrCodexManagedDeviceNotFound
+}
+
+func (s *codexEntryCenterRepoStub) TouchManagedDevice(ctx context.Context, id int64, seenAt time.Time) error {
+	return nil
 }
 
 func (s *codexEntryCenterRepoStub) ListManagedDevicesByUser(ctx context.Context, userID int64) ([]*dbent.CodexManagedDevice, error) {
@@ -115,13 +121,17 @@ func (s *codexEntryCenterAPIKeyReaderStub) GetByID(ctx context.Context, id int64
 // ─── Helper ───
 
 func newTestEntryCenterService(repo *codexEntryCenterRepoStub, apiKeyReader *codexEntryCenterAPIKeyReaderStub) *CodexEntryCenterServiceImpl {
+	return newTestEntryCenterServiceWithModelRegistry(repo, apiKeyReader, nil)
+}
+
+func newTestEntryCenterServiceWithModelRegistry(repo *codexEntryCenterRepoStub, apiKeyReader *codexEntryCenterAPIKeyReaderStub, modelRegistry *CodexGatewayModelRegistry) *CodexEntryCenterServiceImpl {
 	if apiKeyReader == nil {
 		apiKeyReader = &codexEntryCenterAPIKeyReaderStub{}
 	}
 	return NewCodexEntryCenterService(repo, apiKeyReader, &codexEntryCenterAPIKeyCreatorStub{}, &CodexEntryCenterConfig{
 		ServerOrigin:  "https://sub2api.example.com",
 		GatewayOrigin: "https://sub2api.example.com",
-	})
+	}, modelRegistry)
 }
 
 // ─── Tests ───
@@ -142,12 +152,146 @@ func TestGetSummary_NoAttachmentRelationship_ReturnsOnboardingCredential(t *test
 	require.Empty(t, summary.Devices)
 }
 
+func TestGetSummary_IncludesCodexGatewayModelCatalog(t *testing.T) {
+	repo := &codexEntryCenterRepoStub{
+		devices: []*dbent.CodexManagedDevice{},
+		grants:  []*dbent.CodexSetupGrant{},
+	}
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"gpt-5.5", "deepseek-v4-pro"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderOpenAI: {
+						Provider: CodexGatewayProviderOpenAI,
+						GroupID:  1001,
+						Healthy:  true,
+					},
+					CodexGatewayProviderDeepSeek: {
+						Provider: CodexGatewayProviderDeepSeek,
+						GroupID:  2002,
+						Healthy:  true,
+					},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"deepseek-v4-pro": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+	)
+	svc := newTestEntryCenterServiceWithModelRegistry(repo, nil, registry)
+
+	summary, err := svc.GetSummary(context.Background(), 7)
+	require.NoError(t, err)
+	require.Len(t, summary.ModelCatalog, 2)
+	require.Equal(t, []string{"gpt-5.5", "deepseek-v4-pro"}, codexEntryModelSummaryNames(summary.ModelCatalog))
+	require.Equal(t, "GPT-5.5", summary.ModelCatalog[0].DisplayName)
+	require.Equal(t, "openai", summary.ModelCatalog[0].Platform)
+	require.Equal(t, "DeepSeek V4 Pro", summary.ModelCatalog[1].DisplayName)
+	require.Equal(t, "deepseek", summary.ModelCatalog[1].Platform)
+}
+
+func TestGetSummary_IncludesFullCodexGatewayModelCatalog(t *testing.T) {
+	repo := &codexEntryCenterRepoStub{
+		devices: []*dbent.CodexManagedDevice{},
+		grants:  []*dbent.CodexSetupGrant{},
+	}
+	enabledModels := []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"claude-opus-4-7",
+	}
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: enabledModels,
+			ProviderGroups: config.GatewayCodexProviderGroupsConfig{
+				OpenAI:    1001,
+				DeepSeek:  2002,
+				Anthropic: 3003,
+			},
+		},
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{
+			"deepseek-v4-pro":   true,
+			"deepseek-v4-flash": true,
+		}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{
+			"deepseek-v4-pro":   true,
+			"deepseek-v4-flash": true,
+		}}),
+	)
+	svc := newTestEntryCenterServiceWithModelRegistry(repo, nil, registry)
+
+	summary, err := svc.GetSummary(context.Background(), 7)
+	require.NoError(t, err)
+
+	require.Len(t, summary.ModelCatalog, len(enabledModels))
+	require.Equal(t, []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"claude-opus-4-7",
+	}, codexEntryModelSummaryNames(summary.ModelCatalog))
+}
+
+func TestGetSummary_IncludesModelPricingFromResolver(t *testing.T) {
+	repo := &codexEntryCenterRepoStub{
+		devices: []*dbent.CodexManagedDevice{},
+		grants:  []*dbent.CodexSetupGrant{},
+	}
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"gpt-5.5", "deepseek-v4-pro", "claude-opus-4-7"},
+			ProviderGroups: config.GatewayCodexProviderGroupsConfig{
+				OpenAI:    1001,
+				DeepSeek:  2002,
+				Anthropic: 3003,
+			},
+		},
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{
+			"deepseek-v4-pro": true,
+		}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{
+			"deepseek-v4-pro": true,
+		}}),
+	)
+	svc := newTestEntryCenterServiceWithModelRegistry(repo, nil, registry)
+
+	summary, err := svc.GetSummary(context.Background(), 7)
+	require.NoError(t, err)
+	require.Len(t, summary.ModelCatalog, 3)
+
+	var raw []map[string]any
+	require.NoError(t, mustMarshalUnmarshal(summary.ModelCatalog, &raw))
+	for _, model := range raw {
+		pricing, ok := model["pricing"].(map[string]any)
+		require.True(t, ok, "model %s should include pricing", model["name"])
+		require.Equal(t, "token", pricing["billing_mode"])
+		require.Greater(t, pricing["input_price"].(float64), 0.0)
+		require.Greater(t, pricing["output_price"].(float64), 0.0)
+		require.Greater(t, pricing["cache_read_price"].(float64), 0.0)
+		require.NotEmpty(t, pricing["source"])
+	}
+}
+
 func TestGetSummary_PendingSessionNoDevice_ReturnsOnboardingAttach(t *testing.T) {
+	codeHash := hashManagedSecret("setup-code")
 	repo := &codexEntryCenterRepoStub{
 		devices: []*dbent.CodexManagedDevice{},
 		grants: []*dbent.CodexSetupGrant{
 			{
 				ID:            1,
+				CodeHash:      codeHash,
 				UserID:        7,
 				APIKeyID:      42,
 				ServerOrigin:  "https://sub2api.example.com",
@@ -164,6 +308,9 @@ func TestGetSummary_PendingSessionNoDevice_ReturnsOnboardingAttach(t *testing.T)
 	require.NotNil(t, summary.WizardStep)
 	require.Equal(t, 2, *summary.WizardStep)
 	require.NotNil(t, summary.SetupSession)
+	require.Equal(t, codeHash[:16], summary.SetupSession.ID)
+	require.Nil(t, summary.SetupSession.LaunchURL)
+	require.Nil(t, summary.SetupSession.CLICommand)
 	require.NotNil(t, summary.SetupSessionPresentation)
 	require.Equal(t, CodexSetupSessionPresentationWizard, *summary.SetupSessionPresentation)
 }
@@ -350,10 +497,12 @@ func TestCreateSetupSession_ReusedKeyMode_Success(t *testing.T) {
 }
 
 func TestDiagnose_SetupSessionTarget(t *testing.T) {
+	codeHash := hashManagedSecret("setup-code")
 	repo := &codexEntryCenterRepoStub{
 		grants: []*dbent.CodexSetupGrant{
 			{
 				ID:            1,
+				CodeHash:      codeHash,
 				UserID:        7,
 				APIKeyID:      42,
 				ServerOrigin:  "https://sub2api.example.com",
@@ -369,6 +518,34 @@ func TestDiagnose_SetupSessionTarget(t *testing.T) {
 		UserID:         7,
 		SetupSessionID: &sessionID,
 	})
+	require.NoError(t, err)
+	require.Equal(t, "setup_session", report.TargetKind)
+	require.NotEmpty(t, report.Checks)
+}
+
+func TestDiagnose_SetupSessionTargetAcceptsCodeHashPrefix(t *testing.T) {
+	codeHash := hashManagedSecret("setup-code")
+	repo := &codexEntryCenterRepoStub{
+		grants: []*dbent.CodexSetupGrant{
+			{
+				ID:            1,
+				CodeHash:      codeHash,
+				UserID:        7,
+				APIKeyID:      42,
+				ServerOrigin:  "https://sub2api.example.com",
+				GatewayOrigin: "https://sub2api.example.com",
+				ExpiresAt:     time.Now().Add(5 * time.Minute),
+			},
+		},
+	}
+	svc := newTestEntryCenterService(repo, nil)
+
+	sessionID := codeHash[:16]
+	report, err := svc.Diagnose(context.Background(), CodexDiagnoseRequest{
+		UserID:         7,
+		SetupSessionID: &sessionID,
+	})
+
 	require.NoError(t, err)
 	require.Equal(t, "setup_session", report.TargetKind)
 	require.NotEmpty(t, report.Checks)
@@ -422,6 +599,22 @@ func TestDiagnose_RequiresExactlyOneTarget(t *testing.T) {
 		DeviceID:       &deviceID,
 	})
 	require.Error(t, err)
+}
+
+func codexEntryModelSummaryNames(models []CodexEntryModelSummary) []string {
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		names = append(names, model.Name)
+	}
+	return names
+}
+
+func mustMarshalUnmarshal(in any, out any) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
 }
 
 // ─── API key creator stub ───

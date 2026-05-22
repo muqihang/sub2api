@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -31,10 +32,12 @@ type codexAPIKeyCreator interface {
 
 // CodexEntryCenterServiceImpl implements CodexEntryCenterService.
 type CodexEntryCenterServiceImpl struct {
-	repo          CodexAgentRepository
-	apiKeyReader  codexManagedAPIKeyReader
-	apiKeyCreator codexAPIKeyCreator
-	cfg           *CodexEntryCenterConfig
+	repo            CodexAgentRepository
+	apiKeyReader    codexManagedAPIKeyReader
+	apiKeyCreator   codexAPIKeyCreator
+	cfg             *CodexEntryCenterConfig
+	modelRegistry   *CodexGatewayModelRegistry
+	pricingResolver *ModelPricingResolver
 }
 
 type CodexEntryCenterConfig struct {
@@ -47,12 +50,27 @@ func NewCodexEntryCenterService(
 	apiKeyReader codexManagedAPIKeyReader,
 	apiKeyCreator codexAPIKeyCreator,
 	cfg *CodexEntryCenterConfig,
+	modelRegistry *CodexGatewayModelRegistry,
+	pricingResolver ...*ModelPricingResolver,
 ) *CodexEntryCenterServiceImpl {
+	registry := modelRegistry
+	if registry == nil {
+		registry = NewDefaultCodexGatewayModelRegistry()
+	}
+	var resolver *ModelPricingResolver
+	if len(pricingResolver) > 0 {
+		resolver = pricingResolver[0]
+	}
+	if resolver == nil {
+		resolver = NewModelPricingResolver(nil, NewBillingService(nil, nil))
+	}
 	return &CodexEntryCenterServiceImpl{
-		repo:          repo,
-		apiKeyReader:  apiKeyReader,
-		apiKeyCreator: apiKeyCreator,
-		cfg:           cfg,
+		repo:            repo,
+		apiKeyReader:    apiKeyReader,
+		apiKeyCreator:   apiKeyCreator,
+		cfg:             cfg,
+		modelRegistry:   registry,
+		pricingResolver: resolver,
 	}
 }
 
@@ -73,9 +91,11 @@ func (s *CodexEntryCenterServiceImpl) GetSummary(ctx context.Context, userID int
 	if err != nil {
 		return nil, err
 	}
+	pricingGroupID := s.resolveModelPricingGroupID(ctx, presentableDevices, pendingSession)
 
 	summary := &CodexEntrySummary{
-		Devices: make([]CodexDeviceDTO, 0, len(presentableDevices)),
+		Devices:      make([]CodexDeviceDTO, 0, len(presentableDevices)),
+		ModelCatalog: s.buildModelCatalogSummary(ctx, pricingGroupID),
 	}
 
 	// Build device DTOs.
@@ -462,13 +482,13 @@ func (s *CodexEntryCenterServiceImpl) findSetupSessionByID(ctx context.Context, 
 	// Session ID is the string representation of the grant's database ID.
 	grantID, err := strconv.ParseInt(sessionID, 10, 64)
 	if err != nil {
-		// Try looking up by hash prefix (for sessions created via the new flow).
+		// Try looking up by code-hash prefix (for sessions returned directly by create/regenerate).
 		grants, err := s.repo.ListPendingSetupGrantsByUser(ctx, userID, time.Now())
 		if err != nil {
 			return nil, err
 		}
 		for _, g := range grants {
-			if strconv.FormatInt(g.ID, 10) == sessionID {
+			if len(g.CodeHash) >= len(sessionID) && g.CodeHash[:len(sessionID)] == sessionID {
 				return g, nil
 			}
 		}
@@ -499,7 +519,7 @@ func (s *CodexEntryCenterServiceImpl) findPendingSetupSession(ctx context.Contex
 }
 
 func (s *CodexEntryCenterServiceImpl) buildSetupSessionDTO(grant *dbent.CodexSetupGrant) *CodexSetupSessionDTO {
-	sessionID := strconv.FormatInt(grant.ID, 10)
+	sessionID := codexSetupSessionID(grant)
 
 	// Determine attachment mode from the grant.
 	// For now, all grants created via the old flow are "reused_key".
@@ -511,19 +531,244 @@ func (s *CodexEntryCenterServiceImpl) buildSetupSessionDTO(grant *dbent.CodexSet
 		reuseKeyID = &id
 	}
 
-	// Build launch URL from stored data.
-	launchURL := fmt.Sprintf("%s?client=codex&server=%s", codexDeeplinkScheme, url.QueryEscape(grant.ServerOrigin))
-	cliCommand := fmt.Sprintf("codex auth --server %s", grant.ServerOrigin)
-
 	return &CodexSetupSessionDTO{
 		ID:              sessionID,
 		CredentialLabel: "Codex",
 		AttachmentMode:  mode,
 		ReuseAPIKeyID:   reuseKeyID,
-		LaunchURL:       &launchURL,
-		CLICommand:      &cliCommand,
+		LaunchURL:       nil,
+		CLICommand:      nil,
 		ExpiresAt:       grant.ExpiresAt,
 	}
+}
+
+func codexSetupSessionID(grant *dbent.CodexSetupGrant) string {
+	if grant != nil && len(grant.CodeHash) >= 16 {
+		return grant.CodeHash[:16]
+	}
+	if grant == nil {
+		return ""
+	}
+	return strconv.FormatInt(grant.ID, 10)
+}
+
+func (s *CodexEntryCenterServiceImpl) buildModelCatalogSummary(ctx context.Context, pricingGroupID *int64) []CodexEntryModelSummary {
+	if s == nil || s.modelRegistry == nil {
+		return []CodexEntryModelSummary{}
+	}
+	models := s.modelRegistry.Models()
+	out := make([]CodexEntryModelSummary, 0, len(models))
+	for _, model := range models {
+		out = append(out, CodexEntryModelSummary{
+			Name:        model.Slug,
+			DisplayName: model.DisplayName,
+			Platform:    model.Provider,
+			Pricing:     s.buildModelPricingSummary(ctx, model, pricingGroupID),
+		})
+	}
+	return out
+}
+
+func (s *CodexEntryCenterServiceImpl) resolveModelPricingGroupID(ctx context.Context, devices []*dbent.CodexManagedDevice, pendingSession *dbent.CodexSetupGrant) *int64 {
+	if s == nil || s.apiKeyReader == nil {
+		return nil
+	}
+
+	var apiKeyID int64
+	if focusDeviceID := s.pickFocusDevice(devices); focusDeviceID != nil {
+		for _, device := range devices {
+			if device.ID == *focusDeviceID {
+				apiKeyID = device.APIKeyID
+				break
+			}
+		}
+	}
+	if apiKeyID <= 0 && len(devices) > 0 {
+		apiKeyID = devices[0].APIKeyID
+	}
+	if apiKeyID <= 0 && pendingSession != nil {
+		apiKeyID = pendingSession.APIKeyID
+	}
+	if apiKeyID <= 0 {
+		return nil
+	}
+
+	apiKey, err := s.apiKeyReader.GetByID(ctx, apiKeyID)
+	if err != nil || apiKey == nil {
+		return nil
+	}
+	return apiKey.GroupID
+}
+
+func (s *CodexEntryCenterServiceImpl) buildModelPricingSummary(ctx context.Context, model CodexGatewayModel, groupID *int64) *CodexEntryModelPricing {
+	if s == nil || s.pricingResolver == nil {
+		return nil
+	}
+	var best *CodexEntryModelPricing
+	for _, modelName := range codexEntryPricingModelCandidates(model) {
+		resolved := s.pricingResolver.Resolve(ctx, PricingInput{Model: modelName, GroupID: groupID})
+		pricing := codexEntryResolvedPricingToDTO(resolved)
+		if pricing == nil {
+			continue
+		}
+		if pricing.Source == PricingSourceChannel {
+			return pricing
+		}
+		if best == nil {
+			best = pricing
+		}
+	}
+	return best
+}
+
+func codexEntryPricingModelCandidates(model CodexGatewayModel) []string {
+	raw := []string{
+		model.Slug,
+		model.UpstreamBaseModel,
+		model.UpstreamModel,
+		model.UpstreamThinkingModel,
+		codexEntryBasePricingModel(model.Slug),
+		codexEntryBasePricingModel(model.UpstreamBaseModel),
+		codexEntryBasePricingModel(model.UpstreamModel),
+		codexEntryBasePricingModel(model.UpstreamThinkingModel),
+	}
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func codexEntryBasePricingModel(model string) string {
+	model = strings.TrimSpace(model)
+	for _, suffix := range []string{"-thinking-ag", "-thinking", "-max", "-ag"} {
+		if strings.HasSuffix(model, suffix) {
+			return strings.TrimSuffix(model, suffix)
+		}
+	}
+	return ""
+}
+
+func codexEntryResolvedPricingToDTO(resolved *ResolvedPricing) *CodexEntryModelPricing {
+	if resolved == nil {
+		return nil
+	}
+	mode := resolved.Mode
+	if mode == "" {
+		mode = BillingModeToken
+	}
+	dto := &CodexEntryModelPricing{
+		BillingMode: string(mode),
+		Intervals:   codexEntryPricingIntervalsToDTO(codexEntryResolvedIntervals(resolved)),
+		Source:      resolved.Source,
+	}
+
+	switch mode {
+	case BillingModePerRequest:
+		dto.PerRequestPrice = positiveFloatPtr(resolved.DefaultPerRequestPrice)
+	case BillingModeImage:
+		dto.PerRequestPrice = positiveFloatPtr(resolved.DefaultPerRequestPrice)
+		dto.ImageOutputPrice = positiveFloatPtr(resolved.DefaultPerRequestPrice)
+	default:
+		if resolved.BasePricing != nil {
+			dto.InputPrice = positiveFloatPtr(resolved.BasePricing.InputPricePerToken)
+			dto.OutputPrice = positiveFloatPtr(resolved.BasePricing.OutputPricePerToken)
+			dto.CacheWritePrice = positiveFloatPtr(firstPositiveFloat(
+				resolved.BasePricing.CacheCreationPricePerToken,
+				resolved.BasePricing.CacheCreation5mPrice,
+				resolved.BasePricing.CacheCreation1hPrice,
+			))
+			dto.CacheReadPrice = positiveFloatPtr(resolved.BasePricing.CacheReadPricePerToken)
+			dto.ImageOutputPrice = positiveFloatPtr(resolved.BasePricing.ImageOutputPricePerToken)
+		}
+	}
+
+	if !codexEntryModelPricingHasValues(dto) {
+		return nil
+	}
+	return dto
+}
+
+func codexEntryResolvedIntervals(resolved *ResolvedPricing) []PricingInterval {
+	if resolved == nil {
+		return nil
+	}
+	if resolved.Mode == BillingModePerRequest || resolved.Mode == BillingModeImage {
+		return resolved.RequestTiers
+	}
+	return resolved.Intervals
+}
+
+func codexEntryPricingIntervalsToDTO(intervals []PricingInterval) []CodexEntryPricingInterval {
+	out := make([]CodexEntryPricingInterval, 0, len(intervals))
+	for _, iv := range intervals {
+		out = append(out, CodexEntryPricingInterval{
+			MinTokens:       iv.MinTokens,
+			MaxTokens:       cloneIntPtr(iv.MaxTokens),
+			TierLabel:       iv.TierLabel,
+			InputPrice:      clonePositiveFloatPtr(iv.InputPrice),
+			OutputPrice:     clonePositiveFloatPtr(iv.OutputPrice),
+			CacheWritePrice: clonePositiveFloatPtr(iv.CacheWritePrice),
+			CacheReadPrice:  clonePositiveFloatPtr(iv.CacheReadPrice),
+			PerRequestPrice: clonePositiveFloatPtr(iv.PerRequestPrice),
+		})
+	}
+	return out
+}
+
+func codexEntryModelPricingHasValues(pricing *CodexEntryModelPricing) bool {
+	if pricing == nil {
+		return false
+	}
+	return pricing.InputPrice != nil ||
+		pricing.OutputPrice != nil ||
+		pricing.CacheWritePrice != nil ||
+		pricing.CacheReadPrice != nil ||
+		pricing.ImageOutputPrice != nil ||
+		pricing.PerRequestPrice != nil ||
+		len(pricing.Intervals) > 0
+}
+
+func positiveFloatPtr(value float64) *float64 {
+	if value <= 0 {
+		return nil
+	}
+	v := value
+	return &v
+}
+
+func clonePositiveFloatPtr(value *float64) *float64 {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	v := *value
+	return &v
+}
+
+func cloneIntPtr(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	v := *value
+	return &v
+}
+
+func firstPositiveFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (s *CodexEntryCenterServiceImpl) buildDeviceDTO(device *dbent.CodexManagedDevice) CodexDeviceDTO {
