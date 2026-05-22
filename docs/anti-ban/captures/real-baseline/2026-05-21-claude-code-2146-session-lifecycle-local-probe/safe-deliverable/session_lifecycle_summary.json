@@ -2,7 +2,8 @@
   "cli_version": "2.1.146",
   "status": "PARTIAL",
   "notes": [
-    "Covered --no-session-persistence, default persistence first turn, continue-most-recent, stream-json, and local 500-once error path.",
+    "Covered --no-session-persistence, default persistence first turn, continue-most-recent, and local 500-once error path.",
+    "Attempted stream-json but it did not produce a safe reproducible capture and is not counted as covered.",
     "Did not exercise explicit --resume/--session-id because non-interactive minimal localhost flow did not surface a safe reproducible session identifier without reading persisted session payloads."
   ],
   "scenarios": [

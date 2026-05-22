@@ -1,6 +1,6 @@
 # Joint local capture acceptance
 
-- Executed at: `2026-05-21T17:39:33-07:00`
+- Executed at: `2026-05-21T23:02:28-07:00`
 - Gateway mode: `sub2api`
 - No real upstream: `true`
 - No raw secrets in safe deliverable: `true`
@@ -43,6 +43,25 @@
 - sub2api->gateway body sha256: `5be832de94a6089d6a5c13615778771ca19d69105170e843985ef18b0b9ef6fe`
 - sub2api->gateway billing/cch: `false/false`
 - note: `route is explicitly deferred in first wave; no upstream request observed`
+
+## oauth_native_messages_sign_primary - PASS
+- route: `/v1/messages?beta=true`
+- decision: `forward_sign_primary`
+- selected account id hash: `sha256:c3ea99f86b2f8a74`
+- egress bucket: `bucket-a`
+- policy version: `2.1.146`
+- response status: `200`
+- request count: `1`
+- no real upstream: `true`
+- no native fallback: `true`
+- sub2api->gateway route: `/v1/messages?beta=true`
+- sub2api->gateway body sha256: `4e1374b2d3b973e0030171e27a74a2b730855da91bf7cfa98b1a58b721125d01`
+- sub2api->gateway billing/cch: `false/false`
+- gateway->upstream route: `/v1/messages?beta=true`
+- gateway->upstream body sha256: `0d6fd64bcd7686a7aa49c92ec5e2a9d5c6fbb0e48509dd78cf9e308cad2d2ff2`
+- gateway->upstream billing/cch: `true/true`
+- note: `sub2api->gateway body is pre-final with no billing/CCH material`
+- note: `cc gateway generated billing block, cc_version suffix, CCH, canonical persona, and post-sign verifier passed before localhost upstream capture`
 
 ## apikey_native_messages_strip - PASS
 - route: `/v1/messages?beta=true`
@@ -206,14 +225,27 @@
 - no native fallback: `true`
 - note: `direct gateway control-plane probe; no upstream request observed`
 
-## gateway_signing_fixture_fail_closed_403 - PASS
+## gateway_signing_untrusted_cch_fail_closed_403 - PASS
 - route: `/v1/messages?beta=true`
 - decision: `control_plane_403`
 - selected account id hash: `sha256:c3ea99f86b2f8a74`
 - egress bucket: `bucket-a`
 - policy version: `2.1.146`
 - response status: `403`
-- control-plane: `control-plane/signing_verifier_failed`
+- control-plane: `control-plane/signing_untrusted_billing_input`
+- request count: `0`
+- no real upstream: `true`
+- no native fallback: `true`
+- note: `direct gateway control-plane probe; no upstream request observed`
+
+## gateway_billing_mode_disabled_403 - PASS
+- route: `/v1/messages?beta=true`
+- decision: `control_plane_403`
+- selected account id hash: `sha256:c3ea99f86b2f8a74`
+- egress bucket: `bucket-a`
+- policy version: `2.1.146`
+- response status: `403`
+- control-plane: `control-plane/billing_cch_mode_disabled`
 - request count: `0`
 - no real upstream: `true`
 - no native fallback: `true`

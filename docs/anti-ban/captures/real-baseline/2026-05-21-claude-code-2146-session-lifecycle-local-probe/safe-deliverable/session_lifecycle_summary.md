@@ -1,8 +1,9 @@
 # Claude Code 2.1.146 session lifecycle local probe
 
 - Status: `PARTIAL`
-- Covered: `--no-session-persistence`, default persistence first turn, `-c/--continue`, `stream-json`, local 500-once error path.
+- Covered: `--no-session-persistence`, default persistence first turn, `-c/--continue`, local 500-once error path.
 - Not covered: explicit `--resume` / `--session-id`.
+- Attempted but not covered: `stream-json`.
 
 ## Scenario summaries
 

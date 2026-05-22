@@ -908,10 +908,10 @@ egress:
 
 | Gate | Status | First-wave decision | Evidence |
 |---|---|---|---|
-| P0-A count_tokens | DEFER | `/v1/messages/count_tokens` remains blocked/deferred and excluded from first-wave shared-pool canary until a real `2.1.146` dynamic fixture exists. | `captures/real-baseline/2026-05-21-claude-code-2146-count-tokens-local-probe/safe-deliverable/count_tokens_local_probe_summary.md`; `captures/real-baseline/2026-05-21-sub2api-cc-gateway-joint-local-capture/safe-deliverable/README.md` |
+| P0-A count_tokens | DEFER | Linux localhost attempts still did not naturally emit `/v1/messages/count_tokens`; the route remains blocked/deferred and excluded from first-wave shared-pool canary. | `captures/real-baseline/2026-05-21-p0-a-count-tokens-linux-local-probe/safe-deliverable/count_tokens_linux_local_probe_summary.md`; `captures/real-baseline/2026-05-21-claude-code-2146-count-tokens-local-probe/safe-deliverable/count_tokens_local_probe_summary.md` |
 | P0-B refresh | PASS | Refresh behavior is limited to static audit plus service-local mock; no real `platform.claude.com` call was made. | `captures/real-baseline/2026-05-21-claude-code-2146-oauth-refresh-static-and-local-mock-audit/safe-deliverable/oauth_refresh_static_local_mock_summary.md` |
-| P0-C metadata/session | DEFER | First-wave scope is limited to observed `--no-session-persistence`, default persistence first turn, `-c/--continue`, `stream-json`, and local retry/error paths; explicit `--resume` / `--session-id` remains excluded until separate local capture exists. | `captures/real-baseline/2026-05-21-claude-code-2146-session-lifecycle-local-probe/safe-deliverable/session_lifecycle_summary.md`; `captures/real-baseline/2026-05-21-sub2api-cc-gateway-joint-local-capture/safe-deliverable/README.md` |
-| P0-D Linux parity | DEFER | Linux shared-pool deployment/persona parity claims remain blocked; no Linux or deployment-like host was available in this checkpoint. | `captures/real-baseline/2026-05-21-claude-code-2146-linux-parity-local-probe/safe-deliverable/linux_parity_summary.md` |
+| P0-C metadata/session | PASS | Linux localhost capture covers default persistence, `-c/--continue`, explicit `--resume`, and explicit `--session-id`; `--output-format stream-json --verbose` emitted the same request shape as JSON output, so this gate no longer blocks first-wave messages-only scope. | `captures/real-baseline/2026-05-21-p0-c-session-lifecycle-linux-local-probe/safe-deliverable/session_lifecycle_linux_local_probe_summary.md`; `captures/real-baseline/2026-05-21-p0-c-session-static-triage/safe-deliverable/README.md` |
+| P0-D Linux parity | PASS | Official Claude Code 2.1.146 was installed on Ubuntu 24.04.4 x86_64 and successfully exercised against localhost-only capture with no real upstream attempts. | `captures/real-baseline/2026-05-21-p0-d-linux-parity-local-probe/safe-deliverable/linux_parity_local_probe_summary.md` |
 | P0-E event route-family policy | PASS | `POST /api/event_logging/batch` and `/api/event_logging/v2/batch` are suppressed locally; unknown `/api/event_logging/*` is blocked; the route family stays excluded from first-wave canary until schema capture exists. | `14-cc-gateway-shared-pool-compatibility-plan.md`; `captures/real-baseline/2026-05-21-sub2api-cc-gateway-joint-local-capture/safe-deliverable/README.md` |
 | P0-F Sub2API boundary | PASS | Native messages/count_tokens and OpenAI-compatible chat/responses CC Gateway routes skip final mimicry/billing/CCH/proxy-TLS ownership in Sub2API. | `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation/backend/internal/service/gateway_cc_gateway_boundary_test.go`; `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation/backend/internal/service/gateway_cc_gateway_control_plane_test.go` |
 | P0-G CC Gateway final-output boundary | PASS | Per-account identity/egress isolation, strict route/header allowlists, strip verifier, retry contract, and control-plane fail-closed behavior are covered in CC Gateway tests. | `/Users/muqihang/chelingxi_workspace/cc-gateway/tests/checkpoint3-remediation.test.ts`; `/Users/muqihang/chelingxi_workspace/cc-gateway/tests/proxy-sub2api.test.ts` |
@@ -920,7 +920,26 @@ egress:
 | P0-J API-key passthrough include/block/defer | PASS | Anthropic API-key passthrough `/v1/messages` is included through CC Gateway; API-key `/v1/messages/count_tokens` is explicitly deferred/blocked in first wave. | `captures/real-baseline/2026-05-21-sub2api-cc-gateway-joint-local-capture/safe-deliverable/README.md`; `/Users/muqihang/chelingxi_workspace/cc-gateway/tests/proxy-sub2api.test.ts` |
 | P0-K joint local capture | PASS | Fifteen local topology scenarios passed with redaction scan clean, no real upstream, no native fallback, and negative cases fail-closed. | `captures/real-baseline/2026-05-21-sub2api-cc-gateway-joint-local-capture/safe-deliverable/README.md`; `captures/real-baseline/2026-05-21-sub2api-cc-gateway-joint-local-capture/safe-deliverable/joint_local_capture_summary.redacted.json` |
 
-**Checkpoint 5 decision:** Do **not** start `27-final-shared-pool-signing-mode-design.md` yet. Remaining P0 `DEFER` items are `P0-A count_tokens`, `P0-C metadata/session`, and `P0-D Linux parity`. Current first-wave strip/no-CCH scope stays messages-only plus Anthropic API-key passthrough messages; count_tokens remains blocked/deferred, explicit resume/session-id lifecycle paths remain excluded, and Linux deployment parity claims remain blocked.
+**Checkpoint 5 decision:** Do **not** start `27-final-shared-pool-signing-mode-design.md` yet. Remaining P0 `DEFER` item is `P0-A count_tokens`; `P0-C metadata/session` and `P0-D Linux parity` are now PASS. Current evidence now supports drafting a constrained `27-first-wave-shared-pool-messages-only-design.md` while keeping `/v1/messages/count_tokens` blocked/deferred from first-wave scope.
+
+
+
+### P0-A follow-on note
+
+- Safe deliverable: `captures/real-baseline/2026-05-21-p0-a-count-tokens-linux-local-probe/safe-deliverable/count_tokens_linux_local_probe_summary.md`
+- Static triage: `captures/real-baseline/2026-05-21-p0-a-count-tokens-static-triage/safe-deliverable/README.md`
+- Linux localhost attempts still did not naturally trigger `/v1/messages/count_tokens?beta=true`; static binary evidence points to an SDK/internal path with no known official natural CLI trigger, so first-wave decision remains `blocked/deferred`.
+
+### P0-C follow-on note
+
+- Safe deliverable: `captures/real-baseline/2026-05-21-p0-c-session-lifecycle-linux-local-probe/safe-deliverable/session_lifecycle_linux_local_probe_summary.md`
+- Static triage: `captures/real-baseline/2026-05-21-p0-c-session-static-triage/safe-deliverable/README.md`
+- Linux localhost capture now covers explicit `--resume` and explicit `--session-id`; static+runtime evidence shows `stream-json` here is output-side and does not change request shape.
+
+### P0-D follow-on note
+
+- Safe deliverable: `captures/real-baseline/2026-05-21-p0-d-linux-parity-local-probe/safe-deliverable/linux_parity_local_probe_summary.md`
+- Linux/shared-pool persona parity is now backed by an actual Ubuntu 24.04.4 x86_64 localhost-only 2.1.146 capture.
 
 ## 8. 最小测试命令清单
 
