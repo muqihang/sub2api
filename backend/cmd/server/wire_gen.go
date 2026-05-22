@@ -277,7 +277,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
 	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
 	gatewayHandler := handler.NewGatewayHandler(gatewayService, geminiMessagesCompatService, antigravityGatewayService, userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool, errorPassthroughService, userMessageQueueService, configConfig, settingService)
-	codexGatewayModelRegistry := service.ProvideCodexGatewayModelRegistryWithVariantChecker(configConfig, codexGatewayAdminService, gatewayService)
+	codexGatewayModelRegistry := service.ProvideCodexGatewayModelRegistryWithVariantChecker(configConfig, codexGatewayAdminService, gatewayService, modelPricingResolver)
 	codexGatewayProviderExecutor := service.ProvideCodexGatewayProviderExecutor(configConfig, openAIGatewayService, gatewayService, codexGatewayStateStore, codexGatewayAdminService)
 	codexGatewayCaptureManager := service.ProvideCodexGatewayCaptureManager(configConfig)
 	codexGatewayService := service.ProvideCodexGatewayService(codexGatewayModelRegistry, codexGatewayProviderExecutor, codexGatewayCaptureManager)

@@ -332,3 +332,48 @@ def test_common_proxy_ports_are_avoided():
     for port in COMMON_PROXY_PORTS:
         chosen = choose_local_proxy_port(port)
         assert chosen not in COMMON_PROXY_PORTS
+
+def test_build_model_catalog_preserves_origin_capabilities_and_pricing(tmp_path: Path):
+    manager = CodexConfigManager(tmp_path)
+    catalog = manager.build_model_catalog({
+        "models": [
+            {
+                "slug": "gpt-5.5",
+                "display_name": "GPT-5.5",
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {
+                    "responses": True,
+                    "streaming": True,
+                    "tool_calls": True,
+                    "image_input": True,
+                    "cache_pricing": True,
+                    "context_continuation": True,
+                },
+                "pricing": {
+                    "input_price": "2.50",
+                    "output_price": "15.00",
+                    "cached_input_price": "0.25",
+                    "cache_write_price": "2.50",
+                    "currency": "USD",
+                    "unit": "per_1m_tokens",
+                    "updated_at": "2026-05-21T00:00:00Z",
+                    "source": "database_model_pricing",
+                },
+            },
+            {
+                "slug": "missing-price-model",
+                "display_name": "Missing Price Model",
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True},
+                "pricing": None,
+            },
+        ]
+    })
+
+    assert catalog["models"][0]["origin"] == "zhumeng"
+    assert catalog["models"][0]["provider_id"] == "zhumeng"
+    assert catalog["models"][0]["capabilities"]["tool_calls"] is True
+    assert catalog["models"][0]["pricing"]["source"] == "database_model_pricing"
+    assert catalog["models"][1]["pricing"] is None

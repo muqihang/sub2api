@@ -99,9 +99,9 @@ func (s *CodexGatewayService) Models(ctx context.Context, req CodexGatewayModels
 		err  error
 	)
 	if strings.EqualFold(strings.TrimSpace(req.CatalogFormat), "codex_cli") {
-		body, err = s.registry.ExportCodexCLICatalogJSON()
+		body, err = s.registry.ExportCodexCLICatalogJSON(req.APIKey.GroupID)
 	} else {
-		body, err = json.Marshal(s.registry.ModelsResponse())
+		body, err = json.Marshal(s.registry.ModelsResponse(req.APIKey.GroupID))
 	}
 	if err != nil {
 		return nil, err

@@ -12,6 +12,7 @@ import socket
 import urllib.request
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -588,6 +589,107 @@ def desktop_restore_enhancements(app_path: Path, item: str) -> dict[str, object]
         default_state_store().update({"desktop_enhancements_restored": True, "restart_required": bool(result.get("restart_required"))})
     return result
 
+
+def codex_model_catalog_summary(catalog: dict[str, object], *, catalog_path: Path, last_synced_at: object = None, source: str | None = None) -> dict[str, object]:
+    models = catalog.get("models", [])
+    if not isinstance(models, list):
+        models = []
+    model_count = 0
+    main_list_count = 0
+    restricted_count = 0
+    incompatible_count = 0
+    missing_pricing_count = 0
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_count += 1
+        compatible = codex_model_is_compatible(model)
+        if not compatible:
+            incompatible_count += 1
+        if codex_model_in_main_list(model) and compatible:
+            main_list_count += 1
+        elif compatible:
+            restricted_count += 1
+        if codex_model_pricing_missing(model.get("pricing")):
+            missing_pricing_count += 1
+    return {
+        "status": "synced" if model_count else "empty",
+        "model_count": model_count,
+        "main_list_count": main_list_count,
+        "restricted_count": restricted_count,
+        "incompatible_count": incompatible_count,
+        "missing_pricing_count": missing_pricing_count,
+        "last_synced_at": last_synced_at,
+        "catalog_path": str(catalog_path),
+        "source": source,
+    }
+
+
+def codex_model_in_main_list(model: dict[str, object]) -> bool:
+    visibility = str(model.get("visibility", "list") or "list").strip().lower()
+    return bool(model.get("supported_in_api", True)) and visibility in {"list", "visible"}
+
+
+def codex_model_is_compatible(model: dict[str, object]) -> bool:
+    capabilities = model.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return False
+    return all(bool(capabilities.get(key)) for key in ("responses", "streaming", "tool_calls", "context_continuation"))
+
+
+def codex_model_pricing_missing(pricing: object) -> bool:
+    if not isinstance(pricing, dict):
+        return True
+    return not any(pricing.get(key) for key in ("input_price", "output_price", "cached_input_price", "cache_write_price"))
+
+
+def desktop_models_status(client_name: str) -> dict[str, object]:
+    if client_name != "codex":
+        raise ValueError(f"unsupported client: {client_name}")
+    store = default_state_store()
+    state = store.read()
+    config_manager = default_config_manager()
+    profile = state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE)
+    catalog = config_manager.read_existing_model_catalog(profile)
+    catalog_path = config_manager.catalog_path_for_profile(profile)
+    return codex_model_catalog_summary(
+        catalog,
+        catalog_path=catalog_path,
+        last_synced_at=state.get("model_catalog_synced_at"),
+        source=str(state.get("model_catalog_meta", {}).get("source", "local")) if isinstance(state.get("model_catalog_meta"), dict) else "local",
+    )
+
+
+def desktop_models_sync(client_name: str) -> dict[str, object]:
+    if client_name != "codex":
+        raise ValueError(f"unsupported client: {client_name}")
+    store = default_state_store()
+    state = store.read()
+    required = ("gateway_base_url", "access_token", "managed_session_id", "device_id")
+    missing = [key for key in required if not state.get(key)]
+    if missing:
+        return {"status": "not_configured", "message": f"managed model sync is incomplete: missing {', '.join(missing)}"}
+    config_manager = default_config_manager()
+    client = default_http_client(str(state.get("server_base_url", "")))
+    catalog, meta = fetch_codex_model_catalog(client, config_manager, state, store)
+    profile = state.get("config_profile", DEFAULT_CODEX_CONFIG_PROFILE)
+    saved = config_manager.write_model_catalog(profile, catalog)
+    catalog_path = config_manager.catalog_path_for_profile(profile)
+    synced_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    patch = {
+        "model_catalog_meta": meta,
+        "model_catalog_synced_at": synced_at,
+        "catalog_path": str(catalog_path),
+        "catalog_hash_after": file_sha256(catalog_path),
+    }
+    updated = store.update(patch) if hasattr(store, "update") else {**state, **patch}
+    return codex_model_catalog_summary(
+        saved,
+        catalog_path=catalog_path,
+        last_synced_at=updated.get("model_catalog_synced_at"),
+        source=str(meta.get("source", "gateway")),
+    )
+
 def desktop_repair_client(client_name: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
@@ -656,6 +758,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "enhancements_status": inspect_codex_enhancements,
             "enhancements_patch": desktop_patch_enhancements,
             "enhancements_restore": desktop_restore_enhancements,
+            "models_status": desktop_models_status,
+            "models_sync": desktop_models_sync,
         })
 
     if args.command == "setup":

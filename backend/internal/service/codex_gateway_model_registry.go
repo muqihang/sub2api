@@ -3,18 +3,20 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 type CodexGatewayModelRegistry struct {
-	fallback        config.GatewayCodexConfig
-	orderedSlugs    []string
-	stateSource     CodexGatewayRegistryStateSource
-	pricingChecker  CodexGatewayPricingReadyChecker
-	protocolChecker CodexGatewayProtocolReadyChecker
-	variantChecker  CodexGatewayVariantReadyChecker
+	fallback             config.GatewayCodexConfig
+	orderedSlugs         []string
+	stateSource          CodexGatewayRegistryStateSource
+	pricingChecker       CodexGatewayPricingReadyChecker
+	protocolChecker      CodexGatewayProtocolReadyChecker
+	variantChecker       CodexGatewayVariantReadyChecker
+	modelPricingResolver CodexGatewayModelPricingResolver
 }
 
 func NewDefaultCodexGatewayModelRegistry() *CodexGatewayModelRegistry {
@@ -28,6 +30,35 @@ func NewDefaultCodexGatewayModelRegistry() *CodexGatewayModelRegistry {
 
 type CodexGatewayRegistryStateSource interface {
 	LoadCodexGatewayRegistryState(ctx context.Context) (*CodexGatewayRegistryState, error)
+}
+
+type CodexGatewayModelPricingResolver interface {
+	ResolveCodexGatewayModelPricing(ctx context.Context, model CodexGatewayModel, groupID *int64) *CodexGatewayModelPricing
+}
+
+type codexGatewayDatabaseModelPricingResolver struct {
+	resolver *ModelPricingResolver
+}
+
+func NewCodexGatewayDatabaseModelPricingResolver(resolver *ModelPricingResolver) CodexGatewayModelPricingResolver {
+	return codexGatewayDatabaseModelPricingResolver{resolver: resolver}
+}
+
+func (r codexGatewayDatabaseModelPricingResolver) ResolveCodexGatewayModelPricing(ctx context.Context, model CodexGatewayModel, groupID *int64) *CodexGatewayModelPricing {
+	if r.resolver == nil {
+		return nil
+	}
+	for _, modelName := range codexEntryPricingModelCandidates(model) {
+		resolved := r.resolver.Resolve(ctx, PricingInput{Model: modelName, GroupID: groupID})
+		if resolved == nil || resolved.Source != PricingSourceChannel {
+			continue
+		}
+		pricing := codexGatewayResolvedPricingToCatalog(resolved)
+		if pricing != nil {
+			return pricing
+		}
+	}
+	return nil
 }
 
 type CodexGatewayModelRegistryOption func(*CodexGatewayModelRegistry)
@@ -53,6 +84,10 @@ type CodexGatewayCodexCLICatalog struct {
 type CodexGatewayCodexCLIModel struct {
 	Slug                          string                            `json:"slug"`
 	DisplayName                   string                            `json:"display_name"`
+	Origin                        string                            `json:"origin"`
+	ProviderID                    string                            `json:"provider_id"`
+	Capabilities                  CodexGatewayModelCapabilities     `json:"capabilities"`
+	Pricing                       *CodexGatewayModelPricing         `json:"pricing"`
 	Description                   string                            `json:"description"`
 	DefaultReasoningLevel         string                            `json:"default_reasoning_level,omitempty"`
 	SupportedReasoningLevels      []CodexGatewayReasoningLevelInfo  `json:"supported_reasoning_levels,omitempty"`
@@ -135,6 +170,12 @@ func WithCodexGatewayPricingReadyChecker(checker CodexGatewayPricingReadyChecker
 func WithCodexGatewayProtocolReadyChecker(checker CodexGatewayProtocolReadyChecker) CodexGatewayModelRegistryOption {
 	return func(registry *CodexGatewayModelRegistry) {
 		registry.protocolChecker = checker
+	}
+}
+
+func WithCodexGatewayModelPricingResolver(resolver CodexGatewayModelPricingResolver) CodexGatewayModelRegistryOption {
+	return func(registry *CodexGatewayModelRegistry) {
+		registry.modelPricingResolver = resolver
 	}
 }
 
@@ -258,16 +299,16 @@ func (r *CodexGatewayModelRegistry) Resolve(slug string) (CodexGatewayModel, boo
 	return model, ok
 }
 
-func (r *CodexGatewayModelRegistry) ModelsResponse() CodexGatewayModelsResponse {
-	return CodexGatewayModelsResponse{Models: r.Models()}
+func (r *CodexGatewayModelRegistry) ModelsResponse(groupID ...*int64) CodexGatewayModelsResponse {
+	return CodexGatewayModelsResponse{Models: r.decorateModels(context.Background(), r.Models(), firstCodexGatewayGroupID(groupID))}
 }
 
-func (r *CodexGatewayModelRegistry) ExportCatalogJSON() ([]byte, error) {
-	return json.MarshalIndent(r.ModelsResponse(), "", "  ")
+func (r *CodexGatewayModelRegistry) ExportCatalogJSON(groupID ...*int64) ([]byte, error) {
+	return json.MarshalIndent(r.ModelsResponse(firstCodexGatewayGroupID(groupID)), "", "  ")
 }
 
-func (r *CodexGatewayModelRegistry) ExportCodexCLICatalogJSON() ([]byte, error) {
-	models := r.Models()
+func (r *CodexGatewayModelRegistry) ExportCodexCLICatalogJSON(groupID ...*int64) ([]byte, error) {
+	models := r.decorateModels(context.Background(), r.Models(), firstCodexGatewayGroupID(groupID))
 	out := CodexGatewayCodexCLICatalog{
 		Models: make([]CodexGatewayCodexCLIModel, 0, len(models)),
 	}
@@ -275,6 +316,109 @@ func (r *CodexGatewayModelRegistry) ExportCodexCLICatalogJSON() ([]byte, error) 
 		out.Models = append(out.Models, codexGatewayModelToCodexCLIModel(model))
 	}
 	return json.MarshalIndent(out, "", "  ")
+}
+
+func firstCodexGatewayGroupID(values []*int64) *int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
+}
+
+func (r *CodexGatewayModelRegistry) decorateModels(ctx context.Context, models []CodexGatewayModel, groupID *int64) []CodexGatewayModel {
+	out := make([]CodexGatewayModel, 0, len(models))
+	for _, model := range models {
+		out = append(out, r.decorateModel(ctx, model, groupID))
+	}
+	return out
+}
+
+func (r *CodexGatewayModelRegistry) decorateModel(ctx context.Context, model CodexGatewayModel, groupID *int64) CodexGatewayModel {
+	model.Origin = "zhumeng"
+	model.ProviderID = "zhumeng"
+	if r != nil && r.modelPricingResolver != nil {
+		model.Pricing = r.modelPricingResolver.ResolveCodexGatewayModelPricing(ctx, model, groupID)
+	}
+	model.Capabilities = codexGatewayModelCapabilities(model)
+	return model
+}
+
+func codexGatewayModelCapabilities(model CodexGatewayModel) CodexGatewayModelCapabilities {
+	return CodexGatewayModelCapabilities{
+		Responses:           true,
+		Streaming:           true,
+		ToolCalls:           codexGatewayModelSupportsToolCalls(model),
+		ImageInput:          codexGatewayStringSliceContains(model.InputModalities, "image"),
+		CachePricing:        model.Pricing != nil && (model.Pricing.CachedInputPrice != nil || model.Pricing.CacheWritePrice != nil),
+		ContextContinuation: true,
+	}
+}
+
+func codexGatewayModelSupportsToolCalls(model CodexGatewayModel) bool {
+	for _, tool := range model.ExperimentalSupportedTools {
+		switch strings.TrimSpace(tool) {
+		case CodexGatewayToolKindFunction, CodexGatewayToolKindNamespace, CodexGatewayToolKindCustom:
+			return true
+		}
+	}
+	return model.SupportsParallelToolCalls
+}
+
+func codexGatewayStringSliceContains(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexGatewayResolvedPricingToCatalog(resolved *ResolvedPricing) *CodexGatewayModelPricing {
+	if resolved == nil || resolved.Source != PricingSourceChannel {
+		return nil
+	}
+	pricing := &CodexGatewayModelPricing{
+		Currency: "USD",
+		Unit:     "per_1m_tokens",
+		Source:   "database_model_pricing",
+	}
+	if resolved.BasePricing != nil {
+		pricing.InputPrice = codexGatewayPerMillionPrice(resolved.BasePricing.InputPricePerToken)
+		pricing.OutputPrice = codexGatewayPerMillionPrice(resolved.BasePricing.OutputPricePerToken)
+		pricing.CachedInputPrice = codexGatewayPerMillionPrice(resolved.BasePricing.CacheReadPricePerToken)
+		pricing.CacheWritePrice = codexGatewayPerMillionPrice(firstPositiveFloat(
+			resolved.BasePricing.CacheCreationPricePerToken,
+			resolved.BasePricing.CacheCreation5mPrice,
+			resolved.BasePricing.CacheCreation1hPrice,
+		))
+	}
+	if len(resolved.Intervals) > 0 {
+		interval := resolved.Intervals[0]
+		if interval.InputPrice != nil {
+			pricing.InputPrice = codexGatewayPerMillionPrice(*interval.InputPrice)
+		}
+		if interval.OutputPrice != nil {
+			pricing.OutputPrice = codexGatewayPerMillionPrice(*interval.OutputPrice)
+		}
+		if interval.CacheReadPrice != nil {
+			pricing.CachedInputPrice = codexGatewayPerMillionPrice(*interval.CacheReadPrice)
+		}
+		if interval.CacheWritePrice != nil {
+			pricing.CacheWritePrice = codexGatewayPerMillionPrice(*interval.CacheWritePrice)
+		}
+	}
+	if pricing.InputPrice == nil && pricing.OutputPrice == nil && pricing.CachedInputPrice == nil && pricing.CacheWritePrice == nil {
+		return nil
+	}
+	return pricing
+}
+
+func codexGatewayPerMillionPrice(perToken float64) *string {
+	if perToken <= 0 {
+		return nil
+	}
+	value := strconv.FormatFloat(perToken*1_000_000, 'f', -1, 64)
+	return &value
 }
 
 func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodexCLIModel {
@@ -298,6 +442,10 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 	cli := CodexGatewayCodexCLIModel{
 		Slug:                          model.Slug,
 		DisplayName:                   model.DisplayName,
+		Origin:                        model.Origin,
+		ProviderID:                    model.ProviderID,
+		Capabilities:                  model.Capabilities,
+		Pricing:                       model.Pricing,
 		Description:                   description,
 		DefaultReasoningLevel:         model.DefaultReasoningLevel,
 		SupportedReasoningLevels:      codexGatewayReasoningLevelInfo(model.SupportedReasoningLevels),

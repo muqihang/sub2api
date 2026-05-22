@@ -339,7 +339,7 @@ class CodexConfigManager:
             slug = "unknown-model"
         display_name = str(model.get("display_name") or model.get("displayName") or slug)
         context_window = safe_int(model.get("context_window") or model.get("max_context_window"), 0)
-        return {
+        catalog_model = {
             "slug": slug,
             "display_name": display_name,
             "description": str(model.get("description") or f"{display_name} via Zhumeng Codex."),
@@ -371,6 +371,10 @@ class CodexConfigManager:
             "supports_search_tool": bool(model.get("supports_search_tool", False)),
             "web_search_tool_type": normalize_web_search_tool_type(model),
         }
+        for key in ("origin", "provider_id", "capabilities", "pricing"):
+            if key in model:
+                catalog_model[key] = model[key]
+        return catalog_model
 
     def _default_model_limits(self, catalog_payload: dict[str, object], default_model: str) -> dict[str, int]:
         context_window = 200000
