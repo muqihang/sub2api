@@ -13,18 +13,26 @@ describe("sidecar client", () => {
 
     await client.status();
     await client.modelsStatus();
+    await client.openCodex();
+    await client.setup("codex", "setup-code", "https://example.com");
+    await client.reauth("codex", "reauth-code", "https://example.com");
     await client.patchEnhancements("/Applications/Codex.app");
 
-    expect(invoke).toHaveBeenNthCalledWith(1, "run_sidecar", {
-      args: ["desktop", "status", "--json"],
-      timeoutMs: 5000
-    });
-    expect(invoke).toHaveBeenNthCalledWith(2, "run_sidecar", {
-      args: ["desktop", "models", "status", "--client", "codex", "--json"],
-      timeoutMs: 5000
-    });
-    expect(invoke).toHaveBeenNthCalledWith(3, "run_sidecar", {
-      args: ["desktop", "codex-enhancements", "patch", "--app", "/Applications/Codex.app", "--item", "all", "--json"],
+    const calls = (invoke.mock.calls as unknown as Array<[string, { args: string[]; timeoutMs: number }]>).map(([, payload]) => payload.args);
+    expect(calls).toEqual([
+      ["desktop", "status", "--json"],
+      ["desktop", "models", "status", "--client", "codex", "--json"],
+      ["desktop", "open", "--app", "codex", "--json"],
+      ["desktop", "setup", "--client", "codex", "--code", "setup-code", "--server", "https://example.com", "--json"],
+      ["desktop", "reauth", "--client", "codex", "--code", "reauth-code", "--server", "https://example.com", "--json"],
+      ["desktop", "codex-enhancements", "patch", "--app", "/Applications/Codex.app", "--item", "all", "--json"]
+    ]);
+    for (const args of calls) {
+      expect(args[0]).toBe("desktop");
+      expect(args).toContain("--json");
+    }
+    expect(invoke).toHaveBeenLastCalledWith("run_sidecar", {
+      args: calls.at(-1),
       timeoutMs: 20000
     });
   });

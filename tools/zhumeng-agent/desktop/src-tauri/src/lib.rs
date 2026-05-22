@@ -33,7 +33,20 @@ struct SidecarErrorBody {
 #[tauri::command]
 fn run_sidecar(args: Vec<String>, timeout_ms: Option<u64>) -> Result<Value, Value> {
     let request = SidecarRequest { args, timeout_ms };
+    validate_sidecar_request(&request).map_err(|error| json!(error))?;
     run_sidecar_command(request).map_err(|error| json!(error))
+}
+
+fn validate_sidecar_request(request: &SidecarRequest) -> Result<(), SidecarFailure> {
+    let uses_desktop_command = request.args.first().map(String::as_str) == Some("desktop");
+    let requests_json = request.args.iter().any(|arg| arg == "--json");
+    if uses_desktop_command && requests_json {
+        return Ok(());
+    }
+    Err(sidecar_failure(
+        "invalid_sidecar_command",
+        "desktop shell may only call `zhumeng-agent desktop ... --json`".to_string(),
+    ))
 }
 
 fn run_sidecar_command(request: SidecarRequest) -> Result<Value, SidecarFailure> {
@@ -252,5 +265,28 @@ mod tests {
         .expect_err("timeout should fail");
 
         assert_eq!(error.error.code, "timeout");
+    }
+
+    #[test]
+    fn sidecar_request_requires_desktop_json_contract() {
+        validate_sidecar_request(&SidecarRequest {
+            args: vec!["desktop".to_string(), "status".to_string(), "--json".to_string()],
+            timeout_ms: None,
+        })
+        .expect("desktop json commands are allowed");
+
+        let error = validate_sidecar_request(&SidecarRequest {
+            args: vec!["doctor".to_string(), "--json".to_string()],
+            timeout_ms: None,
+        })
+        .expect_err("non-desktop commands are rejected");
+        assert_eq!(error.error.code, "invalid_sidecar_command");
+
+        let error = validate_sidecar_request(&SidecarRequest {
+            args: vec!["desktop".to_string(), "status".to_string()],
+            timeout_ms: None,
+        })
+        .expect_err("desktop commands must ask for json");
+        assert_eq!(error.error.code, "invalid_sidecar_command");
     }
 }
