@@ -11,6 +11,8 @@ import {
   ExternalLink,
   FileWarning,
   Gauge,
+  Globe,
+  Info,
   KeyRound,
   ListChecks,
   LockKeyhole,
@@ -20,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
   Sun,
@@ -30,6 +33,12 @@ import { useEffect, useMemo, useState } from "react";
 
 import { parseZhumengDeepLink } from "./lib/deeplink";
 import { isLanguage, translations, type Language, type Translation } from "./lib/i18n";
+import {
+  ZHUMENG_CONSOLE_URL,
+  ZHUMENG_DOCS_URL,
+  ZHUMENG_WEBSITE_URL,
+  openExternal
+} from "./lib/links";
 import { filterCatalogModels, modelIsCompatible, modelPriceRows, providerOptions, summarizeCatalog } from "./lib/modelCatalog";
 import { sidecar, SidecarError } from "./lib/sidecar";
 import type { CatalogModel, DeepLinkRoute, DesktopStatus, ModelFilter } from "./lib/types";
@@ -164,6 +173,7 @@ function App() {
           <NavButton icon={<Settings />} label={t.nav.settings} active={page === "settings"} onClick={() => setPage("settings")} />
           <NavButton icon={<ShieldCheck />} label={t.nav.about} active={page === "about"} onClick={() => setPage("about")} />
         </nav>
+        <SidebarWebsiteLink t={t} />
       </aside>
 
       <main className="main-panel">
@@ -172,7 +182,7 @@ function App() {
         <div className="page-scroll">
           {page === "overview" && <OverviewPage t={t} status={status} summary={summary} onRepair={() => runAction(() => sidecar.repair())} onOpenCodex={() => runAction(() => sidecar.openCodex())} />}
           {page === "apps" && <ConnectedAppsPage t={t} status={status} onOpenCodex={() => setPage("codex")} />}
-          {page === "codex" && <CodexDetailPage t={t} language={language} status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} />}
+          {page === "codex" && <CodexDetailPage t={t} language={language} status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} onGoWizard={() => setPage("wizard")} />}
           {page === "wizard" && <SetupWizardPage t={t} deepLink={deepLink} status={status} onAuthorize={() => void handleDeepLinkAuth()} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} />}
           {page === "diagnostics" && <DiagnosticsPage t={t} onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
           {page === "settings" && <SettingsPage t={t} language={language} onLanguage={setLanguage} />}
@@ -189,6 +199,25 @@ function NavButton({ icon, label, active, badge, onClick }: { icon: React.ReactN
       {icon}
       <span>{label}</span>
       {badge ? <span className="nav-badge">{badge}</span> : null}
+    </button>
+  );
+}
+
+function SidebarWebsiteLink({ t }: { t: Translation }) {
+  return (
+    <button
+      className="sidebar-link"
+      onClick={() => void openExternal(ZHUMENG_WEBSITE_URL)}
+      aria-label={t.websiteCta.sidebarVisit}
+    >
+      <span className="sidebar-link-icon">
+        <Globe size={14} />
+      </span>
+      <span className="sidebar-link-body">
+        <span className="sidebar-link-title">{t.websiteCta.sidebarVisit}</span>
+        <span className="sidebar-link-hint">{t.websiteCta.sidebarHint}</span>
+      </span>
+      <ExternalLink size={13} className="sidebar-link-arrow" />
     </button>
   );
 }
@@ -215,6 +244,11 @@ function GlobalStatusBar({ t, status, proxyPort, busy, theme, onTheme, onRefresh
 }
 
 function OverviewPage({ t, status, summary, onRepair, onOpenCodex }: { t: Translation; status: DesktopStatus; summary: ReturnType<typeof summarizeCatalog>; onRepair: () => void; onOpenCodex: () => void }) {
+  const proxyPort = status.proxy?.port;
+  const proxyEndpoint = proxyPort ? `127.0.0.1:${proxyPort}` : t.overview.runtimeNotReady;
+  const deviceId = status.authorization?.device_id;
+  const deviceLabel = deviceId ? `#${deviceId}` : t.overview.deviceUnknown;
+
   return (
     <section className="content">
       <PageHeader title={t.overview.title} subtitle={t.overview.subtitle} />
@@ -224,13 +258,38 @@ function OverviewPage({ t, status, summary, onRepair, onOpenCodex }: { t: Transl
         <Metric title={t.overview.mainListModels} value={modelCountText(summary.mainListCount, t)} icon={<BadgeCheck />} />
         <Metric title={t.overview.missingPricing} value={modelCountText(summary.missingPricingCount, t)} icon={<AlertTriangle />} />
       </div>
-      <div className="two-column">
+      <div className="two-column overview-grid">
         <HealthCheckList t={t} status={status} />
-        <div className="card">
-          <div className="card-title">{t.overview.quickActions}</div>
-          <button className="primary-action full" onClick={onRepair}><Wrench size={14} />{t.actions.repairCodex}</button>
-          <button className="secondary-action full" onClick={onOpenCodex}><ExternalLink size={14} />{t.actions.openCodex}</button>
-          <div className="hint">{t.overview.repairHint}</div>
+        <div className="overview-side">
+          <div className="card quick-actions-card">
+            <div className="card-title">{t.overview.quickActions}</div>
+            <button className="primary-action full" onClick={onRepair}>
+              <Wrench size={14} />
+              {t.actions.repairCodex}
+            </button>
+            <button className="secondary-action full" onClick={onOpenCodex}>
+              <ExternalLink size={14} />
+              {t.actions.openCodex}
+            </button>
+            <div className="hint">{t.overview.repairHint}</div>
+            <div className="key-list">
+              <div className="key-row">
+                <span>{t.overview.proxyEndpoint}</span>
+                <em>{proxyEndpoint}</em>
+              </div>
+              <div className="key-row">
+                <span>{t.overview.deviceId}</span>
+                <em>{deviceLabel}</em>
+              </div>
+            </div>
+          </div>
+          <WebsiteCallout
+            t={t}
+            title={t.websiteCta.overviewTitle}
+            body={t.websiteCta.overviewBody}
+            action={t.websiteCta.overviewAction}
+            url={ZHUMENG_CONSOLE_URL}
+          />
         </div>
       </div>
     </section>
@@ -255,7 +314,32 @@ function ConnectedAppsPage({ t, status, onOpenCodex }: { t: Translation; status:
   );
 }
 
-function CodexDetailPage({ t, language, status, models, onRepair, onPatch, onSyncModels }: { t: Translation; language: Language; status: DesktopStatus; models: CatalogModel[]; onRepair: () => void; onPatch: () => void; onSyncModels: () => void }) {
+function CodexDetailPage({ t, language, status, models, onRepair, onPatch, onSyncModels, onGoWizard }: { t: Translation; language: Language; status: DesktopStatus; models: CatalogModel[]; onRepair: () => void; onPatch: () => void; onSyncModels: () => void; onGoWizard: () => void }) {
+  const codexStatus = status.adapters?.codex?.status || "not_configured";
+  const isConnected = codexStatus !== "not_configured";
+  if (!isConnected) {
+    return (
+      <section className="content">
+        <PageHeader title={t.codex.title} subtitle={t.codex.subtitle} />
+        <div className="empty-state" data-testid="codex-empty-state">
+          <div className="empty-state-icon"><AppWindow size={22} /></div>
+          <div className="empty-state-title">{t.codex.emptyTitle}</div>
+          <div className="empty-state-body">{t.codex.emptyBody}</div>
+          <div className="empty-state-actions">
+            <button className="primary-action" onClick={onGoWizard}>
+              <ListChecks size={14} />
+              {t.codex.goWizard}
+            </button>
+            <button className="secondary-action" onClick={() => void openExternal(ZHUMENG_WEBSITE_URL + "/docs/codex")}>
+              <Globe size={14} />
+              {t.codex.learnAtSite}
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="content">
       <PageHeader title={t.codex.title} subtitle={t.codex.subtitle} />
@@ -272,29 +356,52 @@ function CodexDetailPage({ t, language, status, models, onRepair, onPatch, onSyn
 }
 
 function SetupWizardPage({ t, deepLink, status, onAuthorize, onPatch }: { t: Translation; deepLink: DeepLinkRoute | null; status: DesktopStatus; onAuthorize: () => void; onPatch: () => void }) {
-  const steps = [
-    [t.wizard.receivedAuth, deepLink ? "done" : "pending"],
-    [t.wizard.detectCodex, status.adapters?.codex?.status !== "not_configured" ? "done" : "pending"],
-    [t.wizard.injectAuth, status.authorization?.status === "configured" || status.status === "configured" ? "done" : "pending"],
-    [t.wizard.startProxy, status.proxy?.port ? "done" : "pending"],
-    [t.wizard.enableCodexEnhancements, status.adapters?.codex?.enhancements ? "done" : "pending"],
-    [t.wizard.healthCheck, status.global_status === "running" || status.global_status === "configured" ? "done" : "pending"],
-    [t.wizard.done, status.status === "configured" ? "done" : "pending"]
-  ] as const;
+  const steps: Array<{ label: string; hint: string; state: "done" | "pending" }> = [
+    { label: t.wizard.receivedAuth, hint: t.wizard.receivedAuthHint, state: deepLink ? "done" : "pending" },
+    { label: t.wizard.detectCodex, hint: t.wizard.detectCodexHint, state: status.adapters?.codex?.status && status.adapters.codex.status !== "not_configured" ? "done" : "pending" },
+    { label: t.wizard.injectAuth, hint: t.wizard.injectAuthHint, state: status.authorization?.status === "configured" || status.status === "configured" ? "done" : "pending" },
+    { label: t.wizard.startProxy, hint: t.wizard.startProxyHint, state: status.proxy?.port ? "done" : "pending" },
+    { label: t.wizard.enableCodexEnhancements, hint: t.wizard.enableEnhancementsHint, state: status.adapters?.codex?.enhancements && Object.keys(status.adapters.codex.enhancements as Record<string, unknown>).length > 0 ? "done" : "pending" },
+    { label: t.wizard.healthCheck, hint: t.wizard.healthCheckHint, state: status.global_status === "running" || status.global_status === "configured" ? "done" : "pending" },
+    { label: t.wizard.done, hint: t.wizard.doneHint, state: status.status === "configured" ? "done" : "pending" }
+  ];
   return (
     <section className="content">
       <PageHeader title={t.wizard.title} subtitle={t.wizard.subtitle} />
-      <div className="wizard">
-        {steps.map(([label, state], index) => (
-          <div className={`wizard-step ${state}`} key={label}>
-            <span>{index + 1}</span>
-            <div>{label}</div>
+      <div className="wizard-stepper" data-testid="setup-wizard">
+        {steps.map((step, index) => (
+          <div className={`wizard-step ${step.state}`} key={step.label}>
+            <div className="wizard-step-rail">
+              <span className="wizard-step-index">{index + 1}</span>
+              {index < steps.length - 1 ? <span className="wizard-step-connector" /> : null}
+            </div>
+            <div className="wizard-step-body">
+              <div className="wizard-step-label">
+                <span>{step.label}</span>
+                <em>{step.state === "done" ? t.wizard.statusDone : t.wizard.statusPending}</em>
+              </div>
+              <div className="wizard-step-hint">{step.hint}</div>
+            </div>
           </div>
         ))}
       </div>
       <div className="action-row">
-        <button className="primary-action" disabled={!deepLink || deepLink.action === "open"} onClick={onAuthorize}><KeyRound size={14} />{t.actions.authorize}</button>
-        <button className="secondary-action" onClick={onPatch}><PlugZap size={14} />{t.actions.enableEnhancements}</button>
+        <button className="primary-action" disabled={!deepLink || deepLink.action === "open"} onClick={onAuthorize}>
+          <KeyRound size={14} />
+          {t.actions.authorize}
+        </button>
+        <button className="secondary-action" onClick={onPatch}>
+          <PlugZap size={14} />
+          {t.actions.enableEnhancements}
+        </button>
+      </div>
+      <div className="wizard-help">
+        <Info size={14} />
+        <span>{t.wizard.needAuthCode}</span>
+        <button className="inline-link" onClick={() => void openExternal(ZHUMENG_CONSOLE_URL)}>
+          {t.websiteCta.wizardCta}
+          <ExternalLink size={12} />
+        </button>
       </div>
     </section>
   );
@@ -304,6 +411,11 @@ function DiagnosticsPage({ t, status, onDiagnose }: { t: Translation; status: De
   return (
     <section className="content">
       <PageHeader title={t.diagnostics.title} subtitle={t.diagnostics.subtitle} />
+      <InfoCallout
+        icon={<ShieldCheck size={16} />}
+        title={t.diagnostics.calloutTitle}
+        body={t.diagnostics.calloutBody}
+      />
       <div className="card">
         <div className="card-title">{t.diagnostics.reportTitle}</div>
         <div className="code-block">{JSON.stringify({ status: status.status, proxy: status.proxy, authorization: status.authorization }, null, 2)}</div>
@@ -331,14 +443,33 @@ function AboutDistributionPage({ t }: { t: Translation }) {
   return (
     <section className="content">
       <PageHeader title={t.distribution.title} subtitle={t.distribution.subtitle} />
-      <div className="two-column">
-        <div className="card">
-          <div className="card-title">{t.distribution.releasePath}</div>
-          <p>{t.distribution.releaseCopy}</p>
+      <div className="callout-grid">
+        <InfoCallout
+          icon={<PackageCheck size={16} />}
+          title={t.distribution.releasePath}
+          body={t.distribution.releaseCopy}
+        />
+        <InfoCallout
+          icon={<ShieldAlert size={16} />}
+          title={t.distribution.safetyBoundary}
+          body={t.distribution.safetyCopy}
+        />
+      </div>
+      <div className="card website-card">
+        <div className="website-card-icon"><Globe size={18} /></div>
+        <div className="website-card-body">
+          <div className="website-card-title">{t.distribution.websiteTitle}</div>
+          <div className="website-card-text">{t.distribution.websiteCopy}</div>
         </div>
-        <div className="card">
-          <div className="card-title">{t.distribution.safetyBoundary}</div>
-          <p>{t.distribution.safetyCopy}</p>
+        <div className="website-card-actions">
+          <button className="primary-action" onClick={() => void openExternal(ZHUMENG_WEBSITE_URL + "/download")}>
+            <ExternalLink size={14} />
+            {t.distribution.websiteAction}
+          </button>
+          <button className="secondary-action" onClick={() => void openExternal(ZHUMENG_DOCS_URL)}>
+            <Info size={14} />
+            {t.websiteCta.distributionDocs}
+          </button>
         </div>
       </div>
     </section>
@@ -351,6 +482,35 @@ function PageHeader({ title, subtitle }: { title: string; subtitle: string }) {
       <h1>{title}</h1>
       <p>{subtitle}</p>
     </header>
+  );
+}
+
+function InfoCallout({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
+  return (
+    <div className="info-callout" data-testid="info-callout">
+      <div className="info-callout-icon">{icon}</div>
+      <div className="info-callout-body">
+        <div className="info-callout-title">{title}</div>
+        <div className="info-callout-text">{body}</div>
+      </div>
+    </div>
+  );
+}
+
+function WebsiteCallout({ t, title, body, action, url }: { t: Translation; title: string; body: string; action: string; url: string }) {
+  return (
+    <div className="website-callout">
+      <div className="website-callout-icon"><Globe size={16} /></div>
+      <div className="website-callout-body">
+        <div className="website-callout-title">{title}</div>
+        <div className="website-callout-text">{body}</div>
+        <button className="link-action compact" onClick={() => void openExternal(url)}>
+          {action}
+          <ExternalLink size={12} />
+        </button>
+      </div>
+      <span className="sr-only">{t.websiteCta.learnMore}</span>
+    </div>
   );
 }
 
@@ -404,23 +564,31 @@ function ModelCatalogTable({ t, language, models, onSyncModels }: { t: Translati
   return (
     <div className="card model-card">
       <div className="table-toolbar">
-        <div>
+        <div className="table-toolbar-heading">
           <div className="card-title">{t.modelCatalog.title}</div>
           <div className="muted-text">{filtered.length} / {models.length} {t.modelCatalog.modelUnit}</div>
         </div>
-        <label className="search-field"><Search size={15} /><input value={filter.query} onChange={(event) => setFilter({ ...filter, query: event.target.value })} placeholder={t.modelCatalog.searchPlaceholder} /></label>
-        <select value={filter.provider} onChange={(event) => setFilter({ ...filter, provider: event.target.value })}>
-          <option value="all">{t.modelCatalog.allProviders}</option>
-          {providers.map((provider) => <option value={provider} key={provider}>{provider}</option>)}
-        </select>
-        <select value={filter.capability} onChange={(event) => setFilter({ ...filter, capability: event.target.value as ModelFilter["capability"] })}>
-          <option value="all">{t.modelCatalog.allCapabilities}</option>
-          <option value="responses">{t.modelCatalog.responses}</option>
-          <option value="streaming">{t.modelCatalog.streaming}</option>
-          <option value="tool_calls">{t.modelCatalog.toolCalls}</option>
-          <option value="context_continuation">{t.modelCatalog.contextContinuation}</option>
-        </select>
-        <button className="secondary-action" onClick={onSyncModels}><RefreshCw size={14} />{t.actions.sync}</button>
+        <div className="table-toolbar-controls">
+          <label className="search-field">
+            <Search size={15} />
+            <input value={filter.query} onChange={(event) => setFilter({ ...filter, query: event.target.value })} placeholder={t.modelCatalog.searchPlaceholder} />
+          </label>
+          <select value={filter.provider} onChange={(event) => setFilter({ ...filter, provider: event.target.value })}>
+            <option value="all">{t.modelCatalog.allProviders}</option>
+            {providers.map((provider) => <option value={provider} key={provider}>{provider}</option>)}
+          </select>
+          <select value={filter.capability} onChange={(event) => setFilter({ ...filter, capability: event.target.value as ModelFilter["capability"] })}>
+            <option value="all">{t.modelCatalog.allCapabilities}</option>
+            <option value="responses">{t.modelCatalog.responses}</option>
+            <option value="streaming">{t.modelCatalog.streaming}</option>
+            <option value="tool_calls">{t.modelCatalog.toolCalls}</option>
+            <option value="context_continuation">{t.modelCatalog.contextContinuation}</option>
+          </select>
+          <button className="icon-action" onClick={onSyncModels} aria-label={t.actions.sync} title={t.actions.sync}>
+            <RefreshCw size={14} />
+            <span className="icon-action-label">{t.actions.syncShort}</span>
+          </button>
+        </div>
       </div>
       <div className="model-table-wrap">
         <table className="model-table">

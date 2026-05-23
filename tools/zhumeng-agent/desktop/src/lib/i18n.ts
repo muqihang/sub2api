@@ -15,6 +15,19 @@ const zh = {
     restart: "重启",
     sectionLabel: "导航"
   },
+  websiteCta: {
+    sidebarVisit: "访问逐梦官网",
+    sidebarHint: "查看新版本与教程",
+    overviewTitle: "在浏览器中继续",
+    overviewBody: "前往逐梦控制台领取授权码、管理订阅与查看用量。",
+    overviewAction: "前往逐梦控制台",
+    wizardCta: "前往逐梦控制台获取授权",
+    distributionAction: "下载页",
+    distributionDocs: "查看安装指南",
+    aboutTitle: "了解更多",
+    aboutBody: "教程、订阅与版本说明都在逐梦官网。",
+    learnMore: "了解更多"
+  },
   global: {
     subtitle: "Codex App · 逐梦托管模型 · 本机代理",
     proxyPort: "代理端口",
@@ -30,7 +43,8 @@ const zh = {
     enableEnhancements: "启用 Codex 增强项",
     enableAllEnhancements: "启用全部增强项",
     copyDiagnostics: "生成并复制报告",
-    sync: "同步"
+    sync: "同步",
+    syncShort: "同步"
   },
   overview: {
     title: "概览",
@@ -40,7 +54,12 @@ const zh = {
     mainListModels: "主列表模型",
     missingPricing: "缺少定价",
     quickActions: "快速操作",
-    repairHint: "修复会重新接入授权、代理与 Codex 增强项，不会改动其他配置。"
+    repairHint: "修复会重新接入授权、代理与 Codex 增强项，不会改动其他配置。",
+    runtime: "运行时",
+    proxyEndpoint: "本机代理",
+    deviceId: "授权设备",
+    runtimeNotReady: "未启动",
+    deviceUnknown: "未授权"
   },
   apps: {
     title: "已接入应用",
@@ -52,23 +71,39 @@ const zh = {
   },
   codex: {
     title: "Codex App",
-    subtitle: "授权、代理、增强项和模型目录都在这里集中管理。"
+    subtitle: "授权、代理、增强项和模型目录都在这里集中管理。",
+    emptyTitle: "Codex 还未接入",
+    emptyBody: "前往接入向导完成授权后，即可在这里启用增强项并查看可用模型。",
+    goWizard: "去接入向导",
+    learnAtSite: "去逐梦官网了解 Codex 接入"
   },
   wizard: {
     title: "接入向导",
-    subtitle: "授权、重新授权和打开 Codex 都从这里发起。",
+    subtitle: "完成授权、启用增强项后，Codex App 就能用上逐梦托管模型。",
     receivedAuth: "收到网页授权",
     detectCodex: "检测 Codex App",
     injectAuth: "授权与配置注入",
     startProxy: "启动本机代理",
     enableCodexEnhancements: "启用 Codex 增强项",
     healthCheck: "健康检查",
-    done: "完成"
+    done: "完成",
+    receivedAuthHint: "在浏览器中点击「在 Codex 中打开」后，授权码会自动到达。",
+    detectCodexHint: "确认 /Applications/Codex.app 已安装并可启动。",
+    injectAuthHint: "把授权信息和服务地址写入本机配置。",
+    startProxyHint: "启动本机代理，自动避开常见占用端口。",
+    enableEnhancementsHint: "启用模型选择器、插件门禁等增强项。",
+    healthCheckHint: "检查代理、网关和模型目录是否正常。",
+    doneHint: "全部就绪，可以在 Codex App 中开始使用。",
+    statusDone: "已完成",
+    statusPending: "待完成",
+    needAuthCode: "还没有授权码？"
   },
   diagnostics: {
     title: "诊断与日志",
-    subtitle: "诊断报告自动脱敏，不会包含任何 token。",
-    reportTitle: "脱敏诊断报告"
+    subtitle: "查看本机状态报告，遇到问题可一键复制并发送给逐梦支持。",
+    reportTitle: "脱敏诊断报告",
+    calloutTitle: "报告会自动脱敏",
+    calloutBody: "诊断报告只包含运行状态与错误代码，不含授权 token、设备指纹或代码内容。"
   },
   settings: {
     title: "设置",
@@ -90,7 +125,10 @@ const zh = {
     releasePath: "发布路径",
     releaseCopy: "通过逐梦官网下载安装，不通过 Mac App Store。正式版本经 Apple Developer ID 签名与公证，并附带 SHA256 校验。",
     safetyBoundary: "安全边界",
-    safetyCopy: "本工具只在本机管理 Codex 接入、代理与配置，不会上传或读取你的代码内容。"
+    safetyCopy: "本工具只在本机管理 Codex 接入、代理与配置，不会上传或读取你的代码内容。",
+    websiteTitle: "在官网获取最新版本",
+    websiteCopy: "下载页提供历史版本、SHA256 校验和升级说明。",
+    websiteAction: "前往下载页"
   },
   health: {
     title: "健康检查",
@@ -184,6 +222,19 @@ export const translations: Record<Language, Translation> = {
       restart: "Restart",
       sectionLabel: "Navigation"
     },
+    websiteCta: {
+      sidebarVisit: "Visit Zhumeng",
+      sidebarHint: "Releases and guides",
+      overviewTitle: "Continue in your browser",
+      overviewBody: "Open the Zhumeng console to grab an auth code, manage subscription, and review usage.",
+      overviewAction: "Open Zhumeng console",
+      wizardCta: "Open Zhumeng console for an auth code",
+      distributionAction: "Downloads",
+      distributionDocs: "Read install guide",
+      aboutTitle: "Learn more",
+      aboutBody: "Tutorials, plans, and release notes live on the Zhumeng website.",
+      learnMore: "Learn more"
+    },
     global: {
       subtitle: "Codex App · Zhumeng managed models · Local proxy",
       proxyPort: "Proxy port",
@@ -199,7 +250,8 @@ export const translations: Record<Language, Translation> = {
       enableEnhancements: "Enable Codex enhancements",
       enableAllEnhancements: "Enable all enhancements",
       copyDiagnostics: "Generate and copy report",
-      sync: "Sync"
+      sync: "Sync",
+      syncShort: "Sync"
     },
     overview: {
       title: "Overview",
@@ -209,7 +261,12 @@ export const translations: Record<Language, Translation> = {
       mainListModels: "Main list",
       missingPricing: "Missing pricing",
       quickActions: "Quick actions",
-      repairHint: "Repair re-applies authorization, the local proxy, and Codex enhancements without touching other settings."
+      repairHint: "Repair re-applies authorization, the local proxy, and Codex enhancements without touching other settings.",
+      runtime: "Runtime",
+      proxyEndpoint: "Local proxy",
+      deviceId: "Authorized device",
+      runtimeNotReady: "Stopped",
+      deviceUnknown: "Not authorized"
     },
     apps: {
       title: "Connected Apps",
@@ -221,23 +278,39 @@ export const translations: Record<Language, Translation> = {
     },
     codex: {
       title: "Codex App",
-      subtitle: "Manage authorization, proxy, enhancements, and model catalog in one place."
+      subtitle: "Manage authorization, proxy, enhancements, and model catalog in one place.",
+      emptyTitle: "Codex is not connected yet",
+      emptyBody: "Run the setup wizard to authorize, then come back to enable enhancements and browse models.",
+      goWizard: "Open setup wizard",
+      learnAtSite: "Learn how Codex connects on zhumeng.example.com"
     },
     wizard: {
       title: "Setup Wizard",
-      subtitle: "Authorize, reauthorize, and launch Codex App from a single place.",
+      subtitle: "Finish authorization and enable enhancements so Codex App can use Zhumeng models.",
       receivedAuth: "Received web authorization",
       detectCodex: "Detect Codex App",
       injectAuth: "Inject authorization and config",
       startProxy: "Start local proxy",
       enableCodexEnhancements: "Enable Codex enhancements",
       healthCheck: "Health check",
-      done: "Done"
+      done: "Done",
+      receivedAuthHint: "Click \"Open in Codex\" in your browser; the auth code arrives automatically.",
+      detectCodexHint: "Confirm /Applications/Codex.app is installed and launchable.",
+      injectAuthHint: "Write the auth code and server URL into the local config.",
+      startProxyHint: "Start the local proxy and steer clear of common ports.",
+      enableEnhancementsHint: "Turn on the model picker, plugin auth gate, and other enhancements.",
+      healthCheckHint: "Verify the proxy, gateway, and model catalog look healthy.",
+      doneHint: "All set. Open Codex App and start chatting.",
+      statusDone: "Done",
+      statusPending: "Pending",
+      needAuthCode: "Need an auth code?"
     },
     diagnostics: {
       title: "Diagnostics",
-      subtitle: "Diagnostic reports are redacted automatically and never include tokens.",
-      reportTitle: "Redacted diagnostic report"
+      subtitle: "Inspect runtime status and copy a redacted report when reaching out to support.",
+      reportTitle: "Redacted diagnostic report",
+      calloutTitle: "Reports are redacted automatically",
+      calloutBody: "Reports include runtime status and error codes only. They never contain auth tokens, device fingerprints, or your code."
     },
     settings: {
       title: "Settings",
@@ -259,7 +332,10 @@ export const translations: Record<Language, Translation> = {
       releasePath: "Release path",
       releaseCopy: "Installed from the Zhumeng website rather than the Mac App Store. Stable releases are signed with an Apple Developer ID, notarized by Apple, and accompanied by a SHA256 checksum.",
       safetyBoundary: "Safety boundary",
-      safetyCopy: "The app manages Codex connection, the local proxy, and configuration on your Mac only. It never uploads or reads your code."
+      safetyCopy: "The app manages Codex connection, the local proxy, and configuration on your Mac only. It never uploads or reads your code.",
+      websiteTitle: "Get the latest version",
+      websiteCopy: "The download page lists every release, SHA256 checksum, and upgrade notes.",
+      websiteAction: "Open downloads page"
     },
     health: {
       title: "Health checks",
