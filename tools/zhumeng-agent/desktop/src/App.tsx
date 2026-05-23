@@ -146,49 +146,39 @@ function App() {
   }
 
   return (
-    <div className="preview-stage">
-      <div className="mac-window" data-testid="mac-window-frame">
-        <div className="mac-titlebar" data-testid="mac-window-titlebar">
-          <div className="traffic-lights" aria-hidden="true">
-            <span className="traffic-light close" data-testid="mac-window-control" />
-            <span className="traffic-light minimize" data-testid="mac-window-control" />
-            <span className="traffic-light zoom" data-testid="mac-window-control" />
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-mark">{t.app.mark}</div>
+          <div>
+            <div className="brand-title">{t.app.name}</div>
+            <div className="brand-subtitle">{t.app.subtitle}</div>
           </div>
-          <div className="window-title">{t.app.name}</div>
-          <div className="titlebar-meta">{t.app.windowMeta}</div>
         </div>
-        <div className="app-shell">
-          <aside className="sidebar">
-            <div className="brand">
-              <div className="brand-mark">{t.app.mark}</div>
-              <div>
-                <div className="brand-title">{t.app.name}</div>
-                <div className="brand-subtitle">{t.app.subtitle}</div>
-              </div>
-            </div>
-            <NavButton icon={<Gauge />} label={t.nav.overview} active={page === "overview"} onClick={() => setPage("overview")} />
-            <NavButton icon={<Boxes />} label={t.nav.apps} active={page === "apps"} onClick={() => setPage("apps")} />
-            <NavButton icon={<AppWindow />} label={t.nav.codex} active={page === "codex"} onClick={() => setPage("codex")} badge={status.adapters?.codex?.restart_required ? t.nav.restart : undefined} />
-            <NavButton icon={<ListChecks />} label={t.nav.wizard} active={page === "wizard"} onClick={() => setPage("wizard")} />
-            <NavButton icon={<FileWarning />} label={t.nav.diagnostics} active={page === "diagnostics"} onClick={() => setPage("diagnostics")} />
-            <NavButton icon={<Settings />} label={t.nav.settings} active={page === "settings"} onClick={() => setPage("settings")} />
-            <NavButton icon={<ShieldCheck />} label={t.nav.about} active={page === "about"} onClick={() => setPage("about")} />
-            <div className="sidebar-footer">{t.app.footer}</div>
-          </aside>
+        <nav className="nav-list" aria-label={t.nav.sectionLabel}>
+          <NavButton icon={<Gauge />} label={t.nav.overview} active={page === "overview"} onClick={() => setPage("overview")} />
+          <NavButton icon={<Boxes />} label={t.nav.apps} active={page === "apps"} onClick={() => setPage("apps")} />
+          <NavButton icon={<AppWindow />} label={t.nav.codex} active={page === "codex"} onClick={() => setPage("codex")} badge={status.adapters?.codex?.restart_required ? t.nav.restart : undefined} />
+          <NavButton icon={<ListChecks />} label={t.nav.wizard} active={page === "wizard"} onClick={() => setPage("wizard")} />
+          <NavButton icon={<FileWarning />} label={t.nav.diagnostics} active={page === "diagnostics"} onClick={() => setPage("diagnostics")} />
+          <NavButton icon={<Settings />} label={t.nav.settings} active={page === "settings"} onClick={() => setPage("settings")} />
+          <NavButton icon={<ShieldCheck />} label={t.nav.about} active={page === "about"} onClick={() => setPage("about")} />
+        </nav>
+      </aside>
 
-          <main className="main-panel">
-            <GlobalStatusBar t={t} status={globalStatus} proxyPort={status.proxy?.port} busy={isBusy} onRefresh={() => void refreshStatus()} theme={theme} onTheme={setTheme} />
-            {lastError ? <div className="error-strip"><AlertTriangle size={16} />{lastError}</div> : null}
-            {page === "overview" && <OverviewPage t={t} status={status} summary={summary} onRepair={() => runAction(() => sidecar.repair())} onOpenCodex={() => runAction(() => sidecar.openCodex())} />}
-            {page === "apps" && <ConnectedAppsPage t={t} status={status} onOpenCodex={() => setPage("codex")} />}
-            {page === "codex" && <CodexDetailPage t={t} language={language} status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} />}
-            {page === "wizard" && <SetupWizardPage t={t} deepLink={deepLink} status={status} onAuthorize={() => void handleDeepLinkAuth()} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} />}
-            {page === "diagnostics" && <DiagnosticsPage t={t} onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
-            {page === "settings" && <SettingsPage t={t} language={language} onLanguage={setLanguage} />}
-            {page === "about" && <AboutDistributionPage t={t} />}
-          </main>
+      <main className="main-panel">
+        <GlobalStatusBar t={t} status={globalStatus} proxyPort={status.proxy?.port} busy={isBusy} onRefresh={() => void refreshStatus()} theme={theme} onTheme={setTheme} />
+        {lastError ? <div className="error-strip"><AlertTriangle size={16} />{lastError}</div> : null}
+        <div className="page-scroll">
+          {page === "overview" && <OverviewPage t={t} status={status} summary={summary} onRepair={() => runAction(() => sidecar.repair())} onOpenCodex={() => runAction(() => sidecar.openCodex())} />}
+          {page === "apps" && <ConnectedAppsPage t={t} status={status} onOpenCodex={() => setPage("codex")} />}
+          {page === "codex" && <CodexDetailPage t={t} language={language} status={status} models={visibleModels} onRepair={() => runAction(() => sidecar.repair())} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} onSyncModels={() => runAction(() => sidecar.modelsSync())} />}
+          {page === "wizard" && <SetupWizardPage t={t} deepLink={deepLink} status={status} onAuthorize={() => void handleDeepLinkAuth()} onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))} />}
+          {page === "diagnostics" && <DiagnosticsPage t={t} onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
+          {page === "settings" && <SettingsPage t={t} language={language} onLanguage={setLanguage} />}
+          {page === "about" && <AboutDistributionPage t={t} />}
         </div>
-      </div>
+      </main>
     </div>
   );
 }
@@ -238,8 +228,8 @@ function OverviewPage({ t, status, summary, onRepair, onOpenCodex }: { t: Transl
         <HealthCheckList t={t} status={status} />
         <div className="card">
           <div className="card-title">{t.overview.quickActions}</div>
-          <button className="primary-action" onClick={onRepair}><Wrench size={16} />{t.actions.repairCodex}</button>
-          <button className="secondary-action" onClick={onOpenCodex}><ExternalLink size={16} />{t.actions.openCodex}</button>
+          <button className="primary-action full" onClick={onRepair}><Wrench size={14} />{t.actions.repairCodex}</button>
+          <button className="secondary-action full" onClick={onOpenCodex}><ExternalLink size={14} />{t.actions.openCodex}</button>
           <div className="hint">{t.overview.repairHint}</div>
         </div>
       </div>
@@ -275,7 +265,7 @@ function CodexDetailPage({ t, language, status, models, onRepair, onPatch, onSyn
       </div>
       <ModelCatalogTable t={t} language={language} models={models} onSyncModels={onSyncModels} />
       <div className="action-row">
-        <button className="primary-action inline" onClick={onRepair}><Wrench size={16} />{t.actions.repair}</button>
+        <button className="primary-action" onClick={onRepair}><Wrench size={14} />{t.actions.repair}</button>
       </div>
     </section>
   );
@@ -303,8 +293,8 @@ function SetupWizardPage({ t, deepLink, status, onAuthorize, onPatch }: { t: Tra
         ))}
       </div>
       <div className="action-row">
-        <button className="primary-action inline" disabled={!deepLink || deepLink.action === "open"} onClick={onAuthorize}><KeyRound size={16} />{t.actions.authorize}</button>
-        <button className="secondary-action inline" onClick={onPatch}><PlugZap size={16} />{t.actions.enableEnhancements}</button>
+        <button className="primary-action" disabled={!deepLink || deepLink.action === "open"} onClick={onAuthorize}><KeyRound size={14} />{t.actions.authorize}</button>
+        <button className="secondary-action" onClick={onPatch}><PlugZap size={14} />{t.actions.enableEnhancements}</button>
       </div>
     </section>
   );
@@ -317,7 +307,7 @@ function DiagnosticsPage({ t, status, onDiagnose }: { t: Translation; status: De
       <div className="card">
         <div className="card-title">{t.diagnostics.reportTitle}</div>
         <div className="code-block">{JSON.stringify({ status: status.status, proxy: status.proxy, authorization: status.authorization }, null, 2)}</div>
-        <button className="secondary-action inline" onClick={onDiagnose}><Copy size={16} />{t.actions.copyDiagnostics}</button>
+        <button className="secondary-action" onClick={onDiagnose}><Copy size={14} />{t.actions.copyDiagnostics}</button>
       </div>
     </section>
   );
@@ -402,7 +392,7 @@ function CodexEnhancementsCard({ t, enhancements, restartRequired, onPatch }: { 
         </div>
       ))}
       {restartRequired ? <div className="warning-note"><AlertTriangle size={15} />{t.enhancements.restartRequired}</div> : null}
-      <button className="secondary-action inline" onClick={onPatch}><PlugZap size={16} />{t.actions.enableAllEnhancements}</button>
+      <button className="secondary-action full" onClick={onPatch}><PlugZap size={14} />{t.actions.enableAllEnhancements}</button>
     </div>
   );
 }
@@ -430,7 +420,7 @@ function ModelCatalogTable({ t, language, models, onSyncModels }: { t: Translati
           <option value="tool_calls">{t.modelCatalog.toolCalls}</option>
           <option value="context_continuation">{t.modelCatalog.contextContinuation}</option>
         </select>
-        <button className="secondary-action inline" onClick={onSyncModels}><RefreshCw size={16} />{t.actions.sync}</button>
+        <button className="secondary-action" onClick={onSyncModels}><RefreshCw size={14} />{t.actions.sync}</button>
       </div>
       <div className="model-table-wrap">
         <table className="model-table">
