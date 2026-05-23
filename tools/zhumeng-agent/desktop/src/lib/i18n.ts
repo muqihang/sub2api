@@ -2,9 +2,7 @@ const zh = {
   app: {
     name: "逐梦注入工具",
     mark: "逐",
-    subtitle: "桌面版 Mac MVP",
-    windowMeta: "Mac MVP",
-    footer: "官网下载安装 · 不走 Mac App Store"
+    subtitle: "Codex 接入控制台"
   },
   nav: {
     overview: "概览",
@@ -14,7 +12,8 @@ const zh = {
     diagnostics: "诊断与日志",
     settings: "设置",
     about: "分发与安全",
-    restart: "重启"
+    restart: "重启",
+    sectionLabel: "导航"
   },
   global: {
     subtitle: "Codex App · 逐梦托管模型 · 本机代理",
@@ -41,15 +40,15 @@ const zh = {
     mainListModels: "主列表模型",
     missingPricing: "缺少定价",
     quickActions: "快速操作",
-    repairHint: "修复动作只调用 `zhumeng-agent desktop repair`，不会在桌面壳里直接改 `~/.codex` 或 `app.asar`。"
+    repairHint: "修复会重新接入授权、代理与 Codex 增强项，不会改动其他配置。"
   },
   apps: {
     title: "已接入应用",
-    subtitle: "MVP 先支持 Codex App，后续 Adapter 可以接 Claude Desktop 和自研工具。",
+    subtitle: "目前支持 Codex App，未来还会接入更多桌面应用。",
     claude: "Claude Desktop",
     custom: "自定义目标应用",
-    planned: "规划中",
-    v2Reserved: "第二版预留"
+    planned: "即将支持",
+    v2Reserved: "敬请期待"
   },
   codex: {
     title: "Codex App",
@@ -57,7 +56,7 @@ const zh = {
   },
   wizard: {
     title: "接入向导",
-    subtitle: "深链会进入这里，重新授权和打开 Codex 也走同一套路由。",
+    subtitle: "授权、重新授权和打开 Codex 都从这里发起。",
     receivedAuth: "收到网页授权",
     detectCodex: "检测 Codex App",
     injectAuth: "授权与配置注入",
@@ -68,12 +67,12 @@ const zh = {
   },
   diagnostics: {
     title: "诊断与日志",
-    subtitle: "诊断报告由 sidecar 生成并脱敏，桌面壳不展示 token。",
+    subtitle: "诊断报告自动脱敏，不会包含任何 token。",
     reportTitle: "脱敏诊断报告"
   },
   settings: {
     title: "设置",
-    subtitle: "MVP 保留关键开关位置，真实策略由 sidecar 和后端控制。",
+    subtitle: "管理界面语言与代理、模型门禁等通用偏好。",
     languageTitle: "语言",
     languageDescription: "默认中文；切换后会保存到本机，下次打开继续使用。",
     chinese: "中文",
@@ -83,15 +82,15 @@ const zh = {
     strictGate: "严格模型门禁",
     strictGateValue: "只展示兼容 Codex Agent 的模型",
     autoUpdate: "自动更新",
-    autoUpdateValue: "第二版支持"
+    autoUpdateValue: "即将支持"
   },
   distribution: {
     title: "分发与安全",
-    subtitle: "首版从官网下载，不上架 Mac App Store。",
+    subtitle: "查看安装来源、签名信息和工具的安全边界。",
     releasePath: "发布路径",
-    releaseCopy: "内测包可以先未签名分发；正式官网发布前需要 `Developer ID` 签名、苹果公证和 `SHA256` 校验。",
+    releaseCopy: "通过逐梦官网下载安装，不通过 Mac App Store。正式版本经 Apple Developer ID 签名与公证，并附带 SHA256 校验。",
     safetyBoundary: "安全边界",
-    safetyCopy: "桌面壳只调用稳定 JSON 接口；写配置、启动代理、修补和恢复都由 Python sidecar 执行。"
+    safetyCopy: "本工具只在本机管理 Codex 接入、代理与配置，不会上传或读取你的代码内容。"
   },
   health: {
     title: "健康检查",
@@ -172,9 +171,7 @@ export const translations: Record<Language, Translation> = {
     app: {
       name: "Zhumeng Injector",
       mark: "Z",
-      subtitle: "Desktop Mac MVP",
-      windowMeta: "Mac MVP",
-      footer: "Download from website · No Mac App Store"
+      subtitle: "Codex connection console"
     },
     nav: {
       overview: "Overview",
@@ -184,7 +181,8 @@ export const translations: Record<Language, Translation> = {
       diagnostics: "Diagnostics",
       settings: "Settings",
       about: "Distribution",
-      restart: "Restart"
+      restart: "Restart",
+      sectionLabel: "Navigation"
     },
     global: {
       subtitle: "Codex App · Zhumeng managed models · Local proxy",
@@ -211,15 +209,15 @@ export const translations: Record<Language, Translation> = {
       mainListModels: "Main list",
       missingPricing: "Missing pricing",
       quickActions: "Quick actions",
-      repairHint: "Repair only calls `zhumeng-agent desktop repair`; the shell does not edit `~/.codex` or `app.asar` directly."
+      repairHint: "Repair re-applies authorization, the local proxy, and Codex enhancements without touching other settings."
     },
     apps: {
       title: "Connected Apps",
-      subtitle: "The MVP supports Codex App first. Later adapters can connect Claude Desktop and internal tools.",
+      subtitle: "Codex App is supported today, with more desktop apps on the way.",
       claude: "Claude Desktop",
       custom: "Custom target app",
-      planned: "Planned",
-      v2Reserved: "Reserved for v2"
+      planned: "Coming soon",
+      v2Reserved: "Coming soon"
     },
     codex: {
       title: "Codex App",
@@ -227,7 +225,7 @@ export const translations: Record<Language, Translation> = {
     },
     wizard: {
       title: "Setup Wizard",
-      subtitle: "Deep links land here. Reauthorization and opening Codex use the same route.",
+      subtitle: "Authorize, reauthorize, and launch Codex App from a single place.",
       receivedAuth: "Received web authorization",
       detectCodex: "Detect Codex App",
       injectAuth: "Inject authorization and config",
@@ -238,12 +236,12 @@ export const translations: Record<Language, Translation> = {
     },
     diagnostics: {
       title: "Diagnostics",
-      subtitle: "The sidecar generates redacted diagnostics. The shell never displays tokens.",
+      subtitle: "Diagnostic reports are redacted automatically and never include tokens.",
       reportTitle: "Redacted diagnostic report"
     },
     settings: {
       title: "Settings",
-      subtitle: "The MVP keeps core controls here. Real policies are enforced by the sidecar and backend.",
+      subtitle: "Manage language, proxy, and model gating preferences for the app.",
       languageTitle: "Language",
       languageDescription: "Chinese is the default. Your choice is saved locally for the next launch.",
       chinese: "中文",
@@ -253,15 +251,15 @@ export const translations: Record<Language, Translation> = {
       strictGate: "Strict model gate",
       strictGateValue: "Only show models compatible with Codex Agent",
       autoUpdate: "Auto update",
-      autoUpdateValue: "Supported in v2"
+      autoUpdateValue: "Coming soon"
     },
     distribution: {
       title: "Distribution",
-      subtitle: "The first release is downloaded from the website, not the Mac App Store.",
+      subtitle: "Review the install source, signing details, and the safety boundary of this tool.",
       releasePath: "Release path",
-      releaseCopy: "Internal builds can be unsigned first. Public website releases need `Developer ID` signing, Apple notarization, and `SHA256` checksums.",
+      releaseCopy: "Installed from the Zhumeng website rather than the Mac App Store. Stable releases are signed with an Apple Developer ID, notarized by Apple, and accompanied by a SHA256 checksum.",
       safetyBoundary: "Safety boundary",
-      safetyCopy: "The shell only calls stable JSON commands. Config writes, proxy startup, patching, and restore are handled by the Python sidecar."
+      safetyCopy: "The app manages Codex connection, the local proxy, and configuration on your Mac only. It never uploads or reads your code."
     },
     health: {
       title: "Health checks",
