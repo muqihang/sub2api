@@ -32,7 +32,7 @@ const zh = {
     appsBannerAction: "去逐梦官网提需求"
   },
   global: {
-    subtitle: "Codex App · 逐梦托管模型 · 本机代理",
+    subtitle: "逐梦托管模型 · 本机代理",
     proxyPort: "代理端口",
     proxyStopped: "未启动",
     refresh: "刷新状态",
@@ -40,7 +40,6 @@ const zh = {
   },
   actions: {
     repairAll: "修复所有接入",
-    repairCodex: "一键修复 Codex 接入",
     openCodex: "打开 Codex App",
     repair: "修复接入",
     open: "打开",
@@ -74,7 +73,6 @@ const zh = {
     connectedFractionFmt: "{connected} / {total}",
     modelCatalog: "模型目录",
     mainListModels: "主列表模型",
-    missingPricing: "缺少定价",
     appStatusTitle: "应用状态",
     quickActions: "快速操作",
     repairHint: "修复会重新接入授权、代理与增强项，不会改动其他配置。",
@@ -95,7 +93,6 @@ const zh = {
     filterConnected: "已接入",
     filterPlanned: "即将支持",
     enhancementsCountFmt: "增强项 {ratio}",
-    lastRepairFmt: "上次修复 {time}",
     notDetected: "未检测到",
     claudeMeta: "Anthropic 桌面端 · 接入逻辑开发中",
     customMeta: "接入你自己部署的 IDE / Agent · 敬请期待",
@@ -289,7 +286,7 @@ export const translations: Record<Language, Translation> = {
       appsBannerAction: "Request on Zhumeng"
     },
     global: {
-      subtitle: "Codex App · Zhumeng managed models · Local proxy",
+      subtitle: "Zhumeng managed models · Local proxy",
       proxyPort: "Proxy port",
       proxyStopped: "Stopped",
       refresh: "Refresh status",
@@ -297,7 +294,6 @@ export const translations: Record<Language, Translation> = {
     },
     actions: {
       repairAll: "Repair all connections",
-      repairCodex: "Repair Codex connection",
       openCodex: "Open Codex App",
       repair: "Repair connection",
       open: "Open",
@@ -331,7 +327,6 @@ export const translations: Record<Language, Translation> = {
       connectedFractionFmt: "{connected} / {total}",
       modelCatalog: "Model catalog",
       mainListModels: "Main list",
-      missingPricing: "Missing pricing",
       appStatusTitle: "App status",
       quickActions: "Quick actions",
       repairHint: "Repair re-applies authorization, the local proxy, and connected app enhancements without touching other settings.",
@@ -352,7 +347,6 @@ export const translations: Record<Language, Translation> = {
       filterConnected: "Connected",
       filterPlanned: "Coming soon",
       enhancementsCountFmt: "Enhancements {ratio}",
-      lastRepairFmt: "Last repair {time}",
       notDetected: "Not detected",
       claudeMeta: "Anthropic desktop · integration in progress",
       customMeta: "For your own IDE / agent · coming soon",
@@ -375,7 +369,7 @@ export const translations: Record<Language, Translation> = {
       comingSoonTitleFmt: "{name} integration is in progress",
       comingSoonBodyFmt: "We're polishing {name}'s authorization and config injection. When it ships we'll push the update to devices with an active Zhumeng subscription. You can also subscribe to release notifications on the Zhumeng website.",
       comingSoonLearn: "Read more on Zhumeng",
-      customSummaryBody: "Custom injection will arrive in a later release. Until then, point Codex App at Zhumeng-managed models from the Codex tab."
+      customSummaryBody: "Custom injection will arrive in a later release. Until then, connect Codex App from the Apps page to use Zhumeng-managed models."
     },
     wizard: {
       title: "Setup Wizard",

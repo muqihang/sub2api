@@ -66,6 +66,8 @@ type PageId =
 
 export const LANGUAGE_STORAGE_KEY = "zhumeng-agent-desktop-language";
 
+export type AppsHubFilter = "all" | "connected" | "planned";
+
 const emptyStatus: DesktopStatus = {
   status: "not_connected",
   global_status: "not_connected",
@@ -79,6 +81,7 @@ function App() {
   const [page, setPage] = useState<PageId>("overview");
   const [selectedAppId, setSelectedAppId] = useState<AppId>("codex");
   const [wizardAppId, setWizardAppId] = useState<AppId>("codex");
+  const [appsFilter, setAppsFilter] = useState<AppsHubFilter>("all");
   const [status, setStatus] = useState<DesktopStatus>(emptyStatus);
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [lastError, setLastError] = useState<string>("");
@@ -109,14 +112,25 @@ function App() {
       if (!first) return;
       try {
         const parsed = parseZhumengDeepLink(first);
-        setDeepLink(parsed);
         if (parsed.action === "open") {
-          const target: AppId = isAppId(parsed.app) ? parsed.app : "codex";
+          if (!isAppId(parsed.app)) {
+            setLastError(`unsupported app: ${parsed.app}`);
+            return;
+          }
+          setDeepLink(parsed);
+          const target = parsed.app;
           setSelectedAppId(target);
           setPage("app-detail");
-          void runAction(() => sidecar.openCodex());
+          if (target === "codex") {
+            void runAction(() => sidecar.openCodex());
+          }
         } else {
-          const target: AppId = isAppId(parsed.client) ? parsed.client : "codex";
+          if (!isAppId(parsed.client)) {
+            setLastError(`unsupported client: ${parsed.client}`);
+            return;
+          }
+          setDeepLink(parsed);
+          const target = parsed.client;
           setWizardAppId(target);
           setPage("wizard");
         }
@@ -242,35 +256,45 @@ function App() {
             <AppsHubPage
               t={t}
               status={status}
+              filter={appsFilter}
+              onFilterChange={setAppsFilter}
               onOpenApp={openAppDetail}
               onStartWizard={startWizardForApp}
             />
           )}
-          {page === "app-detail" && (
-            <AppDetailPage
-              t={t}
-              status={status}
-              models={visibleModels}
-              app={findApp(selectedAppId)}
-              onBack={() => setPage("apps")}
-              onRepair={() => runAction(() => sidecar.repair())}
-              onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))}
-              onOpenCodex={() => runAction(() => sidecar.openCodex())}
-              onGoWizard={(id) => startWizardForApp(id)}
-              onGoCatalog={() => setPage("catalog")}
-            />
-          )}
-          {page === "wizard" && (
-            <SetupWizardPage
-              t={t}
-              deepLink={deepLink}
-              status={status}
-              app={findApp(wizardAppId)}
-              onPickApp={setWizardAppId}
-              onAuthorize={() => void handleDeepLinkAuth()}
-              onPatch={() => runAction(() => sidecar.patchEnhancements("/Applications/Codex.app"))}
-            />
-          )}
+          {page === "app-detail" && (() => {
+            const app = findApp(selectedAppId);
+            const targetPath = app.defaultAppPath ?? "/Applications/Codex.app";
+            return (
+              <AppDetailPage
+                t={t}
+                status={status}
+                models={visibleModels}
+                app={app}
+                onBack={() => setPage("apps")}
+                onRepair={() => runAction(() => sidecar.repair())}
+                onPatch={() => runAction(() => sidecar.patchEnhancements(targetPath))}
+                onOpenCodex={() => runAction(() => sidecar.openCodex())}
+                onGoWizard={(id) => startWizardForApp(id)}
+                onGoCatalog={() => setPage("catalog")}
+              />
+            );
+          })()}
+          {page === "wizard" && (() => {
+            const app = findApp(wizardAppId);
+            const targetPath = app.defaultAppPath ?? "/Applications/Codex.app";
+            return (
+              <SetupWizardPage
+                t={t}
+                deepLink={deepLink}
+                status={status}
+                app={app}
+                onPickApp={setWizardAppId}
+                onAuthorize={() => void handleDeepLinkAuth()}
+                onPatch={() => runAction(() => sidecar.patchEnhancements(targetPath))}
+              />
+            );
+          })()}
           {page === "catalog" && (
             <ModelCatalogPage
               t={t}
@@ -450,10 +474,7 @@ function AppStatusRow({ t, app, status, onOpen, onStartWizard, onOpenCodex }: { 
   );
 }
 
-function AppsHubPage({ t, status, onOpenApp, onStartWizard }: { t: Translation; status: DesktopStatus; onOpenApp: (id: AppId) => void; onStartWizard: (id: AppId) => void }) {
-  type Filter = "all" | "connected" | "planned";
-  const [filter, setFilter] = useState<Filter>("all");
-
+function AppsHubPage({ t, status, filter, onFilterChange, onOpenApp, onStartWizard }: { t: Translation; status: DesktopStatus; filter: AppsHubFilter; onFilterChange: (filter: AppsHubFilter) => void; onOpenApp: (id: AppId) => void; onStartWizard: (id: AppId) => void }) {
   const counts = useMemo(() => ({
     all: APPS.length,
     connected: APPS.filter((app) => appConnectionStatus(app, status) === "connected").length,
@@ -470,13 +491,13 @@ function AppsHubPage({ t, status, onOpenApp, onStartWizard }: { t: Translation; 
     <section className="content" data-testid="apps-hub">
       <PageHeader title={t.apps.title} subtitle={t.apps.subtitle} />
       <div className="filter-row" role="tablist" aria-label={t.apps.title}>
-        <button className={filter === "all" ? "on" : ""} onClick={() => setFilter("all")}>
+        <button role="tab" aria-selected={filter === "all"} className={filter === "all" ? "on" : ""} onClick={() => onFilterChange("all")}>
           {t.apps.filterAll} ({counts.all})
         </button>
-        <button className={filter === "connected" ? "on" : ""} onClick={() => setFilter("connected")}>
+        <button role="tab" aria-selected={filter === "connected"} className={filter === "connected" ? "on" : ""} onClick={() => onFilterChange("connected")}>
           {t.apps.filterConnected} ({counts.connected})
         </button>
-        <button className={filter === "planned" ? "on" : ""} onClick={() => setFilter("planned")}>
+        <button role="tab" aria-selected={filter === "planned"} className={filter === "planned" ? "on" : ""} onClick={() => onFilterChange("planned")}>
           {t.apps.filterPlanned} ({counts.planned})
         </button>
       </div>
@@ -519,37 +540,31 @@ function AppsHubPage({ t, status, onOpenApp, onStartWizard }: { t: Translation; 
 function AppHubCard({ t, app, status, onEnter, onStartWizard }: { t: Translation; app: AppDefinition; status: DesktopStatus; onEnter: () => void; onStartWizard: () => void }) {
   const connection = appConnectionStatus(app, status);
   const meta = appRowMeta(t, app, status, connection);
-  const className = `app-hub-card ${app.supported ? "" : "dashed"}`.trim();
-  const handleKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onEnter();
-    }
-  };
+  const wrapperClassName = `app-hub-card-wrapper ${app.supported ? "" : "dashed"}`.trim();
   return (
-    <div
-      className={className}
-      role="button"
-      tabIndex={0}
-      onClick={onEnter}
-      onKeyDown={handleKey}
-      data-testid={`app-card-${app.id}`}
-    >
-      <AppIcon app={app} large />
-      <div className="app-hub-card-body">
-        <div className="app-hub-card-name">
-          {appName(t, app)}
-          <AppStatusBadge t={t} status={connection} />
+    <div className={wrapperClassName}>
+      <button
+        type="button"
+        className="app-hub-card-tile"
+        onClick={onEnter}
+        aria-label={appName(t, app)}
+        data-testid={`app-card-${app.id}`}
+      >
+        <AppIcon app={app} large />
+        <span className="app-hub-card-body">
+          <span className="app-hub-card-name">
+            <span>{appName(t, app)}</span>
+            <AppStatusBadge t={t} status={connection} />
+          </span>
+          <span className="app-hub-card-meta">{meta}</span>
+        </span>
+        <span className="btn-chevron"><ChevronRight size={16} /></span>
+      </button>
+      {connection === "pending" ? (
+        <div className="app-hub-card-footer">
+          <button type="button" className="btn-ghost" onClick={onStartWizard}>{t.actions.repair}</button>
         </div>
-        <div className="app-hub-card-meta">{meta}</div>
-      </div>
-      <div className="app-hub-card-actions" onClick={(event) => event.stopPropagation()}>
-        {connection === "pending" ? (
-          <button className="btn-ghost" onClick={onStartWizard}>{t.actions.repair}</button>
-        ) : (
-          <span className="btn-chevron"><ChevronRight size={16} /></span>
-        )}
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -732,7 +747,7 @@ function SetupWizardPage({ t, deepLink, status, app, onPickApp, onAuthorize, onP
     <section className="content" data-testid="setup-wizard-page">
       <PageHeader title={t.wizard.title} subtitle={t.wizard.subtitle} />
       <WizardAppPicker t={t} app={app} onPickApp={onPickApp} />
-      {app.supported ? (
+      {app.wizardKind === "codex" ? (
         <CodexWizard t={t} deepLink={deepLink} status={status} onAuthorize={onAuthorize} onPatch={onPatch} />
       ) : (
         <UnsupportedWizard t={t} app={app} />
@@ -961,11 +976,11 @@ function HealthCheckList({ t, status }: { t: Translation; status: DesktopStatus 
 }
 
 function CodexEnhancementsCard({ t, enhancements, restartRequired, onPatch }: { t: Translation; enhancements?: Record<string, unknown>; restartRequired: boolean; onPatch: () => void }) {
-  const items = (enhancements?.items || enhancements || {}) as Record<string, { status?: string }>;
+  const items = codexEnhancementItems(enhancements) as Record<string, { status?: string }>;
   return (
     <div className="card">
       <div className="card-title">{t.enhancements.title}</div>
-      {["model-picker", "plugin-auth-gate", "plugin-mention-marketplace"].map((item) => (
+      {CODEX_ENHANCEMENT_KEYS.map((item) => (
         <div className="enhancement-row" key={item}>
           <TerminalSquare size={16} />
           <span>{enhancementName(item, t)}</span>
@@ -1133,10 +1148,7 @@ function appRowMeta(t: Translation, app: AppDefinition, status: DesktopStatus, c
   if (app.id === "codex") {
     if (connection === "connected") {
       const path = app.defaultAppPath;
-      const enhancements = status.adapters?.codex?.enhancements as Record<string, unknown> | undefined;
-      const total = 3;
-      const enabled = enhancements ? Object.values(enhancements).filter((value) => isEnabledEnhancement(value)).length : 0;
-      const ratio = `${enabled} / ${total}`;
+      const ratio = codexEnhancementsRatio(status);
       const enhancementsText = formatTemplate(t.apps.enhancementsCountFmt, { ratio });
       return path ? `${path} · ${enhancementsText}` : enhancementsText;
     }
@@ -1145,6 +1157,28 @@ function appRowMeta(t: Translation, app: AppDefinition, status: DesktopStatus, c
     }
   }
   return t.appBadges[connection];
+}
+
+const CODEX_ENHANCEMENT_KEYS = ["model-picker", "plugin-auth-gate", "plugin-mention-marketplace"] as const;
+
+function codexEnhancementsRatio(status: DesktopStatus): string {
+  const items = codexEnhancementItems(status.adapters?.codex?.enhancements);
+  const total = CODEX_ENHANCEMENT_KEYS.length;
+  const enabled = CODEX_ENHANCEMENT_KEYS.filter((key) => isEnabledEnhancement(items[key])).length;
+  return `${enabled} / ${total}`;
+}
+
+/**
+ * Sidecar payloads have shifted between { items: { ... } } and a flat map of
+ * enhancement entries; tolerate both shapes so hub/detail counts stay accurate.
+ */
+export function codexEnhancementItems(enhancements: Record<string, unknown> | undefined | null): Record<string, unknown> {
+  if (!enhancements || typeof enhancements !== "object") return {};
+  const maybeItems = (enhancements as { items?: unknown }).items;
+  if (maybeItems && typeof maybeItems === "object" && !Array.isArray(maybeItems)) {
+    return maybeItems as Record<string, unknown>;
+  }
+  return enhancements;
 }
 
 function isEnabledEnhancement(value: unknown): boolean {

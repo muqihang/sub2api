@@ -7,8 +7,33 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => vi.fn())
 }));
 
+const sidecarHoisted = vi.hoisted(() => ({
+  status: vi.fn(async () => ({
+    status: "configured",
+    global_status: "configured",
+    proxy: { status: "configured", port: 51793 },
+    authorization: { status: "configured", device_id: 9 },
+    adapters: { codex: { status: "not_configured", enhancements: {}, restart_required: false } },
+    model_catalog: { model_count: 0, models: [] }
+  })),
+  modelsStatus: vi.fn(async () => ({ models: [] })),
+  repair: vi.fn(),
+  openCodex: vi.fn(async () => undefined),
+  setup: vi.fn(),
+  reauth: vi.fn(),
+  patchEnhancements: vi.fn(),
+  modelsSync: vi.fn(),
+  diagnose: vi.fn()
+}));
+const deepLinkHoisted = vi.hoisted(() => ({
+  initial: { current: null as string[] | null }
+}));
+const initialDeepLinks = deepLinkHoisted.initial;
+const sidecarStatusMock = sidecarHoisted.status;
+const openCodexMock = sidecarHoisted.openCodex;
+
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
-  getCurrent: vi.fn(async () => null),
+  getCurrent: vi.fn(async () => deepLinkHoisted.initial.current),
   onOpenUrl: vi.fn(async () => vi.fn())
 }));
 
@@ -23,24 +48,7 @@ vi.mock("./lib/sidecar", () => ({
     code = "mock_error";
     status = "mock_error";
   },
-  sidecar: {
-    status: vi.fn(async () => ({
-      status: "configured",
-      global_status: "configured",
-      proxy: { status: "configured", port: 51793 },
-      authorization: { status: "configured", device_id: 9 },
-      adapters: { codex: { status: "not_configured", enhancements: {}, restart_required: false } },
-      model_catalog: { model_count: 0, models: [] }
-    })),
-    modelsStatus: vi.fn(async () => ({ models: [] })),
-    repair: vi.fn(),
-    openCodex: vi.fn(),
-    setup: vi.fn(),
-    reauth: vi.fn(),
-    patchEnhancements: vi.fn(),
-    modelsSync: vi.fn(),
-    diagnose: vi.fn()
-  }
+  sidecar: sidecarHoisted
 }));
 
 describe("App visual shell", () => {
@@ -48,6 +56,17 @@ describe("App visual shell", () => {
     document.documentElement.dataset.theme = "";
     window.localStorage.clear();
     openUrlMock.mockClear();
+    initialDeepLinks.current = null;
+    sidecarStatusMock.mockClear();
+    openCodexMock.mockClear();
+    sidecarStatusMock.mockImplementation(async () => ({
+      status: "configured",
+      global_status: "configured",
+      proxy: { status: "configured", port: 51793 },
+      authorization: { status: "configured", device_id: 9 },
+      adapters: { codex: { status: "not_configured", enhancements: {}, restart_required: false } },
+      model_catalog: { model_count: 0, models: [] }
+    }));
   });
 
   it("renders inside the native window without a faux macOS shell", async () => {
@@ -161,5 +180,78 @@ describe("App visual shell", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /模型目录/ }));
     expect(await screen.findByTestId("catalog-page")).toBeInTheDocument();
+  });
+
+  it("deep link open?app=claude routes to the Claude detail without launching Codex", async () => {
+    initialDeepLinks.current = ["zhumeng-agent://open?app=claude"];
+
+    render(<App />);
+
+    expect(await screen.findByTestId("app-detail-coming-soon")).toBeInTheDocument();
+    expect(openCodexMock).not.toHaveBeenCalled();
+  });
+
+  it("deep link with an unknown client does not navigate to the Codex wizard", async () => {
+    initialDeepLinks.current = ["zhumeng-agent://setup?client=unknown&code=abc&server=https://api.example.com"];
+
+    render(<App />);
+
+    // Wait for the initial status refresh to settle.
+    await waitFor(() => expect(sidecarStatusMock).toHaveBeenCalled());
+    expect(screen.queryByTestId("setup-wizard")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wizard-coming-soon")).not.toBeInTheDocument();
+    // The default overview page should still be visible.
+    expect(screen.getByRole("button", { name: /概览/ })).toHaveClass("active");
+  });
+
+  it("apps hub keyboard activation enters the detail without triggering pending repair shortcut", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /应用/ }));
+    const tile = await screen.findByTestId("app-card-codex");
+    tile.focus();
+    expect(tile).toHaveFocus();
+    fireEvent.keyDown(tile, { key: "Enter" });
+    fireEvent.click(tile);
+    expect(await screen.findByTestId("app-detail-empty-state")).toBeInTheDocument();
+  });
+
+  it("apps hub displays 3 / 3 enhancements when sidecar wraps items in { items }", async () => {
+    sidecarStatusMock.mockImplementation(async () => ({
+      status: "configured",
+      global_status: "configured",
+      proxy: { status: "configured", port: 51793 },
+      authorization: { status: "configured", device_id: 9 },
+      adapters: {
+        codex: {
+          status: "configured",
+          enhancements: {
+            items: {
+              "model-picker": { status: "patched" },
+              "plugin-auth-gate": { status: "patched" },
+              "plugin-mention-marketplace": { status: "patched" }
+            }
+          },
+          restart_required: false
+        }
+      },
+      model_catalog: { model_count: 0, models: [] }
+    }));
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /应用/ }));
+    const meta = await screen.findByText(/增强项 3 \/ 3/);
+    expect(meta).toBeInTheDocument();
+  });
+
+  it("English settings page exposes the Apps navigation in English copy", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Apps/ }));
+    expect(await screen.findByText("Coming soon (2)")).toBeInTheDocument();
   });
 });

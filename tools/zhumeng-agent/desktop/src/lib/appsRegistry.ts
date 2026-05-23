@@ -4,6 +4,10 @@ export type AppId = "codex" | "claude" | "custom";
 
 export type AppIconVariant = "primary" | "claude" | "muted";
 
+export type AppWizardKind = "codex" | "coming-soon";
+
+export type AppConnectionStatus = "connected" | "pending" | "planned" | "error";
+
 export interface AppDefinition {
   id: AppId;
   initial: string;
@@ -16,62 +20,82 @@ export interface AppDefinition {
   defaultAppPath?: string;
   /** External URL used for "learn more / subscribe" buttons. */
   learnMorePath: string;
+  /** Which wizard implementation should run for this app. */
+  wizardKind: AppWizardKind;
+  /**
+   * Resolves a unified connection status from the sidecar payload. Apps
+   * declared `supported: false` always return "planned".
+   */
+  resolveConnectionStatus(status: DesktopStatus): AppConnectionStatus;
+}
+
+function resolveCodexConnection(status: DesktopStatus): AppConnectionStatus {
+  const adapter = status.adapters?.codex;
+  const adapterStatus = adapter?.status;
+  if (!adapterStatus || adapterStatus === "not_configured") {
+    return "pending";
+  }
+  if (adapterStatus === "error") {
+    return "error";
+  }
+  return "connected";
+}
+
+function plannedConnection(): AppConnectionStatus {
+  return "planned";
 }
 
 /** Apps shown in the hub. Order matters for default selection. */
-export const APPS: AppDefinition[] = [
+const APP_LIST = [
   {
-    id: "codex",
+    id: "codex" as const,
     initial: "C",
-    iconVariant: "primary",
+    iconVariant: "primary" as const,
     supported: true,
     hasEnhancements: true,
     hasModelPreview: true,
     hasOpenAction: true,
     defaultAppPath: "/Applications/Codex.app",
-    learnMorePath: "/docs/codex"
+    learnMorePath: "/docs/codex",
+    wizardKind: "codex" as const,
+    resolveConnectionStatus: resolveCodexConnection
   },
   {
-    id: "claude",
+    id: "claude" as const,
     initial: "A",
-    iconVariant: "claude",
+    iconVariant: "claude" as const,
     supported: false,
     hasEnhancements: false,
     hasModelPreview: false,
     hasOpenAction: false,
-    learnMorePath: "/docs/claude"
+    learnMorePath: "/docs/claude",
+    wizardKind: "coming-soon" as const,
+    resolveConnectionStatus: plannedConnection
   },
   {
-    id: "custom",
+    id: "custom" as const,
     initial: "+",
-    iconVariant: "muted",
+    iconVariant: "muted" as const,
     supported: false,
     hasEnhancements: false,
     hasModelPreview: false,
     hasOpenAction: false,
-    learnMorePath: "/docs/custom"
+    learnMorePath: "/docs/custom",
+    wizardKind: "coming-soon" as const,
+    resolveConnectionStatus: plannedConnection
   }
-];
+] satisfies readonly AppDefinition[];
 
-export type AppConnectionStatus = "connected" | "pending" | "planned" | "error";
+export const APPS: readonly AppDefinition[] = APP_LIST;
+
+const APP_IDS: ReadonlySet<AppId> = new Set(APP_LIST.map((app) => app.id));
 
 /** Distil a unified connection state per app from the sidecar status payload. */
 export function appConnectionStatus(app: AppDefinition, status: DesktopStatus): AppConnectionStatus {
   if (!app.supported) {
     return "planned";
   }
-  if (app.id === "codex") {
-    const adapter = status.adapters?.codex;
-    const adapterStatus = adapter?.status;
-    if (!adapterStatus || adapterStatus === "not_configured") {
-      return "pending";
-    }
-    if (adapterStatus === "error") {
-      return "error";
-    }
-    return "connected";
-  }
-  return "pending";
+  return app.resolveConnectionStatus(status);
 }
 
 export function findApp(id: AppId | string | null | undefined): AppDefinition {
@@ -80,11 +104,13 @@ export function findApp(id: AppId | string | null | undefined): AppDefinition {
 }
 
 export function isAppId(value: unknown): value is AppId {
-  return value === "codex" || value === "claude" || value === "custom";
+  return typeof value === "string" && APP_IDS.has(value as AppId);
 }
 
+/** Total counts apps that can become connected; planners are excluded. */
 export function countConnected(status: DesktopStatus): { connected: number; total: number } {
-  const total = APPS.length;
-  const connected = APPS.filter((app) => appConnectionStatus(app, status) === "connected").length;
+  const supported = APPS.filter((app) => app.supported);
+  const total = supported.length;
+  const connected = supported.filter((app) => app.resolveConnectionStatus(status) === "connected").length;
   return { connected, total };
 }
