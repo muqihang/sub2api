@@ -359,6 +359,33 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
+.language-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-sub);
+  color: var(--muted);
+}
+
+.language-menu svg {
+  color: var(--soft);
+  flex: 0 0 auto;
+}
+
+.language-menu select {
+  min-width: 72px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .icon-button {
   display: grid;
   place-items: center;
@@ -1084,43 +1111,6 @@ a {
 
 .setting-row.disabled {
   opacity: 0.55;
-}
-
-.language-setting {
-  min-height: 64px;
-}
-
-.segmented-control {
-  display: inline-grid;
-  grid-template-columns: repeat(2, minmax(72px, 1fr));
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-sub);
-}
-
-.segmented-control button {
-  min-width: 0;
-  height: 26px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 540;
-  line-height: 1;
-}
-
-.segmented-control button:hover {
-  color: var(--text);
-}
-
-.segmented-control button.selected {
-  background: var(--panel);
-  color: var(--text);
-  box-shadow: 0 1px 2px rgba(15, 17, 21, 0.06);
 }
 
 @keyframes spin {

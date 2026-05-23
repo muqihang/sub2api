@@ -86,17 +86,24 @@ describe("App visual shell", () => {
 
     expect(await screen.findByRole("button", { name: /概览/ })).toBeInTheDocument();
     expect(screen.getByText("设置")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByText("设置"));
-    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "语言" }), { target: { value: "en" } });
 
     expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
-    expect(screen.getAllByText("Settings")).toHaveLength(2);
-    expect(screen.getByText("Language")).toBeInTheDocument();
+    expect(screen.getByText("Settings")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Language" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /概览/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Download from website · No Mac App Store")).not.toBeInTheDocument();
     expect(screen.queryByText("Desktop Mac MVP")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("zhumeng-agent-desktop-language")).toBe("en");
+  });
+
+  it("removes the old language control from settings after moving it to the top bar", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
+
+    expect(screen.queryAllByRole("combobox", { name: "语言" })).toHaveLength(1);
+    expect(screen.queryByText("默认中文；切换后会保存到本机，下次打开继续使用。")).not.toBeInTheDocument();
   });
 
   it("renders a website entry point in the sidebar that links to zhumeng.example.com", async () => {
@@ -258,7 +265,7 @@ describe("App visual shell", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
-    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "语言" }), { target: { value: "en" } });
 
     fireEvent.click(await screen.findByRole("button", { name: /Apps/ }));
     expect(await screen.findByText("Coming soon (2)")).toBeInTheDocument();

@@ -238,7 +238,17 @@ function App() {
       </aside>
 
       <main className="main-panel">
-        <GlobalStatusBar t={t} status={globalStatus} proxyPort={status.proxy?.port} busy={isBusy} onRefresh={() => void refreshStatus()} theme={theme} onTheme={setTheme} />
+        <GlobalStatusBar
+          t={t}
+          status={globalStatus}
+          proxyPort={status.proxy?.port}
+          busy={isBusy}
+          onRefresh={() => void refreshStatus()}
+          theme={theme}
+          onTheme={setTheme}
+          language={language}
+          onLanguage={setLanguage}
+        />
         {lastError ? <div className="error-strip"><AlertTriangle size={16} />{lastError}</div> : null}
         <div className="page-scroll">
           {page === "overview" && (
@@ -304,7 +314,7 @@ function App() {
             />
           )}
           {page === "diagnostics" && <DiagnosticsPage t={t} onDiagnose={() => runAction(() => sidecar.diagnose())} status={status} />}
-          {page === "settings" && <SettingsPage t={t} language={language} onLanguage={setLanguage} />}
+          {page === "settings" && <SettingsPage t={t} />}
           {page === "about" && <AboutDistributionPage t={t} />}
         </div>
       </main>
@@ -341,7 +351,17 @@ function SidebarWebsiteLink({ t }: { t: Translation }) {
   );
 }
 
-function GlobalStatusBar({ t, status, proxyPort, busy, theme, onTheme, onRefresh }: { t: Translation; status: string; proxyPort?: number; busy: boolean; theme: "system" | "dark" | "light"; onTheme: (theme: "system" | "dark" | "light") => void; onRefresh: () => void }) {
+function GlobalStatusBar({ t, status, proxyPort, busy, theme, onTheme, onRefresh, language, onLanguage }: {
+  t: Translation;
+  status: string;
+  proxyPort?: number;
+  busy: boolean;
+  theme: "system" | "dark" | "light";
+  onTheme: (theme: "system" | "dark" | "light") => void;
+  onRefresh: () => void;
+  language: Language;
+  onLanguage: (language: Language) => void;
+}) {
   const tone = statusTone(status);
   return (
     <div className={`global-bar ${tone}`}>
@@ -352,6 +372,13 @@ function GlobalStatusBar({ t, status, proxyPort, busy, theme, onTheme, onRefresh
       </div>
       <div className="global-spacer" />
       <span className="pill">{t.global.proxyPort} {proxyPort || t.global.proxyStopped}</span>
+      <label className="language-menu">
+        <Globe size={14} />
+        <select aria-label={t.settings.languageTitle} value={language} onChange={(event) => onLanguage(event.target.value as Language)}>
+          <option value="zh">{t.settings.chinese}</option>
+          <option value="en">{t.settings.english}</option>
+        </select>
+      </label>
       <button className="icon-button" onClick={onRefresh} aria-label={t.global.refresh}>
         <RefreshCw size={16} className={busy ? "spin" : ""} />
       </button>
@@ -861,12 +888,11 @@ function DiagnosticsPage({ t, status, onDiagnose }: { t: Translation; status: De
   );
 }
 
-function SettingsPage({ t, language, onLanguage }: { t: Translation; language: Language; onLanguage: (language: Language) => void }) {
+function SettingsPage({ t }: { t: Translation }) {
   return (
     <section className="content">
       <PageHeader title={t.settings.title} subtitle={t.settings.subtitle} />
       <div className="settings-list">
-        <LanguageSetting t={t} language={language} onLanguage={onLanguage} />
         <SettingRow icon={<SlidersHorizontal />} title={t.settings.proxyPolicy} value={t.settings.proxyPolicyValue} />
         <SettingRow icon={<LockKeyhole />} title={t.settings.strictGate} value={t.settings.strictGateValue} />
         <SettingRow icon={<PackageCheck />} title={t.settings.autoUpdate} value={t.settings.autoUpdateValue} disabled />
@@ -1063,22 +1089,6 @@ function ModelPriceTooltip({ t, language, model }: { t: Translation; language: L
         {rows.map(([label, value]) => <span key={label}><b>{label}</b><em>{value}</em></span>)}
       </span>
     </span>
-  );
-}
-
-function LanguageSetting({ t, language, onLanguage }: { t: Translation; language: Language; onLanguage: (language: Language) => void }) {
-  return (
-    <div className="setting-row language-setting">
-      <SlidersHorizontal />
-      <div>
-        <div>{t.settings.languageTitle}</div>
-        <span>{t.settings.languageDescription}</span>
-      </div>
-      <div className="segmented-control" aria-label={t.settings.languageTitle}>
-        <button className={language === "zh" ? "selected" : ""} onClick={() => onLanguage("zh")}>{t.settings.chinese}</button>
-        <button className={language === "en" ? "selected" : ""} onClick={() => onLanguage("en")}>{t.settings.english}</button>
-      </div>
-    </div>
   );
 }
 
