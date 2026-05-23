@@ -175,6 +175,15 @@ describe("App visual shell", () => {
     expect(screen.queryByTestId("setup-wizard")).not.toBeInTheDocument();
   });
 
+  it("wizard app picker keeps the Claude mini icon styling", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /接入向导/ }));
+    const claudeTab = await screen.findByRole("tab", { name: /Claude Desktop/ });
+    const miniIcon = claudeTab.querySelector(".app-glyph.variant-claude.compact");
+    expect(miniIcon).not.toBeNull();
+  });
+
   it("model catalog lives at the top level and the Codex App page no longer renders the table", async () => {
     render(<App />);
 

@@ -1172,7 +1172,7 @@ function codexEnhancementsRatio(status: DesktopStatus): string {
  * Sidecar payloads have shifted between { items: { ... } } and a flat map of
  * enhancement entries; tolerate both shapes so hub/detail counts stay accurate.
  */
-export function codexEnhancementItems(enhancements: Record<string, unknown> | undefined | null): Record<string, unknown> {
+function codexEnhancementItems(enhancements: Record<string, unknown> | undefined | null): Record<string, unknown> {
   if (!enhancements || typeof enhancements !== "object") return {};
   const maybeItems = (enhancements as { items?: unknown }).items;
   if (maybeItems && typeof maybeItems === "object" && !Array.isArray(maybeItems)) {
