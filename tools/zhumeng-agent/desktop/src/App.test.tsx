@@ -65,16 +65,16 @@ describe("App visual shell", () => {
   it("defaults to Chinese and switches the full shell to English from settings", async () => {
     render(<App />);
 
-    expect(await screen.findAllByText("概览")).toHaveLength(2);
+    expect(await screen.findByRole("button", { name: /概览/ })).toBeInTheDocument();
     expect(screen.getByText("设置")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("设置"));
     fireEvent.click(screen.getByRole("button", { name: "English" }));
 
-    expect(screen.getByText("Overview")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
     expect(screen.getAllByText("Settings")).toHaveLength(2);
     expect(screen.getByText("Language")).toBeInTheDocument();
-    expect(screen.queryByText("概览")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /概览/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Download from website · No Mac App Store")).not.toBeInTheDocument();
     expect(screen.queryByText("Desktop Mac MVP")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("zhumeng-agent-desktop-language")).toBe("en");
@@ -93,7 +93,7 @@ describe("App visual shell", () => {
   it("uses a vertical stepper layout for the setup wizard", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("接入向导"));
+    fireEvent.click(screen.getByRole("button", { name: /接入向导/ }));
 
     const wizard = await screen.findByTestId("setup-wizard");
     expect(wizard.classList.contains("wizard-stepper")).toBe(true);
@@ -103,7 +103,7 @@ describe("App visual shell", () => {
   it("nudges users with a website CTA on the setup wizard", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("接入向导"));
+    fireEvent.click(screen.getByRole("button", { name: /接入向导/ }));
 
     const ctas = await screen.findAllByRole("button", { name: /前往逐梦控制台获取授权/ });
     expect(ctas.length).toBeGreaterThanOrEqual(1);
@@ -113,12 +113,13 @@ describe("App visual shell", () => {
     expect(openUrlMock.mock.calls[0]?.[0]).toMatch(/^https:\/\/zhumeng\.example\.com\/codex/);
   });
 
-  it("shows a Codex empty state when the app is not connected yet", async () => {
+  it("shows the Codex pending empty state from the apps hub when not connected", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByText("Codex App"));
+    fireEvent.click(await screen.findByRole("button", { name: /应用/ }));
+    fireEvent.click(await screen.findByTestId("app-card-codex"));
 
-    expect(await screen.findByTestId("codex-empty-state")).toBeInTheDocument();
+    expect(await screen.findByTestId("app-detail-empty-state")).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
@@ -129,5 +130,36 @@ describe("App visual shell", () => {
 
     const callouts = await screen.findAllByTestId("info-callout");
     expect(callouts.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("apps hub lists every registered app and exposes a coming-soon state for Claude", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /应用/ }));
+    expect(await screen.findByTestId("apps-hub")).toBeInTheDocument();
+    expect(screen.getByTestId("app-card-codex")).toBeInTheDocument();
+    expect(screen.getByTestId("app-card-claude")).toBeInTheDocument();
+    expect(screen.getByTestId("app-card-custom")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("app-card-claude"));
+    expect(await screen.findByTestId("app-detail-coming-soon")).toBeInTheDocument();
+  });
+
+  it("setup wizard exposes an app picker and shows a coming-soon empty state for Claude", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /接入向导/ }));
+    const claudeTab = await screen.findByRole("tab", { name: /Claude Desktop/ });
+    fireEvent.click(claudeTab);
+
+    expect(await screen.findByTestId("wizard-coming-soon")).toBeInTheDocument();
+    expect(screen.queryByTestId("setup-wizard")).not.toBeInTheDocument();
+  });
+
+  it("model catalog lives at the top level and the Codex App page no longer renders the table", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /模型目录/ }));
+    expect(await screen.findByTestId("catalog-page")).toBeInTheDocument();
   });
 });
