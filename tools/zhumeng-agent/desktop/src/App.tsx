@@ -6,6 +6,8 @@ import {
   AppWindow,
   BadgeCheck,
   Boxes,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -30,7 +32,7 @@ import {
   TerminalSquare,
   Wrench
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { parseZhumengDeepLink } from "./lib/deeplink";
 import { isLanguage, translations, type Language, type Translation } from "./lib/i18n";
@@ -332,6 +334,110 @@ function NavButton({ icon, label, active, badge, onClick }: { icon: React.ReactN
   );
 }
 
+function AppSelect<T extends string>({ label, value, options, onChange, align = "left", compact = false }: {
+  label: string;
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+  align?: "left" | "right";
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = useId();
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  function handleTriggerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setOpen(true);
+    }
+  }
+
+  function handleOptionKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    const buttons = rootRef.current?.querySelectorAll<HTMLButtonElement>(".app-select-option");
+    if (!buttons?.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      buttons[(index + 1) % buttons.length]?.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      buttons[(index - 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      buttons[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      buttons[buttons.length - 1]?.focus();
+    }
+  }
+
+  return (
+    <div className={`app-select ${open ? "open" : ""} ${compact ? "compact" : ""}`} ref={rootRef}>
+      <button
+        type="button"
+        className="app-select-trigger"
+        aria-label={label}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <span className="app-select-value">{selected?.label}</span>
+        <ChevronDown size={14} className="app-select-chevron" />
+      </button>
+      {open ? (
+        <div className={`app-select-popover align-${align}`} role="listbox" id={listboxId} aria-label={label}>
+          {options.map((option, index) => {
+            const isSelected = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                className={`app-select-option ${isSelected ? "selected" : ""}`}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+                onKeyDown={(event) => handleOptionKeyDown(event, index)}
+              >
+                <span className="app-select-check">{isSelected ? <Check size={15} /> : null}</span>
+                <span>{option.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SidebarWebsiteLink({ t }: { t: Translation }) {
   return (
     <button
@@ -372,13 +478,20 @@ function GlobalStatusBar({ t, status, proxyPort, busy, theme, onTheme, onRefresh
       </div>
       <div className="global-spacer" />
       <span className="pill">{t.global.proxyPort} {proxyPort || t.global.proxyStopped}</span>
-      <label className="language-menu">
+      <div className="language-menu">
         <Globe size={14} />
-        <select aria-label={t.settings.languageTitle} value={language} onChange={(event) => onLanguage(event.target.value as Language)}>
-          <option value="zh">{t.settings.chinese}</option>
-          <option value="en">{t.settings.english}</option>
-        </select>
-      </label>
+        <AppSelect
+          label={t.settings.languageTitle}
+          value={language}
+          onChange={onLanguage}
+          align="right"
+          compact
+          options={[
+            { value: "zh", label: t.settings.chinese },
+            { value: "en", label: t.settings.english }
+          ]}
+        />
+      </div>
       <button className="icon-button" onClick={onRefresh} aria-label={t.global.refresh}>
         <RefreshCw size={16} className={busy ? "spin" : ""} />
       </button>
@@ -1023,6 +1136,13 @@ function ModelCatalogTable({ t, language, models, onSyncModels }: { t: Translati
   const [filter, setFilter] = useState<ModelFilter>({ query: "", provider: "all", capability: "all" });
   const filtered = useMemo(() => filterCatalogModels(models, filter), [models, filter]);
   const providers = providerOptions(models);
+  const capabilityOptions: Array<{ value: ModelFilter["capability"]; label: string }> = [
+    { value: "all", label: t.modelCatalog.allCapabilities },
+    { value: "responses", label: t.modelCatalog.responses },
+    { value: "streaming", label: t.modelCatalog.streaming },
+    { value: "tool_calls", label: t.modelCatalog.toolCalls },
+    { value: "context_continuation", label: t.modelCatalog.contextContinuation }
+  ];
   return (
     <div className="card model-card">
       <div className="table-toolbar">
@@ -1035,17 +1155,22 @@ function ModelCatalogTable({ t, language, models, onSyncModels }: { t: Translati
             <Search size={15} />
             <input value={filter.query} onChange={(event) => setFilter({ ...filter, query: event.target.value })} placeholder={t.modelCatalog.searchPlaceholder} />
           </label>
-          <select value={filter.provider} onChange={(event) => setFilter({ ...filter, provider: event.target.value })}>
-            <option value="all">{t.modelCatalog.allProviders}</option>
-            {providers.map((provider) => <option value={provider} key={provider}>{provider}</option>)}
-          </select>
-          <select value={filter.capability} onChange={(event) => setFilter({ ...filter, capability: event.target.value as ModelFilter["capability"] })}>
-            <option value="all">{t.modelCatalog.allCapabilities}</option>
-            <option value="responses">{t.modelCatalog.responses}</option>
-            <option value="streaming">{t.modelCatalog.streaming}</option>
-            <option value="tool_calls">{t.modelCatalog.toolCalls}</option>
-            <option value="context_continuation">{t.modelCatalog.contextContinuation}</option>
-          </select>
+          <AppSelect
+            label={t.modelCatalog.allProviders}
+            value={filter.provider}
+            onChange={(provider) => setFilter({ ...filter, provider })}
+            options={[
+              { value: "all", label: t.modelCatalog.allProviders },
+              ...providers.map((provider) => ({ value: provider, label: provider }))
+            ]}
+          />
+          <AppSelect
+            label={t.modelCatalog.allCapabilities}
+            value={filter.capability}
+            onChange={(capability) => setFilter({ ...filter, capability })}
+            align="right"
+            options={capabilityOptions}
+          />
           <button className="icon-action" onClick={onSyncModels} aria-label={t.actions.sync} title={t.actions.sync}>
             <RefreshCw size={14} />
             <span className="icon-action-label">{t.actions.syncShort}</span>

@@ -86,11 +86,12 @@ describe("App visual shell", () => {
 
     expect(await screen.findByRole("button", { name: /概览/ })).toBeInTheDocument();
     expect(screen.getByText("设置")).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "语言" }), { target: { value: "en" } });
+    fireEvent.click(screen.getByRole("button", { name: "语言" }));
+    fireEvent.click(await screen.findByRole("option", { name: "English" }));
 
     expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
     expect(screen.getByText("Settings")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Language" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Language" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /概览/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Download from website · No Mac App Store")).not.toBeInTheDocument();
     expect(screen.queryByText("Desktop Mac MVP")).not.toBeInTheDocument();
@@ -102,7 +103,7 @@ describe("App visual shell", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
 
-    expect(screen.queryAllByRole("combobox", { name: "语言" })).toHaveLength(1);
+    expect(screen.queryAllByRole("button", { name: "语言" })).toHaveLength(1);
     expect(screen.queryByText("默认中文；切换后会保存到本机，下次打开继续使用。")).not.toBeInTheDocument();
   });
 
@@ -265,9 +266,22 @@ describe("App visual shell", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /设置/ }));
-    fireEvent.change(screen.getByRole("combobox", { name: "语言" }), { target: { value: "en" } });
+    fireEvent.click(screen.getByRole("button", { name: "语言" }));
+    fireEvent.click(await screen.findByRole("option", { name: "English" }));
 
     fireEvent.click(await screen.findByRole("button", { name: /Apps/ }));
     expect(await screen.findByText("Coming soon (2)")).toBeInTheDocument();
+  });
+
+  it("uses the custom listbox popover for language and model filters", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "语言" }));
+    expect(await screen.findByRole("listbox", { name: "语言" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("option", { name: "English" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Model Catalog/ }));
+    fireEvent.click(screen.getByRole("button", { name: "All capabilities" }));
+    expect(await screen.findByRole("listbox", { name: "All capabilities" })).toBeInTheDocument();
   });
 });
