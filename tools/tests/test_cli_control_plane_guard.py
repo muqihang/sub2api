@@ -1,0 +1,465 @@
+import argparse
+import copy
+import json
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from tools.cli_control_plane_guard import (
+    ExecutionController,
+    GuardConfig,
+    RedactingForwarder,
+    _cli_session_budget_ledger,
+    body_summary,
+    classify_request,
+    redact_headers,
+)
+from tools.cli_control_plane_policy import load_default_policy
+
+
+class CliControlPlaneGuardTest(unittest.TestCase):
+    def test_cli_main_does_not_enforce_session_budget_by_default(self):
+        args = argparse.Namespace(
+            enforce_session_budget=False,
+            disable_session_budget=False,
+            session_budget_max_messages=7,
+            session_budget_max_rich_messages=None,
+            session_budget_max_body_bytes=None,
+            session_budget_max_tool_def_bytes=None,
+            session_budget_max_thinking_messages=None,
+        )
+        self.assertIsNone(_cli_session_budget_ledger(args))
+
+    def test_cli_main_builds_session_budget_ledger_only_when_explicitly_enforced(self):
+        args = argparse.Namespace(
+            enforce_session_budget=True,
+            disable_session_budget=False,
+            session_budget_max_messages=7,
+            session_budget_max_rich_messages=None,
+            session_budget_max_body_bytes=None,
+            session_budget_max_tool_def_bytes=None,
+            session_budget_max_thinking_messages=None,
+        )
+        ledger = _cli_session_budget_ledger(args)
+        self.assertIsNotNone(ledger)
+        self.assertEqual(ledger.policy.max_messages_per_session, 7)
+
+    def test_cli_main_can_disable_session_budget_explicitly(self):
+        args = argparse.Namespace(disable_session_budget=True, enforce_session_budget=True)
+        self.assertIsNone(_cli_session_budget_ledger(args))
+
+    def test_classify_request_uses_default_policy_and_quarantines_unknown_routes(self):
+        self.assertEqual(classify_request('POST', '/v1/messages?beta=true').action, 'forward_messages')
+        self.assertEqual(classify_request('POST', '/api/event_logging/v2/batch').action, 'suppress_204')
+        self.assertEqual(classify_request('GET', '/v1/mcp_servers?limit=1000').action, 'stub_json')
+        self.assertEqual(classify_request('GET', '/totally-unknown').action, 'quarantine_block')
+
+    def test_redaction_keeps_auth_shape_not_value(self):
+        headers = {
+            'Authorization': 'Bearer secret-token-value',
+            'x-api-key': 'secret-api-key',
+            'Cookie': 'a=b',
+            'Proxy-Authorization': 'Basic proxy-credential-marker',
+            'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)',
+            'anthropic-beta': 'oauth-2025-04-20',
+        }
+        redacted = redact_headers(headers)
+        self.assertEqual(
+            redacted['auth_shape'],
+            {
+                'authorization': 'Bearer',
+                'x-api-key': 'present',
+                'cookie': 'present',
+                'proxy-authorization': 'present',
+            },
+        )
+        dumped = json.dumps(redacted)
+        self.assertNotIn('secret-token-value', dumped)
+        self.assertNotIn('secret-api-key', dumped)
+        self.assertNotIn('proxy-credential-marker', dumped)
+        self.assertTrue(redacted['selected']['user-agent'].startswith('claude-cli/'))
+
+    def test_redact_headers_sanitizes_sensitive_header_names(self):
+        redacted = redact_headers({
+            'x-secret-token-marker': '1',
+            'x-raw-prompt-marker': '1',
+            'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)',
+        })
+        dumped = json.dumps(redacted, sort_keys=True)
+        self.assertIn('user-agent', dumped)
+        self.assertNotIn('x-secret-token-marker', dumped)
+        self.assertNotIn('x-raw-prompt-marker', dumped)
+
+    def test_redact_headers_sanitizes_sensitive_selected_header_values(self):
+        redacted = redact_headers({
+            'User-Agent': 'claude-cli secret-token-marker',
+            'anthropic-beta': 'raw-prompt-marker',
+        })
+        dumped = json.dumps(redacted, sort_keys=True)
+        self.assertNotIn('secret-token-marker', dumped)
+        self.assertNotIn('raw-prompt-marker', dumped)
+        self.assertEqual(redacted['selected']['user-agent'], 'redacted-header-value')
+        self.assertEqual(redacted['selected']['anthropic-beta'], 'redacted-header-value')
+
+    def test_body_summary_redacts_sensitive_model_and_key_names(self):
+        summary = body_summary(json.dumps({
+            'model': 'secret-token-marker',
+            'secret-token-marker': 'x',
+            'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
+            'max_tokens': 1,
+        }).encode('utf-8'))
+        dumped = json.dumps(summary, sort_keys=True)
+        self.assertIn('body_keys', summary)
+        self.assertNotIn('secret-token-marker', dumped)
+        self.assertNotIn('raw-prompt-marker', dumped)
+
+    def test_body_summary_sanitizes_non_integer_max_tokens(self):
+        summary = body_summary(json.dumps({
+            'model': 'claude-sonnet-4-6',
+            'max_tokens': 'secret-token-marker',
+        }).encode('utf-8'))
+        dumped = json.dumps(summary, sort_keys=True)
+        self.assertNotIn('secret-token-marker', dumped)
+        self.assertEqual(summary['max_tokens'], 'redacted-non-int')
+
+    def test_explicit_policy_on_guard_config_controls_local_stub_response(self):
+        policy_dict = load_default_policy()._source_dict
+        custom_dict = copy.deepcopy(policy_dict)
+        custom_dict['control_plane']['mcp']['response']['body'] = {'servers': ['from-policy']}
+        policy = load_default_policy().from_dict(custom_dict)
+
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:9',
+                sub2api_auth='unused',
+                summary_path=Path(td) / 'summary.jsonl',
+                policy=policy,
+            ))
+            forwarder.start_background()
+            try:
+                with urllib.request.urlopen(
+                    f'http://127.0.0.1:{listen_port}/v1/mcp_servers?limit=1000',
+                    timeout=5,
+                ) as resp:
+                    body = json.loads(resp.read().decode('utf-8'))
+                self.assertEqual(body, {'servers': ['from-policy']})
+            finally:
+                forwarder.stop()
+
+    def test_cli_policy_path_invalid_config_exits_nonzero_before_serving(self):
+        with tempfile.TemporaryDirectory() as td:
+            policy_path = Path(td) / 'policy.json'
+            summary_path = Path(td) / 'summary.jsonl'
+            policy_path.write_text(json.dumps({'schema_version': 1}), encoding='utf-8')
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    '-m',
+                    'tools.cli_control_plane_guard',
+                    '--listen-port',
+                    str(_free_port()),
+                    '--upstream-base',
+                    'http://127.0.0.1:9',
+                    '--sub2api-auth',
+                    'sub2api-entry',
+                    '--summary-path',
+                    str(summary_path),
+                    '--policy-path',
+                    str(policy_path),
+                ],
+                cwd=root_dir(),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertFalse(summary_path.exists())
+            self.assertNotIn('"listen"', proc.stdout)
+
+    def test_control_plane_summary_uses_safe_path_templates_and_omission_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            summary = Path(td) / 'summary.jsonl'
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:9',
+                sub2api_auth='unused',
+                summary_path=summary,
+            ))
+            forwarder.start_background()
+            try:
+                req = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}/api/oauth/organizations/local-org-secret/referral/eligibility',
+                    method='GET',
+                    headers={
+                        'Authorization': 'Bearer secret-token-marker',
+                        'Cookie': 'session=cookie-marker',
+                    },
+                )
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req, timeout=5)
+                self.assertEqual(ctx.exception.code, 403)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('/api/oauth/organizations/{org}/referral/eligibility', dumped)
+                self.assertIn('query_omitted_reason', dumped)
+                self.assertIn('body_length_bucket', dumped)
+                self.assertNotIn('local-org-secret', dumped)
+                self.assertNotIn('secret-token-marker', dumped)
+                self.assertNotIn('cookie-marker', dumped)
+                self.assertNotIn('query_hash', dumped)
+                self.assertNotIn('body_hash', dumped)
+            finally:
+                forwarder.stop()
+
+    def test_future_upload_defaults_remain_disabled_noop_and_never_forward(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            count = 0
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.__class__.count += 1
+                self.send_response(500)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='unused',
+                    summary_path=Path(td) / 'summary.jsonl',
+                ))
+                forwarder.start_background()
+                try:
+                    with urllib.request.urlopen(
+                        f'http://127.0.0.1:{listen_port}/api/claude_cli/bootstrap?entrypoint=sdk-cli',
+                        timeout=5,
+                    ) as resp:
+                        self.assertEqual(resp.status, 200)
+                    self.assertEqual(CaptureHandler.count, 0)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_forwarder_strips_local_auth_and_preserves_safe_messages_summary(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                body = self.rfile.read(n)
+                self.__class__.requests.append({
+                    'path': self.path,
+                    'headers': {key.lower(): value for key, value in self.headers.items()},
+                    'body': body.decode('utf-8'),
+                })
+                data = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.send_header('content-length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=json.dumps({
+                            'model': 'claude-sonnet-4-6',
+                            'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
+                            'max_tokens': 64,
+                            'tools': [{'name': 'calculator'}],
+                            'output_config': {'format': 'json'},
+                        }).encode('utf-8'),
+                        method='POST',
+                        headers={
+                            'Authorization': 'Bearer secret-token-marker',
+                            'x-api-key': 'local-api-key-marker',
+                            'Cookie': 'session=cookie-marker',
+                            'Proxy-Authorization': 'Basic proxy-credential-marker',
+                            'content-type': 'application/json',
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        self.assertEqual(resp.status, 200)
+                    self.assertEqual(len(CaptureHandler.requests), 1)
+                    forwarded = CaptureHandler.requests[0]
+                    self.assertEqual(forwarded['headers'].get('authorization'), 'Bearer sub2api-entry-key')
+                    self.assertNotIn('x-api-key', forwarded['headers'])
+                    self.assertNotIn('cookie', forwarded['headers'])
+                    self.assertNotIn('proxy-authorization', forwarded['headers'])
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('auth_shape', dumped)
+                    self.assertIn('body_keys', dumped)
+                    self.assertNotIn('raw-prompt-marker', dumped)
+                    self.assertNotIn('secret-token-marker', dumped)
+                    self.assertNotIn('local-api-key-marker', dumped)
+                    self.assertNotIn('cookie-marker', dumped)
+                    self.assertNotIn('proxy-credential-marker', dumped)
+                    self.assertNotIn('"messages"', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_connect_stub_blocks_direct_messages_inside_tls(self):
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            summary = Path(td) / 'summary.jsonl'
+            cert = Path(td) / 'api.anthropic.com.pem'
+            key = Path(td) / 'api.anthropic.com.key'
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:9',
+                sub2api_auth='unused',
+                summary_path=summary,
+                connect_mode='stub',
+                cert_path=cert,
+                key_path=key,
+            ))
+            forwarder.start_background()
+            try:
+                import ssl
+                sock = socket.create_connection(('127.0.0.1', listen_port), timeout=5)
+                sock.sendall(b'CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n')
+                self.assertIn(b'200 Connection Established', sock.recv(4096))
+                _wait_for_file(cert)
+                ctx = ssl.create_default_context(cafile=str(cert))
+                with ctx.wrap_socket(sock, server_hostname='api.anthropic.com') as tls:
+                    tls.sendall(
+                        b'POST /v1/messages?beta=true HTTP/1.1\r\n'
+                        b'Host: api.anthropic.com\r\n'
+                        b'Content-Length: 2\r\n\r\n{}'
+                    )
+                    data = tls.recv(4096)
+                self.assertIn(b'403 Forbidden', data)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('direct_messages_route_blocked', dumped)
+            finally:
+                forwarder.stop()
+
+    def test_canary_single_message_controller_stops_cli_after_first_http_error(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            count = 0
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.__class__.count += 1
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                data = b'{"error":"denied"}'
+                self.send_response(429)
+                self.send_header('content-type', 'application/json')
+                self.send_header('content-length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                sleeper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+                controller = ExecutionController(mode='canary_single_message', stop_grace_seconds=0.2)
+                controller.register_cli_process(sleeper)
+                listen_port = _free_port()
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='entry',
+                    summary_path=Path(td) / 'summary.jsonl',
+                    max_messages=1,
+                ), execution_controller=controller)
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=b'{"model":"claude-sonnet-4-6","messages":[]}',
+                        method='POST',
+                        headers={'content-type': 'application/json'},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 429)
+                    deadline = time.time() + 5
+                    while sleeper.poll() is None and time.time() < deadline:
+                        time.sleep(0.05)
+                    self.assertIsNotNone(sleeper.poll())
+                    summary_text = (Path(td) / 'summary.jsonl').read_text(encoding='utf-8')
+                    self.assertIn('execution_controller_stop_requested', summary_text)
+                    self.assertEqual(CaptureHandler.count, 1)
+                finally:
+                    forwarder.stop()
+                    if sleeper.poll() is None:
+                        sleeper.kill()
+                        sleeper.wait(timeout=5)
+        finally:
+            upstream.shutdown()
+
+
+def _free_port():
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def root_dir() -> str:
+    return '/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation'
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+def _wait_for_file(path: Path, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f'file was not created in time: {path}')
