@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -389,6 +390,42 @@ func (s *ClaudeOAuthServiceSuite) TestRefreshToken() {
 			}
 		})
 	}
+}
+
+func (s *ClaudeOAuthServiceSuite) TestTokenExchangeProxyFailureDoesNotDirectConnect() {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(oauth.TokenResponse{AccessToken: "at", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+	require.True(s.T(), ok, "type assertion failed")
+	client.tokenURL = server.URL
+
+	_, err := client.ExchangeCodeForToken(context.Background(), "AUTH", "ver", "", "http://127.0.0.1:1", false)
+	require.Error(s.T(), err)
+	require.Zero(s.T(), hits, "token exchange must not bypass unavailable proxy and direct-connect")
+}
+
+func (s *ClaudeOAuthServiceSuite) TestRefreshTokenProxyFailureDoesNotDirectConnect() {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(oauth.TokenResponse{AccessToken: "at", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+	require.True(s.T(), ok, "type assertion failed")
+	client.tokenURL = server.URL
+
+	_, err := client.RefreshToken(context.Background(), "rt", "http://127.0.0.1:1")
+	require.Error(s.T(), err)
+	require.Zero(s.T(), hits, "refresh must not bypass unavailable proxy and direct-connect")
 }
 
 func (s *ClaudeOAuthServiceSuite) TestOAuthErrorBodiesAreRedacted() {

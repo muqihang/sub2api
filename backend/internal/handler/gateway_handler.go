@@ -2,13 +2,16 @@ package handler
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -35,6 +38,8 @@ import (
 const gatewayCompatibilityMetricsLogInterval = 1024
 
 var gatewayCompatibilityMetricsLogCounter atomic.Uint64
+
+const gatewayStickySessionHMACEnv = "SUB2API_GATEWAY_STICKY_SESSION_HMAC_KEY"
 
 // GatewayHandler handles API gateway requests
 type GatewayHandler struct {
@@ -69,8 +74,15 @@ func computeStickySessionHashFromHeaders(c *gin.Context) string {
 	if sessionID == "" {
 		return ""
 	}
-	hash := sha256.Sum256([]byte(sessionID))
-	return hex.EncodeToString(hash[:])
+	secret := os.Getenv(gatewayStickySessionHMACEnv)
+	if strings.TrimSpace(secret) == "" {
+		secret = "sub2api-gateway-sticky-session-dev-key"
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("gateway_sticky_session"))
+	mac.Write([]byte{0})
+	mac.Write([]byte(sessionID))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
 }
 
 // NewGatewayHandler creates a new GatewayHandler
@@ -142,6 +154,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
+	c.Request = c.Request.WithContext(service.WithClaudeCodeSessionUserScope(c.Request.Context(), fmt.Sprintf("user:%d|api_key:%d", subject.UserID, apiKey.ID)))
 	reqLog := requestLogger(
 		c,
 		"handler.gateway.messages",
@@ -304,7 +317,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
 		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
-			zap.String("session_key", sessionKey),
+			zap.Bool("session_key_present", sessionKey != ""),
 			zap.Int64("bound_account_id", sessionBoundAccountID),
 		)
 		if sessionBoundAccountID > 0 {
@@ -316,10 +329,58 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			c.Request = c.Request.WithContext(ctx)
 		}
 	} else {
-		reqLog.Info("sticky.no_session_key", zap.String("session_hash", sessionHash))
+		reqLog.Info("sticky.no_session_key", zap.Bool("session_hash_present", sessionHash != ""))
 	}
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
+
+	if c.GetHeader("x-sub2api-explicit-canary") == "1" {
+		if clientIP := net.ParseIP(strings.TrimSpace(ip.GetClientIP(c))); clientIP == nil || !clientIP.IsLoopback() {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary requires loopback caller", streamStarted)
+			return
+		}
+		if c.Request.Method != http.MethodPost || c.Request.URL == nil || c.Request.URL.Path != "/v1/messages" || c.Query("beta") != "true" {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary route blocked", streamStarted)
+			return
+		}
+		accountID, parseErr := strconv.ParseInt(strings.TrimSpace(c.GetHeader("x-sub2api-canary-account-id")), 10, 64)
+		if parseErr != nil || accountID <= 0 {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary account id is required", streamStarted)
+			return
+		}
+		canaryReq := service.CCGatewayAnthropicCanaryRequest{
+			AccountID:      accountID,
+			AccountHash:    c.GetHeader("x-sub2api-canary-account-hash"),
+			EgressBucket:   c.GetHeader("x-sub2api-canary-egress-bucket"),
+			BillingCCHMode: c.GetHeader("x-sub2api-canary-billing-cch-mode"),
+			Method:         c.Request.Method,
+			Route:          c.Request.URL.Path,
+		}
+		ctx := service.WithCCGatewayExplicitCanaryRequest(c.Request.Context(), canaryReq)
+		if c.GetHeader("x-sub2api-canary-localhost-only") == "1" {
+			ctx = service.WithCCGatewayExplicitCanaryLocalOnly(ctx)
+		}
+		c.Request = c.Request.WithContext(ctx)
+		account, canaryErr := h.gatewayService.GetExplicitCCGatewayCanaryAccount(c.Request.Context(), canaryReq)
+		if canaryErr != nil {
+			reqLog.Warn("gateway.explicit_canary_blocked", zap.Error(canaryErr))
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary blocked", streamStarted)
+			return
+		}
+		setOpsSelectedAccount(c, account.ID, account.Platform)
+		c.Set("parsed_request", parsedReq)
+		_, forwardErr := h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
+		if forwardErr != nil {
+			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
+			reqLog.Error("gateway.explicit_canary_forward_failed",
+				zap.Int64("account_id", account.ID),
+				zap.Bool("fallback_error_response_written", wroteFallback),
+				zap.Error(forwardErr),
+			)
+			return
+		}
+		return
+	}
 
 	if platform == service.PlatformGemini {
 		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
@@ -568,7 +629,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		for {
 			// 选择支持该模型的账号
 			reqLog.Info("sticky.selecting_account",
-				zap.String("session_key", sessionKey),
+				zap.Bool("session_key_present", sessionKey != ""),
 				zap.Int64("sticky_bound_account_id", sessionBoundAccountID),
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
@@ -683,7 +744,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
 				reqLog.Info("sticky.bind_after_wait",
-					zap.String("session_key", sessionKey),
+					zap.Bool("session_key_present", sessionKey != ""),
 					zap.Int64("account_id", account.ID),
 				)
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
@@ -938,6 +999,80 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 }
 
+// ControlPlaneIntent handles the localhost-only safe control-plane intent endpoint.
+func (h *GatewayHandler) ControlPlaneIntent(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if !gatewayHandlerLoopbackRequest(c.Request.RemoteAddr) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_quarantine",
+				"message": "Control-plane intent endpoint requires loopback origin",
+			},
+		})
+		return
+	}
+	if controlPlaneForgedHeaderPresent(c.Request.Header) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Control-plane transport markers must be stripped or rejected",
+			},
+		})
+		return
+	}
+	expectedAuth := strings.TrimSpace(os.Getenv("SUB2API_CONTROL_PLANE_INTENT_TOKEN"))
+	if expectedAuth == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_unavailable",
+				"message": "Control-plane intent auth is not configured",
+			},
+		})
+		return
+	}
+	if c.GetHeader("x-sub2api-intent-auth") != expectedAuth {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": gin.H{
+				"type":    "authentication_error",
+				"message": "Invalid control-plane intent auth",
+			},
+		})
+		return
+	}
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	intent, err := service.ParseAndValidateControlPlaneIntent(body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Invalid control-plane intent",
+			},
+		})
+		return
+	}
+	if _, err := service.NewControlPlaneAttestationService().VerifyIntent(intent, c.Request.Header); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_quarantine",
+				"message": "Invalid control-plane attestation",
+			},
+		})
+		return
+	}
+	decision := service.NewControlPlaneIntentService().EvaluateParsedIntent(intent)
+	if decision.Decision == "suppress_204" {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	c.JSON(decision.Status, decision)
+}
+
 // Models handles listing available models
 // GET /v1/models
 // Returns models based on account configurations (model_mapping whitelist)
@@ -993,6 +1128,32 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		"object": "list",
 		"data":   claude.DefaultModels,
 	})
+}
+
+func gatewayHandlerLoopbackRequest(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	ipValue := net.ParseIP(strings.TrimSpace(host))
+	return ipValue != nil && ipValue.IsLoopback()
+}
+
+func controlPlaneForgedHeaderPresent(headers http.Header) bool {
+	for name := range headers {
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		switch normalized {
+		case "x-anthropic-billing-header",
+			"x-sub2api-control-plane-intent",
+			"x-sub2api-control-plane-token",
+			"x-sub2api-canary-billing-cch-mode":
+			return true
+		}
+		if strings.Contains(normalized, "cch") {
+			return true
+		}
+	}
+	return false
 }
 
 // AntigravityModels 返回 Antigravity 支持的全部模型
@@ -1478,11 +1639,12 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	_, ok = middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
+	c.Request = c.Request.WithContext(service.WithClaudeCodeSessionUserScope(c.Request.Context(), fmt.Sprintf("user:%d|api_key:%d", subject.UserID, apiKey.ID)))
 	reqLog := requestLogger(
 		c,
 		"handler.gateway.count_tokens",

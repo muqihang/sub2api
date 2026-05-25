@@ -36,6 +36,7 @@ func newAnthropicOAuthAccountForClaudeForwardTest() *Account {
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"access_token": "oauth-token",
+			"scope":        "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
 		},
 		Extra: map[string]any{
 			"account_uuid": "acct-uuid",

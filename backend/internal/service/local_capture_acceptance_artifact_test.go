@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +28,8 @@ import (
 )
 
 const jointLocalCaptureArtifactSlug = "sub2api-cc-gateway-joint-local-capture"
+const jointExpectedGatewayUserAgent = "claude-cli/2.1.150 (external, sdk-cli)"
+const jointExpectedGatewayPersonaVariant = "claude-code-2.1.150-macos-local"
 
 type jointRedactionRule struct {
 	Label  string
@@ -55,14 +55,14 @@ var jointLocalCaptureRedactionRules = []jointRedactionRule{
 }
 
 type jointCaptureMetadataSummary struct {
-	FieldNames        []string          `json:"field_names,omitempty"`
-	FieldHashes       map[string]string `json:"field_hashes,omitempty"`
-	UserIDValueHash   string            `json:"user_id_value_hash,omitempty"`
-	SessionHeaderHash string            `json:"session_header_hash,omitempty"`
+	FieldNames       []string          `json:"field_names,omitempty"`
+	FieldRefs        map[string]string `json:"field_refs,omitempty"`
+	UserIDValueRef   string            `json:"user_id_value_ref,omitempty"`
+	SessionHeaderRef string            `json:"session_header_ref,omitempty"`
 }
 
 type jointCaptureBodySummary struct {
-	SHA256               string                       `json:"sha256"`
+	BodyRef              string                       `json:"body_ref"`
 	SizeBytes            int                          `json:"size_bytes"`
 	TopLevelKeys         []string                     `json:"top_level_keys,omitempty"`
 	MessageCount         int                          `json:"message_count,omitempty"`
@@ -89,14 +89,14 @@ type jointCaptureScenario struct {
 	Category                 string                  `json:"category"`
 	Route                    string                  `json:"route"`
 	PolicyDecision           string                  `json:"policy_decision"`
-	SelectedAccountIDHash    string                  `json:"selected_account_id_hash,omitempty"`
+	SelectedAccountIDRef     string                  `json:"selected_account_id_ref,omitempty"`
 	EgressBucketID           string                  `json:"egress_bucket_id,omitempty"`
 	PolicyVersion            string                  `json:"policy_version,omitempty"`
 	ResponseStatus           int                     `json:"response_status"`
 	ResponseErrorKind        string                  `json:"response_error_kind,omitempty"`
 	ResponseErrorCode        string                  `json:"response_error_code,omitempty"`
 	ClientHeaderOrder        []string                `json:"client_header_order,omitempty"`
-	ClientBodySHA256         string                  `json:"client_body_sha256,omitempty"`
+	ClientBodyRef            string                  `json:"client_body_ref,omitempty"`
 	Sub2APIToGateway         *jointCaptureHopSummary `json:"sub2api_to_gateway,omitempty"`
 	GatewayToUpstream        *jointCaptureHopSummary `json:"gateway_to_upstream,omitempty"`
 	RequestCount             int                     `json:"request_count"`
@@ -541,7 +541,7 @@ func defaultRawCaptureResponse(path string, body []byte) rawCaptureResponse {
 		if bytes.Contains(body, []byte(`"stream":true`)) {
 			sse := strings.Join([]string{
 				`event: message_start`,
-				`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-3-7-sonnet-20250219","stop_reason":"","usage":{"input_tokens":12}}}`,
+				`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":"","usage":{"input_tokens":12}}}`,
 				``,
 				`event: content_block_start`,
 				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
@@ -568,7 +568,7 @@ func defaultRawCaptureResponse(path string, body []byte) rawCaptureResponse {
 				"Content-Type": "application/json",
 				"x-request-id": "upstream-message",
 			},
-			Body: []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-7-sonnet-20250219","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}`),
+			Body: []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}`),
 		}
 	}
 	return rawCaptureResponse{
@@ -624,33 +624,34 @@ process:
 shared_pool:
   max_body_bytes: 2097152
   billing_cch_mode: strip
+  message_beta_profile: claude_code_2_1_150_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
-    account_uuid_hash: "sha256:acct301"
-    email_hash: "sha256:email301"
-    account_hash: "sha256:account301"
-    persona_variant: "claude-code-2.1.146-macos-local"
+    account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct301"
+    email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email301"
+    account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account301"
+    persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
   "201":
     device_id: "%s"
-    account_uuid_hash: "sha256:acct201"
-    email_hash: "sha256:email201"
-    account_hash: "sha256:account201"
-    persona_variant: "claude-code-2.1.146-macos-local"
+    account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct201"
+    email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email201"
+    account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account201"
+    persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
 egress_buckets:
   bucket-a:
     enabled: true
     proxy_url: %q
-    proxy_identity_hash: "sha256:proxy-bucket-a"
+    proxy_identity_hash: "opaque:proxy-ref:v1:bucket-a"
     allowed_account_ids: ["301", "201"]
 logging:
   level: error
   audit: false
-`, upstreamURL, strings.Repeat("a", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("b", 64), ccGatewayAnthropicPolicyVersion, strings.Repeat("c", 64), ccGatewayAnthropicPolicyVersion, proxyURL)
+`, upstreamURL, strings.Repeat("a", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("b", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, strings.Repeat("c", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL)
 }
 
 func jointGatewaySigningConfigYAML(upstreamURL, proxyURL string) string {
@@ -701,25 +702,26 @@ shared_pool:
   billing_cch_mode: sign
   signing_enabled: true
   signing_evidence_gates_approved: true
+  message_beta_profile: claude_code_2_1_150_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
-    account_uuid_hash: "sha256:acct301"
-    email_hash: "sha256:email301"
-    account_hash: "sha256:account301"
-    persona_variant: "claude-code-2.1.146-macos-local"
+    account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct301"
+    email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email301"
+    account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account301"
+    persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
 egress_buckets:
   bucket-a:
     enabled: true
     proxy_url: %q
-    proxy_identity_hash: "sha256:proxy-bucket-a"
+    proxy_identity_hash: "opaque:proxy-ref:v1:bucket-a"
     allowed_account_ids: ["301"]
 logging:
   level: error
   audit: false
-`, upstreamURL, strings.Repeat("d", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("e", 64), ccGatewayAnthropicPolicyVersion, proxyURL)
+`, upstreamURL, strings.Repeat("d", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("e", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL)
 }
 
 func jointGatewayDisabledConfigYAML(upstreamURL, proxyURL string) string {
@@ -768,25 +770,26 @@ process:
 shared_pool:
   max_body_bytes: 2097152
   billing_cch_mode: disabled
+  message_beta_profile: claude_code_2_1_150_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
-    account_uuid_hash: "sha256:acct301"
-    email_hash: "sha256:email301"
-    account_hash: "sha256:account301"
-    persona_variant: "claude-code-2.1.146-macos-local"
+    account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct301"
+    email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email301"
+    account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account301"
+    persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
 egress_buckets:
   bucket-a:
     enabled: true
     proxy_url: %q
-    proxy_identity_hash: "sha256:proxy-bucket-a"
+    proxy_identity_hash: "opaque:proxy-ref:v1:bucket-a"
     allowed_account_ids: ["301"]
 logging:
   level: error
   audit: false
-`, upstreamURL, strings.Repeat("f", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("g", 64), ccGatewayAnthropicPolicyVersion, proxyURL)
+`, upstreamURL, strings.Repeat("f", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("g", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL)
 }
 
 func newJointCaptureService(baseURL string, upstream *jointGatewayRecordingUpstream) *GatewayService {
@@ -860,7 +863,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
-		body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		result, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -869,34 +872,34 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		hop2 := captureServer.popSingle(t)
 		sub2apiSummary := summarizeGatewayHop(hop1, body)
 		upstreamSummary := summarizeRawCaptureHop(hop2)
-		passed := sub2apiSummary.BodyUnchangedFromClient &&
+		passed := !sub2apiSummary.BodyUnchangedFromClient &&
 			sub2apiSummary.Body.BillingHeaderPresent &&
 			sub2apiSummary.Body.CCHPresent &&
 			!upstreamSummary.Body.BillingHeaderPresent &&
 			!upstreamSummary.Body.CCHPresent &&
-			upstreamSummary.HeaderValuesSummary["User-Agent"] == "claude-cli/2.1.146 (external, sdk-cli)"
+			upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
 		return jointCaptureScenario{
 			Category:                 "sub2api_joint",
 			Route:                    "/v1/messages?beta=true",
 			PolicyDecision:           "forward_strip",
-			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
-			ClientBodySHA256:         jointSHA256Hex(body),
+			ClientBodyRef:            jointBodyRef(body),
 			Sub2APIToGateway:         &sub2apiSummary,
 			GatewayToUpstream:        &upstreamSummary,
 			RequestCount:             hop2Count(hop1, hop2),
 			FailClosed:               false,
 			NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
 			NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
-			Sub2APIFinalMutation:     sub2apiSummary.BodyUnchangedFromClient,
-			CCGatewayOwnsFinalOutput: !upstreamSummary.Body.BillingHeaderPresent && !upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == "claude-cli/2.1.146 (external, sdk-cli)",
+			Sub2APIFinalMutation:     !sub2apiSummary.BodyUnchangedFromClient,
+			CCGatewayOwnsFinalOutput: !upstreamSummary.Body.BillingHeaderPresent && !upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent,
 			Passed:                   passed,
 			Notes: []string{
-				"sub2api->gateway body unchanged while gateway->upstream body stripped billing markers",
-				"gateway final persona is canonical Claude Code 2.1.146",
+				"sub2api->gateway rewrites metadata.user_id session to a server-issued UUID-like value before CC Gateway final-output handling",
+				"gateway final persona is canonical Claude Code 2.1.150 subscription profile",
 			},
 		}
 	})
@@ -906,7 +909,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/messages/count_tokens")
-		body := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.Error(t, err)
 		hop1 := gatewayUpstream.popSingle(t)
@@ -916,14 +919,14 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			Category:                 "sub2api_joint",
 			Route:                    "/v1/messages/count_tokens?beta=true",
 			PolicyDecision:           "defer_block",
-			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
 			ResponseErrorKind:        extractErrorTypeFromBody(rec.Body.Bytes()),
 			ResponseErrorCode:        extractErrorCodeFromBody(rec.Body.Bytes()),
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
-			ClientBodySHA256:         jointSHA256Hex(body),
+			ClientBodyRef:            jointBodyRef(body),
 			Sub2APIToGateway:         &sub2apiSummary,
 			RequestCount:             1,
 			FailClosed:               rec.Code == http.StatusForbidden,
@@ -941,7 +944,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
-		body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello sign lane"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello sign lane"}]}]}`)
 		result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -951,32 +954,32 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		sub2apiSummary := summarizeGatewayHop(hop1, body)
 		upstreamSummary := summarizeRawCaptureHop(hop2)
 		upstreamBody := string(hop2.Body)
-		passed := sub2apiSummary.BodyUnchangedFromClient &&
+		passed := !sub2apiSummary.BodyUnchangedFromClient &&
 			!sub2apiSummary.Body.BillingHeaderPresent &&
 			!sub2apiSummary.Body.CCHPresent &&
 			upstreamSummary.Body.BillingHeaderPresent &&
 			upstreamSummary.Body.CCHPresent &&
 			!strings.Contains(upstreamBody, "cch=00000;") &&
-			regexp.MustCompile(`cc_version=2\.1\.146\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
-			upstreamSummary.HeaderValuesSummary["User-Agent"] == "claude-cli/2.1.146 (external, sdk-cli)"
+			regexp.MustCompile(`cc_version=2\.1\.150\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
+			upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
 		return jointCaptureScenario{
 			Category:                 "sub2api_joint",
 			Route:                    "/v1/messages?beta=true",
 			PolicyDecision:           "forward_sign_primary",
-			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
-			ClientBodySHA256:         jointSHA256Hex(body),
+			ClientBodyRef:            jointBodyRef(body),
 			Sub2APIToGateway:         &sub2apiSummary,
 			GatewayToUpstream:        &upstreamSummary,
 			RequestCount:             hop2Count(hop1, hop2),
 			FailClosed:               false,
 			NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
 			NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
-			Sub2APIFinalMutation:     sub2apiSummary.BodyUnchangedFromClient,
-			CCGatewayOwnsFinalOutput: upstreamSummary.Body.BillingHeaderPresent && upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == "claude-cli/2.1.146 (external, sdk-cli)",
+			Sub2APIFinalMutation:     !sub2apiSummary.BodyUnchangedFromClient,
+			CCGatewayOwnsFinalOutput: upstreamSummary.Body.BillingHeaderPresent && upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent,
 			Passed:                   passed,
 			Notes: []string{
 				"sub2api->gateway body is pre-final with no billing/CCH material",
@@ -990,7 +993,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointAPIKeyAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
-		body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		result, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -999,29 +1002,29 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		hop2 := captureServer.popSingle(t)
 		sub2apiSummary := summarizeGatewayHop(hop1, body)
 		upstreamSummary := summarizeRawCaptureHop(hop2)
-		passed := sub2apiSummary.BodyUnchangedFromClient && !upstreamSummary.Body.BillingHeaderPresent && !upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["x-api-key"] != ""
+		passed := !sub2apiSummary.BodyUnchangedFromClient && !upstreamSummary.Body.BillingHeaderPresent && !upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["x-api-key"] != ""
 		return jointCaptureScenario{
 			Category:                 "sub2api_joint",
 			Route:                    "/v1/messages?beta=true",
 			PolicyDecision:           "forward_strip",
-			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
-			ClientBodySHA256:         jointSHA256Hex(body),
+			ClientBodyRef:            jointBodyRef(body),
 			Sub2APIToGateway:         &sub2apiSummary,
 			GatewayToUpstream:        &upstreamSummary,
 			RequestCount:             hop2Count(hop1, hop2),
 			FailClosed:               false,
 			NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
 			NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
-			Sub2APIFinalMutation:     sub2apiSummary.BodyUnchangedFromClient,
+			Sub2APIFinalMutation:     !sub2apiSummary.BodyUnchangedFromClient,
 			CCGatewayOwnsFinalOutput: !upstreamSummary.Body.BillingHeaderPresent && !upstreamSummary.Body.CCHPresent,
 			Passed:                   passed,
 			Notes: []string{
 				"anthropic api-key passthrough is included for /v1/messages in first wave",
-				"gateway strips billing markers before localhost upstream capture",
+				"server-issued session mapping happens before gateway strips billing markers",
 			},
 		}
 	})
@@ -1031,7 +1034,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointAPIKeyAccount()
 		c, ctx, rec := newJointContext("/v1/messages/count_tokens")
-		body := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.Error(t, err)
 		hop1 := gatewayUpstream.popSingle(t)
@@ -1041,14 +1044,14 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			Category:                 "sub2api_joint",
 			Route:                    "/v1/messages/count_tokens?beta=true",
 			PolicyDecision:           "defer_block",
-			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
 			ResponseErrorKind:        extractErrorTypeFromBody(rec.Body.Bytes()),
 			ResponseErrorCode:        extractErrorCodeFromBody(rec.Body.Bytes()),
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
-			ClientBodySHA256:         jointSHA256Hex(body),
+			ClientBodyRef:            jointBodyRef(body),
 			Sub2APIToGateway:         &sub2apiSummary,
 			RequestCount:             1,
 			FailClosed:               rec.Code == http.StatusForbidden,
@@ -1066,8 +1069,8 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/chat/completions")
-		body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
-		parsed := &ParsedRequest{Body: body, Model: "claude-3-7-sonnet-20250219", Stream: false}
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+		parsed := &ParsedRequest{Body: body, Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsChatCompletions(ctx, c, account, body, parsed)
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -1081,12 +1084,12 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			Category:                 "sub2api_joint",
 			Route:                    "/v1/chat/completions -> /v1/messages?beta=true",
 			PolicyDecision:           "forward_strip",
-			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
-			ClientBodySHA256:         jointSHA256Hex(body),
+			ClientBodyRef:            jointBodyRef(body),
 			Sub2APIToGateway:         &sub2apiSummary,
 			GatewayToUpstream:        &upstreamSummary,
 			RequestCount:             hop2Count(hop1, hop2),
@@ -1105,8 +1108,8 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/responses")
-		body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"input":"hello"}`)
-		parsed := &ParsedRequest{Body: body, Model: "claude-3-7-sonnet-20250219", Stream: false}
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"input":"hello"}`)
+		parsed := &ParsedRequest{Body: body, Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsResponses(ctx, c, account, body, parsed)
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -1120,12 +1123,12 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			Category:                 "sub2api_joint",
 			Route:                    "/v1/responses -> /v1/messages?beta=true",
 			PolicyDecision:           "forward_strip",
-			SelectedAccountIDHash:    jointHashText(strconv.FormatInt(account.ID, 10)),
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
-			ClientBodySHA256:         jointSHA256Hex(body),
+			ClientBodyRef:            jointBodyRef(body),
 			Sub2APIToGateway:         &sub2apiSummary,
 			GatewayToUpstream:        &upstreamSummary,
 			RequestCount:             hop2Count(hop1, hop2),
@@ -1300,7 +1303,7 @@ func directGatewayScenario(name, route, decision, accountID string, resp gateway
 		Category:                 "gateway_direct",
 		Route:                    route,
 		PolicyDecision:           decision,
-		SelectedAccountIDHash:    jointHashText(accountID),
+		SelectedAccountIDRef:     jointHashText(accountID),
 		EgressBucketID:           resp.EgressBucket,
 		PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 		ResponseStatus:           resp.Status,
@@ -1450,7 +1453,7 @@ func summarizeRawCaptureHop(captured rawCaptureRequest) jointCaptureHopSummary {
 
 func summarizeBody(body []byte, sessionHeader string) jointCaptureBodySummary {
 	summary := jointCaptureBodySummary{
-		SHA256:               jointSHA256Hex(body),
+		BodyRef:              jointBodyRef(body),
 		SizeBytes:            len(body),
 		BillingHeaderPresent: bytes.Contains(bytes.ToLower(body), []byte("x-anthropic-billing-header")),
 		CCHPresent:           bytes.Contains(bytes.ToLower(body), []byte("cch=")),
@@ -1489,10 +1492,10 @@ func summarizeBody(body []byte, sessionHeader string) jointCaptureBodySummary {
 		fieldHashes[key] = jointHashText(fmt.Sprintf("%v", parsedUserID[key]))
 	}
 	summary.Metadata = &jointCaptureMetadataSummary{
-		FieldNames:        fieldNames,
-		FieldHashes:       fieldHashes,
-		UserIDValueHash:   jointHashText(userIDRaw),
-		SessionHeaderHash: jointHashText(sessionHeader),
+		FieldNames:       fieldNames,
+		FieldRefs:        fieldHashes,
+		UserIDValueRef:   jointHashText(userIDRaw),
+		SessionHeaderRef: jointHashText(sessionHeader),
 	}
 	return summary
 }
@@ -1593,8 +1596,8 @@ func writeJointLocalCaptureArtifacts(t *testing.T, report *jointCaptureReport) (
 		md.WriteString("## " + scenario.Name + " - " + status + "\n")
 		md.WriteString("- route: `" + scenario.Route + "`\n")
 		md.WriteString("- decision: `" + scenario.PolicyDecision + "`\n")
-		if scenario.SelectedAccountIDHash != "" {
-			md.WriteString("- selected account id hash: `" + scenario.SelectedAccountIDHash + "`\n")
+		if scenario.SelectedAccountIDRef != "" {
+			md.WriteString("- selected account id ref: `" + scenario.SelectedAccountIDRef + "`\n")
 		}
 		if scenario.EgressBucketID != "" {
 			md.WriteString("- egress bucket: `" + scenario.EgressBucketID + "`\n")
@@ -1611,12 +1614,12 @@ func writeJointLocalCaptureArtifacts(t *testing.T, report *jointCaptureReport) (
 		md.WriteString("- no native fallback: `" + strconv.FormatBool(scenario.NoNativeFallback) + "`\n")
 		if scenario.Sub2APIToGateway != nil {
 			md.WriteString("- sub2api->gateway route: `" + scenario.Sub2APIToGateway.Route + "`\n")
-			md.WriteString("- sub2api->gateway body sha256: `" + scenario.Sub2APIToGateway.Body.SHA256 + "`\n")
+			md.WriteString("- sub2api->gateway body ref: `" + scenario.Sub2APIToGateway.Body.BodyRef + "`\n")
 			md.WriteString("- sub2api->gateway billing/cch: `" + strconv.FormatBool(scenario.Sub2APIToGateway.Body.BillingHeaderPresent) + "/" + strconv.FormatBool(scenario.Sub2APIToGateway.Body.CCHPresent) + "`\n")
 		}
 		if scenario.GatewayToUpstream != nil {
 			md.WriteString("- gateway->upstream route: `" + scenario.GatewayToUpstream.Route + "`\n")
-			md.WriteString("- gateway->upstream body sha256: `" + scenario.GatewayToUpstream.Body.SHA256 + "`\n")
+			md.WriteString("- gateway->upstream body ref: `" + scenario.GatewayToUpstream.Body.BodyRef + "`\n")
 			md.WriteString("- gateway->upstream billing/cch: `" + strconv.FormatBool(scenario.GatewayToUpstream.Body.BillingHeaderPresent) + "/" + strconv.FormatBool(scenario.GatewayToUpstream.Body.CCHPresent) + "`\n")
 		}
 		for _, note := range scenario.Notes {
@@ -1664,14 +1667,14 @@ func repoBackendRootForCapture(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
-func jointSHA256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+func jointBodyRef(b []byte) string {
+	_ = b
+	return "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted"
 }
 
 func jointHashText(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return "sha256:" + hex.EncodeToString(sum[:8])
+	_ = s
+	return "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
 }
 
 func jointSortedKeys(m map[string]any) []string {

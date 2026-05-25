@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -23,25 +24,62 @@ const (
 	ccGatewayOrganizationUUIDHeader = "x-cc-organization-uuid"
 	ccGatewayProjectIDHeader        = "x-cc-project-id"
 	ccGatewayEgressBucketHeader     = "x-cc-egress-bucket"
+	ccGatewayPolicyVersionHeader    = "x-cc-policy-version"
+	ccGatewayTrustedPersonaHeader   = "x-sub2api-persona-trusted"
 	ccGatewayErrorKindHeader        = "x-cc-gateway-error-kind"
 	ccGatewayErrorCodeHeader        = "x-cc-gateway-error-code"
 
-	ccGatewayExtraEgressBucket       = "cc_gateway_egress_bucket"
-	openAIGatewayExtraEgressFallback = "openai_gateway_egress_bucket"
+	ccGatewayExtraEgressBucket  = "cc_gateway_egress_bucket"
+	ccGatewayExtraPolicyVersion = "cc_gateway_policy_version"
+	ccGatewayExtraAccountRef    = "cc_gateway_account_ref"
 
-	// First-wave shared-pool policy is pinned to the canonical Claude Code
-	// 2.1.146 persona/version lock enforced by CC Gateway.
-	ccGatewayAnthropicPolicyVersion = "2.1.146"
+	// First-wave shared-pool policy stays anchored to the verified Claude Code
+	// 2.1.150 registry profile. Same-minor CLI-through drift (for example
+	// 2.1.151) is still forwarded to CC Gateway for source-of-truth resolver
+	// handling; unknown newer minors/majors stay fail-closed at the resolver.
+	ccGatewayAnthropicPolicyVersion = "2.1.150"
 )
+
+var ccGatewayVersionRe = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`)
 
 type ccGatewayAnthropicRoute string
 
 const (
-	ccGatewayRouteNativeMessages   ccGatewayAnthropicRoute = "native_messages"
+	ccGatewayRouteNativeMessages    ccGatewayAnthropicRoute = "native_messages"
 	ccGatewayRouteNativeCountTokens ccGatewayAnthropicRoute = "native_count_tokens"
-	ccGatewayRouteChatCompletions  ccGatewayAnthropicRoute = "chat_completions"
-	ccGatewayRouteResponses        ccGatewayAnthropicRoute = "responses"
+	ccGatewayRouteChatCompletions   ccGatewayAnthropicRoute = "chat_completions"
+	ccGatewayRouteResponses         ccGatewayAnthropicRoute = "responses"
 )
+
+type CCGatewayAnthropicCanaryRequest struct {
+	AccountID      int64
+	AccountHash    string
+	EgressBucket   string
+	BillingCCHMode string
+	Method         string
+	Route          string
+}
+
+type ccGatewayExplicitCanaryRequestContextKey struct{}
+type ccGatewayExplicitCanaryLocalOnlyContextKey struct{}
+
+func WithCCGatewayExplicitCanaryRequest(ctx context.Context, req CCGatewayAnthropicCanaryRequest) context.Context {
+	return context.WithValue(ctx, ccGatewayExplicitCanaryRequestContextKey{}, req)
+}
+
+func GetCCGatewayExplicitCanaryRequest(ctx context.Context) (CCGatewayAnthropicCanaryRequest, bool) {
+	req, ok := ctx.Value(ccGatewayExplicitCanaryRequestContextKey{}).(CCGatewayAnthropicCanaryRequest)
+	return req, ok
+}
+
+func WithCCGatewayExplicitCanaryLocalOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ccGatewayExplicitCanaryLocalOnlyContextKey{}, true)
+}
+
+func IsCCGatewayExplicitCanaryLocalOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(ccGatewayExplicitCanaryLocalOnlyContextKey{}).(bool)
+	return v
+}
 
 func ccGatewayConfig(cfg *config.Config) config.GatewayCCGatewayConfig {
 	if cfg == nil {
@@ -96,6 +134,26 @@ func (s *GatewayService) shouldUseCCGatewayAnthropic(account *Account) bool {
 		ccGatewayAnthropicEnabled(s.cfg)
 }
 
+// GetExplicitCCGatewayCanaryAccount fetches a canary-only account for a
+// request that has already opted into the explicit canary control plane.
+func (s *GatewayService) GetExplicitCCGatewayCanaryAccount(ctx context.Context, req CCGatewayAnthropicCanaryRequest) (*Account, error) {
+	if req.AccountID <= 0 {
+		return nil, fmt.Errorf("cc gateway explicit canary account id is required")
+	}
+	account, err := s.accountRepo.GetByID(ctx, req.AccountID)
+	if err != nil {
+		return nil, fmt.Errorf("get cc gateway explicit canary account: %w", err)
+	}
+	useCCGateway, err := s.selectCCGatewayAnthropicCanaryRoute(account, req)
+	if err != nil {
+		return nil, err
+	}
+	if !useCCGateway {
+		return nil, fmt.Errorf("cc gateway explicit canary account %d is not eligible", req.AccountID)
+	}
+	return account, nil
+}
+
 func parseCCGatewayBool(raw string) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "on":
@@ -120,7 +178,59 @@ func parseCCGatewayRouteSet(raw string) map[string]struct{} {
 	return out
 }
 
+func (s *GatewayService) selectCCGatewayAnthropicCanaryRoute(account *Account, req CCGatewayAnthropicCanaryRequest) (bool, error) {
+	if !s.shouldUseCCGatewayAnthropic(account) {
+		return false, nil
+	}
+	if err := ValidateCCGatewayAnthropicCanaryAccount(account, req); err != nil {
+		return false, err
+	}
+	return s.selectCCGatewayAnthropicRouteForMode(account, ccGatewayRouteNativeMessages, true)
+}
+
+func ValidateCCGatewayAnthropicCanaryAccount(account *Account, req CCGatewayAnthropicCanaryRequest) error {
+	if account == nil {
+		return fmt.Errorf("cc gateway canary account is required")
+	}
+	if account.Platform != PlatformAnthropic || !account.IsAnthropicOAuthOrSetupToken() {
+		return fmt.Errorf("cc gateway canary requires anthropic oauth/setup-token account")
+	}
+	if strings.ToUpper(strings.TrimSpace(req.Method)) != http.MethodPost || strings.TrimSpace(req.Route) != "/v1/messages" {
+		return fmt.Errorf("cc gateway canary route must be POST /v1/messages for account %d", account.ID)
+	}
+	if strings.TrimSpace(req.BillingCCHMode) != "sign" || strings.TrimSpace(account.GetExtraString("billing_cch_mode")) != "sign" {
+		return fmt.Errorf("cc gateway canary requires billing_cch_mode=sign for account %d", account.ID)
+	}
+	if account.Status != StatusActive {
+		return fmt.Errorf("cc gateway canary lifecycle ineligible for account %d", account.ID)
+	}
+	if err := validateAnthropicMessagesInferenceScope(account); err != nil {
+		return err
+	}
+	if req.AccountID > 0 && req.AccountID != account.ID {
+		return fmt.Errorf("cc gateway canary account id mismatch for account %d", account.ID)
+	}
+	if requestedHash := strings.TrimSpace(req.AccountHash); requestedHash != "" && requestedHash != ccGatewayAccountRef(account) {
+		return fmt.Errorf("cc gateway canary account hash mismatch for account %d", account.ID)
+	}
+	canaryOnly, ok := parseCCGatewayBool(account.GetExtraString("cc_gateway_canary_only"))
+	if !ok || !canaryOnly {
+		return fmt.Errorf("cc gateway canary-only gate missing for account %d", account.ID)
+	}
+	if strings.TrimSpace(account.GetExtraString(ccGatewayExtraEgressBucket)) == "" {
+		return fmt.Errorf("cc gateway canary requires direct cc gateway egress bucket for account %d", account.ID)
+	}
+	if strings.TrimSpace(req.EgressBucket) == "" || strings.TrimSpace(req.EgressBucket) != strings.TrimSpace(account.GetExtraString(ccGatewayExtraEgressBucket)) {
+		return fmt.Errorf("cc gateway canary egress bucket mismatch for account %d", account.ID)
+	}
+	return nil
+}
+
 func (s *GatewayService) selectCCGatewayAnthropicRoute(account *Account, route ccGatewayAnthropicRoute) (bool, error) {
+	return s.selectCCGatewayAnthropicRouteForMode(account, route, false)
+}
+
+func (s *GatewayService) selectCCGatewayAnthropicRouteForMode(account *Account, route ccGatewayAnthropicRoute, explicitCanary bool) (bool, error) {
 	if !s.shouldUseCCGatewayAnthropic(account) {
 		return false, nil
 	}
@@ -133,20 +243,20 @@ func (s *GatewayService) selectCCGatewayAnthropicRoute(account *Account, route c
 	if !ok {
 		return false, fmt.Errorf("cc gateway canary gate missing for account %d", account.ID)
 	}
-	if canaryOnly {
+	if canaryOnly && !explicitCanary {
 		return false, fmt.Errorf("cc gateway canary-only account %d is not eligible for broad routing", account.ID)
 	}
-	if account.Status != StatusActive || !account.Schedulable {
+	if account.Status != StatusActive || (!explicitCanary && !account.Schedulable) {
 		return false, fmt.Errorf("cc gateway lifecycle ineligible for account %d", account.ID)
 	}
-	if version := strings.TrimSpace(account.GetExtraString("cc_gateway_policy_version")); version == "" || version != ccGatewayAnthropicPolicyVersion {
+	if version := strings.TrimSpace(account.GetExtraString("cc_gateway_policy_version")); version == "" || !ccGatewayPolicyVersionCompatible(version) {
 		return false, fmt.Errorf("cc gateway policy version mismatch for account %d", account.ID)
 	}
 	bucketEnabled, ok := parseCCGatewayBool(account.GetExtraString("cc_gateway_egress_bucket_enabled"))
 	if !ok || !bucketEnabled {
 		return false, fmt.Errorf("cc gateway egress bucket disabled or missing for account %d", account.ID)
 	}
-	if bucket := strings.TrimSpace(resolveCCGatewayEgressBucket(account, ccGatewayConfig(s.cfg).DefaultEgressBucket)); bucket == "" {
+	if bucket := strings.TrimSpace(resolveCCGatewayEgressBucket(account)); bucket == "" {
 		return false, fmt.Errorf("cc gateway egress bucket missing for account %d", account.ID)
 	}
 
@@ -166,23 +276,16 @@ func (s *GatewayService) selectCCGatewayAnthropicRoute(account *Account, route c
 }
 
 func (s *GatewayService) ccGatewayEgressBucket(account *Account) string {
-	ccg := ccGatewayConfig(s.cfg)
-	return resolveCCGatewayEgressBucket(account, ccg.DefaultEgressBucket)
+	return resolveCCGatewayEgressBucket(account)
 }
 
-func resolveCCGatewayEgressBucket(account *Account, fallback string) string {
+func resolveCCGatewayEgressBucket(account *Account) string {
 	if account != nil {
 		if bucket := strings.TrimSpace(account.GetExtraString(ccGatewayExtraEgressBucket)); bucket != "" {
 			return bucket
 		}
-		if bucket := strings.TrimSpace(account.GetExtraString(openAIGatewayExtraEgressFallback)); bucket != "" {
-			return bucket
-		}
 	}
-	if strings.TrimSpace(fallback) != "" {
-		return strings.TrimSpace(fallback)
-	}
-	return "default"
+	return ""
 }
 
 func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, account *Account, tokenType string) {
@@ -191,20 +294,49 @@ func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, accou
 	}
 	ccg := cfg.Gateway.CCGateway
 	setHeaderRaw(req.Header, ccGatewayTokenHeader, strings.TrimSpace(ccg.Token))
-	setHeaderRaw(req.Header, ccGatewayAccountIDHeader, strconv.FormatInt(account.ID, 10))
+	setHeaderRaw(req.Header, ccGatewayAccountIDHeader, ccGatewayAccountRef(account))
 	setHeaderRaw(req.Header, ccGatewayProviderHeader, PlatformAnthropic)
 	setHeaderRaw(req.Header, ccGatewayTokenTypeHeader, tokenType)
-	setHeaderRaw(req.Header, "x-cc-policy-version", strings.TrimSpace(account.GetExtraString("cc_gateway_policy_version")))
-	if email := ccGatewayAccountEmail(account); email != "" {
-		setHeaderRaw(req.Header, ccGatewayAccountEmailHeader, email)
+	setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)))
+	// Formal shared-pool Anthropic routing must not send raw email/account/org
+	// identity headers to CC Gateway. Account identity is selected by the
+	// server-owned x-cc-account-id ref and CC Gateway account_identities config.
+	setHeaderRaw(req.Header, ccGatewayEgressBucketHeader, resolveCCGatewayEgressBucket(account))
+	applyCCGatewayClaudeCodeSessionMapping(req, account)
+}
+
+func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request, account *Account) {
+	if req == nil {
+		return
 	}
-	if accountUUID := strings.TrimSpace(account.GetExtraString("account_uuid")); accountUUID != "" {
-		setHeaderRaw(req.Header, ccGatewayAccountUUIDHeader, accountUUID)
+	trustedPersona := ccGatewayTrustedPersonaContext(ctx)
+	if trustedPersona {
+		setHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader, "1")
+		if version := strings.TrimSpace(GetClaudeCodeVersion(ctx)); version != "" {
+			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, version)
+			return
+		}
 	}
-	if orgUUID := strings.TrimSpace(account.GetExtraString("organization_uuid")); orgUUID != "" {
-		setHeaderRaw(req.Header, ccGatewayOrganizationUUIDHeader, orgUUID)
+	if account != nil {
+		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" {
+			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, version)
+		}
 	}
-	setHeaderRaw(req.Header, ccGatewayEgressBucketHeader, resolveCCGatewayEgressBucket(account, ccg.DefaultEgressBucket))
+}
+
+func ccGatewayTrustedPersonaContext(ctx context.Context) bool {
+	_, ok := GetCCGatewayExplicitCanaryRequest(ctx)
+	return ok
+}
+
+func ccGatewayAccountRef(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if ref := strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef)); ref != "" {
+		return ref
+	}
+	return strconv.FormatInt(account.ID, 10)
 }
 
 func ccGatewayAccountEmail(account *Account) string {
@@ -224,6 +356,19 @@ func ccGatewayAccountEmail(account *Account) string {
 	return ""
 }
 
+func ccGatewayPolicyVersionCompatible(version string) bool {
+	normalized := strings.TrimSpace(version)
+	if normalized == ccGatewayAnthropicPolicyVersion {
+		return true
+	}
+	base := ccGatewayVersionRe.FindStringSubmatch(ccGatewayAnthropicPolicyVersion)
+	candidate := ccGatewayVersionRe.FindStringSubmatch(normalized)
+	if len(base) != 4 || len(candidate) != 4 {
+		return false
+	}
+	return base[1] == candidate[1] && base[2] == candidate[2]
+}
+
 func applyCCGatewayAntigravityHeaders(req *http.Request, p antigravityRetryLoopParams) {
 	if req == nil || p.account == nil {
 		return
@@ -236,9 +381,8 @@ func applyCCGatewayAntigravityHeaders(req *http.Request, p antigravityRetryLoopP
 	if p.ccGatewayProjectID != "" {
 		req.Header.Set(ccGatewayProjectIDHeader, strings.TrimSpace(p.ccGatewayProjectID))
 	}
-	if p.ccGatewayAccountEmail != "" {
-		req.Header.Set(ccGatewayAccountEmailHeader, strings.TrimSpace(p.ccGatewayAccountEmail))
-	}
+	// Do not send raw account email to CC Gateway. Formal shared-pool
+	// identity is selected by server-owned account refs, not raw PII headers.
 }
 
 func isCCGatewayControlPlaneResponse(resp *http.Response) bool {
@@ -293,6 +437,6 @@ func (s *AntigravityGatewayService) ccGatewayAntigravityParams(account *Account,
 	return true,
 		strings.TrimSpace(ccg.BaseURL),
 		strings.TrimSpace(ccg.Token),
-		resolveCCGatewayEgressBucket(account, ccg.DefaultEgressBucket),
+		resolveCCGatewayEgressBucket(account),
 		ccGatewayAccountEmail(account)
 }

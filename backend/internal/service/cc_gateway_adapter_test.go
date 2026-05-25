@@ -3,16 +3,19 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type ccGatewayIdentityCache struct{}
@@ -77,6 +80,142 @@ func readRequestBody(t *testing.T, req *http.Request) string {
 	return string(body)
 }
 
+func TestCCGatewayAnthropicPolicyVersionTracksClaudeCode2150Canary(t *testing.T) {
+	require.Equal(t, "2.1.150", ccGatewayAnthropicPolicyVersion)
+}
+
+func TestGatewayService_CCGatewayAnthropicOAuthMapsServerSessionIntoMetadataAndHeader(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hi"}]}`)
+	account := &Account{
+		ID:       42,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "selected-oauth-token",
+			"email":        "user@example.com",
+		},
+		Extra: map[string]any{
+			"account_uuid":                     "acct-uuid",
+			"organization_uuid":                "org-uuid",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	svc := &GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}
+
+	ctx := WithClaudeCodeSessionUserScope(SetClaudeCodeVersion(context.Background(), "2.1.150"), "user:alpha")
+	c := ccGatewayTestContext("/v1/messages")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+
+	req, err := svc.buildUpstreamRequest(ctx, c, account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
+	require.NoError(t, err)
+
+	mappedSessionID := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
+	require.Regexp(t, regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`), mappedSessionID)
+	require.NotEqual(t, "11111111-2222-4333-8444-555555555555", mappedSessionID)
+
+	rewrittenBody := readRequestBody(t, req)
+	parsedUserID := ParseMetadataUserID(gjson.Get(rewrittenBody, "metadata.user_id").String())
+	require.NotNil(t, parsedUserID)
+	require.Equal(t, mappedSessionID, parsedUserID.SessionID)
+	require.NotContains(t, rewrittenBody, "11111111-2222-4333-8444-555555555555")
+}
+
+func TestGatewayService_CCGatewayAnthropicSessionMappingIsolatedAcrossUsers(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hi"}]}`)
+	account := &Account{
+		ID:       42,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "selected-oauth-token",
+			"email":        "user@example.com",
+		},
+		Extra: map[string]any{
+			"account_uuid":                     "acct-uuid",
+			"organization_uuid":                "org-uuid",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	svc := &GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}
+
+	build := func(scope string) string {
+		t.Helper()
+		c := ccGatewayTestContext("/v1/messages")
+		c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+		req, err := svc.buildUpstreamRequest(WithClaudeCodeSessionUserScope(context.Background(), scope), c, account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
+		require.NoError(t, err)
+		return getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
+	}
+
+	sessionA1 := build("user:alpha")
+	sessionA2 := build("user:alpha")
+	sessionB := build("user:beta")
+
+	require.Equal(t, sessionA1, sessionA2)
+	require.NotEqual(t, sessionA1, sessionB)
+}
+
+func TestGatewayService_CCGatewayCountTokensMapsServerSessionIntoMetadataAndHeader(t *testing.T) {
+	account := &Account{
+		ID:       43,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Extra: map[string]any{
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	svc := &GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}
+
+	bodyMap := map[string]any{
+		"model": "claude-3-7-sonnet-20250219",
+		"metadata": map[string]any{
+			"user_id": `{"device_id":"client-device","session_id":"11111111-2222-4333-8444-555555555555"}`,
+		},
+	}
+	body, err := json.Marshal(bodyMap)
+	require.NoError(t, err)
+
+	c := ccGatewayTestContext("/v1/messages/count_tokens")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+
+	req, err := svc.buildCountTokensRequest(WithClaudeCodeSessionUserScope(context.Background(), "user:alpha"), c, account, body, "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
+	require.NoError(t, err)
+
+	mappedSessionID := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
+	require.Regexp(t, regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`), mappedSessionID)
+	require.NotEqual(t, "11111111-2222-4333-8444-555555555555", mappedSessionID)
+
+	rewrittenBody := readRequestBody(t, req)
+	parsedUserID := ParseMetadataUserID(gjson.Get(rewrittenBody, "metadata.user_id").String())
+	require.NotNil(t, parsedUserID)
+	require.Equal(t, mappedSessionID, parsedUserID.SessionID)
+	require.NotContains(t, rewrittenBody, "11111111-2222-4333-8444-555555555555")
+}
+
 func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testing.T) {
 	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hi"}]}`)
 	account := &Account{
@@ -88,14 +227,14 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 			"email":        "user@example.com",
 		},
 		Extra: map[string]any{
-			"account_uuid":             "acct-uuid",
-			"organization_uuid":        "org-uuid",
-			"cc_gateway_enabled":       "true",
-			"cc_gateway_canary_only":   "false",
-			"cc_gateway_policy_version": ccGatewayAnthropicPolicyVersion,
-			"cc_gateway_routes":        "native_messages,native_count_tokens,chat_completions,responses",
+			"account_uuid":                     "acct-uuid",
+			"organization_uuid":                "org-uuid",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
 			"cc_gateway_egress_bucket_enabled": "true",
-			"cc_gateway_egress_bucket": "bucket-a",
+			"cc_gateway_egress_bucket":         "bucket-a",
 		},
 	}
 	svc := &GatewayService{
@@ -103,7 +242,8 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	req, err := svc.buildUpstreamRequest(context.Background(), ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
+	ctx := SetClaudeCodeVersion(context.Background(), "2.1.150")
+	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", req.URL.String())
@@ -113,12 +253,13 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 	require.Equal(t, "42", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Equal(t, "anthropic", getHeaderRaw(req.Header, "x-cc-provider"))
 	require.Equal(t, "oauth", getHeaderRaw(req.Header, "x-cc-token-type"))
-	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Equal(t, "2.1.150", getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
-	require.Equal(t, "user@example.com", getHeaderRaw(req.Header, "x-cc-account-email"))
-	require.Equal(t, "acct-uuid", getHeaderRaw(req.Header, "x-cc-account-uuid"))
-	require.Equal(t, "org-uuid", getHeaderRaw(req.Header, "x-cc-organization-uuid"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-cc-account-email"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-cc-account-uuid"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-cc-organization-uuid"))
 	require.Equal(t, "bucket-a", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
+	require.Empty(t, getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))
 	require.Equal(t, "", getHeaderRaw(req.Header, "x-stainless-os"))
 	require.NotContains(t, readRequestBody(t, req), "rewritten-device-id")
 }
@@ -129,12 +270,12 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 		Platform: PlatformAnthropic,
 		Type:     AccountTypeSetupToken,
 		Extra: map[string]any{
-			"cc_gateway_enabled":            "true",
-			"cc_gateway_canary_only":        "false",
-			"cc_gateway_policy_version":     ccGatewayAnthropicPolicyVersion,
-			"cc_gateway_routes":             "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
 			"cc_gateway_egress_bucket_enabled": "true",
-			"cc_gateway_egress_bucket":      "bucket-a",
+			"cc_gateway_egress_bucket":         "bucket-a",
 		},
 	}
 	svc := &GatewayService{
@@ -158,8 +299,7 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughBuildsTransparentRequest(t *testing.T) {
 	account := newAnthropicAPIKeyAccountForTest()
 	account.Credentials["base_url"] = "https://must-not-be-used.example"
-	account.Extra["cc_gateway_egress_bucket"] = ""
-	account.Extra["openai_gateway_egress_bucket"] = "legacy-bucket"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
 	account.Extra["cc_gateway_enabled"] = "true"
 	account.Extra["cc_gateway_canary_only"] = "false"
 	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
@@ -178,7 +318,23 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughBuildsTransparentRequ
 	require.Equal(t, "anthropic", getHeaderRaw(req.Header, "x-cc-provider"))
 	require.Equal(t, "apikey", getHeaderRaw(req.Header, "x-cc-token-type"))
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
-	require.Equal(t, "legacy-bucket", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
+	require.Equal(t, "bucket-a", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
+}
+
+func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughRejectsLegacyEgressFallback(t *testing.T) {
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Extra["cc_gateway_egress_bucket"] = ""
+	account.Extra["openai_gateway_egress_bucket"] = "legacy-bucket"
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+
+	_, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
+		buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), ccGatewayTestContext("/v1/messages"), account, []byte(`{"model":"x"}`), "selected-api-key")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "egress bucket")
 }
 
 func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensBuildsTransparentRequest(t *testing.T) {
@@ -233,6 +389,92 @@ func TestGatewayService_SelectCCGatewayAnthropicRouteRespectsPolicyAndCanaryFlag
 	require.Contains(t, err.Error(), "canary-only")
 }
 
+func TestGatewayService_ExplicitCanaryAllowsCanaryOnlyMessagesWithoutBroadRouting(t *testing.T) {
+	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Schedulable = false
+	account.Concurrency = 0
+	account.Credentials["scope"] = "user:file_upload user:inference user:mcp_servers user:profile user:sessions:claude_code"
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "true"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "home-ip-canary-2026-05-22"
+	account.Extra["billing_cch_mode"] = "sign"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:acct-canary-placeholder"
+
+	useCCGateway, err := svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "canary-only")
+
+	useCCGateway, err = svc.selectCCGatewayAnthropicCanaryRoute(account, CCGatewayAnthropicCanaryRequest{
+		AccountHash:    "hmac-sha256:acct-canary-placeholder",
+		EgressBucket:   "home-ip-canary-2026-05-22",
+		BillingCCHMode: "sign",
+		Method:         http.MethodPost,
+		Route:          "/v1/messages",
+	})
+	require.True(t, useCCGateway)
+	require.NoError(t, err)
+}
+
+func TestGatewayService_ExplicitCanaryFailsClosedOnScopeRouteModeAndFallbacks(t *testing.T) {
+	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Schedulable = false
+	account.Concurrency = 0
+	account.Credentials["scope"] = "user:file_upload user:inference user:mcp_servers user:profile user:sessions:claude_code"
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "true"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "home-ip-canary-2026-05-22"
+	account.Extra["billing_cch_mode"] = "sign"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:acct-canary-placeholder"
+
+	valid := CCGatewayAnthropicCanaryRequest{
+		AccountHash:    "hmac-sha256:acct-canary-placeholder",
+		EgressBucket:   "home-ip-canary-2026-05-22",
+		BillingCCHMode: "sign",
+		Method:         http.MethodPost,
+		Route:          "/v1/messages",
+	}
+
+	account.Credentials["scope"] = "user:profile user:file_upload"
+	ok, err := svc.selectCCGatewayAnthropicCanaryRoute(account, valid)
+	require.False(t, ok)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "inference_scope_missing")
+
+	account.Credentials["scope"] = "user:file_upload user:inference user:mcp_servers user:profile user:sessions:claude_code"
+	for name, mutate := range map[string]func(*CCGatewayAnthropicCanaryRequest){
+		"count_tokens":      func(r *CCGatewayAnthropicCanaryRequest) { r.Route = "/v1/messages/count_tokens" },
+		"event_logging":     func(r *CCGatewayAnthropicCanaryRequest) { r.Route = "/api/event_logging/v2/batch" },
+		"openai_compatible": func(r *CCGatewayAnthropicCanaryRequest) { r.Route = "/v1/chat/completions" },
+		"antigravity":       func(r *CCGatewayAnthropicCanaryRequest) { r.Route = "/v1internal/complete" },
+		"strip_mode":        func(r *CCGatewayAnthropicCanaryRequest) { r.BillingCCHMode = "strip" },
+		"wrong_bucket":      func(r *CCGatewayAnthropicCanaryRequest) { r.EgressBucket = "server-ip" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := valid
+			mutate(&req)
+			ok, err := svc.selectCCGatewayAnthropicCanaryRoute(account, req)
+			require.False(t, ok)
+			require.Error(t, err)
+		})
+	}
+
+	delete(account.Extra, "cc_gateway_egress_bucket")
+	account.Extra["openai_gateway_egress_bucket"] = "home-ip-canary-2026-05-22"
+	ok, err = svc.selectCCGatewayAnthropicCanaryRoute(account, valid)
+	require.False(t, ok)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "direct cc gateway egress bucket")
+}
+
 func TestGatewayService_SelectCCGatewayAnthropicRouteFailsClosedOnRouteAndLifecycleRejects(t *testing.T) {
 	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
 	account := newAnthropicOAuthAccountForClaudeForwardTest()
@@ -268,6 +510,124 @@ func TestGatewayService_SelectCCGatewayAnthropicRouteFailsClosedOnRouteAndLifecy
 	require.False(t, useCCGateway)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "lifecycle ineligible")
+}
+
+func TestCCGatewayPolicyVersionCompatibleAllowsObservedMinorDrift(t *testing.T) {
+	require.True(t, ccGatewayPolicyVersionCompatible("2.1.150"))
+	require.True(t, ccGatewayPolicyVersionCompatible("2.1.151"))
+	require.False(t, ccGatewayPolicyVersionCompatible("2.2.0"))
+	require.False(t, ccGatewayPolicyVersionCompatible("3.0.0"))
+}
+
+func TestGatewayService_CCGatewayAnthropicOAuthExactPolicyVersionKeepsKnownOpus46CapabilityFloor(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-opus-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":32000,"stream":true,"thinking":{"type":"enabled","budget_tokens":1024},"context_management":{"edits":[]}}`)
+	account := &Account{
+		ID:       51,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "selected-oauth-token",
+			"email":        "user@example.com",
+		},
+		Extra: map[string]any{
+			"account_uuid":                     "acct-uuid",
+			"organization_uuid":                "org-uuid",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	svc := &GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}
+
+	ctx := SetClaudeCodeVersion(context.Background(), "2.1.150")
+	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-6", true, false, false)
+	require.NoError(t, err)
+	require.Equal(t, "2.1.150", getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Contains(t, readRequestBody(t, req), `"max_tokens":32000`)
+	require.Contains(t, readRequestBody(t, req), `"stream":true`)
+	require.Contains(t, readRequestBody(t, req), `"thinking"`)
+	require.Contains(t, readRequestBody(t, req), `"context_management"`)
+}
+
+func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftPolicyVersionPasses(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-opus-4-7","messages":[{"role":"user","content":"hi"}],"max_tokens":32000,"stream":true,"thinking":{"type":"enabled","budget_tokens":1024},"context_management":{"edits":[]}}`)
+	account := &Account{
+		ID:       52,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "selected-oauth-token",
+			"email":        "user@example.com",
+		},
+		Extra: map[string]any{
+			"account_uuid":                     "acct-uuid",
+			"organization_uuid":                "org-uuid",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        "2.1.151",
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	svc := &GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}
+
+	ctx := WithCCGatewayExplicitCanaryRequest(SetClaudeCodeVersion(context.Background(), "2.1.151"), CCGatewayAnthropicCanaryRequest{
+		AccountID:      account.ID,
+		AccountHash:    "hmac-sha256:acct",
+		EgressBucket:   "bucket-a",
+		BillingCCHMode: "sign",
+		Method:         http.MethodPost,
+		Route:          "/v1/messages",
+	})
+	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
+	require.NoError(t, err)
+	require.Equal(t, "2.1.151", getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Equal(t, "1", getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))
+	require.Contains(t, readRequestBody(t, req), `"max_tokens":32000`)
+	require.Contains(t, readRequestBody(t, req), `"context_management"`)
+}
+
+func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftWithoutTrustedContextFallsBackToAnchoredPolicyVersion(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-opus-4-7","messages":[{"role":"user","content":"hi"}],"max_tokens":32000,"stream":true}`)
+	account := &Account{
+		ID:       53,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "selected-oauth-token",
+			"email":        "user@example.com",
+		},
+		Extra: map[string]any{
+			"account_uuid":                     "acct-uuid",
+			"organization_uuid":                "org-uuid",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	svc := &GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}
+
+	ctx := SetClaudeCodeVersion(context.Background(), "2.1.151")
+	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
+	require.NoError(t, err)
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Empty(t, getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))
 }
 
 func TestAntigravityGatewayService_CCGatewayRetryLoopBuildsV1InternalRequest(t *testing.T) {
@@ -367,4 +727,24 @@ func TestAntigravityGatewayService_CCGatewayRequestHelperAddsControlHeaders(t *t
 
 func TestSafeHeaderValueForLogRedactsCCGatewayToken(t *testing.T) {
 	require.Equal(t, "[redacted]", safeHeaderValueForLog("x-cc-gateway-token", "ccg-token"))
+}
+
+func TestApplyCCGatewayAntigravityHeadersDoesNotSendRawAccountEmail(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "http://cc-gateway/v1/messages", nil)
+	require.NoError(t, err)
+	account := &Account{ID: 77, Platform: PlatformAntigravity}
+
+	applyCCGatewayAntigravityHeaders(req, antigravityRetryLoopParams{
+		account:               account,
+		ccGatewayToken:        "ccg-token",
+		ccGatewayEgressBucket: "bucket-a",
+		ccGatewayAccountEmail: "raw-user@example.invalid",
+	})
+
+	require.Equal(t, "ccg-token", getHeaderRaw(req.Header, "x-cc-gateway-token"))
+	require.Equal(t, "77", getHeaderRaw(req.Header, "x-cc-account-id"))
+	require.Equal(t, "antigravity", getHeaderRaw(req.Header, "x-cc-provider"))
+	require.Equal(t, "oauth", getHeaderRaw(req.Header, "x-cc-token-type"))
+	require.Equal(t, "bucket-a", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-cc-account-email"))
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type ccGatewayBoundaryUpstreamRecorder struct {
@@ -108,7 +109,11 @@ func TestCCGatewayBoundary_ForwardSkipsMimicryAndProxy(t *testing.T) {
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.NoError(t, err)
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
-	require.True(t, bytes.Equal(body, upstream.lastBody), "CC Gateway path must not apply final mimicry/body rewrite in Sub2API")
+	require.False(t, bytes.Equal(body, upstream.lastBody), "formal-pool CC Gateway path must rewrite metadata.user_id session before forwarding")
+	parsedUID := ParseMetadataUserID(gjson.GetBytes(upstream.lastBody, "metadata.user_id").String())
+	require.NotNil(t, parsedUID)
+	require.NotEqual(t, "99999999-8888-4777-8666-555555555555", parsedUID.SessionID)
+	require.Equal(t, parsedUID.SessionID, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
 	require.Empty(t, upstream.lastProxyURL, "CC Gateway path must not use account proxy")
 	require.Nil(t, upstream.lastProfile, "CC Gateway path must not use account TLS fingerprint profile")
 }
@@ -123,7 +128,11 @@ func TestCCGatewayBoundary_ForwardCountTokensSkipsMimicryAndProxy(t *testing.T) 
 	err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.NoError(t, err)
 	require.Equal(t, "http://cc-gateway:8443/v1/messages/count_tokens?beta=true", upstream.lastReq.URL.String())
-	require.True(t, bytes.Equal(body, upstream.lastBody), "CC Gateway count_tokens path must not apply final mimicry/body rewrite in Sub2API")
+	require.False(t, bytes.Equal(body, upstream.lastBody), "formal-pool CC Gateway count_tokens path must rewrite metadata.user_id session before forwarding")
+	parsedUID := ParseMetadataUserID(gjson.GetBytes(upstream.lastBody, "metadata.user_id").String())
+	require.NotNil(t, parsedUID)
+	require.NotEqual(t, "99999999-8888-4777-8666-555555555555", parsedUID.SessionID)
+	require.Equal(t, parsedUID.SessionID, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
 	require.Empty(t, upstream.lastProxyURL, "CC Gateway count_tokens path must not use account proxy")
 	require.Nil(t, upstream.lastProfile, "CC Gateway count_tokens path must not use account TLS fingerprint profile")
 }

@@ -1886,6 +1886,14 @@ type SetSchedulableRequest struct {
 	Schedulable bool `json:"schedulable"`
 }
 
+type CCGatewayCanaryPreflightRequest struct {
+	AccountHash    string `json:"account_hash"`
+	EgressBucket   string `json:"egress_bucket" binding:"required"`
+	BillingCCHMode string `json:"billing_cch_mode" binding:"required"`
+	Method         string `json:"method" binding:"required"`
+	Route          string `json:"route" binding:"required"`
+}
+
 // SetSchedulable handles toggling account schedulable status
 // POST /api/v1/admin/accounts/:id/schedulable
 func (h *AccountHandler) SetSchedulable(c *gin.Context) {
@@ -1908,6 +1916,60 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	}
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
+func (h *AccountHandler) CCGatewayCanaryPreflight(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	var req CCGatewayCanaryPreflightRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	canaryReq := service.CCGatewayAnthropicCanaryRequest{
+		AccountID:      accountID,
+		AccountHash:    strings.TrimSpace(req.AccountHash),
+		EgressBucket:   strings.TrimSpace(req.EgressBucket),
+		BillingCCHMode: strings.TrimSpace(req.BillingCCHMode),
+		Method:         strings.TrimSpace(req.Method),
+		Route:          strings.TrimSpace(req.Route),
+	}
+	if err := service.ValidateCCGatewayAnthropicCanaryAccount(account, canaryReq); err != nil {
+		response.Error(c, http.StatusForbidden, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"ok":                         true,
+		"account_hash_matched":       strings.TrimSpace(req.AccountHash) != "",
+		"egress_bucket":              canaryReq.EgressBucket,
+		"billing_cch_mode":           canaryReq.BillingCCHMode,
+		"route":                      canaryReq.Route,
+		"method":                     canaryReq.Method,
+		"user_inference_scope_pass":  true,
+		"canary_only":                true,
+		"broad_routing_allowed":      false,
+		"no_real_upstream_request":   true,
+		"messages_request_performed": false,
+		"count_tokens_allowed":       false,
+		"event_logging_allowed":      false,
+		"openai_compatible_allowed":  false,
+		"antigravity_allowed":        false,
+		"automatic_retry_allowed":    false,
+		"sign_to_strip_fallback":     false,
+		"direct_fallback_allowed":    false,
+	})
 }
 
 // GetAvailableModels handles getting available models for an account

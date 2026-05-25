@@ -19,13 +19,13 @@ const (
 	ClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 	// OAuth endpoints
-	AuthorizeURL = "https://platform.claude.com/oauth/authorize"
+	AuthorizeURL = "https://claude.ai/oauth/authorize"
 	TokenURL     = "https://platform.claude.com/v1/oauth/token"
 	RedirectURI  = "https://platform.claude.com/oauth/code/callback"
 
-	// Scopes - Browser URL (includes org:create_api_key for user authorization)
-	ScopeOAuth = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
-	// Scopes - Internal API call (org:create_api_key not supported in API)
+	// Scopes - Browser URL for Claude Code messages OAuth.
+	ScopeOAuth = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+	// Scopes - Internal API call.
 	ScopeAPI = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 	// Scopes - Setup token (inference only)
 	ScopeInference = "user:inference"

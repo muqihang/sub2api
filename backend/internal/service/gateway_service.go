@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,7 +34,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
-	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	gocache "github.com/patrickmn/go-cache"
 	"github.com/tidwall/gjson"
@@ -57,6 +58,7 @@ const (
 	defaultModelsListCacheTTL    = 15 * time.Second
 	postUsageBillingTimeout      = 15 * time.Second
 	debugGatewayBodyEnv          = "SUB2API_DEBUG_GATEWAY_BODY"
+	sessionBudgetExportEnv       = "SUB2API_SESSION_BUDGET_EXPORT_PATH"
 )
 
 const (
@@ -195,10 +197,7 @@ func shortSessionHash(sessionHash string) string {
 	if sessionHash == "" {
 		return ""
 	}
-	if len(sessionHash) <= 8 {
-		return sessionHash
-	}
-	return sessionHash[:8]
+	return scopedStickyHMAC("log_session_ref", sessionHash)[:20]
 }
 
 func redactAuthHeaderValue(v string) string {
@@ -215,12 +214,14 @@ func redactAuthHeaderValue(v string) string {
 
 func safeHeaderValueForLog(key string, v string) string {
 	key = strings.ToLower(strings.TrimSpace(key))
-	switch key {
-	case "authorization", "x-api-key", "x-cc-gateway-token":
+	if key == "authorization" || key == "x-api-key" || key == "x-cc-gateway-token" ||
+		strings.Contains(key, "cookie") || strings.Contains(key, "token") ||
+		strings.Contains(key, "session") || strings.Contains(key, "account") ||
+		strings.Contains(key, "user") || strings.Contains(key, "org") ||
+		strings.Contains(key, "cch") || strings.Contains(key, "billing") {
 		return redactAuthHeaderValue(v)
-	default:
-		return strings.TrimSpace(v)
 	}
+	return strings.TrimSpace(v)
 }
 
 func extractSystemPreviewFromBody(body []byte) string {
@@ -288,30 +289,26 @@ func buildClaudeMimicDebugLine(req *http.Request, body []byte, account *Account,
 
 	metaUserID := strings.TrimSpace(gjson.GetBytes(body, "metadata.user_id").String())
 	sysPreview := strings.TrimSpace(extractSystemPreviewFromBody(body))
+	bodyBucket := safeLengthBucket(len(body))
+	systemBucket := safeLengthBucket(len(sysPreview))
 
-	// Truncate preview to keep logs sane.
-	if len(sysPreview) > 300 {
-		sysPreview = sysPreview[:300] + "..."
-	}
-	sysPreview = strings.ReplaceAll(sysPreview, "\n", "\\n")
-	sysPreview = strings.ReplaceAll(sysPreview, "\r", "\\r")
-
-	aid := int64(0)
-	aname := ""
+	accountPresent := account != nil
+	accountRef := ""
 	if account != nil {
-		aid = account.ID
-		aname = account.Name
+		accountRef = scopedStickyHMAC("gateway_account_log_ref", fmt.Sprintf("%d|%s", account.ID, account.Name))
 	}
 
 	return fmt.Sprintf(
-		"url=%s account=%d(%s) tokenType=%s mimic=%t meta.user_id=%q system.preview=%q headers={%s}",
+		"url=%s account_present=%t account_ref=%s tokenType=%s mimic=%t meta.user_id_present=%t meta.user_id_length_bucket=%s system.preview_omitted_reason=raw_prompt_forbidden system.length_bucket=%s body.length_bucket=%s headers={%s}",
 		req.URL.String(),
-		aid,
-		aname,
+		accountPresent,
+		accountRef,
 		tokenType,
 		mimicClaudeCode,
-		metaUserID,
-		sysPreview,
+		metaUserID != "",
+		safeLengthBucket(len(metaUserID)),
+		systemBucket,
+		bodyBucket,
 		strings.Join(h, " "),
 	)
 }
@@ -634,6 +631,7 @@ type GatewayService struct {
 	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
+	sessionBudgetObserve  SessionBudgetObserveSink
 }
 
 // NewGatewayService creates a new GatewayService
@@ -699,6 +697,7 @@ func NewGatewayService(
 		channelService:       channelService,
 		resolver:             resolver,
 		balanceNotifyService: balanceNotifyService,
+		sessionBudgetObserve: newDefaultSessionBudgetObserveSink(),
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -715,6 +714,15 @@ func NewGatewayService(
 	return svc
 }
 
+func newDefaultSessionBudgetObserveSink() SessionBudgetObserveSink {
+	if path := strings.TrimSpace(os.Getenv(sessionBudgetExportEnv)); path != "" {
+		if sink, err := NewFileSessionBudgetObserveSink(path); err == nil {
+			return sink
+		}
+	}
+	return NewInMemorySessionBudgetObserveSink(1024)
+}
+
 // GenerateSessionHash 从预解析请求计算粘性会话 hash
 func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 	if parsed == nil {
@@ -727,14 +735,15 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		if uid != nil && uid.SessionID != "" {
 			slog.Info("sticky.hash_source",
 				"source", "metadata_user_id",
-				"session_id", uid.SessionID,
-				"device_id", uid.DeviceID,
+				"session_present", true,
+				"device_present", strings.TrimSpace(uid.DeviceID) != "",
 				"is_new_format", uid.IsNewFormat,
 			)
-			return uid.SessionID
+			return scopedStickyHMAC("metadata_user_id", uid.SessionID)
 		}
 		slog.Info("sticky.hash_metadata_parse_failed",
-			"metadata_user_id", parsed.MetadataUserID,
+			"metadata_present", true,
+			"metadata_length", len(parsed.MetadataUserID),
 			"parsed_nil", uid == nil,
 		)
 	}
@@ -745,7 +754,7 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		hash := s.hashContent(cacheableContent)
 		slog.Info("sticky.hash_source",
 			"source", "cacheable_content",
-			"hash", hash,
+			"hash_present", hash != "",
 		)
 		return hash
 	}
@@ -790,8 +799,8 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 		hash := s.hashContent(combined.String())
 		slog.Info("sticky.hash_source",
 			"source", "message_content_fallback",
-			"hash", hash,
-			"content_len", combined.Len(),
+			"hash_present", hash != "",
+			"content_length_bucket", safeLengthBucket(combined.Len()),
 		)
 		return hash
 	}
@@ -937,8 +946,7 @@ func (s *GatewayService) extractTextFromContent(content any) string {
 }
 
 func (s *GatewayService) hashContent(content string) string {
-	h := xxhash.Sum64String(content)
-	return strconv.FormatUint(h, 36)
+	return scopedStickyHMAC("gateway_content_sticky", content)
 }
 
 type anthropicCacheControlPayload struct {
@@ -1356,10 +1364,8 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 		return ""
 	}
 
+	// Do not derive durable metadata sessions from raw body digests.
 	sessionID := uuid.NewString()
-	if hash := hashBodyForSessionSeed(body); hash != "" {
-		sessionID = generateSessionUUID(fmt.Sprintf("%d::%s", account.ID, hash))
-	}
 
 	var uaVersion string
 	if fp != nil {
@@ -1369,17 +1375,7 @@ func (s *GatewayService) buildOAuthMetadataUserIDFromBody(
 	return FormatMetadataUserID(userID, accountUUID, sessionID, uaVersion)
 }
 
-// hashBodyForSessionSeed 为 sessionID 提供一个稳定但仅对本次请求特征化的种子。
-// 复用 SHA-256 + 截断，与 generateSessionUUID 的输入格式对齐。
-func hashBodyForSessionSeed(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	sum := sha256.Sum256(body)
-	return fmt.Sprintf("%x", sum[:16])
-}
-
-// GenerateSessionUUID creates a deterministic UUID4 from a seed string.
+// GenerateSessionUUID creates a deterministic UUID4 from a scoped keyed HMAC seed.
 func GenerateSessionUUID(seed string) string {
 	return generateSessionUUID(seed)
 }
@@ -1388,12 +1384,51 @@ func generateSessionUUID(seed string) string {
 	if seed == "" {
 		return uuid.NewString()
 	}
-	hash := sha256.Sum256([]byte(seed))
-	bytes := hash[:16]
+	bytes := scopedStickyHMACBytes("generate_session_uuid", seed)[:16]
 	bytes[6] = (bytes[6] & 0x0f) | 0x40
 	bytes[8] = (bytes[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x",
 		bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
+}
+
+func scopedStickyHMAC(scope string, value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return "hmac-sha256:" + hex.EncodeToString(scopedStickyHMACBytes(scope, value))
+}
+
+func scopedStickyHMACBytes(scope string, value string) []byte {
+	secret := strings.TrimSpace(os.Getenv("SUB2API_GATEWAY_STICKY_SESSION_HMAC_KEY"))
+	if secret == "" {
+		secret = "sub2api-gateway-sticky-session-dev-key"
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(scope))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte("v1"))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(value))
+	return mac.Sum(nil)
+}
+
+func safeLengthBucket(n int) string {
+	switch {
+	case n <= 0:
+		return "empty"
+	case n <= 1024:
+		return "le_1kb"
+	case n <= 4096:
+		return "le_4kb"
+	case n <= 16384:
+		return "le_16kb"
+	case n <= 65536:
+		return "le_64kb"
+	case n <= 262144:
+		return "le_256kb"
+	default:
+		return "gt_256kb"
+	}
 }
 
 // SelectAccount 选择账号（粘性会话+优先级）
@@ -3824,6 +3859,14 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 }
 
 func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (string, string, error) {
+	if IsCCGatewayExplicitCanaryLocalOnly(ctx) && account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth {
+		accessToken := account.GetCredential("access_token")
+		if accessToken == "" {
+			return "", "", errors.New("access_token not found in credentials")
+		}
+		return accessToken, "oauth", nil
+	}
+
 	// 对于 Anthropic OAuth 账号，使用 ClaudeTokenProvider 获取缓存的 token
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth && s.claudeTokenProvider != nil {
 		accessToken, err := s.claudeTokenProvider.GetAccessToken(ctx, account)
@@ -4375,6 +4418,19 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
 	}
+	if err := validateAnthropicMessagesInferenceScope(account); err != nil {
+		if c != nil {
+			c.JSON(http.StatusForbidden, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "permission_error",
+					"code":    "inference_scope_missing",
+					"message": "Anthropic OAuth/setup-token account is missing user:inference scope",
+				},
+			})
+		}
+		return nil, err
+	}
 
 	// Web Search 模拟：纯 web_search 请求时，直接调用搜索 API 构造响应
 	if account != nil && s.shouldEmulateWebSearch(ctx, account, parsed.GroupID, parsed.Body) {
@@ -4422,7 +4478,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	reqModel := parsed.Model
 	reqStream := parsed.Stream
 	originalModel := reqModel
-	useCCGateway, ccGatewayErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	var useCCGateway bool
+	var ccGatewayErr error
+	if canaryReq, ok := GetCCGatewayExplicitCanaryRequest(ctx); ok {
+		useCCGateway, ccGatewayErr = s.selectCCGatewayAnthropicCanaryRoute(account, canaryReq)
+	} else {
+		useCCGateway, ccGatewayErr = s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	}
 	if ccGatewayErr != nil {
 		return nil, ccGatewayErr
 	}
@@ -4569,6 +4631,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// 重试间复用同一请求体，避免每次 string(body) 产生额外分配。
 	setOpsUpstreamRequestBody(c, body)
 
+	budgetObservation := s.observeSessionBudgetRequest(ctx, account, parsed, body, reqStream)
+
 	// 重试循环
 	var resp *http.Response
 	retryStart := time.Now()
@@ -4606,6 +4670,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					"message": "Upstream request failed",
 				},
 			})
+			s.observeSessionBudgetResponse(ctx, account, budgetObservation, nil, http.StatusBadGateway, nil)
+			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 		}
 
@@ -4624,6 +4690,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				Kind:               "cc_gateway_control_plane",
 				Message:            code + ": " + msg,
 			})
+			s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, respBody)
 			writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
 			return nil, fmt.Errorf("cc gateway control-plane error: %s", code)
 		}
@@ -4892,6 +4959,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					return ""
 				}(),
 			})
+			s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, respBody)
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
@@ -4926,6 +4994,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return ""
 			}(),
 		})
+		s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, respBody)
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
@@ -4938,7 +5007,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			if readErr != nil {
 				// ReadAll failed, fall back to normal error handling without consuming the stream
-				return s.handleErrorResponse(ctx, resp, c, account)
+				return s.handleErrorResponseWithBudget(ctx, resp, c, account, budgetObservation)
 			}
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -4975,10 +5044,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					logger.LegacyPrintf("service.gateway", "Account %d: 400 error, attempting failover", account.ID)
 				}
 				s.handleFailoverSideEffects(ctx, resp, account)
+				s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, respBody)
 				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 			}
 		}
-		return s.handleErrorResponse(ctx, resp, c, account)
+		return s.handleErrorResponseWithBudget(ctx, resp, c, account, budgetObservation)
 	}
 
 	// 处理正常响应
@@ -5010,6 +5080,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return nil, err
 		}
 	}
+
+	s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, nil)
 
 	return &ForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
@@ -5355,6 +5427,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	setHeaderRaw(req.Header, "x-api-key", token)
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
 	if getHeaderRaw(req.Header, "content-type") == "" {
@@ -6221,6 +6294,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
+			body = mappedBody
+		}
 	}
 
 	if !strictPassthrough && mimicClaudeCode && !useCCGateway {
@@ -6916,6 +6993,26 @@ func ExtractUpstreamErrorMessage(body []byte) string {
 	return extractUpstreamErrorMessage(body)
 }
 
+func validateAnthropicMessagesInferenceScope(account *Account) error {
+	if account == nil || !account.IsAnthropicOAuthOrSetupToken() {
+		return nil
+	}
+	raw, ok := account.Credentials["scope"]
+	if !ok {
+		return fmt.Errorf("inference_scope_missing: Anthropic OAuth/setup-token account requires user:inference scope")
+	}
+	scope, ok := raw.(string)
+	if !ok || strings.TrimSpace(scope) == "" {
+		return fmt.Errorf("inference_scope_missing: Anthropic OAuth/setup-token account requires user:inference scope")
+	}
+	for _, part := range strings.Fields(scope) {
+		if part == "user:inference" {
+			return nil
+		}
+	}
+	return fmt.Errorf("inference_scope_missing: Anthropic OAuth/setup-token account requires user:inference scope")
+}
+
 func extractUpstreamErrorMessage(body []byte) string {
 	// Claude 风格：{"type":"error","error":{"type":"...","message":"..."}}
 	if m := gjson.GetBytes(body, "error.message").String(); strings.TrimSpace(m) != "" {
@@ -6973,6 +7070,14 @@ func isCountTokensUnsupported404(statusCode int, body []byte) bool {
 		return true
 	}
 	return strings.Contains(msg, "count_tokens") && strings.Contains(msg, "not found")
+}
+
+func (s *GatewayService) handleErrorResponseWithBudget(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, budgetObservation sessionBudgetRequestObservation) (*ForwardResult, error) {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, body)
+	return s.handleErrorResponse(ctx, resp, c, account)
 }
 
 func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account) (*ForwardResult, error) {
@@ -7127,6 +7232,10 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, resp *http.Response, account *Account) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	statusCode := resp.StatusCode
+	if s.rateLimitService == nil {
+		logger.LegacyPrintf("service.gateway", "Account %d: upstream error %d after retries (rate limit service unavailable)", account.ID, statusCode)
+		return
+	}
 
 	// OAuth/Setup Token 账号的 403：标记账号异常
 	if account.IsOAuth() && statusCode == 403 {
@@ -7140,6 +7249,9 @@ func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, re
 
 func (s *GatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if s.rateLimitService == nil {
+		return
+	}
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 }
 
@@ -7250,7 +7362,9 @@ type streamingResult struct {
 
 func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string, mimicClaudeCode bool) (*streamingResult, error) {
 	// 更新5h窗口状态
-	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
+	if s.rateLimitService != nil {
+		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -7872,7 +7986,9 @@ func (s *GatewayService) resolveCacheTTLUsageOverrideTarget(ctx context.Context,
 
 func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
 	// 更新5h窗口状态
-	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
+	if s.rateLimitService != nil {
+		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
+	}
 
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
@@ -9346,6 +9462,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	req.Header.Set("x-api-key", token)
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
 	if req.Header.Get("content-type") == "" {
@@ -9511,6 +9628,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
+			body = mappedBody
+		}
 	}
 
 	if !strictPassthrough && mimicClaudeCode && !useCCGateway {
@@ -9782,7 +9903,7 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 		}
 		sort.Strings(extraKeys)
 		for _, k := range extraKeys {
-			fmt.Fprintf(&buf, "  %s: %s\n", k, extra[k])
+			fmt.Fprintf(&buf, "  %s: %s\n", k, safeDebugExtraValueForLog(k, extra[k]))
 		}
 	}
 
@@ -9794,20 +9915,20 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 		}
 	}
 
-	// 3. body（完整输出，格式化 JSON 便于 diff）
-	fmt.Fprint(&buf, "--- body ---\n")
-	if len(body) == 0 {
-		fmt.Fprint(&buf, "  (empty)\n")
-	} else {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, body, "  ", "  ") == nil {
-			fmt.Fprintf(&buf, "  %s\n", pretty.Bytes())
-		} else {
-			// JSON 格式化失败时原样输出
-			fmt.Fprintf(&buf, "  %s\n", body)
-		}
-	}
+	// 3. body: only safe summary is logged; raw body/prompt/CCH is forbidden.
+	fmt.Fprint(&buf, "--- body_summary ---\n")
+	fmt.Fprintf(&buf, "  body_length_bucket: %s\n", safeLengthBucket(len(body)))
+	fmt.Fprint(&buf, "  body_omitted_reason: raw_body_forbidden\n")
 
 	// 写入文件（调试用，并发写入可能交错但不影响可读性）
 	_, _ = f.WriteString(buf.String())
+}
+
+func safeDebugExtraValueForLog(key string, value string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "empty"
+	}
+	return fmt.Sprintf("present=true length_bucket=%s ref=%s", safeLengthBucket(len(value)), scopedStickyHMAC("gateway_debug_extra:"+key, value))
 }
