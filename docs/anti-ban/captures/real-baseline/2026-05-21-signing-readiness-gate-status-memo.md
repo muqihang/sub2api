@@ -7,7 +7,7 @@ Do **not** start `docs/anti-ban/27-final-shared-pool-signing-mode-design.md` yet
 Checkpoint 5 closes the local code-boundary and joint-capture work, and one P0 gate remains in `DEFER`:
 
 - `P0-A count_tokens`: Linux localhost attempts still did not naturally emit `/v1/messages/count_tokens`, so the route remains blocked/deferred and excluded from first-wave shared-pool canary.
-- `P0-C metadata/session`: PASS via Linux localhost capture for default persistence, `-c/--continue`, explicit `--resume`, and explicit `--session-id`; `stream-json` is treated as output-side here because the Linux localhost request shape matched JSON output.
+digest_omitted_by_policy: true
 - `P0-D Linux parity`: PASS via Linux localhost capture on Ubuntu 24.04.4 x86_64.
 
 ## Gates that are now supported by evidence
@@ -66,3 +66,23 @@ Checkpoint 5 closes the local code-boundary and joint-capture work, and one P0 g
 ## Next-step recommendation
 
 Do **not** start the full final signing-mode design yet. However, the evidence now supports drafting a constrained `27-first-wave-shared-pool-messages-only-design.md`, because the remaining open gate (`P0-A count_tokens`) is explicitly blocked/deferred outside first-wave scope.
+
+## 2026-05-22 Anthropic OAuth scope gate update
+
+Offline triage after the single real sign-primary canary confirmed that the 403 was an OAuth scope failure, not evidence of a CCH/signing failure or success. The canary token was created through the ordinary `generate-auth-url` flow; requested scopes included `user:inference`, but returned/saved scopes were only `org:create_api_key`, `user:file_upload`, and `user:profile`. Therefore the drop point is upstream grant/exchange result rather than local persistence.
+
+Current policy update:
+
+- Ordinary Anthropic OAuth tokens that do not return `user:inference` are blocked from `/v1/messages`.
+- Current setup-token browser URL shape remains unusable (`Invalid OAuth Request`) and is not a viable first-wave login path until separately fixed.
+- `old-local-account-canary` remains quarantined/blocked for messages use: keep `schedulable=false`, `concurrency=0`, `ProxyID=1`, and reason `inference_scope_missing`; do not delete token without separate approval.
+- Sub2API now has a local `/v1/messages` scope gate for Anthropic OAuth/setup-token accounts: `credentials.scope` must contain `user:inference`; missing/empty/non-string/order-changed-without-match fails closed before CC Gateway or upstream forwarding.
+- Anthropic API-key accounts and non-Anthropic paths are not affected by this gate.
+- CCH status remains: offline/local verifier PASS; real upstream CCH acceptance is still unverified because the only real sign-primary request failed before model execution at OAuth scope authorization.
+
+Evidence/code:
+
+- Safe deliverable: `captures/real-baseline/2026-05-22-anthropic-oauth-login-method-system-triage/safe-deliverable/`
+- Code/test gate: `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation/backend/internal/service/gateway_inference_scope_gate_test.go`
+
+Next step remains offline: separately compare/fix the Claude Code CLI subscription-login authorization path before any further OAuth/login or real canary.

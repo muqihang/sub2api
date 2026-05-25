@@ -28,10 +28,10 @@
       ],
       "bodyGrantType": "refresh_token",
       "scopeWordCount": 5,
-      "refreshTokenHash": "sha256:154f43e8c9b56a01e25dcba6f7aef62d23a3e91264e818124f6adf721d6a8e33",
-      "bodyHash": "sha256:998e545af7c71458a3b4d2087cfab75173d680edefee88750cd7188f5b50619d",
+      "refreshToken_omitted_reason": "digest_omitted_by_policy",
+      "saferef_omitted_reason": "digest_omitted_by_policy",
       "bodyClientIdPresent": true,
-      "bodyClientIdHash": "sha256:473668f2b13c71009d028ff0ef74c2cf76e71cbdd33b76e69fcc42d7e59aca4b"
+      "safeClientIdref_omitted_reason": "digest_omitted_by_policy"
     },
     "second_request": {
       "url": "/failure",
@@ -50,19 +50,19 @@
       ],
       "bodyGrantType": "refresh_token",
       "scopeWordCount": 5,
-      "refreshTokenHash": "sha256:154f43e8c9b56a01e25dcba6f7aef62d23a3e91264e818124f6adf721d6a8e33",
-      "bodyHash": "sha256:998e545af7c71458a3b4d2087cfab75173d680edefee88750cd7188f5b50619d",
+      "refreshToken_omitted_reason": "digest_omitted_by_policy",
+      "saferef_omitted_reason": "digest_omitted_by_policy",
       "bodyClientIdPresent": true,
-      "bodyClientIdHash": "sha256:473668f2b13c71009d028ff0ef74c2cf76e71cbdd33b76e69fcc42d7e59aca4b"
+      "safeClientIdref_omitted_reason": "digest_omitted_by_policy"
     },
     "success_result": {
       "accessTokenPresent": true,
-      "accessTokenHash": "sha256:d7492899fcde7799bf5d9b4d1888301eabd28bd0df448583789b43a8ce6b68bf",
-      "refreshTokenHash": "sha256:66524e44bdb2499118df7d282373a5e8d22e25aa99bd7a7aa6851abbef4f6588",
+      "accessToken_omitted_reason": "digest_omitted_by_policy",
+      "refreshToken_omitted_reason": "digest_omitted_by_policy",
       "expiresAtType": "number"
     },
     "failure_contains_401": true,
-    "failure_hash": "sha256:47a0bf30aa4be4adc44d25fbd0a1cb0f37f237aefc6fff5d755a16267ae1a9f7"
+    "failure_omitted_reason": "digest_omitted_by_policy"
   },
   "observations": [
     "CC Gateway source defines TOKEN_URL as https://platform.claude.com/v1/oauth/token and uses POST application/json.",

@@ -20,7 +20,7 @@
 - first request Accept-Encoding: `gzip, deflate, br, zstd`
 - first request body keys: `context_management, max_tokens, messages, metadata, model, output_config, stream, system, thinking, tools`
 - metadata.user_id fields: `account_uuid, device_id, session_id`
-- metadata.user_id hash: `sha256:25117482ae0c71a4d12799fa304056c6dcd6121d2b14925e36f1c6d458df1f0c`
+digest_omitted_by_policy: true
 - billing block present: `True` / cch present: `True`
 
 ### attribution_off_minimal_print_json
@@ -35,7 +35,7 @@
 - first request Accept-Encoding: `gzip, deflate, br, zstd`
 - first request body keys: `context_management, max_tokens, messages, metadata, model, output_config, stream, system, thinking, tools`
 - metadata.user_id fields: `account_uuid, device_id, session_id`
-- metadata.user_id hash: `sha256:066b47d5d57aa9ac816881c9ccc137f89b7e68f71bc0757831e8e5fd10350887`
+digest_omitted_by_policy: true
 - billing block present: `False` / cch present: `False`
 
-> Safe deliverable stores only hashes and field/key summaries. No raw Authorization, raw prompt text, raw request bodies, raw CCH, or raw account UUIDs are included.
+digest_omitted_by_policy: true

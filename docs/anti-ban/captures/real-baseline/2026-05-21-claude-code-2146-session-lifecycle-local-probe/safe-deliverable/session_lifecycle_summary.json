@@ -20,8 +20,8 @@
       "mode": "success",
       "exit_code": 0,
       "timed_out": false,
-      "stdout_sha256": "sha256:cdf38cd26d05781a9d640332845081fe82c821047bbc730fdb175fe7164f0756",
-      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
       "request_count": 2,
       "paths": [
         "/v1/messages?beta=true",
@@ -75,12 +75,8 @@
           "Content-Length"
         ]
       ],
-      "session_header_hashes": [
-        "sha256:826432dfca19be4dd0169df1d925ae8d5303f9e23e0df45d2b9bcf2659391374"
-      ],
-      "metadata_user_id_hashes": [
-        "sha256:93ab922d450eec08a506ee7851ad2673b837c872360163fa9b20ec4de3dff8b4"
-      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
       "metadata_user_id_fields": [
         [
           "account_uuid",
@@ -142,8 +138,8 @@
       "mode": "success",
       "exit_code": 0,
       "timed_out": false,
-      "stdout_sha256": "sha256:39c59e2a283822d5bf16b93c5160933e1db833c769a68e8361cf581bf350a96d",
-      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
       "request_count": 2,
       "paths": [
         "/v1/messages?beta=true",
@@ -197,12 +193,8 @@
           "Content-Length"
         ]
       ],
-      "session_header_hashes": [
-        "sha256:bf0dd2ee86562564764e270ef6ce7218c4528649d121ad01a77bf26bf7a81bbc"
-      ],
-      "metadata_user_id_hashes": [
-        "sha256:4b8737a7c07bea89cd8bbea897d6320003b1738b2f894adbd5e82a858277b7fc"
-      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
       "metadata_user_id_fields": [
         [
           "account_uuid",
@@ -265,8 +257,8 @@
       "mode": "success",
       "exit_code": 0,
       "timed_out": false,
-      "stdout_sha256": "sha256:d5a97b9016d9d6492b3e6152056a0ea831013ea97c3c3be8ad75e07b34d02550",
-      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
       "request_count": 1,
       "paths": [
         "/v1/messages?beta=true"
@@ -296,12 +288,8 @@
           "Content-Length"
         ]
       ],
-      "session_header_hashes": [
-        "sha256:bf0dd2ee86562564764e270ef6ce7218c4528649d121ad01a77bf26bf7a81bbc"
-      ],
-      "metadata_user_id_hashes": [
-        "sha256:4b8737a7c07bea89cd8bbea897d6320003b1738b2f894adbd5e82a858277b7fc"
-      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
       "metadata_user_id_fields": [
         [
           "account_uuid",
@@ -349,13 +337,13 @@
       "mode": "success",
       "exit_code": 1,
       "timed_out": false,
-      "stdout_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "stderr_sha256": "sha256:feb1740346a5db353a734dd0eed0a277c2e772aa11b7bad480afe3a0256c0d25",
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
       "request_count": 0,
       "paths": [],
       "header_key_orders": [],
-      "session_header_hashes": [],
-      "metadata_user_id_hashes": [],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
       "metadata_user_id_fields": [],
       "body_keys_per_request": [],
       "stream_values": [],
@@ -375,8 +363,8 @@
       "mode": "error_once",
       "exit_code": 0,
       "timed_out": false,
-      "stdout_sha256": "sha256:6012bdad9ef85e5e52dd2734d13543a60e1fa9207923770c8a832e71102ee6a3",
-      "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
       "request_count": 2,
       "paths": [
         "/v1/messages?beta=true",
@@ -430,12 +418,8 @@
           "Content-Length"
         ]
       ],
-      "session_header_hashes": [
-        "sha256:4742a1da9e622cf0df3a9382e3f43099cc6c3517224ae0935d9dfd6e875fafc9"
-      ],
-      "metadata_user_id_hashes": [
-        "sha256:497dc940274ac798b2cfa5c0d10a7b4255f6a0ef58896a2cc55c5abe26396c26"
-      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
       "metadata_user_id_fields": [
         [
           "account_uuid",

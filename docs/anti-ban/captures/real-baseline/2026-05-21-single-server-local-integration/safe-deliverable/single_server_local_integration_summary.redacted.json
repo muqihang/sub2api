@@ -4,7 +4,7 @@
   "artifact_dir": "/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation/docs/anti-ban/captures/real-baseline/2026-05-21-single-server-local-integration/safe-deliverable",
   "gateway_mode": "sub2api",
   "no_real_upstream": true,
-  "no_raw_secrets": true,
+  "no_sensitive_payloads": true,
   "no_native_fallback": true,
   "sub2api_not_final_mutating": true,
   "cc_gateway_final_owner": true,
@@ -15,7 +15,7 @@
       "category": "sub2api_joint",
       "route": "/v1/messages?beta=true",
       "policy_decision": "forward_strip",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 200,
@@ -25,7 +25,7 @@
         "Accept-Encoding",
         "X-Claude-Code-Session-Id"
       ],
-      "client_body_sha256": "ae83f8d4dce205590e4684c8e486bfa822a8111e43a86f7f119587dc956aac16",
+      "client_safe_ref_omitted_reason": "digest_omitted_by_policy",
       "sub2api_to_gateway": {
         "url_host": "127.0.0.1:53749",
         "route": "/v1/messages?beta=true",
@@ -50,21 +50,21 @@
           "Content-Length": "",
           "Host": "loopback",
           "User-Agent": "claude-cli/99.9.9 (external, sdk-cli)",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "anthropic-beta": "client-beta,oauth-2025-04-20",
           "anthropic-version": "2023-06-01",
-          "authorization": "sha256:13f7f7e725757b6e",
+          "authorization": "digest_omitted_by_policy",
           "content-type": "application/json",
-          "x-cc-account-id": "sha256:c3ea99f86b2f8a74",
-          "x-cc-account-uuid": "sha256:22e86c827a3582dd",
+          "x-cc-account-id": "digest_omitted_by_policy",
+          "x-cc-account-uuid": "digest_omitted_by_policy",
           "x-cc-egress-bucket": "bucket-a",
-          "x-cc-gateway-token": "sha256:f15ae5b5899f8327",
+          "x-cc-gateway-token": "digest_omitted_by_policy",
           "x-cc-policy-version": "2.1.146",
           "x-cc-provider": "anthropic",
-          "x-cc-token-type": "sha256:6e306c515177ca5a"
+          "x-cc-token-type": "digest_omitted_by_policy"
         },
         "body": {
-          "sha256": "ae83f8d4dce205590e4684c8e486bfa822a8111e43a86f7f119587dc956aac16",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 372,
           "top_level_keys": [
             "messages",
@@ -83,13 +83,9 @@
               "device_id",
               "session_id"
             ],
-            "field_hashes": {
-              "account_uuid": "sha256:f82e9dfb3d284953",
-              "device_id": "sha256:6cdb26c9367fbb72",
-              "session_id": "sha256:89d07480e9d09240"
-            },
-            "user_id_value_hash": "sha256:e38fb9ad85102748",
-            "session_header_hash": "sha256:89d07480e9d09240"
+            "field_es_omitted_reason": "digest_omitted_by_policy",
+            "safe_id_value_ref_omitted_reason": "digest_omitted_by_policy",
+            "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
           }
         },
         "request_count": 1,
@@ -127,7 +123,7 @@
           "Accept-Encoding": "gzip, deflate, br, zstd",
           "Connection": "close",
           "User-Agent": "claude-cli/2.1.146 (external, sdk-cli)",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "X-Stainless-Arch": "arm64",
           "X-Stainless-Lang": "js",
           "X-Stainless-OS": "MacOS",
@@ -139,14 +135,14 @@
           "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24,extended-cache-ttl-2025-04-11",
           "anthropic-dangerous-direct-browser-access": "true",
           "anthropic-version": "2023-06-01",
-          "authorization": "sha256:13f7f7e725757b6e",
+          "authorization": "digest_omitted_by_policy",
           "content-length": "339",
           "content-type": "application/json",
           "host": "loopback",
           "x-app": "cli"
         },
         "body": {
-          "sha256": "ba1e2cb2bd08ad50abce17826c78025aa0808f952b7686502017c060b58d36b9",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 339,
           "top_level_keys": [
             "messages",
@@ -164,13 +160,9 @@
               "device_id",
               "session_id"
             ],
-            "field_hashes": {
-              "account_uuid": "sha256:e010d1d5d17dee3c",
-              "device_id": "sha256:a0fab1377f49a759",
-              "session_id": "sha256:89d07480e9d09240"
-            },
-            "user_id_value_hash": "sha256:a85c3665ae511667",
-            "session_header_hash": "sha256:89d07480e9d09240"
+            "field_es_omitted_reason": "digest_omitted_by_policy",
+            "safe_id_value_ref_omitted_reason": "digest_omitted_by_policy",
+            "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
           }
         },
         "request_count": 1,
@@ -193,7 +185,7 @@
       "category": "sub2api_joint",
       "route": "/v1/messages?beta=true",
       "policy_decision": "forward_sign_primary",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 200,
@@ -203,7 +195,7 @@
         "Accept-Encoding",
         "X-Claude-Code-Session-Id"
       ],
-      "client_body_sha256": "4e1374b2d3b973e0030171e27a74a2b730855da91bf7cfa98b1a58b721125d01",
+      "client_safe_ref_omitted_reason": "digest_omitted_by_policy",
       "sub2api_to_gateway": {
         "url_host": "127.0.0.1:53761",
         "route": "/v1/messages?beta=true",
@@ -228,21 +220,21 @@
           "Content-Length": "",
           "Host": "loopback",
           "User-Agent": "claude-cli/99.9.9 (external, sdk-cli)",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "anthropic-beta": "client-beta,oauth-2025-04-20",
           "anthropic-version": "2023-06-01",
-          "authorization": "sha256:13f7f7e725757b6e",
+          "authorization": "digest_omitted_by_policy",
           "content-type": "application/json",
-          "x-cc-account-id": "sha256:c3ea99f86b2f8a74",
-          "x-cc-account-uuid": "sha256:22e86c827a3582dd",
+          "x-cc-account-id": "digest_omitted_by_policy",
+          "x-cc-account-uuid": "digest_omitted_by_policy",
           "x-cc-egress-bucket": "bucket-a",
-          "x-cc-gateway-token": "sha256:f15ae5b5899f8327",
+          "x-cc-gateway-token": "digest_omitted_by_policy",
           "x-cc-policy-version": "2.1.146",
           "x-cc-provider": "anthropic",
-          "x-cc-token-type": "sha256:6e306c515177ca5a"
+          "x-cc-token-type": "digest_omitted_by_policy"
         },
         "body": {
-          "sha256": "4e1374b2d3b973e0030171e27a74a2b730855da91bf7cfa98b1a58b721125d01",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 283,
           "top_level_keys": [
             "messages",
@@ -259,13 +251,9 @@
               "device_id",
               "session_id"
             ],
-            "field_hashes": {
-              "account_uuid": "sha256:f82e9dfb3d284953",
-              "device_id": "sha256:6cdb26c9367fbb72",
-              "session_id": "sha256:89d07480e9d09240"
-            },
-            "user_id_value_hash": "sha256:e38fb9ad85102748",
-            "session_header_hash": "sha256:89d07480e9d09240"
+            "field_es_omitted_reason": "digest_omitted_by_policy",
+            "safe_id_value_ref_omitted_reason": "digest_omitted_by_policy",
+            "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
           }
         },
         "request_count": 1,
@@ -303,7 +291,7 @@
           "Accept-Encoding": "gzip, deflate, br, zstd",
           "Connection": "close",
           "User-Agent": "claude-cli/2.1.146 (external, sdk-cli)",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "X-Stainless-Arch": "arm64",
           "X-Stainless-Lang": "js",
           "X-Stainless-OS": "MacOS",
@@ -315,14 +303,14 @@
           "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24,extended-cache-ttl-2025-04-11",
           "anthropic-dangerous-direct-browser-access": "true",
           "anthropic-version": "2023-06-01",
-          "authorization": "sha256:13f7f7e725757b6e",
+          "authorization": "digest_omitted_by_policy",
           "content-length": "455",
           "content-type": "application/json",
           "host": "loopback",
           "x-app": "cli"
         },
         "body": {
-          "sha256": "0d6fd64bcd7686a7aa49c92ec5e2a9d5c6fbb0e48509dd78cf9e308cad2d2ff2",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 455,
           "top_level_keys": [
             "messages",
@@ -341,13 +329,9 @@
               "device_id",
               "session_id"
             ],
-            "field_hashes": {
-              "account_uuid": "sha256:e010d1d5d17dee3c",
-              "device_id": "sha256:add5b41fc5a881fc",
-              "session_id": "sha256:89d07480e9d09240"
-            },
-            "user_id_value_hash": "sha256:df6744d14219b9ce",
-            "session_header_hash": "sha256:89d07480e9d09240"
+            "field_es_omitted_reason": "digest_omitted_by_policy",
+            "safe_id_value_ref_omitted_reason": "digest_omitted_by_policy",
+            "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
           }
         },
         "request_count": 1,
@@ -370,7 +354,7 @@
       "category": "sub2api_joint",
       "route": "/v1/messages/count_tokens?beta=true",
       "policy_decision": "defer_block",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 403,
@@ -382,7 +366,7 @@
         "Accept-Encoding",
         "X-Claude-Code-Session-Id"
       ],
-      "client_body_sha256": "5be832de94a6089d6a5c13615778771ca19d69105170e843985ef18b0b9ef6fe",
+      "client_safe_ref_omitted_reason": "digest_omitted_by_policy",
       "sub2api_to_gateway": {
         "url_host": "127.0.0.1:53749",
         "route": "/v1/messages/count_tokens?beta=true",
@@ -407,21 +391,21 @@
           "Content-Length": "",
           "Host": "loopback",
           "User-Agent": "claude-cli/99.9.9 (external, sdk-cli)",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "anthropic-beta": "client-beta,oauth-2025-04-20,token-counting-2024-11-01",
           "anthropic-version": "2023-06-01",
-          "authorization": "sha256:13f7f7e725757b6e",
+          "authorization": "digest_omitted_by_policy",
           "content-type": "application/json",
-          "x-cc-account-id": "sha256:c3ea99f86b2f8a74",
-          "x-cc-account-uuid": "sha256:22e86c827a3582dd",
+          "x-cc-account-id": "digest_omitted_by_policy",
+          "x-cc-account-uuid": "digest_omitted_by_policy",
           "x-cc-egress-bucket": "bucket-a",
-          "x-cc-gateway-token": "sha256:f15ae5b5899f8327",
+          "x-cc-gateway-token": "digest_omitted_by_policy",
           "x-cc-policy-version": "2.1.146",
           "x-cc-provider": "anthropic",
-          "x-cc-token-type": "sha256:6e306c515177ca5a"
+          "x-cc-token-type": "digest_omitted_by_policy"
         },
         "body": {
-          "sha256": "5be832de94a6089d6a5c13615778771ca19d69105170e843985ef18b0b9ef6fe",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 110,
           "top_level_keys": [
             "messages",
@@ -451,7 +435,7 @@
       "category": "sub2api_joint",
       "route": "/v1/messages?beta=true",
       "policy_decision": "forward_strip",
-      "selected_account_id_hash": "sha256:43974ed74066b207",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 200,
@@ -461,7 +445,7 @@
         "Accept-Encoding",
         "X-Claude-Code-Session-Id"
       ],
-      "client_body_sha256": "ae83f8d4dce205590e4684c8e486bfa822a8111e43a86f7f119587dc956aac16",
+      "client_safe_ref_omitted_reason": "digest_omitted_by_policy",
       "sub2api_to_gateway": {
         "url_host": "127.0.0.1:53749",
         "route": "/v1/messages?beta=true",
@@ -485,20 +469,20 @@
           "Content-Length": "",
           "Host": "loopback",
           "User-Agent": "claude-cli/99.9.9 (external, sdk-cli)",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "anthropic-beta": "client-beta",
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
-          "x-api-key": "sha256:a7e3a1ddda2ce652",
-          "x-cc-account-id": "sha256:43974ed74066b207",
+          "x-api-key": "digest_omitted_by_policy",
+          "x-cc-account-id": "digest_omitted_by_policy",
           "x-cc-egress-bucket": "bucket-a",
-          "x-cc-gateway-token": "sha256:f15ae5b5899f8327",
+          "x-cc-gateway-token": "digest_omitted_by_policy",
           "x-cc-policy-version": "2.1.146",
           "x-cc-provider": "anthropic",
-          "x-cc-token-type": "sha256:6c793695171e793d"
+          "x-cc-token-type": "digest_omitted_by_policy"
         },
         "body": {
-          "sha256": "ae83f8d4dce205590e4684c8e486bfa822a8111e43a86f7f119587dc956aac16",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 372,
           "top_level_keys": [
             "messages",
@@ -517,13 +501,9 @@
               "device_id",
               "session_id"
             ],
-            "field_hashes": {
-              "account_uuid": "sha256:f82e9dfb3d284953",
-              "device_id": "sha256:6cdb26c9367fbb72",
-              "session_id": "sha256:89d07480e9d09240"
-            },
-            "user_id_value_hash": "sha256:e38fb9ad85102748",
-            "session_header_hash": "sha256:89d07480e9d09240"
+            "field_es_omitted_reason": "digest_omitted_by_policy",
+            "safe_id_value_ref_omitted_reason": "digest_omitted_by_policy",
+            "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
           }
         },
         "request_count": 1,
@@ -561,7 +541,7 @@
           "Accept-Encoding": "gzip, deflate, br, zstd",
           "Connection": "close",
           "User-Agent": "claude-cli/2.1.146 (external, sdk-cli)",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "X-Stainless-Arch": "arm64",
           "X-Stainless-Lang": "js",
           "X-Stainless-OS": "MacOS",
@@ -576,11 +556,11 @@
           "content-length": "339",
           "content-type": "application/json",
           "host": "loopback",
-          "x-api-key": "sha256:a7e3a1ddda2ce652",
+          "x-api-key": "digest_omitted_by_policy",
           "x-app": "cli"
         },
         "body": {
-          "sha256": "2abd863d0906a52657a53f9641e5ef03012cc0f4d73f2ee4aa92c9bc5b5e0693",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 339,
           "top_level_keys": [
             "messages",
@@ -598,13 +578,9 @@
               "device_id",
               "session_id"
             ],
-            "field_hashes": {
-              "account_uuid": "sha256:51e565071788eb67",
-              "device_id": "sha256:52b6419d27bd7f54",
-              "session_id": "sha256:89d07480e9d09240"
-            },
-            "user_id_value_hash": "sha256:36c752c0c0098b60",
-            "session_header_hash": "sha256:89d07480e9d09240"
+            "field_es_omitted_reason": "digest_omitted_by_policy",
+            "safe_id_value_ref_omitted_reason": "digest_omitted_by_policy",
+            "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
           }
         },
         "request_count": 1,
@@ -627,7 +603,7 @@
       "category": "sub2api_joint",
       "route": "/v1/messages/count_tokens?beta=true",
       "policy_decision": "defer_block",
-      "selected_account_id_hash": "sha256:43974ed74066b207",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 403,
@@ -639,7 +615,7 @@
         "Accept-Encoding",
         "X-Claude-Code-Session-Id"
       ],
-      "client_body_sha256": "5be832de94a6089d6a5c13615778771ca19d69105170e843985ef18b0b9ef6fe",
+      "client_safe_ref_omitted_reason": "digest_omitted_by_policy",
       "sub2api_to_gateway": {
         "url_host": "127.0.0.1:53749",
         "route": "/v1/messages/count_tokens?beta=true",
@@ -665,18 +641,18 @@
           "Content-Type": "application/json",
           "Host": "loopback",
           "User-Agent": "claude-cli/99.9.9 (external, sdk-cli)",
-          "X-Api-Key": "sha256:a7e3a1ddda2ce652",
-          "X-Claude-Code-Session-Id": "sha256:89d07480e9d09240",
+          "X-Api-Key": "digest_omitted_by_policy",
+          "X-Claude-Code-Session-Id": "digest_omitted_by_policy",
           "anthropic-beta": "client-beta",
-          "x-cc-account-id": "sha256:43974ed74066b207",
+          "x-cc-account-id": "digest_omitted_by_policy",
           "x-cc-egress-bucket": "bucket-a",
-          "x-cc-gateway-token": "sha256:f15ae5b5899f8327",
+          "x-cc-gateway-token": "digest_omitted_by_policy",
           "x-cc-policy-version": "2.1.146",
           "x-cc-provider": "anthropic",
-          "x-cc-token-type": "sha256:6c793695171e793d"
+          "x-cc-token-type": "digest_omitted_by_policy"
         },
         "body": {
-          "sha256": "5be832de94a6089d6a5c13615778771ca19d69105170e843985ef18b0b9ef6fe",
+          "artifact_omitted_reason": "digest_omitted_by_policy",
           "size_bytes": 110,
           "top_level_keys": [
             "messages",
@@ -757,7 +733,7 @@
       "category": "gateway_direct",
       "route": "/v1/messages?beta=true",
       "policy_decision": "control_plane_401",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 401,
@@ -790,7 +766,7 @@
       "category": "gateway_direct",
       "route": "/v1/messages?beta=true",
       "policy_decision": "control_plane_403",
-      "selected_account_id_hash": "sha256:83cf8b609de60036",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 403,
@@ -823,7 +799,7 @@
       "category": "gateway_direct",
       "route": "/v1/messages?beta=true",
       "policy_decision": "control_plane_400",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "policy_version": "2.1.146",
       "response_status": 400,
       "response_error_kind": "control-plane",
@@ -854,7 +830,7 @@
       "category": "gateway_direct",
       "route": "/v1/unknown?beta=true",
       "policy_decision": "block_404",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 404,
@@ -887,7 +863,7 @@
       "category": "gateway_direct",
       "route": "/v1/messages?beta=true",
       "policy_decision": "control_plane_400",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 400,
@@ -920,7 +896,7 @@
       "category": "gateway_direct",
       "route": "/v1/messages?beta=true",
       "policy_decision": "control_plane_403",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 403,
@@ -953,7 +929,7 @@
       "category": "gateway_direct",
       "route": "/v1/messages?beta=true",
       "policy_decision": "control_plane_403",
-      "selected_account_id_hash": "sha256:c3ea99f86b2f8a74",
+      "selected_safe_id_ref_omitted_reason": "digest_omitted_by_policy",
       "egress_bucket_id": "bucket-a",
       "policy_version": "2.1.146",
       "response_status": 403,
