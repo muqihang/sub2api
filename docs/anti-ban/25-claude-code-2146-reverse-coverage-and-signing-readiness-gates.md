@@ -236,3 +236,22 @@ Required blocker follow-up before final signing-mode design is recommended:
 1. Close `P0-A` with a real `2.1.146` local `count_tokens` fixture, or keep the route blocked/deferred in the approved first-wave scope document.
 2. Keep Linux P0-C session evidence current if CLI option semantics change; current evidence covers explicit `--resume` / `--session-id` and shows `stream-json` is output-side in this path.
 3. Keep Linux parity evidence current if the deployment host/persona changes; the current Ubuntu 24.04.4 x86_64 localhost capture is the basis for the current PASS.
+
+## 2026-05-22 OAuth messages scope gate addendum
+
+A single approved sign-primary `/v1/messages` canary returned upstream 403 `permission_error`. Offline analysis of the safe evidence and database state confirmed the saved OAuth scope lacked `user:inference`; signer/verifier did not fail, proxy egress stayed pinned, and no fallback occurred. This means the request failed at the OAuth permission gate before CCH acceptance could be evaluated.
+
+Gate adjustment:
+
+- Anthropic OAuth/setup-token accounts must not enter `/v1/messages` unless `credentials.scope` contains exact scope token `user:inference` (order-insensitive).
+- Missing, empty, non-string, or malformed scope is fail-closed with stable code `inference_scope_missing`.
+- The gate is before CC Gateway/upstream forwarding and therefore prevents another missing-scope token from reaching real upstream.
+- Anthropic API-key passthrough is unaffected.
+- Non-Anthropic routes are unaffected.
+- The existing `old-local-account-canary` token remains quarantined/blocked with reason `inference_scope_missing`; it must not be used for messages until reauthorized through a corrected path that returns `user:inference`.
+
+Status impact:
+
+- Ordinary `generate-auth-url` OAuth is **not sufficient** for messages canary unless the returned/saved scope includes `user:inference`.
+- Current `generate-setup-token-url` browser flow is **not usable** due `Invalid OAuth Request`; pause it until the Claude Code CLI subscription-login path is separately compared and fixed.
+- CCH/sign-primary remains locally verified only: real upstream accepted status is **not proven** by the failed 403 canary.

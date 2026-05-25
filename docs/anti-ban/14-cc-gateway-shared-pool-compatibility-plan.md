@@ -867,10 +867,10 @@ egress:
   buckets:
     - name: default
       direct: false
-      proxy_url: "http://user:pass@proxy-default:8080"
+      proxy_url: "http://proxy-default:8080"
     - name: acct-001
       direct: false
-      proxy_url: "http://user:pass@proxy-acct-001:8080"
+      proxy_url: "http://proxy-acct-001:8080"
 ```
 
 > 以上是目标配置形态，当前 CC Gateway 需要先按 Checkpoint 2/3 实现后才能使用。
@@ -890,10 +890,19 @@ egress:
 - [ ] count_tokens / event logging 若无完整 `2.1.146` 真实 fixture，则其首轮生产策略已明确写成 block / deferred / residual risk，而不是默认放行。
 - [ ] Sub2API 与 CC Gateway 配置均确认不泄露 raw token/proxy。
 - [ ] 账号授权浏览器出口与 token exchange /运行出口策略一致。
+- [ ] Anthropic OAuth/setup-token 账号的保存 scope 必须包含 `user:inference`，否则 `/v1/messages` 在 Sub2API 本地以 `inference_scope_missing` fail closed，且不得进入 CC Gateway 或上游。
 - [ ] 回滚命令和开关已演练。
 - [ ] Chat Completions / Responses 若未完成联合 capture，生产路由中保持关闭或不走 CC Gateway。
 - [ ] `direct` bucket 若存在，已被显式审批并在 capture 报告中记录；默认生产 bucket 均为 proxy bucket。
 - [x] no-CCH upstream acceptance 已按 `16-no-cch-upstream-acceptance-validation.md` 完成，结论为 PASS，范围限定为一个 Claude Code 2.1.146 最小 `/v1/messages` 请求；更广流量仍需 canary。
+
+Scope clarification after the single sign-primary canary (2026-05-22):
+
+- The approved canary reached Anthropic once and returned 403 `permission_error` because the saved OAuth scope lacked `user:inference`.
+- This result does not prove CCH/signing failure or success; CCH remains offline/local verified and real upstream acceptance remains unverified.
+- Ordinary `generate-auth-url` OAuth is not messages-capable unless the returned/saved scope includes `user:inference`.
+- The current `generate-setup-token-url` browser flow is not usable for first wave until its `Invalid OAuth Request` cause is fixed.
+- The existing `old-local-account-canary` token remains quarantined/blocked for messages use; do not delete or reuse it without separate approval.
 
 首轮真实 canary：
 

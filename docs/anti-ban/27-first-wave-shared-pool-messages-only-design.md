@@ -586,3 +586,11 @@ Document `28` must cover both first-wave lanes:
 2. `strip-controlled` lane rollout only as baseline sanity, diagnostic, emergency operator-approved fallback, cache optimization, or explicit opt-out.
 
 Document `28` must include separate entry criteria, traffic cohorts, observability, redaction checks, kill switches, rollback steps, and stop conditions for both lanes. It must not expand scope beyond messages-only unless a later approved design changes the route boundary.
+
+## 20. 2026-05-22 OAuth scope gate clarification
+
+Before any OAuth/setup-token account can enter first-wave native `/v1/messages`, Sub2API must verify the saved credential scope contains `user:inference`. This is a local pre-forward gate and must execute before CC Gateway selection/final-output forwarding or direct upstream forwarding. Missing, empty, non-string, or malformed scope fails closed with `inference_scope_missing`.
+
+The ordinary OAuth web flow may successfully create an account while still returning only profile/API-key/file-upload scopes. Such accounts are not messages-capable and must remain blocked/quarantined. The current setup-token browser URL shape is not first-wave usable until separately repaired.
+
+This clarification does not change the first-wave route scope: messages-only remains the only included route; count_tokens remains blocked/deferred; event_logging remains suppress/block; OpenAI-compatible Anthropic routes and Antigravity remain excluded. It also does not claim CCH real-upstream acceptance: the only real sign-primary attempt failed at OAuth scope authorization before CCH acceptance could be evaluated.

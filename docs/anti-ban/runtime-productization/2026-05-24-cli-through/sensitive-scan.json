@@ -1,0 +1,6 @@
+{
+  "api_key": false,
+  "authorization_value": false,
+  "bearer": false,
+  "prompt_sensitive_payload_marker": false
+}
