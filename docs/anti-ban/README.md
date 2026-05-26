@@ -42,6 +42,7 @@
 | [24-disaster-recovery-and-policy-rollout.md](./24-disaster-recovery-and-policy-rollout.md) | 灾备与策略发布 Runbook | feature flag、canary、rollback、禁止静默 fallback |
 | [25-claude-code-2146-reverse-coverage-and-signing-readiness-gates.md](./25-claude-code-2146-reverse-coverage-and-signing-readiness-gates.md) | Claude Code 2.1.146 逆向覆盖与 signing readiness gate | count_tokens / refresh / session / Linux parity / Sub2API+CC Gateway signing 阻断项 |
 | [26-signing-readiness-gap-closure-plan.md](./26-signing-readiness-gap-closure-plan.md) | Signing readiness gap closure 执行计划 | 把 14/15/20/25 与 A/B 审计中的 P0/P1 转为可执行闭环；通过后才写 final signing-mode design |
+| [40-real-operation-data-retention-strategy.md](./40-real-operation-data-retention-strategy.md) | 真实小流量运营数据留存策略 | 服务器 raw 证据、ledger、safe deliverable、运营报表的分层留存和脱敏边界 |
 ---
 
 ### 共享账号池设计包（17-24）的边界
@@ -134,3 +135,5 @@
 | `captures/2026-05-20-cch-final-attempt.md` | CCH 算法攻克尝试 |
 | `captures/2026-05-20-header-wire-order.md` | Header Wire Order |
 | `captures/2026-05-19-extracted-fragments/` | 119 个原始证据文件 |
+
+- [42-claude-onboarding-wizard-operator-runbook.md](42-claude-onboarding-wizard-operator-runbook.md) - Claude 正式号池上号向导 Runbook

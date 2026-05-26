@@ -1,7 +1,7 @@
 # Harness Engineering SOR: Claude Code formal pool staging to small-flow operation
 
 Date: 2026-05-25
-Status: staging-ready after local verification; not yet deployed in this document
+Status: staging runtime deployed; small-flow production mode enabled on 2026-05-26; operator-watched only
 Source of truth: `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation`
 CC Gateway source: `/Users/muqihang/chelingxi_workspace/cc-gateway`
 
@@ -105,6 +105,12 @@ Not yet complete:
 - Real telemetry upload. This remains disabled until separately approved.
 
 Therefore the first live phase must be very small-flow and operator-watched.
+
+Data retention for this live phase is governed by:
+
+- `docs/anti-ban/40-real-operation-data-retention-strategy.md`
+
+Short version: raw evidence stays only on the restricted server runtime path; the worktree only receives scan-clean safe deliverables and aggregated summaries. Do not move raw request bodies, prompts, tokens, CCH, account UUIDs, email, or proxy credentials into this repository.
 
 ## 7. Staging deployment checklist
 
@@ -219,6 +225,7 @@ Primary docs:
 
 - Staging runbook: `docs/anti-ban/staging/staging-deployment-readiness-runbook.md`
 - This SOR: `docs/anti-ban/staging/2026-05-25-harness-engineering-sor.md`
+- Real operation data retention: `docs/anti-ban/40-real-operation-data-retention-strategy.md`
 - Session Budget design: `docs/anti-ban/39-formal-pool-session-budget-strategy.md`
 - Session Budget implementation memo: `docs/anti-ban/session-budget-phase1-implementation-memo.md`
 - Control-plane upload strategy: `docs/anti-ban/35-formal-pool-control-plane-upload-strategy.md`
@@ -261,3 +268,7 @@ If this document is current and verification remains green, the next action is:
 5. Confirm ledger export and scan-clean artifacts.
 6. Only then allow tiny small-flow user traffic.
 
+
+## Claude formal pool onboarding wizard
+
+Status: implemented for localhost/mock readiness. The wizard uses backend-only OAuth exchange/create, creates accounts unschedulable, writes formal-pool CC Gateway defaults, runs acceptance without real Anthropic/Claude messages, and requires manual activation. Real OAuth login/smoke remains blocked pending separate approval.
