@@ -63,6 +63,15 @@
                 </div>
               </div>
 
+
+              <button
+                @click="router.push('/admin/claude-onboarding')"
+                class="btn btn-primary"
+                title="Claude 正式号池上号向导"
+              >
+                Claude 正式号池上号向导
+              </button>
+
               <!-- Error Passthrough Rules -->
               <button
                 @click="showErrorPassthrough = true"
@@ -341,6 +350,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
@@ -378,6 +388,7 @@ import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, Admi
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const router = useRouter()
 const authStore = useAuthStore()
 
 const proxies = ref<AccountProxy[]>([])

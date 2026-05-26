@@ -506,6 +506,17 @@ export const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/claude-onboarding',
+    name: 'AdminClaudeOnboarding',
+    component: () => import('@/views/admin/ClaudeOnboardingWizardView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Claude Onboarding Wizard',
+      description: 'Formal pool Claude subscription account onboarding wizard'
+    }
+  },
+  {
     path: '/admin/openai-rt-import',
     name: 'AdminOpenAIRTImport',
     component: () => import('@/views/admin/OpenAIRTImportView.vue'),
