@@ -20,6 +20,7 @@ from tools.cli_control_plane_guard import (
     _cli_session_budget_ledger,
     body_summary,
     classify_request,
+    deep_body_summary,
     redact_headers,
 )
 from tools.cli_control_plane_policy import load_default_policy
@@ -130,6 +131,17 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertNotIn('secret-token-marker', dumped)
         self.assertEqual(summary['max_tokens'], 'redacted-non-int')
 
+    def test_deep_body_summary_records_shape_without_string_values(self):
+        summary = deep_body_summary(json.dumps({
+            'model': 'claude-sonnet-4-6',
+            'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
+            'events': [{'event_type': 'ClaudeCodeInternalEvent', 'event_name': 'tengu_api_success'}],
+        }).encode('utf-8'))
+        dumped = json.dumps(summary, sort_keys=True)
+        self.assertIn('json_tree', dumped)
+        self.assertIn('tengu_api_success', dumped)
+        self.assertNotIn('raw-prompt-marker', dumped)
+
     def test_explicit_policy_on_guard_config_controls_local_stub_response(self):
         policy_dict = load_default_policy()._source_dict
         custom_dict = copy.deepcopy(policy_dict)
@@ -215,6 +227,8 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 self.assertIn('/api/oauth/organizations/{org}/referral/eligibility', dumped)
                 self.assertIn('query_omitted_reason', dumped)
                 self.assertIn('body_length_bucket', dumped)
+                self.assertIn('transport_summary', dumped)
+                self.assertIn('auth_shape', dumped)
                 self.assertNotIn('local-org-secret', dumped)
                 self.assertNotIn('secret-token-marker', dumped)
                 self.assertNotIn('cookie-marker', dumped)
@@ -297,6 +311,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     upstream_base=f'http://127.0.0.1:{upstream_port}',
                     sub2api_auth='sub2api-entry-key',
                     summary_path=summary,
+                    capture_level='deep',
                 ))
                 forwarder.start_background()
                 try:
@@ -329,16 +344,65 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     dumped = summary.read_text(encoding='utf-8')
                     self.assertIn('auth_shape', dumped)
                     self.assertIn('body_keys', dumped)
+                    self.assertIn('messages_upstream_response', dumped)
+                    self.assertIn('"status": 200', dumped)
+                    self.assertIn('deep_body_summary', dumped)
+                    self.assertIn('response_deep_body_summary', dumped)
                     self.assertNotIn('raw-prompt-marker', dumped)
                     self.assertNotIn('secret-token-marker', dumped)
                     self.assertNotIn('local-api-key-marker', dumped)
                     self.assertNotIn('cookie-marker', dumped)
                     self.assertNotIn('proxy-credential-marker', dumped)
-                    self.assertNotIn('"messages"', dumped)
                 finally:
                     forwarder.stop()
         finally:
             upstream.shutdown()
+
+    def test_local_raw_capture_writes_redacted_artifact_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            summary = Path(td) / 'summary.jsonl'
+            raw_dir = Path(td) / 'raw-secure'
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:9',
+                sub2api_auth='unused',
+                summary_path=summary,
+                capture_level='local-raw',
+                local_raw_dir=raw_dir,
+            ))
+            forwarder.start_background()
+            try:
+                req = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}/api/event_logging/v2/batch',
+                    data=json.dumps({
+                        'events': [{
+                            'event_type': 'ClaudeCodeInternalEvent',
+                            'event_name': 'tengu_api_success',
+                            'secret-token-marker': 'must-not-persist',
+                            'content': 'raw-prompt-marker',
+                        }]
+                    }).encode('utf-8'),
+                    method='POST',
+                    headers={
+                        'Authorization': 'Bearer secret-token-marker',
+                        'content-type': 'application/json',
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    self.assertEqual(resp.status, 204)
+                artifacts = list(raw_dir.glob('*.json'))
+                self.assertEqual(len(artifacts), 1)
+                dumped = artifacts[0].read_text(encoding='utf-8')
+                self.assertIn('tengu_api_success', dumped)
+                self.assertIn('ClaudeCodeInternalEvent', dumped)
+                self.assertNotIn('secret-token-marker', dumped)
+                self.assertNotIn('must-not-persist', dumped)
+                self.assertNotIn('raw-prompt-marker', dumped)
+                self.assertIn('local_raw_ref', summary.read_text(encoding='utf-8'))
+            finally:
+                forwarder.stop()
 
     def test_connect_stub_blocks_direct_messages_inside_tls(self):
         with tempfile.TemporaryDirectory() as td:

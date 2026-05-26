@@ -54,6 +54,15 @@ SELECTED_HEADERS = {
     "x-stainless-runtime-version",
 }
 SENSITIVE_BODY_KEYS = {"messages", "prompt", "body", "cch"}
+CAPTURE_LEVELS = {"summary", "deep", "local-raw"}
+SAFE_VALUE_KEYS = {
+    "event_name",
+    "event_type",
+    "model",
+    "role",
+    "stop_reason",
+    "type",
+}
 _DEFAULT_POLICY: ControlPlanePolicy | None = None
 _DEFAULT_POLICY_LOCK = threading.Lock()
 _SAFE_HEADER_NAME_RE = re.compile(r"^[a-z0-9-]+$")
@@ -153,11 +162,17 @@ class GuardConfig:
     extra_forward_headers: Mapping[str, str] | None = None
     cost_envelope_limits: Mapping[str, Any] | None = None
     session_budget_ledger: SessionBudgetLedger | None = None
+    capture_level: str = "summary"
+    local_raw_dir: Path | None = None
 
     def __post_init__(self) -> None:
         policy = self.policy or default_policy()
+        if self.capture_level not in CAPTURE_LEVELS:
+            raise ValueError(f"capture_level must be one of {sorted(CAPTURE_LEVELS)}")
         object.__setattr__(self, "policy", policy)
         object.__setattr__(self, "upstream_base", validate_loopback_url(self.upstream_base))
+        if self.capture_level == "local-raw" and self.local_raw_dir is None:
+            object.__setattr__(self, "local_raw_dir", self.summary_path.parent / "raw-secure")
         if self.control_plane_intent_url is not None:
             object.__setattr__(
                 self,
@@ -421,6 +436,178 @@ def body_summary(body: bytes) -> dict[str, Any]:
     return summary
 
 
+def deep_body_summary(body: bytes) -> dict[str, Any]:
+    summary: dict[str, Any] = {"body_size": len(body)}
+    if not body:
+        summary["content_kind"] = "empty"
+        return summary
+    try:
+        obj = json.loads(body.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - summary only
+        summary["content_kind"] = "non_json_or_invalid"
+        summary["json_error"] = type(exc).__name__
+        return summary
+    summary["content_kind"] = "json"
+    summary["json_tree"] = _json_shape_tree(obj)
+    event_names = sorted(_extract_event_names(obj))
+    if event_names:
+        summary["event_names"] = event_names[:100]
+        summary["event_names_truncated"] = len(event_names) > 100
+    return summary
+
+
+def _json_shape_tree(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 5:
+        return {"type": _json_type_name(value), "truncated": "max_depth"}
+    if isinstance(value, Mapping):
+        keys = sorted(str(key) for key in value.keys())
+        children: dict[str, Any] = {}
+        for key in keys[:80]:
+            child_value = value.get(key)
+            safe_key = _sanitize_body_key(key) or "redacted-key"
+            children[safe_key] = _json_shape_tree(child_value, depth=depth + 1)
+        result: dict[str, Any] = {"type": "object", "keys": [_sanitize_body_key(key) or "redacted-key" for key in keys[:80]], "children": children}
+        if len(keys) > 80:
+            result["truncated_keys"] = len(keys) - 80
+        return result
+    if isinstance(value, list):
+        result = {"type": "array", "length": len(value)}
+        if value:
+            result["first"] = _json_shape_tree(value[0], depth=depth + 1)
+        return result
+    if isinstance(value, str):
+        return {"type": "string", "length": len(value)}
+    if isinstance(value, bool):
+        return {"type": "bool"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {"type": "int", "bucket": _number_bucket(value)}
+    if isinstance(value, float):
+        return {"type": "float"}
+    if value is None:
+        return {"type": "null"}
+    return {"type": type(value).__name__}
+
+
+def _extract_event_names(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if key in {"event_name", "event_type"} and isinstance(child, str) and not _looks_sensitive_text(child):
+                found.add(child[:200])
+            found.update(_extract_event_names(child))
+    elif isinstance(value, list):
+        for child in value[:200]:
+            found.update(_extract_event_names(child))
+    return found
+
+
+def _sanitized_local_raw_headers(headers: Mapping[str, str]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in headers.items():
+        lower = _sanitize_header_name(key.lower())
+        if key.lower() in SENSITIVE_HEADERS:
+            result[lower] = {"present": True, "scheme": value.split(" ", 1)[0] if " " in value else "present-no-scheme"}
+        elif lower == "redacted-header":
+            result[lower] = {"present": True, "value": "redacted"}
+        else:
+            result[lower] = _safe_local_raw_scalar(value, key=lower)
+    return result
+
+
+def _sanitized_local_raw_body(body: bytes) -> dict[str, Any]:
+    result: dict[str, Any] = {"size": len(body)}
+    if not body:
+        result["content_kind"] = "empty"
+        return result
+    try:
+        obj = json.loads(body.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        result["content_kind"] = "non_json_or_invalid"
+        result["decode_error"] = type(exc).__name__
+        return result
+    result["content_kind"] = "json_redacted"
+    result["json"] = _redact_json_value(obj)
+    return result
+
+
+def _redact_json_value(value: Any, *, key: str | None = None, depth: int = 0) -> Any:
+    lowered_key = (key or "").lower()
+    if lowered_key in SENSITIVE_BODY_KEYS or _looks_sensitive_text(lowered_key):
+        return {"redacted": True, "type": _json_type_name(value)}
+    if depth >= 8:
+        return {"type": _json_type_name(value), "truncated": "max_depth"}
+    if isinstance(value, Mapping):
+        items = list(value.items())
+        result: dict[str, Any] = {}
+        for child_key, child_value in items[:200]:
+            safe_key = _sanitize_body_key(child_key) or "redacted-key"
+            result[safe_key] = _redact_json_value(child_value, key=str(child_key), depth=depth + 1)
+        if len(items) > 200:
+            result["__truncated_keys__"] = len(items) - 200
+        return result
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "length": len(value),
+            "items": [_redact_json_value(item, key=key, depth=depth + 1) for item in value[:50]],
+            **({"truncated_items": len(value) - 50} if len(value) > 50 else {}),
+        }
+    return _safe_local_raw_scalar(value, key=lowered_key)
+
+
+def _safe_local_raw_scalar(value: Any, *, key: str | None = None) -> Any:
+    lowered_key = (key or "").lower()
+    if isinstance(value, str):
+        if lowered_key in SAFE_VALUE_KEYS and not _looks_sensitive_text(value):
+            return value[:500]
+        return {"type": "string", "length": len(value)}
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {"type": "int", "bucket": _number_bucket(value)}
+    if isinstance(value, float):
+        return {"type": "float"}
+    return {"type": type(value).__name__}
+
+
+def _json_type_name(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def _number_bucket(value: int) -> str:
+    abs_value = abs(value)
+    if abs_value <= 10:
+        return "0_10"
+    if abs_value <= 100:
+        return "11_100"
+    if abs_value <= 1000:
+        return "101_1000"
+    if abs_value <= 10000:
+        return "1001_10000"
+    if abs_value <= 100000:
+        return "10001_100000"
+    return "100001_plus"
+
+
+def _safe_artifact_name(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value).strip("-").lower()
+    return cleaned[:80] or "capture"
+
+
 class RedactingForwarder:
     def __init__(self, config: GuardConfig, execution_controller: ExecutionController | None = None):
         self.config = config
@@ -431,6 +618,8 @@ class RedactingForwarder:
         self._thread: threading.Thread | None = None
         self._message_count = 0
         self._message_lock = threading.Lock()
+        self._artifact_count = 0
+        self._artifact_lock = threading.Lock()
 
     def start_background(self) -> None:
         handler = self._make_handler()
@@ -456,6 +645,59 @@ class RedactingForwarder:
         self.config.summary_path.parent.mkdir(parents=True, exist_ok=True)
         with self.config.summary_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(dict(obj), ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _capture_record(
+        self,
+        *,
+        event: str,
+        method: str,
+        path: str,
+        headers: Mapping[str, str],
+        body: bytes,
+        status: int | None = None,
+    ) -> dict[str, Any]:
+        if self.config.capture_level != "local-raw":
+            return {}
+        raw_dir = self.config.local_raw_dir
+        if raw_dir is None:
+            return {}
+        with self._artifact_lock:
+            self._artifact_count += 1
+            index = self._artifact_count
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            raw_dir.chmod(0o700)
+        except OSError:
+            pass
+        filename = f"{index:06d}-{_safe_artifact_name(event)}.json"
+        artifact_path = raw_dir / filename
+        payload = {
+            "event": event,
+            "method": method.upper(),
+            "path_template": _safe_fallback_path(path),
+            "status": status,
+            "headers": _sanitized_local_raw_headers(headers),
+            "body": _sanitized_local_raw_body(body),
+            "safety": {
+                "raw_token_persisted": False,
+                "prompt_text_persisted": False,
+                "request_payload_persisted": False,
+                "string_values_are_redacted_by_default": True,
+            },
+        }
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            artifact_path.chmod(0o600)
+        except OSError:
+            pass
+        return {
+            "local_raw_ref": {
+                "path": str(artifact_path),
+                "mode": "redacted_local_only",
+                "raw_token_persisted": False,
+                "request_payload_persisted": False,
+            }
+        }
 
     def _ssl_context(self) -> ssl.SSLContext:
         cert = self.config.cert_path or (self.config.summary_path.parent / "api.anthropic.com.pem")
@@ -608,7 +850,7 @@ class RedactingForwarder:
                 body = self.rfile.read(length) if length else b""
                 if decision.action == "forward_messages":
                     envelope = evaluate_cost_envelope(body, parent.config)
-                    parent._record({
+                    request_record = {
                         "ts": time.time(),
                         "event": "request",
                         "method": "POST",
@@ -617,7 +859,17 @@ class RedactingForwarder:
                         "reason": decision.reason,
                         **redact_headers(dict(self.headers)),
                         **body_summary(body),
-                    })
+                    }
+                    if parent.config.capture_level in {"deep", "local-raw"}:
+                        request_record["deep_body_summary"] = deep_body_summary(body)
+                    request_record.update(parent._capture_record(
+                        event="messages_request",
+                        method="POST",
+                        path=request_path,
+                        headers=dict(self.headers),
+                        body=body,
+                    ))
+                    parent._record(request_record)
                     if not envelope.allowed:
                         parent._record({
                             "ts": time.time(),
@@ -723,6 +975,26 @@ class RedactingForwarder:
                 try:
                     with opener.open(request, timeout=30) as response:
                         data = response.read()
+                        response_record = {
+                            "ts": time.time(),
+                            "event": "messages_upstream_response",
+                            "decision": "forward_messages",
+                            "path": request_path,
+                            "status": response.status,
+                            "response_content_type": response.headers.get("content-type"),
+                            "response_body_size": len(data),
+                        }
+                        if parent.config.capture_level in {"deep", "local-raw"}:
+                            response_record["response_deep_body_summary"] = deep_body_summary(data)
+                        response_record.update(parent._capture_record(
+                            event="messages_response",
+                            method="POST",
+                            path=request_path,
+                            headers=dict(response.headers),
+                            body=data,
+                            status=response.status,
+                        ))
+                        parent._record(response_record)
                         self.send_response(response.status)
                         for key, value in response.headers.items():
                             if key.lower() not in {"transfer-encoding", "connection", "content-length"}:
@@ -732,6 +1004,26 @@ class RedactingForwarder:
                         self.wfile.write(data)
                 except urllib.error.HTTPError as exc:
                     data = exc.read()
+                    error_record = {
+                        "ts": time.time(),
+                        "event": "messages_upstream_response",
+                        "decision": "forward_messages",
+                        "path": request_path,
+                        "status": exc.code,
+                        "response_content_type": exc.headers.get("content-type"),
+                        "response_body_size": len(data),
+                    }
+                    if parent.config.capture_level in {"deep", "local-raw"}:
+                        error_record["response_deep_body_summary"] = deep_body_summary(data)
+                    error_record.update(parent._capture_record(
+                        event="messages_response",
+                        method="POST",
+                        path=request_path,
+                        headers=dict(exc.headers),
+                        body=data,
+                        status=exc.code,
+                    ))
+                    parent._record(error_record)
                     self.send_response(exc.code)
                     content_type = exc.headers.get("content-type")
                     if content_type:
@@ -794,8 +1086,20 @@ class RedactingForwarder:
                 "event": event,
                 "decision": decision.action,
                 "reason": decision.reason,
+                "transport_summary": redact_headers(headers),
+                "control_plane_body_summary": body_summary(body),
                 **intent,
             }
+            if self.config.capture_level in {"deep", "local-raw"}:
+                record["control_plane_deep_body_summary"] = deep_body_summary(body)
+            record.update(self._capture_record(
+                event=f"control_plane_{event}",
+                method=method,
+                path=path,
+                headers=headers,
+                body=body,
+                status=decision.status,
+            ))
             if target is not None:
                 record.update(_sanitize_connect_target(target, allowed=self._is_allowed_stub_target(target)))
             if declared_content_length is not None:
@@ -835,8 +1139,20 @@ class RedactingForwarder:
             "event": event,
             "decision": effective_decision.action,
             "reason": effective_decision.reason,
+            "transport_summary": redact_headers(headers),
+            "control_plane_body_summary": body_summary(body),
             **intent,
         }
+        if self.config.capture_level in {"deep", "local-raw"}:
+            record["control_plane_deep_body_summary"] = deep_body_summary(body)
+        record.update(self._capture_record(
+            event=f"control_plane_{event}",
+            method=method,
+            path=path,
+            headers=headers,
+            body=body,
+            status=effective_decision.status,
+        ))
         if target is not None:
             record.update(_sanitize_connect_target(target, allowed=self._is_allowed_stub_target(target)))
         if declared_content_length is not None:
@@ -1250,7 +1566,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, required=True)
     parser.add_argument("--upstream-base", required=True)
-    parser.add_argument("--sub2api-auth", required=True)
+    parser.add_argument("--sub2api-auth")
+    parser.add_argument("--sub2api-auth-env", default="ZHUMENG_API_KEY")
     parser.add_argument("--summary-path", type=Path, required=True)
     parser.add_argument("--control-plane-intent-url")
     parser.add_argument("--control-plane-intent-auth")
@@ -1279,7 +1596,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session-budget-max-body-bytes", type=int)
     parser.add_argument("--session-budget-max-tool-def-bytes", type=int)
     parser.add_argument("--session-budget-max-thinking-messages", type=int)
+    parser.add_argument("--capture-level", choices=sorted(CAPTURE_LEVELS), default="summary")
+    parser.add_argument("--local-raw-dir", type=Path)
     args = parser.parse_args(argv)
+    sub2api_auth = args.sub2api_auth or os.environ.get(args.sub2api_auth_env or "")
+    if not sub2api_auth:
+        print("missing Sub2API auth: pass --sub2api-auth or set --sub2api-auth-env", file=os.sys.stderr)
+        return 2
 
     try:
         policy = load_policy_from_path(args.policy_path)
@@ -1296,7 +1619,7 @@ def main(argv: list[str] | None = None) -> int:
                 listen_host=args.listen_host,
                 listen_port=args.listen_port,
                 upstream_base=args.upstream_base,
-                sub2api_auth=args.sub2api_auth,
+                sub2api_auth=sub2api_auth,
                 summary_path=args.summary_path,
                 control_plane_intent_url=args.control_plane_intent_url,
                 control_plane_intent_auth=args.control_plane_intent_auth,
@@ -1307,6 +1630,8 @@ def main(argv: list[str] | None = None) -> int:
                 policy=policy,
                 cost_envelope_limits=cost_limits,
                 session_budget_ledger=session_budget_ledger,
+                capture_level=args.capture_level,
+                local_raw_dir=args.local_raw_dir,
             )
         )
     except ValueError as exc:
