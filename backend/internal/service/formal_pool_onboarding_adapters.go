@@ -1,0 +1,179 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
+)
+
+type FormalPoolAdminProxyVerifier struct{ admin AdminService }
+
+func NewFormalPoolAdminProxyVerifier(admin AdminService) *FormalPoolAdminProxyVerifier {
+	return &FormalPoolAdminProxyVerifier{admin: admin}
+}
+func (v *FormalPoolAdminProxyVerifier) ResolveOrCreateProxy(ctx context.Context, req FormalPoolOnboardingStartRequest) (FormalPoolProxyResolution, error) {
+	if v == nil || v.admin == nil {
+		return FormalPoolProxyResolution{}, ErrFormalPoolOnboardingNotFound
+	}
+	if strings.EqualFold(req.ProxyMode, "create") {
+		protocol := strings.ToLower(strings.TrimSpace(req.Proxy.Protocol))
+		probe := Proxy{Name: req.Proxy.Name, Protocol: protocol, Host: req.Proxy.Host, Port: req.Proxy.Port, Username: req.Proxy.Username, Password: req.Proxy.Password}
+		normalized, parsed, err := proxyurl.Parse(probe.URL())
+		if err != nil {
+			return FormalPoolProxyResolution{}, err
+		}
+		created, err := v.admin.CreateProxy(ctx, &CreateProxyInput{Name: strings.TrimSpace(req.Proxy.Name), Protocol: parsed.Scheme, Host: strings.TrimSpace(req.Proxy.Host), Port: req.Proxy.Port, Username: strings.TrimSpace(req.Proxy.Username), Password: strings.TrimSpace(req.Proxy.Password)})
+		if err != nil {
+			return FormalPoolProxyResolution{}, err
+		}
+		return FormalPoolProxyResolution{ProxyID: created.ID, ProxyRef: formalPoolSafeRef("proxy", fmt.Sprintf("%d", created.ID)), NormalizedProxyURL: normalized}, nil
+	}
+	proxy, err := v.admin.GetProxy(ctx, *req.ProxyID)
+	if err != nil {
+		return FormalPoolProxyResolution{}, err
+	}
+	if proxy == nil || !proxy.IsActive() {
+		return FormalPoolProxyResolution{}, fmt.Errorf("proxy inactive")
+	}
+	normalized, _, err := proxyurl.Parse(proxy.URL())
+	if err != nil {
+		return FormalPoolProxyResolution{}, err
+	}
+	return FormalPoolProxyResolution{ProxyID: proxy.ID, ProxyRef: formalPoolSafeRef("proxy", fmt.Sprintf("%d", proxy.ID)), NormalizedProxyURL: normalized}, nil
+}
+func (v *FormalPoolAdminProxyVerifier) TestProxy(ctx context.Context, proxyID int64) (FormalPoolProxyTestSummary, error) {
+	if v == nil || v.admin == nil {
+		return FormalPoolProxyTestSummary{}, ErrFormalPoolOnboardingNotFound
+	}
+	proxy, err := v.admin.GetProxy(ctx, proxyID)
+	if err != nil {
+		return FormalPoolProxyTestSummary{}, err
+	}
+	if proxy == nil || !proxy.IsActive() {
+		return FormalPoolProxyTestSummary{}, fmt.Errorf("proxy inactive")
+	}
+	if _, _, err := proxyurl.Parse(proxy.URL()); err != nil {
+		return FormalPoolProxyTestSummary{}, err
+	}
+	res, err := v.admin.TestProxy(ctx, proxyID)
+	if err != nil {
+		return FormalPoolProxyTestSummary{}, err
+	}
+	if res == nil || !res.Success {
+		return FormalPoolProxyTestSummary{}, fmt.Errorf("proxy test failed")
+	}
+	return FormalPoolProxyTestSummary{Success: true, ProxyRef: formalPoolSafeRef("proxy", fmt.Sprintf("%d", proxyID)), ExitIPRef: formalPoolSafeRef("exit_ip", res.IPAddress), LatencyBucket: formalPoolLatencyBucket(res.LatencyMs)}, nil
+}
+
+func formalPoolLatencyBucket(ms int64) string {
+	switch {
+	case ms <= 0:
+		return "unknown"
+	case ms < 500:
+		return "lt_500ms"
+	case ms < 1500:
+		return "lt_1500ms"
+	default:
+		return "gte_1500ms"
+	}
+}
+
+type FormalPoolClaudeOAuthFacade struct{ oauth *OAuthService }
+
+func NewFormalPoolClaudeOAuthFacade(oauthService *OAuthService) *FormalPoolClaudeOAuthFacade {
+	return &FormalPoolClaudeOAuthFacade{oauth: oauthService}
+}
+func (f *FormalPoolClaudeOAuthFacade) GenerateFormalAuthURL(ctx context.Context, proxyID int64) (FormalPoolOAuthURL, error) {
+	if f == nil || f.oauth == nil {
+		return FormalPoolOAuthURL{}, fmt.Errorf("oauth service unavailable")
+	}
+	res, err := f.oauth.GenerateAuthURL(ctx, &proxyID)
+	if err != nil {
+		return FormalPoolOAuthURL{}, err
+	}
+	return FormalPoolOAuthURL{AuthURL: res.AuthURL, SessionID: res.SessionID}, nil
+}
+func (f *FormalPoolClaudeOAuthFacade) ExchangeCode(ctx context.Context, sessionID, code string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	if f == nil || f.oauth == nil {
+		return FormalPoolOAuthTokenSummary{}, nil, fmt.Errorf("oauth service unavailable")
+	}
+	tok, err := f.oauth.ExchangeCode(ctx, &ExchangeCodeInput{SessionID: sessionID, Code: code})
+	if err != nil {
+		return FormalPoolOAuthTokenSummary{}, nil, err
+	}
+	scope := strings.TrimSpace(tok.Scope)
+	summary := FormalPoolOAuthTokenSummary{EmailPresent: strings.TrimSpace(tok.EmailAddress) != "", AccountUUIDPresent: strings.TrimSpace(tok.AccountUUID) != "", OrganizationUUIDPresent: strings.TrimSpace(tok.OrgUUID) != "", ScopeContainsUserInference: strings.Contains(scope, "user:inference"), ScopeContainsClaudeCode: strings.Contains(scope, "user:sessions:claude_code") && scope != oauth.ScopeInference, ExpiresInBucket: formalPoolExpiresBucket(tok.ExpiresIn)}
+	creds := map[string]any{"access_token": tok.AccessToken, "refresh_token": tok.RefreshToken, "token_type": tok.TokenType, "expires_in": tok.ExpiresIn, "expires_at": tok.ExpiresAt, "scope": tok.Scope}
+	return summary, creds, nil
+}
+func formalPoolExpiresBucket(v int64) string {
+	if v <= 0 {
+		return "unknown"
+	}
+	if v <= 3600 {
+		return "le_1h"
+	}
+	return "gt_1h"
+}
+
+type FormalPoolAdminAccountManager struct{ admin AdminService }
+
+func NewFormalPoolAdminAccountManager(admin AdminService) *FormalPoolAdminAccountManager {
+	return &FormalPoolAdminAccountManager{admin: admin}
+}
+func (m *FormalPoolAdminAccountManager) CreateFormalPoolAccount(ctx context.Context, input FormalPoolAccountCreateInput) (*Account, error) {
+	if m == nil || m.admin == nil {
+		return nil, fmt.Errorf("admin service unavailable")
+	}
+	return m.admin.CreateAccount(ctx, &CreateAccountInput{Name: input.Name, Notes: &input.Notes, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: input.Credentials, Extra: input.Extra, ProxyID: &input.ProxyID, Concurrency: input.Concurrency, GroupIDs: []int64{input.GroupID}, SkipDefaultGroupBind: true, Schedulable: &input.Schedulable})
+}
+func (m *FormalPoolAdminAccountManager) GetFormalPoolAccount(ctx context.Context, id int64) (*Account, error) {
+	if m == nil || m.admin == nil {
+		return nil, fmt.Errorf("admin service unavailable")
+	}
+	return m.admin.GetAccount(ctx, id)
+}
+func (m *FormalPoolAdminAccountManager) ActivateFormalPoolAccount(ctx context.Context, id int64, extra map[string]any) (*Account, error) {
+	if m == nil || m.admin == nil {
+		return nil, fmt.Errorf("admin service unavailable")
+	}
+	account, err := m.admin.GetAccount(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	merged := cloneCredentials(account.Extra)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	sched := true
+	return m.admin.UpdateAccount(ctx, id, &UpdateAccountInput{Schedulable: &sched, Extra: merged})
+}
+
+type FormalPoolStaticCCGatewayReadinessVerifier struct{}
+
+func NewFormalPoolStaticCCGatewayReadinessVerifier() *FormalPoolStaticCCGatewayReadinessVerifier {
+	return &FormalPoolStaticCCGatewayReadinessVerifier{}
+}
+
+func (v *FormalPoolStaticCCGatewayReadinessVerifier) VerifyCCGatewayReadiness(ctx context.Context, input FormalPoolAcceptanceInput) ([]FormalPoolAcceptanceCheck, error) {
+	_ = ctx
+	checks := []FormalPoolAcceptanceCheck{
+		{Name: "cc_gateway_bucket_present", Status: "pass", Message: "bucket ref recorded locally; runtime bucket smoke requires separate approval"},
+		{Name: "cc_gateway_account_ref_present", Status: "pass", Message: "safe account ref recorded locally"},
+	}
+	if strings.TrimSpace(input.EgressBucket) == "" {
+		checks[0].Status = "fail"
+		checks[0].Message = "egress bucket missing"
+	}
+	if strings.TrimSpace(input.AccountRef) == "" || input.AccountRef == fmt.Sprintf("%d", input.AccountID) || !isSafeLedgerRef(input.AccountRef) {
+		checks[1].Status = "fail"
+		checks[1].Message = "safe account ref missing"
+	}
+	return checks, nil
+}

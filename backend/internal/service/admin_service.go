@@ -281,6 +281,8 @@ type CreateAccountInput struct {
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
+	// Schedulable overrides the default create-time schedulable state.
+	Schedulable *bool
 }
 
 type UpdateAccountInput struct {
@@ -300,6 +302,7 @@ type UpdateAccountInput struct {
 	ExpiresAt             *int64
 	AutoPauseOnExpired    *bool
 	SkipMixedChannelCheck bool // 跳过混合渠道检查（用户已确认风险）
+	Schedulable           *bool
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
@@ -2413,6 +2416,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		Schedulable: true,
 	}
 	// 预计算固定时间重置的下次重置时间
+	if input.Schedulable != nil {
+		account.Schedulable = *input.Schedulable
+	}
 	if account.Extra != nil {
 		if err := ValidateQuotaResetConfig(account.Extra); err != nil {
 			return nil, err
@@ -2573,6 +2579,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 	if input.Status != "" {
 		account.Status = input.Status
+	}
+	if input.Schedulable != nil {
+		account.Schedulable = *input.Schedulable
 	}
 	if input.ExpiresAt != nil {
 		if *input.ExpiresAt <= 0 {

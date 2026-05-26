@@ -98,6 +98,9 @@ func RegisterAdminRoutes(
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
 
+		// Claude formal pool onboarding
+		registerFormalPoolOnboardingAdminRoutes(admin, h)
+
 		// Augment Gateway 管理
 		registerAugmentGatewayAdminRoutes(admin, h)
 
@@ -649,5 +652,36 @@ func registerAffiliateRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			users.PUT("/:user_id", h.Admin.Affiliate.UpdateUserSettings)
 			users.DELETE("/:user_id", h.Admin.Affiliate.ClearUserSettings)
 		}
+	}
+}
+
+func registerFormalPoolOnboardingAdminRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	onboarding := admin.Group("/claude-onboarding")
+	{
+		sessions := onboarding.Group("/sessions")
+		{
+			sessions.POST("", h.Admin.FormalPoolOnboarding.CreateSession)
+			sessions.GET("/:id", h.Admin.FormalPoolOnboarding.GetSession)
+			sessions.POST("/:id/test-proxy", h.Admin.FormalPoolOnboarding.TestProxy)
+			sessions.POST("/:id/browser-egress-attestation", h.Admin.FormalPoolOnboarding.BrowserEgressAttestation)
+			sessions.POST("/:id/generate-auth-url", h.Admin.FormalPoolOnboarding.GenerateAuthURL)
+			sessions.POST("/:id/exchange-code-and-create", h.Admin.FormalPoolOnboarding.ExchangeCodeAndCreate)
+			sessions.POST("/:id/acceptance", h.Admin.FormalPoolOnboarding.Acceptance)
+			sessions.POST("/:id/activate", h.Admin.FormalPoolOnboarding.Activate)
+			sessions.POST("/:id/abort", h.Admin.FormalPoolOnboarding.Abort)
+		}
+	}
+}
+
+func RegisterFormalPoolOnboardingPublicRoutes(v1 *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	public := v1.Group("/claude-onboarding")
+	{
+		public.GET("/browser-egress-check/:nonce", h.Admin.FormalPoolOnboarding.BrowserEgressCheck)
 	}
 }

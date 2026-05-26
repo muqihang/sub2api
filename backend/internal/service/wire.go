@@ -49,6 +49,15 @@ func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiToke
 	return NewOAuthRefreshAPI(accountRepo, tokenCache)
 }
 
+func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService) *FormalPoolOnboardingService {
+	return NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+		OAuth:     NewFormalPoolClaudeOAuthFacade(oauthService),
+		Proxy:     NewFormalPoolAdminProxyVerifier(adminService),
+		Accounts:  NewFormalPoolAdminAccountManager(adminService),
+		CCGateway: NewFormalPoolStaticCCGatewayReadinessVerifier(),
+	})
+}
+
 // ProvideTokenRefreshService creates and starts TokenRefreshService
 func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
@@ -734,8 +743,8 @@ func ProvideCodexGatewayAdminService(cfg *config.Config, stateStore *CodexGatewa
 
 func ProvideCodexGatewayAdminServiceWithVariantChecker(cfg *config.Config, stateStore *CodexGatewayStateStore, gatewayService *GatewayService) *CodexGatewayAdminService {
 	adminCfg := config.GatewayCodexConfig{
-			Enabled:       true,
-			EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+		Enabled:       true,
+		EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
 	}
 	if cfg != nil {
 		adminCfg = cfg.Gateway.Codex
@@ -803,6 +812,7 @@ var ProviderSet = wire.NewSet(
 	NewEntityRateLimitService,
 	ProvideOpenAIGatewayService,
 	NewOAuthService,
+	ProvideFormalPoolOnboardingService,
 	ProvideOpenAIOAuthSessionStore,
 	ProvideOpenAIOAuthService,
 	ProvideGeminiOAuthSessionStore,
