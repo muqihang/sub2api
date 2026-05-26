@@ -355,6 +355,59 @@ func TestUpdateSessionWindow_NoClearUtilizationOnCorrection(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionWindow_StoresPercentUtilizationHeaders(t *testing.T) {
+	end := time.Now().Add(2 * time.Hour)
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{ID: 67, SessionWindowEnd: &end}
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "42%")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "91%")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", fmt.Sprintf("%d", time.Now().Add(48*time.Hour).Unix()))
+
+	svc.UpdateSessionWindow(context.Background(), account, headers)
+
+	if len(repo.updateExtraCalls) != 1 {
+		t.Fatalf("expected 1 UpdateExtra call, got %d", len(repo.updateExtraCalls))
+	}
+	if val, ok := repo.updateExtraCalls[0].Updates["session_window_utilization"].(float64); !ok || val != 0.42 {
+		t.Errorf("expected 5h utilization 0.42, got %v", repo.updateExtraCalls[0].Updates["session_window_utilization"])
+	}
+	if val, ok := repo.updateExtraCalls[0].Updates["passive_usage_7d_utilization"].(float64); !ok || val != 0.91 {
+		t.Errorf("expected 7d utilization 0.91, got %v", repo.updateExtraCalls[0].Updates["passive_usage_7d_utilization"])
+	}
+}
+
+func TestUpdateSessionWindow_ParsesRFC3339AndMillisResetHeaders(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "rfc3339", raw: time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)},
+		{name: "millis", raw: fmt.Sprintf("%d", time.Now().Add(4*time.Hour).UTC().UnixMilli())},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &sessionWindowMockRepo{}
+			svc := newRateLimitServiceForTest(repo)
+			account := &Account{ID: 68}
+			headers := http.Header{}
+			headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+			headers.Set("anthropic-ratelimit-unified-5h-reset", tc.raw)
+
+			svc.UpdateSessionWindow(context.Background(), account, headers)
+
+			if len(repo.sessionWindowCalls) != 1 {
+				t.Fatalf("expected 1 session window call, got %d", len(repo.sessionWindowCalls))
+			}
+			if repo.sessionWindowCalls[0].End == nil || time.Until(*repo.sessionWindowCalls[0].End) <= 0 {
+				t.Fatalf("expected future parsed window end, got %+v", repo.sessionWindowCalls[0])
+			}
+		})
+	}
+}
+
 func TestUpdateSessionWindow_NoStatusHeader(t *testing.T) {
 	// Should return immediately if no status header.
 	repo := &sessionWindowMockRepo{}

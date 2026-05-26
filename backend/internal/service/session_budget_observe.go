@@ -215,23 +215,20 @@ func statusRiskReason(status int, body []byte) string {
 }
 
 func poolWindowAgeFromReset(profile string, headers http.Header) time.Duration {
-	days := 7
-	if normalizePoolProfile(profile) == PoolProfileAggressive {
-		days = 3
-	}
+	const resetWindowDays = 7
 	if headers == nil {
-		return time.Duration(days) * 24 * time.Hour
+		return time.Duration(resetWindowDays) * 24 * time.Hour
 	}
 	resetRaw := strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-7d-reset"))
 	if resetRaw == "" {
-		return time.Duration(days) * 24 * time.Hour
+		return time.Duration(resetWindowDays) * 24 * time.Hour
 	}
-	reset, err := time.Parse(time.RFC3339, resetRaw)
-	if err != nil {
-		return time.Duration(days) * 24 * time.Hour
+	reset, ok := parseAnthropicUnifiedReset(resetRaw)
+	if !ok {
+		return time.Duration(resetWindowDays) * 24 * time.Hour
 	}
 	remaining := time.Until(reset)
-	total := time.Duration(days) * 24 * time.Hour
+	total := time.Duration(resetWindowDays) * 24 * time.Hour
 	age := total - remaining
 	if age < 0 {
 		return 0

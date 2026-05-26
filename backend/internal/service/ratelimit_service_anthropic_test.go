@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -58,6 +60,44 @@ func TestCalculateAnthropic429ResetTime_NoPerWindowHeaders(t *testing.T) {
 	}
 }
 
+type anthropic429FallbackRepo struct {
+	sessionWindowMockRepo
+	rateLimitedAt *time.Time
+}
+
+func (r *anthropic429FallbackRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
+	r.rateLimitedAt = &resetAt
+	return nil
+}
+
+func TestHandle429_AnthropicAggregateResetParsesRFC3339AndMillis(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "rfc3339", raw: time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)},
+		{name: "millis", raw: strconv.FormatInt(time.Now().Add(3*time.Hour).UTC().UnixMilli(), 10)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &anthropic429FallbackRepo{}
+			svc := newRateLimitServiceForTest(repo)
+			account := &Account{ID: 70, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+			headers := http.Header{}
+			headers.Set("anthropic-ratelimit-unified-reset", tc.raw)
+
+			svc.handle429(context.Background(), account, headers, nil)
+
+			if repo.rateLimitedAt == nil || time.Until(*repo.rateLimitedAt) <= 0 || time.Until(*repo.rateLimitedAt) > 4*time.Hour {
+				t.Fatalf("expected aggregate reset to be parsed into near-future cooldown, got %v", repo.rateLimitedAt)
+			}
+			if len(repo.sessionWindowCalls) != 1 || repo.sessionWindowCalls[0].Status != "rejected" {
+				t.Fatalf("expected rejected session window update, got %+v", repo.sessionWindowCalls)
+			}
+		})
+	}
+}
+
 func TestCalculateAnthropic429ResetTime_NoHeaders(t *testing.T) {
 	result := calculateAnthropic429ResetTime(http.Header{})
 	if result != nil {
@@ -74,6 +114,22 @@ func TestCalculateAnthropic429ResetTime_SurpassedThreshold(t *testing.T) {
 
 	result := calculateAnthropic429ResetTime(headers)
 	assertAnthropicResult(t, result, 1770998400)
+}
+
+func TestCalculateAnthropic429ResetTime_ParsesRFC3339AndMillisResetHeaders(t *testing.T) {
+	reset5h := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	reset7d := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "102%")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", reset5h.Format(time.RFC3339))
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.50")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(reset7d.UnixMilli(), 10))
+
+	result := calculateAnthropic429ResetTime(headers)
+	assertAnthropicResult(t, result, reset5h.Unix())
+	if result.fiveHourReset == nil || !result.fiveHourReset.Equal(reset5h) {
+		t.Errorf("expected fiveHourReset=%v, got %v", reset5h, result.fiveHourReset)
+	}
 }
 
 func TestCalculateAnthropic429ResetTime_UtilizationExactlyOne(t *testing.T) {
@@ -149,6 +205,18 @@ func TestIsAnthropicWindowExceeded(t *testing.T) {
 			name:     "surpassed-threshold true",
 			headers:  makeHeader("anthropic-ratelimit-unified-7d-surpassed-threshold", "true"),
 			window:   "7d",
+			expected: true,
+		},
+		{
+			name:     "percent utilization exactly 100",
+			headers:  makeHeader("anthropic-ratelimit-unified-5h-utilization", "100%"),
+			window:   "5h",
+			expected: true,
+		},
+		{
+			name:     "percent utilization above 100",
+			headers:  makeHeader("anthropic-ratelimit-unified-5h-utilization", "102%"),
+			window:   "5h",
 			expected: true,
 		},
 		{

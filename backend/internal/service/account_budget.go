@@ -118,7 +118,8 @@ func parseUtilization(raw string) (float64, bool) {
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, false
 	}
-	if percent || v > 1 {
+	// Bare values are ratios (0.42 or 1.02). Only explicit percentages use percent semantics.
+	if percent {
 		v = v / 100
 	}
 	if v < 0 {
@@ -167,7 +168,7 @@ func resetBucket(raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return "unknown"
 	}
-	if ts, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil {
+	if ts, ok := parseAnthropicUnifiedReset(raw); ok {
 		d := time.Until(ts)
 		switch {
 		case d <= 0:
@@ -183,6 +184,23 @@ func resetBucket(raw string) string {
 		}
 	}
 	return "malformed"
+}
+
+func parseAnthropicUnifiedReset(raw string) (time.Time, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return time.Time{}, false
+	}
+	if ts, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if ts > 1e11 {
+			ts = ts / 1000
+		}
+		return time.Unix(ts, 0), true
+	}
+	if ts, err := time.Parse(time.RFC3339, s); err == nil {
+		return ts, true
+	}
+	return time.Time{}, false
 }
 
 func cooldownState(a *Account) string {

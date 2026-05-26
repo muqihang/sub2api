@@ -95,6 +95,23 @@ func TestAccountBudgetLedger_UtilizationHeadersAreBucketedAndNoRawIdentity(t *te
 	assertJSONDoesNotContain(t, entry, "do-not-log", "raw-user", "raw-pass", "127.0.0.1")
 }
 
+func TestAccountBudgetLedger_OverOneDecimalUtilizationMeansExceeded(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "1.02")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "102%")
+
+	entry, err := BuildAccountBudgetLedgerEntry(AccountBudgetLedgerInput{
+		Account:         &Account{ID: 43, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true},
+		ResponseHeaders: headers,
+	})
+	if err != nil {
+		t.Fatalf("BuildAccountBudgetLedgerEntry returned error: %v", err)
+	}
+	if entry.Utilization5hPercentageBucket != "pct_100" || entry.Utilization7dPercentageBucket != "pct_100" {
+		t.Fatalf("over-limit utilization must bucket as 100%%, got 5h=%q 7d=%q", entry.Utilization5hPercentageBucket, entry.Utilization7dPercentageBucket)
+	}
+}
+
 func TestUserAndRiskLedger_DoNotStoreRawIdentityOrReason(t *testing.T) {
 	userEntry, err := BuildUserBudgetLedgerEntry(UserBudgetLedgerInput{
 		RawUserID:          "person@example.test",

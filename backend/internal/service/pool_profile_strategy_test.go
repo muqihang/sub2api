@@ -2,6 +2,7 @@ package service
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -57,6 +58,50 @@ func TestPoolProfileStrategy_LiveObserveUsesResetWindowAgeForCatchUp(t *testing.
 	}
 	if sink.decisions[0].ReasonCode != "observe_pool_catch_up" || sink.decisions[0].AccountWeight <= 1 {
 		t.Fatalf("live observe should catch up when aggressive behind target, got %+v", sink.decisions[0])
+	}
+}
+
+func TestPoolProfileStrategy_UnixResetHeadersDriveBucketsAndWindowAge(t *testing.T) {
+	reset5h := time.Now().Add(2 * time.Hour).UTC().Unix()
+	reset7d := time.Now().Add(48 * time.Hour).UTC().Unix()
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.06")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(reset5h, 10))
+	headers.Set("anthropic-ratelimit-unified-7d-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.20")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(reset7d, 10))
+
+	account := &Account{ID: 7, Status: StatusActive, Schedulable: true, Extra: map[string]any{"pool_profile": PoolProfileAggressive}}
+	accountEntry, err := BuildAccountBudgetLedgerEntry(AccountBudgetLedgerInput{Account: account, ResponseHeaders: headers})
+	if err != nil {
+		t.Fatalf("account ledger: %v", err)
+	}
+	if accountEntry.Utilization5hResetBucket != "le_5h" || accountEntry.Utilization7dResetBucket != "gt_24h" {
+		t.Fatalf("unix reset headers must be parsed, got 5h=%q 7d=%q", accountEntry.Utilization5hResetBucket, accountEntry.Utilization7dResetBucket)
+	}
+
+	age := poolWindowAgeFromReset(PoolProfileAggressive, headers)
+	if age < 119*time.Hour || age > 121*time.Hour {
+		t.Fatalf("pool age should be derived from elapsed 7d reset window, got %s", age)
+	}
+}
+
+func TestPoolProfileStrategy_AggressiveUsesWeekAgeForThreeDayTarget(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(time.Now().Add(6*24*time.Hour).UTC().Unix(), 10))
+
+	age := poolWindowAgeFromReset(PoolProfileAggressive, headers)
+	if age < 23*time.Hour || age > 25*time.Hour {
+		t.Fatalf("aggressive profile should use elapsed week age, got %s", age)
+	}
+	pool := BuildPoolUtilizationBudgetLedger(PoolUtilizationBudgetInput{
+		Profile:       PoolProfileAggressive,
+		Utilization7d: 0.20,
+		WindowAge:     age,
+	})
+	if pool.Action != PoolUtilizationActionCatchUp {
+		t.Fatalf("aggressive day-one 20%% utilization should catch up toward 3-day target, got %+v", pool)
 	}
 }
 

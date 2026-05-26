@@ -965,15 +965,12 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		return
 	}
 
-	// 解析Unix时间戳
-	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
-	if err != nil {
-		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err)
+	resetAt, ok := parseAnthropicUnifiedReset(resetTimestamp)
+	if !ok {
+		slog.Warn("rate_limit_reset_parse_failed", "reset_bucket", resetBucket(resetTimestamp))
 		s.apply429FallbackRateLimit(ctx, account, "reset_parse_failed")
 		return
 	}
-
-	resetAt := time.Unix(ts, 0)
 
 	// 标记限流状态
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
@@ -1111,12 +1108,10 @@ func calculateAnthropic429ResetTime(headers http.Header) *anthropic429Result {
 	}
 
 	var reset5h, reset7d *time.Time
-	if ts, err := strconv.ParseInt(reset5hStr, 10, 64); err == nil {
-		t := time.Unix(ts, 0)
+	if t, ok := parseAnthropicUnifiedReset(reset5hStr); ok {
 		reset5h = &t
 	}
-	if ts, err := strconv.ParseInt(reset7dStr, 10, 64); err == nil {
-		t := time.Unix(ts, 0)
+	if t, ok := parseAnthropicUnifiedReset(reset7dStr); ok {
 		reset7d = &t
 	}
 
@@ -1126,8 +1121,8 @@ func calculateAnthropic429ResetTime(headers http.Header) *anthropic429Result {
 	slog.Info("anthropic_429_window_analysis",
 		"is_5h_exceeded", is5hExceeded,
 		"is_7d_exceeded", is7dExceeded,
-		"reset_5h", reset5hStr,
-		"reset_7d", reset7dStr,
+		"reset_5h_bucket", resetBucket(reset5hStr),
+		"reset_7d_bucket", resetBucket(reset7dStr),
 	)
 
 	// Select the correct reset time based on which window(s) are exceeded.
@@ -1166,7 +1161,7 @@ func isAnthropicWindowExceeded(headers http.Header, window string) bool {
 
 	// Fall back to utilization >= 1.0
 	if utilStr := headers.Get(prefix + "utilization"); utilStr != "" {
-		if util, err := strconv.ParseFloat(utilStr, 64); err == nil && util >= 1.0-1e-9 {
+		if util, ok := parseUtilization(utilStr); ok && util >= 1.0-1e-9 {
 			// Use a small epsilon to handle floating point: treat 0.9999999... as >= 1.0
 			return true
 		}
@@ -1316,18 +1311,12 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 
 	// 优先使用响应头中的真实重置时间（比预测更准确）
 	if resetStr := headers.Get("anthropic-ratelimit-unified-5h-reset"); resetStr != "" {
-		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
-			// 检测可能的毫秒时间戳（秒级约为 1e9，毫秒约为 1e12）
-			if ts > 1e11 {
-				slog.Warn("account_session_window_header_millis_detected", "account_id", account.ID, "raw_reset", resetStr)
-				ts = ts / 1000
-			}
-			end := time.Unix(ts, 0)
+		if end, ok := parseAnthropicUnifiedReset(resetStr); ok {
 			// 校验时间戳是否在合理范围内（不早于 5h 前，不晚于 7 天后）
 			minAllowed := time.Now().Add(-5 * time.Hour)
 			maxAllowed := time.Now().Add(7 * 24 * time.Hour)
 			if end.Before(minAllowed) || end.After(maxAllowed) {
-				slog.Warn("account_session_window_header_out_of_range", "account_id", account.ID, "raw_reset", resetStr, "parsed_end", end)
+				slog.Warn("account_session_window_header_out_of_range", "account_id", account.ID, "reset_bucket", resetBucket(resetStr), "parsed_end_bucket", resetBucket(end.Format(time.RFC3339)))
 			} else if needInitWindow || account.SessionWindowEnd == nil || !end.Equal(*account.SessionWindowEnd) {
 				// 窗口需要初始化，或者真实重置时间与已存储的不同，则更新
 				start := end.Add(-5 * time.Hour)
@@ -1336,7 +1325,7 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 				slog.Info("account_session_window_from_header", "account_id", account.ID, "window_start", start, "window_end", end, "status", status)
 			}
 		} else {
-			slog.Warn("account_session_window_header_parse_failed", "account_id", account.ID, "raw_reset", resetStr, "error", err)
+			slog.Warn("account_session_window_header_parse_failed", "account_id", account.ID)
 		}
 	}
 
@@ -1368,23 +1357,20 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 	extraUpdates := make(map[string]any, 4)
 	// 5h utilization（0-1 小数），供 estimateSetupTokenUsage 使用
 	if utilStr := headers.Get("anthropic-ratelimit-unified-5h-utilization"); utilStr != "" {
-		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
+		if util, ok := parseUtilization(utilStr); ok {
 			extraUpdates["session_window_utilization"] = util
 		}
 	}
 	// 7d utilization（0-1 小数）
 	if utilStr := headers.Get("anthropic-ratelimit-unified-7d-utilization"); utilStr != "" {
-		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
+		if util, ok := parseUtilization(utilStr); ok {
 			extraUpdates["passive_usage_7d_utilization"] = util
 		}
 	}
 	// 7d reset timestamp
 	if resetStr := headers.Get("anthropic-ratelimit-unified-7d-reset"); resetStr != "" {
-		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
-			if ts > 1e11 {
-				ts = ts / 1000
-			}
-			extraUpdates["passive_usage_7d_reset"] = ts
+		if ts, ok := parseAnthropicUnifiedReset(resetStr); ok {
+			extraUpdates["passive_usage_7d_reset"] = ts.Unix()
 		}
 	}
 	if len(extraUpdates) > 0 {
