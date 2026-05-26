@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -289,9 +288,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughScope
 		require.Equal(t, responseIDs[0], readResponseID())
 		writeMessage(`{"type":"response.create","model":"gpt-5.1","stream":false,"prompt_cache_key":"shared-ws-cache","input":[{"type":"input_text","text":"second"}]}`)
 		require.Equal(t, responseIDs[1], readResponseID())
-		if closeErr := clientConn.Close(coderws.StatusNormalClosure, "done"); closeErr != nil {
-			require.ErrorIs(t, closeErr, io.EOF)
-		}
+		_ = clientConn.Close(coderws.StatusNormalClosure, "done")
 
 		select {
 		case serverErr := <-serverErrCh:

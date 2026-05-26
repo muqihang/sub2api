@@ -32,15 +32,12 @@ func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedMo
 		return false
 	}
 
-	modelKey := a.GetMappedModel(requestedModel)
-	if a.Platform == PlatformAntigravity {
-		modelKey = resolveFinalAntigravityModelKey(ctx, a, requestedModel)
+	for _, modelKey := range a.modelRateLimitLookupKeys(ctx, requestedModel) {
+		if a.isRateLimitActiveForKey(modelKey) {
+			return true
+		}
 	}
-	modelKey = strings.TrimSpace(modelKey)
-	if modelKey == "" {
-		return false
-	}
-	return a.isRateLimitActiveForKey(modelKey)
+	return false
 }
 
 // GetModelRateLimitRemainingTime 获取模型限流剩余时间
@@ -54,15 +51,13 @@ func (a *Account) GetModelRateLimitRemainingTimeWithContext(ctx context.Context,
 		return 0
 	}
 
-	modelKey := a.GetMappedModel(requestedModel)
-	if a.Platform == PlatformAntigravity {
-		modelKey = resolveFinalAntigravityModelKey(ctx, a, requestedModel)
+	var maxRemaining time.Duration
+	for _, modelKey := range a.modelRateLimitLookupKeys(ctx, requestedModel) {
+		if remaining := a.getRateLimitRemainingForKey(modelKey); remaining > maxRemaining {
+			maxRemaining = remaining
+		}
 	}
-	modelKey = strings.TrimSpace(modelKey)
-	if modelKey == "" {
-		return 0
-	}
-	return a.getRateLimitRemainingForKey(modelKey)
+	return maxRemaining
 }
 
 func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requestedModel string) string {
@@ -75,6 +70,45 @@ func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requ
 		modelKey = applyThinkingModelSuffix(modelKey, enabled)
 	}
 	return modelKey
+}
+
+func (a *Account) modelRateLimitLookupKeys(ctx context.Context, requestedModel string) []string {
+	if a == nil {
+		return nil
+	}
+
+	if a.Platform != PlatformAntigravity {
+		return appendUniqueModelRateLimitKey(nil, a.GetMappedModel(requestedModel))
+	}
+
+	var keys []string
+	mappedKey := resolveFinalAntigravityModelKey(ctx, a, requestedModel)
+	keys = appendUniqueModelRateLimitKey(keys, mappedKey)
+
+	// Antigravity reset metadata has historically been stored under the model
+	// reported by the upstream error, which can be the requested alias rather
+	// than the current default-mapped upstream model. Keep lookup backward
+	// compatible without falling back to old coarse scopes such as claude_sonnet.
+	requestedKey := normalizeAntigravityModelName(requestedModel)
+	if enabled, ok := ThinkingEnabledFromContext(ctx); ok {
+		requestedKey = applyThinkingModelSuffix(requestedKey, enabled)
+	}
+	keys = appendUniqueModelRateLimitKey(keys, requestedKey)
+
+	return keys
+}
+
+func appendUniqueModelRateLimitKey(keys []string, key string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return keys
+	}
+	for _, existing := range keys {
+		if existing == key {
+			return keys
+		}
+	}
+	return append(keys, key)
 }
 
 func (a *Account) modelRateLimitResetAt(scope string) *time.Time {
