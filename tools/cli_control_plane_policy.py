@@ -55,6 +55,7 @@ _DEFAULT_POLICY_DICT = {
     "messages": {
         "allowed_routes": [
             {"method": "POST", "path": "/v1/messages", "query": "beta=true"},
+            {"method": "POST", "path": "/v1/messages/count_tokens", "query": ""},
         ],
         "max_messages": 1,
         "stop_cli_after_first_response": False,
@@ -338,7 +339,10 @@ def _parse_messages(messages: Any) -> tuple[tuple[_Matcher, ...], dict[str, Any]
         )
         method = _normalize_method(route.get("method"), f"messages.allowed_routes[{index}].method")
         path = _require_path(route.get("path"), f"messages.allowed_routes[{index}].path")
-        query = _require_non_empty_string(route.get("query"), f"messages.allowed_routes[{index}].query")
+        query_value = route.get("query")
+        if not isinstance(query_value, str):
+            raise PolicyConfigError(f"messages.allowed_routes[{index}].query must be a string")
+        query = query_value
         matcher = _Matcher(method=method, kind="path", value=path, query=query)
         matchers.append(matcher)
         normalized_routes.append({"method": method, "path": path, "query": query})

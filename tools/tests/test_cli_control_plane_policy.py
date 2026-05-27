@@ -99,6 +99,8 @@ class CliControlPlanePolicyTest(unittest.TestCase):
         policy = load_default_policy()
 
         self.assertEqual(policy.decide("POST", "/v1/messages?beta=true").action, "forward_messages")
+        self.assertEqual(policy.decide("POST", "/v1/messages/count_tokens").action, "forward_messages")
+        self.assertEqual(policy.decide("POST", "/v1/messages/count_tokens?beta=true").action, "quarantine_block")
         self.assertEqual(policy.decide("POST", "/api/event_logging/v2/batch").action, "suppress_204")
         self.assertEqual(policy.decide("POST", "/api/eval/redacted").action, "suppress_204")
         self.assertEqual(policy.decide("POST", "/api/eval/other").action, "suppress_204")
