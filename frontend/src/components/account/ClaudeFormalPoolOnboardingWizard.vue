@@ -19,7 +19,9 @@
           <input v-model.number="form.proxy_id" type="number" min="1" class="input mt-1 w-full" />
         </label>
         <template v-else>
-          <label class="text-sm">名称<input v-model="proxy.name" class="input mt-1 w-full" /></label>
+          <label class="text-sm">代理名称（仅后台备注）
+            <input v-model="proxy.name" class="input mt-1 w-full" placeholder="例如：claude-01-38.75.201.125" />
+          </label>
           <label class="text-sm">协议
             <select v-model="proxy.protocol" class="input mt-1 w-full">
               <option value="socks5">socks5（后端按远程 DNS 语义规范化）</option>
@@ -28,20 +30,34 @@
               <option value="https">https</option>
             </select>
           </label>
-          <label class="text-sm">Host<input v-model="proxy.host" class="input mt-1 w-full" autocomplete="off" /></label>
-          <label class="text-sm">Port<input v-model.number="proxy.port" type="number" class="input mt-1 w-full" /></label>
-          <label class="text-sm">Username<input v-model="proxy.username" class="input mt-1 w-full" autocomplete="off" /></label>
-          <label class="text-sm">Password（只提交，不回显）<input v-model="proxy.password" type="password" class="input mt-1 w-full" autocomplete="new-password" /></label>
+          <label class="text-sm">代理服务器地址 / IP（Host）
+            <input v-model="proxy.host" class="input mt-1 w-full" autocomplete="off" placeholder="例如：38.75.201.125" />
+          </label>
+          <label class="text-sm">代理端口（Port）
+            <input v-model.number="proxy.port" type="number" class="input mt-1 w-full" placeholder="例如：443" />
+          </label>
+          <label class="text-sm">代理用户名（Username）
+            <input v-model="proxy.username" class="input mt-1 w-full" autocomplete="off" placeholder="代理商提供的用户名" />
+          </label>
+          <label class="text-sm">代理密码（Password，只提交，不回显）
+            <input v-model="proxy.password" type="password" class="input mt-1 w-full" autocomplete="new-password" placeholder="代理商提供的密码" />
+          </label>
         </template>
-        <label class="text-sm">Claude Code only Group ID<input v-model.number="form.group_id" type="number" min="1" class="input mt-1 w-full" /></label>
-        <label class="text-sm">账号名称<input v-model="form.account_name" class="input mt-1 w-full" /></label>
-        <label class="text-sm">Pool profile
+        <label class="text-sm">Claude Code 专用分组 ID
+          <input v-model.number="form.group_id" type="number" min="1" class="input mt-1 w-full" placeholder="只让 Claude Code/API Key 用户从这个分组调度" />
+        </label>
+        <label class="text-sm">账号名称
+          <input v-model="form.account_name" class="input mt-1 w-full" placeholder="例如：claude-oauth-01" />
+        </label>
+        <label class="text-sm">用量策略
           <select v-model="form.pool_profile" class="input mt-1 w-full">
-            <option value="normal">normal：默认正式池策略</option>
-            <option value="aggressive">aggressive：更积极调度建议，不降低 P0/cooldown/quarantine 安全线</option>
+            <option value="normal">正常策略：7 天平滑消耗，尽量用完但优先稳定</option>
+            <option value="aggressive">激进策略（速刷）：约 3 天用到 95%-100%，不降低安全线</option>
           </select>
         </label>
-        <label class="text-sm">并发<input v-model.number="form.concurrency" type="number" min="1" max="10" class="input mt-1 w-full" /></label>
+        <label class="text-sm">账号并发上限
+          <input v-model.number="form.concurrency" type="number" min="1" max="10" class="input mt-1 w-full" />
+        </label>
       </div>
       <button class="btn btn-primary mt-4" :disabled="busy || !canStart" @click="start">创建 onboarding session</button>
     </section>
