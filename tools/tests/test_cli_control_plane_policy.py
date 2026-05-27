@@ -112,6 +112,8 @@ class CliControlPlanePolicyTest(unittest.TestCase):
 
         self.assertEqual(policy.decide("GET", "/mcp-registry/v0/servers?version=latest").action, "quarantine_block")
         self.assertEqual(policy.decide("GET", "/mcp-registry/anything").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/hello").action, "stub_json")
+        self.assertEqual(policy.decide("GET", "/v1/oauth/hello").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/claude_cli/bootstrap?entrypoint=sdk-cli").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/oauth/account/settings").action, "quarantine_block")
         self.assertEqual(policy.decide("GET", "/api/claude_code_grove").action, "quarantine_block")
@@ -121,6 +123,9 @@ class CliControlPlanePolicyTest(unittest.TestCase):
             "quarantine_block",
         )
         self.assertEqual(policy.decide("GET", "/unknown").action, "quarantine_block")
+        self.assertIn("api.anthropic.com:443", policy.connect["allowed_stub_targets"])
+        self.assertIn("platform.claude.com:443", policy.connect["allowed_stub_targets"])
+        self.assertIn("claude.ai:443", policy.connect["allowed_stub_targets"])
 
     def test_messages_route_requires_exact_query(self):
         policy = load_default_policy()

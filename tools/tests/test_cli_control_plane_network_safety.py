@@ -46,6 +46,24 @@ class CliControlPlaneNetworkSafetyTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_loopback_url(url)
 
+    def test_validate_url_can_allow_nonloopback_zhumeng_upstream_but_never_claude_hosts(self):
+        self.assertEqual(
+            validate_loopback_url('http://198.12.67.185:18080', allow_nonloopback=True),
+            'http://198.12.67.185:18080',
+        )
+        self.assertEqual(
+            validate_loopback_url('https://example.com/base', allow_nonloopback=True),
+            'https://example.com/base',
+        )
+        for url in (
+            'https://api.anthropic.com',
+            'https://platform.claude.com',
+            'https://claude.ai',
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    validate_loopback_url(url, allow_nonloopback=True)
+
     def test_guard_config_rejects_invalid_upstream_before_startup(self):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(ValueError):
@@ -64,6 +82,27 @@ class CliControlPlaneNetworkSafetyTest(unittest.TestCase):
                     sub2api_auth='sub2api-entry',
                     summary_path=Path(td) / 'summary.jsonl',
                     control_plane_intent_url='https://claude.ai/backend-api/anthropic/control-plane/intent',
+                )
+
+    def test_guard_config_allows_nonloopback_upstream_only_when_explicit(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=18080,
+                upstream_base='http://198.12.67.185:18080',
+                sub2api_auth='sub2api-entry',
+                summary_path=Path(td) / 'summary.jsonl',
+                allow_nonloopback_upstream=True,
+            )
+            self.assertEqual(cfg.upstream_base, 'http://198.12.67.185:18080')
+            with self.assertRaises(ValueError):
+                GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=18080,
+                    upstream_base='https://api.anthropic.com',
+                    sub2api_auth='sub2api-entry',
+                    summary_path=Path(td) / 'summary.jsonl',
+                    allow_nonloopback_upstream=True,
                 )
 
     def test_cli_main_rejects_invalid_upstream_before_serving(self):

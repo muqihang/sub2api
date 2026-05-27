@@ -103,6 +103,7 @@ def _build_env(args: argparse.Namespace, port: int, run_dir: Path) -> dict[str, 
         # Main messages go to localhost; guard forwards upstream with proxies disabled.
         env["NO_PROXY"] = "127.0.0.1,localhost,::1"
         env["no_proxy"] = env["NO_PROXY"]
+        env["NODE_EXTRA_CA_CERTS"] = str(_cert_path(run_dir))
     else:
         # Messages are still captured through ANTHROPIC_BASE_URL, but direct
         # hard-coded HTTPS control-plane egress may bypass the lab in this mode.
@@ -116,9 +117,82 @@ def _build_env(args: argparse.Namespace, port: int, run_dir: Path) -> dict[str, 
     return env
 
 
+def _cert_path(run_dir: Path) -> Path:
+    return run_dir / "certs" / "zhumeng-claude-code-local-capture.pem"
+
+
+def _key_path(run_dir: Path) -> Path:
+    return run_dir / "certs" / "zhumeng-claude-code-local-capture.key"
+
+
+def _ensure_local_capture_cert(run_dir: Path) -> tuple[Path, Path]:
+    cert = _cert_path(run_dir)
+    key = _key_path(run_dir)
+    if cert.exists() and key.exists():
+        return cert, key
+    cert.parent.mkdir(parents=True, exist_ok=True)
+    config_path = cert.parent / "openssl-san.cnf"
+    config_path.write_text(
+        """
+[req]
+default_bits = 2048
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = Zhumeng Claude Code Local Capture
+
+[v3_req]
+subjectAltName = @alt_names
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, digitalSignature, keyEncipherment, keyCertSign, cRLSign
+extendedKeyUsage = serverAuth
+
+[alt_names]
+DNS.1 = api.anthropic.com
+DNS.2 = platform.claude.com
+DNS.3 = claude.ai
+DNS.4 = claude.com
+DNS.5 = mcp-proxy.anthropic.com
+""".lstrip(),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-nodes",
+            "-days",
+            "7",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-config",
+            str(config_path),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        key.chmod(0o600)
+        cert.chmod(0o644)
+        config_path.chmod(0o600)
+    except OSError:
+        pass
+    return cert, key
+
+
 def _start_guard(args: argparse.Namespace, port: int, run_dir: Path, env: dict[str, str]) -> subprocess.Popen[str]:
     summary = run_dir / "guard-summary.jsonl"
     local_raw_dir = run_dir / "raw-secure"
+    cert, key = _ensure_local_capture_cert(run_dir) if args.egress_guard else (None, None)
     guard_cmd = [
         sys.executable,
         str(REPO_ROOT / "tools" / "cli_control_plane_guard.py"),
@@ -138,6 +212,7 @@ def _start_guard(args: argparse.Namespace, port: int, run_dir: Path, env: dict[s
         args.capture_level,
         "--local-raw-dir",
         str(local_raw_dir),
+        "--allow-nonloopback-upstream",
         "--max-messages",
         "0",
         "--cost-max-tokens",
@@ -163,6 +238,8 @@ def _start_guard(args: argparse.Namespace, port: int, run_dir: Path, env: dict[s
         "--cost-allow-assistant-messages",
         "--cost-allow-tool-content",
     ]
+    if cert is not None and key is not None:
+        guard_cmd.extend(["--cert-path", str(cert), "--key-path", str(key)])
     proc = subprocess.Popen(
         guard_cmd,
         cwd=str(REPO_ROOT),

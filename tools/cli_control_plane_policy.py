@@ -97,6 +97,8 @@ _DEFAULT_POLICY_DICT = {
         },
         "bootstrap_settings": {
             "match": [
+                {"method": "GET", "path": "/api/hello"},
+                {"method": "GET", "path": "/v1/oauth/hello"},
                 {"method": "GET", "path": "/api/claude_cli/bootstrap"},
             ],
             "action": "stub_json",
@@ -122,7 +124,13 @@ _DEFAULT_POLICY_DICT = {
     },
     "unknown": {"action": "quarantine_block"},
     "connect": {
-        "allowed_stub_targets": ["api.anthropic.com:443"],
+        "allowed_stub_targets": [
+            "api.anthropic.com:443",
+            "platform.claude.com:443",
+            "claude.ai:443",
+            "claude.com:443",
+            "mcp-proxy.anthropic.com:443",
+        ],
         "unknown_target_action": "block_403",
     },
 }

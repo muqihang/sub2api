@@ -164,13 +164,21 @@ class GuardConfig:
     session_budget_ledger: SessionBudgetLedger | None = None
     capture_level: str = "summary"
     local_raw_dir: Path | None = None
+    allow_nonloopback_upstream: bool = False
 
     def __post_init__(self) -> None:
         policy = self.policy or default_policy()
         if self.capture_level not in CAPTURE_LEVELS:
             raise ValueError(f"capture_level must be one of {sorted(CAPTURE_LEVELS)}")
         object.__setattr__(self, "policy", policy)
-        object.__setattr__(self, "upstream_base", validate_loopback_url(self.upstream_base))
+        object.__setattr__(
+            self,
+            "upstream_base",
+            validate_loopback_url(
+                self.upstream_base,
+                allow_nonloopback=self.allow_nonloopback_upstream,
+            ),
+        )
         if self.capture_level == "local-raw" and self.local_raw_dir is None:
             object.__setattr__(self, "local_raw_dir", self.summary_path.parent / "raw-secure")
         if self.control_plane_intent_url is not None:
@@ -211,7 +219,7 @@ def load_policy_from_path(path: Path | None) -> ControlPlanePolicy:
     return ControlPlanePolicy.from_dict(payload)
 
 
-def validate_loopback_url(url: str, field_name: str = "upstream_base") -> str:
+def validate_loopback_url(url: str, field_name: str = "upstream_base", *, allow_nonloopback: bool = False) -> str:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"{field_name} must use http or https")
@@ -226,8 +234,12 @@ def validate_loopback_url(url: str, field_name: str = "upstream_base") -> str:
     try:
         ip = ipaddress.ip_address(lowered_host)
     except ValueError as exc:
+        if allow_nonloopback:
+            return url
         raise ValueError(f"{field_name} must target loopback only") from exc
     if not ip.is_loopback:
+        if allow_nonloopback:
+            return url
         raise ValueError(f"{field_name} must target loopback only")
     return url
 
@@ -1456,11 +1468,38 @@ def _fallback_body_length_bucket(body: bytes) -> str:
 
 
 def _sanitize_connect_target(target: str, *, allowed: bool) -> dict[str, Any]:
+    host, port = _split_connect_target(target)
+    safe_known_hosts = {
+        "api.anthropic.com",
+        "platform.claude.com",
+        "claude.ai",
+        "claude.com",
+        "mcp-proxy.anthropic.com",
+    }
+    safe_target: dict[str, Any] = {}
+    if host in safe_known_hosts:
+        safe_target["target_host"] = host
+        safe_target["target_port"] = port
     return {
         "target_kind": "allowed_stub_target" if allowed else "blocked_connect_target",
         "target_allowed": allowed,
         "target_ref": _scoped_hmac_ref(target, scope="control_plane_connect_target"),
+        **safe_target,
     }
+
+
+def _split_connect_target(target: str) -> tuple[str, int | None]:
+    if target.startswith("[") and "]" in target:
+        end = target.find("]")
+        host = target[1:end].lower()
+        rest = target[end + 1 :]
+        if rest.startswith(":") and rest[1:].isdigit():
+            return host, int(rest[1:])
+        return host, None
+    if ":" in target:
+        host, port_raw = target.rsplit(":", 1)
+        return host.lower(), int(port_raw) if port_raw.isdigit() else None
+    return target.lower(), None
 
 
 def _request_target_path(raw_target: str) -> str:
@@ -1598,6 +1637,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session-budget-max-thinking-messages", type=int)
     parser.add_argument("--capture-level", choices=sorted(CAPTURE_LEVELS), default="summary")
     parser.add_argument("--local-raw-dir", type=Path)
+    parser.add_argument(
+        "--allow-nonloopback-upstream",
+        action="store_true",
+        help="Allow forwarding /v1/messages to a non-loopback Zhumeng/Sub2API upstream. Claude/Anthropic hosts remain forbidden.",
+    )
     args = parser.parse_args(argv)
     sub2api_auth = args.sub2api_auth or os.environ.get(args.sub2api_auth_env or "")
     if not sub2api_auth:
@@ -1632,6 +1676,7 @@ def main(argv: list[str] | None = None) -> int:
                 session_budget_ledger=session_budget_ledger,
                 capture_level=args.capture_level,
                 local_raw_dir=args.local_raw_dir,
+                allow_nonloopback_upstream=args.allow_nonloopback_upstream,
             )
         )
     except ValueError as exc:

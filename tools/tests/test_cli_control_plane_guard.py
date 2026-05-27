@@ -169,6 +169,54 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             finally:
                 forwarder.stop()
 
+    def test_api_hello_preflight_is_stubbed_locally(self):
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            summary = Path(td) / 'summary.jsonl'
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:9',
+                sub2api_auth='unused',
+                summary_path=summary,
+            ))
+            forwarder.start_background()
+            try:
+                with urllib.request.urlopen(
+                    f'http://127.0.0.1:{listen_port}/api/hello',
+                    timeout=5,
+                ) as resp:
+                    self.assertEqual(resp.status, 200)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('/api/hello', dumped)
+                self.assertIn('stub_json', dumped)
+            finally:
+                forwarder.stop()
+
+    def test_oauth_hello_preflight_is_stubbed_locally(self):
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            summary = Path(td) / 'summary.jsonl'
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:9',
+                sub2api_auth='unused',
+                summary_path=summary,
+            ))
+            forwarder.start_background()
+            try:
+                with urllib.request.urlopen(
+                    f'http://127.0.0.1:{listen_port}/v1/oauth/hello',
+                    timeout=5,
+                ) as resp:
+                    self.assertEqual(resp.status, 200)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('/v1/oauth/hello', dumped)
+                self.assertIn('stub_json', dumped)
+            finally:
+                forwarder.stop()
+
     def test_cli_policy_path_invalid_config_exits_nonzero_before_serving(self):
         with tempfile.TemporaryDirectory() as td:
             policy_path = Path(td) / 'policy.json'
@@ -438,6 +486,31 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 self.assertIn(b'403 Forbidden', data)
                 dumped = summary.read_text(encoding='utf-8')
                 self.assertIn('direct_messages_route_blocked', dumped)
+            finally:
+                forwarder.stop()
+
+    def test_connect_summary_identifies_known_claude_control_plane_hosts(self):
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            summary = Path(td) / 'summary.jsonl'
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:9',
+                sub2api_auth='unused',
+                summary_path=summary,
+            ))
+            forwarder.start_background()
+            try:
+                sock = socket.create_connection(('127.0.0.1', listen_port), timeout=5)
+                try:
+                    sock.sendall(b'CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\n')
+                    self.assertIn(b'403 Forbidden', sock.recv(4096))
+                finally:
+                    sock.close()
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('"target_host": "platform.claude.com"', dumped)
+                self.assertIn('"target_port": 443', dumped)
             finally:
                 forwarder.stop()
 
