@@ -187,12 +187,14 @@ func (w *CodexGatewayResponseEventWriter) WriteResponseInProgress(response Codex
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteOutputItemAdded(responseID string, outputIndex int, item json.RawMessage) error {
-	return w.write("response.output_item.added", map[string]any{
+	payload := map[string]any{
 		"type":         "response.output_item.added",
 		"response_id":  responseID,
 		"output_index": outputIndex,
 		"item":         json.RawMessage(item),
-	})
+	}
+	addCodexGatewayOutputItemIdentityFields(payload, item)
+	return w.write("response.output_item.added", payload)
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteOutputTextDelta(responseID, itemID string, outputIndex, contentIndex int, delta string) error {
@@ -262,13 +264,17 @@ func (w *CodexGatewayResponseEventWriter) WriteContentPartDone(responseID, itemI
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDelta(responseID, itemID string, outputIndex int, delta string) error {
-	return w.write("response.function_call_arguments.delta", map[string]any{
+	payload := map[string]any{
 		"type":         "response.function_call_arguments.delta",
 		"response_id":  responseID,
 		"item_id":      itemID,
 		"output_index": outputIndex,
 		"delta":        delta,
-	})
+	}
+	if callID := strings.TrimPrefix(strings.TrimSpace(itemID), "fc_"); callID != "" && callID != strings.TrimSpace(itemID) {
+		payload["call_id"] = callID
+	}
+	return w.write("response.function_call_arguments.delta", payload)
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDelta(responseID, itemID, callID string, outputIndex int, delta string) error {
@@ -283,13 +289,17 @@ func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDelta(response
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDone(responseID, itemID string, outputIndex int, input string) error {
-	return w.write("response.custom_tool_call_input.done", map[string]any{
+	payload := map[string]any{
 		"type":         "response.custom_tool_call_input.done",
 		"response_id":  responseID,
 		"item_id":      itemID,
 		"output_index": outputIndex,
 		"input":        input,
-	})
+	}
+	if callID := strings.TrimPrefix(strings.TrimSpace(itemID), "fc_"); callID != "" && callID != strings.TrimSpace(itemID) {
+		payload["call_id"] = callID
+	}
+	return w.write("response.custom_tool_call_input.done", payload)
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(responseID, itemID string, outputIndex int, item json.RawMessage) error {
@@ -316,12 +326,30 @@ func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(respons
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteOutputItemDone(responseID string, outputIndex int, item json.RawMessage) error {
-	return w.write("response.output_item.done", map[string]any{
+	payload := map[string]any{
 		"type":         "response.output_item.done",
 		"response_id":  responseID,
 		"output_index": outputIndex,
 		"item":         json.RawMessage(item),
-	})
+	}
+	addCodexGatewayOutputItemIdentityFields(payload, item)
+	return w.write("response.output_item.done", payload)
+}
+
+func addCodexGatewayOutputItemIdentityFields(payload map[string]any, item json.RawMessage) {
+	if payload == nil || len(item) == 0 {
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(item, &parsed); err != nil {
+		return
+	}
+	if itemID := strings.TrimSpace(firstCodexGatewayToolString(parsed["id"])); itemID != "" {
+		payload["item_id"] = itemID
+	}
+	if callID := strings.TrimSpace(firstCodexGatewayToolString(parsed["call_id"])); callID != "" {
+		payload["call_id"] = callID
+	}
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteWebSearchCallEvent(name, responseID, itemID string, outputIndex int) error {

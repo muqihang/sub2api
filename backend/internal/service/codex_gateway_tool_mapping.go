@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
 var codexGatewayToolSafeNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 const codexGatewayNamespacePathSeparator = "\x1f"
+const codexGatewayToolSearchType = "tool_search"
 
 var codexGatewayHostedResponsesToolTypes = map[string]struct{}{
 	"computer_use_preview": {},
@@ -49,7 +51,7 @@ func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappi
 		result.IgnoredHostedToolTypes = append(result.IgnoredHostedToolTypes, ignored...)
 		for _, record := range records {
 			if existing, ok := result.NameMap[record.alias]; ok {
-				if existing != record.entry {
+				if !codexGatewayToolNameMapEntriesEqual(existing, record.entry) {
 					return CodexGatewayToolMappingResult{}, fmt.Errorf("tool alias collision for %q", record.alias)
 				}
 				return CodexGatewayToolMappingResult{}, fmt.Errorf("duplicate tool alias %q", record.alias)
@@ -61,6 +63,14 @@ func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappi
 	}
 	result.Tools = flattened
 	return result, nil
+}
+
+func codexGatewayToolNameMapEntriesEqual(a, b CodexGatewayToolNameMapEntry) bool {
+	return a.Alias == b.Alias &&
+		a.Kind == b.Kind &&
+		a.Namespace == b.Namespace &&
+		a.NamespacePath == b.NamespacePath &&
+		a.Name == b.Name
 }
 
 func flattenCodexGatewayTool(raw any, namespacePrefix, parentKind string, cfg CodexGatewayToolMappingConfig) ([]codexGatewayToolMappingRecord, []string, error) {
@@ -86,6 +96,12 @@ func flattenCodexGatewayTool(raw any, namespacePrefix, parentKind string, cfg Co
 		return flattenCodexGatewayNamespaceTool(tool, namespacePrefix, cfg)
 	case CodexGatewayToolKindCustom:
 		record, err := flattenCodexGatewayCustomTool(tool, namespacePrefix, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []codexGatewayToolMappingRecord{record}, nil, nil
+	case codexGatewayToolSearchType:
+		record, err := flattenCodexGatewayToolSearchTool(tool, cfg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -158,6 +174,52 @@ func flattenCodexGatewayNamespaceTool(tool map[string]any, parentNamespace strin
 		ignored = append(ignored, childIgnored...)
 	}
 	return out, ignored, nil
+}
+
+func flattenCodexGatewayToolSearchTool(tool map[string]any, cfg CodexGatewayToolMappingConfig) (codexGatewayToolMappingRecord, error) {
+	alias := codexGatewayToolSearchType
+	params := firstCodexGatewayToolValue(tool["parameters"], tool["input_schema"])
+	if params == nil {
+		params = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"required": []any{"query"},
+		}
+	}
+	schema, err := prepareCodexGatewayToolSchema(params, false, cfg)
+	if err != nil {
+		return codexGatewayToolMappingRecord{}, err
+	}
+	function := map[string]any{
+		"name":        alias,
+		"description": codexGatewayToolSearchDescription(tool["description"]),
+	}
+	if schema != nil {
+		function["parameters"] = schema
+	}
+	return codexGatewayToolMappingRecord{
+		alias: alias,
+		entry: CodexGatewayToolNameMapEntry{
+			Alias: alias,
+			Kind:  CodexGatewayToolKindFunction,
+			Name:  alias,
+		},
+		tool: map[string]any{
+			"type":     "function",
+			"function": function,
+		},
+	}, nil
+}
+
+func codexGatewayToolSearchDescription(raw any) string {
+	desc := strings.TrimSpace(firstCodexGatewayToolString(raw))
+	if desc != "" {
+		return desc
+	}
+	return "Search available deferred tool metadata and return matching tools for the next model turn."
 }
 
 func flattenCodexGatewayFunctionTool(tool map[string]any, namespacePrefix, parentKind string, cfg CodexGatewayToolMappingConfig) (codexGatewayToolMappingRecord, error) {
@@ -587,6 +649,459 @@ func prepareCodexGatewayToolSchema(schema any, strict bool, cfg CodexGatewayTool
 		return schema, nil
 	}
 	return sanitizeCodexGatewayToolSchema(schema, cfg)
+}
+
+func codexGatewayDeepSeekAdaptToolMapping(mapping CodexGatewayToolMappingResult, cfg CodexGatewayToolMappingConfig) CodexGatewayToolMappingResult {
+	if len(mapping.Tools) == 0 || len(mapping.NameMap) == 0 {
+		return mapping
+	}
+	for _, tool := range mapping.Tools {
+		function, _ := tool["function"].(map[string]any)
+		if function == nil {
+			continue
+		}
+		alias := strings.TrimSpace(firstCodexGatewayToolString(function["name"]))
+		if alias == "" {
+			continue
+		}
+		entry, ok := mapping.NameMap[alias]
+		if !ok {
+			continue
+		}
+		if desc := codexGatewayDeepSeekToolDescription(function["description"], entry); desc != "" {
+			function["description"] = desc
+		}
+		if schema, ok := function["parameters"].(map[string]any); ok && schema != nil {
+			if flattened, paths, changed := codexGatewayDeepSeekFlattenToolParameters(schema, cfg); changed {
+				function["parameters"] = flattened
+				entry.FlattenedArgs = paths
+			}
+			if params, ok := function["parameters"].(map[string]any); ok {
+				codexGatewayDeepSeekEnhanceToolParameters(params, entry)
+			}
+		}
+		if _, strictSet := function["strict"]; strictSet && !codexGatewayDeepSeekStrictEligible(function, entry) {
+			delete(function, "strict")
+		}
+		mapping.NameMap[alias] = entry
+	}
+	return mapping
+}
+
+func codexGatewayDeepSeekStrictEligible(function map[string]any, entry CodexGatewayToolNameMapEntry) bool {
+	if function == nil || entry.Kind != CodexGatewayToolKindFunction || len(entry.FlattenedArgs) > 0 {
+		return false
+	}
+	schema, _ := function["parameters"].(map[string]any)
+	if schema == nil || !strings.EqualFold(strings.TrimSpace(firstCodexGatewayToolString(schema["type"])), "object") {
+		return false
+	}
+	if additional, ok := schema["additionalProperties"].(bool); ok && additional {
+		return false
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	if len(properties) == 0 || len(properties) > 16 {
+		return false
+	}
+	for _, value := range properties {
+		prop, ok := value.(map[string]any)
+		if !ok || !codexGatewayDeepSeekStrictEligibleProperty(prop) {
+			return false
+		}
+	}
+	return true
+}
+
+func codexGatewayDeepSeekStrictEligibleProperty(schema map[string]any) bool {
+	if schema == nil {
+		return false
+	}
+	if _, ok := schema["properties"]; ok {
+		return false
+	}
+	if _, ok := schema["items"]; ok {
+		return false
+	}
+	typ := strings.TrimSpace(firstCodexGatewayToolString(schema["type"]))
+	switch typ {
+	case "string", "number", "integer", "boolean":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexGatewayDeepSeekToolDescription(raw any, entry CodexGatewayToolNameMapEntry) string {
+	desc := strings.TrimSpace(firstCodexGatewayToolString(raw))
+	extras := make([]string, 0, 2)
+	if codexGatewayDeepSeekIsShellLikeTool(entry) {
+		extras = append(extras,
+			"Put the full shell command in `cmd`.",
+			"For multi-line file creation or rewrites, prefer `python3 - <<'PY' ... PY` when it is safer than many small edits.",
+		)
+	}
+	if codexGatewayDeepSeekIsPythonTool(entry) {
+		extras = append(extras, "For multi-line file creation or rewrites, prefer `python3 - <<'PY' ... PY` when it is safer than many small edits.")
+	}
+	if codexGatewayDeepSeekIsApplyPatchTool(entry) {
+		extras = append(extras, "Put the exact raw patch text in the custom input field. Do not wrap it in extra prose or another object.")
+	}
+	extras = uniqueCodexGatewayStrings(extras)
+	if len(extras) == 0 {
+		return desc
+	}
+	if desc == "" {
+		return strings.Join(extras, "\n")
+	}
+	return desc + "\n\n" + strings.Join(extras, "\n")
+}
+
+func codexGatewayDeepSeekEnhanceToolParameters(schema map[string]any, entry CodexGatewayToolNameMapEntry) {
+	properties, _ := schema["properties"].(map[string]any)
+	if len(properties) == 0 {
+		return
+	}
+	if codexGatewayDeepSeekIsShellLikeTool(entry) {
+		if prop, ok := properties["cmd"].(map[string]any); ok {
+			prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Put the full shell command here.")
+		}
+	}
+	if codexGatewayDeepSeekIsApplyPatchTool(entry) {
+		if prop, ok := properties["input"].(map[string]any); ok {
+			prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Put the exact raw patch text in this custom input field.")
+		}
+	}
+}
+
+func codexGatewayAppendToolDescription(raw any, extra string) string {
+	base := strings.TrimSpace(firstCodexGatewayToolString(raw))
+	extra = strings.TrimSpace(extra)
+	switch {
+	case base == "":
+		return extra
+	case extra == "":
+		return base
+	case strings.Contains(base, extra):
+		return base
+	default:
+		return base + " " + extra
+	}
+}
+
+type codexGatewayDeepSeekSchemaLeaf struct {
+	FlatKey  string
+	Path     []string
+	Schema   map[string]any
+	Required bool
+}
+
+func codexGatewayDeepSeekFlattenToolParameters(schema map[string]any, cfg CodexGatewayToolMappingConfig) (map[string]any, []CodexGatewayToolArgumentPath, bool) {
+	if !cfg.EnableDeepSeekSchemaFlattening {
+		return schema, nil, false
+	}
+	if schema == nil || !strings.EqualFold(strings.TrimSpace(firstCodexGatewayToolString(schema["type"])), "object") {
+		return schema, nil, false
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	if len(properties) == 0 {
+		return schema, nil, false
+	}
+
+	leaves := make([]codexGatewayDeepSeekSchemaLeaf, 0, len(properties))
+	maxDepth := 0
+	nestedLeaf := false
+	rootRequired := codexGatewayToolSchemaRequiredSet(schema["required"])
+	keys := make([]string, 0, len(properties))
+	for key := range properties {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		child, ok := properties[key].(map[string]any)
+		if !ok || child == nil {
+			continue
+		}
+		codexGatewayDeepSeekCollectSchemaLeaves([]string{key}, child, rootRequired[key], &leaves, &maxDepth, &nestedLeaf)
+	}
+	minDepth := cfg.DeepSeekFlattenMinDepth
+	if minDepth <= 0 {
+		minDepth = 3
+	}
+	minLeaves := cfg.DeepSeekFlattenMinLeaves
+	if minLeaves <= 0 {
+		minLeaves = 4
+	}
+	if !nestedLeaf || (maxDepth < minDepth && len(leaves) < minLeaves) {
+		return schema, nil, false
+	}
+
+	flattened := make(map[string]any, len(schema))
+	for key, value := range schema {
+		if key == "properties" || key == "required" {
+			continue
+		}
+		flattened[key] = value
+	}
+	propertiesOut := make(map[string]any, len(leaves))
+	requiredOut := make([]any, 0, len(leaves))
+	paths := make([]CodexGatewayToolArgumentPath, 0, len(leaves))
+	seenFlatKeys := make(map[string]struct{}, len(leaves))
+	for _, leaf := range leaves {
+		if _, exists := seenFlatKeys[leaf.FlatKey]; exists {
+			return schema, nil, false
+		}
+		seenFlatKeys[leaf.FlatKey] = struct{}{}
+		propertiesOut[leaf.FlatKey] = leaf.Schema
+		if leaf.Required {
+			requiredOut = append(requiredOut, leaf.FlatKey)
+		}
+		paths = append(paths, CodexGatewayToolArgumentPath{
+			FlatKey: leaf.FlatKey,
+			Path:    append([]string(nil), leaf.Path...),
+		})
+	}
+	flattened["type"] = "object"
+	flattened["properties"] = propertiesOut
+	if len(requiredOut) > 0 {
+		flattened["required"] = requiredOut
+	}
+	return flattened, paths, true
+}
+
+func codexGatewayDeepSeekCollectSchemaLeaves(path []string, schema map[string]any, required bool, leaves *[]codexGatewayDeepSeekSchemaLeaf, maxDepth *int, nestedLeaf *bool) {
+	if len(path) > *maxDepth {
+		*maxDepth = len(path)
+	}
+	if strings.EqualFold(strings.TrimSpace(firstCodexGatewayToolString(schema["type"])), "object") {
+		properties, _ := schema["properties"].(map[string]any)
+		if len(properties) > 0 {
+			requiredSet := codexGatewayToolSchemaRequiredSet(schema["required"])
+			keys := make([]string, 0, len(properties))
+			for key := range properties {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				child, ok := properties[key].(map[string]any)
+				if !ok || child == nil {
+					continue
+				}
+				nextPath := append(append([]string(nil), path...), key)
+				codexGatewayDeepSeekCollectSchemaLeaves(nextPath, child, required && requiredSet[key], leaves, maxDepth, nestedLeaf)
+			}
+			return
+		}
+	}
+	flatKey := strings.Join(path, ".")
+	if len(path) > 1 {
+		*nestedLeaf = true
+	}
+	*leaves = append(*leaves, codexGatewayDeepSeekSchemaLeaf{
+		FlatKey:  flatKey,
+		Path:     append([]string(nil), path...),
+		Schema:   schema,
+		Required: required,
+	})
+}
+
+func codexGatewayToolSchemaRequiredSet(raw any) map[string]bool {
+	required := make(map[string]bool)
+	values, _ := raw.([]any)
+	for _, value := range values {
+		if name, ok := value.(string); ok && strings.TrimSpace(name) != "" {
+			required[strings.TrimSpace(name)] = true
+		}
+	}
+	return required
+}
+
+func codexGatewayPrepareDeepSeekToolArguments(entry CodexGatewayToolNameMapEntry, raw string) (string, bool, string) {
+	trimmed := strings.TrimSpace(raw)
+	if entry.Kind == CodexGatewayToolKindCustom {
+		trimmed = codexGatewayNormalizeLiteralNewlinesInJSONStrings(trimmed)
+		if trimmed != "" && strings.HasPrefix(trimmed, "{") && !json.Valid([]byte(trimmed)) {
+			if repaired, ok := codexGatewayRepairTruncatedJSON(trimmed); ok {
+				if codexGatewayDeepSeekIsApplyPatchTool(entry) {
+					if strings.TrimSpace(codexGatewayDeepSeekCustomToolInput(repaired, entry)) == "" {
+						return "", false, "malformed_tool_arguments"
+					}
+					return repaired, true, ""
+				}
+				if codexGatewayDeepSeekIsMutatingTool(entry) {
+					return "", false, "malformed_tool_arguments"
+				}
+				return repaired, true, ""
+			}
+			return "", false, "malformed_tool_arguments"
+		}
+		return raw, true, ""
+	}
+
+	normalized := normalizeCodexGatewayToolArguments(raw)
+	if !json.Valid([]byte(normalized)) {
+		if repaired, ok := codexGatewayRepairTruncatedJSON(normalized); ok {
+			if codexGatewayDeepSeekIsMutatingTool(entry) {
+				return "", false, "malformed_tool_arguments"
+			}
+			normalized = repaired
+		} else {
+			return "", false, "malformed_tool_arguments"
+		}
+	}
+	if next, changed := codexGatewayDeepSeekUnflattenToolArguments(normalized, entry); changed {
+		normalized = next
+	}
+	if next, changed := codexGatewayNormalizeFunctionToolArguments(codexGatewayClientVisibleToolName(entry), normalized); changed {
+		normalized = next
+	}
+	return normalized, true, ""
+}
+
+func codexGatewayDeepSeekUnflattenToolArguments(raw string, entry CodexGatewayToolNameMapEntry) (string, bool) {
+	if len(entry.FlattenedArgs) == 0 || strings.TrimSpace(raw) == "" || !json.Valid([]byte(raw)) {
+		return raw, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload == nil {
+		return raw, false
+	}
+	changed := false
+	for _, path := range entry.FlattenedArgs {
+		if len(path.Path) == 0 || strings.TrimSpace(path.FlatKey) == "" {
+			continue
+		}
+		value, ok := payload[path.FlatKey]
+		if !ok {
+			continue
+		}
+		delete(payload, path.FlatKey)
+		codexGatewaySetNestedToolArgument(payload, path.Path, value)
+		changed = true
+	}
+	if !changed {
+		return raw, false
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return raw, false
+	}
+	return string(encoded), true
+}
+
+func codexGatewaySetNestedToolArgument(root map[string]any, path []string, value any) {
+	current := root
+	for i, segment := range path {
+		if i == len(path)-1 {
+			current[segment] = value
+			return
+		}
+		next, _ := current[segment].(map[string]any)
+		if next == nil {
+			next = make(map[string]any)
+			current[segment] = next
+		}
+		current = next
+	}
+}
+
+func codexGatewayRepairTruncatedJSON(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || json.Valid([]byte(raw)) {
+		return raw, false
+	}
+	stack := make([]rune, 0, 8)
+	inString := false
+	escape := false
+	for _, r := range raw {
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			switch r {
+			case '\\':
+				escape = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) == 0 || stack[len(stack)-1] != r {
+				return raw, false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	var suffix strings.Builder
+	if inString {
+		suffix.WriteRune('"')
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		suffix.WriteRune(stack[i])
+	}
+	if suffix.Len() == 0 {
+		return raw, false
+	}
+	candidate := raw + suffix.String()
+	if !json.Valid([]byte(candidate)) {
+		return raw, false
+	}
+	return candidate, true
+}
+
+func codexGatewayDeepSeekDangerousToolCallKey(entry CodexGatewayToolNameMapEntry, arguments string) string {
+	name := strings.TrimSpace(codexGatewayClientVisibleToolName(entry))
+	if name == "" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(entry.Namespace)) + "|" + strings.ToLower(name) + "|" + strings.TrimSpace(arguments)
+}
+
+func codexGatewayDeepSeekIsMutatingTool(entry CodexGatewayToolNameMapEntry) bool {
+	name := strings.ToLower(strings.TrimSpace(codexGatewayClientVisibleToolName(entry)))
+	namespace := strings.ToLower(strings.TrimSpace(entry.Namespace))
+	alias := strings.ToLower(strings.TrimSpace(entry.Alias))
+	switch {
+	case codexGatewayDeepSeekIsApplyPatchTool(entry):
+		return true
+	case codexGatewayDeepSeekIsShellLikeTool(entry):
+		return true
+	case name == "python", strings.Contains(alias, "python"):
+		return true
+	case name == "exec_command", strings.Contains(alias, "exec_command"):
+		return true
+	case namespace == "shell" && name == "exec":
+		return true
+	default:
+		return false
+	}
+}
+
+func codexGatewayDeepSeekIsShellLikeTool(entry CodexGatewayToolNameMapEntry) bool {
+	name := strings.ToLower(strings.TrimSpace(codexGatewayClientVisibleToolName(entry)))
+	namespace := strings.ToLower(strings.TrimSpace(entry.Namespace))
+	alias := strings.ToLower(strings.TrimSpace(entry.Alias))
+	return name == "exec_command" || (namespace == "shell" && name == "exec") || strings.Contains(alias, "shell__exec")
+}
+
+func codexGatewayDeepSeekIsPythonTool(entry CodexGatewayToolNameMapEntry) bool {
+	name := strings.ToLower(strings.TrimSpace(codexGatewayClientVisibleToolName(entry)))
+	alias := strings.ToLower(strings.TrimSpace(entry.Alias))
+	return name == "python" || strings.Contains(alias, "python")
+}
+
+func codexGatewayDeepSeekIsApplyPatchTool(entry CodexGatewayToolNameMapEntry) bool {
+	name := strings.ToLower(strings.TrimSpace(codexGatewayClientVisibleToolName(entry)))
+	alias := strings.ToLower(strings.TrimSpace(entry.Alias))
+	return name == "apply_patch" || name == "edit" || strings.Contains(alias, "apply_patch")
 }
 
 var codexGatewayUnsupportedSchemaKeys = map[string]struct{}{

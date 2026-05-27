@@ -99,6 +99,12 @@ def shape_app_server_frame(
         add_safe_metadata(base, "model", model, hasher)
     if request_path:
         add_safe_metadata(base, "request_path", request_path, hasher)
+    base["trace_correlation"] = trace_correlation_summary(
+        desktop_trace_id=desktop_trace_id,
+        correlation_hashes=base.get("correlation_hashes"),
+        model=model,
+        request_path=request_path,
+    )
     try:
         decoded = frame.decode("utf-8")
         payload = json.loads(decoded)
@@ -154,6 +160,13 @@ def shape_tool_lifecycle_event(
     duration_ms: int,
     sent_back_to_model: bool,
     hasher: CorrelationHasher | None = None,
+    desktop_trace_id: str | None = None,
+    correlation_ids: dict[str, object] | None = None,
+    model: str | None = None,
+    request_path: str | None = None,
+    ui_matrix: dict[str, object] | None = None,
+    degraded_reason: str | None = None,
+    pass_fail_rule: str | None = None,
 ) -> dict[str, object]:
     hasher = hasher or CorrelationHasher.from_key_file(None)
     result_text = result if isinstance(result, str) else json.dumps(result, sort_keys=True, default=str)
@@ -180,9 +193,70 @@ def shape_tool_lifecycle_event(
         "result_hash": hasher.hash_identifier(result_text),
         "sent_back_to_model": sent_back_to_model,
     }
+    if desktop_trace_id:
+        event["desktop_trace_id"] = desktop_trace_id
+    correlation_hashes = build_correlation_hashes(correlation_ids or {}, hasher)
+    if correlation_hashes:
+        event["correlation_hashes"] = correlation_hashes
     add_safe_metadata(event, "tool_name", tool_name, hasher)
     add_safe_metadata(event, "namespace", namespace, hasher)
+    if model:
+        add_safe_metadata(event, "model", model, hasher)
+    if request_path:
+        add_safe_metadata(event, "request_path", request_path, hasher)
+    normalized_ui_matrix = normalize_ui_matrix(ui_matrix)
+    if normalized_ui_matrix:
+        event["ui_matrix"] = normalized_ui_matrix
+    if degraded_reason:
+        event["degraded_reason"] = degraded_reason
+    if pass_fail_rule:
+        event["pass_fail_rule"] = pass_fail_rule
+    event["trace_correlation"] = trace_correlation_summary(
+        desktop_trace_id=desktop_trace_id,
+        correlation_hashes=event.get("correlation_hashes"),
+        model=model,
+        request_path=request_path,
+    )
     return event
+
+
+def normalize_ui_matrix(value: object) -> dict[str, bool] | None:
+    if not isinstance(value, dict):
+        return None
+    output: dict[str, bool] = {}
+    for key in (
+        "command_collapsed",
+        "command_expandable",
+        "tool_detail_expandable",
+        "diff_entry_visible",
+        "file_open_action_available",
+    ):
+        if isinstance(value.get(key), bool):
+            output[key] = bool(value[key])
+    return output or None
+
+
+def trace_correlation_summary(
+    *,
+    desktop_trace_id: str | None,
+    correlation_hashes: object,
+    model: str | None,
+    request_path: str | None,
+) -> dict[str, object]:
+    has_hashes = isinstance(correlation_hashes, dict) and bool(correlation_hashes)
+    fallback_ready = bool(model) and bool(request_path)
+    if has_hashes:
+        strategy = "shared_hash"
+    elif fallback_ready:
+        strategy = "time_model_path"
+    else:
+        strategy = "none"
+    return {
+        "desktop_trace_id_present": bool(desktop_trace_id),
+        "correlation_hashes_present": has_hashes,
+        "link_ready": has_hashes or fallback_ready,
+        "strategy": strategy,
+    }
 
 
 def capture_model_picker_state(

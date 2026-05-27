@@ -69,7 +69,7 @@ describe('UseKeyModal', () => {
     expect(code).toContain('review_model = "gpt-5.4"')
   })
 
-  it('uses backend-aligned OpenAI context window limits in generated configs', async () => {
+  it('uses GPT-5.5 Codex-safe context limits in generated configs', async () => {
     listCodexManagedDevices.mockResolvedValue([])
     const wrapper = mount(UseKeyModal, {
       props: {
@@ -92,8 +92,19 @@ describe('UseKeyModal', () => {
     })
 
     const code = wrapper.find('pre code').text()
-    expect(code).toContain('model_context_window = 1050000')
-    expect(code).toContain('model_auto_compact_token_limit = 900000')
+    expect(code).toContain('model = "gpt-5.5"')
+    expect(code).toContain('model_context_window = 272000')
+    expect(code).toContain('model_auto_compact_token_limit = 244800')
+
+    const model54Button = wrapper.findAll('button').find((button) => button.text().includes('gpt-5.4'))
+    expect(model54Button).toBeDefined()
+    await model54Button!.trigger('click')
+    await nextTick()
+
+    const gpt54Code = wrapper.find('pre code').text()
+    expect(gpt54Code).toContain('model = "gpt-5.4"')
+    expect(gpt54Code).toContain('model_context_window = 1050000')
+    expect(gpt54Code).toContain('model_auto_compact_token_limit = 900000')
   })
 
   it('renders updated GPT-5.4 mini/nano names in OpenCode config', async () => {

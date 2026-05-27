@@ -389,6 +389,28 @@ def test_plugin_auth_gate_patch_allows_plugin_page_and_updates_integrity(tmp_pat
     assert status["target_file"] == "webview/assets/gradient-test.js"
 
 
+def test_plugin_auth_gate_patch_handles_current_plugin_auth_chunk(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + OLD_PLUGIN_AUTH_GATE_EXPR.encode("utf-8") + b" suffix",
+        filename="plugin-auth-test.js",
+    )
+
+    result = patch_plugin_auth_gate_app(app, backup_root=tmp_path / "backups", sign=False, verify_signature=False)
+
+    assert result["status"] == "patched"
+    assert result["target_file"] == "webview/assets/plugin-auth-test.js"
+    asar = app / "Contents" / "Resources" / "app.asar"
+    data = asar.read_bytes()
+    assert OLD_PLUGIN_AUTH_GATE_EXPR.encode("utf-8") not in data
+    assert NEW_PLUGIN_AUTH_GATE_EXPR.encode("utf-8") in data
+
+    status = inspect_plugin_auth_gate_app(app)
+    assert status["status"] == "patched"
+    assert status["integrity_ok"] is True
+    assert status["target_file"] == "webview/assets/plugin-auth-test.js"
+
+
 def test_plugin_auth_gate_patch_is_idempotent(tmp_path: Path):
     app = make_codex_app(
         tmp_path,
@@ -615,6 +637,36 @@ def test_plugin_mention_marketplace_patch_handles_current_flag_gated_chunks(tmp_
     assert status["status"] == "patched"
     assert status["old_expression_count"] == 0
     assert status["new_expression_count"] == 2
+    assert status["integrity_ok"] is True
+
+
+def test_plugin_mention_marketplace_patch_handles_current_prefetch_inline_and_metadata_chunks(tmp_path: Path):
+    app = make_codex_app_files(
+        tmp_path,
+        {
+            "app-prefetch-impl-test.js": b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+            "inline-mentions-test.js": b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+            "mention-metadata-syncer-test.js": b"prefix " + OLD_PLUGIN_MENTION_MARKETPLACE_EXPR.encode("utf-8") + b" suffix",
+        },
+    )
+
+    result = patch_plugin_mention_marketplace_app(
+        app,
+        backup_root=tmp_path / "backups",
+        sign=False,
+        verify_signature=False,
+    )
+
+    assert result["status"] == "patched"
+    assert result["target_files"] == [
+        "webview/assets/app-prefetch-impl-test.js",
+        "webview/assets/inline-mentions-test.js",
+        "webview/assets/mention-metadata-syncer-test.js",
+    ]
+    status = inspect_plugin_mention_marketplace_app(app)
+    assert status["status"] == "patched"
+    assert status["old_expression_count"] == 0
+    assert status["new_expression_count"] == 3
     assert status["integrity_ok"] is True
 
 

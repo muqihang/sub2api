@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func (m *CodexGatewayCaptureManager) traceReport(trace *CodexGatewayTrace, summary map[string]any, terminalClassification string) map[string]any {
+func (m *CodexGatewayCaptureManager) traceReport(trace *CodexGatewayTrace, summary map[string]any, terminalClassification string, cacheEfficiency map[string]any) map[string]any {
 	trace.mu.Lock()
 	cacheUsage := cloneCaptureMap(trace.cacheUsage)
 	toolClosure := cloneCaptureMap(trace.toolClosure)
@@ -30,8 +30,8 @@ func (m *CodexGatewayCaptureManager) traceReport(trace *CodexGatewayTrace, summa
 		"stream":                  summary["stream"],
 		"upstream_model":          summary["upstream_model"],
 	}
-	if efficiency := codexGatewayCaptureCacheEfficiency(cacheUsage, summary["provider"]); len(efficiency) > 0 {
-		report["cache_efficiency"] = efficiency
+	if len(cacheEfficiency) > 0 {
+		report["cache_efficiency"] = cacheEfficiency
 	}
 	if state.UpstreamRequestID != "" {
 		report["upstream_request_id_hash"] = m.redact.CorrelationHash("upstream_request_id", state.UpstreamRequestID)
@@ -44,12 +44,11 @@ func (m *CodexGatewayCaptureManager) traceReport(trace *CodexGatewayTrace, summa
 	return report
 }
 
-func (m *CodexGatewayCaptureManager) writeSessionReport(trace *CodexGatewayTrace, summary map[string]any, terminalClassification string) {
+func (m *CodexGatewayCaptureManager) writeSessionReport(trace *CodexGatewayTrace, summary map[string]any, terminalClassification string, cacheEfficiency map[string]any) {
 	if !m.enabledTrace(trace) {
 		return
 	}
 	trace.mu.Lock()
-	cacheUsage := cloneCaptureMap(trace.cacheUsage)
 	cacheRead := trace.cacheUsage["cache_read_input_tokens"]
 	state := trace.state
 	requestDiag := cloneCaptureMap(trace.requestDiag)
@@ -66,10 +65,16 @@ func (m *CodexGatewayCaptureManager) writeSessionReport(trace *CodexGatewayTrace
 		"cache_read_input_tokens": cacheRead,
 		"visible_output_started":  state.VisibleOutputStarted,
 	}
-	if efficiency := codexGatewayCaptureCacheEfficiency(cacheUsage, summary["provider"]); len(efficiency) > 0 {
-		record["cache_hit_rate"] = efficiency["cache_hit_rate"]
-		record["cache_miss_input_tokens"] = efficiency["cache_miss_input_tokens"]
-		record["cache_diagnostics"] = efficiency["diagnostics"]
+	if len(cacheEfficiency) > 0 {
+		record["prompt_cache_hit_tokens"] = cacheEfficiency["prompt_cache_hit_tokens"]
+		record["prompt_cache_miss_tokens"] = cacheEfficiency["prompt_cache_miss_tokens"]
+		record["cache_hit_ratio"] = cacheEfficiency["cache_hit_ratio"]
+		record["cache_hit_rate"] = cacheEfficiency["cache_hit_rate"]
+		record["cache_miss_input_tokens"] = cacheEfficiency["cache_miss_input_tokens"]
+		record["cache_diagnostics"] = cacheEfficiency["diagnostics"]
+		if missAttribution, ok := cacheEfficiency["miss_attribution"]; ok {
+			record["cache_miss_attribution"] = missAttribution
+		}
 	}
 	if trace.Meta.ThreadID != "" {
 		record["thread_id_hash"] = m.redact.CorrelationHash("thread_id", trace.Meta.ThreadID)
@@ -110,17 +115,12 @@ func (m *CodexGatewayCaptureManager) writeJSONLAtPath(trace *CodexGatewayTrace, 
 
 func codexGatewayCaptureCacheEfficiency(cacheUsage map[string]any, provider any) map[string]any {
 	inputTokens, inputOK := codexGatewayCaptureIntValue(cacheUsage["input_tokens"])
-	cacheReadTokens, readOK := codexGatewayCaptureIntValue(cacheUsage["cache_read_input_tokens"])
-	if !inputOK || !readOK || inputTokens <= 0 {
+	hitTokens, missTokens, hitRate, ok := codexGatewayCapturePromptCacheMetrics(cacheUsage)
+	if !inputOK || !ok || inputTokens <= 0 {
 		return nil
 	}
-	missTokens := inputTokens - cacheReadTokens
-	if missTokens < 0 {
-		missTokens = 0
-	}
-	hitRate := float64(cacheReadTokens) / float64(inputTokens)
 	diagnostics := make([]string, 0, 2)
-	if inputTokens > 1000 && cacheReadTokens == 0 {
+	if inputTokens > 1000 && hitTokens == 0 {
 		diagnostics = append(diagnostics, "cache_cold_or_prefix_changed")
 	}
 	if inputTokens > 1000 && hitRate < 0.5 {
@@ -129,13 +129,62 @@ func codexGatewayCaptureCacheEfficiency(cacheUsage map[string]any, provider any)
 			diagnostics = append(diagnostics, "deepseek_account_or_prefix_changed")
 		}
 	}
-	return map[string]any{
-		"input_tokens":            inputTokens,
-		"cache_read_input_tokens": cacheReadTokens,
-		"cache_miss_input_tokens": missTokens,
-		"cache_hit_rate":          hitRate,
-		"diagnostics":             diagnostics,
+	out := map[string]any{
+		"input_tokens":             inputTokens,
+		"prompt_cache_hit_tokens":  hitTokens,
+		"prompt_cache_miss_tokens": missTokens,
+		"cache_miss_input_tokens":  missTokens,
+		"cache_hit_ratio":          hitRate,
+		"cache_hit_rate":           hitRate,
+		"diagnostics":              diagnostics,
 	}
+	if cacheReadTokens, readOK := codexGatewayCaptureIntValue(cacheUsage["cache_read_input_tokens"]); readOK {
+		out["cache_read_input_tokens"] = cacheReadTokens
+	}
+	return out
+}
+
+func codexGatewayCaptureEnrichCacheUsage(cacheUsage map[string]any) map[string]any {
+	hitTokens, missTokens, hitRate, ok := codexGatewayCapturePromptCacheMetrics(cacheUsage)
+	if !ok {
+		return cacheUsage
+	}
+	cacheUsage["prompt_cache_hit_tokens"] = hitTokens
+	cacheUsage["prompt_cache_miss_tokens"] = missTokens
+	cacheUsage["cache_hit_ratio"] = hitRate
+	return cacheUsage
+}
+
+func codexGatewayCapturePromptCacheMetrics(cacheUsage map[string]any) (int, int, float64, bool) {
+	inputTokens, inputOK := codexGatewayCaptureIntValue(cacheUsage["input_tokens"])
+	if hitTokens, hitOK := codexGatewayCaptureIntValue(cacheUsage["prompt_cache_hit_tokens"]); hitOK {
+		if missTokens, missOK := codexGatewayCaptureIntValue(cacheUsage["prompt_cache_miss_tokens"]); missOK {
+			total := hitTokens + missTokens
+			if total > 0 {
+				return hitTokens, missTokens, float64(hitTokens) / float64(total), true
+			}
+		}
+		if inputOK && inputTokens > 0 && hitTokens <= inputTokens {
+			missTokens := inputTokens - hitTokens
+			return hitTokens, missTokens, float64(hitTokens) / float64(inputTokens), true
+		}
+	}
+	if missTokens, missOK := codexGatewayCaptureIntValue(cacheUsage["prompt_cache_miss_tokens"]); missOK && inputOK && inputTokens > 0 && missTokens <= inputTokens {
+		hitTokens := inputTokens - missTokens
+		return hitTokens, missTokens, float64(hitTokens) / float64(inputTokens), true
+	}
+	cacheReadTokens, readOK := codexGatewayCaptureIntValue(cacheUsage["cache_read_input_tokens"])
+	if !inputOK || !readOK || inputTokens <= 0 {
+		return 0, 0, 0, false
+	}
+	if cacheReadTokens < 0 {
+		cacheReadTokens = 0
+	}
+	missTokens := inputTokens - cacheReadTokens
+	if missTokens < 0 {
+		missTokens = 0
+	}
+	return cacheReadTokens, missTokens, float64(cacheReadTokens) / float64(inputTokens), true
 }
 
 func codexGatewayCaptureIntValue(value any) (int, bool) {

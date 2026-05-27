@@ -23,8 +23,17 @@ async def make_proxy(tmp_path, status_code: int = 200, response_body: dict | Non
                 "display_name": "DeepSeek V4 Pro",
                 "visibility": "visible",
                 "supported_in_api": True,
+                "capabilities": {
+                    "responses": True,
+                    "streaming": True,
+                    "tool_calls": True,
+                    "image_input": True,
+                    "context_continuation": True,
+                },
                 "input_modalities": ["text", "image"],
+                "supports_image_detail_original": True,
                 "supports_search_tool": True,
+                "web_search_tool_type": "text_and_image",
                 "supported_reasoning_levels": ["high", "xhigh"],
                 "context_window": 262144,
                 "max_context_window": 262144,
@@ -397,6 +406,10 @@ async def test_proxy_syncs_model_catalog_from_gateway_models(tmp_path):
     payload = json.loads(catalog_path.read_text(encoding="utf-8"))
     deepseek = next(model for model in payload["models"] if model["slug"] == "deepseek-v4-pro")
     assert deepseek["input_modalities"] == ["text", "image"]
+    assert deepseek["supports_image_detail_original"] is True
+    assert deepseek["supports_search_tool"] is True
+    assert deepseek["web_search_tool_type"] == "text_and_image"
+    assert deepseek["capabilities"]["image_input"] is True
     assert seen["query_string"] == "catalog_format=codex_cli"
     await upstream.close()
 

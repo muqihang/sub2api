@@ -33,10 +33,7 @@ func (m *CodexGatewayCaptureManager) recordClientRequestDiagnostics(trace *Codex
 	}
 	diagnostics := m.codexGatewayCaptureRequestDiagnostics(body)
 	if len(diagnostics) > 0 {
-		trace.mu.Lock()
-		trace.requestDiag = diagnostics
-		trace.mu.Unlock()
-		m.writeJSON(trace, "client_request.diagnostics.json", diagnostics)
+		m.mergeRequestDiagnostics(trace, diagnostics)
 	}
 }
 
@@ -64,7 +61,7 @@ func (m *CodexGatewayCaptureManager) RecordProviderResult(trace *CodexGatewayTra
 			"emitted_calls": calls,
 		})
 	}
-	m.mergeCacheUsage(trace, map[string]any{
+	cacheUsage := map[string]any{
 		"upstream_model":                 strings.TrimSpace(result.UpstreamModel),
 		"input_tokens":                   result.Usage.InputTokens,
 		"output_tokens":                  result.Usage.OutputTokens,
@@ -74,7 +71,16 @@ func (m *CodexGatewayCaptureManager) RecordProviderResult(trace *CodexGatewayTra
 		"cache_creation_5m_tokens":       result.Usage.CacheCreation5mTokens,
 		"cache_creation_1h_tokens":       result.Usage.CacheCreation1hTokens,
 		"provider_usage_extra_available": result.Usage.ProviderUsageExtra != nil,
-	})
+	}
+	if len(result.Usage.ProviderUsageExtra) > 0 {
+		if value, ok := result.Usage.ProviderUsageExtra["prompt_cache_hit_tokens"]; ok {
+			cacheUsage["prompt_cache_hit_tokens"] = value
+		}
+		if value, ok := result.Usage.ProviderUsageExtra["prompt_cache_miss_tokens"]; ok {
+			cacheUsage["prompt_cache_miss_tokens"] = value
+		}
+	}
+	m.mergeCacheUsage(trace, cacheUsage)
 }
 
 func (m *CodexGatewayCaptureManager) updateStreamState(trace *CodexGatewayTrace, direction, eventName string) {
@@ -129,7 +135,7 @@ func codexGatewayCaptureTerminalClassification(state codexGatewayCaptureTraceSta
 
 func codexGatewayCaptureIsTerminalEvent(eventName string) bool {
 	switch strings.TrimSpace(eventName) {
-	case "response.completed", "message_stop", "deepseek.done", "done":
+	case "response.completed", "response.failed", "response.incomplete", "message_stop", "deepseek.done", "done":
 		return true
 	default:
 		return false
@@ -162,6 +168,7 @@ func codexGatewayProviderUsagePresent(usage CodexGatewayProviderUsage) bool {
 }
 
 func (m *CodexGatewayCaptureManager) mergeCacheUsage(trace *CodexGatewayTrace, values map[string]any) {
+	values = codexGatewayCaptureEnrichCacheUsage(values)
 	trace.mu.Lock()
 	if trace.cacheUsage == nil {
 		trace.cacheUsage = make(map[string]any)

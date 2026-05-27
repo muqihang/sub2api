@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,12 +19,14 @@ import (
 )
 
 type codexGatewayGoldenFixture struct {
-	Name      string                        `json:"name"`
-	Mode      string                        `json:"mode"`
-	Request   codexGatewayGoldenRequest     `json:"request"`
-	Upstream  *codexGatewayGoldenUpstream   `json:"upstream,omitempty"`
-	SeedState *CodexGatewayResponseState    `json:"seed_state,omitempty"`
-	Expect    codexGatewayGoldenExpectation `json:"expect"`
+	Name                  string                        `json:"name"`
+	Mode                  string                        `json:"mode"`
+	Request               codexGatewayGoldenRequest     `json:"request"`
+	Upstream              *codexGatewayGoldenUpstream   `json:"upstream,omitempty"`
+	UpstreamSequence      []codexGatewayGoldenUpstream  `json:"upstream_sequence,omitempty"`
+	HostedWebSearchOutput string                        `json:"hosted_web_search_output,omitempty"`
+	SeedState             *CodexGatewayResponseState    `json:"seed_state,omitempty"`
+	Expect                codexGatewayGoldenExpectation `json:"expect"`
 }
 
 type codexGatewayGoldenRequest struct {
@@ -55,6 +58,7 @@ type codexGatewayGoldenUpstream struct {
 type codexGatewayGoldenExpectation struct {
 	TerminalEvent   string                   `json:"terminal_event,omitempty"`
 	ResponseStatus  string                   `json:"response_status,omitempty"`
+	FailoverStatus  int                      `json:"failover_status,omitempty"`
 	Usage           *codexGatewayGoldenUsage `json:"usage,omitempty"`
 	ReasoningText   string                   `json:"reasoning_text,omitempty"`
 	OutputText      string                   `json:"output_text,omitempty"`
@@ -82,6 +86,11 @@ func TestCodexGatewayDeepSeekIntegrationGolden_StreamFixtures(t *testing.T) {
 		"function_tool_call_stream",
 		"namespace_tool_call_stream",
 		"custom_tool_call_stream",
+		"custom_apply_patch_freeform_stream",
+		"wait_agent_normalized_stream",
+		"incomplete_partial_tool_stream",
+		"hosted_web_search_visible_stream",
+		"usage_terminal_only_stream",
 		"usage_only_stream",
 		"error_invalid_request_stream",
 		"error_upstream_failure_stream",
@@ -98,17 +107,32 @@ func TestCodexGatewayDeepSeekIntegrationGolden_StreamFixtures(t *testing.T) {
 				insertCodexGatewayGoldenState(t, stateStore, *fixture.SeedState)
 			}
 			var buf bytes.Buffer
+			requestCount := 0
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				require.Equal(t, http.MethodPost, r.Method)
-				for key, value := range fixture.Upstream.Headers {
+				requestCount++
+				upstream := fixture.Upstream
+				if len(fixture.UpstreamSequence) > 0 {
+					require.LessOrEqual(t, requestCount, len(fixture.UpstreamSequence))
+					step := fixture.UpstreamSequence[requestCount-1]
+					upstream = &step
+				}
+				require.NotNil(t, upstream)
+				for key, value := range upstream.Headers {
 					w.Header().Set(key, value)
 				}
-				w.WriteHeader(fixture.Upstream.StatusCode)
-				_, err := io.WriteString(w, fixture.Upstream.Body)
+				w.WriteHeader(upstream.StatusCode)
+				_, err := io.WriteString(w, upstream.Body)
 				require.NoError(t, err)
 			}))
 			defer server.Close()
+			cfg := CodexGatewayDeepSeekRequestConfig{}
+			if strings.TrimSpace(fixture.HostedWebSearchOutput) != "" {
+				cfg.HostedWebSearch = func(_ context.Context, query string) (string, error) {
+					return fixture.HostedWebSearchOutput, nil
+				}
+			}
 
 			result, err := ExecuteCodexGatewayDeepSeekStream(
 				context.Background(),
@@ -122,9 +146,22 @@ func TestCodexGatewayDeepSeekIntegrationGolden_StreamFixtures(t *testing.T) {
 					SessionKey:   "fixture-session",
 					IsolationKey: "fixture-isolation",
 				},
-				CodexGatewayDeepSeekRequestConfig{},
+				cfg,
 				&buf,
 			)
+			if fixture.Expect.FailoverStatus > 0 || fixture.Expect.ErrorContains != "" {
+				require.Error(t, err)
+				if fixture.Expect.FailoverStatus > 0 {
+					var failoverErr *UpstreamFailoverError
+					require.True(t, errors.As(err, &failoverErr))
+					require.Equal(t, fixture.Expect.FailoverStatus, failoverErr.StatusCode)
+				}
+				if fixture.Expect.ErrorContains != "" {
+					require.Contains(t, err.Error(), fixture.Expect.ErrorContains)
+				}
+				require.Empty(t, buf.String())
+				return
+			}
 			require.NoError(t, err)
 
 			stream := buf.String()
@@ -133,6 +170,14 @@ func TestCodexGatewayDeepSeekIntegrationGolden_StreamFixtures(t *testing.T) {
 
 			events := parseCodexGatewayOrderedEvents(t, stream)
 			assertCodexGatewayGoldenEventContract(t, events)
+			semanticTrace, traceErr := BuildCodexGatewaySemanticTraceFromSSE(stream)
+			require.NoError(t, traceErr)
+			parityReport := BuildCodexGatewaySemanticParityReport(semanticTrace, nil)
+			require.Truef(t, parityReport.FoundationPass, "expected parity foundation to pass for fixture %s, mismatches=%v invariants=%v", fixture.Name, parityReport.Mismatches, parityReport.Invariants)
+			require.Equal(t, "baseline_missing", parityReport.DegradedReason)
+			require.False(t, parityReport.BaselineCompared)
+			require.Equal(t, len(events), parityReport.Candidate.EventCount)
+			require.Equal(t, semanticTrace.TerminalEvent, parityReport.Candidate.TerminalEvent)
 			require.NotEmpty(t, events)
 			require.Equal(t, fixture.Expect.TerminalEvent, events[len(events)-1].Event)
 			require.Equal(t, fixture.Expect.ResponseStatus, gjson.GetBytes(events[len(events)-1].Payload, "response.status").String())

@@ -143,6 +143,45 @@ def test_tool_lifecycle_shape_only_policy_for_sensitive_outputs():
     assert event["sent_back_to_model"] is True
 
 
+def test_tool_lifecycle_can_record_ui_matrix_and_trace_correlation(tmp_path):
+    key = tmp_path / "key"
+    key.write_bytes(b"shared")
+    event = shape_tool_lifecycle_event(
+        tool_name="shell_exec",
+        call_id="call-secret",
+        item_id="item-secret",
+        schema={"type": "object"},
+        result="ok",
+        content_class="command_output",
+        status="completed",
+        duration_ms=5,
+        sent_back_to_model=True,
+        hasher=CorrelationHasher.from_key_file(key),
+        desktop_trace_id="cd_runtime",
+        correlation_ids={"x_client_request_id": "request-1"},
+        model="deepseek-v4-pro",
+        request_path="/codex/v1/responses",
+        ui_matrix={
+            "command_collapsed": True,
+            "command_expandable": True,
+            "tool_detail_expandable": False,
+            "diff_entry_visible": True,
+            "file_open_action_available": False,
+        },
+        degraded_reason="diff_not_materialized",
+        pass_fail_rule="diff_entry_visible implies replayable artifact metadata",
+    )
+
+    assert event["ui_matrix"]["command_collapsed"] is True
+    assert event["ui_matrix"]["tool_detail_expandable"] is False
+    assert event["degraded_reason"] == "diff_not_materialized"
+    assert event["pass_fail_rule"] == "diff_entry_visible implies replayable artifact metadata"
+    assert event["desktop_trace_id"] == "cd_runtime"
+    assert event["correlation_hashes"]["x_client_request_id_hash"].startswith("hmac-sha256:")
+    assert event["trace_correlation"]["strategy"] == "shared_hash"
+    assert event["trace_correlation"]["link_ready"] is True
+
+
 def test_tool_lifecycle_redacts_all_sensitive_tool_families(tmp_path):
     cases = [
         ("mcp__computer_use__screenshot", "screenshot", "PNG_SCREENSHOT_BYTES"),

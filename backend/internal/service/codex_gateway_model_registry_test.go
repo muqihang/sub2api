@@ -45,9 +45,9 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 	gpt55, ok := reg.Resolve("gpt-5.5")
 	require.True(t, ok)
 	require.Equal(t, "visible", gpt55.Visibility)
-	require.Equal(t, 1_050_000, gpt55.ContextWindow)
-	require.Equal(t, 900_000, gpt55.AutoCompactTokenLimit)
-	require.Equal(t, 92, gpt55.EffectiveContextWindowPercent)
+	require.Equal(t, 272_000, gpt55.ContextWindow)
+	require.Equal(t, 244_800, gpt55.AutoCompactTokenLimit)
+	require.Equal(t, 95, gpt55.EffectiveContextWindowPercent)
 
 	gpt54, ok := reg.Resolve("gpt-5.4")
 	require.True(t, ok)
@@ -75,6 +75,7 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 	require.True(t, pro.SupportsSearchTool)
 	require.Equal(t, "openai", pro.WebSearchToolType)
 	require.Equal(t, "none", pro.ImageGenerationToolType)
+	require.False(t, pro.Capabilities.ImageInput)
 
 	flash, ok := reg.Resolve("deepseek-v4-flash")
 	require.True(t, ok)
@@ -224,16 +225,68 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 	require.Contains(t, bySlug, "deepseek-v4-pro")
 
 	gpt55 := bySlug["gpt-5.5"]
-	require.Equal(t, 1_050_000, gpt55.ContextWindow)
-	require.Equal(t, 900_000, gpt55.AutoCompactTokenLimit)
-	require.Equal(t, 92, gpt55.EffectiveContextWindowPercent)
+	require.Equal(t, 272_000, gpt55.ContextWindow)
+	require.Equal(t, 244_800, gpt55.AutoCompactTokenLimit)
+	require.Equal(t, 95, gpt55.EffectiveContextWindowPercent)
+	require.NotContains(t, gpt55.BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
 
 	deepseek := envelope.Models[1]
 	require.Equal(t, "deepseek-v4-pro", deepseek.Slug)
 	require.True(t, deepseek.SupportsSearchTool)
-	require.NotEmpty(t, deepseek.WebSearchToolType)
+	require.Equal(t, "text_and_image", deepseek.WebSearchToolType)
 	require.Equal(t, []string{"text", "image"}, deepseek.InputModalities)
 	require.False(t, deepseek.SupportsParallelToolCalls)
+	require.Contains(t, deepseek.BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, deepseek.BaseInstructions, "clearly matches")
+	require.Contains(t, deepseek.BaseInstructions, "Do not load unrelated skills")
+}
+
+func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSONAddsRoutingBridgeForAnthropic(t *testing.T) {
+	type codexCLICatalogModelForTest struct {
+		Slug             string `json:"slug"`
+		BaseInstructions string `json:"base_instructions"`
+	}
+
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"gpt-5.5", "claude-opus-4-7"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderOpenAI:    {Provider: CodexGatewayProviderOpenAI, GroupID: 1001, Healthy: true},
+					CodexGatewayProviderAnthropic: {Provider: CodexGatewayProviderAnthropic, GroupID: 3003, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"gpt-5.5":         {Enabled: true},
+					"claude-opus-4-7": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{
+			"gpt-5.5":         true,
+			"claude-opus-4-7": true,
+		}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{
+			"gpt-5.5":         true,
+			"claude-opus-4-7": true,
+		}}),
+	)
+
+	raw, err := reg.ExportCodexCLICatalogJSON()
+	require.NoError(t, err)
+
+	var envelope struct {
+		Models []codexCLICatalogModelForTest `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &envelope))
+	bySlug := make(map[string]codexCLICatalogModelForTest, len(envelope.Models))
+	for _, model := range envelope.Models {
+		bySlug[model.Slug] = model
+	}
+	require.NotContains(t, bySlug["gpt-5.5"].BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, bySlug["claude-opus-4-7"].BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, bySlug["claude-opus-4-7"].BaseInstructions, "Do not load unrelated skills")
 }
 
 func TestCodexGatewayModelRegistry_HidesOpenAIModelsWhenProviderGroupIsUnavailable(t *testing.T) {
@@ -277,6 +330,10 @@ func TestCodexGatewayModelRegistry_DeepSeekVisibleWhenAllGatesPass(t *testing.T)
 	require.True(t, ok)
 	require.True(t, model.SupportedInAPI)
 	require.Equal(t, "visible", model.Visibility)
+	require.Equal(t, []string{"text", "image"}, model.InputModalities)
+	require.False(t, model.Capabilities.ImageInput)
+	require.True(t, model.SupportsSearchTool)
+	require.Equal(t, "openai", model.WebSearchToolType)
 	require.Contains(t, codexGatewayModelSlugs(reg.Models()), "deepseek-v4-pro")
 }
 
@@ -612,7 +669,7 @@ func TestCodexGatewayModelRegistry_CodexCLICatalogPreservesDesktopModelContract(
 	require.True(t, payload.Models[0].Capabilities.ToolCalls)
 	require.NotNil(t, payload.Models[0].Pricing)
 	require.Equal(t, "2.50", *payload.Models[0].Pricing.InputPrice)
-	require.Equal(t, 1_050_000, payload.Models[0].ContextWindow)
+	require.Equal(t, 272_000, payload.Models[0].ContextWindow)
 }
 
 func TestCodexGatewayModelRegistryProviderWiresDatabasePricingResolver(t *testing.T) {

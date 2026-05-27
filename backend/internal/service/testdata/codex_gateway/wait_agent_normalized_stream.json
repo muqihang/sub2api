@@ -1,0 +1,60 @@
+{
+  "name": "wait_agent_normalized_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "wait for subagent"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "wait_agent",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "targets": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "timeout_ms": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "targets"
+          ]
+        }
+      }
+    ]
+  },
+  "upstream": {
+    "status_code": 200,
+    "headers": {
+      "Content-Type": "text/event-stream"
+    },
+    "body": "data: {\"id\":\"chatcmpl_stream_wait_agent\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_wait\",\"type\":\"function\",\"function\":{\"name\":\"wait_agent\",\"arguments\":\"{\\\"targets\\\":\\\"agent-1\\\",\\\"timeout_ms\\\":\\\"30000\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+  },
+  "expect": {
+    "terminal_event": "response.completed",
+    "response_status": "completed",
+    "output_types": [
+      "reasoning",
+      "function_call"
+    ],
+    "tool_name": "wait_agent",
+    "tool_arguments": "{\"targets\":[\"agent-1\"],\"timeout_ms\":30000}",
+    "stored_tool_calls": 1
+  }
+}

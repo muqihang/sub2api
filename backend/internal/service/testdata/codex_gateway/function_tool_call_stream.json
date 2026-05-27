@@ -47,6 +47,7 @@
       "cached_tokens": 2
     },
     "output_types": [
+      "reasoning",
       "function_call"
     ],
     "tool_name": "get_weather",

@@ -28,7 +28,7 @@ def inspect_codex_plugins(
 ) -> dict[str, dict[str, object]]:
     bundled_root = codex_home / "plugins" / "cache" / "openai-bundled"
     computer_use_manifest = find_plugin_manifest(bundled_root, "computer-use")
-    browser_use_manifest = find_plugin_manifest(bundled_root, "browser-use")
+    browser_use_manifest = find_plugin_manifest(bundled_root, "browser-use") or find_plugin_manifest(bundled_root, "browser")
     chrome_manifest = find_plugin_manifest(bundled_root, "chrome")
 
     helper_app = codex_home / "computer-use" / "Codex Computer Use.app"

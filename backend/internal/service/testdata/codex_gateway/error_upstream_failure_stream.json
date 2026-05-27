@@ -24,11 +24,7 @@
     "body": "{\"error\":{\"type\":\"api_error\",\"code\":\"upstream_error\",\"message\":\"temporary overload\"}}"
   },
   "expect": {
-    "terminal_event": "response.failed",
-    "response_status": "failed",
-    "error_type": "api_error",
-    "error_code": "upstream_error",
-    "error_message": "temporary overload",
-    "output_types": []
+    "failover_status": 503,
+    "error_contains": "failover"
   }
 }

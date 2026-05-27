@@ -43,6 +43,7 @@
       "cached_tokens": 0
     },
     "output_types": [
+      "reasoning",
       "custom_tool_call"
     ],
     "tool_name": "shell",

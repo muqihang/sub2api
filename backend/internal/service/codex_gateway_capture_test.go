@@ -598,6 +598,21 @@ func TestCodexGatewayCaptureV2ErrorClassification(t *testing.T) {
 	}
 }
 
+func TestCodexGatewayCaptureV2RecognizesFailedAndIncompleteTerminalEvents(t *testing.T) {
+	require.True(t, codexGatewayCaptureIsTerminalEvent("response.failed"))
+	require.True(t, codexGatewayCaptureIsTerminalEvent("response.incomplete"))
+
+	failed := codexGatewayCaptureTerminalClassification(codexGatewayCaptureTraceState{
+		ClientTerminalEvent: "response.failed",
+	}, CodexGatewayCaptureFinishSummary{Status: "failed"})
+	require.Equal(t, "completed", failed)
+
+	incomplete := codexGatewayCaptureTerminalClassification(codexGatewayCaptureTraceState{
+		UpstreamTerminalEvent: "response.incomplete",
+	}, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.Equal(t, "completed", incomplete)
+}
+
 func TestCodexGatewayCaptureV2TerminalClassificationPrefersErrors(t *testing.T) {
 	state := codexGatewayCaptureTraceState{
 		UpstreamTerminalEvent: "message_stop",
@@ -738,6 +753,156 @@ func TestCodexGatewayCaptureV2GPTMiniBackgroundTaskDiagnostics(t *testing.T) {
 		"PRIVATE_BACKGROUND_PROMPT",
 		"No available accounts",
 	)
+}
+
+func TestCodexGatewayCaptureV2DeepSeekCacheMissAttribution(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("01234567890123456789012345678901"), 0o600))
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              keyPath,
+		CorrelationHashKeyFile:   keyPath,
+		CaptureSuccessSampleRate: 1,
+	})
+
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	buildTrace := func(traceID string, tools json.RawMessage, ctx CodexGatewayDeepSeekRequestContext) {
+		trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+			TraceID:  traceID,
+			Method:   "POST",
+			Path:     "/codex/v1/responses",
+			Model:    "deepseek-v4-pro",
+			Provider: "deepseek",
+		})
+		require.NotNil(t, trace)
+		_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+			Model:        "deepseek-v4-pro",
+			Instructions: json.RawMessage(`"Keep answers short."`),
+			Input: json.RawMessage(`[
+				{"type":"message","role":"developer","content":[{"type":"input_text","text":"Use local tools when possible."}]},
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect the repository"}]}
+			]`),
+			Tools: tools,
+		}, nil, CodexGatewayDeepSeekRequestContext{
+			SessionKey:           ctx.SessionKey,
+			IsolationKey:         ctx.IsolationKey,
+			WorkspaceKey:         ctx.WorkspaceKey,
+			ManagedSessionBucket: ctx.ManagedSessionBucket,
+			UserID:               ctx.UserID,
+			CaptureTrace:         trace,
+		}, CodexGatewayDeepSeekRequestConfig{})
+		require.NoError(t, err)
+		manager.RecordProviderResult(trace, CodexGatewayProviderResult{
+			UpstreamModel: "deepseek-v4-pro",
+			Usage: CodexGatewayProviderUsage{
+				InputTokens:          1200,
+				OutputTokens:         24,
+				TotalTokens:          1224,
+				CacheReadInputTokens: 0,
+			},
+		})
+		manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	}
+
+	toolsA := json.RawMessage(`[
+		{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
+	]`)
+	toolsB := json.RawMessage(`[
+		{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}},
+		{"type":"custom","name":"apply_patch","format":{"type":"grammar"}}
+	]`)
+
+	buildTrace("miss_not_warmed", toolsA, CodexGatewayDeepSeekRequestContext{SessionKey: "session_a", IsolationKey: "iso_a", WorkspaceKey: "workspace_shared"})
+	buildTrace("miss_repeat", toolsA, CodexGatewayDeepSeekRequestContext{SessionKey: "session_b", IsolationKey: "iso_a", WorkspaceKey: "workspace_shared"})
+	buildTrace("miss_tool_change", toolsB, CodexGatewayDeepSeekRequestContext{SessionKey: "session_c", IsolationKey: "iso_a", WorkspaceKey: "workspace_shared"})
+	buildTrace("miss_user_change", toolsB, CodexGatewayDeepSeekRequestContext{SessionKey: "session_d", IsolationKey: "iso_b", WorkspaceKey: "workspace_shared"})
+	buildTrace("miss_other_workspace", toolsA, CodexGatewayDeepSeekRequestContext{SessionKey: "session_e", IsolationKey: "iso_a", WorkspaceKey: "workspace_other"})
+	require.NoError(t, manager.Close())
+
+	dateDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"))
+	report1 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_not_warmed", "trace_report.json"))
+	require.Contains(t, fmtAny(report1["request_diagnostics"]), "stable_serialization")
+	require.Contains(t, fmtAny(report1["cache_efficiency"]), "request_not_warmed")
+
+	report2 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_repeat", "trace_report.json"))
+	require.Contains(t, fmtAny(report2["cache_efficiency"]), "upstream_best_effort_or_unknown")
+
+	report3 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_tool_change", "trace_report.json"))
+	require.Contains(t, fmtAny(report3["cache_efficiency"]), "tool_schema_changed")
+	require.Contains(t, fmtAny(report3["cache_efficiency"]), "prefix_hash_changed_reason")
+	require.Contains(t, fmtAny(report3["cache_usage"]), "tool_schema_hash")
+
+	report4 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_user_change", "trace_report.json"))
+	require.Contains(t, fmtAny(report4["cache_efficiency"]), "user_id_changed")
+
+	report5 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_other_workspace", "trace_report.json"))
+	require.NotContains(t, fmtAny(report5["cache_efficiency"]), "tool_schema_changed")
+	require.NotContains(t, fmtAny(report5["cache_efficiency"]), "user_id_changed")
+}
+
+func TestCodexGatewayCaptureV2DeepSeekCacheUsagePrefersProviderExtra(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("01234567890123456789012345678901"), 0o600))
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              keyPath,
+		CorrelationHashKeyFile:   keyPath,
+		CaptureSuccessSampleRate: 1,
+	})
+	defer manager.Close()
+
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+		TraceID:  "deepseek_cache_extra",
+		Method:   "POST",
+		Path:     "/codex/v1/responses",
+		Model:    "deepseek-v4-pro",
+		Provider: "deepseek",
+	})
+	require.NotNil(t, trace)
+	manager.RecordProviderResult(trace, CodexGatewayProviderResult{
+		UpstreamModel: "deepseek-v4-pro",
+		Usage: CodexGatewayProviderUsage{
+			InputTokens:          1200,
+			OutputTokens:         50,
+			TotalTokens:          1250,
+			CacheReadInputTokens: 900,
+			ProviderUsageExtra: map[string]any{
+				"prompt_cache_hit_tokens":  float64(300),
+				"prompt_cache_miss_tokens": float64(900),
+			},
+		},
+	})
+	manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, manager.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "deepseek_cache_extra")
+	cacheUsage := readCaptureJSONFile(t, filepath.Join(traceDir, "cache_usage.json"))
+	require.Equal(t, float64(300), cacheUsage["prompt_cache_hit_tokens"])
+	require.Equal(t, float64(900), cacheUsage["prompt_cache_miss_tokens"])
+	require.Equal(t, 0.25, cacheUsage["cache_hit_ratio"])
+
+	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
+	efficiency := report["cache_efficiency"].(map[string]any)
+	require.Equal(t, float64(300), efficiency["prompt_cache_hit_tokens"])
+	require.Equal(t, float64(900), efficiency["prompt_cache_miss_tokens"])
+	require.Equal(t, float64(900), efficiency["cache_miss_input_tokens"])
+	require.Equal(t, 0.25, efficiency["cache_hit_rate"])
+	require.Equal(t, 0.25, efficiency["cache_hit_ratio"])
+	require.Contains(t, fmtAny(efficiency), "low_cache_hit_rate")
+
+	sessionReport, err := os.ReadFile(filepath.Join(baseDir, time.Now().Format("2006-01-02"), "session_report.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(sessionReport), `"prompt_cache_hit_tokens":300`)
+	require.Contains(t, string(sessionReport), `"prompt_cache_miss_tokens":900`)
+	require.Contains(t, string(sessionReport), `"cache_hit_ratio":0.25`)
 }
 
 func TestCodexGatewayCaptureV2CacheEfficiencyDiagnostics(t *testing.T) {

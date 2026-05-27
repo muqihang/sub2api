@@ -22,11 +22,20 @@ func codexGatewayMergeInstructions(existing string, injected string) string {
 		return injected
 	case injected == "":
 		return existing
-	case strings.Contains(existing, injected):
+	case codexGatewayInstructionsContain(existing, injected):
 		return existing
 	default:
 		return injected + "\n\n" + existing
 	}
+}
+
+func codexGatewayInstructionsContain(existing string, injected string) bool {
+	if strings.Contains(existing, injected) {
+		return true
+	}
+	normalizedExisting := strings.Join(strings.Fields(existing), " ")
+	normalizedInjected := strings.Join(strings.Fields(injected), " ")
+	return normalizedInjected != "" && strings.Contains(normalizedExisting, normalizedInjected)
 }
 
 func codexGatewayShouldInjectBaseInstructions(model CodexGatewayModel) bool {
@@ -44,6 +53,9 @@ func codexGatewayInjectBaseInstructions(req *CodexGatewayResponsesCreateRequest,
 	}
 	existing, _ := parseCodexGatewayJSONString(req.Instructions)
 	merged := codexGatewayMergeInstructions(existing, codexGatewayDefaultBaseInstructions)
+	if codexGatewayProviderNeedsRoutingBridge(model) {
+		merged = codexGatewayMergeInstructions(merged, codexGatewayProviderRoutingBridgeInstructions)
+	}
 	if strings.TrimSpace(merged) == strings.TrimSpace(existing) {
 		return nil
 	}
@@ -63,6 +75,99 @@ type codexGatewayStreamingHandledError struct{}
 
 func (e *codexGatewayStreamingHandledError) Error() string {
 	return "codex gateway streaming error already written"
+}
+
+type codexGatewayStreamingResponseController struct {
+	writer      io.Writer
+	header      http.Header
+	writeStatus func(int)
+	flush       func()
+	buffered    http.Header
+	statusCode  int
+	headersSent bool
+}
+
+func newCodexGatewayStreamingResponseController(writer io.Writer, header http.Header, writeStatus func(int), flush func()) *codexGatewayStreamingResponseController {
+	buffered := http.Header{}
+	for key, values := range header {
+		buffered[key] = append([]string(nil), values...)
+	}
+	return &codexGatewayStreamingResponseController{
+		writer:      writer,
+		header:      header,
+		writeStatus: writeStatus,
+		flush:       flush,
+		buffered:    buffered,
+	}
+}
+
+func (c *codexGatewayStreamingResponseController) ResponseHeader() http.Header {
+	if c == nil {
+		return nil
+	}
+	if c.buffered == nil {
+		c.buffered = http.Header{}
+	}
+	return c.buffered
+}
+
+func (c *codexGatewayStreamingResponseController) WriteStatus(code int) {
+	if c == nil {
+		return
+	}
+	c.statusCode = code
+}
+
+func (c *codexGatewayStreamingResponseController) Write(p []byte) (int, error) {
+	if c == nil || c.writer == nil {
+		return 0, io.ErrClosedPipe
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	c.commit()
+	return c.writer.Write(p)
+}
+
+func (c *codexGatewayStreamingResponseController) Flush() {
+	if c == nil || !c.headersSent {
+		return
+	}
+	if c.flush != nil {
+		c.flush()
+	}
+}
+
+func (c *codexGatewayStreamingResponseController) commit() {
+	if c == nil || c.headersSent {
+		return
+	}
+	if c.buffered == nil {
+		c.buffered = http.Header{}
+	}
+	if c.buffered.Get("Content-Type") == "" {
+		c.buffered.Set("Content-Type", "text/event-stream")
+	}
+	if c.buffered.Get("Cache-Control") == "" {
+		c.buffered.Set("Cache-Control", "no-cache")
+	}
+	if c.buffered.Get("Connection") == "" {
+		c.buffered.Set("Connection", "keep-alive")
+	}
+	if c.header != nil {
+		for key := range c.header {
+			c.header.Del(key)
+		}
+		copyCodexGatewayHTTPHeaders(c.header, c.buffered)
+	}
+	statusCode := c.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+	if c.writeStatus != nil {
+		c.writeStatus(statusCode)
+	}
+	c.headersSent = true
 }
 
 type CodexGatewayService struct {
@@ -167,30 +272,32 @@ func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayRes
 		s.capture.RecordProviderSelection(trace, model.Provider, model.UpstreamModel, "")
 	}
 	streamWriter := req.StreamWriter
+	if parsed.Stream != nil && *parsed.Stream && streamWriter != nil {
+		controller := newCodexGatewayStreamingResponseController(streamWriter, req.ResponseHeader, req.WriteStatus, req.Flush)
+		streamWriter = controller
+		req.StreamWriter = streamWriter
+		req.ResponseHeader = controller.ResponseHeader()
+		req.WriteStatus = controller.WriteStatus
+		req.Flush = controller.Flush
+	}
 	if trace != nil && streamWriter != nil {
 		streamWriter = NewCodexGatewayCaptureStreamWriter(streamWriter, s.capture, trace, "client")
 		req.StreamWriter = streamWriter
 	}
 
 	providerReq := CodexGatewayProviderRequest{
-		Request:      req,
-		Model:        model,
-		Parsed:       parsed,
-		SessionKey:   codexGatewaySessionKey(ctx, req.Headers, req.Body),
-		IsolationKey: codexGatewayIsolationKey(ctx, req.APIKey),
-		CaptureTrace: trace,
+		Request:              req,
+		Model:                model,
+		Parsed:               parsed,
+		SessionKey:           codexGatewaySessionKey(ctx, req.Headers, req.Body),
+		IsolationKey:         codexGatewayIsolationKey(ctx, req.APIKey),
+		WorkspaceKey:         codexGatewayWorkspaceKey(req.Headers),
+		ManagedSessionBucket: codexGatewayManagedSessionBucket(req.Headers),
+		CaptureTrace:         trace,
 	}
 
 	isStream := parsed.Stream != nil && *parsed.Stream
 	if isStream {
-		if req.ResponseHeader != nil {
-			req.ResponseHeader.Set("Content-Type", "text/event-stream")
-			req.ResponseHeader.Set("Cache-Control", "no-cache")
-			req.ResponseHeader.Set("Connection", "keep-alive")
-		}
-		if req.WriteStatus != nil {
-			req.WriteStatus(http.StatusOK)
-		}
 		if err := s.executor.Stream(ctx, providerReq); err != nil {
 			s.captureStreamPending(streamWriter)
 			s.finishCaptureError(trace, captureErrorForCodexGatewayError(err, model, "stream"))

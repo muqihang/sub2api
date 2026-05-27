@@ -53,6 +53,7 @@
       "cached_tokens": 1
     },
     "output_types": [
+      "reasoning",
       "function_call"
     ],
     "tool_name": "open-page",

@@ -18,7 +18,13 @@ CODEX_PROVIDER_NAME = "Zhumeng Codex"
 CODEX_DEFAULT_MODEL = "deepseek-v4-pro"
 CODEX_MODEL_CATALOG_FILE = "zhumeng-codex-models.json"
 CODEX_SUPPORTS_WEBSOCKETS = False
-CODEX_BASE_INSTRUCTIONS = (
+CODEX_ROUTING_BRIDGE_INSTRUCTIONS = (
+    "## Codex routing guidance\n\n"
+    "- When Codex developer instructions include skills, plugins, MCP servers, or tool routing guidance, treat those sections as active routing guidance.\n"
+    "- Before substantive work, quickly decide whether the user's request clearly matches any listed trigger. If it clearly matches, read only the relevant SKILL.md or use the relevant plugin, MCP server, or tool first, then continue.\n"
+    "- Do not load unrelated skills, do not repeatedly reload the same skill in the same turn, and do not use tools only for show.\n"
+)
+CODEX_CORE_BASE_INSTRUCTIONS = (
     "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.\n\n"
     "## General\n\n"
     "- When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster than alternatives like `grep`. "
@@ -37,6 +43,7 @@ CODEX_BASE_INSTRUCTIONS = (
     "- For substantial work, summarize what changed and why.\n"
     "- Offer next steps only when they are useful.\n"
 )
+CODEX_BASE_INSTRUCTIONS = CODEX_CORE_BASE_INSTRUCTIONS + "\n" + CODEX_ROUTING_BRIDGE_INSTRUCTIONS
 
 REASONING_DESCRIPTIONS = {
     "none": "Disable extended thinking",
@@ -337,6 +344,7 @@ class CodexConfigManager:
         slug = str(model.get("slug") or model.get("id") or model.get("model") or "")
         if not slug.strip():
             slug = "unknown-model"
+        base_instructions = codex_base_instructions_for_model(model, slug)
         display_name = str(model.get("display_name") or model.get("displayName") or slug)
         context_window = safe_int(model.get("context_window") or model.get("max_context_window"), 0)
         catalog_model = {
@@ -349,9 +357,9 @@ class CodexConfigManager:
             "visibility": normalize_visibility(model.get("visibility")),
             "supported_in_api": bool(model.get("supported_in_api", True)),
             "priority": safe_int(model.get("priority"), 0),
-            "base_instructions": CODEX_BASE_INSTRUCTIONS,
+            "base_instructions": base_instructions,
             "model_messages": {
-                "instructions_template": CODEX_BASE_INSTRUCTIONS,
+                "instructions_template": base_instructions,
                 "instructions_variables": {},
             },
             "context_window": context_window,
@@ -444,6 +452,24 @@ def normalize_web_search_tool_type(model: dict[str, object]) -> str | None:
     if bool(model.get("supports_image_detail_original", False)):
         return "text_and_image"
     return "text"
+
+
+def codex_model_needs_routing_bridge(model: dict[str, object], slug: str) -> bool:
+    providers = {
+        str(model.get(key) or "").strip().lower()
+        for key in ("provider_id", "provider", "origin")
+        if str(model.get(key) or "").strip()
+    }
+    normalized_slug = slug.strip().lower()
+    if providers:
+        return bool(providers & {"deepseek", "anthropic"})
+    return normalized_slug.startswith(("deepseek-", "claude-"))
+
+
+def codex_base_instructions_for_model(model: dict[str, object], slug: str) -> str:
+    if codex_model_needs_routing_bridge(model, slug):
+        return CODEX_BASE_INSTRUCTIONS
+    return CODEX_CORE_BASE_INSTRUCTIONS
 
 
 def normalize_provider_id(raw: str) -> str:

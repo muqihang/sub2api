@@ -236,8 +236,8 @@ const openAIModelContextWindows: Record<'gpt-5.4' | 'gpt-5.5', {
     autoCompactTokenLimit: 900_000
   },
   'gpt-5.5': {
-    contextWindow: 1_050_000,
-    autoCompactTokenLimit: 900_000
+    contextWindow: 272_000,
+    autoCompactTokenLimit: 244_800
   }
 }
 
@@ -711,7 +711,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
 	    'gpt-5.5': {
 	      name: 'GPT-5.5',
 	      limit: {
-	        context: 1050000,
+	        context: 272000,
 	        output: 128000
 	      },
       options: {

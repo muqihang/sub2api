@@ -126,6 +126,38 @@ func TestCodexGatewayToolMapping_ExposesHostedResponsesTools(t *testing.T) {
 	require.Equal(t, CodexGatewayToolKindNamespace, result.NameMap[alias].Kind)
 }
 
+func TestCodexGatewayToolMapping_MapsCodexToolSearchWithoutName(t *testing.T) {
+	raw := json.RawMessage(`[
+		{
+			"type":"tool_search",
+			"parameters":{
+				"type":"object",
+				"properties":{
+					"query":{"type":"string"},
+					"limit":{"type":"integer"}
+				},
+				"required":["query"]
+			}
+		}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+
+	function := result.Tools[0]["function"].(map[string]any)
+	require.Equal(t, "tool_search", function["name"])
+	params := function["parameters"].(map[string]any)
+	properties := params["properties"].(map[string]any)
+	require.Contains(t, properties, "query")
+	require.Contains(t, properties, "limit")
+
+	entry := result.NameMap["tool_search"]
+	require.Equal(t, "tool_search", entry.Alias)
+	require.Equal(t, CodexGatewayToolKindFunction, entry.Kind)
+	require.Equal(t, "tool_search", entry.Name)
+}
+
 func TestCodexGatewayToolMapping_PreservesNestedNamespacePath(t *testing.T) {
 	raw := json.RawMessage(`[
 		{

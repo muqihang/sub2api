@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,23 @@ import (
 	"sort"
 	"strings"
 )
+
+var codexGatewayDeepSeekChatCompletionsAllowlist = map[string]struct{}{
+	"model":             {},
+	"messages":          {},
+	"tools":             {},
+	"tool_choice":       {},
+	"reasoning_effort":  {},
+	"thinking":          {},
+	"max_tokens":        {},
+	"stream":            {},
+	"stream_options":    {},
+	"temperature":       {},
+	"top_p":             {},
+	"presence_penalty":  {},
+	"frequency_penalty": {},
+	"user_id":           {},
+}
 
 func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayDeepSeekRequestContext, cfg CodexGatewayDeepSeekRequestConfig) (CodexGatewayPreparedDeepSeekRequest, error) {
 	if strings.TrimSpace(model.Provider) != "" && !strings.EqualFold(strings.TrimSpace(model.Provider), "deepseek") {
@@ -36,10 +54,23 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 		})
 	}
 
-	toolMapping, err := BuildCodexGatewayToolMapping(req.Tools, cfg.ToolMappingConfig)
+	toolCfg := cfg.ToolMappingConfig
+	if toolCfg.DisableDeepSeekSchemaFlattening {
+		toolCfg.EnableDeepSeekSchemaFlattening = false
+	}
+	if toolCfg.DeepSeekFlattenMinDepth <= 0 {
+		toolCfg.DeepSeekFlattenMinDepth = 3
+	}
+	if toolCfg.DeepSeekFlattenMinLeaves <= 0 {
+		toolCfg.DeepSeekFlattenMinLeaves = 4
+	}
+
+	toolMapping, err := BuildCodexGatewayToolMapping(req.Tools, toolCfg)
 	if err != nil {
 		return CodexGatewayPreparedDeepSeekRequest{}, err
 	}
+	toolMapping = codexGatewayDeepSeekRestrictHostedToolMapping(toolMapping)
+	toolMapping = codexGatewayDeepSeekAdaptToolMapping(toolMapping, toolCfg)
 	if len(toolMapping.Tools) > 0 {
 		tools := make([]any, 0, len(toolMapping.Tools))
 		for _, tool := range toolMapping.Tools {
@@ -71,14 +102,12 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	if req.Stream != nil {
 		body["stream"] = *req.Stream
 	}
-	if req.ParallelToolCalls != nil && model.SupportsParallelToolCalls {
-		body["parallel_tool_calls"] = *req.ParallelToolCalls
-	}
 	if len(req.Include) > 0 {
 		body["include"] = cloneCodexGatewayRawJSON(req.Include)
 	}
 
-	if userID, err := codexGatewayDeepSeekStableUserID(ctx, req.RawFields); err != nil {
+	userID, userIDDiag, err := codexGatewayDeepSeekStableUserID(ctx, req.RawFields)
+	if err != nil {
 		return CodexGatewayPreparedDeepSeekRequest{}, err
 	} else if userID != "" {
 		body["user_id"] = userID
@@ -133,11 +162,85 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	if len(toolMapping.Tools) > 0 && body["tool_choice"] == nil {
 		delete(body, "tool_choice")
 	}
+	body = codexGatewayDeepSeekAllowlistedChatCompletionsBody(body)
+	if ctx.CaptureTrace != nil && ctx.CaptureTrace.manager != nil {
+		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
+			ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, map[string]any{
+				"deepseek_cache": diagnostics,
+			})
+			if cacheUsage := codexGatewayDeepSeekCacheUsageFields(diagnostics); len(cacheUsage) > 0 {
+				ctx.CaptureTrace.manager.mergeCacheUsage(ctx.CaptureTrace, cacheUsage)
+			}
+		}
+	}
 
 	return CodexGatewayPreparedDeepSeekRequest{
 		Body:        body,
 		ToolNameMap: toolMapping.NameMap,
 	}, nil
+}
+
+func codexGatewayDeepSeekAllowlistedChatCompletionsBody(body map[string]any) map[string]any {
+	if len(body) == 0 {
+		return body
+	}
+	out := make(map[string]any, len(body))
+	for key, value := range body {
+		if _, ok := codexGatewayDeepSeekChatCompletionsAllowlist[key]; !ok {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func codexGatewayDeepSeekRestrictHostedToolMapping(mapping CodexGatewayToolMappingResult) CodexGatewayToolMappingResult {
+	if len(mapping.Tools) == 0 || len(mapping.NameMap) == 0 {
+		mapping.IgnoredHostedToolTypes = uniqueCodexGatewayStrings(mapping.IgnoredHostedToolTypes)
+		return mapping
+	}
+
+	filtered := CodexGatewayToolMappingResult{
+		Tools:                  make([]map[string]any, 0, len(mapping.Tools)),
+		NameMap:                make(map[string]CodexGatewayToolNameMapEntry, len(mapping.NameMap)),
+		IgnoredHostedToolTypes: append([]string(nil), mapping.IgnoredHostedToolTypes...),
+		originalToAlias:        make(map[string]string, len(mapping.originalToAlias)),
+	}
+
+	keepAlias := make(map[string]struct{}, len(mapping.NameMap))
+	for _, tool := range mapping.Tools {
+		function, _ := tool["function"].(map[string]any)
+		alias := strings.TrimSpace(firstCodexGatewayToolString(function["name"]))
+		entry, ok := mapping.NameMap[alias]
+		if !ok {
+			filtered.Tools = append(filtered.Tools, tool)
+			continue
+		}
+		if entry.Kind == CodexGatewayToolKindHosted && !strings.EqualFold(strings.TrimSpace(entry.Name), "web_search") {
+			filtered.IgnoredHostedToolTypes = append(filtered.IgnoredHostedToolTypes, entry.Name)
+			continue
+		}
+		filtered.Tools = append(filtered.Tools, tool)
+		filtered.NameMap[alias] = entry
+		keepAlias[alias] = struct{}{}
+	}
+
+	for alias, entry := range mapping.NameMap {
+		if _, ok := keepAlias[alias]; ok {
+			continue
+		}
+		if entry.Kind != CodexGatewayToolKindHosted {
+			filtered.NameMap[alias] = entry
+			keepAlias[alias] = struct{}{}
+		}
+	}
+	for key, alias := range mapping.originalToAlias {
+		if _, ok := keepAlias[alias]; ok {
+			filtered.originalToAlias[key] = alias
+		}
+	}
+	filtered.IgnoredHostedToolTypes = uniqueCodexGatewayStrings(filtered.IgnoredHostedToolTypes)
+	return filtered
 }
 
 func codexGatewayDeepSeekHostedToolNotice(toolTypes []string) string {
@@ -349,6 +452,8 @@ func convertCodexGatewayInputItem(item any, toolMapping CodexGatewayToolMappingR
 	}
 
 	switch typ {
+	case "reasoning":
+		return nil, nil, nil
 	case "message":
 		return convertCodexGatewayMessageItem(m, toolMapping, cfg)
 	case "function_call":
@@ -929,50 +1034,77 @@ func codexGatewayDeepSeekReasoningConfig(raw json.RawMessage, model CodexGateway
 	return effort, true
 }
 
-func codexGatewayDeepSeekStableUserID(ctx CodexGatewayDeepSeekRequestContext, rawFields map[string]json.RawMessage) (string, error) {
+type codexGatewayDeepSeekUserIDDiagnostics struct {
+	Scope                string
+	Source               string
+	WorkspaceScopeKey    string
+	ManagedSessionBucket string
+}
+
+func codexGatewayDeepSeekStableUserID(ctx CodexGatewayDeepSeekRequestContext, rawFields map[string]json.RawMessage) (string, codexGatewayDeepSeekUserIDDiagnostics, error) {
+	diag := codexGatewayDeepSeekUserIDDiagnostics{
+		Scope:                "actor_workspace",
+		Source:               "derived_actor_workspace",
+		WorkspaceScopeKey:    strings.TrimSpace(ctx.WorkspaceKey),
+		ManagedSessionBucket: strings.TrimSpace(ctx.ManagedSessionBucket),
+	}
+	actorScopeKey := strings.TrimSpace(ctx.IsolationKey)
+	if actorScopeKey == "" {
+		actorScopeKey = "shared_actor"
+	}
+	workspaceScopeKey := strings.TrimSpace(ctx.WorkspaceKey)
+	if workspaceScopeKey == "" {
+		workspaceScopeKey = "shared_workspace"
+	}
+	if diag.ManagedSessionBucket != "" {
+		diag.Scope = "actor_workspace_session_bucket"
+	}
+	providedSeedDigest := ""
 	if rawFields != nil {
 		if raw, ok := rawFields["user_id"]; ok && len(raw) > 0 {
-			var userID string
-			if err := json.Unmarshal(raw, &userID); err != nil {
-				return "", fmt.Errorf("decode user_id: %w", err)
+			var userSeed string
+			if err := json.Unmarshal(raw, &userSeed); err != nil {
+				return "", codexGatewayDeepSeekUserIDDiagnostics{}, fmt.Errorf("decode user_id: %w", err)
 			}
-			if !codexGatewayDeepSeekValidUserID(userID) {
-				return "", fmt.Errorf("user_id must match [A-Za-z0-9_-]{1,512}")
+			userSeed = strings.TrimSpace(userSeed)
+			if userSeed != "" {
+				providedSeedDigest = codexGatewayDeepSeekUserIDSeedDigest(userSeed)
+				diag.Source = "raw_fields.user_id"
 			}
-			return userID, nil
 		}
 	}
-	if strings.TrimSpace(ctx.UserID) != "" {
-		if !codexGatewayDeepSeekValidUserID(ctx.UserID) {
-			return "", fmt.Errorf("user_id must match [A-Za-z0-9_-]{1,512}")
-		}
-		return ctx.UserID, nil
+	if providedSeedDigest == "" && strings.TrimSpace(ctx.UserID) != "" {
+		providedSeedDigest = codexGatewayDeepSeekUserIDSeedDigest(strings.TrimSpace(ctx.UserID))
+		diag.Source = "request_context.user_id"
 	}
-	parts := []string{"codex_gateway_deepseek"}
-	if strings.TrimSpace(ctx.IsolationKey) != "" {
-		parts = append(parts, "isolation="+strings.TrimSpace(ctx.IsolationKey))
-	} else if strings.TrimSpace(ctx.SessionKey) != "" {
-		parts = append(parts, "session="+strings.TrimSpace(ctx.SessionKey))
+	parts := []string{
+		"scope=" + diag.Scope,
+		"actor_scope=" + actorScopeKey,
+		"workspace_scope=" + workspaceScopeKey,
 	}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
-	return "sub2api_" + hex.EncodeToString(sum[:12]), nil
+	if providedSeedDigest != "" {
+		parts = append(parts, "provided_seed_sha256="+providedSeedDigest)
+	}
+	if diag.ManagedSessionBucket != "" {
+		parts = append(parts, "managed_session_bucket="+diag.ManagedSessionBucket)
+	}
+	keyMaterial := strings.Join([]string{
+		"codex_gateway_deepseek_user_id",
+		actorScopeKey,
+		workspaceScopeKey,
+	}, "|")
+	mac := hmac.New(sha256.New, []byte(keyMaterial))
+	_, _ = mac.Write([]byte(strings.Join(parts, "|")))
+	return "sub2api_" + hex.EncodeToString(mac.Sum(nil)[:16]), diag, nil
 }
 
-func codexGatewayDeepSeekValidUserID(userID string) bool {
-	userID = strings.TrimSpace(userID)
-	if userID == "" || len(userID) > 512 {
-		return false
+func codexGatewayDeepSeekUserIDSeedDigest(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if seed == "" {
+		return ""
 	}
-	for _, r := range userID {
-		if unicodeCodePointInvalid(r) {
-			return false
-		}
-	}
-	return true
-}
-
-func unicodeCodePointInvalid(r rune) bool {
-	return !(r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'))
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:16])
 }
 
 func parseCodexGatewayRawFloat(raw json.RawMessage) (float64, bool) {

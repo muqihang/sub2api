@@ -271,8 +271,52 @@ def test_model_catalog_is_generated_from_gateway_models(tmp_path: Path):
     assert model["web_search_tool_type"] == "text"
     assert saved["models"][1]["web_search_tool_type"] == "text_and_image"
     assert "For multi-line file creation or rewrites" in saved["models"][0]["base_instructions"]
+    assert "skills, plugins, MCP servers, or tool routing guidance" in saved["models"][0]["base_instructions"]
+    assert "clearly matches" in saved["models"][0]["base_instructions"]
+    assert "Do not load unrelated skills" in saved["models"][0]["base_instructions"]
     assert saved["models"][0]["base_instructions"] == CODEX_BASE_INSTRUCTIONS
     assert saved["models"][0]["model_messages"]["instructions_template"] == CODEX_BASE_INSTRUCTIONS
+
+
+def test_model_catalog_adds_routing_bridge_only_for_non_openai_fallback_models(tmp_path: Path):
+    manager = CodexConfigManager(tmp_path)
+    catalog = manager.build_model_catalog({
+        "models": [
+            {
+                "slug": "gpt-5.5",
+                "display_name": "GPT 5.5",
+                "provider": "openai",
+            },
+            {
+                "slug": "claude-opus-4-7",
+                "display_name": "Claude Opus 4.7",
+                "provider": "anthropic",
+            },
+            {
+                "slug": "deepseek-v4-pro",
+                "display_name": "DeepSeek V4 Pro",
+                "provider_id": "deepseek",
+            },
+            {
+                "slug": "legacy-managed-deepseek",
+                "display_name": "Legacy Managed DeepSeek",
+                "provider_id": "zhumeng",
+                "provider": "deepseek",
+            },
+            {
+                "slug": "claude-compatible-openai-model",
+                "display_name": "Claude-compatible OpenAI Model",
+                "provider": "openai",
+            },
+        ]
+    })
+
+    by_slug = {model["slug"]: model for model in catalog["models"]}
+    assert "skills, plugins, MCP servers, or tool routing guidance" not in by_slug["gpt-5.5"]["base_instructions"]
+    assert "skills, plugins, MCP servers, or tool routing guidance" in by_slug["claude-opus-4-7"]["base_instructions"]
+    assert "skills, plugins, MCP servers, or tool routing guidance" in by_slug["deepseek-v4-pro"]["base_instructions"]
+    assert "skills, plugins, MCP servers, or tool routing guidance" in by_slug["legacy-managed-deepseek"]["base_instructions"]
+    assert "skills, plugins, MCP servers, or tool routing guidance" not in by_slug["claude-compatible-openai-model"]["base_instructions"]
 
 
 def test_model_catalog_preserves_gateway_cli_catalog_payload(tmp_path: Path):
@@ -377,3 +421,40 @@ def test_build_model_catalog_preserves_origin_capabilities_and_pricing(tmp_path:
     assert catalog["models"][0]["capabilities"]["tool_calls"] is True
     assert catalog["models"][0]["pricing"]["source"] == "database_model_pricing"
     assert catalog["models"][1]["pricing"] is None
+
+
+def test_build_model_catalog_preserves_deepseek_hosted_image_and_search_capabilities(tmp_path: Path):
+    manager = CodexConfigManager(tmp_path)
+    catalog = manager.build_model_catalog({
+        "models": [
+            {
+                "slug": "deepseek-v4-pro",
+                "display_name": "DeepSeek V4 Pro",
+                "provider_id": "deepseek",
+                "origin": "deepseek",
+                "capabilities": {
+                    "responses": True,
+                    "streaming": True,
+                    "tool_calls": True,
+                    "image_input": True,
+                    "context_continuation": True,
+                },
+                "input_modalities": ["text", "image"],
+                "supports_image_detail_original": True,
+                "supports_search_tool": True,
+                "web_search_tool_type": "text_and_image",
+                "experimental_supported_tools": ["function", "namespace", "custom"],
+            }
+        ]
+    })
+
+    model = catalog["models"][0]
+    assert model["provider_id"] == "deepseek"
+    assert model["origin"] == "deepseek"
+    assert model["input_modalities"] == ["text", "image"]
+    assert model["supports_image_detail_original"] is True
+    assert model["supports_search_tool"] is True
+    assert model["web_search_tool_type"] == "text_and_image"
+    assert model["experimental_supported_tools"] == ["function", "namespace", "custom"]
+    assert model["capabilities"]["tool_calls"] is True
+    assert model["capabilities"]["image_input"] is True

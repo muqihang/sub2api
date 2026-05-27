@@ -35,6 +35,7 @@
     },
     "output_text": "hello world",
     "output_types": [
+      "reasoning",
       "message"
     ]
   }

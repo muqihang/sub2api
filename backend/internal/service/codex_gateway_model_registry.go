@@ -155,6 +155,29 @@ const codexGatewayDefaultBaseInstructions = `You are Codex, based on GPT-5. You 
 - Offer next steps only when they are useful.
 `
 
+const codexGatewayProviderRoutingBridgeInstructions = `## Codex routing guidance
+
+- When Codex developer instructions include skills, plugins, MCP servers, or tool routing guidance, treat those sections as active routing guidance.
+- Before substantive work, quickly decide whether the user's request clearly matches any listed trigger. If it clearly matches, read only the relevant SKILL.md or use the relevant plugin, MCP server, or tool first, then continue.
+- Do not load unrelated skills, do not repeatedly reload the same skill in the same turn, and do not use tools only for show.
+`
+
+func codexGatewayProviderNeedsRoutingBridge(model CodexGatewayModel) bool {
+	switch normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) {
+	case CodexGatewayProviderDeepSeek, CodexGatewayProviderAnthropic:
+		return true
+	default:
+		return false
+	}
+}
+
+func codexGatewayBaseInstructionsForModel(model CodexGatewayModel) string {
+	if !codexGatewayProviderNeedsRoutingBridge(model) {
+		return codexGatewayDefaultBaseInstructions
+	}
+	return strings.TrimRight(codexGatewayDefaultBaseInstructions, "\n") + "\n\n" + codexGatewayProviderRoutingBridgeInstructions
+}
+
 func WithCodexGatewayRegistryStateSource(source CodexGatewayRegistryStateSource) CodexGatewayModelRegistryOption {
 	return func(registry *CodexGatewayModelRegistry) {
 		registry.stateSource = source
@@ -439,6 +462,7 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 	if normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) == CodexGatewayProviderOpenAI {
 		description = model.DisplayName + " via the configured OpenAI Responses upstream."
 	}
+	baseInstructions := codexGatewayBaseInstructionsForModel(model)
 	cli := CodexGatewayCodexCLIModel{
 		Slug:                          model.Slug,
 		DisplayName:                   model.DisplayName,
@@ -453,8 +477,8 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 		Visibility:                    codexGatewayCLIVisibility(model.Visibility),
 		SupportedInAPI:                model.SupportedInAPI,
 		Priority:                      model.Priority,
-		BaseInstructions:              codexGatewayDefaultBaseInstructions,
-		ModelMessages:                 codexGatewayDefaultCLIModelMessages(),
+		BaseInstructions:              baseInstructions,
+		ModelMessages:                 codexGatewayCLIModelMessages(baseInstructions),
 		ContextWindow:                 contextWindow,
 		AutoCompactTokenLimit:         truncationLimit,
 		MaxContextWindow:              maxContextWindow,
@@ -487,9 +511,9 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 	return cli
 }
 
-func codexGatewayDefaultCLIModelMessages() CodexGatewayCodexCLIModelMessages {
+func codexGatewayCLIModelMessages(instructions string) CodexGatewayCodexCLIModelMessages {
 	return CodexGatewayCodexCLIModelMessages{
-		InstructionsTemplate:  codexGatewayDefaultBaseInstructions,
+		InstructionsTemplate:  instructions,
 		InstructionsVariables: map[string]string{},
 	}
 }
@@ -521,6 +545,9 @@ func codexGatewayCLIWebSearchToolType(model CodexGatewayModel) string {
 	case "text", "text_and_image":
 		return strings.TrimSpace(model.WebSearchToolType)
 	default:
+		if codexGatewayStringSliceContains(model.InputModalities, "image") {
+			return "text_and_image"
+		}
 		if model.SupportsImageDetailOriginal {
 			return "text_and_image"
 		}
@@ -601,9 +628,9 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		effectiveContextWindowPercent := 95
 		switch slug {
 		case "gpt-5.5":
-			contextWindow = 1_050_000
-			autoCompactTokenLimit = 900_000
-			effectiveContextWindowPercent = 92
+			contextWindow = 272_000
+			autoCompactTokenLimit = 244_800
+			effectiveContextWindowPercent = 95
 		case "gpt-5.4":
 			contextWindow = 1_050_000
 			autoCompactTokenLimit = 900_000

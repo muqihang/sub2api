@@ -174,8 +174,10 @@ func codexGatewayDeepSeekMapChatCompletionResponse(
 	storedCalls := make([]CodexGatewayStoredToolCall, 0, len(choice.Message.ToolCalls))
 	if response.Status == "completed" {
 		for _, toolCall := range choice.Message.ToolCalls {
-			item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(toolCall, toolNameMap)
+			item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(toolCall, toolNameMap, nil)
 			if !ok {
+				response.Status = "incomplete"
+				response.IncompleteDetails = json.RawMessage(`{"reason":"malformed_tool_arguments"}`)
 				continue
 			}
 			rawItem, err := json.Marshal(item)
@@ -233,7 +235,7 @@ func codexGatewayDeepSeekUsageJSON(usage *apicompat.ChatUsage) (json.RawMessage,
 	return raw, out
 }
 
-func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, toolNameMap map[string]CodexGatewayToolNameMapEntry) (map[string]any, CodexGatewayStoredToolCall, bool) {
+func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, toolNameMap map[string]CodexGatewayToolNameMapEntry, _ map[string]struct{}) (map[string]any, CodexGatewayStoredToolCall, bool) {
 	callID := strings.TrimSpace(toolCall.ID)
 	alias := strings.TrimSpace(toolCall.Function.Name)
 	if callID == "" || alias == "" {
@@ -247,11 +249,9 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 			Name:  alias,
 		}
 	}
-	arguments := toolCall.Function.Arguments
-	if entry.Kind != CodexGatewayToolKindCustom && codexGatewayClientVisibleToolItemType(entry) != CodexGatewayOutputItemTypeLocalShellCall {
-		if next, changed := codexGatewayNormalizeFunctionToolArguments(codexGatewayClientVisibleToolName(entry), arguments); changed {
-			arguments = next
-		}
+	arguments, ok, _ := codexGatewayPrepareDeepSeekToolArguments(entry, toolCall.Function.Arguments)
+	if !ok {
+		return nil, CodexGatewayStoredToolCall{}, false
 	}
 	stored := CodexGatewayStoredToolCall{
 		ID:        callID,
@@ -270,9 +270,9 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 	switch codexGatewayClientVisibleToolItemType(entry) {
 	case CodexGatewayOutputItemTypeCustomToolCall:
 		item["type"] = CodexGatewayOutputItemTypeCustomToolCall
-		item["input"] = codexGatewayDeepSeekCustomToolInput(toolCall.Function.Arguments, entry)
+		item["input"] = codexGatewayDeepSeekCustomToolInput(arguments, entry)
 	case CodexGatewayOutputItemTypeLocalShellCall:
-		codexGatewayApplyLocalShellCallItemFields(item, callID, "completed", toolCall.Function.Arguments)
+		codexGatewayApplyLocalShellCallItemFields(item, callID, "completed", arguments)
 	default:
 		item["type"] = codexGatewayClientVisibleToolItemType(entry)
 		if namespace := strings.TrimSpace(entry.Namespace); namespace != "" {
@@ -288,6 +288,7 @@ func codexGatewayDeepSeekCustomToolInput(arguments string, entry CodexGatewayToo
 	if raw == "" {
 		return arguments
 	}
+	raw = codexGatewayNormalizeLiteralNewlinesInJSONStrings(raw)
 
 	var object map[string]any
 	if err := json.Unmarshal([]byte(raw), &object); err != nil {
@@ -325,11 +326,54 @@ func codexGatewayDeepSeekCustomToolStreamInput(arguments string, entry CodexGate
 	if !strings.HasPrefix(raw, "{") {
 		return arguments, true
 	}
+	raw = codexGatewayNormalizeLiteralNewlinesInJSONStrings(raw)
 	var object map[string]any
 	if err := json.Unmarshal([]byte(raw), &object); err != nil {
 		return "", false
 	}
 	return codexGatewayDeepSeekCustomToolInput(arguments, entry), true
+}
+
+func codexGatewayNormalizeLiteralNewlinesInJSONStrings(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	var out strings.Builder
+	out.Grow(len(raw))
+	inString := false
+	escape := false
+	for _, r := range raw {
+		if inString {
+			if escape {
+				out.WriteRune(r)
+				escape = false
+				continue
+			}
+			switch r {
+			case '\\':
+				out.WriteRune(r)
+				escape = true
+				continue
+			case '"':
+				out.WriteRune(r)
+				inString = false
+				continue
+			case '\n':
+				out.WriteString(`\n`)
+				continue
+			case '\r':
+				out.WriteString(`\r`)
+				continue
+			}
+			out.WriteRune(r)
+			continue
+		}
+		if r == '"' {
+			inString = true
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 func codexGatewayDeepSeekCustomToolStringField(object map[string]any, key string) (string, bool) {

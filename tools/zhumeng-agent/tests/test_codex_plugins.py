@@ -23,6 +23,12 @@ def test_detects_bundled_plugin_manifests_by_version_directory(tmp_path: Path):
     assert report["browser-use"]["status"] == STATUS_AVAILABLE
 
 
+def test_detects_browser_bundle_alias_for_browser_use_plugin(tmp_path: Path):
+    write_plugin_manifest(tmp_path, "browser", "0.1.0-alpha2")
+    report = inspect_codex_plugins(tmp_path)
+    assert report["browser-use"]["status"] == STATUS_AVAILABLE
+
+
 def test_computer_use_reports_configured_when_helper_exists(tmp_path: Path):
     write_plugin_manifest(tmp_path, "computer-use", "1.0.780")
     helper = tmp_path / "computer-use" / "Codex Computer Use.app"

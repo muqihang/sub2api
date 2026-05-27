@@ -548,7 +548,7 @@ func TestCodexGatewayDeepSeekToolCallOutputItem_PreservesNamespaceForCodex(t *te
 			Namespace: "mcp__computer_use__",
 			Name:      "click",
 		},
-	})
+	}, nil)
 	require.True(t, ok)
 	require.Equal(t, "function_call", item["type"])
 	require.Equal(t, "click", item["name"])
@@ -571,7 +571,7 @@ func TestCodexGatewayDeepSeekToolCallOutputItem_UsesFunctionCallForShellExec(t *
 			Namespace: "shell",
 			Name:      "exec",
 		},
-	})
+	}, nil)
 	require.True(t, ok)
 	require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, item["type"])
 	require.Equal(t, "shell", item["namespace"])
@@ -595,7 +595,7 @@ func TestCodexGatewayDeepSeekToolCallOutputItem_UnwrapsCustomToolInput(t *testin
 			Kind:  CodexGatewayToolKindCustom,
 			Name:  "apply_patch",
 		},
-	})
+	}, nil)
 	require.True(t, ok)
 	require.Equal(t, "custom_tool_call", item["type"])
 	require.Equal(t, "apply_patch", item["name"])

@@ -648,6 +648,43 @@ def test_capture_event_router_adds_tool_content_policy_proof_fields(tmp_path: Pa
     assert event["sent_back_to_model"] is True
 
 
+def test_capture_event_router_preserves_ui_matrix_and_trace_correlation_fields(tmp_path: Path):
+    key = tmp_path / "key"
+    key.write_bytes(b"shared")
+    config = CodexDesktopCaptureConfig.defaults(correlation_hash_key_file=key)
+    route_capture_event({
+        "type": "tool.lifecycle",
+        "tool_name": "shell_exec",
+        "content_class": "command_output",
+        "result_chars": 88,
+        "sent_back_to_model": True,
+        "desktop_trace_id": "cd_runtime",
+        "correlation_ids": {"x_client_request_id": "request-1"},
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "ui_matrix": {
+            "command_collapsed": True,
+            "command_expandable": True,
+            "tool_detail_expandable": False,
+            "diff_entry_visible": True,
+            "file_open_action_available": True,
+        },
+        "degraded_reason": "file_open_not_supported_for_remote_diff",
+        "pass_fail_rule": "command rows must stay collapsed but expandable",
+    }, tmp_path, config)
+
+    event = json.loads((tmp_path / "tool_lifecycle.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert event["ui_matrix"]["command_collapsed"] is True
+    assert event["ui_matrix"]["file_open_action_available"] is True
+    assert event["degraded_reason"] == "file_open_not_supported_for_remote_diff"
+    assert event["pass_fail_rule"] == "command rows must stay collapsed but expandable"
+    assert event["desktop_trace_id"] == "cd_runtime"
+    assert event["correlation_hashes"]["x_client_request_id_hash"].startswith("hmac-sha256:")
+    assert event["trace_correlation"]["strategy"] == "shared_hash"
+    assert event["trace_correlation"]["link_ready"] is True
+
+
 def test_capture_event_router_rehashes_renderer_result_hash_with_shared_key(tmp_path: Path):
     key = tmp_path / "key"
     key.write_bytes(b"shared")
@@ -665,6 +702,48 @@ def test_capture_event_router_rehashes_renderer_result_hash_with_shared_key(tmp_
     assert event["result_hash"].startswith("hmac-sha256:")
     assert event["result_hash"] != "sha256:" + "a" * 64
     assert event["renderer_result_hash_present"] is True
+
+
+def test_capture_event_router_derives_tool_trace_chain_and_ui_matrix_from_frame(tmp_path: Path):
+    key = tmp_path / "key"
+    key.write_bytes(b"shared")
+    config = CodexDesktopCaptureConfig.defaults(correlation_hash_key_file=key)
+
+    route_capture_event({
+        "type": "app_server_frame",
+        "direction": "app_server_to_desktop",
+        "desktop_trace_id": "cd_frame_1",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "frame_text": json.dumps({
+            "id": 2,
+            "params": {
+                "x-client-request-id": "request-1",
+            },
+            "result": {
+                "tool_name": "shell_exec",
+                "content": "RAW_COMMAND_OUTPUT",
+                "ui_matrix": {
+                    "command_collapsed": True,
+                    "command_expandable": True,
+                    "tool_detail_expandable": True,
+                    "diff_entry_visible": False,
+                    "file_open_action_available": False,
+                },
+                "degraded_reason": "diff_entry_missing",
+                "pass_fail_rule": "diff rows must be visible for file mutations",
+            },
+        }),
+    }, tmp_path, config)
+
+    event = json.loads((tmp_path / "tool_lifecycle.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert event["desktop_trace_id"] == "cd_frame_1"
+    assert event["ui_matrix"]["tool_detail_expandable"] is True
+    assert event["degraded_reason"] == "diff_entry_missing"
+    assert event["pass_fail_rule"] == "diff rows must be visible for file mutations"
+    assert event["trace_correlation"]["strategy"] == "shared_hash"
+    assert event["correlation_hashes"]["x_client_request_id_hash"].startswith("hmac-sha256:")
 
 
 def test_capture_installation_enabled_checks_current_app_hash(tmp_path: Path):

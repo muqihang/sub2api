@@ -294,6 +294,43 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamFailsOverBeforeClientOutput(t 
 	require.Empty(t, out.String())
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_StreamRequestErrorFailsOverBeforeClientOutput(t *testing.T) {
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(nil, fmt.Errorf(`Post "https://api.5566676.xyz/v1/responses": EOF`))
+	var out bytes.Buffer
+
+	_, err := adapter.Stream(context.Background(), newCodexGatewayOpenAIAccountForTest("https://api.5566676.xyz"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body:         []byte(`{"model":"gpt-5.5","stream":true}`),
+			StreamWriter: &out,
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), `"upstream_error"`)
+	require.NotContains(t, string(failoverErr.ResponseBody), "api.5566676.xyz")
+	require.Empty(t, out.String())
+}
+
+func TestCodexGatewayOpenAIResponsesAdapter_CompleteRequestErrorFailsOver(t *testing.T) {
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(nil, fmt.Errorf(`Post "https://api.5566676.xyz/v1/responses": EOF`))
+
+	_, err := adapter.Complete(context.Background(), newCodexGatewayOpenAIAccountForTest("https://api.5566676.xyz"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body: []byte(`{"model":"gpt-5.5","stream":false}`),
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), `"upstream_error"`)
+	require.NotContains(t, string(failoverErr.ResponseBody), "api.5566676.xyz")
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_StreamFailoverAppliesRateLimitSideEffects(t *testing.T) {
 	account := newCodexGatewayOpenAIAccountForTest("http://openai.local")
 	repo := &openAIGatewayCoreRepoStub{

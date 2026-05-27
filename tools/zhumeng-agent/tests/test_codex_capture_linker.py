@@ -81,6 +81,8 @@ def test_linker_missing_key_uses_low_confidence_time_window():
 
     assert links[0]["confidence"] == "low"
     assert links[0]["linked_by"] == "time_model_path"
+    assert links[0]["degraded_reason"] == "shared_correlation_hash_missing"
+    assert links[0]["pass_fail_rule"] == "prefer_shared_hash_else_time_model_path"
 
 
 def test_missing_key_hashes_are_not_used_for_high_confidence_links():

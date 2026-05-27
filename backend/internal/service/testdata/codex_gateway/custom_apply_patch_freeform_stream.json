@@ -1,0 +1,49 @@
+{
+  "name": "custom_apply_patch_freeform_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "patch a file"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "custom",
+        "name": "apply_patch",
+        "description": "edit files",
+        "format": {
+          "type": "grammar",
+          "syntax": "lark",
+          "definition": "start: begin_patch hunk+ end_patch"
+        }
+      }
+    ]
+  },
+  "upstream": {
+    "status_code": 200,
+    "headers": {
+      "Content-Type": "text/event-stream"
+    },
+    "body": "data: {\"id\":\"chatcmpl_stream_custom_patch\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch\",\"type\":\"function\",\"function\":{\"name\":\"custom__apply_patch\",\"arguments\":\"{\\\"input\\\":\\\"*** Begin\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_stream_custom_patch\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\" Patch\\n*** End Patch\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+  },
+  "expect": {
+    "terminal_event": "response.completed",
+    "response_status": "completed",
+    "output_types": [
+      "reasoning",
+      "custom_tool_call"
+    ],
+    "tool_name": "apply_patch",
+    "tool_arguments": "*** Begin Patch\n*** End Patch",
+    "stored_tool_calls": 1
+  }
+}

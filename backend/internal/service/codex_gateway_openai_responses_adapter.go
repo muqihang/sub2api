@@ -29,7 +29,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, false)
 	if err != nil {
-		return CodexGatewayDeepSeekAdapterResult{}, err
+		return CodexGatewayDeepSeekAdapterResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
 
@@ -97,7 +97,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, true)
 	if err != nil {
-		return CodexGatewayProviderResult{}, err
+		return CodexGatewayProviderResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
 	codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, nil)
@@ -276,6 +276,17 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		}
 	}
 	return result, nil
+}
+
+func codexGatewayOpenAIRequestFailoverError(err error) error {
+	if err == nil {
+		return nil
+	}
+	body, _ := MarshalCodexGatewayErrorJSON(CodexGatewayErrorTypeAPI, "upstream_error", "upstream request failed before response")
+	return &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: body,
+	}
 }
 
 func codexGatewayOpenAIUpstreamRequestBody(body []byte) ([]byte, error) {

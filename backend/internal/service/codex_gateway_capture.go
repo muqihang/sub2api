@@ -74,6 +74,10 @@ type CodexGatewayCaptureManager struct {
 
 	linksMu       sync.Mutex
 	emittedCallBy map[string]codexGatewayCaptureToolLink
+
+	deepSeekCacheMu          sync.Mutex
+	deepSeekSeenRequestExact map[string]struct{}
+	deepSeekLastRequestByKey map[string]codexGatewayDeepSeekCacheSnapshot
 }
 
 type CodexGatewayTrace struct {
@@ -122,9 +126,11 @@ type codexGatewayCapturePendingWrite struct {
 func NewCodexGatewayCaptureManager(cfg config.GatewayCodexCaptureConfig) *CodexGatewayCaptureManager {
 	cfg = NormalizeCodexGatewayCaptureConfig(cfg)
 	m := &CodexGatewayCaptureManager{
-		cfg:           cfg,
-		disabled:      !cfg.Enabled,
-		emittedCallBy: make(map[string]codexGatewayCaptureToolLink),
+		cfg:                      cfg,
+		disabled:                 !cfg.Enabled,
+		emittedCallBy:            make(map[string]codexGatewayCaptureToolLink),
+		deepSeekSeenRequestExact: make(map[string]struct{}),
+		deepSeekLastRequestByKey: make(map[string]codexGatewayDeepSeekCacheSnapshot),
 	}
 	if m.disabled {
 		return m
@@ -392,6 +398,7 @@ func (m *CodexGatewayCaptureManager) FinishTrace(trace *CodexGatewayTrace, finis
 	if len(finish.Additional) > 0 {
 		summary["additional"] = m.sanitizeSummaryAdditional(finish.Additional)
 	}
+	cacheEfficiency := m.cacheEfficiency(trace, summary["provider"], summary["upstream_model"])
 	if !trace.sampled.Load() {
 		if strings.EqualFold(strings.TrimSpace(finish.Status), "failed") {
 			m.activateTrace(trace)
@@ -400,8 +407,8 @@ func (m *CodexGatewayCaptureManager) FinishTrace(trace *CodexGatewayTrace, finis
 		}
 	}
 	m.writeJSONCritical(trace, "summary.json", summary)
-	m.writeJSONCritical(trace, "trace_report.json", m.traceReport(trace, summary, terminalClassification))
-	m.writeSessionReport(trace, summary, terminalClassification)
+	m.writeJSONCritical(trace, "trace_report.json", m.traceReport(trace, summary, terminalClassification, cacheEfficiency))
+	m.writeSessionReport(trace, summary, terminalClassification, cacheEfficiency)
 }
 
 func (m *CodexGatewayCaptureManager) enabledTrace(trace *CodexGatewayTrace) bool {

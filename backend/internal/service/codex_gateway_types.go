@@ -174,6 +174,7 @@ type CodexGatewayToolNameMapEntry struct {
 	Namespace     string
 	NamespacePath string `json:"-"`
 	Name          string
+	FlattenedArgs []CodexGatewayToolArgumentPath `json:"-"`
 }
 
 type CodexGatewayToolMappingResult struct {
@@ -197,8 +198,17 @@ type CodexGatewayResponseState struct {
 }
 
 type CodexGatewayToolMappingConfig struct {
-	EnableStrictBeta               bool
-	RejectUnsupportedStrictSchemas bool
+	EnableStrictBeta                bool
+	RejectUnsupportedStrictSchemas  bool
+	EnableDeepSeekSchemaFlattening  bool
+	DisableDeepSeekSchemaFlattening bool
+	DeepSeekFlattenMinDepth         int
+	DeepSeekFlattenMinLeaves        int
+}
+
+type CodexGatewayToolArgumentPath struct {
+	FlatKey string
+	Path    []string
 }
 
 const (
@@ -207,10 +217,12 @@ const (
 )
 
 type CodexGatewayDeepSeekRequestContext struct {
-	SessionKey   string
-	IsolationKey string
-	UserID       string
-	CaptureTrace *CodexGatewayTrace
+	SessionKey           string
+	IsolationKey         string
+	WorkspaceKey         string
+	ManagedSessionBucket string
+	UserID               string
+	CaptureTrace         *CodexGatewayTrace
 }
 
 type CodexGatewayDeepSeekRequestConfig struct {

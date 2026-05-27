@@ -24,14 +24,7 @@
     "body": "data: {\"id\":\"chatcmpl_usage_only\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":0,\"total_tokens\":4,\"prompt_cache_hit_tokens\":2}}\n\ndata: [DONE]\n\n"
   },
   "expect": {
-    "terminal_event": "response.incomplete",
-    "response_status": "incomplete",
-    "usage": {
-      "input_tokens": 4,
-      "output_tokens": 0,
-      "total_tokens": 4,
-      "cached_tokens": 2
-    },
-    "output_types": []
+    "failover_status": 502,
+    "error_contains": "failover"
   }
 }

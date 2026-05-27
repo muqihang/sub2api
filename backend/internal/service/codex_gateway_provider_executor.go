@@ -41,12 +41,14 @@ func (e *CodexGatewayProviderUnavailableError) Error() string {
 }
 
 type CodexGatewayProviderRequest struct {
-	Request      CodexGatewayResponsesRequest
-	Model        CodexGatewayModel
-	Parsed       CodexGatewayResponsesCreateRequest
-	SessionKey   string
-	IsolationKey string
-	CaptureTrace *CodexGatewayTrace
+	Request              CodexGatewayResponsesRequest
+	Model                CodexGatewayModel
+	Parsed               CodexGatewayResponsesCreateRequest
+	SessionKey           string
+	IsolationKey         string
+	WorkspaceKey         string
+	ManagedSessionBucket string
+	CaptureTrace         *CodexGatewayTrace
 }
 
 type codexGatewayUsageRecorder interface {
@@ -723,6 +725,9 @@ func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, acco
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex gateway deepseek adapter requires selected account")
 	}
 	cfg := CodexGatewayDeepSeekRequestConfig{}
+	cfg.ToolMappingConfig.EnableDeepSeekSchemaFlattening = true
+	cfg.ToolMappingConfig.DeepSeekFlattenMinDepth = 3
+	cfg.ToolMappingConfig.DeepSeekFlattenMinLeaves = 4
 	if a.hostedWebSearch != nil {
 		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
 			return a.hostedWebSearch(ctx, req, query)
@@ -742,9 +747,11 @@ func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, acco
 		req.Parsed,
 		a.stateStore,
 		CodexGatewayDeepSeekRequestContext{
-			SessionKey:   req.SessionKey,
-			IsolationKey: req.IsolationKey,
-			CaptureTrace: req.CaptureTrace,
+			SessionKey:           req.SessionKey,
+			IsolationKey:         req.IsolationKey,
+			WorkspaceKey:         req.WorkspaceKey,
+			ManagedSessionBucket: req.ManagedSessionBucket,
+			CaptureTrace:         req.CaptureTrace,
 		},
 		cfg,
 	)
@@ -754,15 +761,10 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 	if account == nil {
 		return CodexGatewayProviderResult{}, fmt.Errorf("codex gateway deepseek adapter requires selected account")
 	}
-	if req.Request.ResponseHeader != nil {
-		req.Request.ResponseHeader.Set("Content-Type", "text/event-stream")
-		req.Request.ResponseHeader.Set("Cache-Control", "no-cache")
-		req.Request.ResponseHeader.Set("Connection", "keep-alive")
-	}
-	if req.Request.WriteStatus != nil {
-		req.Request.WriteStatus(http.StatusOK)
-	}
 	cfg := CodexGatewayDeepSeekRequestConfig{}
+	cfg.ToolMappingConfig.EnableDeepSeekSchemaFlattening = true
+	cfg.ToolMappingConfig.DeepSeekFlattenMinDepth = 3
+	cfg.ToolMappingConfig.DeepSeekFlattenMinLeaves = 4
 	if a.hostedWebSearch != nil {
 		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
 			return a.hostedWebSearch(ctx, req, query)
@@ -782,9 +784,11 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 		req.Parsed,
 		a.stateStore,
 		CodexGatewayDeepSeekRequestContext{
-			SessionKey:   req.SessionKey,
-			IsolationKey: req.IsolationKey,
-			CaptureTrace: req.CaptureTrace,
+			SessionKey:           req.SessionKey,
+			IsolationKey:         req.IsolationKey,
+			WorkspaceKey:         req.WorkspaceKey,
+			ManagedSessionBucket: req.ManagedSessionBucket,
+			CaptureTrace:         req.CaptureTrace,
 		},
 		cfg,
 		req.Request.StreamWriter,

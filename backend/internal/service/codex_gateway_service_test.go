@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +21,18 @@ import (
 type codexGatewayExecutorStub struct {
 	completeFn func(ctx context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error)
 	streamFn   func(ctx context.Context, req CodexGatewayProviderRequest) error
+}
+
+func TestCodexGatewayInstructionsContainIgnoresWhitespaceDifferences(t *testing.T) {
+	equivalent := strings.Replace(
+		codexGatewayDefaultBaseInstructions,
+		"(If the `rg` command is not found, then use alternatives.)\n- Act as an agent:",
+		"(If the `rg` command is not found, then use alternatives.)\n\n- Act as an agent:",
+		1,
+	)
+
+	require.True(t, codexGatewayInstructionsContain(equivalent, codexGatewayDefaultBaseInstructions))
+	require.False(t, codexGatewayInstructionsContain("You are Codex.", codexGatewayDefaultBaseInstructions))
 }
 
 func TestCodexGatewayService_ResponsesRecordsCaptureTrace(t *testing.T) {
@@ -186,6 +200,181 @@ func TestCodexGatewayService_ResponsesInjectsBaseInstructionsForDeepSeek(t *test
 	require.True(t, ok)
 	require.Contains(t, instructions, "You are Codex, based on GPT-5.")
 	require.Contains(t, instructions, "Try to use `edit`")
+	require.Contains(t, instructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, instructions, "clearly matches")
+	require.Contains(t, instructions, "Do not load unrelated skills")
+}
+
+func TestCodexGatewayService_ResponsesAddsRoutingBridgeWithoutDuplicatingExistingBaseInstructions(t *testing.T) {
+	var captured CodexGatewayProviderRequest
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"deepseek-v4-pro"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderDeepSeek: {Provider: CodexGatewayProviderDeepSeek, GroupID: 2002, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"deepseek-v4-pro": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+	)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_deepseek"}`),
+			}, nil
+		},
+	})
+
+	rawInstructions, err := json.Marshal(codexGatewayDefaultBaseInstructions + "\n\n<skills_instructions>Available skills...</skills_instructions>")
+	require.NoError(t, err)
+	body := []byte(fmt.Sprintf(`{"model":"deepseek-v4-pro","instructions":%s,"input":"hello"}`, rawInstructions))
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   body,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	instructions, ok := parseCodexGatewayJSONString(captured.Parsed.Instructions)
+	require.True(t, ok)
+	require.Equal(t, 1, strings.Count(instructions, "You are Codex, based on GPT-5."))
+	require.Contains(t, instructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, instructions, "<skills_instructions>Available skills...</skills_instructions>")
+}
+
+func TestCodexGatewayService_ResponsesAddsRoutingBridgeWithoutDuplicatingEquivalentBaseInstructions(t *testing.T) {
+	var captured CodexGatewayProviderRequest
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"deepseek-v4-pro"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderDeepSeek: {Provider: CodexGatewayProviderDeepSeek, GroupID: 2002, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"deepseek-v4-pro": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"deepseek-v4-pro": true}}),
+	)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_deepseek"}`),
+			}, nil
+		},
+	})
+
+	equivalentBase := strings.Replace(
+		codexGatewayDefaultBaseInstructions,
+		"(If the `rg` command is not found, then use alternatives.)\n- Act as an agent:",
+		"(If the `rg` command is not found, then use alternatives.)\n\n- Act as an agent:",
+		1,
+	)
+	rawInstructions, err := json.Marshal(equivalentBase + "\n<skills_instructions>Available skills...</skills_instructions>")
+	require.NoError(t, err)
+	body := []byte(fmt.Sprintf(`{"model":"deepseek-v4-pro","instructions":%s,"input":"hello"}`, rawInstructions))
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   body,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	instructions, ok := parseCodexGatewayJSONString(captured.Parsed.Instructions)
+	require.True(t, ok)
+	require.Equal(t, 1, strings.Count(instructions, "You are Codex, based on GPT-5."))
+	require.Equal(t, 1, strings.Count(instructions, "skills, plugins, MCP servers, or tool routing guidance"))
+	require.Contains(t, instructions, "<skills_instructions>Available skills...</skills_instructions>")
+}
+
+func TestCodexGatewayService_ResponsesInjectsRoutingBridgeForAnthropic(t *testing.T) {
+	var captured CodexGatewayProviderRequest
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"claude-opus-4-7"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderAnthropic: {Provider: CodexGatewayProviderAnthropic, GroupID: 3003, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"claude-opus-4-7": {Enabled: true},
+				},
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{"claude-opus-4-7": true}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{"claude-opus-4-7": true}}),
+	)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_claude"}`),
+			}, nil
+		},
+	})
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   []byte(`{"model":"claude-opus-4-7","input":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	instructions, ok := parseCodexGatewayJSONString(captured.Parsed.Instructions)
+	require.True(t, ok)
+	require.Contains(t, instructions, "You are Codex, based on GPT-5.")
+	require.Contains(t, instructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, instructions, "Do not load unrelated skills")
+}
+
+func TestCodexGatewayService_ResponsesDoesNotInjectBaseInstructionsForOpenAI(t *testing.T) {
+	var captured CodexGatewayProviderRequest
+	registry := NewDefaultCodexGatewayModelRegistry()
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_openai"}`),
+			}, nil
+		},
+	})
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   []byte(`{"model":"gpt-5.5","instructions":"existing app instructions","input":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	instructions, ok := parseCodexGatewayJSONString(captured.Parsed.Instructions)
+	require.True(t, ok)
+	require.Equal(t, "existing app instructions", instructions)
+	require.NotContains(t, instructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.NotContains(t, instructions, "Try to use `edit`")
 }
 
 func TestCodexGatewayService_ResponsesFailoverErrorUsesMappedBodyMessage(t *testing.T) {
@@ -360,6 +549,35 @@ func TestCodexGatewayService_ResponsesStreamingWritesTerminalErrorEvent(t *testi
 	require.Equal(t, "text/event-stream", headers.Get("Content-Type"))
 	require.Contains(t, out.String(), `"type":"response.failed"`)
 	require.Contains(t, out.String(), `"message":"upstream disconnected"`)
+}
+
+func TestCodexGatewayService_ResponsesStreamingDelaysSSEHeadersUntilFirstWrite(t *testing.T) {
+	registry := NewDefaultCodexGatewayModelRegistry()
+	var statusCode int
+	headers := http.Header{}
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		streamFn: func(_ context.Context, req CodexGatewayProviderRequest) error {
+			require.Equal(t, 0, statusCode)
+			require.Empty(t, headers.Get("Content-Type"))
+			_, err := req.Request.StreamWriter.Write([]byte("event: ping\ndata: {}\n\n"))
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, statusCode)
+			require.Equal(t, "text/event-stream", headers.Get("Content-Type"))
+			return nil
+		},
+	})
+	var out bytes.Buffer
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey:         validCodexGatewayAPIKeyForTest(),
+		Body:           []byte(`{"model":"gpt-5.5","stream":true}`),
+		StreamWriter:   &out,
+		ResponseHeader: headers,
+		WriteStatus:    func(code int) { statusCode = code },
+	})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Equal(t, "event: ping\ndata: {}\n\n", out.String())
 }
 
 func TestCodexGatewayService_ResponsesStreamingFailoverErrorKeepsSSEEnvelope(t *testing.T) {

@@ -1063,12 +1063,18 @@ def candidate_plugin_mention_marketplace_files(archive: AsarArchive) -> list[str
 
 
 def is_plugin_auth_gate_candidate(file_path: str) -> bool:
-    return file_path.startswith("webview/assets/gradient-") and file_path.endswith(".js")
+    return (
+        file_path.startswith("webview/assets/gradient-")
+        or file_path.startswith("webview/assets/plugin-auth-")
+    ) and file_path.endswith(".js")
 
 
 def is_plugin_mention_marketplace_candidate(file_path: str) -> bool:
     return (
-        file_path.startswith("webview/assets/prosemirror-")
+        file_path.startswith("webview/assets/app-prefetch-impl-")
+        or file_path.startswith("webview/assets/inline-mentions-")
+        or file_path.startswith("webview/assets/mention-metadata-syncer-")
+        or file_path.startswith("webview/assets/prosemirror-")
         or file_path.startswith("webview/assets/reply-")
     ) and file_path.endswith(".js")
 

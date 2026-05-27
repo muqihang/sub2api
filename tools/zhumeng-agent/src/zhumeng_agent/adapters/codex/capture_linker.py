@@ -54,9 +54,11 @@ def link_traces(desktop_events: list[dict[str, Any]], gateway_events: list[dict[
             same_shape = desktop.get("model") == gateway.get("model") and desktop.get("request_path") == gateway.get("request_path")
             if linked_by:
                 confidence = "high"
+                degraded_reason = None
             elif same_shape and delta <= 5000:
                 linked_by = "time_model_path"
                 confidence = "low"
+                degraded_reason = "shared_correlation_hash_missing"
             else:
                 continue
             links.append({
@@ -69,6 +71,8 @@ def link_traces(desktop_events: list[dict[str, Any]], gateway_events: list[dict[
                 "time_delta_ms": delta,
                 "model": desktop.get("model") or gateway.get("model"),
                 "request_path": desktop.get("request_path") or gateway.get("request_path"),
+                "pass_fail_rule": "prefer_shared_hash_else_time_model_path",
+                **({"degraded_reason": degraded_reason} if degraded_reason else {}),
             })
     return links
 

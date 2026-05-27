@@ -15,8 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .capture_config import CodexDesktopCaptureConfig, CorrelationHasher, file_hash, path_identity
-from .capture_shape import add_safe_metadata, capture_model_picker_state, shape_app_server_frame, shape_tool_lifecycle_event
-from .capture_redact import content_policy_for_class, redaction_reason
+from .capture_shape import (
+    add_safe_metadata,
+    capture_model_picker_state,
+    normalize_ui_matrix,
+    shape_app_server_frame,
+    shape_tool_lifecycle_event,
+)
 from .capture_writer import JsonlTraceWriter
 
 
@@ -606,10 +611,19 @@ def write_derived_frame_events(event: dict[str, object], trace_dir: Path, config
     frame = parse_renderer_frame(event)
     if not isinstance(frame, dict):
         return
+    context = {
+        "desktop_trace_id": str(event.get("desktop_trace_id") or "cd_runtime"),
+        "correlation_ids": merge_correlation_ids(
+            event.get("correlation_ids") if isinstance(event.get("correlation_ids"), dict) else None,
+            extract_correlation_ids_from_frame_bytes(renderer_frame_bytes(event)),
+        ),
+        "model": str(event.get("model")) if event.get("model") else None,
+        "request_path": str(event.get("request_path")) if event.get("request_path") else None,
+    }
     model_event = model_picker_event_from_frame(frame)
     if model_event:
         JsonlTraceWriter(trace_dir / "model_picker.jsonl").safe_write(model_event)
-    tool_event = tool_event_from_frame(frame, config)
+    tool_event = tool_event_from_frame(frame, config, context=context)
     if tool_event:
         JsonlTraceWriter(trace_dir / "tool_lifecycle.jsonl").safe_write(tool_event)
 
@@ -638,7 +652,12 @@ def model_picker_event_from_frame(frame: dict[str, object]) -> dict[str, object]
     )
 
 
-def tool_event_from_frame(frame: dict[str, object], config: CodexDesktopCaptureConfig) -> dict[str, object] | None:
+def tool_event_from_frame(
+    frame: dict[str, object],
+    config: CodexDesktopCaptureConfig,
+    *,
+    context: dict[str, object] | None = None,
+) -> dict[str, object] | None:
     result = frame.get("result")
     method = str(frame.get("method") or "")
     candidate = result if isinstance(result, dict) else frame
@@ -662,6 +681,13 @@ def tool_event_from_frame(frame: dict[str, object], config: CodexDesktopCaptureC
         duration_ms=int(candidate.get("duration_ms")) if isinstance(candidate.get("duration_ms"), int) and int(candidate.get("duration_ms")) >= 0 else 0,
         sent_back_to_model=bool(candidate.get("sent_back_to_model", True)),
         hasher=CorrelationHasher.from_key_file(config.correlation_hash_key_file),
+        desktop_trace_id=str(context.get("desktop_trace_id")) if isinstance(context, dict) and context.get("desktop_trace_id") else None,
+        correlation_ids=context.get("correlation_ids") if isinstance(context, dict) and isinstance(context.get("correlation_ids"), dict) else None,
+        model=str(context.get("model")) if isinstance(context, dict) and context.get("model") else None,
+        request_path=str(context.get("request_path")) if isinstance(context, dict) and context.get("request_path") else None,
+        ui_matrix=event_ui_matrix(candidate),
+        degraded_reason=str(candidate.get("degraded_reason")) if candidate.get("degraded_reason") else None,
+        pass_fail_rule=str(candidate.get("pass_fail_rule")) if candidate.get("pass_fail_rule") else None,
     )
 
 
@@ -766,43 +792,48 @@ def sanitize_renderer_tool_event(event: dict[str, object], config: CodexDesktopC
     hasher = CorrelationHasher.from_key_file(config.correlation_hash_key_file)
     tool_name = str(event.get("tool_name") or event.get("name") or "unknown_tool")
     content_class = infer_tool_content_class(tool_name, str(event.get("content_class") or ""))
-    policy = content_policy_for_class(content_class)
-    if policy != "raw_allowed":
-        policy = "shape_only"
     schema_shape = event.get("schema_shape") if isinstance(event.get("schema_shape"), dict) else {}
     result_shape = event.get("result_shape") if isinstance(event.get("result_shape"), dict) else {}
     result_chars = event.get("result_chars")
     if not isinstance(result_chars, int) or result_chars < 0:
         result_chars = 0
     renderer_result_hash_present = isinstance(event.get("result_hash"), str)
-    result_hash = hasher.hash_identifier(json.dumps({
-        "content_class": content_class,
-        "result_shape": result_shape,
-        "result_chars": result_chars,
-    }, sort_keys=True, default=str))
-    sanitized: dict[str, object] = {
-        "schema_version": 1,
-        "source": "codex_desktop",
-        "hook_mode": "renderer_readonly",
-        "event_type": "tool_lifecycle",
-        "renderer_event_type": str(event.get("type", "")),
-        "call_id_hash": hasher.hash_identifier(event.get("call_id") or "unknown_call"),
-        "item_id_hash": hasher.hash_identifier(event.get("item_id") or "unknown_item"),
-        "schema_hash": hasher.hash_identifier(json.dumps(schema_shape, sort_keys=True, default=str)),
-        "content_class": content_class,
-        "policy_decision": policy,
-        "redaction_reason": redaction_reason(policy),
-        "status": str(event.get("status") or "observed"),
-        "duration_ms": int(event.get("duration_ms")) if isinstance(event.get("duration_ms"), int) and int(event.get("duration_ms")) >= 0 else 0,
-        "result_content_type": str(event.get("result_content_type") or "shape"),
-        "result_chars": result_chars,
-        "result_hash": result_hash,
-        "renderer_result_hash_present": renderer_result_hash_present,
-        "sent_back_to_model": bool(event.get("sent_back_to_model", False)),
-    }
-    add_safe_metadata(sanitized, "tool_name", tool_name, hasher)
-    add_safe_metadata(sanitized, "namespace", tool_namespace(tool_name), hasher)
+    sanitized = shape_tool_lifecycle_event(
+        tool_name=tool_name,
+        call_id=str(event.get("call_id") or "unknown_call"),
+        item_id=str(event.get("item_id") or "unknown_item"),
+        schema=schema_shape,
+        result={
+            "content_class": content_class,
+            "result_shape": result_shape,
+            "result_chars": result_chars,
+        },
+        content_class=content_class,
+        status=str(event.get("status") or "observed"),
+        duration_ms=int(event.get("duration_ms")) if isinstance(event.get("duration_ms"), int) and int(event.get("duration_ms")) >= 0 else 0,
+        sent_back_to_model=bool(event.get("sent_back_to_model", False)),
+        hasher=hasher,
+        desktop_trace_id=str(event.get("desktop_trace_id")) if event.get("desktop_trace_id") else None,
+        correlation_ids=event.get("correlation_ids") if isinstance(event.get("correlation_ids"), dict) else None,
+        model=str(event.get("model")) if event.get("model") else None,
+        request_path=str(event.get("request_path")) if event.get("request_path") else None,
+        ui_matrix=event_ui_matrix(event),
+        degraded_reason=str(event.get("degraded_reason")) if event.get("degraded_reason") else None,
+        pass_fail_rule=str(event.get("pass_fail_rule")) if event.get("pass_fail_rule") else None,
+    )
+    sanitized["hook_mode"] = "renderer_readonly"
+    sanitized["renderer_event_type"] = str(event.get("type", ""))
+    sanitized["result_content_type"] = str(event.get("result_content_type") or "shape")
+    sanitized["result_chars"] = result_chars
+    sanitized["renderer_result_hash_present"] = renderer_result_hash_present
     return sanitized
+
+
+def event_ui_matrix(event: dict[str, object]) -> dict[str, bool] | None:
+    ui_matrix = normalize_ui_matrix(event.get("ui_matrix"))
+    if ui_matrix:
+        return ui_matrix
+    return normalize_ui_matrix(event)
 
 
 def infer_tool_content_class(tool_name: str, explicit: str) -> str:
