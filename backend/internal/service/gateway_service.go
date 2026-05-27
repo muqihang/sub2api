@@ -6297,6 +6297,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
 			body = mappedBody
+			if shouldStripCCGatewayDownstreamBillingMaterial(account) {
+				body = stripCCGatewayDownstreamBillingMaterial(mappedBody)
+			}
+			claudeCodeReplaceRequestBody(req, body)
 		}
 	}
 
@@ -9631,6 +9635,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
 			body = mappedBody
+			if shouldStripCCGatewayDownstreamBillingMaterial(account) {
+				body = stripCCGatewayDownstreamBillingMaterial(mappedBody)
+			}
+			claudeCodeReplaceRequestBody(req, body)
 		}
 	}
 

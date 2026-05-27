@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -116,6 +117,27 @@ func TestCCGatewayBoundary_ForwardSkipsMimicryAndProxy(t *testing.T) {
 	require.Equal(t, parsedUID.SessionID, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
 	require.Empty(t, upstream.lastProxyURL, "CC Gateway path must not use account proxy")
 	require.Nil(t, upstream.lastProfile, "CC Gateway path must not use account TLS fingerprint profile")
+}
+
+func TestCCGatewayBoundary_StripsDownstreamBillingBeforeSignPrimary(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	account.Extra["billing_cch_mode"] = "sign"
+	require.True(t, shouldStripCCGatewayDownstreamBillingMaterial(account))
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-opus-4-7","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.145.abc; cc_entrypoint=sdk-cli; cch=12345;"},{"type":"text","text":"You are Claude Code."}],"metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	require.NotContains(t, strings.ToLower(string(stripCCGatewayDownstreamBillingMaterial(body))), "x-anthropic-billing-header")
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.NotContains(t, strings.ToLower(string(upstream.lastBody)), "x-anthropic-billing-header")
+	require.NotContains(t, strings.ToLower(string(upstream.lastBody)), "cch=12345")
+	require.Contains(t, string(upstream.lastBody), "You are Claude Code.")
+	parsedUID := ParseMetadataUserID(gjson.GetBytes(upstream.lastBody, "metadata.user_id").String())
+	require.NotNil(t, parsedUID)
+	require.NotEqual(t, "99999999-8888-4777-8666-555555555555", parsedUID.SessionID)
 }
 
 func TestCCGatewayBoundary_ForwardCountTokensSkipsMimicryAndProxy(t *testing.T) {

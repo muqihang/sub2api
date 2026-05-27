@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -57,6 +58,76 @@ func syncBillingHeaderVersion(body []byte, userAgent string) []byte {
 	})
 
 	return body
+}
+
+// stripCCGatewayDownstreamBillingMaterial removes downstream-supplied Claude Code
+// billing/CCH material before the request enters CC Gateway sign-primary mode.
+// CC Gateway owns final shared-pool billing identity; user content that merely
+// mentions cch=... outside the system billing block is left untouched so the
+// downstream verifier can still fail closed on suspicious input.
+func stripCCGatewayDownstreamBillingMaterial(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	systemResult := gjson.GetBytes(body, "system")
+	if !systemResult.Exists() {
+		return body
+	}
+
+	if systemResult.IsArray() {
+		kept := make([]any, 0, len(systemResult.Array()))
+		changed := false
+		systemResult.ForEach(func(_, item gjson.Result) bool {
+			text := ""
+			if item.Type == gjson.String {
+				text = item.String()
+			} else if t := item.Get("text"); t.Type == gjson.String {
+				text = t.String()
+			}
+			if strings.HasPrefix(strings.TrimLeft(text, " \t\r\n"), "x-anthropic-billing-header:") {
+				changed = true
+				return true
+			}
+			var decoded any
+			if err := json.Unmarshal([]byte(item.Raw), &decoded); err == nil {
+				kept = append(kept, decoded)
+			}
+			return true
+		})
+		if !changed {
+			return body
+		}
+		if updated, err := sjson.SetBytes(body, "system", kept); err == nil {
+			return updated
+		}
+		return body
+	}
+
+	if systemResult.Type == gjson.String {
+		lines := strings.Split(systemResult.String(), "\n")
+		kept := lines[:0]
+		changed := false
+		for _, line := range lines {
+			if strings.HasPrefix(strings.TrimLeft(line, " \t\r"), "x-anthropic-billing-header:") {
+				changed = true
+				continue
+			}
+			kept = append(kept, line)
+		}
+		if changed {
+			if updated, err := sjson.SetBytes(body, "system", strings.Join(kept, "\n")); err == nil {
+				return updated
+			}
+		}
+	}
+	return body
+}
+
+func shouldStripCCGatewayDownstreamBillingMaterial(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(account.GetExtraString("billing_cch_mode")), "sign")
 }
 
 // Deprecated: signBillingHeaderCCH is a legacy placeholder signer retained only for
