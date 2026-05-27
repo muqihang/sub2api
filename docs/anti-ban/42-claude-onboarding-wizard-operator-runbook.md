@@ -18,10 +18,11 @@
 4. 选择 `normal` 或 `aggressive`，并选择 Claude Code only / formal pool group。
 5. 生成 OAuth URL，在同出口浏览器完成 Claude Code OAuth。
 6. 粘贴授权 code；后端执行 exchange-code-and-create，前端不接收 token。
-7. 后端创建账号：`schedulable=false`、`onboarding_state=pending_acceptance`，写入 CC Gateway/formal-pool 默认 extra。
-8. 运行 acceptance。只做本地/mock/readiness 检查，不发真实 messages。
-9. acceptance 全 pass 后，管理员手动激活，账号进入 `ready_for_small_flow`。
-10. 真实 OAuth 登录和小流量 smoke 必须单独批准。
+7. 后端先向 CC Gateway runtime 注册 safe account identity + egress bucket 映射；失败则 fail closed，不创建可调度账号。
+8. 后端创建账号：`schedulable=false`、`onboarding_state=pending_acceptance`，写入 CC Gateway/formal-pool 默认 extra。
+9. 运行 acceptance。只做本地/mock/readiness 检查，不发真实 messages，并确认 `cc_gateway_runtime_registered=true`。
+10. acceptance 全 pass 后，管理员手动激活，账号进入 `ready_for_small_flow`。
+11. 真实 OAuth 登录和小流量 smoke 必须单独批准。
 
 ## 默认账号配置
 
@@ -45,7 +46,8 @@
 - proxy fail：更换/修复代理后重新测试；不要直连回退。
 - browser egress mismatch/expired：用同出口浏览器重新打开 check URL 或重新做 attestation。
 - OAuth invalid_grant/scope missing：重新走正式 Claude Code OAuth；不要切 Setup Token/cookie 路径。
-- CC Gateway bucket missing：先在 CC Gateway runtime 准备 bucket/account_ref 映射，再重跑 acceptance。
+- CC Gateway runtime registration failed：检查 Sub2API `gateway.cc_gateway.base_url/token`、CC Gateway `sub2api` mode、代理 URL 规范化和 runtime register 日志；不要手工把 raw token/body/prompt/CCH 写入前端或 safe deliverable。
+- CC Gateway bucket/account identity missing：向导正常路径应自动注册；若仍缺失，保持账号不可调度，先修 runtime registration，再重跑 acceptance。
 - ledger/usage warning：默认 observe-only；除非 P0 安全问题，不应 hard block Claude Code 能力。
 - activation 失败：账号保持不可调度，不应半写为 ready。
 

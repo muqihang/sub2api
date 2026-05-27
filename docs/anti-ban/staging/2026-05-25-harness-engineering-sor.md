@@ -23,7 +23,7 @@ Local verification has passed for the current worktree and CC Gateway state:
 - Go targeted OAuth/repository tests: PASS.
 - Go targeted service/handler/routes tests: PASS.
 - CC Gateway build: PASS.
-- CC Gateway test suite: 92 tests PASS.
+- CC Gateway test suite: 97 tests PASS.
 - Safe deliverable sensitive scan: 139 files scanned, 0 findings.
 - CC Gateway required docs/config scan: 0 findings.
 - Localhost-only full-chain controller: PASS.
@@ -271,4 +271,4 @@ If this document is current and verification remains green, the next action is:
 
 ## Claude formal pool onboarding wizard
 
-Status: implemented for localhost/mock readiness. The wizard uses backend-only OAuth exchange/create, creates accounts unschedulable, writes formal-pool CC Gateway defaults, runs acceptance without real Anthropic/Claude messages, and requires manual activation. Real OAuth login/smoke remains blocked pending separate approval.
+Status: implemented for localhost/mock readiness. The wizard uses backend-only OAuth exchange/create, registers the CC Gateway runtime account identity and egress bucket mapping, creates accounts unschedulable, writes formal-pool CC Gateway defaults, runs acceptance without real Anthropic/Claude messages, and requires manual activation. Real OAuth login/smoke remains blocked pending separate approval.

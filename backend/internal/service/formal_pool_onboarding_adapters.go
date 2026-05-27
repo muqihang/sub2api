@@ -1,10 +1,16 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 )
@@ -159,6 +165,74 @@ type FormalPoolStaticCCGatewayReadinessVerifier struct{}
 
 func NewFormalPoolStaticCCGatewayReadinessVerifier() *FormalPoolStaticCCGatewayReadinessVerifier {
 	return &FormalPoolStaticCCGatewayReadinessVerifier{}
+}
+
+type FormalPoolHTTPCCGatewayRuntimeRegistrar struct {
+	baseURL string
+	token   string
+	client  *http.Client
+}
+
+func NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg *config.Config) *FormalPoolHTTPCCGatewayRuntimeRegistrar {
+	if cfg == nil || !cfg.Gateway.CCGateway.Enabled || strings.TrimSpace(cfg.Gateway.CCGateway.BaseURL) == "" || strings.TrimSpace(cfg.Gateway.CCGateway.Token) == "" {
+		return nil
+	}
+	timeout := time.Duration(cfg.Gateway.CCGateway.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &FormalPoolHTTPCCGatewayRuntimeRegistrar{
+		baseURL: strings.TrimRight(strings.TrimSpace(cfg.Gateway.CCGateway.BaseURL), "/"),
+		token:   strings.TrimSpace(cfg.Gateway.CCGateway.Token),
+		client:  &http.Client{Timeout: timeout},
+	}
+}
+
+func (r *FormalPoolHTTPCCGatewayRuntimeRegistrar) RegisterCCGatewayRuntime(ctx context.Context, input FormalPoolCCGatewayRuntimeRegistration) error {
+	if r == nil || strings.TrimSpace(r.baseURL) == "" || strings.TrimSpace(r.token) == "" {
+		return infraRuntimeRegistrationUnavailable()
+	}
+	if strings.TrimSpace(input.AccountRef) == "" || strings.TrimSpace(input.EgressBucket) == "" || strings.TrimSpace(input.ProxyURL) == "" || strings.TrimSpace(input.ProxyRef) == "" {
+		return fmt.Errorf("cc gateway runtime registration requires safe account, bucket, proxy url and proxy ref")
+	}
+	endpoint, err := url.JoinPath(r.baseURL, "/_runtime/register-account")
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"account_id":         input.AccountRef,
+		"account_ref":        input.AccountRef,
+		"account_uuid_ref":   input.AccountRef,
+		"egress_bucket":      input.EgressBucket,
+		"proxy_url":          input.ProxyURL,
+		"proxy_identity_ref": input.ProxyRef,
+		"policy_version":     input.PolicyVersion,
+		"persona_variant":    input.PersonaVariant,
+		"session_policy":     input.SessionPolicy,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CC-Gateway-Token", r.token)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("cc gateway runtime registration failed with status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func infraRuntimeRegistrationUnavailable() error {
+	return fmt.Errorf("cc gateway runtime registrar unavailable")
 }
 
 func (v *FormalPoolStaticCCGatewayReadinessVerifier) VerifyCCGatewayReadiness(ctx context.Context, input FormalPoolAcceptanceInput) ([]FormalPoolAcceptanceCheck, error) {

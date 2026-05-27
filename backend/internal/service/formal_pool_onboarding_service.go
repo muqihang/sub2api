@@ -34,28 +34,34 @@ type FormalPoolCCGatewayReadinessVerifier interface {
 	VerifyCCGatewayReadiness(ctx context.Context, input FormalPoolAcceptanceInput) ([]FormalPoolAcceptanceCheck, error)
 }
 
+type FormalPoolCCGatewayRuntimeRegistrar interface {
+	RegisterCCGatewayRuntime(ctx context.Context, input FormalPoolCCGatewayRuntimeRegistration) error
+}
+
 type FormalPoolAcceptanceRunner interface {
 	RunAcceptance(ctx context.Context, input FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error)
 }
 
 type FormalPoolOnboardingDeps struct {
-	Store           *FormalPoolOnboardingStore
-	OAuth           FormalPoolOAuthFacade
-	Proxy           FormalPoolProxyVerifier
-	Accounts        FormalPoolAccountCreator
-	CCGateway       FormalPoolCCGatewayReadinessVerifier
-	Acceptance      FormalPoolAcceptanceRunner
-	PublicURLPrefix string
+	Store            *FormalPoolOnboardingStore
+	OAuth            FormalPoolOAuthFacade
+	Proxy            FormalPoolProxyVerifier
+	Accounts         FormalPoolAccountCreator
+	CCGateway        FormalPoolCCGatewayReadinessVerifier
+	CCGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
+	Acceptance       FormalPoolAcceptanceRunner
+	PublicURLPrefix  string
 }
 
 type FormalPoolOnboardingService struct {
-	store           *FormalPoolOnboardingStore
-	oauth           FormalPoolOAuthFacade
-	proxy           FormalPoolProxyVerifier
-	accounts        FormalPoolAccountCreator
-	ccGateway       FormalPoolCCGatewayReadinessVerifier
-	acceptance      FormalPoolAcceptanceRunner
-	publicURLPrefix string
+	store            *FormalPoolOnboardingStore
+	oauth            FormalPoolOAuthFacade
+	proxy            FormalPoolProxyVerifier
+	accounts         FormalPoolAccountCreator
+	ccGateway        FormalPoolCCGatewayReadinessVerifier
+	ccGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
+	acceptance       FormalPoolAcceptanceRunner
+	publicURLPrefix  string
 }
 
 type FormalPoolOnboardingStartRequest struct {
@@ -84,24 +90,25 @@ type FormalPoolProxyInput struct {
 }
 
 type FormalPoolOnboardingSession struct {
-	ID                    string                       `json:"id"`
-	Status                string                       `json:"status"`
-	ProxyID               int64                        `json:"proxy_id,omitempty"`
-	ProxyRef              string                       `json:"proxy_ref,omitempty"`
-	EgressBucket          string                       `json:"egress_bucket"`
-	PoolProfile           string                       `json:"pool_profile"`
-	GroupID               int64                        `json:"group_id"`
-	AccountName           string                       `json:"account_name"`
-	Concurrency           int                          `json:"concurrency"`
-	AuthURL               string                       `json:"auth_url,omitempty"`
-	OAuthSessionID        string                       `json:"oauth_session_id,omitempty"`
-	BrowserEgressCheckURL string                       `json:"browser_egress_check_url,omitempty"`
-	BrowserEgressVerified bool                         `json:"browser_egress_verified"`
-	AccountID             int64                        `json:"account_id,omitempty"`
-	AccountRef            string                       `json:"account_ref,omitempty"`
-	OAuthSummary          *FormalPoolOAuthTokenSummary `json:"oauth_summary,omitempty"`
-	SafeSummary           map[string]any               `json:"safe_summary"`
-	Checks                []FormalPoolAcceptanceCheck  `json:"checks,omitempty"`
+	ID                         string                       `json:"id"`
+	Status                     string                       `json:"status"`
+	ProxyID                    int64                        `json:"proxy_id,omitempty"`
+	ProxyRef                   string                       `json:"proxy_ref,omitempty"`
+	EgressBucket               string                       `json:"egress_bucket"`
+	PoolProfile                string                       `json:"pool_profile"`
+	GroupID                    int64                        `json:"group_id"`
+	AccountName                string                       `json:"account_name"`
+	Concurrency                int                          `json:"concurrency"`
+	AuthURL                    string                       `json:"auth_url,omitempty"`
+	OAuthSessionID             string                       `json:"oauth_session_id,omitempty"`
+	BrowserEgressCheckURL      string                       `json:"browser_egress_check_url,omitempty"`
+	BrowserEgressVerified      bool                         `json:"browser_egress_verified"`
+	AccountID                  int64                        `json:"account_id,omitempty"`
+	AccountRef                 string                       `json:"account_ref,omitempty"`
+	OAuthSummary               *FormalPoolOAuthTokenSummary `json:"oauth_summary,omitempty"`
+	SafeSummary                map[string]any               `json:"safe_summary"`
+	Checks                     []FormalPoolAcceptanceCheck  `json:"checks,omitempty"`
+	CCGatewayRuntimeRegistered bool                         `json:"cc_gateway_runtime_registered"`
 }
 
 type FormalPoolOAuthURL struct {
@@ -167,6 +174,16 @@ type FormalPoolAcceptanceInput struct {
 	PoolProfile  string
 }
 
+type FormalPoolCCGatewayRuntimeRegistration struct {
+	AccountRef     string
+	EgressBucket   string
+	ProxyURL       string
+	ProxyRef       string
+	PolicyVersion  string
+	PersonaVariant string
+	SessionPolicy  string
+}
+
 type FormalPoolAcceptanceCheck struct {
 	Name    string `json:"name"`
 	Status  string `json:"status"`
@@ -191,7 +208,7 @@ func NewFormalPoolOnboardingService(deps FormalPoolOnboardingDeps) *FormalPoolOn
 		store = NewFormalPoolOnboardingStore(FormalPoolOnboardingDefaultTTL, time.Now)
 	}
 	prefix := strings.TrimRight(strings.TrimSpace(deps.PublicURLPrefix), "/")
-	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, acceptance: deps.Acceptance, publicURLPrefix: prefix}
+	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, publicURLPrefix: prefix}
 }
 
 func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req FormalPoolOnboardingStartRequest) (*FormalPoolOnboardingSession, error) {
@@ -205,6 +222,7 @@ func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req Form
 	}
 	proxyID := int64(0)
 	proxyRef := ""
+	normalizedProxyURL := ""
 	if req.ProxyID != nil {
 		proxyID = *req.ProxyID
 		proxyRef = formalPoolSafeRef("proxy", fmt.Sprintf("%d", proxyID))
@@ -216,12 +234,14 @@ func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req Form
 		}
 		proxyID = resolved.ProxyID
 		proxyRef = resolved.ProxyRef
+		normalizedProxyURL = resolved.NormalizedProxyURL
 	}
 	now := s.store.now()
 	rec := &formalPoolOnboardingSessionRecord{
 		ID: formalPoolRandomID("fpo_"), Status: FormalPoolOnboardingStatusDraft,
 		ProxyMode: strings.ToLower(strings.TrimSpace(req.ProxyMode)), ProxyID: proxyID, ProxyRef: proxyRef,
-		GroupID: req.GroupID, AccountName: strings.TrimSpace(req.AccountName), Notes: strings.TrimSpace(req.Notes),
+		NormalizedProxyURL: normalizedProxyURL,
+		GroupID:            req.GroupID, AccountName: strings.TrimSpace(req.AccountName), Notes: strings.TrimSpace(req.Notes),
 		PoolProfile: profile, Concurrency: concurrency,
 		EgressBucket: formalPoolSafeBucket(proxyRef), BrowserNonce: formalPoolRandomID("nonce_"),
 		CreatedAt: now, UpdatedAt: now,
@@ -381,6 +401,24 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 		return nil, infraerrors.BadRequest("REFRESH_TOKEN_REQUIRED", "formal pool OAuth account requires refresh token")
 	}
 	accountRef := formalPoolSafeRef("account", rec.ID+":"+rec.ProxyRef+":"+rec.AccountName)
+	runtimeRegistered := false
+	if s.ccGatewayRuntime != nil {
+		if strings.TrimSpace(rec.NormalizedProxyURL) == "" {
+			return nil, infraerrors.BadRequest("CC_GATEWAY_RUNTIME_PROXY_URL_MISSING", "cc gateway runtime registration requires a normalized proxy url")
+		}
+		if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, FormalPoolCCGatewayRuntimeRegistration{
+			AccountRef:     accountRef,
+			EgressBucket:   rec.EgressBucket,
+			ProxyURL:       rec.NormalizedProxyURL,
+			ProxyRef:       rec.ProxyRef,
+			PolicyVersion:  ccGatewayAnthropicPolicyVersion,
+			PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+			SessionPolicy:  "preserve_downstream_session_id",
+		}); err != nil {
+			return nil, err
+		}
+		runtimeRegistered = true
+	}
 	extra := formalPoolDefaultExtra(rec, accountRef)
 	account, err := s.accounts.CreateFormalPoolAccount(ctx, FormalPoolAccountCreateInput{
 		Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
@@ -393,6 +431,7 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 		rec.AccountID = account.ID
 		rec.AccountRef = accountRef
 		rec.OAuthSummary = &summary
+		rec.CCGatewayRuntimeRegistered = runtimeRegistered
 		rec.Status = FormalPoolOnboardingStatusPendingAcceptance
 		return nil
 	})
@@ -516,6 +555,7 @@ func formalPoolLocalAcceptanceChecks(account *Account, rec *formalPoolOnboarding
 		add("oauth_refresh_fail_closed", account.GetExtraString("oauth_refresh_fail_closed") == "true", "refresh must fail closed")
 		add("no_dangerous_extra", !formalPoolHasDangerousExtra(account.Extra), "dangerous formal pool extras are forbidden")
 	}
+	add("cc_gateway_runtime_registered", rec.CCGatewayRuntimeRegistered, "cc gateway runtime identity/bucket mapping must be registered before activation")
 	checks = append(checks, FormalPoolAcceptanceCheck{Name: "ledger_probe_safe", Status: "pass", Message: "localhost-only redacted ledger probe placeholder; no upstream request performed"})
 	return checks
 }
@@ -629,17 +669,19 @@ func normalizeFormalPoolProfile(v string) string {
 
 func (s *FormalPoolOnboardingService) sessionResponse(rec *formalPoolOnboardingSessionRecord, checks []FormalPoolAcceptanceCheck) *FormalPoolOnboardingSession {
 	summary := map[string]any{
-		"session_ref":             formalPoolSafeRef("session", rec.ID),
-		"proxy_ref":               rec.ProxyRef,
-		"pool_profile":            rec.PoolProfile,
-		"browser_egress_verified": rec.BrowserVerified,
-		"oauth_url_generated":     rec.AuthURL != "",
+		"session_ref":                   formalPoolSafeRef("session", rec.ID),
+		"proxy_ref":                     rec.ProxyRef,
+		"pool_profile":                  rec.PoolProfile,
+		"browser_egress_verified":       rec.BrowserVerified,
+		"oauth_url_generated":           rec.AuthURL != "",
+		"cc_gateway_runtime_registered": rec.CCGatewayRuntimeRegistered,
 	}
 	return &FormalPoolOnboardingSession{
 		ID: rec.ID, Status: rec.Status, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket,
 		PoolProfile: rec.PoolProfile, GroupID: rec.GroupID, AccountName: rec.AccountName, Concurrency: rec.Concurrency,
 		AuthURL: rec.AuthURL, OAuthSessionID: rec.OAuthSessionID, BrowserEgressCheckURL: s.browserURL(rec.BrowserNonce),
 		BrowserEgressVerified: rec.BrowserVerified, AccountID: rec.AccountID, AccountRef: rec.AccountRef, OAuthSummary: rec.OAuthSummary, SafeSummary: summary, Checks: checks,
+		CCGatewayRuntimeRegistered: rec.CCGatewayRuntimeRegistered,
 	}
 }
 

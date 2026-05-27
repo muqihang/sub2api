@@ -25,28 +25,30 @@ const (
 )
 
 type formalPoolOnboardingSessionRecord struct {
-	ID                string
-	Status            string
-	ProxyMode         string
-	ProxyID           int64
-	CreatedProxyInput *FormalPoolProxyInput
-	ProxyRef          string
-	GroupID           int64
-	AccountName       string
-	Notes             string
-	PoolProfile       string
-	Concurrency       int
-	EgressBucket      string
-	BrowserNonce      string
-	BrowserVerified   bool
-	OAuthSessionID    string
-	AuthURL           string
-	AccountID         int64
-	AccountRef        string
-	OAuthSummary      *FormalPoolOAuthTokenSummary
-	AcceptancePassed  bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                         string
+	Status                     string
+	ProxyMode                  string
+	ProxyID                    int64
+	CreatedProxyInput          *FormalPoolProxyInput
+	ProxyRef                   string
+	NormalizedProxyURL         string
+	GroupID                    int64
+	AccountName                string
+	Notes                      string
+	PoolProfile                string
+	Concurrency                int
+	EgressBucket               string
+	BrowserNonce               string
+	BrowserVerified            bool
+	OAuthSessionID             string
+	AuthURL                    string
+	AccountID                  int64
+	AccountRef                 string
+	OAuthSummary               *FormalPoolOAuthTokenSummary
+	AcceptancePassed           bool
+	CCGatewayRuntimeRegistered bool
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
 }
 
 type FormalPoolOnboardingStore struct {

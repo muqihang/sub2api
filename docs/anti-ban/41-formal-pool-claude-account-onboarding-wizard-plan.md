@@ -320,7 +320,13 @@ exchange-code-and-create(code) -> 后端 exchange token -> 后端立即创建不
 
 ### 4.5 Egress bucket 生成
 
-第一阶段可以只在 Sub2API 账号 extra 中写入 `cc_gateway_egress_bucket`，并要求 CC Gateway runtime 已预先存在同名 bucket；后续再做 CC Gateway bucket API 动态写入。
+第一阶段已改为由上号向导在 `exchange-code-and-create` 阶段自动调用 CC Gateway runtime registration：
+
+- 向 CC Gateway 写入 server-generated safe `account_ref/account_uuid_ref`；
+- 写入对应 `egress_bucket`、规范化代理 URL 和 `proxy_identity_ref`；
+- 不持久化 raw token/body/prompt/CCH 到 safe deliverable；
+- 注册失败时 fail closed，账号不得进入 activation；
+- acceptance 必须看到 `cc_gateway_runtime_registered=true`。
 
 建议 bucket 命名：
 
@@ -405,6 +411,7 @@ draft
 - `cc_gateway_egress_bucket_enabled=true`；
 - `cc_gateway_egress_bucket` 非空；
 - `cc_gateway_account_ref` 非空且 safe；
+- `cc_gateway_runtime_registered=true`；
 - CC Gateway runtime bucket 存在、enabled、proxy identity 匹配、allowed account/ref 包含该账号；
 - `pool_profile in normal/aggressive`；
 - group 绑定正确且 group 不限制 Claude Code 能力；

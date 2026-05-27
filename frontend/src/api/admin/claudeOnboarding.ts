@@ -57,6 +57,7 @@ export interface FormalPoolSession {
   oauth_summary?: FormalPoolOAuthSummary
   safe_summary?: Record<string, unknown>
   checks?: FormalPoolCheck[]
+  cc_gateway_runtime_registered?: boolean
 }
 
 export interface FormalPoolAcceptanceResult {

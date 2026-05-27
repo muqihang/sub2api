@@ -49,12 +49,13 @@ func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiToke
 	return NewOAuthRefreshAPI(accountRepo, tokenCache)
 }
 
-func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService) *FormalPoolOnboardingService {
+func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config) *FormalPoolOnboardingService {
 	return NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
-		OAuth:     NewFormalPoolClaudeOAuthFacade(oauthService),
-		Proxy:     NewFormalPoolAdminProxyVerifier(adminService),
-		Accounts:  NewFormalPoolAdminAccountManager(adminService),
-		CCGateway: NewFormalPoolStaticCCGatewayReadinessVerifier(),
+		OAuth:            NewFormalPoolClaudeOAuthFacade(oauthService),
+		Proxy:            NewFormalPoolAdminProxyVerifier(adminService),
+		Accounts:         NewFormalPoolAdminAccountManager(adminService),
+		CCGateway:        NewFormalPoolStaticCCGatewayReadinessVerifier(),
+		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
 	})
 }
 

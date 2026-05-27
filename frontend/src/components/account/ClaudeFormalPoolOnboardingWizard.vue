@@ -135,6 +135,7 @@ const safeSession = computed(() => JSON.stringify({
   egress_bucket: session.value?.egress_bucket,
   pool_profile: session.value?.pool_profile,
   browser_egress_verified: session.value?.browser_egress_verified,
+  cc_gateway_runtime_registered: session.value?.cc_gateway_runtime_registered,
   account_ref: session.value?.account_ref,
   oauth_summary: session.value?.oauth_summary
 }, null, 2))

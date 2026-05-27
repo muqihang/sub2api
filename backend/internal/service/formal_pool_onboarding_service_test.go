@@ -2,9 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 func TestFormalPoolOnboardingStartValidation(t *testing.T) {
@@ -165,6 +170,95 @@ func TestFormalPoolOnboardingRejectsDangerousRouteAndAccountRefInputs(t *testing
 		if _, err := svc.StartSession(context.Background(), req); err == nil {
 			t.Fatalf("expected dangerous input %#v to be rejected", req)
 		}
+	}
+}
+
+func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testing.T) {
+	var gotPath string
+	var gotToken string
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("X-CC-Gateway-Token")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"registered"}`))
+	}))
+	defer server.Close()
+
+	registrar := NewFormalPoolHTTPCCGatewayRuntimeRegistrar(&config.Config{
+		Gateway: config.GatewayConfig{
+			CCGateway: config.GatewayCCGatewayConfig{
+				Enabled:        true,
+				BaseURL:        server.URL,
+				Token:          "gateway-token",
+				TimeoutSeconds: 1,
+			},
+		},
+	})
+	if registrar == nil {
+		t.Fatalf("expected registrar")
+	}
+
+	err := registrar.RegisterCCGatewayRuntime(context.Background(), FormalPoolCCGatewayRuntimeRegistration{
+		AccountRef:     "hmac-sha256:runtime-account-ref",
+		EgressBucket:   "claude-runtime-bucket",
+		ProxyURL:       "socks5h://user:pass@proxy.example:443",
+		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
+		PolicyVersion:  "2.1.150",
+		PersonaVariant: "claude-code-2.1.150-macos-local",
+		SessionPolicy:  "preserve_downstream_session_id",
+	})
+	if err != nil {
+		t.Fatalf("RegisterCCGatewayRuntime() error = %v", err)
+	}
+
+	if gotPath != "/_runtime/register-account" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotToken != "gateway-token" {
+		t.Fatalf("gateway token header missing")
+	}
+	if got["account_id"] != "hmac-sha256:runtime-account-ref" ||
+		got["account_ref"] != "hmac-sha256:runtime-account-ref" ||
+		got["egress_bucket"] != "claude-runtime-bucket" ||
+		got["proxy_url"] != "socks5h://user:pass@proxy.example:443" ||
+		got["proxy_identity_ref"] != "hmac-sha256:runtime-proxy-ref" ||
+		got["policy_version"] != "2.1.150" ||
+		got["session_policy"] != "preserve_downstream_session_id" {
+		t.Fatalf("unexpected registration payload: %#v", got)
+	}
+}
+
+func TestFormalPoolHTTPCCGatewayRuntimeRegistrarFailsClosedOnGatewayError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "missing identity", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	registrar := NewFormalPoolHTTPCCGatewayRuntimeRegistrar(&config.Config{
+		Gateway: config.GatewayConfig{
+			CCGateway: config.GatewayCCGatewayConfig{
+				Enabled:        true,
+				BaseURL:        server.URL,
+				Token:          "gateway-token",
+				TimeoutSeconds: 1,
+			},
+		},
+	})
+	err := registrar.RegisterCCGatewayRuntime(context.Background(), FormalPoolCCGatewayRuntimeRegistration{
+		AccountRef:     "hmac-sha256:runtime-account-ref",
+		EgressBucket:   "claude-runtime-bucket",
+		ProxyURL:       "socks5h://proxy.example:443",
+		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
+		PolicyVersion:  "2.1.150",
+		PersonaVariant: "claude-code-2.1.150-macos-local",
+		SessionPolicy:  "preserve_downstream_session_id",
+	})
+	if err == nil || !strings.Contains(err.Error(), "status 403") {
+		t.Fatalf("expected fail-closed gateway status error, got %v", err)
 	}
 }
 
