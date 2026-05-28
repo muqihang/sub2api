@@ -53,7 +53,7 @@ import {
   type AppId
 } from "./lib/appsRegistry";
 import { filterCatalogModels, modelIsCompatible, modelPriceRows, providerOptions, summarizeCatalog } from "./lib/modelCatalog";
-import { sidecar, SidecarError } from "./lib/sidecar";
+import { sidecar, sidecarErrorMessage } from "./lib/sidecar";
 import type { CatalogModel, DeepLinkRoute, DesktopStatus, ModelFilter } from "./lib/types";
 
 type PageId =
@@ -178,7 +178,7 @@ function App() {
       setLastError("");
     } catch (error) {
       if (!options.quiet) {
-        setLastError(error instanceof SidecarError ? `${error.code}: ${error.message}` : String(error));
+        setLastError(sidecarErrorMessage(error));
       }
     } finally {
       if (!options.quiet) setIsBusy(false);
@@ -196,7 +196,7 @@ function App() {
       options.onSuccess?.(result);
       await refreshStatus({ quiet: true });
     } catch (error) {
-      const message = error instanceof SidecarError ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
+      const message = sidecarErrorMessage(error);
       setLastError(message);
       options.onError?.(error);
     } finally {
@@ -215,7 +215,7 @@ function App() {
         setWizardActionMessage(t.wizard.authorizeSuccess);
       },
       onError: (error) => {
-        const message = error instanceof SidecarError ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
+        const message = sidecarErrorMessage(error);
         setWizardActionState("error");
         setWizardActionMessage(`${t.wizard.authorizeFailed}: ${message}`);
       }

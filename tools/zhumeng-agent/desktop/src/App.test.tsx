@@ -49,6 +49,16 @@ vi.mock("./lib/sidecar", () => ({
     code = "mock_error";
     status = "mock_error";
   },
+  sidecarErrorMessage: (error: unknown) => {
+    if (error instanceof Error) return error.message;
+    if (error && typeof error === "object") {
+      const envelope = error as { status?: string; error?: { code?: string; message?: string } };
+      const code = envelope.error?.code || envelope.status || "sidecar_error";
+      const message = envelope.error?.message || envelope.status || "sidecar command failed";
+      return `${code}: ${message}`;
+    }
+    return String(error);
+  },
   sidecar: sidecarHoisted
 }));
 

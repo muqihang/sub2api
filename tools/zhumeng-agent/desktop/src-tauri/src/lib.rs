@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::thread;
@@ -50,8 +51,28 @@ fn validate_sidecar_request(request: &SidecarRequest) -> Result<(), SidecarFailu
 }
 
 fn run_sidecar_command(request: SidecarRequest) -> Result<Value, SidecarFailure> {
-    let executable = env::var("ZHUMENG_AGENT_BIN").unwrap_or_else(|_| "zhumeng-agent".to_string());
+    let executable = resolve_sidecar_executable();
     run_sidecar_command_with_executable(&executable, request)
+}
+
+fn resolve_sidecar_executable() -> String {
+    if let Ok(value) = env::var("ZHUMENG_AGENT_BIN") {
+        if !value.trim().is_empty() {
+            return value;
+        }
+    }
+    for candidate in bundled_development_sidecar_candidates() {
+        if candidate.is_file() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+    "zhumeng-agent".to_string()
+}
+
+fn bundled_development_sidecar_candidates() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/tools/zhumeng-agent/.venv/bin/zhumeng-agent"),
+    ]
 }
 
 fn run_sidecar_command_with_executable(

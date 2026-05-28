@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createSidecarClient } from "./sidecar";
+import { createSidecarClient, sidecarErrorMessage } from "./sidecar";
 
 describe("sidecar client", () => {
   it("calls the stable desktop command family", async () => {
@@ -48,5 +48,30 @@ describe("sidecar client", () => {
       code: "not_configured",
       message: "missing state"
     });
+  });
+
+  it("normalizes rejected Tauri object errors into readable sidecar errors", async () => {
+    const client = createSidecarClient(async () => {
+      throw {
+        ok: false,
+        status: "error",
+        error: { code: "spawn_failed", message: "failed to run zhumeng-agent: No such file or directory" }
+      };
+    });
+
+    await expect(client.status()).rejects.toMatchObject({
+      code: "spawn_failed",
+      message: "failed to run zhumeng-agent: No such file or directory"
+    });
+  });
+
+  it("does not render object errors as [object Object]", () => {
+    const message = sidecarErrorMessage({
+      ok: false,
+      status: "error",
+      error: { code: "spawn_failed", message: "failed to run zhumeng-agent" }
+    });
+
+    expect(message).toBe("spawn_failed: failed to run zhumeng-agent");
   });
 });

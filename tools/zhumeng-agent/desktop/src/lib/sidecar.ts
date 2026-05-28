@@ -29,9 +29,43 @@ export class SidecarError extends Error {
   }
 }
 
+function isSidecarEnvelope(value: unknown): value is SidecarEnvelope {
+  return !!value && typeof value === "object" && "ok" in value && "status" in value;
+}
+
+export function sidecarErrorMessage(error: unknown): string {
+  if (error instanceof SidecarError) {
+    return `${error.code}: ${error.message}`;
+  }
+  if (isSidecarEnvelope(error)) {
+    const code = error.error?.code || error.status || "sidecar_error";
+    const message = error.error?.message || error.status || "sidecar command failed";
+    return `${code}: ${message}`;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "sidecar command failed";
+  }
+}
+
 export function createSidecarClient(invokeFn: InvokeFn = tauriInvoke as InvokeFn): SidecarClient {
   const run = async <T>(args: string[], timeoutMs = 5000): Promise<T> => {
-    const envelope = await invokeFn("run_sidecar", { args, timeoutMs });
+    let envelope: SidecarEnvelope<unknown>;
+    try {
+      envelope = await invokeFn("run_sidecar", { args, timeoutMs });
+    } catch (error) {
+      if (isSidecarEnvelope(error)) {
+        throw new SidecarError(error);
+      }
+      throw error;
+    }
     if (!envelope.ok) {
       throw new SidecarError(envelope);
     }
