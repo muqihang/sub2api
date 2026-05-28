@@ -5292,6 +5292,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	setHeaderRaw(req.Header, "x-api-key", token)
 	if s.shouldUseCCGatewayAnthropic(account) {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
 	if getHeaderRaw(req.Header, "content-type") == "" {
@@ -6163,6 +6164,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
 	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖
@@ -9208,6 +9210,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	req.Header.Set("x-api-key", token)
 	if s.shouldUseCCGatewayAnthropic(account) {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
 	if req.Header.Get("content-type") == "" {
@@ -9366,6 +9369,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
 	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖

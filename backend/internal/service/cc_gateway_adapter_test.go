@@ -97,7 +97,8 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	req, err := svc.buildUpstreamRequest(context.Background(), ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false)
+	ctx := SetClaudeCodeVersion(context.Background(), "2.1.150")
+	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", req.URL.String())
@@ -111,6 +112,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 	require.Equal(t, "acct-uuid", getHeaderRaw(req.Header, "x-cc-account-uuid"))
 	require.Equal(t, "org-uuid", getHeaderRaw(req.Header, "x-cc-organization-uuid"))
 	require.Equal(t, "bucket-a", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
+	require.Equal(t, "2.1.150", getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Equal(t, "", getHeaderRaw(req.Header, "x-stainless-os"))
 	require.NotContains(t, readRequestBody(t, req), "rewritten-device-id")
 }

@@ -22,8 +22,10 @@ const (
 	ccGatewayOrganizationUUIDHeader = "x-cc-organization-uuid"
 	ccGatewayProjectIDHeader        = "x-cc-project-id"
 	ccGatewayEgressBucketHeader     = "x-cc-egress-bucket"
+	ccGatewayPolicyVersionHeader    = "x-cc-policy-version"
 
 	ccGatewayExtraEgressBucket       = "cc_gateway_egress_bucket"
+	ccGatewayExtraPolicyVersion      = "cc_gateway_policy_version"
 	openAIGatewayExtraEgressFallback = "openai_gateway_egress_bucket"
 )
 
@@ -119,6 +121,21 @@ func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, accou
 		setHeaderRaw(req.Header, ccGatewayOrganizationUUIDHeader, orgUUID)
 	}
 	setHeaderRaw(req.Header, ccGatewayEgressBucketHeader, resolveCCGatewayEgressBucket(account, ccg.DefaultEgressBucket))
+}
+
+func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request, account *Account) {
+	if req == nil {
+		return
+	}
+	if version := strings.TrimSpace(GetClaudeCodeVersion(ctx)); version != "" {
+		setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, version)
+		return
+	}
+	if account != nil {
+		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" {
+			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, version)
+		}
+	}
 }
 
 func ccGatewayAccountEmail(account *Account) string {
