@@ -27,6 +27,7 @@ def restore_cli_defaults():
             "restore_codex_enhancements",
             "resolve_codex_home",
             "codex_doctor_report",
+            "codex_app_is_running",
         )
         if hasattr(cli, name)
     }
@@ -130,6 +131,46 @@ def test_desktop_setup_returns_json_envelope_without_tokens(capsys, tmp_path: Pa
     assert store.payload["config_hash_after"]
     assert store.payload["auth_hash_after"]
     assert store.payload["catalog_hash_after"]
+
+
+def test_desktop_setup_marks_restart_required_when_codex_is_running(capsys, tmp_path: Path):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            return {
+                "access_token": "access-token-secret",
+                "refresh_token": "refresh-token-secret",
+                "managed_session_id": "sess-1",
+                "expires_at": "2026-05-11T12:00:00Z",
+                "device_id": 9,
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "https://example.com",
+                "config_profile": {"model_provider": "zhumeng-codex"},
+            }
+
+        def list_codex_models(self, **kwargs):
+            return {"models": [{"slug": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro"}]}
+
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.config_path.write_text("model_provider = \"old\"\n", encoding="utf-8")
+    store = MemoryStore()
+    cli.default_http_client = lambda server: FakeClient()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: manager
+    cli.generate_loopback_secret = lambda: "loopback-secret-secret"
+    cli.choose_local_proxy_port = lambda preferred=None: 18081
+    cli.ensure_proxy_running = lambda store: 123
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.codex_app_is_running = lambda app_path: True
+
+    exit_code = main([
+        "desktop", "setup", "--client", "codex", "--code", "one-time-code", "--server", "https://example.com", "--json"
+    ])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["data"]["adapters"]["codex"]["restart_required"] is True
+    assert store.payload["restart_required"] is True
 
 
 def test_desktop_setup_failure_is_json_without_traceback(capsys):
@@ -244,6 +285,47 @@ def test_desktop_reauth_preserves_restore_baseline_and_proxy(capsys, tmp_path: P
     assert store.payload["loopback_secret"] == "existing-loopback-secret"
     assert store.payload["prior_auth_json"] == "original-auth"
     assert store.payload["prior_catalog_json"] == "original-catalog"
+
+
+def test_desktop_reauth_marks_restart_required_when_codex_is_running(capsys, tmp_path: Path):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            return {
+                "access_token": "fresh-access-token",
+                "refresh_token": "fresh-refresh-token",
+                "managed_session_id": "sess-fresh",
+                "device_id": 9,
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "https://example.com",
+                "config_profile": {"model_provider": "zhumeng-codex"},
+            }
+
+        def list_codex_models(self, **kwargs):
+            return {"models": []}
+
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.config_path.write_text("model_provider = \"old\"\n", encoding="utf-8")
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "proxy_port": 18081,
+        "loopback_secret": "existing-loopback-secret",
+        "config_profile": {"model_provider": "zhumeng-codex"},
+    })
+    cli.default_state_store = lambda: store
+    cli.default_http_client = lambda server: FakeClient()
+    cli.default_config_manager = lambda: manager
+    cli.ensure_proxy_running = lambda store: 123
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.codex_app_is_running = lambda app_path: True
+
+    exit_code = main(["desktop", "reauth", "--client", "codex", "--code", "new-code", "--server", "https://example.com", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["data"]["adapters"]["codex"]["restart_required"] is True
+    assert store.payload["restart_required"] is True
 
 
 def test_desktop_invalid_args_stdout_json_and_no_stderr(capsys):

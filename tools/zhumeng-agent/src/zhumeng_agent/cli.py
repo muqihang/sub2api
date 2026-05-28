@@ -433,6 +433,13 @@ def file_sha256(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def codex_restart_required_after_config_change(config_hash_before: str | None, config_hash_after: str | None) -> bool:
+    if not config_hash_before or not config_hash_after or config_hash_before == config_hash_after:
+        return False
+    app_path = default_codex_app_path()
+    return bool(app_path is not None and codex_app_is_running(app_path))
+
+
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
@@ -465,6 +472,7 @@ def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, 
     config_hash_after = file_sha256(config_manager.config_path)
     auth_hash_after = file_sha256(config_manager.auth_path)
     catalog_hash_after = file_sha256(plan.model_catalog_path)
+    restart_required = codex_restart_required_after_config_change(config_hash_before, config_hash_after)
     store = default_state_store()
     state_payload = {
         "client": client_name,
@@ -490,6 +498,7 @@ def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, 
         "catalog_hash_after": catalog_hash_after,
         "desktop_capture_enabled": False,
         "model_catalog_meta": model_catalog_meta,
+        "restart_required": restart_required,
         "status": "configured",
     }
     store.write(state_payload)
@@ -585,7 +594,9 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
     model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, setup_state)
     proxy_port = int(current.get("proxy_port", choose_local_proxy_port()))
     loopback_secret = str(current.get("loopback_secret") or generate_loopback_secret())
+    config_hash_before = file_sha256(config_manager.config_path)
     config_manager.repair(profile, proxy_port, loopback_secret, model_catalog, trusted_project_paths=current_trusted_project_paths())
+    config_hash_after = file_sha256(config_manager.config_path)
     patch = {
         "client": client_name,
         "server_base_url": exchanged["server_base_url"],
@@ -598,9 +609,10 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
         "proxy_port": proxy_port,
         "loopback_secret": loopback_secret,
         "model_catalog_meta": model_catalog_meta,
-        "config_hash_after": file_sha256(config_manager.config_path),
+        "config_hash_after": config_hash_after,
         "auth_hash_after": file_sha256(config_manager.auth_path),
         "catalog_hash_after": file_sha256(config_manager.catalog_path_for_profile(profile)),
+        "restart_required": codex_restart_required_after_config_change(config_hash_before, config_hash_after),
         "status": "configured",
     }
     updated = store.update(patch)
