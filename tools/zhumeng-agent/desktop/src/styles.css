@@ -746,6 +746,39 @@ a {
   margin-top: 14px;
 }
 
+.wizard-action-feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-sub);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wizard-action-feedback.running {
+  border-color: rgba(79, 70, 229, 0.28);
+  color: var(--brand);
+}
+
+.wizard-action-feedback.success {
+  border-color: rgba(31, 157, 106, 0.28);
+  color: var(--ok);
+}
+
+.wizard-action-feedback.error {
+  border-color: rgba(193, 88, 67, 0.28);
+  color: var(--danger);
+}
+
+.wizard-action-feedback svg {
+  flex: 0 0 auto;
+}
+
 .check-row,
 .enhancement-row {
   display: flex;

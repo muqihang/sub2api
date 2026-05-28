@@ -138,7 +138,10 @@ const zh = {
     doneHint: "全部就绪，可以在 Codex App 中开始使用。",
     statusDone: "已完成",
     statusPending: "待完成",
-    needAuthCode: "还没有授权码？"
+    needAuthCode: "还没有授权码？",
+    authorizing: "正在执行授权",
+    authorizeSuccess: "授权已写入，正在刷新本机状态",
+    authorizeFailed: "授权失败"
   },
   catalog: {
     title: "模型目录",
@@ -392,7 +395,10 @@ export const translations: Record<Language, Translation> = {
       doneHint: "All set. Open Codex App and start chatting.",
       statusDone: "Done",
       statusPending: "Pending",
-      needAuthCode: "Need an auth code?"
+      needAuthCode: "Need an auth code?",
+      authorizing: "Authorizing",
+      authorizeSuccess: "Authorization saved. Refreshing local status",
+      authorizeFailed: "Authorization failed"
     },
     catalog: {
       title: "Model catalog",

@@ -31,6 +31,7 @@ const deepLinkHoisted = vi.hoisted(() => ({
 const initialDeepLinks = deepLinkHoisted.initial;
 const sidecarStatusMock = sidecarHoisted.status;
 const openCodexMock = sidecarHoisted.openCodex;
+const sidecarSetupMock = sidecarHoisted.setup;
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
   getCurrent: vi.fn(async () => deepLinkHoisted.initial.current),
@@ -59,6 +60,7 @@ describe("App visual shell", () => {
     initialDeepLinks.current = null;
     sidecarStatusMock.mockClear();
     openCodexMock.mockClear();
+    sidecarSetupMock.mockClear();
     sidecarStatusMock.mockImplementation(async () => ({
       status: "configured",
       global_status: "configured",
@@ -219,6 +221,44 @@ describe("App visual shell", () => {
     expect(screen.queryByTestId("wizard-coming-soon")).not.toBeInTheDocument();
     // The default overview page should still be visible.
     expect(screen.getByRole("button", { name: /概览/ })).toHaveClass("active");
+  });
+
+  it("shows progress and success feedback when executing web authorization", async () => {
+    initialDeepLinks.current = ["zhumeng-agent://setup?client=codex&code=abc&server=http%3A%2F%2F127.0.0.1%3A3080"];
+    let resolveSetup: ((value: Awaited<ReturnType<typeof sidecarSetupMock>>) => void) | undefined;
+    sidecarSetupMock.mockImplementation(() => new Promise((resolve) => {
+      resolveSetup = resolve;
+    }));
+    const configuredStatus = {
+      status: "configured",
+      global_status: "configured",
+      proxy: { status: "configured", port: 64645 },
+      authorization: { status: "configured", device_id: 18 },
+      adapters: { codex: { status: "configured", enhancements: {}, restart_required: false } },
+      model_catalog: { model_count: 14, models: [] }
+    };
+
+    render(<App />);
+
+    const authorizeButton = await screen.findByRole("button", { name: /执行授权/ });
+    fireEvent.click(authorizeButton);
+
+    expect(await screen.findByTestId("wizard-action-feedback")).toHaveTextContent("正在执行授权");
+    await waitFor(() => expect(sidecarSetupMock).toHaveBeenCalledWith("codex", "abc", "http://127.0.0.1:3080"));
+    resolveSetup?.(configuredStatus);
+    expect(await screen.findByTestId("wizard-action-feedback")).toHaveTextContent("授权已写入");
+  });
+
+  it("shows an inline error when web authorization fails", async () => {
+    initialDeepLinks.current = ["zhumeng-agent://setup?client=codex&code=used&server=http%3A%2F%2F127.0.0.1%3A3080"];
+    sidecarSetupMock.mockRejectedValue(new Error("setup grant is invalid, expired, or already used"));
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /执行授权/ }));
+
+    expect(await screen.findByTestId("wizard-action-feedback")).toHaveTextContent("授权失败");
+    expect(screen.getByTestId("wizard-action-feedback")).toHaveTextContent("setup grant is invalid");
   });
 
   it("apps hub keyboard activation enters the detail without triggering pending repair shortcut", async () => {

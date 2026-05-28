@@ -5,6 +5,7 @@ import { useCodexEntryStore } from '@/stores/codexEntry'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import CodexWizard from './components/CodexWizard.vue'
 import CodexConsole from './components/CodexConsole.vue'
+import DiagnoseDialog from './components/DiagnoseDialog.vue'
 import StatusPill from './components/StatusPill.vue'
 
 const { t } = useI18n()
@@ -106,6 +107,10 @@ async function pollSummaryOnce() {
       </div>
 
       <template v-else>
+        <div v-if="store.error" class="inline-error" data-testid="codex-inline-error">
+          {{ store.error }}
+        </div>
+
         <CodexWizard
           v-if="store.pageState !== 'console'"
           data-testid="codex-wizard"
@@ -117,6 +122,11 @@ async function pollSummaryOnce() {
         />
       </template>
     </div>
+    <DiagnoseDialog
+      v-if="store.lastDiagnose"
+      :report="store.lastDiagnose"
+      @close="store.clearDiagnose()"
+    />
     </div>
   </AppLayout>
 </template>
@@ -221,6 +231,17 @@ async function pollSummaryOnce() {
 .codex-loading,
 .codex-error {
   color: var(--ink-2);
+}
+
+.inline-error {
+  margin: 18px 22px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 @media (max-width: 900px) {

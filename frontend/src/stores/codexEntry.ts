@@ -60,6 +60,7 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
   const lastDiagnose = ref<CodexDiagnoseReport | null>(null)
   const diagnosing = ref(false)
   const pendingSetupSessionLaunch = ref<Pick<CodexSetupSessionDTO, 'id' | 'launch_url' | 'cli_command' | 'expires_at'> | null>(null)
+  const forceCredentialStep = ref(false)
 
   const supportingDataLoading = ref(false)
   const supportingDataLoaded = ref(false)
@@ -72,8 +73,18 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
   const credentialLabel = ref('我的 MacBook')
 
   // ─── Derived state (three-layer model) ───
-  const pageState = computed<CodexPageState>(() => summary.value?.page_state ?? 'onboarding_credential')
-  const wizardStep = computed<CodexWizardStep>(() => summary.value?.wizard_step ?? null)
+  const pageState = computed<CodexPageState>(() => {
+    if (forceCredentialStep.value && summary.value?.page_state !== 'console') {
+      return 'onboarding_credential'
+    }
+    return summary.value?.page_state ?? 'onboarding_credential'
+  })
+  const wizardStep = computed<CodexWizardStep>(() => {
+    if (forceCredentialStep.value && summary.value?.page_state !== 'console') {
+      return 1
+    }
+    return summary.value?.wizard_step ?? null
+  })
   const setupSession = computed<CodexSetupSessionDTO | null>(() => summary.value?.setup_session ?? null)
   const setupSessionPresentation = computed<CodexSetupSessionPresentation | null>(() => summary.value?.setup_session_presentation ?? null)
   const devices = computed<CodexDeviceDTO[]>(() => summary.value?.devices ?? [])
@@ -105,6 +116,9 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
     }
     try {
       summary.value = mergePendingSetupSessionLaunch(await getCodexSummary())
+      if (summary.value.page_state === 'console') {
+        forceCredentialStep.value = false
+      }
       if (summary.value?.attachment_mode) {
         selectedAttachmentMode.value = summary.value.attachment_mode
       }
@@ -181,6 +195,7 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
         reuse_api_key_id: selectedAttachmentMode.value === 'reused_key' ? selectedReuseKeyId.value! : undefined,
       })
       rememberSetupSessionLaunch(created.setup_session)
+      forceCredentialStep.value = false
       await loadSummary()
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to create setup session'
@@ -231,6 +246,7 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
   async function diagnoseSetupSession() {
     if (!setupSession.value) return
     diagnosing.value = true
+    error.value = null
     try {
       lastDiagnose.value = await diagnoseCodex({ setup_session_id: setupSession.value.id })
     } catch (e: any) {
@@ -242,6 +258,7 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
 
   async function diagnoseDevice(deviceId: number) {
     diagnosing.value = true
+    error.value = null
     try {
       lastDiagnose.value = await diagnoseCodex({ device_id: deviceId })
     } catch (e: any) {
@@ -321,6 +338,16 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
     }
   }
 
+  function returnToCredentialStep() {
+    forceCredentialStep.value = true
+    lastDiagnose.value = null
+    error.value = null
+  }
+
+  function clearDiagnose() {
+    lastDiagnose.value = null
+  }
+
   function mergePendingSetupSessionLaunch(next: CodexEntrySummary): CodexEntrySummary {
     const pending = pendingSetupSessionLaunch.value
     const session = next.setup_session
@@ -382,6 +409,8 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
     regenerateSetupSession,
     diagnoseSetupSession,
     diagnoseDevice,
+    returnToCredentialStep,
+    clearDiagnose,
     resyncDevice,
     repairDevice,
     reAttachDevice,

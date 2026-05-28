@@ -185,11 +185,28 @@ const selectedReuseKey = computed(() =>
             </div>
 
             <div class="secondary-actions">
-              <button class="btn btn-secondary" @click="store.regenerateSetupSession()" data-testid="regenerate-btn">
+              <button
+                class="btn btn-secondary"
+                :disabled="store.loading"
+                @click="store.regenerateSetupSession()"
+                data-testid="regenerate-btn"
+              >
                 {{ t('codex.wizard.step2.regenerate') }}
               </button>
-              <button class="btn btn-secondary" @click="store.diagnoseSetupSession()" data-testid="diagnose-session-btn">
-                {{ t('codex.wizard.step2.diagnose') }}
+              <button
+                class="btn btn-secondary"
+                :disabled="store.diagnosing"
+                @click="store.diagnoseSetupSession()"
+                data-testid="diagnose-session-btn"
+              >
+                {{ store.diagnosing ? t('codex.wizard.step2.diagnosing') : t('codex.wizard.step2.diagnose') }}
+              </button>
+              <button
+                class="btn btn-ghost"
+                @click="store.returnToCredentialStep()"
+                data-testid="back-to-credential-btn"
+              >
+                {{ t('codex.wizard.step2.backToCredential') }}
               </button>
             </div>
           </section>
@@ -240,8 +257,13 @@ const selectedReuseKey = computed(() =>
             >
               {{ t('codex.wizard.step3.refresh') }}
             </button>
-            <button class="btn btn-secondary" @click="store.diagnoseSetupSession()" data-testid="diagnose-verify-btn">
-              {{ t('codex.wizard.step3.diagnose') }}
+            <button
+              class="btn btn-secondary"
+              :disabled="store.diagnosing"
+              @click="store.diagnoseSetupSession()"
+              data-testid="diagnose-verify-btn"
+            >
+              {{ store.diagnosing ? t('codex.wizard.step3.diagnosing') : t('codex.wizard.step3.diagnose') }}
             </button>
             <button class="btn btn-secondary" @click="store.openLocal()" data-testid="reopen-local-btn">
               {{ store.setupSession?.launch_url ? t('codex.wizard.step3.reopenLocal') : t('codex.wizard.step3.regenerateAndReopen') }}

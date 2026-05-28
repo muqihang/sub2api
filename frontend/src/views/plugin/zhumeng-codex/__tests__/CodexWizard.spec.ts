@@ -6,6 +6,7 @@ import CodexEntryView from '../CodexEntryView.vue'
 
 const mockGetCodexSummary = vi.fn()
 const mockCreateCodexSetupSession = vi.fn()
+const mockDiagnoseCodex = vi.fn()
 
 vi.mock('@/components/layout/AppLayout.vue', () => ({
   default: {
@@ -49,7 +50,7 @@ vi.mock('@/api/zhumengAgent', () => ({
   getCodexSummary: (...args: any[]) => mockGetCodexSummary(...args),
   createCodexSetupSession: (...args: any[]) => mockCreateCodexSetupSession(...args),
   regenerateCodexSetupSession: vi.fn().mockResolvedValue({}),
-  diagnoseCodex: vi.fn().mockResolvedValue({ ok: true, target_kind: 'setup_session', checks: [] }),
+  diagnoseCodex: (...args: any[]) => mockDiagnoseCodex(...args),
   resyncCodexDevice: vi.fn().mockResolvedValue({ device_id: 1, accepted: true }),
   repairCodexDevice: vi.fn().mockResolvedValue({ device_id: 1, accepted: true }),
   reattachCodexDevice: vi.fn().mockResolvedValue({ device_id: 1, accepted: true }),
@@ -62,6 +63,7 @@ describe('CodexEntryView + CodexWizard', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.useRealTimers()
+    mockDiagnoseCodex.mockResolvedValue({ ok: true, target_kind: 'setup_session', checks: [] })
   })
 
   it('renders inside the main app layout instead of as a standalone page', async () => {
@@ -281,6 +283,74 @@ describe('CodexEntryView + CodexWizard', () => {
     expect(wrapper.find('[data-testid="attach-launch-panel"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="attach-help-panel"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="attach-cli-block"]').exists()).toBe(true)
+  })
+
+  it('opens a visible diagnose dialog from the attach step', async () => {
+    mockGetCodexSummary.mockResolvedValue({
+      page_state: 'onboarding_attach',
+      wizard_step: 2,
+      attachment_mode: 'reused_key',
+      setup_session_presentation: 'wizard',
+      setup_session: {
+        id: 'sess-1',
+        credential_label: 'Key',
+        attachment_mode: 'reused_key',
+        reuse_api_key_id: 42,
+        launch_url: 'zhumeng-agent://setup?code=abc',
+        cli_command: 'codex auth --code abc --server https://example.com',
+        expires_at: '2026-01-01T00:00:00Z',
+        first_seen_at: null,
+        first_catalog_synced_at: null,
+      },
+      focus_device_id: null,
+      devices: [],
+    })
+    mockDiagnoseCodex.mockResolvedValue({
+      ok: false,
+      target_kind: 'setup_session',
+      checks: [{ name: 'device_heartbeat', status: 'fail', hint: '尚未收到设备心跳' }],
+    })
+
+    const wrapper = mount(CodexEntryView)
+    await flushPromises()
+    await wrapper.find('[data-testid="diagnose-session-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(mockDiagnoseCodex).toHaveBeenCalledWith({ setup_session_id: 'sess-1' })
+    expect(wrapper.find('[data-testid="diagnose-dialog"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('尚未收到设备心跳')
+  })
+
+  it('lets the user return from an old pending attach session to credential selection', async () => {
+    mockGetCodexSummary.mockResolvedValue({
+      page_state: 'onboarding_attach',
+      wizard_step: 2,
+      attachment_mode: 'reused_key',
+      setup_session_presentation: 'wizard',
+      setup_session: {
+        id: 'sess-1',
+        credential_label: 'Key',
+        attachment_mode: 'reused_key',
+        reuse_api_key_id: 42,
+        launch_url: null,
+        cli_command: null,
+        expires_at: '2026-01-01T00:00:00Z',
+        first_seen_at: null,
+        first_catalog_synced_at: null,
+      },
+      focus_device_id: null,
+      devices: [],
+    })
+
+    const wrapper = mount(CodexEntryView)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="wizard-step-2"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="back-to-credential-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="wizard-step-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="start-setup-btn"]').exists()).toBe(true)
   })
 
   it('shows verify step as a real waiting panel around first catalog sync', async () => {

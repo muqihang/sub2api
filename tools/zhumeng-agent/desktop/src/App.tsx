@@ -89,6 +89,8 @@ function App() {
   const [lastError, setLastError] = useState<string>("");
   const [isBusy, setIsBusy] = useState(false);
   const [deepLink, setDeepLink] = useState<DeepLinkRoute | null>(null);
+  const [wizardActionState, setWizardActionState] = useState<"idle" | "running" | "success" | "error">("idle");
+  const [wizardActionMessage, setWizardActionMessage] = useState("");
   const [theme, setTheme] = useState<"system" | "dark" | "light">("system");
   const [language, setLanguage] = useState<Language>(() => readInitialLanguage());
 
@@ -120,6 +122,8 @@ function App() {
             return;
           }
           setDeepLink(parsed);
+          setWizardActionState("idle");
+          setWizardActionMessage("");
           const target = parsed.app;
           setSelectedAppId(target);
           setPage("app-detail");
@@ -132,6 +136,8 @@ function App() {
             return;
           }
           setDeepLink(parsed);
+          setWizardActionState("idle");
+          setWizardActionMessage("");
           const target = parsed.client;
           setWizardAppId(target);
           setPage("wizard");
@@ -179,7 +185,7 @@ function App() {
     }
   }
 
-  async function runAction<T>(action: () => Promise<T>) {
+  async function runAction<T>(action: () => Promise<T>, options: { onSuccess?: (result: T) => void; onError?: (error: unknown) => void } = {}) {
     setIsBusy(true);
     setLastError("");
     try {
@@ -187,9 +193,12 @@ function App() {
       if (result && typeof result === "object" && "global_status" in result) {
         setStatus(result as DesktopStatus);
       }
+      options.onSuccess?.(result);
       await refreshStatus({ quiet: true });
     } catch (error) {
-      setLastError(error instanceof SidecarError ? `${error.code}: ${error.message}` : String(error));
+      const message = error instanceof SidecarError ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
+      setLastError(message);
+      options.onError?.(error);
     } finally {
       setIsBusy(false);
     }
@@ -198,7 +207,19 @@ function App() {
   async function handleDeepLinkAuth() {
     if (!deepLink || deepLink.action === "open") return;
     const action = deepLink.action === "reauth" ? sidecar.reauth : sidecar.setup;
-    await runAction(() => action(deepLink.client, deepLink.code, deepLink.server));
+    setWizardActionState("running");
+    setWizardActionMessage(t.wizard.authorizing);
+    await runAction(() => action(deepLink.client, deepLink.code, deepLink.server), {
+      onSuccess: () => {
+        setWizardActionState("success");
+        setWizardActionMessage(t.wizard.authorizeSuccess);
+      },
+      onError: (error) => {
+        const message = error instanceof SidecarError ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
+        setWizardActionState("error");
+        setWizardActionMessage(`${t.wizard.authorizeFailed}: ${message}`);
+      }
+    });
   }
 
   function openAppDetail(id: AppId) {
@@ -301,6 +322,9 @@ function App() {
                 deepLink={deepLink}
                 status={status}
                 app={app}
+                busy={isBusy}
+                actionState={wizardActionState}
+                actionMessage={wizardActionMessage}
                 onPickApp={setWizardAppId}
                 onAuthorize={() => void handleDeepLinkAuth()}
                 onPatch={() => runAction(() => sidecar.patchEnhancements(targetPath))}
@@ -882,13 +906,13 @@ function ModelCatalogPage({ t, language, models, onSyncModels }: { t: Translatio
   );
 }
 
-function SetupWizardPage({ t, deepLink, status, app, onPickApp, onAuthorize, onPatch }: { t: Translation; deepLink: DeepLinkRoute | null; status: DesktopStatus; app: AppDefinition; onPickApp: (id: AppId) => void; onAuthorize: () => void; onPatch: () => void }) {
+function SetupWizardPage({ t, deepLink, status, app, busy, actionState, actionMessage, onPickApp, onAuthorize, onPatch }: { t: Translation; deepLink: DeepLinkRoute | null; status: DesktopStatus; app: AppDefinition; busy: boolean; actionState: "idle" | "running" | "success" | "error"; actionMessage: string; onPickApp: (id: AppId) => void; onAuthorize: () => void; onPatch: () => void }) {
   return (
     <section className="content" data-testid="setup-wizard-page">
       <PageHeader title={t.wizard.title} subtitle={t.wizard.subtitle} />
       <WizardAppPicker t={t} app={app} onPickApp={onPickApp} />
       {app.wizardKind === "codex" ? (
-        <CodexWizard t={t} deepLink={deepLink} status={status} onAuthorize={onAuthorize} onPatch={onPatch} />
+        <CodexWizard t={t} deepLink={deepLink} status={status} busy={busy} actionState={actionState} actionMessage={actionMessage} onAuthorize={onAuthorize} onPatch={onPatch} />
       ) : (
         <UnsupportedWizard t={t} app={app} />
       )}
@@ -916,7 +940,7 @@ function WizardAppPicker({ t, app, onPickApp }: { t: Translation; app: AppDefini
   );
 }
 
-function CodexWizard({ t, deepLink, status, onAuthorize, onPatch }: { t: Translation; deepLink: DeepLinkRoute | null; status: DesktopStatus; onAuthorize: () => void; onPatch: () => void }) {
+function CodexWizard({ t, deepLink, status, busy, actionState, actionMessage, onAuthorize, onPatch }: { t: Translation; deepLink: DeepLinkRoute | null; status: DesktopStatus; busy: boolean; actionState: "idle" | "running" | "success" | "error"; actionMessage: string; onAuthorize: () => void; onPatch: () => void }) {
   const steps: Array<{ label: string; hint: string; state: "done" | "pending" }> = [
     { label: t.wizard.receivedAuth, hint: t.wizard.receivedAuthHint, state: deepLink ? "done" : "pending" },
     { label: t.wizard.detectCodex, hint: t.wizard.detectCodexHint, state: status.adapters?.codex?.status && status.adapters.codex.status !== "not_configured" ? "done" : "pending" },
@@ -946,15 +970,21 @@ function CodexWizard({ t, deepLink, status, onAuthorize, onPatch }: { t: Transla
         ))}
       </div>
       <div className="action-row">
-        <button className="primary-action" disabled={!deepLink || deepLink.action === "open"} onClick={onAuthorize}>
+        <button className="primary-action" disabled={busy || !deepLink || deepLink.action === "open"} onClick={onAuthorize}>
           <KeyRound size={14} />
-          {t.actions.authorize}
+          {actionState === "running" ? t.wizard.authorizing : t.actions.authorize}
         </button>
-        <button className="secondary-action" onClick={onPatch}>
+        <button className="secondary-action" disabled={busy} onClick={onPatch}>
           <PlugZap size={14} />
           {t.actions.enableEnhancements}
         </button>
       </div>
+      {actionMessage ? (
+        <div className={`wizard-action-feedback ${actionState}`} data-testid="wizard-action-feedback">
+          {actionState === "running" ? <RefreshCw size={14} className="spin" /> : actionState === "success" ? <BadgeCheck size={14} /> : <AlertTriangle size={14} />}
+          <span>{actionMessage}</span>
+        </div>
+      ) : null}
       <div className="wizard-help">
         <Info size={14} />
         <span>{t.wizard.needAuthCode}</span>
