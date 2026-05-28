@@ -143,6 +143,9 @@ docs/*
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
+!docs/anti-ban/
+docs/anti-ban/*
+!docs/anti-ban/40-formal-pool-new-account-hard-gates.md
 !docs/brand/
 !docs/brand/zhumeng-intent-brief.md
 .serena/
