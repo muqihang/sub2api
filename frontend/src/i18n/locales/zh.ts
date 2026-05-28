@@ -2812,6 +2812,7 @@ export default {
         weight: '权重',
         status: '状态',
         schedulable: '调度',
+        onboardingStage: '上号阶段',
         todayStats: '今日统计',
         groups: '分组',
         usageWindows: '用量窗口',
@@ -2819,6 +2820,23 @@ export default {
         lastUsed: '最近使用',
         expiresAt: '过期时间',
         actions: '操作'
+      },
+      formalPool: {
+        effectiveBlocked: 'DB 调度已开，但正式号池阶段门禁仍阻止调度',
+        requested: '目标',
+        effective: '生效',
+        healthcheck: '健康检查',
+        riskEvent: '风险事件',
+        stage: {
+          imported: '已导入',
+          refreshed: '已刷新',
+          runtime_registered: '已注册运行时',
+          healthcheck_passed: '健康检查通过',
+          warming: '预热中',
+          production: '生产',
+          quarantined: '已隔离',
+          legacy_unknown: '旧账号未知'
+        }
       },
       allPrivacyModes: '全部Privacy状态',
       privacyUnset: '未设置',

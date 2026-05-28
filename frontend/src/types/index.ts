@@ -837,6 +837,19 @@ export interface Account {
 
   // Rate limit & scheduling fields
   schedulable: boolean
+  effective_schedulable?: boolean
+  is_formal_pool?: boolean
+  onboarding_stage?: 'imported' | 'refreshed' | 'runtime_registered' | 'healthcheck_passed' | 'warming' | 'production' | 'quarantined' | 'legacy_unknown' | string
+  pool_profile_requested?: 'normal' | 'aggressive' | string | null
+  pool_profile_effective?: 'normal' | 'aggressive' | string | null
+  pool_weight_mode?: 'low' | 'normal' | string | null
+  healthcheck_status?: string | null
+  healthcheck_last_status_code_bucket?: string | null
+  cc_gateway_runtime_registered?: boolean | string | null
+  quarantine_reason?: string | null
+  risk_event_ref?: string | null
+  warming_until?: string | null
+  production_ready?: boolean
   rate_limited_at: string | null
   rate_limit_reset_at: string | null
   overload_until: string | null

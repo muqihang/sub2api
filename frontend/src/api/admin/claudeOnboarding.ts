@@ -58,6 +58,8 @@ export interface FormalPoolSession {
   safe_summary?: Record<string, unknown>
   checks?: FormalPoolCheck[]
   cc_gateway_runtime_registered?: boolean
+  healthcheck_passed?: boolean
+  production_ready?: boolean
 }
 
 export interface FormalPoolAcceptanceResult {
@@ -70,6 +72,13 @@ export interface FormalPoolAcceptanceResult {
   checks: FormalPoolCheck[]
   no_real_messages_request_performed: boolean
   activation_required: boolean
+  status_code_bucket?: string
+  cc_gateway_seen?: boolean
+  raw_capture_present?: boolean
+  raw_capture_ref?: string
+  fallback_detected?: boolean
+  proxy_mismatch?: boolean
+  risk_text_detected?: boolean
 }
 
 export interface FormalPoolSetupTokenCookieRequest {
@@ -128,6 +137,36 @@ export async function activate(id: string): Promise<FormalPoolSession> {
   return data
 }
 
+export async function refreshOnly(id: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/refresh-only`)
+  return data
+}
+
+export async function runtimeRegister(id: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/runtime-register`)
+  return data
+}
+
+export async function healthcheck(id: string): Promise<FormalPoolAcceptanceResult> {
+  const { data } = await apiClient.post<FormalPoolAcceptanceResult>(`/admin/claude-onboarding/sessions/${id}/healthcheck`)
+  return data
+}
+
+export async function startWarming(id: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/start-warming`)
+  return data
+}
+
+export async function promoteProduction(id: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/promote-production`)
+  return data
+}
+
+export async function abort(id: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/abort`)
+  return data
+}
+
 export default {
   createSession,
   getSession,
@@ -137,5 +176,11 @@ export default {
   exchangeCodeAndCreate,
   setupTokenCookieAuthAndCreate,
   runAcceptance,
-  activate
+  activate,
+  refreshOnly,
+  runtimeRegister,
+  healthcheck,
+  startWarming,
+  promoteProduction,
+  abort
 }

@@ -2,8 +2,8 @@
   <div class="mx-auto max-w-5xl space-y-6 p-4 md:p-6">
     <div class="rounded-xl border border-blue-200 bg-blue-50 p-4 text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100">
       <h2 class="text-xl font-semibold">Claude 订阅号池上号向导</h2>
-      <p class="mt-2 text-sm">独立正式号池流程：代理 -> 同出口确认 -> OAuth -> 创建不可调度账号 -> acceptance -> 手动激活。</p>
-      <p class="mt-2 text-xs">Setup Token 登录态只提交给后端换取 inference token，不在页面回显、不进入 Safe summary；不会展示 TLS 指纹、CCH、自定义 base URL、cache TTL、session masking 或硬预算限制。</p>
+      <p class="mt-2 text-sm">独立正式号池流程：代理 -> 同出口确认 -> OAuth/Setup Token -> refresh-only -> runtime 注册 -> 定向健康检查 -> warming -> production。</p>
+      <p class="mt-2 text-xs">Setup Token 登录态只提交给后端换取 inference token，不在页面回显、不进入 Safe summary；健康检查会由管理员显式触发一次极小真实 messages，并强制经过 CC Gateway 与 raw capture。</p>
     </div>
 
     <section class="rounded-xl border bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
@@ -110,16 +110,29 @@
     </section>
 
     <section v-if="session?.account_id" class="rounded-xl border bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-      <h3 class="font-semibold">4. Acceptance 与手动激活</h3>
-      <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">Acceptance 前账号保持不可调度；全部 pass 后仍需手动激活。</p>
-      <button class="btn btn-secondary mt-3" :disabled="busy" @click="acceptanceStep">运行 acceptance（不发真实 messages）</button>
+      <h3 class="font-semibold">4. Refresh / Runtime / Healthcheck / Warming / Production</h3>
+      <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">账号创建后仍不可调度。必须 refresh-only 成功、runtime 注册成功、定向健康检查 200 且确认 CC Gateway/raw capture 后，才可进入 warming；production 需要单独 promote。</p>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button class="btn btn-secondary" :disabled="busy" @click="refreshOnlyStep">Refresh-only</button>
+        <button class="btn btn-secondary" :disabled="busy" @click="runtimeRegisterStep">Runtime 注册</button>
+        <button class="btn btn-secondary" :disabled="busy" @click="healthcheckStep">定向健康检查（一次极小真实 messages）</button>
+        <button class="btn btn-primary" :disabled="busy || acceptance?.status !== 'healthcheck_passed'" @click="startWarmingStep">进入 warming（low weight）</button>
+        <button class="btn btn-primary" :disabled="busy || session.status !== 'warming'" @click="promoteProductionStep">Promote production</button>
+      </div>
+      <div v-if="acceptance" class="mt-3 grid gap-2 rounded bg-gray-50 p-3 text-xs dark:bg-gray-950 md:grid-cols-2">
+        <div>Status: {{ acceptance.status }}</div>
+        <div>Status bucket: {{ acceptance.status_code_bucket || '-' }}</div>
+        <div>CC Gateway seen: {{ acceptance.cc_gateway_seen ? 'yes' : 'no' }}</div>
+        <div>Raw capture: {{ acceptance.raw_capture_present ? 'yes' : 'no' }}</div>
+        <div>Fallback: {{ acceptance.fallback_detected ? 'yes' : 'no' }}</div>
+        <div>Proxy mismatch: {{ acceptance.proxy_mismatch ? 'yes' : 'no' }}</div>
+      </div>
       <ul v-if="acceptance?.checks?.length" class="mt-3 space-y-1 text-sm">
         <li v-for="check in acceptance.checks" :key="check.name" :class="check.status === 'pass' ? 'text-green-700' : check.status === 'warn' ? 'text-amber-700' : 'text-red-700'">
           {{ check.status.toUpperCase() }} · {{ check.name }} <span v-if="check.message">- {{ check.message }}</span>
         </li>
       </ul>
-      <button class="btn btn-primary mt-4" :disabled="busy || acceptance?.status !== 'pending_activation'" @click="activateStep">手动激活 schedulable</button>
-      <p v-if="session.status === 'ready_for_small_flow'" class="mt-3 rounded bg-green-50 p-3 text-green-800">ready_for_small_flow：可进入小流量准备；真实 smoke 仍需单独批准。</p>
+      <p v-if="session.status === 'production'" class="mt-3 rounded bg-green-50 p-3 text-green-800">production：账号已通过硬门禁；requested aggressive 只在此阶段后才允许生效。</p>
     </section>
 
     <section v-if="session" class="rounded-xl border bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
@@ -154,6 +167,8 @@ const safeSession = computed(() => JSON.stringify({
   pool_profile: session.value?.pool_profile,
   browser_egress_verified: session.value?.browser_egress_verified,
   cc_gateway_runtime_registered: session.value?.cc_gateway_runtime_registered,
+  healthcheck_passed: session.value?.healthcheck_passed,
+  production_ready: session.value?.production_ready,
   account_ref: session.value?.account_ref,
   oauth_summary: session.value?.oauth_summary
 }, null, 2))
@@ -181,6 +196,9 @@ async function setupTokenCreate() {
     setupSessionKey.value = ''
   }
 }
-async function acceptanceStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.runAcceptance(session.value!.id)); if (res) acceptance.value = res }
-async function activateStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.activate(session.value!.id)); if (res) session.value = res }
+async function refreshOnlyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.refreshOnly(session.value!.id)); if (res) session.value = res }
+async function runtimeRegisterStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.runtimeRegister(session.value!.id)); if (res) session.value = res }
+async function healthcheckStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.healthcheck(session.value!.id)); if (res) acceptance.value = res }
+async function startWarmingStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.startWarming(session.value!.id)); if (res) session.value = res }
+async function promoteProductionStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.promoteProduction(session.value!.id)); if (res) session.value = res }
 </script>

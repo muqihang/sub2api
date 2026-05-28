@@ -2718,6 +2718,7 @@ export default {
       apiKey: 'API Key',
       // Schedulable toggle
       schedulable: 'Schedulable',
+        onboardingStage: 'Onboarding',
       schedulableHint: 'Enable to include this account in API request scheduling',
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
@@ -2781,6 +2782,23 @@ export default {
         lastUsed: 'Last Used',
         expiresAt: 'Expires At',
         actions: 'Actions'
+      },
+      formalPool: {
+        effectiveBlocked: 'DB scheduling is enabled, but formal-pool lifecycle gate still blocks effective scheduling',
+        requested: 'Requested',
+        effective: 'Effective',
+        healthcheck: 'Healthcheck',
+        riskEvent: 'Risk event',
+        stage: {
+          imported: 'Imported',
+          refreshed: 'Refreshed',
+          runtime_registered: 'Runtime registered',
+          healthcheck_passed: 'Healthcheck passed',
+          warming: 'Warming',
+          production: 'Production',
+          quarantined: 'Quarantined',
+          legacy_unknown: 'Legacy unknown'
+        }
       },
       allPrivacyModes: 'All Privacy States',
       privacyUnset: 'Unset',
