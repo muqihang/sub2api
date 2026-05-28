@@ -1,6 +1,8 @@
 use std::env;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,10 +34,14 @@ struct SidecarErrorBody {
 }
 
 #[tauri::command]
-fn run_sidecar(args: Vec<String>, timeout_ms: Option<u64>) -> Result<Value, Value> {
-    let request = SidecarRequest { args, timeout_ms };
-    validate_sidecar_request(&request).map_err(|error| json!(error))?;
-    run_sidecar_command(request).map_err(|error| json!(error))
+async fn run_sidecar(args: Vec<String>, timeout_ms: Option<u64>) -> Result<Value, Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = SidecarRequest { args, timeout_ms };
+        validate_sidecar_request(&request).map_err(|error| json!(error))?;
+        run_sidecar_command(request).map_err(|error| json!(error))
+    })
+    .await
+    .map_err(|error| json!(sidecar_failure("join_failed", format!("sidecar task failed: {error}"))))?
 }
 
 fn validate_sidecar_request(request: &SidecarRequest) -> Result<(), SidecarFailure> {
@@ -88,24 +94,24 @@ fn run_sidecar_command_with_executable(
         .spawn()
         .map_err(|error| sidecar_failure("spawn_failed", format!("failed to run zhumeng-agent: {error}")))?;
 
+    let stdout_reader = child.stdout.take().map(read_child_pipe);
+    let stderr_reader = child.stderr.take().map(read_child_pipe);
     let started_at = Instant::now();
-    let output = loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                break child
-                    .wait_with_output()
-                    .map_err(|error| sidecar_failure("wait_failed", format!("failed to collect sidecar output: {error}")))?;
-            }
+            Ok(Some(status)) => break status,
             Ok(None) if started_at.elapsed() >= timeout => {
                 let _ = child.kill();
-                let output = child.wait_with_output().ok();
-                let stderr = output
-                    .as_ref()
-                    .map(|value| String::from_utf8_lossy(&value.stderr).to_string())
-                    .unwrap_or_default();
+                let _ = child.wait();
+                let _stdout = collect_child_pipe(stdout_reader);
+                let stderr = collect_child_pipe(stderr_reader);
                 return Err(sidecar_failure(
                     "timeout",
-                    format!("sidecar timed out after {}ms; stderr={}", timeout.as_millis(), redact_for_log(&stderr)),
+                    format!(
+                        "sidecar timed out after {}ms; stderr={}",
+                        timeout.as_millis(),
+                        redact_for_log(&String::from_utf8_lossy(&stderr))
+                    ),
                 ));
             }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
@@ -118,8 +124,10 @@ fn run_sidecar_command_with_executable(
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_bytes = collect_child_pipe(stdout_reader);
+    let stderr_bytes = collect_child_pipe(stderr_reader);
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
     let parsed: Value = serde_json::from_str(stdout.trim()).map_err(|error| {
         sidecar_failure(
             "invalid_json",
@@ -127,18 +135,34 @@ fn run_sidecar_command_with_executable(
         )
     })?;
 
-    if output.status.success() || parsed.get("ok").and_then(Value::as_bool) == Some(false) {
+    if status.success() || parsed.get("ok").and_then(Value::as_bool) == Some(false) {
         Ok(parsed)
     } else {
         Err(sidecar_failure(
             "exit_failed",
             format!(
                 "sidecar exited with {}; stderr={}",
-                output.status.code().map_or_else(|| "signal".to_string(), |code| code.to_string()),
+                exit_status_code(&status),
                 redact_for_log(&stderr)
             ),
         ))
     }
+}
+
+fn read_child_pipe<T: Read + Send + 'static>(mut pipe: T) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn collect_child_pipe(reader: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    reader.and_then(|handle| handle.join().ok()).unwrap_or_default()
+}
+
+fn exit_status_code(status: &ExitStatus) -> String {
+    status.code().map_or_else(|| "signal".to_string(), |code| code.to_string())
 }
 
 fn sidecar_failure(code: &'static str, message: String) -> SidecarFailure {

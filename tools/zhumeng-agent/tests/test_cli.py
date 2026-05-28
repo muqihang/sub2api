@@ -472,6 +472,7 @@ def test_ensure_proxy_running_reuses_existing_loopback_listener(monkeypatch: pyt
     monkeypatch.setattr(cli, "is_process_alive", lambda pid: False)
     monkeypatch.setattr(cli, "is_loopback_port_accepting_connections", lambda port: port == 18081)
     monkeypatch.setattr(cli, "proxy_matches_current_runtime", lambda port: True)
+    monkeypatch.setattr(cli, "proxy_process_pids_for_state_file", lambda path: [])
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("proxy already running")))
 
     assert cli.ensure_proxy_running(store) == 0
@@ -512,6 +513,7 @@ def test_ensure_proxy_running_starts_detached_process(monkeypatch: pytest.Monkey
     monkeypatch.setattr(cli, "is_process_alive", lambda pid: False)
     monkeypatch.setattr(cli, "is_loopback_port_accepting_connections", lambda port: False)
     monkeypatch.setattr(cli, "proxy_matches_current_runtime", lambda port: False)
+    monkeypatch.setattr(cli, "proxy_process_pids_for_state_file", lambda path: [])
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
 
     assert cli.ensure_proxy_running(store) == 12345
@@ -548,6 +550,7 @@ def test_ensure_proxy_running_restarts_when_listener_is_old_runtime(monkeypatch:
     monkeypatch.setattr(cli, "is_process_alive", lambda pid: True)
     monkeypatch.setattr(cli, "is_loopback_port_accepting_connections", lambda port: True)
     monkeypatch.setattr(cli, "proxy_matches_current_runtime", lambda port: False)
+    monkeypatch.setattr(cli, "proxy_process_pids_for_state_file", lambda path: [])
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
 
     assert cli.ensure_proxy_running(store) == 23456
@@ -584,11 +587,49 @@ def test_ensure_proxy_running_terminates_stale_listener_before_restart(monkeypat
     monkeypatch.setattr(cli, "is_loopback_port_accepting_connections", lambda port: True)
     monkeypatch.setattr(cli, "proxy_matches_current_runtime", lambda port: False)
     monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(cli, "proxy_process_pids_for_state_file", lambda path: [])
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
 
     assert cli.ensure_proxy_running(store) == 34567
     assert killed == [(999999, cli.signal.SIGTERM)]
     assert store.patch["proxy_pid"] == 34567
+
+
+def test_ensure_proxy_running_terminates_duplicate_proxy_processes(monkeypatch: pytest.MonkeyPatch):
+    class FakeStore:
+        path = Path("/tmp/state.json")
+
+        def __init__(self):
+            self.updated = None
+
+        def read(self):
+            return {
+                "gateway_base_url": "https://example.com",
+                "device_id": 9,
+                "managed_session_id": "sess-1",
+                "access_token": "access-token",
+                "loopback_secret": "loopback-secret",
+                "proxy_port": 18081,
+                "proxy_pid": 999999,
+            }
+
+        def update(self, patch):
+            self.updated = patch
+            return patch
+
+    killed: list[tuple[int, int]] = []
+    store = FakeStore()
+    monkeypatch.setattr(cli, "ensure_proxy_running", ORIGINAL_ENSURE_PROXY_RUNNING)
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: pid in {111111, 222222, 999999})
+    monkeypatch.setattr(cli, "is_loopback_port_accepting_connections", lambda port: port == 18081)
+    monkeypatch.setattr(cli, "proxy_matches_current_runtime", lambda port: True)
+    monkeypatch.setattr(cli, "proxy_process_pids_for_state_file", lambda path: [111111, 999999, 222222])
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("proxy already running")))
+
+    assert cli.ensure_proxy_running(store) == 999999
+    assert killed == [(111111, cli.signal.SIGTERM), (222222, cli.signal.SIGTERM)]
+    assert store.updated is None
 
 
 def test_proxy_matches_current_runtime_rejects_stale_runtime_signature(monkeypatch: pytest.MonkeyPatch):

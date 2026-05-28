@@ -73,10 +73,10 @@ export function createSidecarClient(invokeFn: InvokeFn = tauriInvoke as InvokeFn
   };
 
   return {
-    status: () => run<DesktopStatus>(["desktop", "status", "--json"]),
+    status: () => run<DesktopStatus>(["desktop", "status", "--json"], 10000),
     repair: () => run<DesktopStatus>(["desktop", "repair", "--client", "codex", "--json"], 20000),
     diagnose: () => run<Record<string, unknown>>(["desktop", "diagnose", "--redacted", "--json"], 10000),
-    modelsStatus: () => run<Record<string, unknown>>(["desktop", "models", "status", "--client", "codex", "--json"]),
+    modelsStatus: () => run<Record<string, unknown>>(["desktop", "models", "status", "--client", "codex", "--json"], 15000),
     modelsSync: () => run<Record<string, unknown>>(["desktop", "models", "sync", "--client", "codex", "--json"], 20000),
     openCodex: () => run<Record<string, unknown>>(["desktop", "open", "--app", "codex", "--json"]),
     setup: (client, code, server) => run<DesktopStatus>(["desktop", "setup", "--client", client, "--code", code, "--server", server, "--json"], 30000),

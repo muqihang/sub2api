@@ -30,6 +30,7 @@ const deepLinkHoisted = vi.hoisted(() => ({
 }));
 const initialDeepLinks = deepLinkHoisted.initial;
 const sidecarStatusMock = sidecarHoisted.status;
+const sidecarModelsStatusMock = sidecarHoisted.modelsStatus;
 const openCodexMock = sidecarHoisted.openCodex;
 const sidecarSetupMock = sidecarHoisted.setup;
 
@@ -69,6 +70,8 @@ describe("App visual shell", () => {
     openUrlMock.mockClear();
     initialDeepLinks.current = null;
     sidecarStatusMock.mockClear();
+    sidecarModelsStatusMock.mockReset();
+    sidecarModelsStatusMock.mockResolvedValue({ models: [] });
     openCodexMock.mockClear();
     sidecarSetupMock.mockClear();
     sidecarStatusMock.mockImplementation(async () => ({
@@ -257,6 +260,37 @@ describe("App visual shell", () => {
     await waitFor(() => expect(sidecarSetupMock).toHaveBeenCalledWith("codex", "abc", "http://127.0.0.1:3080"));
     resolveSetup?.(configuredStatus);
     expect(await screen.findByTestId("wizard-action-feedback")).toHaveTextContent("授权已写入");
+  });
+
+  it("keeps the authorization flow usable when the model catalog refresh times out", async () => {
+    const warnMock = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    initialDeepLinks.current = ["zhumeng-agent://setup?client=codex&code=abc&server=http%3A%2F%2F127.0.0.1%3A3080"];
+    sidecarHoisted.modelsStatus.mockRejectedValue({
+      ok: false,
+      status: "error",
+      error: { code: "timeout", message: "sidecar timed out after 5000ms; stderr=" }
+    });
+    const configuredStatus = {
+      status: "configured",
+      global_status: "configured",
+      proxy: { status: "configured", port: 64645 },
+      authorization: { status: "configured", device_id: 18 },
+      adapters: { codex: { status: "configured", enhancements: {}, restart_required: false } },
+      model_catalog: { model_count: 14, models: [] }
+    };
+    sidecarSetupMock.mockResolvedValue(configuredStatus);
+
+    render(<App />);
+
+    const authorizeButton = await screen.findByRole("button", { name: /执行授权/ });
+    expect(screen.queryByText(/sidecar timed out/)).not.toBeInTheDocument();
+
+    fireEvent.click(authorizeButton);
+
+    await waitFor(() => expect(sidecarSetupMock).toHaveBeenCalledWith("codex", "abc", "http://127.0.0.1:3080"));
+    expect(await screen.findByTestId("wizard-action-feedback")).toHaveTextContent("授权已写入");
+    expect(screen.queryByText(/sidecar timed out/)).not.toBeInTheDocument();
+    warnMock.mockRestore();
   });
 
   it("shows an inline error when web authorization fails", async () => {

@@ -256,6 +256,42 @@ def terminate_proxy_process(pid: int | None) -> None:
         return
 
 
+def proxy_process_pids_for_state_file(state_file: Path) -> list[int]:
+    try:
+        output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    state_arg = str(state_file)
+    pids: list[int] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        pid_text, _, command = stripped.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if (
+            "zhumeng_agent" in command
+            and "proxy-serve" in command
+            and "--state-file" in command
+            and state_arg in command
+        ):
+            pids.append(pid)
+    return pids
+
+
+def terminate_duplicate_proxy_processes(state_file: Path, keep_pid: int | None) -> None:
+    if keep_pid is None:
+        return
+    for pid in proxy_process_pids_for_state_file(state_file):
+        if pid == keep_pid:
+            continue
+        if is_process_alive(pid):
+            terminate_proxy_process(pid)
+
+
 def ensure_proxy_running(store: JsonStateStore) -> int:
     state = store.read()
     required = ("gateway_base_url", "device_id", "managed_session_id", "access_token", "loopback_secret", "proxy_port")
@@ -265,11 +301,13 @@ def ensure_proxy_running(store: JsonStateStore) -> int:
 
     pid = int(state.get("proxy_pid", 0) or 0)
     if is_process_alive(pid) and proxy_matches_current_runtime(proxy_port := int(state["proxy_port"])):
+        terminate_duplicate_proxy_processes(store.path, keep_pid=pid)
         return pid
     proxy_port = int(state["proxy_port"])
     if is_process_alive(pid):
         terminate_proxy_process(pid)
     if is_loopback_port_accepting_connections(proxy_port) and proxy_matches_current_runtime(proxy_port):
+        terminate_duplicate_proxy_processes(store.path, keep_pid=pid if is_process_alive(pid) else None)
         return 0
 
     process = subprocess.Popen([
@@ -281,6 +319,7 @@ def ensure_proxy_running(store: JsonStateStore) -> int:
         str(store.path),
     ], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     store.update({"proxy_pid": process.pid})
+    terminate_duplicate_proxy_processes(store.path, keep_pid=int(process.pid))
     return int(process.pid)
 
 

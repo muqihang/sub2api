@@ -18,7 +18,8 @@ describe("sidecar client", () => {
     await client.reauth("codex", "reauth-code", "https://example.com");
     await client.patchEnhancements("/Applications/Codex.app");
 
-    const calls = (invoke.mock.calls as unknown as Array<[string, { args: string[]; timeoutMs: number }]>).map(([, payload]) => payload.args);
+    const payloads = (invoke.mock.calls as unknown as Array<[string, { args: string[]; timeoutMs: number }]>).map(([, payload]) => payload);
+    const calls = payloads.map((payload) => payload.args);
     expect(calls).toEqual([
       ["desktop", "status", "--json"],
       ["desktop", "models", "status", "--client", "codex", "--json"],
@@ -35,6 +36,8 @@ describe("sidecar client", () => {
       args: calls.at(-1),
       timeoutMs: 20000
     });
+    expect(payloads[0]?.timeoutMs).toBe(10000);
+    expect(payloads[1]?.timeoutMs).toBe(15000);
   });
 
   it("throws structured errors when the envelope is not ok", async () => {

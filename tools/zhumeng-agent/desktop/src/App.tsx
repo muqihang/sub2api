@@ -93,6 +93,7 @@ function App() {
   const [wizardActionMessage, setWizardActionMessage] = useState("");
   const [theme, setTheme] = useState<"system" | "dark" | "light">("system");
   const [language, setLanguage] = useState<Language>(() => readInitialLanguage());
+  const refreshInFlightRef = useRef(false);
 
   const t = translations[language];
   const visibleModels = models;
@@ -168,20 +169,33 @@ function App() {
   }, [language]);
 
   async function refreshStatus(options: { quiet?: boolean } = {}) {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     try {
+      let statusLoaded = false;
       if (!options.quiet) setIsBusy(true);
-      const nextStatus = await sidecar.status();
-      setStatus(nextStatus);
-      const catalog = await sidecar.modelsStatus();
-      const catalogModels = Array.isArray(catalog.models) ? (catalog.models as CatalogModel[]) : [];
-      setModels(catalogModels);
-      setLastError("");
-    } catch (error) {
-      if (!options.quiet) {
-        setLastError(sidecarErrorMessage(error));
+      try {
+        const nextStatus = await sidecar.status();
+        statusLoaded = true;
+        setStatus(nextStatus);
+        setLastError("");
+      } catch (error) {
+        if (!options.quiet) {
+          setLastError(sidecarErrorMessage(error));
+        }
+      } finally {
+        if (!options.quiet) setIsBusy(false);
+      }
+      if (!statusLoaded) return;
+      try {
+        const catalog = await sidecar.modelsStatus();
+        const catalogModels = Array.isArray(catalog.models) ? (catalog.models as CatalogModel[]) : [];
+        setModels(catalogModels);
+      } catch (error) {
+        console.warn("failed to refresh Codex model catalog", error);
       }
     } finally {
-      if (!options.quiet) setIsBusy(false);
+      refreshInFlightRef.current = false;
     }
   }
 
