@@ -396,6 +396,28 @@ func (s *APIKeyService) validateAPIKeyBindingGroup(ctx context.Context, user *Us
 	return group, nil
 }
 
+func (s *APIKeyService) resolveDefaultBindingGroup(ctx context.Context, user *User, restrictedClientProduct string) (*int64, error) {
+	if user == nil || restrictedClientProduct != CodexUsageClientProduct || s.groupRepo == nil {
+		return nil, nil
+	}
+
+	groups, err := s.groupRepo.ListActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active groups: %w", err)
+	}
+	for _, group := range groups {
+		if !group.CodexGatewayEntitled {
+			continue
+		}
+		if !s.canUserBindGroup(ctx, user, &group) {
+			continue
+		}
+		groupID := group.ID
+		return &groupID, nil
+	}
+	return nil, nil
+}
+
 func (s *APIKeyService) validateScopeFlags(augmentOnly, codexOnly bool) (*string, error) {
 	product, err := restrictedClientProductForScopeFlags(augmentOnly, codexOnly)
 	if err != nil {
@@ -436,6 +458,13 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 	restrictedClientProduct, err := s.validateScopeFlags(req.AugmentOnly, req.CodexOnly)
 	if err != nil {
 		return nil, err
+	}
+	if req.GroupID == nil {
+		resolvedGroupID, err := s.resolveDefaultBindingGroup(ctx, user, clientProductValue(restrictedClientProduct))
+		if err != nil {
+			return nil, err
+		}
+		req.GroupID = resolvedGroupID
 	}
 	if _, err := s.validateAPIKeyBindingGroup(ctx, user, req.GroupID, clientProductValue(restrictedClientProduct)); err != nil {
 		return nil, err

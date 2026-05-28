@@ -32,7 +32,7 @@ func (h *CodexGatewayHandler) Models(c *gin.Context) {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusInternalServerError, service.CodexGatewayErrorTypeAPI, "internal_error", "authenticated API key missing from context")
 		return
 	}
-	if err := service.ValidateCodexScopedAPIKeyAccess(apiKey, c.Request.URL.Path); err != nil {
+	if err := service.ValidateCodexGatewayAPIKeyAccess(apiKey, c.Request.URL.Path, middleware.IsManagedDeviceAccess(c)); err != nil {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusForbidden, service.CodexGatewayErrorTypeAuthentication, "invalid_api_key", pkgerrors.Message(err))
 		return
 	}
@@ -45,6 +45,7 @@ func (h *CodexGatewayHandler) Models(c *gin.Context) {
 		APIKey:        apiKey,
 		ClientVersion: strings.TrimSpace(c.Query("client_version")),
 		CatalogFormat: strings.TrimSpace(c.Query("catalog_format")),
+		ManagedDevice: middleware.IsManagedDeviceAccess(c),
 	})
 	if err != nil {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusInternalServerError, service.CodexGatewayErrorTypeAPI, "internal_error", err.Error())
@@ -59,7 +60,7 @@ func (h *CodexGatewayHandler) Responses(c *gin.Context) {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusInternalServerError, service.CodexGatewayErrorTypeAPI, "internal_error", "authenticated API key missing from context")
 		return
 	}
-	if err := service.ValidateCodexScopedAPIKeyAccess(apiKey, c.Request.URL.Path); err != nil {
+	if err := service.ValidateCodexGatewayAPIKeyAccess(apiKey, c.Request.URL.Path, middleware.IsManagedDeviceAccess(c)); err != nil {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusForbidden, service.CodexGatewayErrorTypeAuthentication, "invalid_api_key", pkgerrors.Message(err))
 		return
 	}
@@ -92,6 +93,7 @@ func (h *CodexGatewayHandler) Responses(c *gin.Context) {
 		ResponseHeader: c.Writer.Header(),
 		WriteStatus:    c.Status,
 		Flush:          c.Writer.Flush,
+		ManagedDevice:  middleware.IsManagedDeviceAccess(c),
 	})
 	if err != nil {
 		service.WriteCodexGatewayErrorJSON(c.Writer, http.StatusInternalServerError, service.CodexGatewayErrorTypeAPI, "internal_error", err.Error())

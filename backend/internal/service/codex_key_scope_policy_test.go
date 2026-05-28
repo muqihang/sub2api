@@ -141,3 +141,53 @@ func TestCodexScopedAPIKeyAccessRejectsNonCodexPaths(t *testing.T) {
 	require.Equal(t, infraerrors.Reason(ErrCodexKeyScopeMismatch), decision.Reason)
 	require.ErrorIs(t, ValidateCodexScopedAPIKeyAccess(apiKey, "/v1/responses"), ErrCodexKeyScopeMismatch)
 }
+
+func TestCodexGatewayAPIKeyAccessAllowsGenericEntitledKeyOnlyForManagedDevice(t *testing.T) {
+	t.Parallel()
+
+	groupID := int64(4)
+	apiKey := &APIKey{
+		Key:     "sk-generic",
+		Status:  StatusActive,
+		GroupID: &groupID,
+		Group: &Group{
+			ID:                   groupID,
+			Status:               StatusActive,
+			Hydrated:             true,
+			Platform:             PlatformOpenAI,
+			CodexGatewayEntitled: true,
+		},
+	}
+
+	decision := EvaluateCodexGatewayAPIKeyAccess(apiKey, "/codex/v1/responses", true)
+	require.True(t, decision.Allowed)
+	require.NoError(t, ValidateCodexGatewayAPIKeyAccess(apiKey, "/codex/v1/responses", true))
+
+	decision = EvaluateCodexGatewayAPIKeyAccess(apiKey, "/codex/v1/responses", false)
+	require.False(t, decision.Allowed)
+	require.Equal(t, infraerrors.Reason(ErrCodexScopedAPIKeyRequired), decision.Reason)
+	require.ErrorIs(t, ValidateCodexGatewayAPIKeyAccess(apiKey, "/codex/v1/responses", false), ErrCodexScopedAPIKeyRequired)
+}
+
+func TestCodexGatewayAPIKeyAccessStillRejectsNonCodexPathsForManagedDevice(t *testing.T) {
+	t.Parallel()
+
+	groupID := int64(5)
+	apiKey := &APIKey{
+		Key:     "sk-generic",
+		Status:  StatusActive,
+		GroupID: &groupID,
+		Group: &Group{
+			ID:                   groupID,
+			Status:               StatusActive,
+			Hydrated:             true,
+			Platform:             PlatformOpenAI,
+			CodexGatewayEntitled: true,
+		},
+	}
+
+	decision := EvaluateCodexGatewayAPIKeyAccess(apiKey, "/v1/responses", true)
+	require.False(t, decision.Allowed)
+	require.Equal(t, infraerrors.Reason(ErrCodexKeyScopeMismatch), decision.Reason)
+	require.ErrorIs(t, ValidateCodexGatewayAPIKeyAccess(apiKey, "/v1/responses", true), ErrCodexKeyScopeMismatch)
+}

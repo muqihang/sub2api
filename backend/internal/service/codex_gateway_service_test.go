@@ -443,6 +443,52 @@ func TestCodexGatewayService_ResponsesRejectsScopeMismatch(t *testing.T) {
 	require.Contains(t, string(resp.Body), `"type":"authentication_error"`)
 }
 
+func TestCodexGatewayService_ManagedDeviceAllowsGenericEntitledKey(t *testing.T) {
+	registry := NewDefaultCodexGatewayModelRegistry()
+	executorCalled := false
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, _ CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			executorCalled = true
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_managed","model":"gpt-5.5","output":[]}`),
+			}, nil
+		},
+	})
+	groupID := int64(44)
+	apiKey := &APIKey{
+		ID:      7,
+		UserID:  88,
+		Key:     "sk-generic",
+		Status:  StatusActive,
+		GroupID: &groupID,
+		Group: &Group{
+			ID:                   groupID,
+			Platform:             PlatformOpenAI,
+			Status:               StatusActive,
+			Hydrated:             true,
+			CodexGatewayEntitled: true,
+		},
+	}
+
+	modelsResp, err := svc.Models(context.Background(), CodexGatewayModelsRequest{
+		APIKey:        apiKey,
+		ManagedDevice: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, modelsResp.StatusCode)
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey:        apiKey,
+		Body:          []byte(`{"model":"gpt-5.5"}`),
+		ManagedDevice: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.True(t, executorCalled)
+}
+
 func TestCodexGatewayService_ResponsesDeepSeekPreviousResponseIDDispatchesToExecutor(t *testing.T) {
 	registry := NewCodexGatewayModelRegistry(
 		config.GatewayCodexConfig{

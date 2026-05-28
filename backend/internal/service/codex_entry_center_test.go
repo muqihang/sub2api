@@ -472,6 +472,31 @@ func TestCreateSetupSession_IndependentMode_CreatesKeyAndSession(t *testing.T) {
 	require.NotNil(t, resp.SetupSession.LaunchURL)
 }
 
+func TestCreateSetupSession_IndependentMode_UsesCodexOnlyCredential(t *testing.T) {
+	repo := &codexEntryCenterRepoStub{
+		devices: []*dbent.CodexManagedDevice{},
+	}
+	creator := &codexEntryCenterAPIKeyCreatorStub{}
+	svc := NewCodexEntryCenterService(repo, &codexEntryCenterAPIKeyReaderStub{}, creator, &CodexEntryCenterConfig{
+		ServerOrigin:  "https://sub2api.example.com",
+		GatewayOrigin: "https://sub2api.example.com",
+	}, nil)
+
+	resp, err := svc.CreateSetupSession(context.Background(), CodexCreateSetupSessionRequest{
+		UserID:          7,
+		AttachmentMode:  CodexAttachmentModeIndependent,
+		CredentialLabel: "My Codex Key",
+		ServerOrigin:    "https://sub2api.example.com",
+		GatewayOrigin:   "https://sub2api.example.com",
+	})
+	require.NoError(t, err)
+	require.Equal(t, CodexAttachmentModeIndependent, resp.SetupSession.AttachmentMode)
+	require.NotNil(t, creator.lastRequest)
+	require.Equal(t, "My Codex Key", creator.lastRequest.Name)
+	require.True(t, creator.lastRequest.CodexOnly)
+	require.False(t, creator.lastRequest.AugmentOnly)
+}
+
 func TestCreateSetupSession_ReusedKeyMode_Success(t *testing.T) {
 	repo := &codexEntryCenterRepoStub{
 		devices: []*dbent.CodexManagedDevice{},
@@ -620,10 +645,15 @@ func mustMarshalUnmarshal(in any, out any) error {
 // ─── API key creator stub ───
 
 type codexEntryCenterAPIKeyCreatorStub struct {
-	nextID int64
+	nextID      int64
+	lastUserID  int64
+	lastRequest *CreateAPIKeyRequest
 }
 
 func (s *codexEntryCenterAPIKeyCreatorStub) Create(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
 	s.nextID++
+	reqCopy := req
+	s.lastUserID = userID
+	s.lastRequest = &reqCopy
 	return &APIKey{ID: s.nextID, User: &User{ID: userID, Status: StatusActive}}, nil
 }

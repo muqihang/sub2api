@@ -283,6 +283,46 @@ describe('useCodexEntryStore', () => {
       expect(store.setupSession?.launch_url).toContain('code=regenerated-code')
     })
 
+    it('openLocal regenerates a one-time launch URL after the page was refreshed', async () => {
+      const popup = { location: { href: '' } }
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => popup as any)
+      mockGetCodexSummary
+        .mockResolvedValueOnce({
+          page_state: 'onboarding_attach',
+          wizard_step: 2,
+          attachment_mode: 'reused_key',
+          setup_session_presentation: 'wizard',
+          setup_session: { id: '100', credential_label: 'Key', attachment_mode: 'reused_key', reuse_api_key_id: 42, launch_url: null, cli_command: null, expires_at: '2027-01-01T00:00:00Z', first_seen_at: null, first_catalog_synced_at: null },
+          focus_device_id: null,
+          devices: [],
+        })
+        .mockResolvedValueOnce({
+          page_state: 'onboarding_attach',
+          wizard_step: 2,
+          attachment_mode: 'reused_key',
+          setup_session_presentation: 'wizard',
+          setup_session: { id: '101', credential_label: 'Key', attachment_mode: 'reused_key', reuse_api_key_id: 42, launch_url: null, cli_command: null, expires_at: '2027-01-01T00:10:00Z', first_seen_at: null, first_catalog_synced_at: null },
+          focus_device_id: null,
+          devices: [],
+        })
+      mockRegenerateCodexSetupSession.mockResolvedValue({
+        setup_session: {
+          id: 'hash-session-2',
+          launch_url: 'zhumeng-agent://setup?client=codex&code=regenerated-code',
+          cli_command: 'codex auth --code regenerated-code --server https://example.com',
+          expires_at: '2027-01-01T00:10:00Z',
+        },
+      })
+
+      const store = useCodexEntryStore()
+      await store.loadSummary()
+      await store.openLocal()
+
+      expect(mockRegenerateCodexSetupSession).toHaveBeenCalledWith('100')
+      expect(openSpy).toHaveBeenCalledWith('', '_blank')
+      expect(popup.location.href).toBe('zhumeng-agent://setup?client=codex&code=regenerated-code')
+    })
+
     it('diagnoseSetupSession calls diagnoseCodex with setup_session_id', async () => {
       mockGetCodexSummary.mockResolvedValue({
         page_state: 'onboarding_attach',

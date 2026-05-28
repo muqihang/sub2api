@@ -12,6 +12,7 @@ type CodexGatewayModelsRequest struct {
 	APIKey        *APIKey
 	ClientVersion string
 	CatalogFormat string
+	ManagedDevice bool
 }
 
 type CodexGatewayResponsesRequest struct {
@@ -23,6 +24,7 @@ type CodexGatewayResponsesRequest struct {
 	WriteStatus    func(int)
 	Flush          func()
 	CaptureTrace   *CodexGatewayTrace
+	ManagedDevice  bool
 }
 
 type CodexGatewayServiceResponse struct {

@@ -252,6 +252,55 @@ func TestCodexGatewayRoutes_ManagedHeadersAllowCodexGateway(t *testing.T) {
 	require.Equal(t, 2, validatorCalls)
 }
 
+func TestCodexGatewayRoutes_ManagedHeadersAllowGenericEntitledKeyForCodexGateway(t *testing.T) {
+	cfg := &config.Config{RunMode: config.RunModeStandard, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, Codex: config.GatewayCodexConfig{Enabled: true}}}
+	managedKey := newCodexGatewayRoutesGenericEntitledKey(42, "managed-generic")
+	validatorCalls := 0
+	auth := servermiddleware.APIKeyAuthMiddleware(servermiddleware.ManagedDeviceOrAPIKeyAuth(
+		servermiddleware.ManagedDeviceAccessValidatorFunc(func(_ context.Context, req service.ValidateManagedDeviceAccessRequest) (*service.ManagedDeviceAccessContext, error) {
+			validatorCalls++
+			require.Equal(t, "Bearer managed-token", req.AccessToken)
+			require.Equal(t, int64(9), req.DeviceID)
+			require.Equal(t, "sess-1", req.ManagedSessionID)
+			return &service.ManagedDeviceAccessContext{
+				APIKey:           managedKey,
+				User:             managedKey.User,
+				ManagedSessionID: "sess-1",
+			}, nil
+		}),
+		servermiddleware.NewCodexGatewayAPIKeyAuthMiddleware(service.NewAPIKeyService(&codexGatewayRoutesAPIKeyRepo{}, nil, nil, nil, nil, nil, cfg), nil, cfg),
+		nil,
+		nil,
+		cfg,
+	))
+	router := newCodexGatewayRoutesTestRouter(
+		cfg,
+		auth,
+		&codexGatewayRoutesServiceStub{
+			modelsResp:    &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"models":[]}`)},
+			responsesResp: &service.CodexGatewayServiceResponse{StatusCode: http.StatusOK, Body: []byte(`{"id":"resp_123"}`)},
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/codex/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer managed-token")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "sess-1")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	req = httptest.NewRequest(http.MethodPost, "/codex/v1/responses", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer managed-token")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "sess-1")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 2, validatorCalls)
+}
+
 func TestCodexGatewayRoutes_IncompleteManagedHeadersFailClosed(t *testing.T) {
 	cfg := &config.Config{RunMode: config.RunModeStandard, Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, Codex: config.GatewayCodexConfig{Enabled: true}}}
 	repo := &codexGatewayRoutesAPIKeyRepo{keys: map[string]*service.APIKey{
@@ -420,5 +469,17 @@ func newCodexGatewayRoutesCodexOnlyKey(id int64, key string) *service.APIKey {
 		GroupID:                 &groupID,
 		Group:                   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true, CodexGatewayEntitled: true},
 		RestrictedClientProduct: &product,
+	}
+}
+
+func newCodexGatewayRoutesGenericEntitledKey(id int64, key string) *service.APIKey {
+	groupID := int64(1)
+	return &service.APIKey{
+		ID:      id,
+		Key:     key,
+		Status:  service.StatusActive,
+		User:    &service.User{ID: 7, Status: service.StatusActive, Role: service.RoleUser, Balance: 1, Concurrency: 1},
+		GroupID: &groupID,
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, Hydrated: true, CodexGatewayEntitled: true},
 	}
 }

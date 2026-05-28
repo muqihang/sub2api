@@ -83,6 +83,7 @@ func ManagedDeviceOrAPIKeyAuth(
 		if !validateAndSetAPIKeyContext(c, access.APIKey, apiKeyService, subscriptionService, cfg, "managed-device", authHeader, codexGatewayAPIKeyAuthErrorWriter) {
 			return
 		}
+		c.Set(string(ContextKeyManagedDeviceAccess), true)
 		c.Next()
 	}
 }

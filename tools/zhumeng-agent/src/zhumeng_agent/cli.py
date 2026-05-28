@@ -472,6 +472,16 @@ def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, 
 
 def build_desktop_status(state: dict[str, object]) -> dict[str, object]:
     status = str(state.get("status", "not_configured"))
+    enhancements = state.get("desktop_enhancements", {})
+    if not isinstance(enhancements, dict):
+        enhancements = {}
+    model_picker = desktop_enhancement_item(enhancements, "model_picker", "model-picker")
+    plugin_auth_gate = desktop_enhancement_item(enhancements, "plugin_auth_gate", "plugin-auth-gate")
+    plugin_mention_marketplace = desktop_enhancement_item(
+        enhancements,
+        "plugin_mention_marketplace",
+        "plugin-mention-marketplace",
+    )
     return {
         "status": status,
         "global_status": status,
@@ -492,13 +502,28 @@ def build_desktop_status(state: dict[str, object]) -> dict[str, object]:
         "adapters": {
             "codex": {
                 "status": status if state.get("client") == "codex" else "not_configured",
-                "enhancements": state.get("desktop_enhancements", {}),
+                "enhancements": enhancements,
                 "restart_required": bool(state.get("restart_required")),
             }
         },
+        "model_picker": model_picker,
+        "plugin_auth_gate": plugin_auth_gate,
+        "plugin_mention_marketplace": plugin_mention_marketplace,
         "model_catalog": state.get("model_catalog_meta", {}),
         "state": public_state(state),
     }
+
+
+def desktop_enhancement_item(enhancements: dict[str, object], key: str, item_key: str) -> dict[str, object]:
+    direct = enhancements.get(key)
+    if isinstance(direct, dict):
+        return direct
+    items = enhancements.get("items")
+    if isinstance(items, dict):
+        item = items.get(item_key)
+        if isinstance(item, dict):
+            return item
+    return {}
 
 
 def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
@@ -900,7 +925,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return emit({
             "command": "status",
             "format": "json" if args.json else "text",
-            "status": state.get("status", "not_configured"),
+            **build_desktop_status(state),
         })
 
     if args.command == "doctor":

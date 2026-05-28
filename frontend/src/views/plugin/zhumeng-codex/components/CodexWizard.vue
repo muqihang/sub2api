@@ -163,10 +163,11 @@ const selectedReuseKey = computed(() =>
             <p class="launch-copy">{{ t('codex.wizard.step2.launchDescription') }}</p>
             <button
               class="btn btn-primary"
+              :disabled="store.loading"
               @click="store.openLocal()"
               data-testid="open-local-btn"
             >
-              {{ t('codex.wizard.step2.openLocal') }}
+              {{ store.setupSession?.launch_url ? t('codex.wizard.step2.openLocal') : t('codex.wizard.step2.regenerateAndOpen') }}
             </button>
 
             <div
@@ -243,7 +244,7 @@ const selectedReuseKey = computed(() =>
               {{ t('codex.wizard.step3.diagnose') }}
             </button>
             <button class="btn btn-secondary" @click="store.openLocal()" data-testid="reopen-local-btn">
-              {{ t('codex.wizard.step3.reopenLocal') }}
+              {{ store.setupSession?.launch_url ? t('codex.wizard.step3.reopenLocal') : t('codex.wizard.step3.regenerateAndReopen') }}
             </button>
           </div>
         </div>

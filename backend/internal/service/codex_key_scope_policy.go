@@ -103,3 +103,42 @@ func ValidateCodexScopedAPIKeyAccess(apiKey *APIKey, path string) error {
 		return ErrCodexKeyScopeMismatch
 	}
 }
+
+func EvaluateCodexGatewayAPIKeyAccess(apiKey *APIKey, path string, managedDevice bool) CodexKeyScopeDecision {
+	if !managedDevice {
+		return EvaluateCodexScopedAPIKeyAccess(apiKey, path)
+	}
+
+	normalizedPath := normalizeCodexScopedAPIKeyPath(path)
+	if !isCodexScopedAPIKeyAllowedPath(normalizedPath) {
+		return CodexKeyScopeDecision{
+			Path:    normalizedPath,
+			Allowed: false,
+			Reason:  infraerrors.Reason(ErrCodexKeyScopeMismatch),
+		}
+	}
+	if apiKey == nil || apiKey.GroupID == nil || apiKey.Group == nil || !apiKey.Group.CodexGatewayEntitled {
+		return CodexKeyScopeDecision{
+			Path:    normalizedPath,
+			Allowed: false,
+			Reason:  infraerrors.Reason(ErrCodexScopedAPIKeyRequired),
+		}
+	}
+	return CodexKeyScopeDecision{
+		Path:    normalizedPath,
+		Allowed: true,
+	}
+}
+
+func ValidateCodexGatewayAPIKeyAccess(apiKey *APIKey, path string, managedDevice bool) error {
+	decision := EvaluateCodexGatewayAPIKeyAccess(apiKey, path, managedDevice)
+	if decision.Allowed {
+		return nil
+	}
+	switch decision.Reason {
+	case infraerrors.Reason(ErrCodexScopedAPIKeyRequired):
+		return ErrCodexScopedAPIKeyRequired
+	default:
+		return ErrCodexKeyScopeMismatch
+	}
+}

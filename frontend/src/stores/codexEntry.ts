@@ -189,9 +189,19 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
     }
   }
 
-  function openLocal() {
+  async function openLocal() {
     if (setupSession.value?.launch_url) {
       window.open(setupSession.value.launch_url, '_blank')
+      return
+    }
+    const pendingWindow = window.open('', '_blank')
+    const regeneratedLaunchURL = await regenerateSetupSession()
+    if (regeneratedLaunchURL) {
+      if (pendingWindow) {
+        pendingWindow.location.href = regeneratedLaunchURL
+      } else {
+        window.location.href = regeneratedLaunchURL
+      }
     }
   }
 
@@ -201,16 +211,18 @@ export const useCodexEntryStore = defineStore('codexEntry', () => {
     }
   }
 
-  async function regenerateSetupSession() {
-    if (!setupSession.value) return
+  async function regenerateSetupSession(): Promise<string | null> {
+    if (!setupSession.value) return null
     loading.value = true
     error.value = null
     try {
       const regenerated = await regenerateCodexSetupSession(setupSession.value.id)
       rememberSetupSessionLaunch(regenerated.setup_session)
       await loadSummary()
+      return regenerated.setup_session.launch_url ?? null
     } catch (e: any) {
       error.value = e?.message ?? 'Failed to regenerate session'
+      return null
     } finally {
       loading.value = false
     }

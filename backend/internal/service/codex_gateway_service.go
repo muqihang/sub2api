@@ -193,7 +193,7 @@ func NewCodexGatewayService(registry *CodexGatewayModelRegistry, executor codexG
 }
 
 func (s *CodexGatewayService) Models(ctx context.Context, req CodexGatewayModelsRequest) (*CodexGatewayServiceResponse, error) {
-	if err := ValidateCodexScopedAPIKeyAccess(req.APIKey, "/codex/v1/models"); err != nil {
+	if err := ValidateCodexGatewayAPIKeyAccess(req.APIKey, "/codex/v1/models", req.ManagedDevice); err != nil {
 		return codexGatewayHTTPErrorResponse(http.StatusForbidden, CodexGatewayErrorTypeAuthentication, "invalid_api_key", err.Error()), nil
 	}
 	if s == nil || s.registry == nil {
@@ -230,7 +230,7 @@ func (s *CodexGatewayService) Models(ctx context.Context, req CodexGatewayModels
 }
 
 func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayResponsesRequest) (*CodexGatewayServiceResponse, error) {
-	if err := ValidateCodexScopedAPIKeyAccess(req.APIKey, "/codex/v1/responses"); err != nil {
+	if err := ValidateCodexGatewayAPIKeyAccess(req.APIKey, "/codex/v1/responses", req.ManagedDevice); err != nil {
 		return codexGatewayHTTPErrorResponse(http.StatusForbidden, CodexGatewayErrorTypeAuthentication, "invalid_api_key", err.Error()), nil
 	}
 	if s == nil || s.registry == nil || s.executor == nil {

@@ -195,6 +195,64 @@ def test_doctor_returns_json(capsys):
     assert data["format"] == "json"
 
 
+def test_status_reports_desktop_injection_fields(capsys):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "codex",
+                "proxy_port": 18081,
+                "desktop_enhancements": {
+                    "status": "patched",
+                    "model_picker": {"status": "patched"},
+                    "plugin_auth_gate": {"status": "patched"},
+                    "plugin_mention_marketplace": {"status": "patched"},
+                },
+                "model_catalog_meta": {"source": "gateway"},
+            }
+
+    cli.default_state_store = lambda: FakeStore()
+
+    exit_code = main(["status", "--json"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "status"
+    assert data["status"] == "configured"
+    assert data["model_picker"]["status"] == "patched"
+    assert data["plugin_auth_gate"]["status"] == "patched"
+    assert data["plugin_mention_marketplace"]["status"] == "patched"
+    assert data["model_catalog"]["source"] == "gateway"
+
+
+def test_status_reports_desktop_injection_fields_from_aggregate_items(capsys):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "codex",
+                "proxy_port": 18081,
+                "desktop_enhancements": {
+                    "status": "patched",
+                    "items": {
+                        "model-picker": {"status": "patched"},
+                        "plugin-auth-gate": {"status": "already_patched"},
+                        "plugin-mention-marketplace": {"status": "patched"},
+                    },
+                },
+            }
+
+    cli.default_state_store = lambda: FakeStore()
+
+    exit_code = main(["status", "--json"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["model_picker"]["status"] == "patched"
+    assert data["plugin_auth_gate"]["status"] == "already_patched"
+    assert data["plugin_mention_marketplace"]["status"] == "patched"
+
+
 def test_fetch_codex_model_catalog_falls_back_on_non_auth_errors():
     class FakeClient:
         def list_codex_models(self, **kwargs):

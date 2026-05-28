@@ -386,6 +386,28 @@ func TestAPIKeyServiceCreateRejectsAugmentOnlyWithoutGroup(t *testing.T) {
 	require.ErrorIs(t, err, ErrAugmentGroupRequired)
 }
 
+func TestAPIKeyServiceCreateRejectsAugmentOnlyWithoutGroupEvenWhenDefaultEntitledGroupExists(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	groupID := int64(24)
+	svc, _ := newAPIKeyAugmentService(user, &Group{
+		ID:                     groupID,
+		Name:                   "augment",
+		Status:                 StatusActive,
+		Hydrated:               true,
+		Platform:               PlatformOpenAI,
+		AugmentGatewayEntitled: true,
+	})
+
+	key, err := svc.Create(context.Background(), user.ID, CreateAPIKeyRequest{
+		Name:        "augment",
+		AugmentOnly: true,
+	})
+	require.Nil(t, key)
+	require.ErrorIs(t, err, ErrAugmentGroupRequired)
+}
+
 func TestAPIKeyServiceCreateRejectsAugmentOnlyForNonEntitledGroup(t *testing.T) {
 	t.Parallel()
 
@@ -584,6 +606,81 @@ func TestAPIKeyServiceCreateRejectsCodexOnlyWithoutGroup(t *testing.T) {
 	})
 	require.Nil(t, key)
 	require.ErrorIs(t, err, ErrCodexGroupRequired)
+}
+
+func TestAPIKeyServiceCreateAssignsDefaultCodexGroupWhenGroupOmitted(t *testing.T) {
+	t.Parallel()
+
+	user := &User{ID: 1, Status: StatusActive}
+	nonEntitledGroupID := int64(20)
+	entitledGroupID := int64(21)
+	svc, repo := newAPIKeyAugmentService(user,
+		&Group{
+			ID:       nonEntitledGroupID,
+			Name:     "generic",
+			Status:   StatusActive,
+			Hydrated: true,
+			Platform: PlatformOpenAI,
+		},
+		&Group{
+			ID:                   entitledGroupID,
+			Name:                 "codex",
+			Status:               StatusActive,
+			Hydrated:             true,
+			Platform:             PlatformOpenAI,
+			CodexGatewayEntitled: true,
+		},
+	)
+
+	key, err := svc.Create(context.Background(), user.ID, CreateAPIKeyRequest{
+		Name:      "codex",
+		CodexOnly: true,
+	})
+	require.NoError(t, err)
+	require.True(t, key.IsCodexOnly())
+	require.NotNil(t, key.GroupID)
+	require.Equal(t, entitledGroupID, *key.GroupID)
+	require.NotNil(t, repo.created)
+	require.NotNil(t, repo.created.GroupID)
+	require.Equal(t, entitledGroupID, *repo.created.GroupID)
+}
+
+func TestAPIKeyServiceCreateAssignsDefaultCodexExclusiveGroupOnlyWhenAllowed(t *testing.T) {
+	t.Parallel()
+
+	disallowedGroupID := int64(22)
+	allowedGroupID := int64(23)
+	user := &User{ID: 1, Status: StatusActive, AllowedGroups: []int64{allowedGroupID}}
+	svc, repo := newAPIKeyAugmentService(user,
+		&Group{
+			ID:                   disallowedGroupID,
+			Name:                 "codex-exclusive-disallowed",
+			Status:               StatusActive,
+			Hydrated:             true,
+			Platform:             PlatformOpenAI,
+			IsExclusive:          true,
+			CodexGatewayEntitled: true,
+		},
+		&Group{
+			ID:                   allowedGroupID,
+			Name:                 "codex-exclusive-allowed",
+			Status:               StatusActive,
+			Hydrated:             true,
+			Platform:             PlatformOpenAI,
+			IsExclusive:          true,
+			CodexGatewayEntitled: true,
+		},
+	)
+
+	key, err := svc.Create(context.Background(), user.ID, CreateAPIKeyRequest{
+		Name:      "codex",
+		CodexOnly: true,
+	})
+	require.NoError(t, err)
+	require.True(t, key.IsCodexOnly())
+	require.NotNil(t, repo.created)
+	require.NotNil(t, repo.created.GroupID)
+	require.Equal(t, allowedGroupID, *repo.created.GroupID)
 }
 
 func TestAPIKeyServiceCreateRejectsCodexOnlyForNonEntitledGroup(t *testing.T) {

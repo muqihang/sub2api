@@ -53,8 +53,8 @@ const focusStatePill = computed(() => {
         <p>{{ t('codex.console.bannerDescription') }}</p>
       </div>
       <div class="banner-actions">
-        <button class="btn btn-primary" @click="store.openLocal()" data-testid="banner-open-local-btn">
-          {{ t('codex.console.openLocal') }}
+        <button class="btn btn-primary" :disabled="store.loading" @click="store.openLocal()" data-testid="banner-open-local-btn">
+          {{ store.setupSession?.launch_url ? t('codex.console.openLocal') : t('codex.console.regenerateAndOpen') }}
         </button>
         <button class="btn btn-secondary" @click="store.copyCli()" data-testid="banner-copy-cli-btn">
           {{ t('codex.console.copyCli') }}
