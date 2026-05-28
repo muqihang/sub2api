@@ -122,6 +122,24 @@ func (h *FormalPoolOnboardingHandler) ExchangeCodeAndCreate(c *gin.Context) {
 	response.Success(c, res)
 }
 
+func (h *FormalPoolOnboardingHandler) SetupTokenCookieAuthAndCreate(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	var req service.FormalPoolSetupTokenCookieAuthAndCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	res, err := h.svc.SetupTokenCookieAuthAndCreate(c.Request.Context(), c.Param("id"), req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
 func (h *FormalPoolOnboardingHandler) Acceptance(c *gin.Context) {
 	if h == nil || h.svc == nil {
 		response.InternalError(c, "formal pool onboarding unavailable")

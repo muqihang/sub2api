@@ -3,7 +3,7 @@
     <div class="rounded-xl border border-blue-200 bg-blue-50 p-4 text-blue-900 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-100">
       <h2 class="text-xl font-semibold">Claude 订阅号池上号向导</h2>
       <p class="mt-2 text-sm">独立正式号池流程：代理 -> 同出口确认 -> OAuth -> 创建不可调度账号 -> acceptance -> 手动激活。</p>
-      <p class="mt-2 text-xs">不会展示或提交 Setup Token、cookie/sessionKey、TLS 指纹、CCH、自定义 base URL、cache TTL、session masking 或硬预算限制。</p>
+      <p class="mt-2 text-xs">Setup Token 登录态只提交给后端换取 inference token，不在页面回显、不进入 Safe summary；不会展示 TLS 指纹、CCH、自定义 base URL、cache TTL、session masking 或硬预算限制。</p>
     </div>
 
     <section class="rounded-xl border bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
@@ -84,12 +84,28 @@
     </section>
 
     <section v-if="session" class="rounded-xl border bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900">
-      <h3 class="font-semibold">3. OAuth 与创建账号</h3>
-      <button class="btn btn-secondary mt-3" :disabled="busy || !session.browser_egress_verified" @click="generateOAuth">生成 OAuth URL</button>
-      <div v-if="session.auth_url" class="mt-3 space-y-2">
-        <a class="break-all text-blue-600 underline" :href="session.auth_url" target="_blank" rel="noreferrer">{{ session.auth_url }}</a>
-        <textarea v-model="oauthCode" class="input h-24 w-full" placeholder="粘贴授权 code；不会保存或回显 token"></textarea>
-        <button class="btn btn-primary" :disabled="busy || !oauthCode" @click="exchangeCreate">Exchange code 并创建不可调度账号</button>
+      <h3 class="font-semibold">3. 授权与创建账号</h3>
+      <div class="mt-3 flex flex-wrap gap-3 text-sm">
+        <label class="inline-flex items-center gap-2">
+          <input v-model="authMode" type="radio" value="oauth" />
+          <span>OAuth URL（完整 Claude Code OAuth）</span>
+        </label>
+        <label class="inline-flex items-center gap-2">
+          <input v-model="authMode" type="radio" value="setup-token-cookie" />
+          <span>Setup Token 登录态（sk-ant-sid，仅换 inference token）</span>
+        </label>
+      </div>
+      <div v-if="authMode === 'oauth'" class="mt-3 space-y-2">
+        <button class="btn btn-secondary" :disabled="busy || !session.browser_egress_verified" @click="generateOAuth">生成 OAuth URL</button>
+        <div v-if="session.auth_url" class="space-y-2">
+          <a class="break-all text-blue-600 underline" :href="session.auth_url" target="_blank" rel="noreferrer">{{ session.auth_url }}</a>
+          <textarea v-model="oauthCode" class="input h-24 w-full" placeholder="粘贴授权 code；不会保存或回显 token"></textarea>
+          <button class="btn btn-primary" :disabled="busy || !oauthCode" @click="exchangeCreate">Exchange code 并创建不可调度账号</button>
+        </div>
+      </div>
+      <div v-else class="mt-3 space-y-2">
+        <input v-model="setupSessionKey" type="password" class="input w-full" autocomplete="new-password" placeholder="粘贴 sk-ant-sid 登录态；只提交给后端换取 setup-token，不回显、不进入 Safe summary" />
+        <button class="btn btn-primary" :disabled="busy || !session.browser_egress_verified || !setupSessionKey" @click="setupTokenCreate">导入 setup-token 并创建不可调度账号</button>
       </div>
     </section>
 
@@ -123,7 +139,9 @@ const busy = ref(false)
 const error = ref('')
 const session = ref<FormalPoolSession | null>(null)
 const acceptance = ref<FormalPoolAcceptanceResult | null>(null)
+const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
 const oauthCode = ref('')
+const setupSessionKey = ref('')
 const attestationCode = ref('')
 const form = reactive<{ proxy_mode: FormalPoolProxyMode; proxy_id?: number; group_id?: number; account_name: string; pool_profile: FormalPoolProfile; concurrency: number }>({ proxy_mode: 'existing', proxy_id: undefined, group_id: undefined, account_name: '', pool_profile: 'normal', concurrency: 10 })
 const proxy = reactive({ name: '', protocol: 'socks5' as 'http' | 'https' | 'socks5' | 'socks5h', host: '', port: 1080, username: '', password: '' })
@@ -155,6 +173,14 @@ async function testProxyStep() { if (!session.value) return; const res = await r
 async function attest() { if (!session.value) return; const res = await run(() => claudeOnboarding.attestBrowserEgress(session.value!.id, attestationCode.value)); if (res) session.value = res }
 async function generateOAuth() { if (!session.value) return; const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!.id)); if (res) session.value = res }
 async function exchangeCreate() { if (!session.value) return; const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!.id, oauthCode.value)); if (res) session.value = res }
+async function setupTokenCreate() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!.id, setupSessionKey.value))
+  if (res) {
+    session.value = res
+    setupSessionKey.value = ''
+  }
+}
 async function acceptanceStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.runAcceptance(session.value!.id)); if (res) acceptance.value = res }
 async function activateStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.activate(session.value!.id)); if (res) session.value = res }
 </script>

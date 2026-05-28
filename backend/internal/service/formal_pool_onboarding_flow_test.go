@@ -34,15 +34,23 @@ func (f *formalProxyFake) TestProxy(ctx context.Context, proxyID int64) (FormalP
 }
 
 type formalOAuthFake struct {
-	summary FormalPoolOAuthTokenSummary
-	creds   map[string]any
-	err     error
+	summary         FormalPoolOAuthTokenSummary
+	creds           map[string]any
+	err             error
+	lastCookieScope string
 }
 
 func (f *formalOAuthFake) GenerateFormalAuthURL(ctx context.Context, proxyID int64) (FormalPoolOAuthURL, error) {
 	return FormalPoolOAuthURL{AuthURL: "https://claude.ai/oauth/authorize?state=safe", SessionID: "oauth-session"}, nil
 }
 func (f *formalOAuthFake) ExchangeCode(ctx context.Context, sessionID, code string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	if f.err != nil {
+		return FormalPoolOAuthTokenSummary{}, nil, f.err
+	}
+	return f.summary, f.creds, nil
+}
+func (f *formalOAuthFake) SetupTokenCookieAuth(ctx context.Context, sessionKey string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	f.lastCookieScope = "inference"
 	if f.err != nil {
 		return FormalPoolOAuthTokenSummary{}, nil, f.err
 	}
@@ -58,7 +66,7 @@ type formalAccountFake struct {
 
 func (f *formalAccountFake) CreateFormalPoolAccount(ctx context.Context, input FormalPoolAccountCreateInput) (*Account, error) {
 	f.created = input
-	a := &Account{ID: 123, Name: input.Name, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: input.Schedulable, ProxyID: &input.ProxyID, Concurrency: input.Concurrency, Credentials: input.Credentials, Extra: input.Extra, GroupIDs: []int64{input.GroupID}}
+	a := &Account{ID: 123, Name: input.Name, Platform: PlatformAnthropic, Type: input.Type, Status: StatusActive, Schedulable: input.Schedulable, ProxyID: &input.ProxyID, Concurrency: input.Concurrency, Credentials: input.Credentials, Extra: input.Extra, GroupIDs: []int64{input.GroupID}}
 	f.account = a
 	return a, nil
 }
@@ -230,6 +238,49 @@ func TestFormalPoolAcceptanceFailsUntilCCGatewayRuntimeRegistered(t *testing.T) 
 	}
 	if !found {
 		t.Fatalf("expected cc_gateway_runtime_registered failure: %#v", accepted.Checks)
+	}
+}
+
+func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedulable(t *testing.T) {
+	acct := &formalAccountFake{}
+	runtime := &formalRuntimeFake{}
+	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{EmailPresent: true, AccountUUIDPresent: true, OrganizationUUIDPresent: true, ScopeContainsUserInference: true, ScopeContainsClaudeCode: false, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "setup-access", "refresh_token": "setup-refresh", "token_type": "Bearer", "expires_in": int64(31536000), "scope": "user:inference"}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "http://proxy.local:443"}, OAuth: oauth, Accounts: acct, CCGatewayRuntime: runtime})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "setup-acct", PoolProfile: "normal"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	got, err := svc.SetupTokenCookieAuthAndCreate(context.Background(), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-test"})
+	if err != nil {
+		t.Fatalf("setup-token create: %v", err)
+	}
+	if oauth.lastCookieScope != "inference" {
+		t.Fatalf("expected setup-token inference cookie auth, got %q", oauth.lastCookieScope)
+	}
+	if acct.created.Type != AccountTypeSetupToken || acct.account.Type != AccountTypeSetupToken {
+		t.Fatalf("expected setup-token account type, created=%q account=%q", acct.created.Type, acct.account.Type)
+	}
+	if acct.created.Schedulable || acct.account.Schedulable {
+		t.Fatalf("setup-token account must remain unschedulable before acceptance/activation")
+	}
+	if acct.created.Extra["cc_gateway_account_ref"] != got.AccountRef || acct.created.Extra["cc_gateway_enabled"] != "true" || acct.created.Extra["cc_gateway_canary_only"] != "false" {
+		t.Fatalf("bad setup-token formal extra: %#v got=%#v", acct.created.Extra, got)
+	}
+	if !runtime.called || runtime.input.AccountRef != got.AccountRef || runtime.input.EgressBucket != got.EgressBucket || runtime.input.ProxyURL != "http://proxy.local:443" {
+		t.Fatalf("runtime registration missing or wrong: %#v got=%#v", runtime.input, got)
+	}
+	if !got.CCGatewayRuntimeRegistered || got.OAuthSummary == nil || !got.OAuthSummary.ScopeContainsUserInference || got.OAuthSummary.ScopeContainsClaudeCode {
+		t.Fatalf("bad setup-token safe summary/session: %#v", got)
+	}
+	assertNoFormalPoolSensitive(t, got)
+}
+
+func TestFormalPoolSetupTokenCookieRejectsFullClaudeCodeScope(t *testing.T) {
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: &formalAccountFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	if _, err := svc.SetupTokenCookieAuthAndCreate(context.Background(), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-test"}); err == nil {
+		t.Fatalf("setup-token path must reject full Claude Code OAuth scope")
 	}
 }
 

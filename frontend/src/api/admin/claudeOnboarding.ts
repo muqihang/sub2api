@@ -72,6 +72,12 @@ export interface FormalPoolAcceptanceResult {
   activation_required: boolean
 }
 
+export interface FormalPoolSetupTokenCookieRequest {
+  session_key?: string
+  code?: string
+  proxy_id?: number
+}
+
 export async function createSession(payload: FormalPoolStartRequest): Promise<FormalPoolSession> {
   const { data } = await apiClient.post<FormalPoolSession>('/admin/claude-onboarding/sessions', payload)
   return data
@@ -105,6 +111,13 @@ export async function exchangeCodeAndCreate(id: string, code: string): Promise<F
   return data
 }
 
+export async function setupTokenCookieAuthAndCreate(id: string, sessionKey: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/setup-token-cookie-auth-and-create`, {
+    session_key: sessionKey
+  })
+  return data
+}
+
 export async function runAcceptance(id: string): Promise<FormalPoolAcceptanceResult> {
   const { data } = await apiClient.post<FormalPoolAcceptanceResult>(`/admin/claude-onboarding/sessions/${id}/acceptance`)
   return data
@@ -122,6 +135,7 @@ export default {
   attestBrowserEgress,
   generateAuthUrl,
   exchangeCodeAndCreate,
+  setupTokenCookieAuthAndCreate,
   runAcceptance,
   activate
 }

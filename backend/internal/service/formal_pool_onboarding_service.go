@@ -17,6 +17,7 @@ var (
 type FormalPoolOAuthFacade interface {
 	GenerateFormalAuthURL(ctx context.Context, proxyID int64) (FormalPoolOAuthURL, error)
 	ExchangeCode(ctx context.Context, sessionID, code string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error)
+	SetupTokenCookieAuth(ctx context.Context, sessionKey string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error)
 }
 
 type FormalPoolProxyVerifier interface {
@@ -139,6 +140,16 @@ type FormalPoolExchangeCodeAndCreateRequest struct {
 	Token        string `json:"token,omitempty"`
 }
 
+type FormalPoolSetupTokenCookieAuthAndCreateRequest struct {
+	SessionKey   string `json:"session_key"`
+	Code         string `json:"code,omitempty"`
+	ProxyID      *int64 `json:"proxy_id,omitempty"`
+	AccountRef   string `json:"account_ref,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Token        string `json:"token,omitempty"`
+}
+
 type FormalPoolProxyResolution struct {
 	ProxyID            int64
 	ProxyRef           string
@@ -153,6 +164,7 @@ type FormalPoolProxyTestSummary struct {
 }
 
 type FormalPoolAccountCreateInput struct {
+	Type        string
 	Name        string
 	Notes       string
 	Credentials map[string]any
@@ -421,7 +433,85 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 	}
 	extra := formalPoolDefaultExtra(rec, accountRef)
 	account, err := s.accounts.CreateFormalPoolAccount(ctx, FormalPoolAccountCreateInput{
-		Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
+		Type: AccountTypeOAuth, Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
+		ProxyID: rec.ProxyID, GroupID: rec.GroupID, Concurrency: rec.Concurrency, Schedulable: false,
+	})
+	if err != nil {
+		return nil, err
+	}
+	rec, err = s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
+		rec.AccountID = account.ID
+		rec.AccountRef = accountRef
+		rec.OAuthSummary = &summary
+		rec.CCGatewayRuntimeRegistered = runtimeRegistered
+		rec.Status = FormalPoolOnboardingStatusPendingAcceptance
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.sessionResponse(rec, nil), nil
+}
+
+func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.Context, id string, req FormalPoolSetupTokenCookieAuthAndCreateRequest) (*FormalPoolOnboardingSession, error) {
+	if strings.TrimSpace(req.AccountRef) != "" || strings.TrimSpace(req.AccessToken) != "" || strings.TrimSpace(req.RefreshToken) != "" || strings.TrimSpace(req.Token) != "" {
+		return nil, infraerrors.BadRequest("FRONTEND_SECRET_FIELD_FORBIDDEN", "frontend-controlled account refs and tokens are forbidden")
+	}
+	rec, ok := s.store.get(id)
+	if !ok {
+		return nil, ErrFormalPoolOnboardingNotFound
+	}
+	if req.ProxyID != nil && *req.ProxyID != rec.ProxyID {
+		return nil, infraerrors.BadRequest("PROXY_MISMATCH", "setup-token proxy must match onboarding session proxy")
+	}
+	sessionKey := strings.TrimSpace(req.SessionKey)
+	if sessionKey == "" {
+		sessionKey = strings.TrimSpace(req.Code)
+	}
+	if sessionKey == "" {
+		return nil, infraerrors.BadRequest("SETUP_TOKEN_SESSION_KEY_REQUIRED", "setup-token session key is required")
+	}
+	if !rec.BrowserVerified {
+		return nil, infraerrors.BadRequest("BROWSER_EGRESS_UNVERIFIED", "browser egress verification is required before setup-token cookie auth")
+	}
+	if s.oauth == nil || s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_CREATE_UNAVAILABLE", "formal pool setup-token/create dependencies are unavailable")
+	}
+	summary, credentials, err := s.oauth.SetupTokenCookieAuth(ctx, sessionKey, rec.ProxyID)
+	if err != nil {
+		return nil, err
+	}
+	if !summary.ScopeContainsUserInference {
+		return nil, infraerrors.BadRequest("INVALID_SETUP_TOKEN_SCOPE", "setup-token account requires user inference scope")
+	}
+	if summary.ScopeContainsClaudeCode {
+		return nil, infraerrors.BadRequest("SETUP_TOKEN_SCOPE_MISMATCH", "setup-token cookie flow must not import full Claude Code OAuth scope")
+	}
+	if strings.TrimSpace(stringFromAny(credentials["refresh_token"])) == "" {
+		return nil, infraerrors.BadRequest("REFRESH_TOKEN_REQUIRED", "formal pool setup-token account requires refresh token")
+	}
+	accountRef := formalPoolSafeRef("account", rec.ID+":"+rec.ProxyRef+":"+rec.AccountName)
+	runtimeRegistered := false
+	if s.ccGatewayRuntime != nil {
+		if strings.TrimSpace(rec.NormalizedProxyURL) == "" {
+			return nil, infraerrors.BadRequest("CC_GATEWAY_RUNTIME_PROXY_URL_MISSING", "cc gateway runtime registration requires a normalized proxy url")
+		}
+		if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, FormalPoolCCGatewayRuntimeRegistration{
+			AccountRef:     accountRef,
+			EgressBucket:   rec.EgressBucket,
+			ProxyURL:       rec.NormalizedProxyURL,
+			ProxyRef:       rec.ProxyRef,
+			PolicyVersion:  ccGatewayAnthropicPolicyVersion,
+			PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+			SessionPolicy:  "preserve_downstream_session_id",
+		}); err != nil {
+			return nil, err
+		}
+		runtimeRegistered = true
+	}
+	extra := formalPoolDefaultExtra(rec, accountRef)
+	account, err := s.accounts.CreateFormalPoolAccount(ctx, FormalPoolAccountCreateInput{
+		Type: AccountTypeSetupToken, Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
 		ProxyID: rec.ProxyID, GroupID: rec.GroupID, Concurrency: rec.Concurrency, Schedulable: false,
 	})
 	if err != nil {
@@ -543,7 +633,11 @@ func formalPoolLocalAcceptanceChecks(account *Account, rec *formalPoolOnboarding
 	if account != nil {
 		scope = account.GetCredential("scope")
 	}
-	add("user_inference_scope", strings.Contains(scope, "user:inference") && strings.Contains(scope, "user:sessions:claude_code"), "full Claude Code OAuth scope required")
+	if account != nil && account.Type == AccountTypeSetupToken {
+		add("user_inference_scope", strings.Contains(scope, "user:inference") && !strings.Contains(scope, "user:sessions:claude_code"), "setup-token inference-only scope required")
+	} else {
+		add("user_inference_scope", strings.Contains(scope, "user:inference") && strings.Contains(scope, "user:sessions:claude_code"), "full Claude Code OAuth scope required")
+	}
 	if account != nil {
 		add("cc_gateway_enabled", account.GetExtraString("cc_gateway_enabled") == "true", "cc gateway enabled required")
 		add("cc_gateway_canary_only_false", account.GetExtraString("cc_gateway_canary_only") == "false", "formal pool must not be canary-only")

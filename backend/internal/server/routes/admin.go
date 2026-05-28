@@ -669,6 +669,7 @@ func registerFormalPoolOnboardingAdminRoutes(admin *gin.RouterGroup, h *handler.
 			sessions.POST("/:id/browser-egress-attestation", h.Admin.FormalPoolOnboarding.BrowserEgressAttestation)
 			sessions.POST("/:id/generate-auth-url", h.Admin.FormalPoolOnboarding.GenerateAuthURL)
 			sessions.POST("/:id/exchange-code-and-create", h.Admin.FormalPoolOnboarding.ExchangeCodeAndCreate)
+			sessions.POST("/:id/setup-token-cookie-auth-and-create", h.Admin.FormalPoolOnboarding.SetupTokenCookieAuthAndCreate)
 			sessions.POST("/:id/acceptance", h.Admin.FormalPoolOnboarding.Acceptance)
 			sessions.POST("/:id/activate", h.Admin.FormalPoolOnboarding.Activate)
 			sessions.POST("/:id/abort", h.Admin.FormalPoolOnboarding.Abort)

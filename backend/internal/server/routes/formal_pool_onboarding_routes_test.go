@@ -40,4 +40,11 @@ func TestFormalPoolOnboardingRoutes_AdminAndPublicBrowserEgress(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	require.NotEqual(t, http.StatusNotFound, rec.Code)
 	require.Equal(t, 1, adminAuthCalls, "mutating onboarding session routes must remain admin protected")
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/fpo_test/setup-token-cookie-auth-and-create", bytes.NewBufferString(`{"session_key":"sk-ant-sid02-test"}`))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, 2, adminAuthCalls, "setup-token onboarding route must remain admin protected")
+	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND", "registered route should reach onboarding service")
+	require.NotContains(t, rec.Body.String(), "sk-ant-sid02-test", "route errors must not echo setup-token login state")
 }

@@ -110,10 +110,31 @@ func (f *FormalPoolClaudeOAuthFacade) ExchangeCode(ctx context.Context, sessionI
 	if err != nil {
 		return FormalPoolOAuthTokenSummary{}, nil, err
 	}
+	summary, creds := formalPoolTokenInfoSummaryAndCredentials(tok)
+	return summary, creds, nil
+}
+
+func (f *FormalPoolClaudeOAuthFacade) SetupTokenCookieAuth(ctx context.Context, sessionKey string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	if f == nil || f.oauth == nil {
+		return FormalPoolOAuthTokenSummary{}, nil, fmt.Errorf("oauth service unavailable")
+	}
+	tok, err := f.oauth.CookieAuth(ctx, &CookieAuthInput{
+		SessionKey: sessionKey,
+		ProxyID:    &proxyID,
+		Scope:      "inference",
+	})
+	if err != nil {
+		return FormalPoolOAuthTokenSummary{}, nil, err
+	}
+	summary, creds := formalPoolTokenInfoSummaryAndCredentials(tok)
+	return summary, creds, nil
+}
+
+func formalPoolTokenInfoSummaryAndCredentials(tok *TokenInfo) (FormalPoolOAuthTokenSummary, map[string]any) {
 	scope := strings.TrimSpace(tok.Scope)
 	summary := FormalPoolOAuthTokenSummary{EmailPresent: strings.TrimSpace(tok.EmailAddress) != "", AccountUUIDPresent: strings.TrimSpace(tok.AccountUUID) != "", OrganizationUUIDPresent: strings.TrimSpace(tok.OrgUUID) != "", ScopeContainsUserInference: strings.Contains(scope, "user:inference"), ScopeContainsClaudeCode: strings.Contains(scope, "user:sessions:claude_code") && scope != oauth.ScopeInference, ExpiresInBucket: formalPoolExpiresBucket(tok.ExpiresIn)}
 	creds := map[string]any{"access_token": tok.AccessToken, "refresh_token": tok.RefreshToken, "token_type": tok.TokenType, "expires_in": tok.ExpiresIn, "expires_at": tok.ExpiresAt, "scope": tok.Scope}
-	return summary, creds, nil
+	return summary, creds
 }
 func formalPoolExpiresBucket(v int64) string {
 	if v <= 0 {
@@ -134,7 +155,11 @@ func (m *FormalPoolAdminAccountManager) CreateFormalPoolAccount(ctx context.Cont
 	if m == nil || m.admin == nil {
 		return nil, fmt.Errorf("admin service unavailable")
 	}
-	return m.admin.CreateAccount(ctx, &CreateAccountInput{Name: input.Name, Notes: &input.Notes, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: input.Credentials, Extra: input.Extra, ProxyID: &input.ProxyID, Concurrency: input.Concurrency, GroupIDs: []int64{input.GroupID}, SkipDefaultGroupBind: true, Schedulable: &input.Schedulable})
+	accountType := strings.TrimSpace(input.Type)
+	if accountType == "" {
+		accountType = AccountTypeOAuth
+	}
+	return m.admin.CreateAccount(ctx, &CreateAccountInput{Name: input.Name, Notes: &input.Notes, Platform: PlatformAnthropic, Type: accountType, Credentials: input.Credentials, Extra: input.Extra, ProxyID: &input.ProxyID, Concurrency: input.Concurrency, GroupIDs: []int64{input.GroupID}, SkipDefaultGroupBind: true, Schedulable: &input.Schedulable})
 }
 func (m *FormalPoolAdminAccountManager) GetFormalPoolAccount(ctx context.Context, id int64) (*Account, error) {
 	if m == nil || m.admin == nil {
