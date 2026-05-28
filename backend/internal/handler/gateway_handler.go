@@ -371,6 +371,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		c.Set("parsed_request", parsedReq)
 		_, forwardErr := h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
 		if forwardErr != nil {
+			h.isolateBadThinkingSessionOnForwardError(c.Request.Context(), apiKey.GroupID, sessionKey, account, forwardErr, reqLog)
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			reqLog.Error("gateway.explicit_canary_forward_failed",
 				zap.Int64("account_id", account.ID),
@@ -515,6 +516,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				h.isolateBadThinkingSessionOnForwardError(c.Request.Context(), apiKey.GroupID, sessionKey, account, err, reqLog)
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
@@ -839,6 +841,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				h.isolateBadThinkingSessionOnForwardError(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account, err, reqLog)
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {
@@ -1571,6 +1574,43 @@ func (h *GatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarte
 	}
 	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
 	return true
+}
+
+func (h *GatewayHandler) isolateBadThinkingSessionOnForwardError(ctx context.Context, groupID *int64, sessionKey string, account *service.Account, err error, log *zap.Logger) bool {
+	var thinkingErr *service.SessionCorruptThinkingSignatureError
+	if !errors.As(err, &thinkingErr) && !service.IsClaudeThinkingSignatureSessionError(errString(err)) {
+		return false
+	}
+
+	fields := []zap.Field{
+		zap.Bool("session_key_present", strings.TrimSpace(sessionKey) != ""),
+	}
+	if account != nil {
+		fields = append(fields,
+			zap.Int64("account_id", account.ID),
+			zap.String("account_platform", account.Platform),
+		)
+	}
+	if h.gatewayService != nil && strings.TrimSpace(sessionKey) != "" {
+		if clearErr := h.gatewayService.ClearStickySession(ctx, groupID, sessionKey); clearErr != nil {
+			fields = append(fields, zap.Error(clearErr))
+			if log != nil {
+				log.Warn("gateway.session_thinking_signature_isolation_failed", fields...)
+			}
+			return true
+		}
+	}
+	if log != nil {
+		log.Warn("gateway.session_thinking_signature_isolated", fields...)
+	}
+	return true
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // checkClaudeCodeVersion 检查 Claude Code 客户端版本是否满足版本要求

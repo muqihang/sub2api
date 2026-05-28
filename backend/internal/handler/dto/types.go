@@ -174,7 +174,9 @@ type Account struct {
 	CreatedAt          time.Time      `json:"created_at"`
 	UpdatedAt          time.Time      `json:"updated_at"`
 
-	Schedulable bool `json:"schedulable"`
+	Schedulable          bool `json:"schedulable"`
+	EffectiveSchedulable bool `json:"effective_schedulable"`
+	IsFormalPool         bool `json:"is_formal_pool,omitempty"`
 
 	RateLimitedAt    *time.Time `json:"rate_limited_at"`
 	RateLimitResetAt *time.Time `json:"rate_limit_reset_at"`
@@ -182,6 +184,18 @@ type Account struct {
 
 	TempUnschedulableUntil  *time.Time `json:"temp_unschedulable_until"`
 	TempUnschedulableReason string     `json:"temp_unschedulable_reason"`
+
+	OnboardingStage                 string `json:"onboarding_stage,omitempty"`
+	PoolProfileRequested            string `json:"pool_profile_requested,omitempty"`
+	PoolProfileEffective            string `json:"pool_profile_effective,omitempty"`
+	PoolWeightMode                  string `json:"pool_weight_mode,omitempty"`
+	HealthcheckStatus               string `json:"healthcheck_status,omitempty"`
+	HealthcheckLastStatusCodeBucket string `json:"healthcheck_last_status_code_bucket,omitempty"`
+	CCGatewayRuntimeRegistered      bool   `json:"cc_gateway_runtime_registered,omitempty"`
+	QuarantineReason                string `json:"quarantine_reason,omitempty"`
+	RiskEventRef                    string `json:"risk_event_ref,omitempty"`
+	WarmingUntil                    string `json:"warming_until,omitempty"`
+	ProductionReady                 bool   `json:"production_ready,omitempty"`
 
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`

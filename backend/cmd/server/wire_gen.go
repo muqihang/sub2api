@@ -272,7 +272,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexGatewayStateStore := service.ProvideCodexGatewayStateStore(configConfig)
 	codexGatewayAdminService := service.ProvideCodexGatewayAdminServiceWithVariantChecker(configConfig, codexGatewayStateStore, gatewayService)
 	codexGatewayHandler := handler.ProvideCodexGatewayAdminHandler(codexGatewayAdminService)
-	formalPoolOnboardingService := service.ProvideFormalPoolOnboardingService(adminService, oAuthService, configConfig)
+	formalPoolOnboardingService := service.ProvideFormalPoolOnboardingService(adminService, oAuthService, configConfig, accountRepository, httpUpstream)
 	formalPoolOnboardingHandler := admin.NewFormalPoolOnboardingHandler(formalPoolOnboardingService)
 	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, geminiHealthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, entityHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, paymentHandler, affiliateHandler, augmentGatewayHandler, codexGatewayHandler, formalPoolOnboardingHandler)
 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)

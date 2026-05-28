@@ -84,6 +84,7 @@ type AdminService interface {
 	// ForceAntigravityPrivacy 强制重新设置 Antigravity OAuth 账号隐私，无论当前状态。
 	ForceAntigravityPrivacy(ctx context.Context, account *Account) string
 	SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error)
+	QuarantineFormalPoolAccount(ctx context.Context, id int64, reason string) (*Account, error)
 	BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error)
 	CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error
 
@@ -2419,6 +2420,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if input.Schedulable != nil {
 		account.Schedulable = *input.Schedulable
 	}
+	if account.Platform == PlatformAnthropic && (account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken) && FormalPoolAccountStage(account) == FormalPoolStageLegacyUnknown {
+		account.Extra = FormalPoolImportedAccountExtra(account.Extra, time.Now().UTC())
+		account.Schedulable = false
+	}
 	if account.Extra != nil {
 		if err := ValidateQuotaResetConfig(account.Extra); err != nil {
 			return nil, err
@@ -2580,8 +2585,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.Status != "" {
 		account.Status = input.Status
 	}
+	desiredSchedulable := account.Schedulable
 	if input.Schedulable != nil {
-		account.Schedulable = *input.Schedulable
+		desiredSchedulable = *input.Schedulable
 	}
 	if input.ExpiresAt != nil {
 		if *input.ExpiresAt <= 0 {
@@ -2594,6 +2600,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.AutoPauseOnExpired != nil {
 		account.AutoPauseOnExpired = *input.AutoPauseOnExpired
 	}
+	if input.Schedulable != nil && *input.Schedulable && IsFormalPoolAccount(account) && !IsFormalPoolSchedulableStage(FormalPoolAccountStage(account)) {
+		return nil, infraerrors.BadRequest("FORMAL_POOL_ONBOARDING_STAGE_NOT_SCHEDULABLE", "formal pool account must pass healthcheck and enter warming or production before scheduling")
+	}
+	account.Schedulable = desiredSchedulable
 
 	// 先验证分组是否存在（在任何写操作之前）
 	if input.GroupIDs != nil {
@@ -2694,6 +2704,27 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if input.RateMultiplier != nil {
 		if *input.RateMultiplier < 0 {
 			return nil, errors.New("rate_multiplier must be >= 0")
+		}
+	}
+
+	if input.Schedulable != nil && *input.Schedulable {
+		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
+		if err != nil {
+			return nil, err
+		}
+		for _, account := range accounts {
+			if account == nil || !IsFormalPoolAccount(account) {
+				continue
+			}
+			targetExtra := cloneCredentials(account.Extra)
+			for key, value := range input.Extra {
+				targetExtra[key] = value
+			}
+			target := *account
+			target.Extra = targetExtra
+			if !IsFormalPoolSchedulableStage(FormalPoolAccountStage(&target)) {
+				return nil, infraerrors.BadRequest("FORMAL_POOL_ONBOARDING_STAGE_NOT_SCHEDULABLE", "formal pool account must pass healthcheck and enter warming or production before scheduling")
+			}
 		}
 	}
 
@@ -2851,6 +2882,13 @@ func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorM
 }
 
 func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error) {
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if schedulable && account != nil && IsFormalPoolAccount(account) && !IsFormalPoolSchedulableStage(FormalPoolAccountStage(account)) {
+		return nil, infraerrors.BadRequest("FORMAL_POOL_ONBOARDING_STAGE_NOT_SCHEDULABLE", "formal pool account must pass healthcheck and enter warming or production before scheduling")
+	}
 	if err := s.accountRepo.SetSchedulable(ctx, id, schedulable); err != nil {
 		return nil, err
 	}
@@ -2859,6 +2897,24 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 		return nil, err
 	}
 	return updated, nil
+}
+
+func (s *adminServiceImpl) QuarantineFormalPoolAccount(ctx context.Context, id int64, reason string) (*Account, error) {
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, ErrAccountNotFound
+	}
+	if !IsFormalPoolAccount(account) {
+		return nil, infraerrors.BadRequest("FORMAL_POOL_ACCOUNT_REQUIRED", "account is not managed by formal pool onboarding")
+	}
+	q := NewAccountQuarantineService(s.accountRepo, newDefaultSessionBudgetObserveSink())
+	if _, err := q.Quarantine(ctx, AccountQuarantineInput{AccountID: id, Kind: RiskEventKindIdentityBoundaryFail, Reason: reason, Source: "admin_account_quarantine"}); err != nil {
+		return nil, err
+	}
+	return s.accountRepo.GetByID(ctx, id)
 }
 
 // Proxy management implementations

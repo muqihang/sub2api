@@ -21,7 +21,7 @@ func newCCGatewayControlPlaneResponse(status int, code string) *http.Response {
 	return &http.Response{
 		StatusCode: status,
 		Header:     header,
-		Body: ccGatewayIOReadCloser(`{"error":{"type":"cc_gateway_control_plane","code":"` + code + `","message":"local control-plane reject"}}`),
+		Body:       ccGatewayIOReadCloser(`{"error":{"type":"cc_gateway_control_plane","code":"` + code + `","message":"local control-plane reject"}}`),
 	}
 }
 
@@ -116,4 +116,43 @@ func TestCCGatewayControlPlane_AnthropicAPIKeyCountTokensFailsClosedWithoutTLSPr
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr), "API-key passthrough count_tokens control-plane errors must fail closed without account failover")
 	require.Nil(t, upstream.lastProfile, "API-key passthrough count_tokens CC Gateway path must not use account TLS profile")
+}
+
+func TestCCGatewayControlPlane_FormalPoolMissingIdentityQuarantines(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, "missing_account_identity")}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
+	sink := &recordingBudgetLedgerSink{}
+	svc.accountRepo = repo
+	svc.sessionBudgetObserve = sink
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.False(t, repo.accountsByID[account.ID].Schedulable)
+	require.Equal(t, StatusError, repo.accountsByID[account.ID].Status)
+	require.NotEmpty(t, repo.accountsByID[account.ID].Extra[FormalPoolExtraRiskEventRef])
+	require.NotEmpty(t, sink.risks)
+}
+
+func TestCCGatewayControlPlane_NonFormalDoesNotQuarantine(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, "missing_account_identity")}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
+	svc.accountRepo = repo
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	require.Empty(t, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.NotEqual(t, StatusError, repo.accountsByID[account.ID].Status)
 }

@@ -748,3 +748,22 @@ func TestApplyCCGatewayAntigravityHeadersDoesNotSendRawAccountEmail(t *testing.T
 	require.Equal(t, "bucket-a", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
 	require.Empty(t, getHeaderRaw(req.Header, "x-cc-account-email"))
 }
+
+func TestGatewayService_SelectCCGatewayAnthropicRouteUsesEffectiveFormalPoolSchedulability(t *testing.T) {
+	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Schedulable = true
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:formal-pool-ref"
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRuntimeRegistered
+
+	useCCGateway, err := svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	require.False(t, useCCGateway)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "lifecycle ineligible")
+}

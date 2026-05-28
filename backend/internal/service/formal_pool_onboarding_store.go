@@ -14,8 +14,15 @@ const (
 	FormalPoolOnboardingStatusBrowserEgressVerified = "browser_egress_verified"
 	FormalPoolOnboardingStatusOAuthURLGenerated     = "oauth_url_generated"
 	FormalPoolOnboardingStatusAccountCreated        = "oauth_exchanged_account_created"
+	FormalPoolOnboardingStatusImported              = FormalPoolStageImported
+	FormalPoolOnboardingStatusRefreshed             = FormalPoolStageRefreshed
+	FormalPoolOnboardingStatusRuntimeRegistered     = FormalPoolStageRuntimeRegistered
+	FormalPoolOnboardingStatusHealthcheckPassed     = FormalPoolStageHealthcheckPassed
+	FormalPoolOnboardingStatusWarming               = FormalPoolStageWarming
+	FormalPoolOnboardingStatusProduction            = FormalPoolStageProduction
+	FormalPoolOnboardingStatusQuarantined           = FormalPoolStageQuarantined
 	FormalPoolOnboardingStatusPendingAcceptance     = "pending_acceptance"
-	FormalPoolOnboardingStatusReadyForSmallFlow     = "ready_for_small_flow"
+	FormalPoolOnboardingStatusReadyForSmallFlow     = FormalPoolStageWarming
 	FormalPoolOnboardingStatusFailed                = "failed"
 	FormalPoolOnboardingStatusAborted               = "aborted"
 	FormalPoolOnboardingDefaultTTL                  = 45 * time.Minute
@@ -46,6 +53,7 @@ type formalPoolOnboardingSessionRecord struct {
 	AccountRef                 string
 	OAuthSummary               *FormalPoolOAuthTokenSummary
 	AcceptancePassed           bool
+	HealthcheckPassed          bool
 	CCGatewayRuntimeRegistered bool
 	CreatedAt                  time.Time
 	UpdatedAt                  time.Time

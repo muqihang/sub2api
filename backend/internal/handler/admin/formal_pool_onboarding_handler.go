@@ -179,6 +179,71 @@ func (h *FormalPoolOnboardingHandler) Abort(c *gin.Context) {
 	response.Success(c, res)
 }
 
+func (h *FormalPoolOnboardingHandler) RefreshOnly(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	res, err := h.svc.RefreshOnly(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *FormalPoolOnboardingHandler) RuntimeRegister(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	res, err := h.svc.RegisterRuntime(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *FormalPoolOnboardingHandler) Healthcheck(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	res, err := h.svc.RunAcceptance(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *FormalPoolOnboardingHandler) StartWarming(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	res, err := h.svc.StartWarming(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *FormalPoolOnboardingHandler) PromoteProduction(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	res, err := h.svc.PromoteProduction(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
 func (h *FormalPoolOnboardingHandler) notImplemented(c *gin.Context) {
 	response.Error(c, 501, "formal pool onboarding step is not implemented yet")
 }

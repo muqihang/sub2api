@@ -20,6 +20,10 @@ type FormalPoolOAuthFacade interface {
 	SetupTokenCookieAuth(ctx context.Context, sessionKey string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error)
 }
 
+type FormalPoolRefreshOnlyRunner interface {
+	RefreshFormalPoolAccount(ctx context.Context, account *Account) (FormalPoolOAuthTokenSummary, map[string]any, error)
+}
+
 type FormalPoolProxyVerifier interface {
 	ResolveOrCreateProxy(ctx context.Context, req FormalPoolOnboardingStartRequest) (FormalPoolProxyResolution, error)
 	TestProxy(ctx context.Context, proxyID int64) (FormalPoolProxyTestSummary, error)
@@ -28,6 +32,8 @@ type FormalPoolProxyVerifier interface {
 type FormalPoolAccountCreator interface {
 	CreateFormalPoolAccount(ctx context.Context, input FormalPoolAccountCreateInput) (*Account, error)
 	GetFormalPoolAccount(ctx context.Context, id int64) (*Account, error)
+	UpdateFormalPoolAccountCredentials(ctx context.Context, id int64, credentials map[string]any) (*Account, error)
+	UpdateFormalPoolAccountState(ctx context.Context, id int64, schedulable bool, status string, extra map[string]any) (*Account, error)
 	ActivateFormalPoolAccount(ctx context.Context, id int64, extra map[string]any) (*Account, error)
 }
 
@@ -43,6 +49,10 @@ type FormalPoolAcceptanceRunner interface {
 	RunAcceptance(ctx context.Context, input FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error)
 }
 
+type FormalPoolAccountHealthcheckRunner interface {
+	RunHealthcheck(ctx context.Context, input FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error)
+}
+
 type FormalPoolOnboardingDeps struct {
 	Store            *FormalPoolOnboardingStore
 	OAuth            FormalPoolOAuthFacade
@@ -51,6 +61,8 @@ type FormalPoolOnboardingDeps struct {
 	CCGateway        FormalPoolCCGatewayReadinessVerifier
 	CCGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
 	Acceptance       FormalPoolAcceptanceRunner
+	Healthcheck      FormalPoolAccountHealthcheckRunner
+	Refresh          FormalPoolRefreshOnlyRunner
 	PublicURLPrefix  string
 }
 
@@ -62,6 +74,8 @@ type FormalPoolOnboardingService struct {
 	ccGateway        FormalPoolCCGatewayReadinessVerifier
 	ccGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
 	acceptance       FormalPoolAcceptanceRunner
+	healthcheck      FormalPoolAccountHealthcheckRunner
+	refresh          FormalPoolRefreshOnlyRunner
 	publicURLPrefix  string
 }
 
@@ -110,6 +124,8 @@ type FormalPoolOnboardingSession struct {
 	SafeSummary                map[string]any               `json:"safe_summary"`
 	Checks                     []FormalPoolAcceptanceCheck  `json:"checks,omitempty"`
 	CCGatewayRuntimeRegistered bool                         `json:"cc_gateway_runtime_registered"`
+	HealthcheckPassed          bool                         `json:"healthcheck_passed"`
+	ProductionReady            bool                         `json:"production_ready"`
 }
 
 type FormalPoolOAuthURL struct {
@@ -179,6 +195,7 @@ type FormalPoolAcceptanceInput struct {
 	SessionID    string
 	AccountID    int64
 	AccountRef   string
+	AccountName  string
 	ProxyID      int64
 	ProxyRef     string
 	GroupID      int64
@@ -212,6 +229,29 @@ type FormalPoolAcceptanceResult struct {
 	Checks                         []FormalPoolAcceptanceCheck `json:"checks"`
 	NoRealMessagesRequestPerformed bool                        `json:"no_real_messages_request_performed"`
 	ActivationRequired             bool                        `json:"activation_required"`
+	StatusCodeBucket               string                      `json:"status_code_bucket,omitempty"`
+	CCGatewaySeen                  bool                        `json:"cc_gateway_seen,omitempty"`
+	RawCapturePresent              bool                        `json:"raw_capture_present,omitempty"`
+	RawCaptureRef                  string                      `json:"raw_capture_ref,omitempty"`
+	FallbackDetected               bool                        `json:"fallback_detected,omitempty"`
+	ProxyMismatch                  bool                        `json:"proxy_mismatch,omitempty"`
+	RiskTextDetected               bool                        `json:"risk_text_detected,omitempty"`
+}
+
+type formalPoolHealthcheckAcceptanceAdapter struct {
+	runner FormalPoolAccountHealthcheckRunner
+}
+
+func (a formalPoolHealthcheckAcceptanceAdapter) RunAcceptance(ctx context.Context, input FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error) {
+	return a.runner.RunHealthcheck(ctx, input)
+}
+
+func (r *FormalPoolAcceptanceResult) FormalPoolHealthcheckPassed() bool {
+	if r == nil {
+		return false
+	}
+	statusOK := r.Status == FormalPoolOnboardingStatusHealthcheckPassed || r.Status == "passed" || r.Status == "healthcheck_passed"
+	return statusOK && strings.TrimSpace(r.StatusCodeBucket) == "status_2xx" && r.CCGatewaySeen && r.RawCapturePresent && !r.FallbackDetected && !r.ProxyMismatch && !r.RiskTextDetected
 }
 
 func NewFormalPoolOnboardingService(deps FormalPoolOnboardingDeps) *FormalPoolOnboardingService {
@@ -220,7 +260,7 @@ func NewFormalPoolOnboardingService(deps FormalPoolOnboardingDeps) *FormalPoolOn
 		store = NewFormalPoolOnboardingStore(FormalPoolOnboardingDefaultTTL, time.Now)
 	}
 	prefix := strings.TrimRight(strings.TrimSpace(deps.PublicURLPrefix), "/")
-	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, publicURLPrefix: prefix}
+	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, publicURLPrefix: prefix}
 }
 
 func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req FormalPoolOnboardingStartRequest) (*FormalPoolOnboardingSession, error) {
@@ -431,7 +471,8 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 		}
 		runtimeRegistered = true
 	}
-	extra := formalPoolDefaultExtra(rec, accountRef)
+	extra := FormalPoolImportedAccountExtra(formalPoolDefaultExtra(rec, accountRef), s.store.now())
+	formalPoolMarkRuntimeRegisteredExtra(extra, runtimeRegistered, s.store.now())
 	account, err := s.accounts.CreateFormalPoolAccount(ctx, FormalPoolAccountCreateInput{
 		Type: AccountTypeOAuth, Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
 		ProxyID: rec.ProxyID, GroupID: rec.GroupID, Concurrency: rec.Concurrency, Schedulable: false,
@@ -444,7 +485,7 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 		rec.AccountRef = accountRef
 		rec.OAuthSummary = &summary
 		rec.CCGatewayRuntimeRegistered = runtimeRegistered
-		rec.Status = FormalPoolOnboardingStatusPendingAcceptance
+		rec.Status = FormalPoolOnboardingStatusImported
 		return nil
 	})
 	if err != nil {
@@ -509,7 +550,8 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 		}
 		runtimeRegistered = true
 	}
-	extra := formalPoolDefaultExtra(rec, accountRef)
+	extra := FormalPoolImportedAccountExtra(formalPoolDefaultExtra(rec, accountRef), s.store.now())
+	formalPoolMarkRuntimeRegisteredExtra(extra, runtimeRegistered, s.store.now())
 	account, err := s.accounts.CreateFormalPoolAccount(ctx, FormalPoolAccountCreateInput{
 		Type: AccountTypeSetupToken, Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
 		ProxyID: rec.ProxyID, GroupID: rec.GroupID, Concurrency: rec.Concurrency, Schedulable: false,
@@ -522,7 +564,7 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 		rec.AccountRef = accountRef
 		rec.OAuthSummary = &summary
 		rec.CCGatewayRuntimeRegistered = runtimeRegistered
-		rec.Status = FormalPoolOnboardingStatusPendingAcceptance
+		rec.Status = FormalPoolOnboardingStatusImported
 		return nil
 	})
 	if err != nil {
@@ -544,6 +586,25 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 		return nil, err
 	}
 	checks := formalPoolLocalAcceptanceChecks(account, rec)
+	var healthResult *FormalPoolAcceptanceResult
+	runner := s.acceptance
+	if runner == nil && s.healthcheck != nil {
+		runner = formalPoolHealthcheckAcceptanceAdapter{s.healthcheck}
+	}
+	if runner != nil {
+		result, err := runner.RunAcceptance(ctx, formalPoolAcceptanceInput(rec))
+		if err != nil {
+			checks = append(checks, FormalPoolAcceptanceCheck{Name: "directed_healthcheck", Status: "fail", Message: "directed healthcheck failed"})
+		} else if result != nil {
+			healthResult = result
+			checks = append(checks, result.Checks...)
+			if result.FormalPoolHealthcheckPassed() {
+				rec.HealthcheckPassed = true
+			}
+		}
+	} else {
+		checks = append(checks, FormalPoolAcceptanceCheck{Name: "directed_healthcheck", Status: "fail", Message: "directed healthcheck runner unavailable"})
+	}
 	if s.ccGateway == nil {
 		checks = append(checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_readiness", Status: "fail", Message: "cc gateway readiness verifier unavailable"})
 	} else {
@@ -554,15 +615,43 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 			checks = append(checks, ccChecks...)
 		}
 	}
+	if !rec.HealthcheckPassed {
+		checks = append(checks, FormalPoolAcceptanceCheck{Name: "healthcheck_200_required", Status: "fail", Message: "directed healthcheck must return 200 before activation"})
+	}
 	if !formalPoolChecksAllPass(checks) {
 		return &FormalPoolAcceptanceResult{Status: "failed_acceptance", AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile, Checks: checks, NoRealMessagesRequestPerformed: true, ActivationRequired: false}, nil
 	}
+	healthExtra := map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageHealthcheckPassed, FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(s.store.now()), FormalPoolExtraHealthcheckStatus: "passed", FormalPoolExtraHealthcheckStatusCodeBucket: "status_2xx"}
+	if healthResult != nil {
+		if strings.TrimSpace(healthResult.StatusCodeBucket) != "" {
+			healthExtra[FormalPoolExtraHealthcheckStatusCodeBucket] = healthResult.StatusCodeBucket
+		}
+		if strings.TrimSpace(healthResult.RawCaptureRef) != "" {
+			healthExtra[FormalPoolExtraHealthcheckRawRef] = healthResult.RawCaptureRef
+		}
+	}
+	if s.accounts != nil {
+		if _, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, healthExtra); err != nil {
+			return nil, err
+		}
+	}
 	_, _ = s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
 		rec.AcceptancePassed = true
-		rec.Status = FormalPoolOnboardingStatusPendingAcceptance
+		rec.HealthcheckPassed = true
+		rec.Status = FormalPoolOnboardingStatusHealthcheckPassed
 		return nil
 	})
-	return &FormalPoolAcceptanceResult{Status: "pending_activation", AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile, Checks: checks, NoRealMessagesRequestPerformed: true, ActivationRequired: true}, nil
+	out := &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile, Checks: checks, NoRealMessagesRequestPerformed: false, ActivationRequired: true, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true}
+	if healthResult != nil {
+		out.StatusCodeBucket = healthResult.StatusCodeBucket
+		out.CCGatewaySeen = healthResult.CCGatewaySeen
+		out.RawCapturePresent = healthResult.RawCapturePresent
+		out.RawCaptureRef = healthResult.RawCaptureRef
+		out.FallbackDetected = healthResult.FallbackDetected
+		out.ProxyMismatch = healthResult.ProxyMismatch
+		out.RiskTextDetected = healthResult.RiskTextDetected
+	}
+	return out, nil
 }
 
 func (s *FormalPoolOnboardingService) Activate(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
@@ -575,7 +664,7 @@ func (s *FormalPoolOnboardingService) Activate(ctx context.Context, id string) (
 		if err != nil {
 			return nil, err
 		}
-		if accepted.Status != "pending_activation" {
+		if accepted.Status != "pending_activation" && accepted.Status != FormalPoolOnboardingStatusHealthcheckPassed {
 			return nil, infraerrors.BadRequest("ACCEPTANCE_NOT_PASSED", "acceptance must pass before activation")
 		}
 		rec, _ = s.store.get(id)
@@ -583,11 +672,16 @@ func (s *FormalPoolOnboardingService) Activate(ctx context.Context, id string) (
 	if s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("ACCOUNT_ACTIVATOR_UNAVAILABLE", "formal pool account activator is unavailable")
 	}
-	if _, err := s.accounts.ActivateFormalPoolAccount(ctx, rec.AccountID, map[string]any{"onboarding_state": FormalPoolOnboardingStatusReadyForSmallFlow}); err != nil {
+	if rec.Status != FormalPoolOnboardingStatusHealthcheckPassed && !rec.HealthcheckPassed {
+		return nil, infraerrors.BadRequest("HEALTHCHECK_NOT_PASSED", "directed healthcheck must pass before warming")
+	}
+	now := s.store.now()
+	warmingUntil := now.Add(24 * time.Hour)
+	if _, err := s.accounts.ActivateFormalPoolAccount(ctx, rec.AccountID, map[string]any{"onboarding_state": FormalPoolOnboardingStatusWarming, FormalPoolExtraOnboardingStage: FormalPoolStageWarming, FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now), FormalPoolExtraWarmingStartedAt: formalPoolTimestamp(now), FormalPoolExtraWarmingUntil: formalPoolTimestamp(warmingUntil), FormalPoolExtraPoolProfileEffective: PoolProfileNormal, FormalPoolExtraPoolWeightMode: FormalPoolWeightLow}); err != nil {
 		return nil, err
 	}
 	rec, err := s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
-		rec.Status = FormalPoolOnboardingStatusReadyForSmallFlow
+		rec.Status = FormalPoolOnboardingStatusWarming
 		return nil
 	})
 	if err != nil {
@@ -596,23 +690,203 @@ func (s *FormalPoolOnboardingService) Activate(ctx context.Context, id string) (
 	return s.sessionResponse(rec, []FormalPoolAcceptanceCheck{{Name: "manual_activation", Status: "pass"}}), nil
 }
 
+func formalPoolMarkRuntimeRegisteredExtra(extra map[string]any, runtimeRegistered bool, now time.Time) {
+	if !runtimeRegistered || extra == nil {
+		return
+	}
+	stamp := formalPoolTimestamp(now)
+	extra[FormalPoolExtraRuntimeRegistered] = "true"
+	extra[FormalPoolExtraRuntimeRegisteredAt] = stamp
+}
+
+func formalPoolRuntimeRegistration(rec *formalPoolOnboardingSessionRecord) FormalPoolCCGatewayRuntimeRegistration {
+	if rec == nil {
+		return FormalPoolCCGatewayRuntimeRegistration{}
+	}
+	return FormalPoolCCGatewayRuntimeRegistration{
+		AccountRef:     rec.AccountRef,
+		EgressBucket:   rec.EgressBucket,
+		ProxyURL:       rec.NormalizedProxyURL,
+		ProxyRef:       rec.ProxyRef,
+		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
+		PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+		SessionPolicy:  "preserve_downstream_session_id",
+	}
+}
+
+func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+	rec, ok := s.store.get(id)
+	if !ok {
+		return nil, ErrFormalPoolOnboardingNotFound
+	}
+	if rec.AccountID <= 0 || s.accounts == nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before refresh-only")
+	}
+	if s.refresh == nil {
+		return nil, infraerrors.ServiceUnavailable("REFRESH_ONLY_UNAVAILABLE", "formal pool refresh-only runner is unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	summary, credentials, err := s.refresh.RefreshFormalPoolAccount(ctx, account)
+	if err != nil {
+		if s.accounts != nil {
+			_, _ = s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusError, map[string]any{
+				FormalPoolExtraOnboardingStage:           FormalPoolStageQuarantined,
+				FormalPoolExtraOnboardingStageUpdatedAt:  formalPoolTimestamp(s.store.now()),
+				FormalPoolExtraOnboardingLastCheck:       FormalPoolStageRefreshed,
+				FormalPoolExtraOnboardingLastCheckAt:     formalPoolTimestamp(s.store.now()),
+				FormalPoolExtraOnboardingLastErrorCode:   "refresh_only_failed",
+				FormalPoolExtraOnboardingLastErrorBucket: reasonBucket(err.Error()),
+				FormalPoolExtraQuarantineReason:          "reason_sensitive",
+				FormalPoolExtraQuarantineAt:              formalPoolTimestamp(s.store.now()),
+			})
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(stringFromAny(credentials["access_token"])) == "" || strings.TrimSpace(stringFromAny(credentials["refresh_token"])) == "" {
+		return nil, infraerrors.BadRequest("REFRESH_ONLY_CREDENTIALS_INCOMPLETE", "refresh-only must return access and refresh tokens")
+	}
+	if _, err := s.accounts.UpdateFormalPoolAccountCredentials(ctx, rec.AccountID, credentials); err != nil {
+		return nil, err
+	}
+	stamp := formalPoolTimestamp(s.store.now())
+	targetStage := FormalPoolStageRefreshed
+	targetStatus := FormalPoolOnboardingStatusRefreshed
+	if rec.CCGatewayRuntimeRegistered || stringFromAny(account.Extra[FormalPoolExtraRuntimeRegistered]) == "true" {
+		targetStage = FormalPoolStageRuntimeRegistered
+		targetStatus = FormalPoolOnboardingStatusRuntimeRegistered
+	}
+	if _, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, map[string]any{
+		"onboarding_state":                       targetStatus,
+		FormalPoolExtraOnboardingStage:           targetStage,
+		FormalPoolExtraOnboardingStageUpdatedAt:  stamp,
+		FormalPoolExtraOnboardingLastCheck:       targetStage,
+		FormalPoolExtraOnboardingLastCheckAt:     stamp,
+		FormalPoolExtraOnboardingLastErrorCode:   "",
+		FormalPoolExtraOnboardingLastErrorBucket: "",
+	}); err != nil {
+		return nil, err
+	}
+	rec, err = s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
+		rec.Status = targetStatus
+		rec.CCGatewayRuntimeRegistered = rec.CCGatewayRuntimeRegistered || targetStage == FormalPoolStageRuntimeRegistered
+		rec.OAuthSummary = &summary
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.sessionResponse(rec, nil), nil
+}
+
+func (s *FormalPoolOnboardingService) RegisterRuntime(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+	rec, ok := s.store.get(id)
+	if !ok {
+		return nil, ErrFormalPoolOnboardingNotFound
+	}
+	if rec.AccountID <= 0 {
+		return nil, infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before runtime registration")
+	}
+	if rec.Status != FormalPoolOnboardingStatusRefreshed {
+		return nil, infraerrors.BadRequest("REFRESH_ONLY_REQUIRED", "refresh-only must pass before runtime registration")
+	}
+	if strings.TrimSpace(rec.AccountRef) == "" || strings.TrimSpace(rec.NormalizedProxyURL) == "" || strings.TrimSpace(rec.ProxyRef) == "" || strings.TrimSpace(rec.EgressBucket) == "" {
+		return nil, infraerrors.BadRequest("RUNTIME_REGISTRATION_INPUT_MISSING", "runtime registration requires account ref, proxy ref, proxy url and egress bucket")
+	}
+	if s.ccGatewayRuntime == nil {
+		return nil, infraRuntimeRegistrationUnavailable()
+	}
+	if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, formalPoolRuntimeRegistration(rec)); err != nil {
+		if s.accounts != nil {
+			_, _ = s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusError, map[string]any{
+				FormalPoolExtraOnboardingStage:          FormalPoolStageQuarantined,
+				FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(s.store.now()),
+				FormalPoolExtraQuarantineReason:         "runtime_registration_failed",
+				FormalPoolExtraQuarantineAt:             formalPoolTimestamp(s.store.now()),
+			})
+		}
+		return nil, err
+	}
+	if s.accounts != nil {
+		_, _ = s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, map[string]any{
+			"onboarding_state":                      FormalPoolOnboardingStatusRuntimeRegistered,
+			FormalPoolExtraOnboardingStage:          FormalPoolStageRuntimeRegistered,
+			FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(s.store.now()),
+			FormalPoolExtraRuntimeRegistered:        "true",
+			FormalPoolExtraRuntimeRegisteredAt:      formalPoolTimestamp(s.store.now()),
+		})
+	}
+	rec, err := s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
+		rec.CCGatewayRuntimeRegistered = true
+		rec.Status = FormalPoolOnboardingStatusRuntimeRegistered
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.sessionResponse(rec, nil), nil
+}
+
+func (s *FormalPoolOnboardingService) StartWarming(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+	return s.Activate(ctx, id)
+}
+
+func (s *FormalPoolOnboardingService) PromoteProduction(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+	rec, ok := s.store.get(id)
+	if !ok {
+		return nil, ErrFormalPoolOnboardingNotFound
+	}
+	if rec.Status != FormalPoolOnboardingStatusWarming {
+		return nil, infraerrors.BadRequest("WARMING_NOT_STARTED", "account must be warming before production promotion")
+	}
+	if s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("ACCOUNT_UPDATER_UNAVAILABLE", "formal pool account updater is unavailable")
+	}
+	effective := normalizePoolProfile(rec.PoolProfile)
+	if effective == "" {
+		effective = PoolProfileNormal
+	}
+	if _, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, true, StatusActive, map[string]any{
+		"onboarding_state":                      FormalPoolOnboardingStatusProduction,
+		FormalPoolExtraOnboardingStage:          FormalPoolStageProduction,
+		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(s.store.now()),
+		FormalPoolExtraPoolProfileEffective:     effective,
+		FormalPoolExtraPoolWeightMode:           FormalPoolWeightNormal,
+	}); err != nil {
+		return nil, err
+	}
+	rec, err := s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
+		rec.Status = FormalPoolOnboardingStatusProduction
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.sessionResponse(rec, nil), nil
+}
+
 func formalPoolDefaultExtra(rec *formalPoolOnboardingSessionRecord, accountRef string) map[string]any {
 	return map[string]any{
-		"cc_gateway_enabled":               "true",
-		"cc_gateway_canary_only":           "false",
-		"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
-		"cc_gateway_routes":                string(ccGatewayRouteNativeMessages),
-		"cc_gateway_egress_bucket_enabled": "true",
-		"cc_gateway_egress_bucket":         rec.EgressBucket,
-		"cc_gateway_account_ref":           accountRef,
-		"pool_profile":                     rec.PoolProfile,
-		"oauth_refresh_fail_closed":        "true",
-		"onboarding_state":                 FormalPoolOnboardingStatusPendingAcceptance,
+		"cc_gateway_enabled":                "true",
+		"cc_gateway_canary_only":            "false",
+		"cc_gateway_policy_version":         ccGatewayAnthropicPolicyVersion,
+		"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
+		"cc_gateway_egress_bucket_enabled":  "true",
+		"cc_gateway_egress_bucket":          rec.EgressBucket,
+		"cc_gateway_account_ref":            accountRef,
+		"pool_profile":                      PoolProfileNormal,
+		FormalPoolExtraPoolProfileRequested: rec.PoolProfile,
+		FormalPoolExtraPoolProfileEffective: PoolProfileNormal,
+		FormalPoolExtraPoolWeightMode:       FormalPoolWeightLow,
+		"oauth_refresh_fail_closed":         "true",
+		"onboarding_state":                  FormalPoolOnboardingStatusPendingAcceptance,
 	}
 }
 
 func formalPoolAcceptanceInput(rec *formalPoolOnboardingSessionRecord) FormalPoolAcceptanceInput {
-	return FormalPoolAcceptanceInput{SessionID: rec.ID, AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, GroupID: rec.GroupID, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile}
+	return FormalPoolAcceptanceInput{SessionID: rec.ID, AccountID: rec.AccountID, AccountRef: rec.AccountRef, AccountName: rec.AccountName, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, GroupID: rec.GroupID, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile}
 }
 
 func formalPoolLocalAcceptanceChecks(account *Account, rec *formalPoolOnboardingSessionRecord) []FormalPoolAcceptanceCheck {
@@ -645,7 +919,9 @@ func formalPoolLocalAcceptanceChecks(account *Account, rec *formalPoolOnboarding
 		add("egress_bucket_present", strings.TrimSpace(account.GetExtraString("cc_gateway_egress_bucket")) != "", "egress bucket required")
 		ref := strings.TrimSpace(account.GetExtraString("cc_gateway_account_ref"))
 		add("account_ref_safe", ref != "" && ref != fmt.Sprintf("%d", account.ID) && isSafeLedgerRef(ref), "server-generated safe account ref required")
-		add("pool_profile_valid", normalizePoolProfile(account.GetExtraString("pool_profile")) == rec.PoolProfile, "pool profile must match")
+		add("pool_profile_requested_valid", normalizePoolProfile(account.GetExtraString(FormalPoolExtraPoolProfileRequested)) == rec.PoolProfile, "requested pool profile must match")
+		add("pool_profile_effective_normal", normalizePoolProfile(account.GetExtraString(FormalPoolExtraPoolProfileEffective)) == PoolProfileNormal, "new account effective profile must remain normal before production")
+		add("pool_weight_low", account.GetExtraString(FormalPoolExtraPoolWeightMode) == FormalPoolWeightLow, "new account must start low weight")
 		add("oauth_refresh_fail_closed", account.GetExtraString("oauth_refresh_fail_closed") == "true", "refresh must fail closed")
 		add("no_dangerous_extra", !formalPoolHasDangerousExtra(account.Extra), "dangerous formal pool extras are forbidden")
 	}
@@ -769,6 +1045,7 @@ func (s *FormalPoolOnboardingService) sessionResponse(rec *formalPoolOnboardingS
 		"browser_egress_verified":       rec.BrowserVerified,
 		"oauth_url_generated":           rec.AuthURL != "",
 		"cc_gateway_runtime_registered": rec.CCGatewayRuntimeRegistered,
+		"healthcheck_passed":            rec.HealthcheckPassed,
 	}
 	return &FormalPoolOnboardingSession{
 		ID: rec.ID, Status: rec.Status, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket,
@@ -776,6 +1053,8 @@ func (s *FormalPoolOnboardingService) sessionResponse(rec *formalPoolOnboardingS
 		AuthURL: rec.AuthURL, OAuthSessionID: rec.OAuthSessionID, BrowserEgressCheckURL: s.browserURL(rec.BrowserNonce),
 		BrowserEgressVerified: rec.BrowserVerified, AccountID: rec.AccountID, AccountRef: rec.AccountRef, OAuthSummary: rec.OAuthSummary, SafeSummary: summary, Checks: checks,
 		CCGatewayRuntimeRegistered: rec.CCGatewayRuntimeRegistered,
+		HealthcheckPassed:          rec.HealthcheckPassed,
+		ProductionReady:            rec.Status == FormalPoolOnboardingStatusProduction,
 	}
 }
 

@@ -246,3 +246,104 @@ func TestAdminServiceBulkUpdateAccounts_ResolvesIDsFromFilters(t *testing.T) {
 	require.Equal(t, 0, result.Failed)
 	require.Equal(t, []int64{7, 11}, result.SuccessIDs)
 }
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolImportedCannotBeMadeSchedulable(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{
+			ID:          301,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeSetupToken,
+			Status:      StatusActive,
+			Schedulable: false,
+			Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageImported},
+		}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+	schedulable := true
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:  []int64{301},
+		Schedulable: &schedulable,
+	})
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Empty(t, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolProductionCanBeMadeSchedulable(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{
+			ID:          302,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: false,
+			Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+		}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+	schedulable := true
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:  []int64{302},
+		Schedulable: &schedulable,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, []int64{302}, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolHealthcheckPassedCanMoveToWarmingAndSchedulableInSameUpdate(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{
+			ID:          303,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: false,
+			Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageHealthcheckPassed},
+		}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+	schedulable := true
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:  []int64{303},
+		Schedulable: &schedulable,
+		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageWarming},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, []int64{303}, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolPreWarmingStagesCannotBeMadeSchedulable(t *testing.T) {
+	for _, stage := range []string{FormalPoolStageImported, FormalPoolStageRefreshed, FormalPoolStageRuntimeRegistered, FormalPoolStageHealthcheckPassed, FormalPoolStageQuarantined} {
+		t.Run(stage, func(t *testing.T) {
+			repo := &accountRepoStubForBulkUpdate{
+				getByIDsAccounts: []*Account{{
+					ID:          304,
+					Platform:    PlatformAnthropic,
+					Type:        AccountTypeOAuth,
+					Status:      StatusActive,
+					Schedulable: false,
+					Extra:       map[string]any{FormalPoolExtraOnboardingStage: stage},
+				}},
+			}
+			svc := &adminServiceImpl{accountRepo: repo}
+			schedulable := true
+
+			result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+				AccountIDs:  []int64{304},
+				Schedulable: &schedulable,
+			})
+
+			require.Nil(t, result)
+			require.Error(t, err)
+			require.Empty(t, repo.bulkUpdateIDs)
+		})
+	}
+}

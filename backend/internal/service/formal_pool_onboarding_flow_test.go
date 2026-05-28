@@ -38,6 +38,10 @@ type formalOAuthFake struct {
 	creds           map[string]any
 	err             error
 	lastCookieScope string
+	refreshCalls    int
+	refreshErr      error
+	refreshSummary  FormalPoolOAuthTokenSummary
+	refreshCreds    map[string]any
 }
 
 func (f *formalOAuthFake) GenerateFormalAuthURL(ctx context.Context, proxyID int64) (FormalPoolOAuthURL, error) {
@@ -57,11 +61,28 @@ func (f *formalOAuthFake) SetupTokenCookieAuth(ctx context.Context, sessionKey s
 	return f.summary, f.creds, nil
 }
 
+func (f *formalOAuthFake) RefreshFormalPoolAccount(ctx context.Context, account *Account) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	f.refreshCalls++
+	if f.refreshErr != nil {
+		return FormalPoolOAuthTokenSummary{}, nil, f.refreshErr
+	}
+	summary := f.refreshSummary
+	if summary.ExpiresInBucket == "" {
+		summary = f.summary
+	}
+	creds := f.refreshCreds
+	if creds == nil {
+		creds = map[string]any{"access_token": "refreshed-access", "refresh_token": "refreshed-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}
+	}
+	return summary, creds, nil
+}
+
 type formalAccountFake struct {
-	account     *Account
-	created     FormalPoolAccountCreateInput
-	activateErr error
-	activated   bool
+	account        *Account
+	created        FormalPoolAccountCreateInput
+	activateErr    error
+	stateUpdateErr error
+	activated      bool
 }
 
 func (f *formalAccountFake) CreateFormalPoolAccount(ctx context.Context, input FormalPoolAccountCreateInput) (*Account, error) {
@@ -76,16 +97,41 @@ func (f *formalAccountFake) GetFormalPoolAccount(ctx context.Context, id int64) 
 	}
 	return f.account, nil
 }
+
+func (f *formalAccountFake) UpdateFormalPoolAccountCredentials(ctx context.Context, id int64, credentials map[string]any) (*Account, error) {
+	if f.account == nil {
+		return nil, ErrAccountNotFound
+	}
+	f.account.Credentials = cloneCredentials(credentials)
+	return f.account, nil
+}
+
+func (f *formalAccountFake) UpdateFormalPoolAccountState(ctx context.Context, id int64, schedulable bool, status string, extra map[string]any) (*Account, error) {
+	if f.stateUpdateErr != nil {
+		return nil, f.stateUpdateErr
+	}
+	if f.account == nil {
+		return nil, ErrAccountNotFound
+	}
+	f.account.Schedulable = schedulable
+	if status != "" {
+		f.account.Status = status
+	}
+	if f.account.Extra == nil {
+		f.account.Extra = map[string]any{}
+	}
+	for k, v := range extra {
+		f.account.Extra[k] = v
+	}
+	return f.account, nil
+}
+
 func (f *formalAccountFake) ActivateFormalPoolAccount(ctx context.Context, id int64, extra map[string]any) (*Account, error) {
 	if f.activateErr != nil {
 		return nil, f.activateErr
 	}
 	f.activated = true
-	f.account.Schedulable = true
-	for k, v := range extra {
-		f.account.Extra[k] = v
-	}
-	return f.account, nil
+	return f.UpdateFormalPoolAccountState(ctx, id, true, StatusActive, extra)
 }
 
 type formalCCFake struct {
@@ -103,8 +149,41 @@ func (f formalCCFake) VerifyCCGatewayReadiness(ctx context.Context, input Formal
 	return []FormalPoolAcceptanceCheck{{Name: "cc_gateway_bucket", Status: "pass"}}, nil
 }
 
+type formalAcceptanceFake struct {
+	result *FormalPoolAcceptanceResult
+	err    error
+}
+
+func (f formalAcceptanceFake) RunAcceptance(ctx context.Context, input FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.result != nil {
+		return f.result, nil
+	}
+	return &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, NoRealMessagesRequestPerformed: false, ActivationRequired: true, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "ref_raw_healthcheck"}, nil
+}
+
+type formalHealthcheckFake struct {
+	result *FormalPoolAcceptanceResult
+	err    error
+	calls  int
+}
+
+func (f *formalHealthcheckFake) RunHealthcheck(ctx context.Context, input FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.result != nil {
+		return f.result, nil
+	}
+	return &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, NoRealMessagesRequestPerformed: false, ActivationRequired: true, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "ref_raw_healthcheck"}, nil
+}
+
 type formalRuntimeFake struct {
 	called bool
+	calls  int
 	input  FormalPoolCCGatewayRuntimeRegistration
 	err    error
 }
@@ -114,6 +193,7 @@ func (f *formalRuntimeFake) RegisterCCGatewayRuntime(ctx context.Context, input 
 		return f.err
 	}
 	f.called = true
+	f.calls++
 	f.input = input
 	return nil
 }
@@ -174,7 +254,7 @@ func TestFormalPoolExchangeCodeAndCreateWritesSafeDefaults(t *testing.T) {
 	if acct.created.Schedulable {
 		t.Fatalf("account must be created unschedulable")
 	}
-	if acct.created.Extra["cc_gateway_enabled"] != "true" || acct.created.Extra["cc_gateway_canary_only"] != "false" || acct.created.Extra["cc_gateway_routes"] != "native_messages" || acct.created.Extra["pool_profile"] != "aggressive" || acct.created.Extra["oauth_refresh_fail_closed"] != "true" {
+	if acct.created.Extra["cc_gateway_enabled"] != "true" || acct.created.Extra["cc_gateway_canary_only"] != "false" || acct.created.Extra["cc_gateway_routes"] != "native_messages" || acct.created.Extra["pool_profile"] != PoolProfileNormal || acct.created.Extra[FormalPoolExtraPoolProfileRequested] != PoolProfileAggressive || acct.created.Extra[FormalPoolExtraPoolProfileEffective] != PoolProfileNormal || acct.created.Extra[FormalPoolExtraPoolWeightMode] != FormalPoolWeightLow || acct.created.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageImported || acct.created.Extra["oauth_refresh_fail_closed"] != "true" {
 		t.Fatalf("bad formal extra: %#v", acct.created.Extra)
 	}
 	if acct.created.Extra["cc_gateway_account_ref"] == "123" || acct.created.Extra["cc_gateway_account_ref"] == "" {
@@ -211,6 +291,9 @@ func TestFormalPoolExchangeRegistersCCGatewayRuntimeMapping(t *testing.T) {
 	}
 	if !got.CCGatewayRuntimeRegistered {
 		t.Fatalf("session must expose runtime registration status")
+	}
+	if acct.created.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageImported || acct.created.Extra[FormalPoolExtraRuntimeRegistered] != "true" {
+		t.Fatalf("runtime registration must be recorded without skipping imported stage: %#v", acct.created.Extra)
 	}
 	assertNoFormalPoolSensitive(t, got)
 }
@@ -271,6 +354,9 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 	if !got.CCGatewayRuntimeRegistered || got.OAuthSummary == nil || !got.OAuthSummary.ScopeContainsUserInference || got.OAuthSummary.ScopeContainsClaudeCode {
 		t.Fatalf("bad setup-token safe summary/session: %#v", got)
 	}
+	if acct.created.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageImported || acct.created.Extra[FormalPoolExtraRuntimeRegistered] != "true" {
+		t.Fatalf("setup-token runtime registration must be recorded without skipping imported stage: %#v", acct.created.Extra)
+	}
 	assertNoFormalPoolSensitive(t, got)
 }
 
@@ -297,7 +383,7 @@ func TestFormalPoolExchangeScopeFailClosed(t *testing.T) {
 
 func TestFormalPoolAcceptanceAndActivation(t *testing.T) {
 	acct := &formalAccountFake{}
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
 	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
 	_, _ = svc.TestProxy(context.Background(), sess.ID)
 	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
@@ -307,7 +393,7 @@ func TestFormalPoolAcceptanceAndActivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acceptance: %v", err)
 	}
-	if accepted.Status != "pending_activation" || !accepted.ActivationRequired || !accepted.NoRealMessagesRequestPerformed {
+	if accepted.Status != FormalPoolOnboardingStatusHealthcheckPassed || !accepted.ActivationRequired || accepted.NoRealMessagesRequestPerformed {
 		t.Fatalf("bad acceptance: %#v", accepted)
 	}
 	if acct.account.Schedulable {
@@ -317,14 +403,14 @@ func TestFormalPoolAcceptanceAndActivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if activated.Status != FormalPoolOnboardingStatusReadyForSmallFlow || !acct.activated || !acct.account.Schedulable {
-		t.Fatalf("activation failed: %#v", activated)
+	if activated.Status != FormalPoolOnboardingStatusWarming || !acct.activated || !acct.account.Schedulable || acct.account.Extra[FormalPoolExtraPoolProfileEffective] != PoolProfileNormal || acct.account.Extra[FormalPoolExtraPoolWeightMode] != FormalPoolWeightLow {
+		t.Fatalf("activation failed: %#v account=%#v", activated, acct.account.Extra)
 	}
 }
 
 func TestFormalPoolActivationFailDoesNotUpdateState(t *testing.T) {
 	acct := &formalAccountFake{activateErr: errors.New("db down")}
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
 	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
 	_, _ = svc.TestProxy(context.Background(), sess.ID)
 	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
@@ -337,5 +423,229 @@ func TestFormalPoolActivationFailDoesNotUpdateState(t *testing.T) {
 	got, _ := svc.GetSession(context.Background(), sess.ID)
 	if got.Status == FormalPoolOnboardingStatusReadyForSmallFlow || acct.activated {
 		t.Fatalf("activation half-wrote state")
+	}
+}
+
+func TestFormalPoolPromoteProductionRequiresWarmingAndEnablesRequestedProfile(t *testing.T) {
+	acct := &formalAccountFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct", PoolProfile: PoolProfileAggressive})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	_, _ = svc.RunAcceptance(context.Background(), sess.ID)
+
+	if _, err := svc.PromoteProduction(context.Background(), sess.ID); err == nil {
+		t.Fatalf("production promotion must require warming first")
+	}
+	_, err := svc.StartWarming(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("start warming: %v", err)
+	}
+	promoted, err := svc.PromoteProduction(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("promote production: %v", err)
+	}
+	if promoted.Status != FormalPoolOnboardingStatusProduction || acct.account.Extra[FormalPoolExtraPoolProfileEffective] != PoolProfileAggressive || acct.account.Extra[FormalPoolExtraPoolWeightMode] != FormalPoolWeightNormal {
+		t.Fatalf("bad production promotion: session=%#v extra=%#v", promoted, acct.account.Extra)
+	}
+}
+
+func TestFormalPoolRefreshOnlyRequiresRealRefreshRunner(t *testing.T) {
+	acct := &formalAccountFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	if _, err := svc.RefreshOnly(context.Background(), sess.ID); err == nil {
+		t.Fatalf("refresh-only must fail closed without real refresh runner")
+	}
+}
+
+func TestFormalPoolRefreshOnlyPerformsRefreshBeforeMarkingRefreshed(t *testing.T) {
+	acct := &formalAccountFake{}
+	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	got, err := svc.RefreshOnly(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("refresh-only: %v", err)
+	}
+	if oauth.refreshCalls != 1 || got.Status != FormalPoolOnboardingStatusRefreshed || acct.account.Schedulable || acct.account.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageRefreshed || acct.account.Credentials["access_token"] != "new-access" {
+		t.Fatalf("refresh-only did not refresh and gate account: calls=%d session=%#v account=%#v creds=%#v", oauth.refreshCalls, got, acct.account.Extra, acct.account.Credentials)
+	}
+}
+
+func TestFormalPoolAcceptanceUsesHealthcheckRunnerWhenAcceptanceRunnerMissing(t *testing.T) {
+	acct := &formalAccountFake{}
+	healthcheck := &formalHealthcheckFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	accepted, err := svc.RunAcceptance(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	if healthcheck.calls != 1 || accepted.Status != FormalPoolOnboardingStatusHealthcheckPassed || !accepted.CCGatewaySeen || !accepted.RawCapturePresent || acct.account.Schedulable {
+		t.Fatalf("healthcheck runner not enforced: calls=%d accepted=%#v account=%#v", healthcheck.calls, accepted, acct.account)
+	}
+}
+
+func TestFormalPoolAcceptanceRejectsHealthcheckWithoutRawCapture(t *testing.T) {
+	acct := &formalAccountFake{}
+	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: false}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	accepted, err := svc.RunAcceptance(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	if accepted.Status != "failed_acceptance" || acct.account.Extra[FormalPoolExtraOnboardingStage] == FormalPoolStageHealthcheckPassed || acct.account.Schedulable {
+		t.Fatalf("healthcheck without raw capture must not pass: accepted=%#v extra=%#v", accepted, acct.account.Extra)
+	}
+}
+
+func TestFormalPoolStartWarmingWritesWarmingUntil(t *testing.T) {
+	acct := &formalAccountFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+		Proxy:            &formalProxyFake{},
+		OAuth:            &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{EmailPresent: true, AccountUUIDPresent: true, OrganizationUUIDPresent: true, ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}},
+		Accounts:         acct,
+		Acceptance:       formalAcceptanceFake{},
+		CCGateway:        formalCCFake{},
+		CCGatewayRuntime: &formalRuntimeFake{},
+	})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, err := svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err = svc.RunAcceptance(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	_, err = svc.StartWarming(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("start warming: %v", err)
+	}
+	if stringFromAny(acct.account.Extra[FormalPoolExtraWarmingUntil]) == "" {
+		t.Fatalf("warming_until must be written: %#v", acct.account.Extra)
+	}
+	if acct.account.Extra[FormalPoolExtraPoolProfileEffective] != PoolProfileNormal || acct.account.Extra[FormalPoolExtraPoolWeightMode] != FormalPoolWeightLow {
+		t.Fatalf("warming must stay normal low weight: %#v", acct.account.Extra)
+	}
+}
+
+func TestFormalPoolRegisterRuntimeRequiresRefreshOnlyGate(t *testing.T) {
+	acct := &formalAccountFake{}
+	runtime := &formalRuntimeFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "socks5h://proxy.local:1080"}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGatewayRuntime: runtime})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, err := svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	if err != nil {
+		t.Fatalf("exchange/create: %v", err)
+	}
+
+	callsBefore := runtime.calls
+	_, err = svc.RegisterRuntime(context.Background(), sess.ID)
+	if err == nil {
+		t.Fatalf("runtime registration must fail before refresh-only gate")
+	}
+	if runtime.calls != callsBefore {
+		t.Fatalf("runtime registrar must not be called again before refresh-only gate: before=%d after=%d", callsBefore, runtime.calls)
+	}
+}
+
+func TestFormalPoolRefreshOnlyPromotesRuntimeRegisteredWhenRuntimeAlreadyRecorded(t *testing.T) {
+	acct := &formalAccountFake{}
+	runtime := &formalRuntimeFake{}
+	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "socks5h://proxy.local:1080"}, OAuth: oauth, Refresh: oauth, Accounts: acct, CCGatewayRuntime: runtime})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, err := svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	if err != nil {
+		t.Fatalf("exchange/create: %v", err)
+	}
+
+	got, err := svc.RefreshOnly(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("refresh-only: %v", err)
+	}
+	if got.Status != FormalPoolOnboardingStatusRuntimeRegistered || !got.CCGatewayRuntimeRegistered || acct.account.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageRuntimeRegistered || acct.account.Credentials["access_token"] != "new-access" {
+		t.Fatalf("refresh-only should promote pre-registered runtime account: session=%#v extra=%#v creds=%#v", got, acct.account.Extra, acct.account.Credentials)
+	}
+}
+
+func TestFormalPoolRefreshOnlyThenRegisterRuntimePromotesRuntimeRegistered(t *testing.T) {
+	acct := &formalAccountFake{}
+	runtime := &formalRuntimeFake{}
+	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	_, err := svc.RefreshOnly(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("refresh-only: %v", err)
+	}
+	svc.ccGatewayRuntime = runtime
+
+	got, err := svc.RegisterRuntime(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("register runtime: %v", err)
+	}
+	if !runtime.called || got.Status != FormalPoolOnboardingStatusRuntimeRegistered || !got.CCGatewayRuntimeRegistered || acct.account.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageRuntimeRegistered {
+		t.Fatalf("runtime registration did not promote after refresh-only: called=%v session=%#v extra=%#v", runtime.called, got, acct.account.Extra)
+	}
+}
+
+func TestFormalPoolRunAcceptanceReturnsErrorWhenHealthcheckStateUpdateFails(t *testing.T) {
+	acct := &formalAccountFake{stateUpdateErr: errors.New("db down")}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	accepted, err := svc.RunAcceptance(context.Background(), sess.ID)
+	if err == nil {
+		t.Fatalf("RunAcceptance must return DB update error, got result %#v", accepted)
+	}
+	session, getErr := svc.GetSession(context.Background(), sess.ID)
+	if getErr != nil {
+		t.Fatalf("get session: %v", getErr)
+	}
+	if session.Status == FormalPoolOnboardingStatusHealthcheckPassed || session.HealthcheckPassed {
+		t.Fatalf("session must not pass healthcheck when DB source-of-truth update fails: %#v", session)
 	}
 }

@@ -307,6 +307,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/:id/reset-quota", h.Admin.Account.ResetQuota)
 		accounts.GET("/:id/temp-unschedulable", h.Admin.Account.GetTempUnschedulable)
 		accounts.DELETE("/:id/temp-unschedulable", h.Admin.Account.ClearTempUnschedulable)
+		accounts.POST("/:id/quarantine", h.Admin.Account.QuarantineFormalPool)
 		accounts.POST("/:id/schedulable", h.Admin.Account.SetSchedulable)
 		accounts.POST("/:id/cc-gateway/canary-preflight", h.Admin.Account.CCGatewayCanaryPreflight)
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
@@ -672,6 +673,11 @@ func registerFormalPoolOnboardingAdminRoutes(admin *gin.RouterGroup, h *handler.
 			sessions.POST("/:id/setup-token-cookie-auth-and-create", h.Admin.FormalPoolOnboarding.SetupTokenCookieAuthAndCreate)
 			sessions.POST("/:id/acceptance", h.Admin.FormalPoolOnboarding.Acceptance)
 			sessions.POST("/:id/activate", h.Admin.FormalPoolOnboarding.Activate)
+			sessions.POST("/:id/refresh-only", h.Admin.FormalPoolOnboarding.RefreshOnly)
+			sessions.POST("/:id/runtime-register", h.Admin.FormalPoolOnboarding.RuntimeRegister)
+			sessions.POST("/:id/healthcheck", h.Admin.FormalPoolOnboarding.Healthcheck)
+			sessions.POST("/:id/start-warming", h.Admin.FormalPoolOnboarding.StartWarming)
+			sessions.POST("/:id/promote-production", h.Admin.FormalPoolOnboarding.PromoteProduction)
 			sessions.POST("/:id/abort", h.Admin.FormalPoolOnboarding.Abort)
 		}
 	}

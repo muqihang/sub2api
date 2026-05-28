@@ -169,6 +169,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
 			code := ccGatewayControlPlaneCode(resp, respBody)
 			msg := ccGatewayControlPlaneMessage(respBody)
+			s.handleCCGatewayControlPlaneSideEffects(ctx, account, resp.StatusCode, code, msg)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,

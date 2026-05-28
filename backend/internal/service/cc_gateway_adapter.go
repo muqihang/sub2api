@@ -246,7 +246,7 @@ func (s *GatewayService) selectCCGatewayAnthropicRouteForMode(account *Account, 
 	if canaryOnly && !explicitCanary {
 		return false, fmt.Errorf("cc gateway canary-only account %d is not eligible for broad routing", account.ID)
 	}
-	if account.Status != StatusActive || (!explicitCanary && !account.Schedulable) {
+	if account.Status != StatusActive || (!explicitCanary && !account.IsSchedulable()) {
 		return false, fmt.Errorf("cc gateway lifecycle ineligible for account %d", account.ID)
 	}
 	if version := strings.TrimSpace(account.GetExtraString("cc_gateway_policy_version")); version == "" || !ccGatewayPolicyVersionCompatible(version) {

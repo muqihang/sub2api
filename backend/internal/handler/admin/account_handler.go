@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -1879,6 +1880,29 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	}
 	c.Header("X-Snapshot-Cache", "miss")
 	response.Success(c, payload)
+}
+
+// QuarantineFormalPool handles manual formal-pool account isolation.
+// POST /api/v1/admin/accounts/:id/quarantine
+func (h *AccountHandler) QuarantineFormalPool(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	account, err := h.adminService.QuarantineFormalPoolAccount(c.Request.Context(), accountID, req.Reason)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
 // SetSchedulableRequest represents the request body for setting schedulable status

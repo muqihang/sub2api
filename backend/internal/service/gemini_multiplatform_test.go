@@ -74,8 +74,13 @@ func (m *mockAccountRepoForGemini) FindByExtraField(ctx context.Context, key str
 func (m *mockAccountRepoForGemini) ListCRSAccountIDs(ctx context.Context) (map[string]int64, error) {
 	return nil, nil
 }
-func (m *mockAccountRepoForGemini) Update(ctx context.Context, account *Account) error { return nil }
-func (m *mockAccountRepoForGemini) Delete(ctx context.Context, id int64) error         { return nil }
+func (m *mockAccountRepoForGemini) Update(ctx context.Context, account *Account) error {
+	if m.accountsByID != nil && account != nil {
+		m.accountsByID[account.ID] = account
+	}
+	return nil
+}
+func (m *mockAccountRepoForGemini) Delete(ctx context.Context, id int64) error { return nil }
 func (m *mockAccountRepoForGemini) List(ctx context.Context, params pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error) {
 	return nil, nil, nil
 }

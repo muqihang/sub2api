@@ -71,3 +71,31 @@ func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
 	require.Equal(t, int64(11), got.AccountGroups[1].GroupID)
 	require.Nil(t, got.Groups)
 }
+
+func TestBuildSchedulerMetadataAccount_KeepsFormalPoolGateFields(t *testing.T) {
+	account := service.Account{
+		ID:          42,
+		Platform:    service.PlatformAnthropic,
+		Type:        service.AccountTypeSetupToken,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			service.FormalPoolExtraOnboardingStage:             service.FormalPoolStageRuntimeRegistered,
+			service.FormalPoolExtraOnboardingStageUpdatedAt:    "2026-05-28T00:00:00Z",
+			service.FormalPoolExtraRuntimeRegistered:           "true",
+			service.FormalPoolExtraHealthcheckStatus:           "pending",
+			service.FormalPoolExtraHealthcheckStatusCodeBucket: "status_unknown",
+			service.FormalPoolExtraPoolProfileEffective:        service.PoolProfileNormal,
+			service.FormalPoolExtraPoolWeightMode:              service.FormalPoolWeightLow,
+			"unused_large_field":                               "drop-me",
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, service.FormalPoolStageRuntimeRegistered, got.Extra[service.FormalPoolExtraOnboardingStage])
+	require.False(t, got.IsSchedulable(), "snapshot metadata must preserve formal-pool stage gate")
+	require.Equal(t, "true", got.Extra[service.FormalPoolExtraRuntimeRegistered])
+	require.Equal(t, service.FormalPoolWeightLow, got.Extra[service.FormalPoolExtraPoolWeightMode])
+	require.Nil(t, got.Extra["unused_large_field"])
+}

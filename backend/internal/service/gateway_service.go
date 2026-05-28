@@ -816,6 +816,17 @@ func (s *GatewayService) BindStickySession(ctx context.Context, groupID *int64, 
 	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
 }
 
+// ClearStickySession removes a sticky session binding without changing account
+// health. It is used for client/session-local corruption such as invalid
+// thinking-block history, where switching or disabling the account would hide
+// the real recovery action from the user.
+func (s *GatewayService) ClearStickySession(ctx context.Context, groupID *int64, sessionHash string) error {
+	if sessionHash == "" || s.cache == nil {
+		return nil
+	}
+	return s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+}
+
 // GetCachedSessionAccountID retrieves the account ID bound to a sticky session.
 // Returns 0 if no binding exists or on error.
 func (s *GatewayService) GetCachedSessionAccountID(ctx context.Context, groupID *int64, sessionHash string) (int64, error) {
@@ -4680,6 +4691,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			_ = resp.Body.Close()
 			code := ccGatewayControlPlaneCode(resp, respBody)
 			msg := ccGatewayControlPlaneMessage(respBody)
+			s.handleCCGatewayControlPlaneSideEffects(ctx, account, resp.StatusCode, code, msg)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -4713,7 +4725,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						Message:            extractUpstreamErrorMessage(respBody),
 						Detail: func() string {
 							if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-								return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+								return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 							}
 							return ""
 						}(),
@@ -4768,7 +4780,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 									Message:            extractUpstreamErrorMessage(retryRespBody),
 									Detail: func() string {
 										if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-											return truncateString(string(retryRespBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+											return safeUpstreamErrorDetailForOps(retryRespBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 										}
 										return ""
 									}(),
@@ -4839,7 +4851,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						Message:            errMsg,
 						Detail: func() string {
 							if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-								return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+								return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 							}
 							return ""
 						}(),
@@ -4901,7 +4913,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					Message:            extractUpstreamErrorMessage(respBody),
 					Detail: func() string {
 						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+							return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 						}
 						return ""
 					}(),
@@ -4941,7 +4953,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 			// 调试日志：打印重试耗尽后的错误响应
 			logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), safeUpstreamErrorLogSummary(resp.StatusCode, respBody))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -4954,7 +4966,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				Message:            extractUpstreamErrorMessage(respBody),
 				Detail: func() string {
 					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+						return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 					}
 					return ""
 				}(),
@@ -4977,7 +4989,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 		// 调试日志：打印上游错误响应
 		logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), safeUpstreamErrorLogSummary(resp.StatusCode, respBody))
 
 		s.handleFailoverSideEffects(ctx, resp, account)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -4989,7 +5001,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			Message:            extractUpstreamErrorMessage(respBody),
 			Detail: func() string {
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+					return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 				}
 				return ""
 			}(),
@@ -5021,7 +5033,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					if maxBytes <= 0 {
 						maxBytes = 2048
 					}
-					upstreamDetail = truncateString(string(respBody), maxBytes)
+					upstreamDetail = safeUpstreamErrorDetailForOps(respBody, maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 					Platform:           account.Platform,
@@ -5038,7 +5050,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					logger.LegacyPrintf("service.gateway",
 						"Account %d: 400 error, attempting failover: %s",
 						account.ID,
-						truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+						safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 					)
 				} else {
 					logger.LegacyPrintf("service.gateway", "Account %d: 400 error, attempting failover", account.ID)
@@ -5203,6 +5215,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			_ = resp.Body.Close()
 			code := ccGatewayControlPlaneCode(resp, respBody)
 			msg := ccGatewayControlPlaneMessage(respBody)
+			s.handleCCGatewayControlPlaneSideEffects(ctx, account, resp.StatusCode, code, msg)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -5249,7 +5262,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					Message:            extractUpstreamErrorMessage(respBody),
 					Detail: func() string {
 						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+							return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 						}
 						return ""
 					}(),
@@ -5278,7 +5291,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), safeUpstreamErrorLogSummary(resp.StatusCode, respBody))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -5292,7 +5305,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				Message:            extractUpstreamErrorMessage(respBody),
 				Detail: func() string {
 					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+						return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 					}
 					return ""
 				}(),
@@ -5312,7 +5325,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 		logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), safeUpstreamErrorLogSummary(resp.StatusCode, respBody))
 
 		s.handleFailoverSideEffects(ctx, resp, account)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -5326,7 +5339,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			Message:            extractUpstreamErrorMessage(respBody),
 			Detail: func() string {
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+					return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 				}
 				return ""
 			}(),
@@ -5968,7 +5981,7 @@ func (s *GatewayService) executeBedrockUpstream(
 					Message:            extractUpstreamErrorMessage(respBody),
 					Detail: func() string {
 						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+							return safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 						}
 						return ""
 					}(),
@@ -6006,7 +6019,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			logger.LegacyPrintf("service.gateway", "[Bedrock] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d Body=%s",
-				account.ID, account.Name, resp.StatusCode, truncateString(string(respBody), 1000))
+				account.ID, account.Name, resp.StatusCode, safeUpstreamErrorLogSummary(resp.StatusCode, respBody))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -6814,6 +6827,18 @@ func applyClaudeCodeMimicHeaders(req *http.Request, isStream bool) {
 	}
 }
 
+func safeUpstreamErrorLogSummary(status int, body []byte) string {
+	msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	if msg == "" {
+		msg = "upstream_error"
+	}
+	return fmt.Sprintf("status_bucket=%s body_length_bucket=%s message=%s raw_body_omitted_reason=raw_body_omitted", statusBucketFromHTTP(status), safeLengthBucket(len(body)), msg)
+}
+
+func safeUpstreamErrorDetailForOps(body []byte, maxBytes int) string {
+	return sanitizeUpstreamErrorBody(body, maxBytes)
+}
+
 func truncateForLog(b []byte, maxBytes int) string {
 	if maxBytes <= 0 {
 		maxBytes = 2048
@@ -7062,6 +7087,39 @@ func extractUpstreamErrorCode(body []byte) string {
 	return ""
 }
 
+// SessionCorruptThinkingSignatureError marks a client/session-history problem:
+// Anthropic rejected a prior thinking block because its signature was invalid
+// or missing. This should not make the account unhealthy and should not trigger
+// a body-mutating retry; the safe recovery is to restart/clear the conversation.
+type SessionCorruptThinkingSignatureError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *SessionCorruptThinkingSignatureError) Error() string {
+	if e == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(e.Message)
+	if msg == "" {
+		return fmt.Sprintf("upstream error: %d session_corrupt_thinking_signature", e.StatusCode)
+	}
+	return fmt.Sprintf("upstream error: %d message=%s", e.StatusCode, msg)
+}
+
+// IsClaudeThinkingSignatureSessionError detects upstream errors that point to a
+// corrupted Claude Code thinking history rather than an account/proxy failure.
+func IsClaudeThinkingSignatureSessionError(message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	if strings.Contains(msg, "invalid signature in thinking block") {
+		return true
+	}
+	return strings.Contains(msg, "thinking.signature") && strings.Contains(msg, "field required")
+}
+
 func isCountTokensUnsupported404(statusCode int, body []byte) bool {
 	if statusCode != http.StatusNotFound {
 		return false
@@ -7074,6 +7132,32 @@ func isCountTokensUnsupported404(statusCode int, body []byte) bool {
 		return true
 	}
 	return strings.Contains(msg, "count_tokens") && strings.Contains(msg, "not found")
+}
+
+func (s *GatewayService) handleCCGatewayControlPlaneSideEffects(ctx context.Context, account *Account, statusCode int, code string, message string) {
+	if s == nil || s.accountRepo == nil || account == nil || !IsFormalPoolAccount(account) {
+		return
+	}
+	reason := strings.TrimSpace(code)
+	if msg := strings.TrimSpace(message); msg != "" {
+		if reason != "" {
+			reason += ":"
+		}
+		reason += msg
+	}
+	if reason == "" {
+		reason = "cc_gateway_control_plane"
+	}
+	_, err := NewAccountQuarantineService(s.accountRepo, s.sessionBudgetObserve).Quarantine(ctx, AccountQuarantineInput{
+		AccountID:  account.ID,
+		Kind:       RiskEventKindIdentityBoundaryFail,
+		Reason:     reason,
+		Source:     "cc_gateway_control_plane",
+		StatusCode: statusCode,
+	})
+	if err != nil {
+		slog.Warn("cc_gateway_control_plane_quarantine_failed", "account_id", account.ID, "status_code", statusCode, "code", code, "error", err)
+	}
 }
 
 func (s *GatewayService) handleErrorResponseWithBudget(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, budgetObservation sessionBudgetRequestObservation) (*ForwardResult, error) {
@@ -7089,7 +7173,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	// 调试日志：打印上游错误响应
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
+		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), safeUpstreamErrorLogSummary(resp.StatusCode, body))
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -7115,7 +7199,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		if maxBytes <= 0 {
 			maxBytes = 2048
 		}
-		upstreamDetail = truncateString(string(body), maxBytes)
+		upstreamDetail = safeUpstreamErrorDetailForOps(body, maxBytes)
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -7145,7 +7229,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			safeUpstreamErrorDetailForOps(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
 	}
 
@@ -7183,6 +7267,25 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	switch resp.StatusCode {
 	case 400:
+		if IsClaudeThinkingSignatureSessionError(upstreamMsg) || IsClaudeThinkingSignatureSessionError(string(body)) {
+			if c != nil {
+				c.Header("X-Sub2API-Error-Class", "session_corrupt_thinking_signature")
+				c.Header("X-Sub2API-Session-Action", "restart_required")
+			}
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Kind:               "session_corrupt_thinking_signature",
+				Message:            upstreamMsg,
+			})
+			c.Data(http.StatusBadRequest, "application/json", body)
+			if upstreamMsg == "" {
+				upstreamMsg = "thinking signature rejected"
+			}
+			return nil, &SessionCorruptThinkingSignatureError{StatusCode: resp.StatusCode, Message: upstreamMsg}
+		}
 		c.Data(http.StatusBadRequest, "application/json", body)
 		summary := upstreamMsg
 		if summary == "" {
@@ -7291,7 +7394,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 		if maxBytes <= 0 {
 			maxBytes = 2048
 		}
-		upstreamDetail = truncateString(string(respBody), maxBytes)
+		upstreamDetail = safeUpstreamErrorDetailForOps(respBody, maxBytes)
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -7311,7 +7414,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
 	}
 
@@ -9188,6 +9291,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
 		code := ccGatewayControlPlaneCode(resp, respBody)
 		msg := ccGatewayControlPlaneMessage(respBody)
+		s.handleCCGatewayControlPlaneSideEffects(ctx, account, resp.StatusCode, code, msg)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -9237,7 +9341,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 			if maxBytes <= 0 {
 				maxBytes = 2048
 			}
-			upstreamDetail = truncateString(string(respBody), maxBytes)
+			upstreamDetail = safeUpstreamErrorDetailForOps(respBody, maxBytes)
 		}
 		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 
@@ -9249,7 +9353,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 				account.ID,
 				account.Platform,
 				account.Type,
-				truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+				safeUpstreamErrorDetailForOps(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 			)
 		}
 
@@ -9336,6 +9440,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 	if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
 		code := ccGatewayControlPlaneCode(resp, respBody)
 		msg := ccGatewayControlPlaneMessage(respBody)
+		s.handleCCGatewayControlPlaneSideEffects(ctx, account, resp.StatusCode, code, msg)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			Platform:           account.Platform,
 			AccountID:          account.ID,
@@ -9376,7 +9481,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 			if maxBytes <= 0 {
 				maxBytes = 2048
 			}
-			upstreamDetail = truncateString(string(respBody), maxBytes)
+			upstreamDetail = safeUpstreamErrorDetailForOps(respBody, maxBytes)
 		}
 		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{

@@ -2,7 +2,9 @@
 package dto
 
 import (
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -208,8 +210,8 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Notes:                   a.Notes,
 		Platform:                a.Platform,
 		Type:                    a.Type,
-		Credentials:             a.Credentials,
-		Extra:                   a.Extra,
+		Credentials:             accountCredentialsForDTO(a),
+		Extra:                   accountExtraForDTO(a),
 		ProxyID:                 a.ProxyID,
 		Concurrency:             a.Concurrency,
 		LoadFactor:              a.LoadFactor,
@@ -223,6 +225,8 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		CreatedAt:               a.CreatedAt,
 		UpdatedAt:               a.UpdatedAt,
 		Schedulable:             a.Schedulable,
+		EffectiveSchedulable:    a.IsSchedulable(),
+		IsFormalPool:            service.IsFormalPoolAccount(a),
 		RateLimitedAt:           a.RateLimitedAt,
 		RateLimitResetAt:        a.RateLimitResetAt,
 		OverloadUntil:           a.OverloadUntil,
@@ -236,6 +240,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 
 	// 提取 5h 窗口费用控制和会话数量控制配置（仅 Anthropic OAuth/SetupToken 账号有效）
 	if a.IsAnthropicOAuthOrSetupToken() {
+		applyFormalPoolAccountFields(out, a)
 		if limit := a.GetWindowCostLimit(); limit > 0 {
 			out.WindowCostLimit = &limit
 		}
@@ -371,6 +376,143 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	}
 
 	return out
+}
+
+func accountCredentialsForDTO(a *service.Account) map[string]any {
+	if a == nil {
+		return nil
+	}
+	if a.IsAnthropicOAuthOrSetupToken() && service.IsFormalPoolAccount(a) {
+		out := map[string]any{}
+		for _, key := range []string{"plan_type", "subscription_expires_at"} {
+			if v, ok := a.Credentials[key]; ok {
+				out[key] = v
+			}
+		}
+		return out
+	}
+	return a.Credentials
+}
+
+func accountExtraForDTO(a *service.Account) map[string]any {
+	if a == nil {
+		return nil
+	}
+	if !a.IsAnthropicOAuthOrSetupToken() || !service.IsFormalPoolAccount(a) {
+		return a.Extra
+	}
+	allowed := []string{
+		service.FormalPoolExtraOnboardingStage,
+		service.FormalPoolExtraOnboardingStageUpdatedAt,
+		service.FormalPoolExtraOnboardingLastCheck,
+		service.FormalPoolExtraOnboardingLastCheckAt,
+		service.FormalPoolExtraOnboardingLastErrorCode,
+		service.FormalPoolExtraOnboardingLastErrorBucket,
+		service.FormalPoolExtraHealthcheckStatus,
+		service.FormalPoolExtraHealthcheckStatusCodeBucket,
+		service.FormalPoolExtraHealthcheckRawRef,
+		service.FormalPoolExtraRuntimeRegistered,
+		service.FormalPoolExtraRuntimeRegisteredAt,
+		service.FormalPoolExtraWarmingStartedAt,
+		service.FormalPoolExtraWarmingUntil,
+		service.FormalPoolExtraPoolProfileRequested,
+		service.FormalPoolExtraPoolProfileEffective,
+		service.FormalPoolExtraPoolWeightMode,
+		service.FormalPoolExtraRiskEventRef,
+		service.FormalPoolExtraQuarantineReason,
+		service.FormalPoolExtraQuarantineAt,
+		"cc_gateway_enabled",
+		"cc_gateway_canary_only",
+		"cc_gateway_policy_version",
+		"cc_gateway_routes",
+		"cc_gateway_routes_deny",
+		"cc_gateway_egress_bucket_enabled",
+		"cc_gateway_egress_bucket",
+		"cc_gateway_account_ref",
+		"pool_profile",
+		"oauth_refresh_fail_closed",
+		"onboarding_state",
+	}
+	out := map[string]any{}
+	for _, key := range allowed {
+		if v, ok := a.Extra[key]; ok {
+			switch key {
+			case service.FormalPoolExtraHealthcheckRawRef, "cc_gateway_account_ref":
+				if safe, ok := safeFormalPoolDTORef(v); ok {
+					out[key] = safe
+				}
+			case "cc_gateway_egress_bucket":
+				if safe, ok := safeFormalPoolDTOBucket(v); ok {
+					out[key] = safe
+				}
+			default:
+				out[key] = v
+			}
+		}
+	}
+	return out
+}
+
+var (
+	formalPoolDTOHMACRefRe      = regexp.MustCompile(`^hmac-sha256:[0-9a-f]{64}$`)
+	formalPoolDTOUUIDLikeRe     = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	formalPoolDTOEmailLikeRe    = regexp.MustCompile(`(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`)
+	formalPoolDTOURLLikeRe      = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*://`)
+	formalPoolDTOClaudeBucketRe = regexp.MustCompile(`^claude-[0-9a-f]{16}$`)
+	formalPoolDTOLocalBucketRe  = regexp.MustCompile(`^bucket-[A-Za-z0-9_-]{1,56}$`)
+	formalPoolDTOSensitiveRe    = regexp.MustCompile(`(?i)(authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|token|x-api-key|cookie|cch|credential|password|passwd|secret|client[_-]?secret|proxy[_-]?url|bearer)`)
+)
+
+func safeFormalPoolDTORef(v any) (string, bool) {
+	ref, ok := formalPoolDTOString(v)
+	if !ok || formalPoolDTOUnsafeText(ref) {
+		return "", false
+	}
+	if formalPoolDTOHMACRefRe.MatchString(ref) {
+		return ref, true
+	}
+	if strings.HasPrefix(ref, "opaque:") || strings.HasPrefix(ref, "scoped:") || strings.HasPrefix(ref, "scoped_hmac_ref:") {
+		return ref, true
+	}
+	return "", false
+}
+
+func safeFormalPoolDTOBucket(v any) (string, bool) {
+	bucket, ok := formalPoolDTOString(v)
+	if !ok || formalPoolDTOUnsafeText(bucket) {
+		return "", false
+	}
+	if formalPoolDTOClaudeBucketRe.MatchString(bucket) {
+		return bucket, true
+	}
+	if _, ok := safeFormalPoolDTORef(bucket); ok {
+		return bucket, true
+	}
+	// Keep compatibility with local/test bucket IDs such as "bucket-a", but do
+	// not expose hosts, URLs, credentials, UUIDs, emails, or token-like values.
+	if formalPoolDTOLocalBucketRe.MatchString(bucket) {
+		return bucket, true
+	}
+	return "", false
+}
+
+func formalPoolDTOString(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	return s, s != ""
+}
+
+func formalPoolDTOUnsafeText(s string) bool {
+	if strings.ContainsAny(s, "\r\n\t") {
+		return true
+	}
+	if formalPoolDTOURLLikeRe.MatchString(s) || strings.Contains(s, "://") || strings.Contains(s, "@") {
+		return true
+	}
+	return formalPoolDTOUUIDLikeRe.MatchString(s) || formalPoolDTOEmailLikeRe.MatchString(s) || formalPoolDTOSensitiveRe.MatchString(s)
 }
 
 func AccountFromService(a *service.Account) *Account {
@@ -805,5 +947,43 @@ func PromoCodeUsageFromService(u *service.PromoCodeUsage) *PromoCodeUsage {
 		BonusAmount: u.BonusAmount,
 		UsedAt:      u.UsedAt,
 		User:        UserFromServiceShallow(u.User),
+	}
+}
+
+func applyFormalPoolAccountFields(out *Account, a *service.Account) {
+	if out == nil || a == nil || !a.IsAnthropicOAuthOrSetupToken() {
+		return
+	}
+	stage := a.GetExtraString(service.FormalPoolExtraOnboardingStage)
+	if stage == "" && a.Extra != nil {
+		stage = service.FormalPoolStageLegacyUnknown
+	}
+	out.OnboardingStage = stage
+	out.PoolProfileRequested = a.GetExtraString(service.FormalPoolExtraPoolProfileRequested)
+	out.PoolProfileEffective = a.GetExtraString(service.FormalPoolExtraPoolProfileEffective)
+	out.PoolWeightMode = a.GetExtraString(service.FormalPoolExtraPoolWeightMode)
+	out.HealthcheckStatus = a.GetExtraString(service.FormalPoolExtraHealthcheckStatus)
+	out.HealthcheckLastStatusCodeBucket = a.GetExtraString(service.FormalPoolExtraHealthcheckStatusCodeBucket)
+	out.CCGatewayRuntimeRegistered = formalPoolDTOBool(a.Extra[service.FormalPoolExtraRuntimeRegistered])
+	out.QuarantineReason = a.GetExtraString(service.FormalPoolExtraQuarantineReason)
+	out.RiskEventRef = a.GetExtraString(service.FormalPoolExtraRiskEventRef)
+	out.WarmingUntil = a.GetExtraString(service.FormalPoolExtraWarmingUntil)
+	out.ProductionReady = stage == service.FormalPoolStageProduction
+}
+
+func formalPoolDTOBool(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		return x == "true" || x == "1" || x == "yes"
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	default:
+		return false
 	}
 }

@@ -154,18 +154,27 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		return false
 	}
 
-	// 先尝试临时不可调度规则（401除外）
-	// 如果匹配成功，直接返回，不执行后续禁用逻辑
-	if statusCode != 401 {
-		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
-			return true
-		}
-	}
-
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 	if upstreamMsg != "" {
 		upstreamMsg = truncateForLog([]byte(upstreamMsg), 512)
+	}
+
+	if IsFormalPoolAccount(account) && account.Platform == PlatformAnthropic && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
+		reason := upstreamMsg
+		if reason == "" {
+			reason = http.StatusText(statusCode)
+		}
+		s.quarantineFormalPoolAccount(ctx, account, RiskEventKindIdentityBoundaryFail, "rate_limit_service", statusCode, reason)
+		return true
+	}
+
+	// Non-formal accounts may still use temporary unschedulable rules. Formal-pool
+	// 401/403 are handled above as hard quarantine to avoid refresh/proxy loops.
+	if statusCode != 401 {
+		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
+			return true
+		}
 	}
 
 	switch statusCode {
@@ -282,14 +291,14 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	case 403:
 		logger.LegacyPrintf(
 			"service.ratelimit",
-			"[HandleUpstreamErrorRaw] account_id=%d platform=%s type=%s status=403 request_id=%s cf_ray=%s upstream_msg=%s raw_body=%s",
+			"[HandleUpstreamErrorSafe] account_id=%d platform=%s type=%s status=403 request_id=%s cf_ray=%s upstream_msg=%s body_summary=%s",
 			account.ID,
 			account.Platform,
 			account.Type,
 			strings.TrimSpace(headers.Get("x-request-id")),
 			strings.TrimSpace(headers.Get("cf-ray")),
-			upstreamMsg,
-			truncateForLog(responseBody, 1024),
+			sanitizeUpstreamErrorMessage(upstreamMsg),
+			safeUpstreamErrorLogSummary(statusCode, responseBody),
 		)
 		shouldDisable = s.handle403(ctx, account, upstreamMsg, responseBody)
 	case 429:
@@ -730,6 +739,18 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 }
 
 // handleAuthError 处理认证类错误(401/403)，停止账号调度
+func (s *RateLimitService) quarantineFormalPoolAccount(ctx context.Context, account *Account, kind, source string, statusCode int, reason string) {
+	if s == nil || s.accountRepo == nil || account == nil || !IsFormalPoolAccount(account) {
+		return
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = source
+	}
+	if _, err := NewAccountQuarantineService(s.accountRepo, nil).Quarantine(ctx, AccountQuarantineInput{AccountID: account.ID, Kind: kind, Reason: reason, Source: source, StatusCode: statusCode}); err != nil {
+		slog.Warn("formal_pool_quarantine_failed", "account_id", account.ID, "source", source, "status_code", statusCode, "error", err)
+	}
+}
+
 func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account, errorMsg string) {
 	if err := s.accountRepo.SetError(ctx, account.ID, errorMsg); err != nil {
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
@@ -745,18 +766,14 @@ func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody 
 	}
 
 	if msg := strings.TrimSpace(upstreamMsg); msg != "" {
-		return prefix + msg
+		return prefix + sanitizeUpstreamErrorMessage(msg)
 	}
 
 	rawBody := bytes.TrimSpace(responseBody)
 	if len(rawBody) > 0 {
-		if json.Valid(rawBody) {
-			var compact bytes.Buffer
-			if err := json.Compact(&compact, rawBody); err == nil {
-				return prefix + truncateForLog(compact.Bytes(), 512)
-			}
+		if safe := strings.TrimSpace(safeUpstreamErrorDetailForOps(rawBody, 512)); safe != "" {
+			return prefix + safe
 		}
-		return prefix + truncateForLog(rawBody, 512)
 	}
 
 	return prefix + fallback
@@ -1702,10 +1719,7 @@ func truncateTempUnschedMessage(body []byte, maxBytes int) string {
 	if maxBytes <= 0 || len(body) == 0 {
 		return ""
 	}
-	if len(body) > maxBytes {
-		body = body[:maxBytes]
-	}
-	return strings.TrimSpace(string(body))
+	return strings.TrimSpace(safeUpstreamErrorDetailForOps(body, maxBytes))
 }
 
 // HandleStreamTimeout 处理流数据超时

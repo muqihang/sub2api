@@ -1687,14 +1687,23 @@ func sleepGeminiBackoff(attempt int) {
 }
 
 var (
-	sensitiveJSONFieldRegex  = regexp.MustCompile(`(?i)("(?:access_token|refresh_token|id_token|api_key|client_secret|authorization_code|password)"\s*:\s*")([^"]*)(")`)
-	sensitivePlainFieldRegex = regexp.MustCompile(`(?i)\b((?:access_token|refresh_token|id_token|api_key|client_secret|authorization_code|password))\b(\s*[:=]\s*)([^,\s]+)`)
-	sensitiveQueryLikeRegex  = regexp.MustCompile(`(?i)\b((?:key|client_secret|access_token|refresh_token|id_token|api_key|authorization_code|password))=([^&\s]+)`)
-	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token|id_token|api_key|authorization_code|password)=)[^&"\s]+`)
-	bearerTokenRegex         = regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{10,}`)
-	urlLikeRegex             = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"']+`)
-	openAIKeyRegex           = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
-	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
+	sensitiveJSONFieldRegex       = regexp.MustCompile(`(?i)("(?:access_token|refresh_token|id_token|api_key|client_secret|authorization_code|password)"\s*:\s*")([^"]*)(")`)
+	sensitivePlainFieldRegex      = regexp.MustCompile(`(?i)\b((?:access_token|refresh_token|id_token|api_key|client_secret|authorization_code|password))\b(\s*[:=]\s*)([^,\s]+)`)
+	sensitiveQueryLikeRegex       = regexp.MustCompile(`(?i)\b((?:key|client_secret|access_token|refresh_token|id_token|api_key|authorization_code|password))=([^&\s]+)`)
+	sensitiveQueryParamRegex      = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token|id_token|api_key|authorization_code|password)=)[^&"\s]+`)
+	bearerTokenRegex              = regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{10,}`)
+	urlLikeRegex                  = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"']+`)
+	openAIKeyRegex                = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
+	anthropicSessionKeyRegex      = regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{12,}\b`)
+	rawTokenMarkerRegex           = regexp.MustCompile(`(?i)\b(?:raw-)?token[-_:][A-Za-z0-9._~+/=-]{3,}\b`)
+	emailLikeRegex                = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
+	uuidLikeRegex                 = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
+	cchLikeRegex                  = regexp.MustCompile(`(?i)\bcch=[A-Za-z0-9._~+/=-]+`)
+	rawPromptMarkerRegex          = regexp.MustCompile(`(?i)raw prompt marker`)
+	retryInRegex                  = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
+	proxyURLUserinfoRegex         = regexp.MustCompile(`(?i)((?:https?|socks5h?)://)[^\s/@]+@([^\s/?#]+)`)
+	proxyURLUserinfoRedactedRegex = regexp.MustCompile(`(?i)((?:https?|socks5h?)://)[^\s/@]+@([^\s/?#]+)`)
+	proxyURLHostOnlyRegex         = regexp.MustCompile(`(?i)((?:https?|socks5h?)://)([^\s/?#"}]+)[^\s"}]*`)
 )
 
 func sanitizeUpstreamErrorMessage(msg string) string {
@@ -1702,12 +1711,21 @@ func sanitizeUpstreamErrorMessage(msg string) string {
 		return msg
 	}
 	out := strings.TrimSpace(msg)
+	out = proxyURLUserinfoRegex.ReplaceAllString(out, `$1$2`)
 	out = sensitiveJSONFieldRegex.ReplaceAllString(out, `$1***$3`)
 	out = sensitiveQueryParamRegex.ReplaceAllString(out, `$1***`)
 	out = sensitiveQueryLikeRegex.ReplaceAllString(out, `$1=***`)
 	out = sensitivePlainFieldRegex.ReplaceAllString(out, `$1$2***`)
 	out = bearerTokenRegex.ReplaceAllString(out, `${1}***`)
+	out = anthropicSessionKeyRegex.ReplaceAllString(out, "sk-ant-***")
 	out = openAIKeyRegex.ReplaceAllString(out, "sk-***")
+	out = rawTokenMarkerRegex.ReplaceAllString(out, "token=***")
+	out = emailLikeRegex.ReplaceAllString(out, "[email-redacted]")
+	out = uuidLikeRegex.ReplaceAllString(out, "[uuid-redacted]")
+	out = cchLikeRegex.ReplaceAllString(out, "cch=***")
+	out = rawPromptMarkerRegex.ReplaceAllString(out, "[prompt-redacted]")
+	out = proxyURLUserinfoRedactedRegex.ReplaceAllString(out, `$1$2`)
+	out = proxyURLHostOnlyRegex.ReplaceAllString(out, `$1$2`)
 	out = urlLikeRegex.ReplaceAllStringFunc(out, func(raw string) string {
 		if strings.Contains(raw, "@") {
 			return MaskOpenAIProxyURL(raw)

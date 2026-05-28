@@ -130,6 +130,22 @@ func (f *FormalPoolClaudeOAuthFacade) SetupTokenCookieAuth(ctx context.Context, 
 	return summary, creds, nil
 }
 
+func (f *FormalPoolClaudeOAuthFacade) RefreshFormalPoolAccount(ctx context.Context, account *Account) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	if f == nil || f.oauth == nil {
+		return FormalPoolOAuthTokenSummary{}, nil, fmt.Errorf("oauth service unavailable")
+	}
+	if account == nil {
+		return FormalPoolOAuthTokenSummary{}, nil, fmt.Errorf("account is required")
+	}
+	tok, err := f.oauth.RefreshAccountToken(ctx, account)
+	if err != nil {
+		return FormalPoolOAuthTokenSummary{}, nil, err
+	}
+	summary, refreshed := formalPoolTokenInfoSummaryAndCredentials(tok)
+	credentials := MergeCredentials(account.Credentials, refreshed)
+	return summary, credentials, nil
+}
+
 func formalPoolTokenInfoSummaryAndCredentials(tok *TokenInfo) (FormalPoolOAuthTokenSummary, map[string]any) {
 	scope := strings.TrimSpace(tok.Scope)
 	summary := FormalPoolOAuthTokenSummary{EmailPresent: strings.TrimSpace(tok.EmailAddress) != "", AccountUUIDPresent: strings.TrimSpace(tok.AccountUUID) != "", OrganizationUUIDPresent: strings.TrimSpace(tok.OrgUUID) != "", ScopeContainsUserInference: strings.Contains(scope, "user:inference"), ScopeContainsClaudeCode: strings.Contains(scope, "user:sessions:claude_code") && scope != oauth.ScopeInference, ExpiresInBucket: formalPoolExpiresBucket(tok.ExpiresIn)}
@@ -167,7 +183,15 @@ func (m *FormalPoolAdminAccountManager) GetFormalPoolAccount(ctx context.Context
 	}
 	return m.admin.GetAccount(ctx, id)
 }
-func (m *FormalPoolAdminAccountManager) ActivateFormalPoolAccount(ctx context.Context, id int64, extra map[string]any) (*Account, error) {
+
+func (m *FormalPoolAdminAccountManager) UpdateFormalPoolAccountCredentials(ctx context.Context, id int64, credentials map[string]any) (*Account, error) {
+	if m == nil || m.admin == nil {
+		return nil, fmt.Errorf("admin service unavailable")
+	}
+	return m.admin.UpdateAccount(ctx, id, &UpdateAccountInput{Credentials: cloneCredentials(credentials)})
+}
+
+func (m *FormalPoolAdminAccountManager) UpdateFormalPoolAccountState(ctx context.Context, id int64, schedulable bool, status string, extra map[string]any) (*Account, error) {
 	if m == nil || m.admin == nil {
 		return nil, fmt.Errorf("admin service unavailable")
 	}
@@ -182,8 +206,15 @@ func (m *FormalPoolAdminAccountManager) ActivateFormalPoolAccount(ctx context.Co
 	for k, v := range extra {
 		merged[k] = v
 	}
-	sched := true
-	return m.admin.UpdateAccount(ctx, id, &UpdateAccountInput{Schedulable: &sched, Extra: merged})
+	input := &UpdateAccountInput{Schedulable: &schedulable, Extra: merged}
+	if strings.TrimSpace(status) != "" {
+		input.Status = status
+	}
+	return m.admin.UpdateAccount(ctx, id, input)
+}
+
+func (m *FormalPoolAdminAccountManager) ActivateFormalPoolAccount(ctx context.Context, id int64, extra map[string]any) (*Account, error) {
+	return m.UpdateFormalPoolAccountState(ctx, id, true, StatusActive, extra)
 }
 
 type FormalPoolStaticCCGatewayReadinessVerifier struct{}

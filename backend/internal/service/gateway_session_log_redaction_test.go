@@ -97,3 +97,15 @@ func TestGenerateSessionHashRedactsMetadataParseFailureLogs(t *testing.T) {
 	require.Contains(t, logs, `"metadata_length":14`)
 	require.True(t, strings.Contains(logs, `"parsed_nil":true`) || strings.Contains(logs, `"parsed_nil":false`))
 }
+
+func TestSafeUpstreamErrorLogSummaryOmitsRawBodyPromptAndToken(t *testing.T) {
+	body := []byte(`{"error":{"message":"token raw-token-marker prompt raw prompt marker email user@example.com uuid 99999999-8888-4777-8666-555555555555 cch=12345"}}`)
+	line := safeUpstreamErrorLogSummary(http.StatusForbidden, body)
+	require.NotContains(t, line, "raw-token-marker")
+	require.NotContains(t, line, "raw prompt marker")
+	require.NotContains(t, line, "user@example.com")
+	require.NotContains(t, line, "99999999-8888-4777-8666-555555555555")
+	require.NotContains(t, line, "cch=12345")
+	require.Contains(t, line, "raw_body_omitted")
+	require.Contains(t, line, "status_403")
+}
