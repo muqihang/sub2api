@@ -321,6 +321,45 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
 
+	if c.GetHeader("x-sub2api-explicit-canary") == "1" {
+		if c.Request.Method != http.MethodPost || c.Request.URL == nil || c.Request.URL.Path != "/v1/messages" || c.Query("beta") != "true" {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary route blocked", streamStarted)
+			return
+		}
+		if c.GetHeader("x-sub2api-canary-localhost-only") == "1" {
+			c.Request = c.Request.WithContext(service.WithCCGatewayExplicitCanaryLocalOnly(c.Request.Context()))
+		}
+		accountID, parseErr := strconv.ParseInt(strings.TrimSpace(c.GetHeader("x-sub2api-canary-account-id")), 10, 64)
+		if parseErr != nil || accountID <= 0 {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary account id is required", streamStarted)
+			return
+		}
+		account, canaryErr := h.gatewayService.GetExplicitCCGatewayCanaryAccount(
+			c.Request.Context(),
+			accountID,
+			c.GetHeader("x-sub2api-canary-egress-bucket"),
+			c.GetHeader("x-sub2api-canary-billing-cch-mode"),
+		)
+		if canaryErr != nil {
+			reqLog.Warn("gateway.explicit_canary_blocked", zap.Error(canaryErr))
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary blocked", streamStarted)
+			return
+		}
+		setOpsSelectedAccount(c, account.ID, account.Platform)
+		c.Set("parsed_request", parsedReq)
+		_, forwardErr := h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
+		if forwardErr != nil {
+			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
+			reqLog.Error("gateway.explicit_canary_forward_failed",
+				zap.Int64("account_id", account.ID),
+				zap.Bool("fallback_error_response_written", wroteFallback),
+				zap.Error(forwardErr),
+			)
+			return
+		}
+		return
+	}
+
 	if platform == service.PlatformGemini {
 		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
 

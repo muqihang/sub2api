@@ -27,7 +27,22 @@ const (
 	ccGatewayExtraEgressBucket       = "cc_gateway_egress_bucket"
 	ccGatewayExtraPolicyVersion      = "cc_gateway_policy_version"
 	openAIGatewayExtraEgressFallback = "openai_gateway_egress_bucket"
+
+	ccGatewayExtraEnabled    = "cc_gateway_enabled"
+	ccGatewayExtraCanaryOnly = "cc_gateway_canary_only"
+	ccGatewayExtraBillingCCH = "billing_cch_mode"
 )
+
+type ccGatewayExplicitCanaryLocalOnlyContextKey struct{}
+
+func WithCCGatewayExplicitCanaryLocalOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ccGatewayExplicitCanaryLocalOnlyContextKey{}, true)
+}
+
+func IsCCGatewayExplicitCanaryLocalOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(ccGatewayExplicitCanaryLocalOnlyContextKey{}).(bool)
+	return v
+}
 
 func ccGatewayConfig(cfg *config.Config) config.GatewayCCGatewayConfig {
 	if cfg == nil {
@@ -80,6 +95,70 @@ func (s *GatewayService) shouldUseCCGatewayAnthropic(account *Account) bool {
 		account.Platform == PlatformAnthropic &&
 		(account.IsAnthropicOAuthOrSetupToken() || account.IsAnthropicAPIKeyPassthroughEnabled()) &&
 		ccGatewayAnthropicEnabled(s.cfg)
+}
+
+// GetExplicitCCGatewayCanaryAccount returns a canary-only Anthropic account for
+// tightly-scoped local/real canary requests. This intentionally bypasses normal
+// broad scheduling, but only after the account and request control fields match.
+func (s *GatewayService) GetExplicitCCGatewayCanaryAccount(ctx context.Context, accountID int64, egressBucket, billingMode string) (*Account, error) {
+	if accountID <= 0 {
+		return nil, fmt.Errorf("explicit canary account id is required")
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get explicit canary account: %w", err)
+	}
+	if err := validateExplicitCCGatewayCanaryAccount(s.cfg, account, egressBucket, billingMode); err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
+func validateExplicitCCGatewayCanaryAccount(cfg *config.Config, account *Account, egressBucket, billingMode string) error {
+	if account == nil {
+		return fmt.Errorf("explicit canary account not found")
+	}
+	if account.Platform != PlatformAnthropic {
+		return fmt.Errorf("explicit canary account must be anthropic")
+	}
+	if !account.IsAnthropicOAuthOrSetupToken() {
+		return fmt.Errorf("explicit canary account must use anthropic oauth or setup-token")
+	}
+	if !ccGatewayAnthropicEnabled(cfg) {
+		return fmt.Errorf("cc gateway anthropic runtime is not enabled")
+	}
+	if !ccGatewayBaseURLIsLocal(cfg) {
+		return fmt.Errorf("explicit canary requires local cc gateway base url")
+	}
+	if !account.getExtraBool(ccGatewayExtraEnabled) {
+		return fmt.Errorf("explicit canary account missing cc_gateway_enabled")
+	}
+	if !account.getExtraBool(ccGatewayExtraCanaryOnly) {
+		return fmt.Errorf("explicit canary account must be canary-only")
+	}
+	if got, want := strings.TrimSpace(resolveCCGatewayEgressBucket(account, ccGatewayConfig(cfg).DefaultEgressBucket)), strings.TrimSpace(egressBucket); want == "" || got != want {
+		return fmt.Errorf("explicit canary egress bucket mismatch")
+	}
+	if got, want := strings.TrimSpace(account.GetExtraString(ccGatewayExtraBillingCCH)), strings.TrimSpace(billingMode); want == "" || got != want {
+		return fmt.Errorf("explicit canary billing mode mismatch")
+	}
+	if !strings.Contains(" "+account.GetCredential("scope")+" ", " user:inference ") {
+		return fmt.Errorf("explicit canary account missing user:inference scope")
+	}
+	return nil
+}
+
+func ccGatewayBaseURLIsLocal(cfg *config.Config) bool {
+	base := strings.TrimSpace(ccGatewayConfig(cfg).BaseURL)
+	if base == "" {
+		return false
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 func (s *GatewayService) ccGatewayEgressBucket(account *Account) string {

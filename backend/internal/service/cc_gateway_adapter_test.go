@@ -58,6 +58,12 @@ func ccGatewayTestConfig(provider string) *config.Config {
 	return cfg
 }
 
+func ccGatewayCanaryTestConfig() *config.Config {
+	cfg := ccGatewayTestConfig(PlatformAnthropic)
+	cfg.Gateway.CCGateway.BaseURL = "http://127.0.0.1:18443"
+	return cfg
+}
+
 func ccGatewayTestContext(path string) *gin.Context {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -74,6 +80,44 @@ func readRequestBody(t *testing.T, req *http.Request) string {
 	require.NoError(t, err)
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return string(body)
+}
+
+func TestValidateExplicitCCGatewayCanaryAccount(t *testing.T) {
+	account := &Account{
+		ID:       3,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "tok",
+			"scope":        "user:profile user:inference user:sessions:claude_code",
+		},
+		Extra: map[string]any{
+			"cc_gateway_enabled":       true,
+			"cc_gateway_canary_only":   true,
+			"cc_gateway_egress_bucket": "home-ip-canary-2026-05-22",
+			"billing_cch_mode":         "sign",
+		},
+	}
+
+	require.NoError(t, validateExplicitCCGatewayCanaryAccount(ccGatewayCanaryTestConfig(), account, "home-ip-canary-2026-05-22", "sign"))
+
+	missingScope := *account
+	missingScope.Credentials = map[string]any{"access_token": "tok", "scope": "user:profile"}
+	require.ErrorContains(t, validateExplicitCCGatewayCanaryAccount(ccGatewayCanaryTestConfig(), &missingScope, "home-ip-canary-2026-05-22", "sign"), "user:inference")
+
+	normalAccount := *account
+	normalAccount.Extra = map[string]any{
+		"cc_gateway_enabled":       true,
+		"cc_gateway_egress_bucket": "home-ip-canary-2026-05-22",
+		"billing_cch_mode":         "sign",
+	}
+	require.ErrorContains(t, validateExplicitCCGatewayCanaryAccount(ccGatewayCanaryTestConfig(), &normalAccount, "home-ip-canary-2026-05-22", "sign"), "canary-only")
+
+	wrongBucket := *account
+	require.ErrorContains(t, validateExplicitCCGatewayCanaryAccount(ccGatewayCanaryTestConfig(), &wrongBucket, "other-bucket", "sign"), "egress bucket")
+
+	nonLocalConfig := ccGatewayTestConfig(PlatformAnthropic)
+	require.ErrorContains(t, validateExplicitCCGatewayCanaryAccount(nonLocalConfig, account, "home-ip-canary-2026-05-22", "sign"), "local")
 }
 
 func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testing.T) {

@@ -3824,6 +3824,14 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 }
 
 func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (string, string, error) {
+	if IsCCGatewayExplicitCanaryLocalOnly(ctx) && account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth {
+		accessToken := account.GetCredential("access_token")
+		if accessToken == "" {
+			return "", "", errors.New("access_token not found in credentials")
+		}
+		return accessToken, "oauth", nil
+	}
+
 	// 对于 Anthropic OAuth 账号，使用 ClaudeTokenProvider 获取缓存的 token
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth && s.claudeTokenProvider != nil {
 		accessToken, err := s.claudeTokenProvider.GetAccessToken(ctx, account)
