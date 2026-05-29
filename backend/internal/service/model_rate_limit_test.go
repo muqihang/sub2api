@@ -183,6 +183,12 @@ func TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey(t *testing.T) {
 
 	account := &Account{
 		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-5":          "claude-sonnet-4-5",
+				"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
+			},
+		},
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"claude-sonnet-4-5-thinking": map[string]any{
@@ -343,7 +349,7 @@ func TestGetRateLimitRemainingTime(t *testing.T) {
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
-						"claude-sonnet-4-5": map[string]any{
+						"claude-sonnet-4-6": map[string]any{
 							"rate_limit_reset_at": future15m,
 						},
 					},
@@ -359,7 +365,7 @@ func TestGetRateLimitRemainingTime(t *testing.T) {
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
-						"claude-sonnet-4-5": map[string]any{
+						"claude-sonnet-4-6": map[string]any{
 							"rate_limit_reset_at": future5m,
 						},
 					},
