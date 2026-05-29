@@ -185,17 +185,30 @@ type Account struct {
 	TempUnschedulableUntil  *time.Time `json:"temp_unschedulable_until"`
 	TempUnschedulableReason string     `json:"temp_unschedulable_reason"`
 
-	OnboardingStage                 string `json:"onboarding_stage,omitempty"`
-	PoolProfileRequested            string `json:"pool_profile_requested,omitempty"`
-	PoolProfileEffective            string `json:"pool_profile_effective,omitempty"`
-	PoolWeightMode                  string `json:"pool_weight_mode,omitempty"`
-	HealthcheckStatus               string `json:"healthcheck_status,omitempty"`
-	HealthcheckLastStatusCodeBucket string `json:"healthcheck_last_status_code_bucket,omitempty"`
-	CCGatewayRuntimeRegistered      bool   `json:"cc_gateway_runtime_registered,omitempty"`
-	QuarantineReason                string `json:"quarantine_reason,omitempty"`
-	RiskEventRef                    string `json:"risk_event_ref,omitempty"`
-	WarmingUntil                    string `json:"warming_until,omitempty"`
-	ProductionReady                 bool   `json:"production_ready,omitempty"`
+	OnboardingStage                  string `json:"onboarding_stage,omitempty"`
+	PoolProfileRequested             string `json:"pool_profile_requested,omitempty"`
+	PoolProfileEffective             string `json:"pool_profile_effective,omitempty"`
+	PoolWeightMode                   string `json:"pool_weight_mode,omitempty"`
+	HealthcheckStatus                string `json:"healthcheck_status,omitempty"`
+	HealthcheckLastStatusCodeBucket  string `json:"healthcheck_last_status_code_bucket,omitempty"`
+	FormalPoolLastFailureOrigin      string `json:"formal_pool_last_failure_origin,omitempty"`
+	FormalPoolLastFailureCode        string `json:"formal_pool_last_failure_code,omitempty"`
+	FormalPoolLastFailureSource      string `json:"formal_pool_last_failure_source,omitempty"`
+	FormalPoolLastCCGatewayErrorCode string `json:"formal_pool_last_cc_gateway_error_code,omitempty"`
+	FormalPoolLastHealthcheckAt      string `json:"formal_pool_last_healthcheck_at,omitempty"`
+	FormalPoolLastHealthcheckResult  string `json:"formal_pool_last_healthcheck_result,omitempty"`
+	HealthcheckCCGatewaySeen         bool   `json:"healthcheck_cc_gateway_seen,omitempty"`
+	HealthcheckFallbackDetected      bool   `json:"healthcheck_fallback_detected,omitempty"`
+	HealthcheckProxyMismatch         bool   `json:"healthcheck_proxy_mismatch,omitempty"`
+	HealthcheckRiskTextDetected      bool   `json:"healthcheck_risk_text_detected,omitempty"`
+	FormalPoolCredentialGeneration   int    `json:"formal_pool_credential_generation,omitempty"`
+	FormalPoolRepairedAt             string `json:"formal_pool_repaired_at,omitempty"`
+	FormalPoolRepairedBy             string `json:"formal_pool_repaired_by,omitempty"`
+	CCGatewayRuntimeRegistered       bool   `json:"cc_gateway_runtime_registered,omitempty"`
+	QuarantineReason                 string `json:"quarantine_reason,omitempty"`
+	RiskEventRef                     string `json:"risk_event_ref,omitempty"`
+	WarmingUntil                     string `json:"warming_until,omitempty"`
+	ProductionReady                  bool   `json:"production_ready,omitempty"`
 
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`

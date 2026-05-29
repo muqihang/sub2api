@@ -49,6 +49,47 @@ func TestAccountFromService_ExposesFormalPoolHardGateFields(t *testing.T) {
 	require.False(t, got.ProductionReady)
 }
 
+func TestAccountFromService_ExposesFormalPoolRecoveryFields(t *testing.T) {
+	t.Parallel()
+
+	account := &service.Account{
+		ID:          42,
+		Name:        "formal-repair",
+		Platform:    service.PlatformAnthropic,
+		Type:        service.AccountTypeSetupToken,
+		Status:      service.StatusError,
+		Schedulable: false,
+		Extra: map[string]any{
+			service.FormalPoolExtraOnboardingStage:             service.FormalPoolStageQuarantined,
+			service.FormalPoolExtraLastFailureOrigin:           "upstream",
+			service.FormalPoolExtraLastFailureCode:             "upstream_401",
+			service.FormalPoolExtraLastFailureSource:           "formal_pool_healthcheck",
+			service.FormalPoolExtraLastCCGatewayErrorCode:      "missing_account_identity",
+			service.FormalPoolExtraHealthcheckCCGatewaySeen:    true,
+			service.FormalPoolExtraHealthcheckFallbackDetected: false,
+			service.FormalPoolExtraHealthcheckProxyMismatch:    false,
+			service.FormalPoolExtraHealthcheckRiskTextDetected: false,
+			service.FormalPoolExtraCredentialGeneration:        3,
+			service.FormalPoolExtraRepairedAt:                  "2026-05-29T00:00:00Z",
+			service.FormalPoolExtraRepairedBy:                  "admin_ref_safe",
+		},
+	}
+
+	got := AccountFromService(account)
+
+	require.Equal(t, "upstream", got.FormalPoolLastFailureOrigin)
+	require.Equal(t, "upstream_401", got.FormalPoolLastFailureCode)
+	require.Equal(t, "formal_pool_healthcheck", got.FormalPoolLastFailureSource)
+	require.Equal(t, "missing_account_identity", got.FormalPoolLastCCGatewayErrorCode)
+	require.True(t, got.HealthcheckCCGatewaySeen)
+	require.False(t, got.HealthcheckFallbackDetected)
+	require.False(t, got.HealthcheckProxyMismatch)
+	require.False(t, got.HealthcheckRiskTextDetected)
+	require.Equal(t, 3, got.FormalPoolCredentialGeneration)
+	require.Equal(t, "2026-05-29T00:00:00Z", got.FormalPoolRepairedAt)
+	require.Equal(t, "admin_ref_safe", got.FormalPoolRepairedBy)
+}
+
 func TestAccountFromService_FormalPoolLegacyUnknownWhenMissing(t *testing.T) {
 	t.Parallel()
 
@@ -102,6 +143,56 @@ func TestAccountFromService_FormalPoolFieldsDoNotExposeSecrets(t *testing.T) {
 	require.NotContains(t, body, "refresh-token-raw")
 	require.NotContains(t, body, "user@example.com")
 	require.NotContains(t, body, "99999999-8888-4777-8666-555555555555")
+}
+
+func TestAccountFromService_FormalPoolRecoveryFieldsDoNotExposeSecrets(t *testing.T) {
+	t.Parallel()
+
+	account := &service.Account{ID: 1, Name: "formal", Platform: service.PlatformAnthropic, Type: service.AccountTypeSetupToken, Extra: map[string]any{
+		service.FormalPoolExtraOnboardingStage:             service.FormalPoolStageQuarantined,
+		service.FormalPoolExtraLastFailureOrigin:           "upstream user@example.com",
+		service.FormalPoolExtraLastFailureCode:             "upstream_401 99999999-8888-4777-8666-555555555555",
+		service.FormalPoolExtraLastFailureSource:           "formal_pool_healthcheck sk-ant-sid01-secret",
+		service.FormalPoolExtraLastCCGatewayErrorCode:      "missing_account_identity raw_cch",
+		service.FormalPoolExtraLastHealthcheckAt:           "2026-05-29T00:00:00Z access_token=secret",
+		service.FormalPoolExtraLastHealthcheckResult:       "raw_body prompt-secret",
+		service.FormalPoolExtraHealthcheckCCGatewaySeen:    "person@example.com",
+		service.FormalPoolExtraHealthcheckFallbackDetected: "raw_prompt marker",
+		service.FormalPoolExtraHealthcheckProxyMismatch:    "http://user:proxy-secret@proxy.example.com:8080",
+		service.FormalPoolExtraHealthcheckRiskTextDetected: "refresh_token=secret",
+		service.FormalPoolExtraCredentialGeneration:        "credential-secret",
+		service.FormalPoolExtraRepairedAt:                  "2026-05-29T00:00:00Z bearer raw-token",
+		service.FormalPoolExtraRepairedBy:                  "admin@example.com",
+		service.FormalPoolExtraHealthcheckStatus:           "failed",
+		service.FormalPoolExtraHealthcheckStatusCodeBucket: "status_4xx",
+		service.FormalPoolExtraHealthcheckRawRef:           "hmac-sha256:" + strings.Repeat("f", 64),
+	}}
+
+	payload, err := json.Marshal(AccountFromService(account))
+	require.NoError(t, err)
+	body := strings.ToLower(string(payload))
+	for _, unsafe := range []string{
+		"user@example.com",
+		"99999999-8888-4777-8666-555555555555",
+		"sk-ant-sid01-secret",
+		"raw_cch",
+		"access_token",
+		"raw_body",
+		"prompt-secret",
+		"person@example.com",
+		"raw_prompt",
+		"proxy-secret",
+		"proxy.example.com",
+		"refresh_token",
+		"credential-secret",
+		"raw-token",
+		"admin@example.com",
+	} {
+		require.NotContains(t, body, strings.ToLower(unsafe))
+	}
+	require.Contains(t, body, "failed")
+	require.Contains(t, body, "status_4xx")
+	require.Contains(t, body, "hmac-sha256:"+strings.Repeat("f", 64))
 }
 
 func TestAccountFromService_FormalPoolDTOOnlyExposesSafeGatewayRefs(t *testing.T) {

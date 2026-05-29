@@ -411,6 +411,19 @@ func accountExtraForDTO(a *service.Account) map[string]any {
 		service.FormalPoolExtraHealthcheckStatus,
 		service.FormalPoolExtraHealthcheckStatusCodeBucket,
 		service.FormalPoolExtraHealthcheckRawRef,
+		service.FormalPoolExtraLastFailureOrigin,
+		service.FormalPoolExtraLastFailureCode,
+		service.FormalPoolExtraLastFailureSource,
+		service.FormalPoolExtraLastCCGatewayErrorCode,
+		service.FormalPoolExtraLastHealthcheckAt,
+		service.FormalPoolExtraLastHealthcheckResult,
+		service.FormalPoolExtraHealthcheckCCGatewaySeen,
+		service.FormalPoolExtraHealthcheckFallbackDetected,
+		service.FormalPoolExtraHealthcheckProxyMismatch,
+		service.FormalPoolExtraHealthcheckRiskTextDetected,
+		service.FormalPoolExtraCredentialGeneration,
+		service.FormalPoolExtraRepairedAt,
+		service.FormalPoolExtraRepairedBy,
 		service.FormalPoolExtraRuntimeRegistered,
 		service.FormalPoolExtraRuntimeRegisteredAt,
 		service.FormalPoolExtraWarmingStartedAt,
@@ -445,6 +458,28 @@ func accountExtraForDTO(a *service.Account) map[string]any {
 				if safe, ok := safeFormalPoolDTOBucket(v); ok {
 					out[key] = safe
 				}
+			case service.FormalPoolExtraLastFailureOrigin,
+				service.FormalPoolExtraLastFailureCode,
+				service.FormalPoolExtraLastFailureSource,
+				service.FormalPoolExtraLastCCGatewayErrorCode,
+				service.FormalPoolExtraLastHealthcheckAt,
+				service.FormalPoolExtraLastHealthcheckResult,
+				service.FormalPoolExtraRepairedAt,
+				service.FormalPoolExtraRepairedBy:
+				if safe, ok := safeFormalPoolDTOText(v); ok {
+					out[key] = safe
+				}
+			case service.FormalPoolExtraHealthcheckCCGatewaySeen,
+				service.FormalPoolExtraHealthcheckFallbackDetected,
+				service.FormalPoolExtraHealthcheckProxyMismatch,
+				service.FormalPoolExtraHealthcheckRiskTextDetected:
+				if safe, ok := safeFormalPoolDTOBool(v); ok {
+					out[key] = safe
+				}
+			case service.FormalPoolExtraCredentialGeneration:
+				if safe, ok := safeFormalPoolDTOInt(v); ok {
+					out[key] = safe
+				}
 			default:
 				out[key] = v
 			}
@@ -460,7 +495,7 @@ var (
 	formalPoolDTOURLLikeRe      = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*://`)
 	formalPoolDTOClaudeBucketRe = regexp.MustCompile(`^claude-[0-9a-f]{16}$`)
 	formalPoolDTOLocalBucketRe  = regexp.MustCompile(`^bucket-[A-Za-z0-9_-]{1,56}$`)
-	formalPoolDTOSensitiveRe    = regexp.MustCompile(`(?i)(authorization|access[_-]?token|refresh[_-]?token|id[_-]?token|token|x-api-key|cookie|cch|credential|password|passwd|secret|client[_-]?secret|proxy[_-]?url|bearer)`)
+	formalPoolDTOSensitiveRe    = regexp.MustCompile(`(?i)(authorization|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|raw[_ -]?token|token\s*[:=]|x-api-key|cookie|cch|credential|password|passwd|secret|client[_ -]?secret|proxy[_ -]?url|proxy[_ -]?credential|bearer)`)
 )
 
 func safeFormalPoolDTORef(v any) (string, bool) {
@@ -496,6 +531,78 @@ func safeFormalPoolDTOBucket(v any) (string, bool) {
 	return "", false
 }
 
+func safeFormalPoolDTOText(v any) (string, bool) {
+	s, ok := formalPoolDTOString(v)
+	if !ok || formalPoolDTOUnsafeText(s) {
+		return "", false
+	}
+	return s, true
+}
+
+func safeFormalPoolDTOBool(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		x = strings.ToLower(strings.TrimSpace(x))
+		switch x {
+		case "true", "1", "yes":
+			return true, true
+		case "false", "0", "no":
+			return false, true
+		default:
+			return false, false
+		}
+	case int:
+		if x == 0 {
+			return false, true
+		}
+		if x == 1 {
+			return true, true
+		}
+	case int64:
+		if x == 0 {
+			return false, true
+		}
+		if x == 1 {
+			return true, true
+		}
+	case float64:
+		if x == 0 {
+			return false, true
+		}
+		if x == 1 {
+			return true, true
+		}
+	}
+	return false, false
+}
+
+func safeFormalPoolDTOInt(v any) (int, bool) {
+	switch x := v.(type) {
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	case int32:
+		return int(x), true
+	case float64:
+		return int(x), true
+	case float32:
+		return int(x), true
+	case string:
+		s := strings.TrimSpace(x)
+		if formalPoolDTOUnsafeText(s) {
+			return 0, false
+		}
+		n, err := strconv.Atoi(s)
+		if err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
 func formalPoolDTOString(v any) (string, bool) {
 	s, ok := v.(string)
 	if !ok {
@@ -509,8 +616,14 @@ func formalPoolDTOUnsafeText(s string) bool {
 	if strings.ContainsAny(s, "\r\n\t") {
 		return true
 	}
+	lower := strings.ToLower(s)
 	if formalPoolDTOURLLikeRe.MatchString(s) || strings.Contains(s, "://") || strings.Contains(s, "@") {
 		return true
+	}
+	for _, marker := range []string{"raw_body", "raw body", "raw-body", "raw_prompt", "raw prompt", "raw-prompt", "raw_telemetry", "raw telemetry", "raw-telemetry", "raw_cch", "raw cch", "raw-cch", "raw_token", "raw token", "raw-token", "sk-ant-sid"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
 	}
 	return formalPoolDTOUUIDLikeRe.MatchString(s) || formalPoolDTOEmailLikeRe.MatchString(s) || formalPoolDTOSensitiveRe.MatchString(s)
 }
@@ -964,11 +1077,58 @@ func applyFormalPoolAccountFields(out *Account, a *service.Account) {
 	out.PoolWeightMode = a.GetExtraString(service.FormalPoolExtraPoolWeightMode)
 	out.HealthcheckStatus = a.GetExtraString(service.FormalPoolExtraHealthcheckStatus)
 	out.HealthcheckLastStatusCodeBucket = a.GetExtraString(service.FormalPoolExtraHealthcheckStatusCodeBucket)
+	out.FormalPoolLastFailureOrigin = safeFormalPoolAccountText(a, service.FormalPoolExtraLastFailureOrigin)
+	out.FormalPoolLastFailureCode = safeFormalPoolAccountText(a, service.FormalPoolExtraLastFailureCode)
+	out.FormalPoolLastFailureSource = safeFormalPoolAccountText(a, service.FormalPoolExtraLastFailureSource)
+	out.FormalPoolLastCCGatewayErrorCode = safeFormalPoolAccountText(a, service.FormalPoolExtraLastCCGatewayErrorCode)
+	out.FormalPoolLastHealthcheckAt = safeFormalPoolAccountText(a, service.FormalPoolExtraLastHealthcheckAt)
+	out.FormalPoolLastHealthcheckResult = safeFormalPoolAccountText(a, service.FormalPoolExtraLastHealthcheckResult)
+	out.HealthcheckCCGatewaySeen, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckCCGatewaySeen])
+	out.HealthcheckFallbackDetected, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckFallbackDetected])
+	out.HealthcheckProxyMismatch, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckProxyMismatch])
+	out.HealthcheckRiskTextDetected, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckRiskTextDetected])
+	if gen, ok := safeFormalPoolDTOInt(a.Extra[service.FormalPoolExtraCredentialGeneration]); ok {
+		out.FormalPoolCredentialGeneration = gen
+	}
+	out.FormalPoolRepairedAt = safeFormalPoolAccountText(a, service.FormalPoolExtraRepairedAt)
+	out.FormalPoolRepairedBy = safeFormalPoolAccountText(a, service.FormalPoolExtraRepairedBy)
 	out.CCGatewayRuntimeRegistered = formalPoolDTOBool(a.Extra[service.FormalPoolExtraRuntimeRegistered])
 	out.QuarantineReason = a.GetExtraString(service.FormalPoolExtraQuarantineReason)
 	out.RiskEventRef = a.GetExtraString(service.FormalPoolExtraRiskEventRef)
 	out.WarmingUntil = a.GetExtraString(service.FormalPoolExtraWarmingUntil)
 	out.ProductionReady = stage == service.FormalPoolStageProduction
+}
+
+func safeFormalPoolAccountText(a *service.Account, key string) string {
+	if a == nil {
+		return ""
+	}
+	safe, ok := safeFormalPoolDTOText(a.Extra[key])
+	if !ok {
+		return ""
+	}
+	return safe
+}
+
+func intFromAny(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case int32:
+		return int(x)
+	case float64:
+		return int(x)
+	case float32:
+		return int(x)
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		if err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 func formalPoolDTOBool(v any) bool {
