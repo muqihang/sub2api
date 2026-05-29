@@ -49,6 +49,14 @@ func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiToke
 	return NewOAuthRefreshAPI(accountRepo, tokenCache)
 }
 
+func ProvideCodexEntryCenterConfig(cfg *config.Config) *CodexEntryCenterConfig {
+	frontendURL := ""
+	if cfg != nil {
+		frontendURL = cfg.Server.FrontendURL
+	}
+	return &CodexEntryCenterConfig{ServerOrigin: frontendURL, GatewayOrigin: ""}
+}
+
 func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream) *FormalPoolOnboardingService {
 	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
 	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
@@ -60,6 +68,20 @@ func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService 
 		CCGateway:        NewFormalPoolStaticCCGatewayReadinessVerifier(),
 		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
 		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+	})
+}
+
+func ProvideFormalPoolOperationsService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream) *FormalPoolOperationsService {
+	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
+	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
+	return NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:         NewFormalPoolOperationsAdminAccountStore(adminService),
+		OAuth:            oauthFacade,
+		Proxy:            NewFormalPoolOperationsAdminProxyStore(adminService),
+		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		Quarantine:       quarantine,
+		Now:              time.Now,
 	})
 }
 
@@ -793,12 +815,16 @@ var ProviderSet = wire.NewSet(
 	ProvideCodexGatewayCaptureManager,
 	ProvideCodexGatewayService,
 	ProvideCodexGatewayAdminServiceWithVariantChecker,
+	ProvideCodexEntryCenterConfig,
+	NewCodexEntryCenterService,
+	wire.Bind(new(CodexEntryCenterService), new(*CodexEntryCenterServiceImpl)),
 	NewAugmentGatewayReasoningTurnStore,
 	NewAugmentGatewayProviderExecutor,
 	NewAugmentGatewayService,
 	NewUserService,
 	ProvideAPIKeyService,
 	wire.Bind(new(codexManagedAPIKeyReader), new(*APIKeyService)),
+	wire.Bind(new(codexAPIKeyCreator), new(*APIKeyService)),
 	ProvideAPIKeyAuthCacheInvalidator,
 	NewGroupService,
 	NewAccountService,
@@ -818,6 +844,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIGatewayService,
 	NewOAuthService,
 	ProvideFormalPoolOnboardingService,
+	ProvideFormalPoolOperationsService,
 	ProvideOpenAIOAuthSessionStore,
 	ProvideOpenAIOAuthService,
 	ProvideGeminiOAuthSessionStore,

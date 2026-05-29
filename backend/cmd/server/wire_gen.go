@@ -187,6 +187,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexAgentRepository := repository.NewCodexAgentRepository(client)
 	codexAgentService := service.NewCodexAgentService(client, codexAgentRepository, apiKeyService, configConfig)
 	codexAgentHandler := handler.NewCodexAgentHandler(codexAgentService)
+	codexEntryCenterConfig := service.ProvideCodexEntryCenterConfig(configConfig)
+	codexEntryCenterServiceImpl := service.NewCodexEntryCenterService(codexAgentRepository, apiKeyService, apiKeyService, codexEntryCenterConfig)
+	codexEntryCenterHandler := handler.NewCodexEntryCenterHandler(codexEntryCenterServiceImpl)
 	dashboardAggregationRepository := repository.NewDashboardAggregationRepository(db)
 	dashboardStatsCache := repository.NewDashboardCache(redisClient, configConfig)
 	dashboardService := service.NewDashboardService(usageLogRepository, dashboardAggregationRepository, dashboardStatsCache, configConfig)
@@ -274,7 +277,9 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexGatewayHandler := handler.ProvideCodexGatewayAdminHandler(codexGatewayAdminService)
 	formalPoolOnboardingService := service.ProvideFormalPoolOnboardingService(adminService, oAuthService, configConfig, accountRepository, httpUpstream)
 	formalPoolOnboardingHandler := admin.NewFormalPoolOnboardingHandler(formalPoolOnboardingService)
-	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, geminiHealthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, entityHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, paymentHandler, affiliateHandler, augmentGatewayHandler, codexGatewayHandler, formalPoolOnboardingHandler)
+	formalPoolOperationsService := service.ProvideFormalPoolOperationsService(adminService, oAuthService, configConfig, accountRepository, httpUpstream)
+	formalPoolOperationsHandler := admin.NewFormalPoolOperationsHandler(formalPoolOperationsService)
+	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, geminiHealthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, entityHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, paymentHandler, affiliateHandler, augmentGatewayHandler, codexGatewayHandler, formalPoolOnboardingHandler, formalPoolOperationsHandler)
 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
 	userMessageQueueService := service.ProvideUserMessageQueueService(userMsgQueueCache, rpmCache, configConfig)
@@ -292,15 +297,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	availableChannelHandler := handler.NewAvailableChannelHandler(channelService, apiKeyService, settingService)
 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, configConfig)
-	handlers := handler.ProvideHandlers(authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, codexAgentHandler, adminHandlers, gatewayHandler, handlerCodexGatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, idempotencyCoordinator, idempotencyCleanupService)
-	// Codex Entry Center (manually wired)
-	codexEntryCenterConfig := &service.CodexEntryCenterConfig{
-		ServerOrigin:  configConfig.Server.FrontendURL,
-		GatewayOrigin: "",
-	}
-	codexEntryCenterService := service.NewCodexEntryCenterService(codexAgentRepository, apiKeyService, apiKeyService, codexEntryCenterConfig)
-	codexEntryCenterHandler := handler.NewCodexEntryCenterHandler(codexEntryCenterService)
-	handlers.CodexEntryCenter = codexEntryCenterHandler
+	handlers := handler.ProvideHandlers(authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, codexAgentHandler, codexEntryCenterHandler, adminHandlers, gatewayHandler, handlerCodexGatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, idempotencyCoordinator, idempotencyCleanupService)
 	jwtAuthMiddleware := middleware.NewJWTAuthMiddleware(authService, userService)
 	adminAuthMiddleware := middleware.NewAdminAuthMiddleware(authService, userService, settingService)
 	apiKeyAuthMiddleware := middleware.NewAPIKeyAuthMiddleware(apiKeyService, subscriptionService, configConfig)

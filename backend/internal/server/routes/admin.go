@@ -310,6 +310,14 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/:id/quarantine", h.Admin.Account.QuarantineFormalPool)
 		accounts.POST("/:id/schedulable", h.Admin.Account.SetSchedulable)
 		accounts.POST("/:id/cc-gateway/canary-preflight", h.Admin.Account.CCGatewayCanaryPreflight)
+		if h.Admin.FormalPoolOperations != nil {
+			accounts.GET("/:id/formal-pool/diagnostics", h.Admin.FormalPoolOperations.Diagnostics)
+			accounts.POST("/:id/setup-token/replace", h.Admin.FormalPoolOperations.ReplaceSetupToken)
+			accounts.POST("/:id/formal-pool/runtime-register", h.Admin.FormalPoolOperations.RuntimeRegister)
+			accounts.POST("/:id/formal-pool/healthcheck", h.Admin.FormalPoolOperations.Healthcheck)
+			accounts.POST("/:id/formal-pool/start-warming", h.Admin.FormalPoolOperations.StartWarming)
+			accounts.POST("/:id/formal-pool/proxy/swap", h.Admin.FormalPoolOperations.SwapProxy)
+		}
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		accounts.GET("/data", h.Admin.Account.ExportData)

@@ -44,6 +44,7 @@ func ProvideAdminHandlers(
 	augmentGatewayHandler *admin.AugmentGatewayHandler,
 	codexGatewayHandler *admin.CodexGatewayHandler,
 	formalPoolOnboardingHandler *admin.FormalPoolOnboardingHandler,
+	formalPoolOperationsHandler *admin.FormalPoolOperationsHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -80,6 +81,7 @@ func ProvideAdminHandlers(
 		AugmentGateway:         augmentGatewayHandler,
 		CodexGateway:           codexGatewayHandler,
 		FormalPoolOnboarding:   formalPoolOnboardingHandler,
+		FormalPoolOperations:   formalPoolOperationsHandler,
 	}
 }
 
@@ -174,6 +176,7 @@ func ProvideHandlers(
 	announcementHandler *AnnouncementHandler,
 	channelMonitorUserHandler *ChannelMonitorUserHandler,
 	codexAgentHandler *CodexAgentHandler,
+	codexEntryCenterHandler *CodexEntryCenterHandler,
 	adminHandlers *AdminHandlers,
 	gatewayHandler *GatewayHandler,
 	codexGatewayHandler *CodexGatewayHandler,
@@ -195,6 +198,7 @@ func ProvideHandlers(
 		Subscription:     subscriptionHandler,
 		Announcement:     announcementHandler,
 		CodexAgent:       codexAgentHandler,
+		CodexEntryCenter: codexEntryCenterHandler,
 		ChannelMonitor:   channelMonitorUserHandler,
 		Admin:            adminHandlers,
 		Gateway:          gatewayHandler,
@@ -220,6 +224,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementHandler,
 	NewChannelMonitorUserHandler,
 	NewCodexAgentHandler,
+	NewCodexEntryCenterHandler,
 	NewGatewayHandler,
 	ProvideCodexGatewayHandler,
 	ProvideOpenAIGatewayHandler,
@@ -264,6 +269,7 @@ var ProviderSet = wire.NewSet(
 	ProvideAugmentGatewayHandler,
 	ProvideCodexGatewayAdminHandler,
 	admin.NewFormalPoolOnboardingHandler,
+	admin.NewFormalPoolOperationsHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,
