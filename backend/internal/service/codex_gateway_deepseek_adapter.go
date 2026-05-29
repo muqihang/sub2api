@@ -53,7 +53,7 @@ func ExecuteCodexGatewayDeepSeekAdapter(
 		return result, nil
 	}
 
-	mapped, err := codexGatewayDeepSeekMapChatCompletionResponse(body, resp.Header.Get("x-request-id"), model, prepared.ToolNameMap, stateStore, reqCtx)
+	mapped, err := codexGatewayDeepSeekMapChatCompletionResponse(body, resp.Header.Get("x-request-id"), model, prepared.ToolNameMap, prepared.ReplayMessages, stateStore, reqCtx)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
@@ -105,6 +105,7 @@ func codexGatewayDeepSeekMapChatCompletionResponse(
 	upstreamRequestID string,
 	model CodexGatewayModel,
 	toolNameMap map[string]CodexGatewayToolNameMapEntry,
+	replayMessages []json.RawMessage,
 	stateStore *CodexGatewayStateStore,
 	reqCtx CodexGatewayDeepSeekRequestContext,
 ) (CodexGatewayProviderResult, error) {
@@ -192,8 +193,8 @@ func codexGatewayDeepSeekMapChatCompletionResponse(
 	result.ToolCalls = storedCalls
 	result.Response = response
 
-	if response.Status == "completed" && len(storedCalls) > 0 {
-		if err := codexGatewayDeepSeekPersistState(stateStore, responseID, parsed.Model, reqCtx, text, true, result.ReasoningContent, reasoningPresent, !reasoningPresent, storedCalls, toolNameMap); err != nil {
+	if response.Status == "completed" {
+		if err := codexGatewayDeepSeekPersistState(stateStore, responseID, parsed.Model, reqCtx, text, true, result.ReasoningContent, reasoningPresent, !reasoningPresent, storedCalls, toolNameMap, codexGatewayDeepSeekStateReplayMessages(replayMessages, text, true, result.ReasoningContent, reasoningPresent, !reasoningPresent, storedCalls, toolNameMap)); err != nil {
 			return CodexGatewayProviderResult{}, err
 		}
 	}
@@ -401,9 +402,14 @@ func codexGatewayDeepSeekPersistState(
 	reasoningContentSynthesized bool,
 	toolCalls []CodexGatewayStoredToolCall,
 	toolNameMap map[string]CodexGatewayToolNameMapEntry,
+	replayMessages []json.RawMessage,
 ) error {
-	if stateStore == nil || strings.TrimSpace(responseID) == "" || len(toolCalls) == 0 {
+	shouldPersist := codexGatewayDeepSeekShouldPersistResponseState(assistantContent, assistantContentPresent, reasoningContent, reasoningContentPresent, reasoningContentSynthesized, toolCalls, replayMessages)
+	if stateStore == nil || strings.TrimSpace(responseID) == "" || !shouldPersist {
 		return nil
+	}
+	if len(replayMessages) == 0 {
+		replayMessages = codexGatewayDeepSeekStateReplayMessages(nil, assistantContent, assistantContentPresent, reasoningContent, reasoningContentPresent, reasoningContentSynthesized, toolCalls, toolNameMap)
 	}
 	return stateStore.Put(CodexGatewayResponseState{
 		Key: CodexGatewayStateLookupKey{
@@ -420,7 +426,41 @@ func codexGatewayDeepSeekPersistState(
 		ReasoningContentSynthesized: reasoningContentSynthesized,
 		ToolCalls:                   cloneCodexGatewayStoredToolCalls(toolCalls),
 		ToolNameMap:                 cloneCodexGatewayToolNameMap(toolNameMap),
+		ReplayMessages:              cloneCodexGatewayRawMessages(replayMessages),
 	})
+}
+
+func codexGatewayDeepSeekShouldPersistResponseState(assistantContent string, assistantContentPresent bool, reasoningContent string, reasoningContentPresent bool, reasoningContentSynthesized bool, toolCalls []CodexGatewayStoredToolCall, replayMessages []json.RawMessage) bool {
+	if len(toolCalls) > 0 || len(replayMessages) > 0 {
+		return true
+	}
+	if assistantContentPresent && strings.TrimSpace(assistantContent) != "" {
+		return true
+	}
+	if (reasoningContentPresent || reasoningContentSynthesized) && strings.TrimSpace(reasoningContent) != "" {
+		return true
+	}
+	return false
+}
+
+func codexGatewayDeepSeekStateReplayMessages(base []json.RawMessage, assistantContent string, assistantContentPresent bool, reasoningContent string, reasoningContentPresent bool, reasoningContentSynthesized bool, toolCalls []CodexGatewayStoredToolCall, toolNameMap map[string]CodexGatewayToolNameMapEntry) []json.RawMessage {
+	state := CodexGatewayResponseState{
+		AssistantContent:            assistantContent,
+		AssistantContentPresent:     assistantContentPresent,
+		ReasoningContent:            reasoningContent,
+		ReasoningContentPresent:     reasoningContentPresent,
+		ReasoningContentSynthesized: reasoningContentSynthesized,
+		ToolCalls:                   toolCalls,
+		ToolNameMap:                 toolNameMap,
+	}
+	assistant := codexGatewayDeepSeekAssistantMessageFromState(state)
+	raw, err := json.Marshal(assistant)
+	if err != nil || len(raw) == 0 {
+		return cloneCodexGatewayRawMessages(base)
+	}
+	out := cloneCodexGatewayRawMessages(base)
+	out = append(out, raw)
+	return out
 }
 
 func codexGatewayDeepSeekMapErrorBody(statusCode int, raw []byte) []byte {

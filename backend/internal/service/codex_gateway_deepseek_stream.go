@@ -399,7 +399,8 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
 
-	if state.shouldPersistToolLoopState() {
+	if state.shouldPersistResponseState(prepared.ReplayMessages) {
+		storedToolCalls := state.storedToolCalls()
 		if err := codexGatewayDeepSeekPersistState(
 			stateStore,
 			state.responseID,
@@ -410,8 +411,9 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 			state.reasoningText.String(),
 			state.reasoningPresent,
 			!state.reasoningPresent,
-			state.storedToolCalls(),
+			storedToolCalls,
 			prepared.ToolNameMap,
+			codexGatewayDeepSeekStateReplayMessages(prepared.ReplayMessages, state.messageText.String(), state.messageAdded, state.reasoningText.String(), state.reasoningPresent, !state.reasoningPresent, storedToolCalls, prepared.ToolNameMap),
 		); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err
 		}
@@ -1133,6 +1135,13 @@ func (s *codexGatewayDeepSeekStreamState) shouldPersistToolLoopState() bool {
 		return false
 	}
 	return s.terminalSeen && strings.TrimSpace(s.finishReason) == "tool_calls"
+}
+
+func (s *codexGatewayDeepSeekStreamState) shouldPersistResponseState(replayMessages []json.RawMessage) bool {
+	if !s.terminalSeen {
+		return false
+	}
+	return codexGatewayDeepSeekShouldPersistResponseState(s.messageText.String(), s.messageAdded, s.reasoningText.String(), s.reasoningPresent, !s.reasoningPresent, s.storedToolCalls(), replayMessages)
 }
 
 func (s *codexGatewayDeepSeekStreamState) shouldExposeToolCall(call *codexGatewayDeepSeekStreamToolCall) bool {

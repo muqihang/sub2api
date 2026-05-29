@@ -14,6 +14,52 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestCodexGatewayDeepSeekAdapter_PersistsOrdinaryAssistantState(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+	stateStore := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	reqCtx := CodexGatewayDeepSeekRequestContext{SessionKey: "session_adapter_ordinary", IsolationKey: "iso_adapter_ordinary"}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl_adapter_ordinary",
+			"object":"chat.completion",
+			"model":"deepseek-v4-pro",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"hello there","reasoning_content":"brief plan"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	_, err := ExecuteCodexGatewayDeepSeekAdapter(context.Background(), server.Client(), server.URL, "test-key", model, req, stateStore, reqCtx, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	state, err := stateStore.Get(CodexGatewayStateLookupKey{
+		ResponseID:    "chatcmpl_adapter_ordinary",
+		SessionKey:    "session_adapter_ordinary",
+		IsolationKey:  "iso_adapter_ordinary",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "hello there", state.AssistantContent)
+	require.True(t, state.AssistantContentPresent)
+	require.Equal(t, "brief plan", state.ReasoningContent)
+	require.True(t, state.ReasoningContentPresent)
+	require.Len(t, state.ReplayMessages, 2)
+	var replayAssistant map[string]any
+	require.NoError(t, json.Unmarshal(state.ReplayMessages[1], &replayAssistant))
+	require.Equal(t, "assistant", replayAssistant["role"])
+	require.Equal(t, "hello there", replayAssistant["content"])
+	require.Equal(t, "brief plan", replayAssistant["reasoning_content"])
+}
+
 func TestCodexGatewayDeepSeekAdapterNonStream(t *testing.T) {
 	t.Run("maps text completion and usage", func(t *testing.T) {
 		model := CodexGatewayModel{

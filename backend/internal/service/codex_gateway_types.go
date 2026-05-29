@@ -238,8 +238,9 @@ type CodexGatewayDeepSeekRequestConfig struct {
 }
 
 type CodexGatewayPreparedDeepSeekRequest struct {
-	Body        map[string]any
-	ToolNameMap map[string]CodexGatewayToolNameMapEntry
+	Body           map[string]any
+	ToolNameMap    map[string]CodexGatewayToolNameMapEntry
+	ReplayMessages []json.RawMessage
 }
 
 type CodexGatewayAnthropicRequestContext struct {

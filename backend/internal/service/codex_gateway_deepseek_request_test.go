@@ -839,6 +839,199 @@ func TestCodexGatewayDeepSeekRequest_NormalizesLatestReminderRoleForChatCompleti
 	require.Equal(t, "user", messages[1].(map[string]any)["role"])
 }
 
+func TestCodexGatewayDeepSeekPersistState_AllowsOrdinaryAssistantTurns(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	err := codexGatewayDeepSeekPersistState(
+		store,
+		"resp_ordinary_persist",
+		"deepseek-v4-pro",
+		CodexGatewayDeepSeekRequestContext{SessionKey: "session_ordinary_persist", IsolationKey: "iso_ordinary_persist"},
+		"plain answer",
+		true,
+		"ordinary reasoning",
+		true,
+		false,
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+
+	state, err := store.Get(CodexGatewayStateLookupKey{
+		ResponseID:    "resp_ordinary_persist",
+		SessionKey:    "session_ordinary_persist",
+		IsolationKey:  "iso_ordinary_persist",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "plain answer", state.AssistantContent)
+	require.True(t, state.AssistantContentPresent)
+	require.Equal(t, "ordinary reasoning", state.ReasoningContent)
+	require.True(t, state.ReasoningContentPresent)
+	require.Len(t, state.ReplayMessages, 1)
+}
+
+func TestCodexGatewayDeepSeekPersistState_SkipsEmptyAssistantTurns(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	err := codexGatewayDeepSeekPersistState(
+		store,
+		"resp_empty_persist",
+		"deepseek-v4-pro",
+		CodexGatewayDeepSeekRequestContext{SessionKey: "session_empty_persist", IsolationKey: "iso_empty_persist"},
+		"",
+		true,
+		"",
+		false,
+		false,
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+
+	_, err = store.Get(CodexGatewayStateLookupKey{
+		ResponseID:    "resp_empty_persist",
+		SessionKey:    "session_empty_persist",
+		IsolationKey:  "iso_empty_persist",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	})
+	require.ErrorIs(t, err, ErrCodexGatewayStateNotFound)
+}
+
+func TestCodexGatewayDeepSeekRequest_ReplaysPreviousOrdinaryAssistantState(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_ordinary_replay",
+			SessionKey:    "session_ordinary_replay",
+			IsolationKey:  "iso_ordinary_replay",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "plain answer",
+		AssistantContentPresent: true,
+		ReasoningContent:        "ordinary reasoning",
+		ReasoningContentPresent: true,
+	}))
+
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_ordinary_replay"),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{SessionKey: "session_ordinary_replay", IsolationKey: "iso_ordinary_replay"}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "plain answer", assistant["content"])
+	require.Equal(t, "ordinary reasoning", assistant["reasoning_content"])
+	require.Equal(t, "user", messages[1].(map[string]any)["role"])
+}
+
+func TestCodexGatewayDeepSeekRequest_ReplaysPreviousResponseFullMessagesPrefix(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	replay := []json.RawMessage{
+		json.RawMessage(`{"role":"system","content":"follow developer instructions"}`),
+		json.RawMessage(`{"role":"user","content":"first prompt"}`),
+		json.RawMessage(`{"role":"assistant","content":"first answer","reasoning_content":"first reasoning"}`),
+		json.RawMessage(`{"role":"user","content":"second prompt"}`),
+		json.RawMessage(`{"role":"assistant","content":"second answer","reasoning_content":"second reasoning"}`),
+	}
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_full_replay",
+			SessionKey:    "session_full_replay",
+			IsolationKey:  "iso_full_replay",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "second answer",
+		AssistantContentPresent: true,
+		ReasoningContent:        "second reasoning",
+		ReasoningContentPresent: true,
+		ReplayMessages:          replay,
+	}))
+
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_full_replay"),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"third prompt"}]}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{SessionKey: "session_full_replay", IsolationKey: "iso_full_replay"}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 6)
+	for i, expected := range replay {
+		var want map[string]any
+		require.NoError(t, json.Unmarshal(expected, &want))
+		require.Equal(t, want, messages[i].(map[string]any))
+	}
+	require.Equal(t, "third prompt", messages[5].(map[string]any)["content"])
+}
+
+func TestCodexGatewayDeepSeekRequest_PreviousResponseDeltaMatchesFullReplayPrefix(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	replay := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"ask one"}`),
+		json.RawMessage(`{"role":"assistant","content":"answer one","reasoning_content":"reason one"}`),
+	}
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_delta_replay",
+			SessionKey:    "session_delta_replay",
+			IsolationKey:  "iso_delta_replay",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "answer one",
+		AssistantContentPresent: true,
+		ReasoningContent:        "reason one",
+		ReasoningContentPresent: true,
+		ReplayMessages:          replay,
+	}))
+
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	fullReq := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ask one"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer one"}],"reasoning_content":"reason one"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ask two"}]}
+		]`),
+	}
+	fullPrepared, err := BuildCodexGatewayDeepSeekRequest(model, fullReq, nil, CodexGatewayDeepSeekRequestContext{SessionKey: "session_delta_replay", IsolationKey: "iso_delta_replay"}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	deltaPrepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_delta_replay"),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ask two"}]}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{SessionKey: "session_delta_replay", IsolationKey: "iso_delta_replay"}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	require.Equal(t, fullPrepared.Body["messages"], deltaPrepared.Body["messages"])
+}
+
 func TestCodexGatewayDeepSeekRequest_ReplaysPreviousToolLoopStateAndNormalizesOutputs(t *testing.T) {
 	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
 		TTL:      time.Minute,
@@ -947,11 +1140,42 @@ func TestCodexGatewayDeepSeekRequest_CoalescesConsecutiveFunctionCallsBeforeOutp
 	}
 }
 
-func TestCodexGatewayDeepSeekRequest_IgnoresResponsesReasoningItems(t *testing.T) {
+func TestCodexGatewayDeepSeekRequest_CoalescesConsecutiveFunctionCallReasoning(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
 		Input: json.RawMessage(`[
-			{"type":"reasoning","summary":[],"content":null},
+			{"type":"function_call","call_id":"call_00","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}","reasoning_content":"first tool reason"},
+			{"type":"function_call","call_id":"call_01","name":"exec_command","arguments":"{\"cmd\":\"rg --files\"}","reasoning_content":"second tool reason"},
+			{"type":"function_call_output","call_id":"call_00","output":"pwd output"},
+			{"type":"function_call_output","call_id":"call_01","output":"rg output"}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_tool_reasoning",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 3)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "first tool reason\nsecond tool reason", assistant["reasoning_content"])
+}
+
+func TestCodexGatewayDeepSeekRequest_PreservesResponsesReasoningItems(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"reasoning","summary_text":"first thought","content":[{"type":"summary_text","text":"second thought"},{"type":"text","text":"third thought"},{"text":"fourth thought"}]},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 		]`),
 	}
@@ -968,9 +1192,75 @@ func TestCodexGatewayDeepSeekRequest_IgnoresResponsesReasoningItems(t *testing.T
 	require.NoError(t, err)
 
 	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "", assistant["content"])
+	require.Equal(t, "first thought\nsecond thought\nthird thought\nfourth thought", assistant["reasoning_content"])
+	require.NotContains(t, assistant["content"], "thought")
+	require.Equal(t, "user", messages[1].(map[string]any)["role"])
+}
+
+func TestCodexGatewayDeepSeekRequest_IgnoresEmptyResponsesReasoningItems(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"reasoning","summary":[],"content":null},
+			{"type":"reasoning","content":[{"type":"text","text":"   "}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_empty_reasoning_item",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
 	require.Len(t, messages, 1)
 	require.Equal(t, "user", messages[0].(map[string]any)["role"])
-	require.NotContains(t, fmt.Sprint(messages), "reasoning")
+	require.NotContains(t, fmt.Sprint(messages), "reasoning_content")
+}
+
+func TestCodexGatewayDeepSeekRequest_PreservesReasoningBeforeFunctionCallOutput(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"reasoning","content":"need cwd before answering"},
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"/tmp/project"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_reasoning_before_tool_output",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 3)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "need cwd before answering", assistant["reasoning_content"])
+	require.NotContains(t, assistant["content"], "need cwd")
+	require.Len(t, assistant["tool_calls"].([]any), 1)
+	require.Equal(t, "tool", messages[1].(map[string]any)["role"])
 }
 
 func TestCodexGatewayDeepSeekRequest_ReplaysPreviousCustomToolLoopState(t *testing.T) {

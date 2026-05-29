@@ -21,6 +21,54 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestCodexGatewayDeepSeekStream_PersistsOrdinaryAssistantState(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+	reqCtx := CodexGatewayDeepSeekRequestContext{SessionKey: "session_stream_ordinary", IsolationKey: "iso_stream_ordinary"}
+	stateStore := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_stream_ordinary","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"brief plan"},"finish_reason":null}]}`,
+			"",
+			`data: {"id":"chatcmpl_stream_ordinary","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"hello there"},"finish_reason":"stop"}]}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	_, err := ExecuteCodexGatewayDeepSeekStream(context.Background(), server.Client(), server.URL, "test-key", model, req, stateStore, reqCtx, CodexGatewayDeepSeekRequestConfig{}, &buf)
+	require.NoError(t, err)
+
+	state, err := stateStore.Get(CodexGatewayStateLookupKey{
+		ResponseID:    "chatcmpl_stream_ordinary",
+		SessionKey:    "session_stream_ordinary",
+		IsolationKey:  "iso_stream_ordinary",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "hello there", state.AssistantContent)
+	require.True(t, state.AssistantContentPresent)
+	require.Equal(t, "brief plan", state.ReasoningContent)
+	require.True(t, state.ReasoningContentPresent)
+	require.Len(t, state.ReplayMessages, 2)
+	var replayAssistant map[string]any
+	require.NoError(t, json.Unmarshal(state.ReplayMessages[1], &replayAssistant))
+	require.Equal(t, "assistant", replayAssistant["role"])
+	require.Equal(t, "hello there", replayAssistant["content"])
+	require.Equal(t, "brief plan", replayAssistant["reasoning_content"])
+}
+
 func TestCodexGatewayDeepSeekStream(t *testing.T) {
 	t.Run("emits completed terminal event and swallows done", func(t *testing.T) {
 		model := CodexGatewayModel{

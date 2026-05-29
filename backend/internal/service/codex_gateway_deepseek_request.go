@@ -175,9 +175,25 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 
 	return CodexGatewayPreparedDeepSeekRequest{
-		Body:        body,
-		ToolNameMap: toolMapping.NameMap,
+		Body:           body,
+		ToolNameMap:    toolMapping.NameMap,
+		ReplayMessages: codexGatewayDeepSeekRawMessages(messages),
 	}, nil
+}
+
+func codexGatewayDeepSeekRawMessages(messages []any) []json.RawMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(messages))
+	for _, msg := range messages {
+		raw, err := json.Marshal(msg)
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
 }
 
 func codexGatewayDeepSeekAllowlistedChatCompletionsBody(body map[string]any) map[string]any {
@@ -288,7 +304,7 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		return nil, nil, err
 	}
 
-	var storedAssistant any
+	var storedMessages []any
 	seedCalls := make(map[string]CodexGatewayStoredToolCall)
 	if req.PreviousResponseID != nil && strings.TrimSpace(*req.PreviousResponseID) != "" && stateStore == nil {
 		return nil, nil, fmt.Errorf("%w: previous_response_id requires state store", ErrCodexGatewayStateInvalid)
@@ -307,7 +323,10 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		if err := validateCodexGatewayResponseState(state); err != nil {
 			return nil, nil, err
 		}
-		storedAssistant = codexGatewayDeepSeekAssistantMessageFromState(state)
+		storedMessages, err = codexGatewayDeepSeekMessagesFromState(state)
+		if err != nil {
+			return nil, nil, err
+		}
 		for _, call := range state.ToolCalls {
 			seedCalls[strings.TrimSpace(call.ID)] = call
 		}
@@ -316,17 +335,42 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		}
 	}
 
-	messages := make([]any, 0, len(items)+1)
-	if storedAssistant != nil {
-		messages = append(messages, storedAssistant)
+	messages := make([]any, 0, len(items)+len(storedMessages))
+	if len(storedMessages) > 0 {
+		messages = append(messages, storedMessages...)
 	}
 	var pendingToolCallAssistant map[string]any
+	var pendingReasoning string
+	mergePendingReasoning := func(msg map[string]any) {
+		if msg == nil || strings.TrimSpace(pendingReasoning) == "" || strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "assistant" {
+			return
+		}
+		existing := strings.TrimSpace(firstCodexGatewayToolString(msg["reasoning_content"]))
+		if existing == "" {
+			msg["reasoning_content"] = pendingReasoning
+		} else {
+			msg["reasoning_content"] = existing + "\n" + pendingReasoning
+		}
+		pendingReasoning = ""
+	}
 	flushPendingToolCallAssistant := func() {
 		if pendingToolCallAssistant == nil {
 			return
 		}
+		mergePendingReasoning(pendingToolCallAssistant)
 		messages = append(messages, pendingToolCallAssistant)
 		pendingToolCallAssistant = nil
+	}
+	flushPendingReasoning := func() {
+		if strings.TrimSpace(pendingReasoning) == "" {
+			return
+		}
+		messages = append(messages, map[string]any{
+			"role":              "assistant",
+			"content":           "",
+			"reasoning_content": pendingReasoning,
+		})
+		pendingReasoning = ""
 	}
 
 	openCalls := make(map[string]int, len(seedCalls))
@@ -341,7 +385,10 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		if err != nil {
 			return nil, nil, err
 		}
-		if storedAssistant != nil && len(seedCalls) > 0 && len(openCalls) > 0 {
+		if msg != nil && strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) == "assistant" {
+			mergePendingReasoning(msg)
+		}
+		if len(storedMessages) > 0 && len(seedCalls) > 0 && len(openCalls) > 0 {
 			if msg == nil || strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "tool" {
 				return nil, nil, fmt.Errorf("%w: replayed tool outputs must precede subsequent turns", ErrCodexGatewayStateInvalid)
 			}
@@ -363,7 +410,30 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		}
 		if msg != nil {
 			flushPendingToolCallAssistant()
+			if strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "assistant" {
+				flushPendingReasoning()
+			}
 			messages = append(messages, msg)
+		} else if reasoning := codexGatewayDeepSeekReasoningContentFromItem(item); reasoning != "" {
+			if pendingToolCallAssistant != nil {
+				if existing := strings.TrimSpace(firstCodexGatewayToolString(pendingToolCallAssistant["reasoning_content"])); existing != "" {
+					pendingToolCallAssistant["reasoning_content"] = existing + "\n" + reasoning
+				} else {
+					pendingToolCallAssistant["reasoning_content"] = reasoning
+				}
+			} else if len(messages) > 0 {
+				if previous, ok := messages[len(messages)-1].(map[string]any); ok && strings.TrimSpace(firstCodexGatewayToolString(previous["role"])) == "assistant" {
+					if existing := strings.TrimSpace(firstCodexGatewayToolString(previous["reasoning_content"])); existing != "" {
+						previous["reasoning_content"] = existing + "\n" + reasoning
+					} else {
+						previous["reasoning_content"] = reasoning
+					}
+				} else {
+					pendingReasoning = codexGatewayDeepSeekAppendReasoning(pendingReasoning, reasoning)
+				}
+			} else {
+				pendingReasoning = codexGatewayDeepSeekAppendReasoning(pendingReasoning, reasoning)
+			}
 		}
 		if msg != nil && strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) == "tool" {
 			callID := strings.TrimSpace(firstCodexGatewayToolString(msg["tool_call_id"]))
@@ -380,11 +450,32 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		}
 	}
 	flushPendingToolCallAssistant()
-	if storedAssistant != nil && len(seedCalls) > 0 && len(openCalls) > 0 {
+	flushPendingReasoning()
+	if len(storedMessages) > 0 && len(seedCalls) > 0 && len(openCalls) > 0 {
 		return nil, nil, fmt.Errorf("codex deepseek request has incomplete replay for response %q", strings.TrimSpace(*req.PreviousResponseID))
 	}
 
 	return messages, seedCalls, nil
+}
+
+func codexGatewayDeepSeekMessagesFromState(state CodexGatewayResponseState) ([]any, error) {
+	if len(state.ReplayMessages) > 0 {
+		out := make([]any, 0, len(state.ReplayMessages))
+		for _, raw := range state.ReplayMessages {
+			if len(raw) == 0 {
+				continue
+			}
+			var msg any
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				return nil, fmt.Errorf("%w: invalid deepseek replay message", ErrCodexGatewayStateInvalid)
+			}
+			out = append(out, msg)
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	return []any{codexGatewayDeepSeekAssistantMessageFromState(state)}, nil
 }
 
 func codexGatewayDeepSeekCanMergeAssistantToolCallMessage(msg map[string]any) bool {
@@ -408,10 +499,10 @@ func codexGatewayDeepSeekMergeAssistantToolCallMessage(dst, src map[string]any) 
 		return fmt.Errorf("codex deepseek request has invalid tool_calls")
 	}
 	dst["tool_calls"] = append(dstCalls, srcCalls...)
-	if strings.TrimSpace(firstCodexGatewayToolString(dst["reasoning_content"])) == "" {
-		if reasoning := strings.TrimSpace(firstCodexGatewayToolString(src["reasoning_content"])); reasoning != "" {
-			dst["reasoning_content"] = reasoning
-		}
+	dstReasoning := strings.TrimSpace(firstCodexGatewayToolString(dst["reasoning_content"]))
+	srcReasoning := strings.TrimSpace(firstCodexGatewayToolString(src["reasoning_content"]))
+	if srcReasoning != "" {
+		dst["reasoning_content"] = codexGatewayDeepSeekAppendReasoning(dstReasoning, srcReasoning)
 	}
 	return nil
 }
@@ -471,6 +562,48 @@ func convertCodexGatewayInputItem(item any, toolMapping CodexGatewayToolMappingR
 	default:
 		return convertCodexGatewayMessageItem(m, toolMapping, cfg)
 	}
+}
+
+func codexGatewayDeepSeekReasoningContentFromItem(item any) string {
+	m, ok := item.(map[string]any)
+	if !ok || strings.TrimSpace(firstCodexGatewayToolString(m["type"])) != "reasoning" {
+		return ""
+	}
+	var parts []string
+	codexGatewayDeepSeekCollectReasoningText(&parts, m["summary_text"])
+	codexGatewayDeepSeekCollectReasoningText(&parts, m["summary"])
+	codexGatewayDeepSeekCollectReasoningText(&parts, m["content"])
+	return strings.Join(parts, "\n")
+}
+
+func codexGatewayDeepSeekCollectReasoningText(parts *[]string, value any) {
+	switch typed := value.(type) {
+	case nil:
+		return
+	case string:
+		if text := strings.TrimSpace(typed); text != "" {
+			*parts = append(*parts, text)
+		}
+	case []any:
+		for _, part := range typed {
+			codexGatewayDeepSeekCollectReasoningText(parts, part)
+		}
+	case map[string]any:
+		codexGatewayDeepSeekCollectReasoningText(parts, typed["text"])
+		codexGatewayDeepSeekCollectReasoningText(parts, typed["summary_text"])
+	}
+}
+
+func codexGatewayDeepSeekAppendReasoning(existing, next string) string {
+	existing = strings.TrimSpace(existing)
+	next = strings.TrimSpace(next)
+	if existing == "" {
+		return next
+	}
+	if next == "" {
+		return existing
+	}
+	return existing + "\n" + next
 }
 
 func convertCodexGatewayMessageItem(m map[string]any, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayDeepSeekRequestConfig) (map[string]any, []string, error) {
