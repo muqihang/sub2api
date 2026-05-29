@@ -7176,6 +7176,10 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	text := strings.ToLower(strings.TrimSpace(code) + " " + strings.TrimSpace(message))
 	code = strings.ToLower(strings.TrimSpace(code))
 
+	if isCCGatewayBenignBodyTooLargeReject(code, text) {
+		return false
+	}
+
 	quarantineSignals := []string{
 		"missing_account_identity",
 		"missing_identity",
@@ -7201,6 +7205,31 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	// Status is context only here: CC Gateway may return 403/422 for both
 	// model policy and hard identity/proxy risks, so text/code decide class.
 	return true
+}
+
+func isCCGatewayBenignBodyTooLargeReject(code string, text string) bool {
+	if code == "body_too_large" || strings.Contains(text, "request body exceeds configured cap") {
+		hardRiskSignals := []string{
+			"missing_account_identity",
+			"missing_identity",
+			"missing_egress",
+			"egress_proxy_failure",
+			"proxy_mismatch",
+			"fallback",
+			"verifier",
+			"sign_strip",
+			"invalid_auth",
+			"forbidden",
+			"risk",
+		}
+		for _, signal := range hardRiskSignals {
+			if strings.Contains(text, signal) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func isCCGatewayModelAllowlistReject(code string, text string) bool {

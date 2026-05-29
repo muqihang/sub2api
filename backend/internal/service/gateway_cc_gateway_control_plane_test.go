@@ -158,6 +158,8 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 		{name: "persona untrusted model", code: "persona_reject_untrusted_model", status: http.StatusUnprocessableEntity, want: false},
 		{name: "untrusted model", code: "reject_untrusted_model", status: http.StatusForbidden, want: false},
 		{name: "cost envelope model blocked", code: "canary_cost_envelope_model_blocked", status: http.StatusUnprocessableEntity, want: false},
+		{name: "request body too large", code: "body_too_large", message: "Shared-pool request body exceeds configured cap", status: http.StatusRequestEntityTooLarge, want: false},
+		{name: "body too large with identity signal quarantines", code: "body_too_large", message: "missing_account_identity", status: http.StatusRequestEntityTooLarge, want: true},
 		{name: "candidate model blocked", code: "candidate_model_opus_blocked", status: http.StatusUnprocessableEntity, want: false},
 		{name: "candidate model rejected", code: "candidate_model_opus_rejected", status: http.StatusUnprocessableEntity, want: false},
 		{name: "candidate model not enabled message", code: "route_reject", message: "candidate model is not enabled", status: http.StatusUnprocessableEntity, want: false},
