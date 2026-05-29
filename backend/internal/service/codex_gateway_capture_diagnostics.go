@@ -160,17 +160,23 @@ func (m *CodexGatewayCaptureManager) mergeRequestDiagnostics(trace *CodexGateway
 	m.writeJSON(trace, "client_request.diagnostics.json", snapshot)
 }
 
-func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, userDiag codexGatewayDeepSeekUserIDDiagnostics, redactor *CodexGatewayCaptureRedactor) map[string]any {
+func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, userDiag codexGatewayDeepSeekUserIDDiagnostics, replayDiag codexGatewayDeepSeekReplayDiagnostics, redactor *CodexGatewayCaptureRedactor) map[string]any {
 	if redactor == nil || len(body) == 0 {
 		return nil
 	}
 	messages, _ := body["messages"].([]any)
 	messagePrefix := codexGatewayDeepSeekMessagePrefix(messages, codexGatewayDeepSeekMessagePrefixLimit)
+	messageSuffix := codexGatewayDeepSeekMessageSuffix(messages, codexGatewayDeepSeekMessagePrefixLimit)
+	messageLast := codexGatewayDeepSeekMessageLast(messages)
 	staticPrefix := codexGatewayDeepSeekStaticPrefix(body)
 	toolSchema := codexGatewayDeepSeekToolSchema(body)
 	requestShape := codexGatewayDeepSeekRequestShape(body)
 	out := map[string]any{
 		"detected":            true,
+		"raw_body_hash":       codexGatewayDeepSeekStableHash(redactor, body),
+		"messages_full_hash":  codexGatewayDeepSeekStableHash(redactor, messages),
+		"message_suffix_hash": codexGatewayDeepSeekStableHash(redactor, messageSuffix),
+		"message_last_hash":   codexGatewayDeepSeekStableHash(redactor, messageLast),
 		"request_prefix_hash": codexGatewayDeepSeekStableHash(redactor, map[string]any{"static_prefix": staticPrefix, "tool_schema": toolSchema, "message_prefix": messagePrefix}),
 		"static_prefix_hash":  codexGatewayDeepSeekStableHash(redactor, staticPrefix),
 		"tool_schema_hash":    codexGatewayDeepSeekStableHash(redactor, toolSchema),
@@ -190,6 +196,26 @@ func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, 
 			"user_id_scope":                 strings.TrimSpace(userDiag.Scope),
 			"user_id_source":                strings.TrimSpace(userDiag.Source),
 		},
+	}
+	for key, value := range replayDiag.toCaptureMap() {
+		out[key] = value
+	}
+	for key, value := range codexGatewayDeepSeekUserScopeDiagnostics(userID, userDiag, redactor) {
+		out[key] = value
+	}
+	return out
+}
+
+func codexGatewayDeepSeekUserScopeDiagnostics(userID string, userDiag codexGatewayDeepSeekUserIDDiagnostics, redactor *CodexGatewayCaptureRedactor) map[string]any {
+	if redactor == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if scope := strings.TrimSpace(userDiag.Scope); scope != "" {
+		out["user_id_scope"] = scope
+	}
+	if source := strings.TrimSpace(userDiag.Source); source != "" {
+		out["user_id_source"] = source
 	}
 	if strings.TrimSpace(userID) != "" {
 		out["user_id_hash"] = redactor.CorrelationHash("deepseek_user_id", userID)
@@ -214,10 +240,17 @@ func codexGatewayDeepSeekCacheUsageFields(diagnostics map[string]any) map[string
 		}
 	}
 	copyKey("request_prefix_hash")
+	copyKey("raw_body_hash")
+	copyKey("messages_full_hash")
+	copyKey("message_suffix_hash")
+	copyKey("message_last_hash")
 	copyKey("static_prefix_hash")
 	copyKey("tool_schema_hash")
 	copyKey("message_prefix_hash")
 	copyKey("request_shape_hash")
+	copyKey("previous_response_id_present")
+	copyKey("previous_response_replay_mode")
+	copyKey("state_lookup_status")
 	copyKey("user_id_hash")
 	copyKey("workspace_scope_hash")
 	copyKey("managed_session_bucket_hash")
@@ -294,6 +327,28 @@ func codexGatewayDeepSeekMessagePrefix(messages []any, limit int) []any {
 		out = append(out, messages[i])
 	}
 	return out
+}
+
+func codexGatewayDeepSeekMessageSuffix(messages []any, limit int) []any {
+	if limit <= 0 || len(messages) == 0 {
+		return []any{}
+	}
+	if len(messages) < limit {
+		limit = len(messages)
+	}
+	start := len(messages) - limit
+	out := make([]any, 0, limit)
+	for i := start; i < len(messages); i++ {
+		out = append(out, messages[i])
+	}
+	return out
+}
+
+func codexGatewayDeepSeekMessageLast(messages []any) any {
+	if len(messages) == 0 {
+		return map[string]any{}
+	}
+	return messages[len(messages)-1]
 }
 
 func codexGatewayDeepSeekRequestShape(body map[string]any) map[string]any {

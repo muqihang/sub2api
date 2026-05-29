@@ -42,14 +42,14 @@ func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappi
 		return CodexGatewayToolMappingResult{}, fmt.Errorf("decode tools: %w", err)
 	}
 
-	var flattened []map[string]any
+	var records []codexGatewayToolMappingRecord
 	for _, tool := range tools {
-		records, ignored, err := flattenCodexGatewayTool(tool, "", "", cfg)
+		flattened, ignored, err := flattenCodexGatewayTool(tool, "", "", cfg)
 		if err != nil {
 			return CodexGatewayToolMappingResult{}, err
 		}
 		result.IgnoredHostedToolTypes = append(result.IgnoredHostedToolTypes, ignored...)
-		for _, record := range records {
+		for _, record := range flattened {
 			if existing, ok := result.NameMap[record.alias]; ok {
 				if !codexGatewayToolNameMapEntriesEqual(existing, record.entry) {
 					return CodexGatewayToolMappingResult{}, fmt.Errorf("tool alias collision for %q", record.alias)
@@ -58,11 +58,35 @@ func BuildCodexGatewayToolMapping(raw json.RawMessage, cfg CodexGatewayToolMappi
 			}
 			result.NameMap[record.alias] = record.entry
 			result.originalToAlias[toolMappingOriginalKey(record.entry.Kind, record.entry.NamespacePath, record.entry.Name)] = record.alias
-			flattened = append(flattened, recordToDeepSeekTool(record, cfg))
+			records = append(records, record)
 		}
+	}
+	sortCodexGatewayToolMappingRecords(records)
+	flattened := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		flattened = append(flattened, recordToDeepSeekTool(record, cfg))
 	}
 	result.Tools = flattened
 	return result, nil
+}
+
+func sortCodexGatewayToolMappingRecords(records []codexGatewayToolMappingRecord) {
+	sort.SliceStable(records, func(i, j int) bool {
+		left := records[i].entry
+		right := records[j].entry
+		for _, pair := range [][2]string{
+			{left.Kind, right.Kind},
+			{left.NamespacePath, right.NamespacePath},
+			{left.Name, right.Name},
+			{left.Alias, right.Alias},
+		} {
+			if pair[0] == pair[1] {
+				continue
+			}
+			return pair[0] < pair[1]
+		}
+		return false
+	})
 }
 
 func codexGatewayToolNameMapEntriesEqual(a, b CodexGatewayToolNameMapEntry) bool {
@@ -646,9 +670,57 @@ func sanitizeCodexGatewayToolSchema(schema any, cfg CodexGatewayToolMappingConfi
 
 func prepareCodexGatewayToolSchema(schema any, strict bool, cfg CodexGatewayToolMappingConfig) (any, error) {
 	if !strict || !cfg.EnableStrictBeta {
-		return schema, nil
+		return canonicalizeCodexGatewayToolSchema(schema), nil
 	}
-	return sanitizeCodexGatewayToolSchema(schema, cfg)
+	normalized, err := sanitizeCodexGatewayToolSchema(schema, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return canonicalizeCodexGatewayToolSchema(normalized), nil
+}
+
+func canonicalizeCodexGatewayToolSchema(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			if key == "required" {
+				if _, ok := child.([]any); ok {
+					out[key] = sortCodexGatewayRequiredSchemaKeys(child)
+				} else {
+					out[key] = canonicalizeCodexGatewayToolSchema(child)
+				}
+				continue
+			}
+			out[key] = canonicalizeCodexGatewayToolSchema(child)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			out = append(out, canonicalizeCodexGatewayToolSchema(child))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func sortCodexGatewayRequiredSchemaKeys(value any) any {
+	items, ok := value.([]any)
+	if !ok {
+		return value
+	}
+	out := append([]any(nil), items...)
+	sort.SliceStable(out, func(i, j int) bool {
+		left, leftOK := out[i].(string)
+		right, rightOK := out[j].(string)
+		if !leftOK || !rightOK {
+			return false
+		}
+		return left < right
+	})
+	return out
 }
 
 func codexGatewayDeepSeekAdaptToolMapping(mapping CodexGatewayToolMappingResult, cfg CodexGatewayToolMappingConfig) CodexGatewayToolMappingResult {

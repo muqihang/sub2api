@@ -43,7 +43,7 @@ func codexGatewayWorkspaceKeyFromTurnMetadata(raw string) string {
 	}
 	paths := make([]string, 0, len(workspaces))
 	for path := range workspaces {
-		path = strings.TrimSpace(path)
+		path = normalizeCodexGatewayWorkspaceScopePath(path)
 		if path != "" {
 			paths = append(paths, path)
 		}
@@ -73,6 +73,14 @@ func codexGatewayTurnMetadata(raw string) map[string]any {
 		return nil
 	}
 	return metadata
+}
+
+func normalizeCodexGatewayWorkspaceScopePath(path string) string {
+	path = strings.TrimSpace(path)
+	for len(path) > 1 && strings.HasSuffix(path, "/") {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return path
 }
 
 func codexGatewayScopeDigest(prefix string, values ...string) string {

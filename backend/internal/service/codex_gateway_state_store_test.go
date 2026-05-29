@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -71,6 +72,25 @@ func TestCodexGatewayStateStore_PutGetConflictAndMissing(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrCodexGatewayStateNotFound))
+}
+
+func TestCodexGatewayStateStore_DefaultCapacitySupportsLongCodexSessions(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{})
+
+	first := codexGatewayTestState("resp_0000", "call_0000")
+	require.NoError(t, store.Put(first))
+	for i := 1; i < 1000; i++ {
+		require.NoError(t, store.Put(codexGatewayTestState(
+			fmt.Sprintf("resp_%04d", i),
+			fmt.Sprintf("call_%04d", i),
+		)))
+	}
+	require.Equal(t, codexGatewayStateStoreDefaultMaxItems, store.max)
+
+	got, err := store.Get(first.Key)
+	require.NoError(t, err)
+	require.Equal(t, first.Key, got.Key)
+	require.Equal(t, first.ToolCalls, got.ToolCalls)
 }
 
 func TestCodexGatewayStateStore_ExpiresAndBoundsEntries(t *testing.T) {

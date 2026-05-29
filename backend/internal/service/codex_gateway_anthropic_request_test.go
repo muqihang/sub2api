@@ -267,11 +267,11 @@ func TestBuildCodexGatewayAnthropicRequest_ForwardsMixedHostedWebSearchAsServerH
 
 	raw, err := json.Marshal(prepared.Body)
 	require.NoError(t, err)
-	require.Equal(t, "web_search", gjson.GetBytes(raw, "tools.0.name").String())
-	require.Equal(t, "computer_use_preview", gjson.GetBytes(raw, "tools.1.name").String())
-	require.Equal(t, "file_search", gjson.GetBytes(raw, "tools.2.name").String())
-	require.Equal(t, "image_generation", gjson.GetBytes(raw, "tools.3.name").String())
-	require.Equal(t, "object", gjson.GetBytes(raw, "tools.0.input_schema.type").String())
+	require.Contains(t, anthropicToolNames(raw), "web_search")
+	require.Contains(t, anthropicToolNames(raw), "computer_use_preview")
+	require.Contains(t, anthropicToolNames(raw), "file_search")
+	require.Contains(t, anthropicToolNames(raw), "image_generation")
+	require.Equal(t, "object", anthropicToolByName(raw, "web_search").Get("input_schema.type").String())
 	require.NotContains(t, string(raw), "OpenAI hosted tools are not available")
 	require.NotContains(t, string(raw), "web_search_20250305")
 }
@@ -643,4 +643,22 @@ func TestBuildCodexGatewayAnthropicRequest_ReplaysLegacyCustomToolCallWithoutCur
 	require.Equal(t, "custom__edit", gjson.GetBytes(raw, "messages.0.content.0.name").String())
 	require.Equal(t, "user", gjson.GetBytes(raw, "messages.1.role").String())
 	require.Equal(t, "tool_result", gjson.GetBytes(raw, "messages.1.content.0.type").String())
+}
+
+func anthropicToolNames(raw []byte) []string {
+	tools := gjson.GetBytes(raw, "tools").Array()
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Get("name").String())
+	}
+	return names
+}
+
+func anthropicToolByName(raw []byte, name string) gjson.Result {
+	for _, tool := range gjson.GetBytes(raw, "tools").Array() {
+		if tool.Get("name").String() == name {
+			return tool
+		}
+	}
+	return gjson.Result{}
 }

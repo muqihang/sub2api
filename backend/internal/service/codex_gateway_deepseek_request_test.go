@@ -153,7 +153,7 @@ func TestCodexGatewayDeepSeekRequest_FlattensDeepSchemasAndAddsDeepSeekToolHints
 	tools := prepared.Body["tools"].([]any)
 	require.Len(t, tools, 3)
 
-	execTool := tools[0].(map[string]any)["function"].(map[string]any)
+	execTool := deepSeekRequestToolFunctionByName(t, tools, "exec_command")
 	require.Contains(t, execTool["description"], "`cmd`")
 	require.Contains(t, execTool["description"], "python3 - <<'PY'")
 	execParams := execTool["parameters"].(map[string]any)
@@ -164,10 +164,10 @@ func TestCodexGatewayDeepSeekRequest_FlattensDeepSchemasAndAddsDeepSeekToolHints
 	require.NotContains(t, execProperties, "workspace")
 	require.ElementsMatch(t, []any{"cmd", "workspace.root", "workspace.filters.include"}, execParams["required"].([]any))
 
-	pythonTool := tools[1].(map[string]any)["function"].(map[string]any)
+	pythonTool := deepSeekRequestToolFunctionByName(t, tools, "python")
 	require.Contains(t, pythonTool["description"], "python3 - <<'PY'")
 
-	patchTool := tools[2].(map[string]any)["function"].(map[string]any)
+	patchTool := deepSeekRequestToolFunctionByDescription(t, tools, "custom input field")
 	require.Contains(t, patchTool["description"], "custom input field")
 	require.Contains(t, patchTool["description"], "exact raw input")
 }
@@ -499,9 +499,9 @@ func TestCodexGatewayDeepSeekRequest_KeepsWebSearchBridgeAndFiltersUnsupportedHo
 
 	tools := prepared.Body["tools"].([]any)
 	require.Len(t, tools, 3)
-	require.Equal(t, "web_search", tools[0].(map[string]any)["function"].(map[string]any)["name"])
-	require.Equal(t, "tool_search", tools[1].(map[string]any)["function"].(map[string]any)["name"])
-	require.Equal(t, "exec_command", tools[2].(map[string]any)["function"].(map[string]any)["name"])
+	require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, "web_search"))
+	require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, "tool_search"))
+	require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, "exec_command"))
 }
 
 func TestCodexGatewayDeepSeekRequest_StripsParallelToolCallsEvenWhenModelSupportsIt(t *testing.T) {
@@ -616,6 +616,214 @@ func TestCodexGatewayDeepSeekRequest_DefaultUserIDUsesWorkspaceScopeAndOptionalM
 	require.NotEqual(t, bucketA.Body["user_id"], bucketB.Body["user_id"])
 }
 
+func TestCodexGatewayWorkspaceKeyIsStableAcrossMetadataOrderAndPathFormatting(t *testing.T) {
+	headersA := http.Header{}
+	headersA.Set("X-Codex-Turn-Metadata", `{
+		"workspaces": {
+			"/Users/example/project": {},
+			"/Users/example/other/": {}
+		}
+	}`)
+	headersB := http.Header{}
+	headersB.Set("X-Codex-Turn-Metadata", `{
+		"workspaces": {
+			"  /Users/example/other  ": {},
+			" /Users/example/project/ ": {}
+		}
+	}`)
+
+	require.Equal(t, codexGatewayWorkspaceKey(headersA), codexGatewayWorkspaceKey(headersB))
+}
+
+func TestCodexGatewayWorkspaceKeyDiffersForDifferentWorkspaces(t *testing.T) {
+	headersA := http.Header{}
+	headersA.Set("X-Codex-Turn-Metadata", `{"workspaces":{"/Users/example/project":{}}}`)
+	headersB := http.Header{}
+	headersB.Set("X-Codex-Turn-Metadata", `{"workspaces":{"/Users/example/other":{}}}`)
+
+	require.NotEqual(t, codexGatewayWorkspaceKey(headersA), codexGatewayWorkspaceKey(headersB))
+}
+
+func TestCodexGatewayManagedSessionBucketRequiresManagedHeadersAndKeepsSubagentsIsolated(t *testing.T) {
+	metadata := `{"session_id":"logical-session-1","workspaces":{"/Users/example/project":{}}}`
+	withoutManagedHeaders := http.Header{}
+	withoutManagedHeaders.Set("X-Codex-Turn-Metadata", metadata)
+	withParentHeader := http.Header{}
+	withParentHeader.Set("X-Codex-Turn-Metadata", metadata)
+	withParentHeader.Set("X-Codex-Parent-Thread-Id", "parent-thread-1")
+	withSubagentHeader := http.Header{}
+	withSubagentHeader.Set("X-Codex-Turn-Metadata", metadata)
+	withSubagentHeader.Set("X-OpenAI-Subagent", "true")
+
+	require.Empty(t, codexGatewayManagedSessionBucket(withoutManagedHeaders))
+	require.NotEmpty(t, codexGatewayManagedSessionBucket(withParentHeader))
+	require.Equal(t, codexGatewayManagedSessionBucket(withParentHeader), codexGatewayManagedSessionBucket(withSubagentHeader))
+}
+
+func TestCodexGatewayDeepSeekRequest_ManagedSessionDiagnosticsExposeScopeAndHashes(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                true,
+		BaseDir:                baseDir,
+		HashKeyFile:            keyPath,
+		CorrelationHashKeyFile: keyPath,
+	})
+	defer manager.Close()
+
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	workspaceKey := codexGatewayWorkspaceKey(http.Header{
+		"X-Codex-Turn-Metadata": []string{`{"workspaces":{"/Users/example/project":{}}}`},
+	})
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "managed_scope_diag", Provider: "deepseek", Model: "deepseek-v4-pro"})
+	require.NotNil(t, trace)
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:           "logical-session-1",
+		IsolationKey:         "api-key-1",
+		WorkspaceKey:         workspaceKey,
+		ManagedSessionBucket: "managed-bucket-1",
+		CaptureTrace:         trace,
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	require.NotEmpty(t, prepared.Body["user_id"])
+
+	deepseekDiag, ok := trace.requestDiag["deepseek_cache"].(map[string]any)
+	require.True(t, ok)
+	stable, ok := deepseekDiag["stable_serialization"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "actor_workspace_session_bucket", stable["user_id_scope"])
+	require.Equal(t, "derived_actor_workspace", stable["user_id_source"])
+	require.Equal(t, "actor_workspace_session_bucket", deepseekDiag["user_id_scope"])
+	require.Equal(t, "derived_actor_workspace", deepseekDiag["user_id_source"])
+	require.NotEmpty(t, deepseekDiag["user_id_hash"])
+	require.NotEmpty(t, deepseekDiag["workspace_scope_hash"])
+	require.NotEmpty(t, deepseekDiag["managed_session_bucket_hash"])
+	require.Equal(t, deepseekDiag["user_id_hash"], trace.cacheUsage["user_id_hash"])
+	require.Equal(t, deepseekDiag["workspace_scope_hash"], trace.cacheUsage["workspace_scope_hash"])
+	require.Equal(t, deepseekDiag["managed_session_bucket_hash"], trace.cacheUsage["managed_session_bucket_hash"])
+	require.Equal(t, "actor_workspace_session_bucket", trace.cacheUsage["user_id_scope"])
+	require.Equal(t, "derived_actor_workspace", trace.cacheUsage["user_id_source"])
+}
+
+func TestCodexGatewayDeepSeekRequest_ManagedSessionHeaderScopeIsDeterministicAndDiagnosed(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                true,
+		BaseDir:                baseDir,
+		HashKeyFile:            keyPath,
+		CorrelationHashKeyFile: keyPath,
+	})
+	defer manager.Close()
+
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	metadata := `{"session_id":"logical-session-1","workspaces":{"/Users/example/project":{}}}`
+	headersWithoutManagedScope := http.Header{}
+	headersWithoutManagedScope.Set("X-Codex-Turn-Metadata", metadata)
+	headersWithParentScope := http.Header{}
+	headersWithParentScope.Set("X-Codex-Turn-Metadata", metadata)
+	headersWithParentScope.Set("X-Codex-Parent-Thread-Id", "parent-thread-1")
+	headersWithSubagentScope := http.Header{}
+	headersWithSubagentScope.Set("X-Codex-Turn-Metadata", metadata)
+	headersWithSubagentScope.Set("X-OpenAI-Subagent", "true")
+
+	build := func(traceID string, headers http.Header) (CodexGatewayPreparedDeepSeekRequest, map[string]any) {
+		trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: traceID, Provider: "deepseek", Model: "deepseek-v4-pro"})
+		require.NotNil(t, trace)
+		prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+			SessionKey:           "logical-session-1",
+			IsolationKey:         "api-key-1",
+			WorkspaceKey:         codexGatewayWorkspaceKey(headers),
+			ManagedSessionBucket: codexGatewayManagedSessionBucket(headers),
+			CaptureTrace:         trace,
+		}, CodexGatewayDeepSeekRequestConfig{})
+		require.NoError(t, err)
+		deepseekDiag, ok := trace.requestDiag["deepseek_cache"].(map[string]any)
+		require.True(t, ok)
+		return prepared, deepseekDiag
+	}
+
+	basePrepared, baseDiag := build("managed_scope_without_headers", headersWithoutManagedScope)
+	parentPrepared, parentDiag := build("managed_scope_parent", headersWithParentScope)
+	subagentPrepared, subagentDiag := build("managed_scope_subagent", headersWithSubagentScope)
+
+	require.NotEqual(t, basePrepared.Body["user_id"], parentPrepared.Body["user_id"])
+	require.Equal(t, parentPrepared.Body["user_id"], subagentPrepared.Body["user_id"])
+	require.Equal(t, "actor_workspace", baseDiag["user_id_scope"])
+	require.Equal(t, "actor_workspace_session_bucket", parentDiag["user_id_scope"])
+	require.Equal(t, "actor_workspace_session_bucket", subagentDiag["user_id_scope"])
+	require.Equal(t, "derived_actor_workspace", baseDiag["user_id_source"])
+	require.Equal(t, "derived_actor_workspace", parentDiag["user_id_source"])
+	require.Equal(t, "derived_actor_workspace", subagentDiag["user_id_source"])
+	require.NotEmpty(t, baseDiag["workspace_scope_hash"])
+	require.NotContains(t, baseDiag, "managed_session_bucket_hash")
+	require.NotEmpty(t, parentDiag["managed_session_bucket_hash"])
+	require.Equal(t, parentDiag["managed_session_bucket_hash"], subagentDiag["managed_session_bucket_hash"])
+}
+
+func TestCodexGatewayDeepSeekRequest_StateMissDiagnosticsIncludeUserScope(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                true,
+		BaseDir:                baseDir,
+		HashKeyFile:            keyPath,
+		CorrelationHashKeyFile: keyPath,
+	})
+	defer manager.Close()
+
+	previousID := "resp_missing_scope_diag"
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "state_miss_scope_diag", Provider: "deepseek", Model: "deepseek-v4-pro"})
+	require.NotNil(t, trace)
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: &previousID,
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}, NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now}), CodexGatewayDeepSeekRequestContext{
+		SessionKey:           "session_miss_diag",
+		IsolationKey:         "api-key-1",
+		WorkspaceKey:         "workspace_miss_diag",
+		ManagedSessionBucket: "bucket_miss_diag",
+		CaptureTrace:         trace,
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.ErrorIs(t, err, ErrCodexGatewayStateNotFound)
+
+	deepseekDiag, ok := trace.requestDiag["deepseek_cache"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, deepseekDiag["previous_response_id_present"])
+	require.Equal(t, "miss", deepseekDiag["state_lookup_status"])
+	require.Equal(t, "none", deepseekDiag["previous_response_replay_mode"])
+	require.NotEmpty(t, deepseekDiag["user_id_hash"])
+	require.NotEmpty(t, deepseekDiag["workspace_scope_hash"])
+	require.NotEmpty(t, deepseekDiag["managed_session_bucket_hash"])
+	require.Equal(t, "actor_workspace_session_bucket", deepseekDiag["user_id_scope"])
+	require.Equal(t, "derived_actor_workspace", deepseekDiag["user_id_source"])
+}
+
 func TestCodexGatewayDeepSeekRequest_HostedToolMappingIsStableAcrossHostedToolOrder(t *testing.T) {
 	reqA := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
@@ -651,12 +859,73 @@ func TestCodexGatewayDeepSeekRequest_HostedToolMappingIsStableAcrossHostedToolOr
 
 	firstTools := first.Body["tools"].([]any)
 	secondTools := second.Body["tools"].([]any)
-	require.Equal(t, "web_search", firstTools[0].(map[string]any)["function"].(map[string]any)["name"])
-	require.Equal(t, "web_search", secondTools[0].(map[string]any)["function"].(map[string]any)["name"])
-	require.Equal(t, "exec_command", firstTools[1].(map[string]any)["function"].(map[string]any)["name"])
-	require.Equal(t, "exec_command", secondTools[1].(map[string]any)["function"].(map[string]any)["name"])
+	require.NotNil(t, deepSeekRequestToolFunctionByName(t, firstTools, "web_search"))
+	require.NotNil(t, deepSeekRequestToolFunctionByName(t, secondTools, "web_search"))
+	require.NotNil(t, deepSeekRequestToolFunctionByName(t, firstTools, "exec_command"))
+	require.NotNil(t, deepSeekRequestToolFunctionByName(t, secondTools, "exec_command"))
 	require.Contains(t, first.Body["messages"].([]any)[0].(map[string]any)["content"], "image_generation")
 	require.Contains(t, second.Body["messages"].([]any)[0].(map[string]any)["content"], "image_generation")
+}
+
+func TestCodexGatewayDeepSeekRequest_EquivalentToolOrderHasStableToolSchemaHash(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                true,
+		BaseDir:                baseDir,
+		HashKeyFile:            keyPath,
+		CorrelationHashKeyFile: keyPath,
+	})
+	defer manager.Close()
+
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	baseReq := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
+		]`),
+	}
+	reqA := baseReq
+	reqA.Tools = json.RawMessage(`[
+		{"type":"namespace","name":"browser","tools":[
+			{"type":"function","name":"open","parameters":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}},
+			{"type":"function","name":"click","parameters":{"type":"object","properties":{"y":{"type":"number"},"x":{"type":"number"}},"required":["y","x"]}}
+		]},
+		{"type":"custom","name":"apply_patch","format":{"type":"grammar"}},
+		{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"},"cwd":{"type":"string"}},"required":["cwd","cmd"]}},
+		{"type":"web_search"}
+	]`)
+	reqB := baseReq
+	reqB.Tools = json.RawMessage(`[
+		{"type":"web_search"},
+		{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cwd":{"type":"string"},"cmd":{"type":"string"}},"required":["cmd","cwd"]}},
+		{"type":"namespace","name":"browser","tools":[
+			{"type":"function","name":"click","parameters":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}},
+			{"type":"function","name":"open","parameters":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}}
+		]},
+		{"type":"custom","name":"apply_patch","format":{"type":"grammar"}}
+	]`)
+
+	build := func(traceID string, req CodexGatewayResponsesCreateRequest) (CodexGatewayPreparedDeepSeekRequest, map[string]any) {
+		trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: traceID, Provider: "deepseek", Model: "deepseek-v4-pro"})
+		require.NotNil(t, trace)
+		prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+			SessionKey:   "stable_tool_session",
+			IsolationKey: "stable_tool_actor",
+			CaptureTrace: trace,
+		}, CodexGatewayDeepSeekRequestConfig{})
+		require.NoError(t, err)
+		diag, ok := trace.requestDiag["deepseek_cache"].(map[string]any)
+		require.True(t, ok)
+		return prepared, diag
+	}
+
+	first, firstDiag := build("stable_tools_a", reqA)
+	second, secondDiag := build("stable_tools_b", reqB)
+
+	require.Equal(t, mustMarshalJSON(t, first.Body["tools"]), mustMarshalJSON(t, second.Body["tools"]))
+	require.NotEmpty(t, firstDiag["tool_schema_hash"])
+	require.Equal(t, firstDiag["tool_schema_hash"], secondDiag["tool_schema_hash"])
 }
 
 func TestCodexGatewayDeepSeekRequest_BodyIsDeterministicForCachePrefix(t *testing.T) {
@@ -2079,4 +2348,42 @@ func TestCodexGatewayDeepSeekRequest_RejectsAmbiguousTopLevelAndNamespacedPath(t
 	}, CodexGatewayDeepSeekRequestConfig{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ambiguous tool name")
+}
+
+func deepSeekRequestToolFunctionByName(t *testing.T, tools []any, name string) map[string]any {
+	t.Helper()
+	for _, toolAny := range tools {
+		tool, ok := toolAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		function, ok := tool["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if function["name"] == name {
+			return function
+		}
+	}
+	require.Failf(t, "deepseek request tool not found", "name=%s tools=%v", name, tools)
+	return nil
+}
+
+func deepSeekRequestToolFunctionByDescription(t *testing.T, tools []any, needle string) map[string]any {
+	t.Helper()
+	for _, toolAny := range tools {
+		tool, ok := toolAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		function, ok := tool["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.Contains(fmt.Sprint(function["description"]), needle) {
+			return function
+		}
+	}
+	require.Failf(t, "deepseek request tool not found by description", "needle=%s tools=%v", needle, tools)
+	return nil
 }

@@ -240,8 +240,8 @@ func TestCodexGatewayDeepSeekAdapterNonStream(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
 			require.NoError(t, err)
-			require.Equal(t, "get_weather", gjson.GetBytes(body, "tools.0.function.name").String())
-			require.Equal(t, "custom__shell", gjson.GetBytes(body, "tools.1.function.name").String())
+			require.Contains(t, deepSeekAdapterToolNames(body), "get_weather")
+			require.Contains(t, deepSeekAdapterToolNames(body), "custom__shell")
 
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
@@ -647,4 +647,13 @@ func TestCodexGatewayDeepSeekToolCallOutputItem_UnwrapsCustomToolInput(t *testin
 	require.Equal(t, "apply_patch", item["name"])
 	require.Equal(t, "*** Begin Patch\n*** Add File: probe.txt\n+codex-gateway-custom\n*** End Patch\n", item["input"])
 	require.Equal(t, rawArguments, stored.Arguments)
+}
+
+func deepSeekAdapterToolNames(raw []byte) []string {
+	tools := gjson.GetBytes(raw, "tools").Array()
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Get("function.name").String())
+	}
+	return names
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -43,18 +44,131 @@ func TestCodexGatewayToolMapping_FunctionNamespaceAndCustomTools(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Tools, 3)
 
-	require.Equal(t, "shell_exec-1", result.Tools[0]["function"].(map[string]any)["name"])
-	require.NotContains(t, result.Tools[0]["function"].(map[string]any), "strict")
-	require.NotContains(t, result.Tools[0]["function"].(map[string]any), "output_schema")
+	shellTool := mappedToolByName(t, result.Tools, "shell_exec-1")
+	require.NotContains(t, shellTool["function"].(map[string]any), "strict")
+	require.NotContains(t, shellTool["function"].(map[string]any), "output_schema")
 
-	require.Equal(t, "browser__open-page", result.Tools[1]["function"].(map[string]any)["name"])
+	require.NotNil(t, mappedToolByName(t, result.Tools, "browser__open-page"))
 	require.Equal(t, CodexGatewayToolKindNamespace, result.NameMap["browser__open-page"].Kind)
 	require.Equal(t, "browser", result.NameMap["browser__open-page"].Namespace)
 	require.Equal(t, "open-page", result.NameMap["browser__open-page"].Name)
 
-	require.Equal(t, "custom__mcp_shell", result.Tools[2]["function"].(map[string]any)["name"])
+	require.NotNil(t, mappedToolByName(t, result.Tools, "custom__mcp_shell"))
 	require.Equal(t, CodexGatewayToolKindCustom, result.NameMap["custom__mcp_shell"].Kind)
 	require.Equal(t, "mcp shell", result.NameMap["custom__mcp_shell"].Name)
+}
+
+func TestCodexGatewayToolMapping_EquivalentToolSetsProduceStableOrder(t *testing.T) {
+	rawA := json.RawMessage(`[
+		{"type":"namespace","name":"browser","tools":[
+			{"type":"function","name":"open","parameters":{"type":"object"}},
+			{"type":"function","name":"click","parameters":{"type":"object"}}
+		]},
+		{"type":"custom","name":"apply_patch","format":{"type":"grammar"}},
+		{"type":"function","name":"exec_command","parameters":{"type":"object"}},
+		{"type":"web_search"}
+	]`)
+	rawB := json.RawMessage(`[
+		{"type":"web_search"},
+		{"type":"function","name":"exec_command","parameters":{"type":"object"}},
+		{"type":"namespace","name":"browser","tools":[
+			{"type":"function","name":"click","parameters":{"type":"object"}},
+			{"type":"function","name":"open","parameters":{"type":"object"}}
+		]},
+		{"type":"custom","name":"apply_patch","format":{"type":"grammar"}}
+	]`)
+
+	first, err := BuildCodexGatewayToolMapping(rawA, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+	second, err := BuildCodexGatewayToolMapping(rawB, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+
+	require.Equal(t, first.NameMap, second.NameMap)
+	require.Equal(t, mappedToolNames(first.Tools), mappedToolNames(second.Tools))
+	require.Equal(t, mustMarshalJSON(t, first.Tools), mustMarshalJSON(t, second.Tools))
+}
+
+func TestCodexGatewayToolMapping_SortsRequiredSchemaKeys(t *testing.T) {
+	rawA := json.RawMessage(`[
+		{"type":"function","name":"create_issue","parameters":{
+			"type":"object",
+			"properties":{
+				"title":{"type":"string"},
+				"body":{"type":"string"},
+				"meta":{"type":"object","properties":{"priority":{"type":"string"},"team":{"type":"string"}},"required":["team","priority"]}
+			},
+			"required":["meta","body","title"]
+		}}
+	]`)
+	rawB := json.RawMessage(`[
+		{"type":"function","name":"create_issue","parameters":{
+			"type":"object",
+			"properties":{
+				"title":{"type":"string"},
+				"body":{"type":"string"},
+				"meta":{"type":"object","properties":{"priority":{"type":"string"},"team":{"type":"string"}},"required":["priority","team"]}
+			},
+			"required":["title","body","meta"]
+		}}
+	]`)
+
+	first, err := BuildCodexGatewayToolMapping(rawA, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+	second, err := BuildCodexGatewayToolMapping(rawB, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+
+	require.Equal(t, mustMarshalJSON(t, first.Tools[0]), mustMarshalJSON(t, second.Tools[0]))
+}
+
+func TestCodexGatewayToolMapping_DoesNotSortSemanticSchemaArrays(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"function","name":"pick_value","parameters":{
+			"type":"object",
+			"properties":{
+				"mode":{"type":"string","enum":["zeta","alpha"]},
+				"payload":{"oneOf":[{"type":"string"},{"type":"number"}],"anyOf":[{"minimum":1},{"maximum":5}]}
+			},
+			"required":["payload","mode"]
+		}}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+
+	params := result.Tools[0]["function"].(map[string]any)["parameters"].(map[string]any)
+	properties := params["properties"].(map[string]any)
+	mode := properties["mode"].(map[string]any)
+	payload := properties["payload"].(map[string]any)
+	require.Equal(t, []any{"zeta", "alpha"}, mode["enum"])
+	require.Equal(t, "string", payload["oneOf"].([]any)[0].(map[string]any)["type"])
+	require.Equal(t, "number", payload["oneOf"].([]any)[1].(map[string]any)["type"])
+	require.Equal(t, float64(1), payload["anyOf"].([]any)[0].(map[string]any)["minimum"])
+	require.Equal(t, float64(5), payload["anyOf"].([]any)[1].(map[string]any)["maximum"])
+	require.Equal(t, []any{"mode", "payload"}, params["required"])
+}
+
+func TestCodexGatewayToolMapping_CanonicalizesPropertyNamedRequired(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"function","name":"schema_edge","parameters":{
+			"type":"object",
+			"properties":{
+				"required":{
+					"type":"object",
+					"properties":{"b":{"type":"string"},"a":{"type":"string"}},
+					"required":["b","a"]
+				}
+			},
+			"required":["required"]
+		}}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+
+	params := result.Tools[0]["function"].(map[string]any)["parameters"].(map[string]any)
+	properties := params["properties"].(map[string]any)
+	requiredProperty := properties["required"].(map[string]any)
+	require.Equal(t, []any{"a", "b"}, requiredProperty["required"])
 }
 
 func TestCodexGatewayToolMapping_CustomFormatBecomesInputSchema(t *testing.T) {
@@ -112,15 +226,21 @@ func TestCodexGatewayToolMapping_ExposesHostedResponsesTools(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, result.IgnoredHostedToolTypes)
 	require.Len(t, result.Tools, 5)
-	require.Equal(t, "web_search", result.Tools[0]["function"].(map[string]any)["name"])
 	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["web_search"].Kind)
-	require.Equal(t, "image_generation", result.Tools[1]["function"].(map[string]any)["name"])
+	require.NotNil(t, mappedToolByName(t, result.Tools, "web_search"))
 	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["image_generation"].Kind)
-	require.Equal(t, "computer_use_preview", result.Tools[2]["function"].(map[string]any)["name"])
+	require.NotNil(t, mappedToolByName(t, result.Tools, "image_generation"))
 	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["computer_use_preview"].Kind)
-	require.Equal(t, "file_search", result.Tools[3]["function"].(map[string]any)["name"])
+	require.NotNil(t, mappedToolByName(t, result.Tools, "computer_use_preview"))
 	require.Equal(t, CodexGatewayToolKindHosted, result.NameMap["file_search"].Kind)
-	alias := result.Tools[4]["function"].(map[string]any)["name"].(string)
+	require.NotNil(t, mappedToolByName(t, result.Tools, "file_search"))
+	var alias string
+	for _, name := range mappedToolNames(result.Tools) {
+		if strings.Contains(name, "mcp_computer_use") {
+			alias = name
+			break
+		}
+	}
 	require.Contains(t, alias, "mcp_computer_use")
 	require.Contains(t, alias, "__click")
 	require.Equal(t, CodexGatewayToolKindNamespace, result.NameMap[alias].Kind)
@@ -230,8 +350,8 @@ func TestCodexGatewayToolMapping_SanitizesNonASCIIAliasesToASCII(t *testing.T) {
 	second := result.Tools[1]["function"].(map[string]any)["name"].(string)
 	require.Regexp(t, codexGatewayToolSafeNameRe, first)
 	require.Regexp(t, codexGatewayToolSafeNameRe, second)
-	require.Contains(t, first, "__open")
-	require.Contains(t, second, "custom__")
+	require.Contains(t, strings.Join([]string{first, second}, " "), "__open")
+	require.Contains(t, strings.Join([]string{first, second}, " "), "custom__")
 }
 
 func TestCodexGatewayToolMapping_TruncatesLongNamesDeterministicallyAndDetectsCollisions(t *testing.T) {
@@ -369,4 +489,32 @@ func TestCodexGatewayToolMapping_StrictSchemaPreservesPropertyNamesThatMatchKeyw
 	params := function["parameters"].(map[string]any)
 	properties := params["properties"].(map[string]any)
 	require.Contains(t, properties, "minLength")
+}
+
+func mappedToolNames(tools []map[string]any) []string {
+	out := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		function, _ := tool["function"].(map[string]any)
+		out = append(out, function["name"].(string))
+	}
+	return out
+}
+
+func mappedToolByName(t *testing.T, tools []map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, tool := range tools {
+		function, _ := tool["function"].(map[string]any)
+		if function["name"] == name {
+			return tool
+		}
+	}
+	require.Failf(t, "mapped tool not found", "name=%s tools=%v", name, mappedToolNames(tools))
+	return nil
+}
+
+func mustMarshalJSON(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	require.NoError(t, err)
+	return string(raw)
 }

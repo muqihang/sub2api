@@ -846,6 +846,109 @@ func TestCodexGatewayCaptureV2DeepSeekCacheMissAttribution(t *testing.T) {
 	require.NotContains(t, fmtAny(report5["cache_efficiency"]), "user_id_changed")
 }
 
+func TestCodexGatewayCaptureV2DeepSeekRecordsFullPrefixDiagnostics(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("01234567890123456789012345678901"), 0o600))
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              keyPath,
+		CorrelationHashKeyFile:   keyPath,
+		CaptureSuccessSampleRate: 1,
+	})
+	defer manager.Close()
+
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	replay := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"PRIVATE_REPLAY_PROMPT"}`),
+		json.RawMessage(`{"role":"assistant","content":"PRIVATE_REPLAY_ANSWER"}`),
+	}
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_full_diag",
+			SessionKey:    "session_full_diag",
+			IsolationKey:  "iso_full_diag",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "PRIVATE_REPLAY_ANSWER",
+		AssistantContentPresent: true,
+		ReplayMessages:          replay,
+	}))
+
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+		TraceID:  "deepseek_full_prefix_diag",
+		Method:   "POST",
+		Path:     "/codex/v1/responses",
+		Model:    "deepseek-v4-pro",
+		Provider: "deepseek",
+	})
+	require.NotNil(t, trace)
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_full_diag"),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"PRIVATE_CURRENT_PROMPT"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:           "session_full_diag",
+		IsolationKey:         "iso_full_diag",
+		WorkspaceKey:         "workspace_full_diag",
+		ManagedSessionBucket: "bucket_full_diag",
+		CaptureTrace:         trace,
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, manager.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "deepseek_full_prefix_diag")
+	diagnostics := readCaptureJSONFile(t, filepath.Join(traceDir, "client_request.diagnostics.json"))
+	deepseek := diagnostics["deepseek_cache"].(map[string]any)
+	for _, key := range []string{
+		"raw_body_hash",
+		"messages_full_hash",
+		"message_suffix_hash",
+		"message_last_hash",
+		"message_count",
+		"tool_schema_hash",
+		"user_id_hash",
+		"workspace_scope_hash",
+		"managed_session_bucket_hash",
+		"previous_response_id_present",
+		"previous_response_replay_mode",
+		"state_lookup_status",
+		"request_prefix_hash",
+		"static_prefix_hash",
+		"message_prefix_hash",
+		"request_shape_hash",
+	} {
+		require.Contains(t, deepseek, key)
+	}
+	require.Equal(t, true, deepseek["previous_response_id_present"])
+	require.Equal(t, "full_replay_messages", deepseek["previous_response_replay_mode"])
+	require.Equal(t, "hit", deepseek["state_lookup_status"])
+	require.Equal(t, float64(3), deepseek["message_count"])
+
+	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
+	require.Contains(t, fmtAny(report["cache_usage"]), "messages_full_hash")
+	require.Contains(t, fmtAny(report["request_diagnostics"]), "previous_response_replay_mode")
+	assertCaptureDirDoesNotContain(t, traceDir,
+		"PRIVATE_REPLAY_PROMPT",
+		"PRIVATE_REPLAY_ANSWER",
+		"PRIVATE_CURRENT_PROMPT",
+		"resp_full_diag",
+		"workspace_full_diag",
+		"bucket_full_diag",
+		"Authorization",
+		"sk-",
+	)
+}
+
 func TestCodexGatewayCaptureV2DeepSeekCacheUsagePrefersProviderExtra(t *testing.T) {
 	baseDir := t.TempDir()
 	keyPath := filepath.Join(baseDir, ".key")

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -25,6 +26,12 @@ var codexGatewayDeepSeekChatCompletionsAllowlist = map[string]struct{}{
 	"presence_penalty":  {},
 	"frequency_penalty": {},
 	"user_id":           {},
+}
+
+type codexGatewayDeepSeekReplayDiagnostics struct {
+	PreviousResponseIDPresent bool
+	StateLookupStatus         string
+	ReplayMode                string
 }
 
 func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayDeepSeekRequestContext, cfg CodexGatewayDeepSeekRequestConfig) (CodexGatewayPreparedDeepSeekRequest, error) {
@@ -118,8 +125,17 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 		rawToolsByAlias[alias] = entry
 	}
 
-	messages, _, err := buildCodexGatewayDeepSeekMessages(req, stateStore, ctx, toolMapping, cfg, upstreamModel)
+	messages, _, replayDiag, err := buildCodexGatewayDeepSeekMessages(req, stateStore, ctx, toolMapping, cfg, upstreamModel)
 	if err != nil {
+		if ctx.CaptureTrace != nil && ctx.CaptureTrace.manager != nil {
+			diagnostics := replayDiag.toCaptureMap()
+			for key, value := range codexGatewayDeepSeekUserScopeDiagnostics(userID, userIDDiag, ctx.CaptureTrace.manager.redact) {
+				diagnostics[key] = value
+			}
+			ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, map[string]any{
+				"deepseek_cache": diagnostics,
+			})
+		}
 		return CodexGatewayPreparedDeepSeekRequest{}, err
 	}
 	if len(messages) > 0 {
@@ -164,7 +180,7 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 	body = codexGatewayDeepSeekAllowlistedChatCompletionsBody(body)
 	if ctx.CaptureTrace != nil && ctx.CaptureTrace.manager != nil {
-		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
+		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, replayDiag, ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
 			ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, map[string]any{
 				"deepseek_cache": diagnostics,
 			})
@@ -179,6 +195,19 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 		ToolNameMap:    toolMapping.NameMap,
 		ReplayMessages: codexGatewayDeepSeekRawMessages(messages),
 	}, nil
+}
+
+func (d codexGatewayDeepSeekReplayDiagnostics) toCaptureMap() map[string]any {
+	out := map[string]any{
+		"previous_response_id_present": d.PreviousResponseIDPresent,
+	}
+	if status := strings.TrimSpace(d.StateLookupStatus); status != "" {
+		out["state_lookup_status"] = status
+	}
+	if mode := strings.TrimSpace(d.ReplayMode); mode != "" {
+		out["previous_response_replay_mode"] = mode
+	}
+	return out
 }
 
 func codexGatewayDeepSeekRawMessages(messages []any) []json.RawMessage {
@@ -298,16 +327,22 @@ func parseCodexGatewayJSONString(raw json.RawMessage) (string, bool) {
 	return s, true
 }
 
-func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayDeepSeekRequestContext, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayDeepSeekRequestConfig, upstreamModel string) ([]any, map[string]CodexGatewayStoredToolCall, error) {
+func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayDeepSeekRequestContext, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayDeepSeekRequestConfig, upstreamModel string) ([]any, map[string]CodexGatewayStoredToolCall, codexGatewayDeepSeekReplayDiagnostics, error) {
+	replayDiag := codexGatewayDeepSeekReplayDiagnostics{
+		PreviousResponseIDPresent: req.PreviousResponseID != nil && strings.TrimSpace(*req.PreviousResponseID) != "",
+		StateLookupStatus:         "not_requested",
+		ReplayMode:                "none",
+	}
 	items, err := decodeCodexGatewayInputItems(req.Input)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, replayDiag, err
 	}
 
 	var storedMessages []any
 	seedCalls := make(map[string]CodexGatewayStoredToolCall)
 	if req.PreviousResponseID != nil && strings.TrimSpace(*req.PreviousResponseID) != "" && stateStore == nil {
-		return nil, nil, fmt.Errorf("%w: previous_response_id requires state store", ErrCodexGatewayStateInvalid)
+		replayDiag.StateLookupStatus = "validation_failure"
+		return nil, nil, replayDiag, fmt.Errorf("%w: previous_response_id requires state store", ErrCodexGatewayStateInvalid)
 	}
 	if stateStore != nil && req.PreviousResponseID != nil && strings.TrimSpace(*req.PreviousResponseID) != "" {
 		state, err := stateStore.Get(CodexGatewayStateLookupKey{
@@ -318,20 +353,26 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 			UpstreamModel: upstreamModel,
 		})
 		if err != nil {
-			return nil, nil, err
+			replayDiag.StateLookupStatus = codexGatewayDeepSeekStateLookupStatus(err)
+			return nil, nil, replayDiag, err
 		}
 		if err := validateCodexGatewayResponseState(state); err != nil {
-			return nil, nil, err
+			replayDiag.StateLookupStatus = "validation_failure"
+			return nil, nil, replayDiag, err
 		}
 		storedMessages, err = codexGatewayDeepSeekMessagesFromState(state)
 		if err != nil {
-			return nil, nil, err
+			replayDiag.StateLookupStatus = "validation_failure"
+			return nil, nil, replayDiag, err
 		}
+		replayDiag.StateLookupStatus = "hit"
+		replayDiag.ReplayMode = codexGatewayDeepSeekReplayModeFromState(state)
 		for _, call := range state.ToolCalls {
 			seedCalls[strings.TrimSpace(call.ID)] = call
 		}
 		if len(state.ToolCalls) > 0 && !codexGatewayInputHasToolCallOutput(items) {
-			return nil, nil, fmt.Errorf("%w: previous_response_id requires function_call_output items", ErrCodexGatewayStateInvalid)
+			replayDiag.StateLookupStatus = "validation_failure"
+			return nil, nil, replayDiag, fmt.Errorf("%w: previous_response_id requires function_call_output items", ErrCodexGatewayStateInvalid)
 		}
 	}
 
@@ -383,19 +424,20 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 	for _, item := range items {
 		msg, newCalls, err := convertCodexGatewayInputItem(item, toolMapping, cfg)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, replayDiag, err
 		}
 		if msg != nil && strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) == "assistant" {
 			mergePendingReasoning(msg)
 		}
 		if len(storedMessages) > 0 && len(seedCalls) > 0 && len(openCalls) > 0 {
 			if msg == nil || strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "tool" {
-				return nil, nil, fmt.Errorf("%w: replayed tool outputs must precede subsequent turns", ErrCodexGatewayStateInvalid)
+				replayDiag.StateLookupStatus = "validation_failure"
+				return nil, nil, replayDiag, fmt.Errorf("%w: replayed tool outputs must precede subsequent turns", ErrCodexGatewayStateInvalid)
 			}
 		}
 		for _, callID := range newCalls {
 			if _, exists := seenCallIDs[callID]; exists {
-				return nil, nil, fmt.Errorf("codex deepseek request has duplicate call_id %q", callID)
+				return nil, nil, replayDiag, fmt.Errorf("codex deepseek request has duplicate call_id %q", callID)
 			}
 			seenCallIDs[callID] = struct{}{}
 			openCalls[callID]++
@@ -404,7 +446,7 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 			if pendingToolCallAssistant == nil {
 				pendingToolCallAssistant = msg
 			} else if err := codexGatewayDeepSeekMergeAssistantToolCallMessage(pendingToolCallAssistant, msg); err != nil {
-				return nil, nil, err
+				return nil, nil, replayDiag, err
 			}
 			continue
 		}
@@ -438,10 +480,10 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 		if msg != nil && strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) == "tool" {
 			callID := strings.TrimSpace(firstCodexGatewayToolString(msg["tool_call_id"]))
 			if callID == "" {
-				return nil, nil, fmt.Errorf("codex deepseek request requires tool_call_id")
+				return nil, nil, replayDiag, fmt.Errorf("codex deepseek request requires tool_call_id")
 			}
 			if openCalls[callID] == 0 {
-				return nil, nil, fmt.Errorf("codex deepseek request has unpaired function_call_output for %q", callID)
+				return nil, nil, replayDiag, fmt.Errorf("codex deepseek request has unpaired function_call_output for %q", callID)
 			}
 			openCalls[callID]--
 			if openCalls[callID] == 0 {
@@ -452,10 +494,36 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 	flushPendingToolCallAssistant()
 	flushPendingReasoning()
 	if len(storedMessages) > 0 && len(seedCalls) > 0 && len(openCalls) > 0 {
-		return nil, nil, fmt.Errorf("codex deepseek request has incomplete replay for response %q", strings.TrimSpace(*req.PreviousResponseID))
+		replayDiag.StateLookupStatus = "validation_failure"
+		return nil, nil, replayDiag, fmt.Errorf("codex deepseek request has incomplete replay for response %q", strings.TrimSpace(*req.PreviousResponseID))
 	}
 
-	return messages, seedCalls, nil
+	return messages, seedCalls, replayDiag, nil
+}
+
+func codexGatewayDeepSeekStateLookupStatus(err error) string {
+	switch {
+	case err == nil:
+		return "hit"
+	case errors.Is(err, ErrCodexGatewayStateNotFound):
+		return "miss"
+	case errors.Is(err, ErrCodexGatewayStateConflict):
+		return "conflict"
+	case errors.Is(err, ErrCodexGatewayStateInvalid):
+		return "validation_failure"
+	default:
+		return "error"
+	}
+}
+
+func codexGatewayDeepSeekReplayModeFromState(state CodexGatewayResponseState) string {
+	if len(state.ReplayMessages) > 0 {
+		return "full_replay_messages"
+	}
+	if state.AssistantContentPresent || state.ReasoningContentPresent || len(state.ToolCalls) > 0 {
+		return "assistant_fallback"
+	}
+	return "none"
 }
 
 func codexGatewayDeepSeekMessagesFromState(state CodexGatewayResponseState) ([]any, error) {

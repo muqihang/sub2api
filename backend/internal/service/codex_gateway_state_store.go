@@ -17,6 +17,8 @@ var (
 	ErrCodexGatewayStateInvalid  = errors.New("codex gateway state invalid")
 )
 
+const codexGatewayStateStoreDefaultMaxItems = 10000
+
 type codexGatewayStateEntry struct {
 	state     CodexGatewayResponseState
 	createdAt time.Time
@@ -36,7 +38,7 @@ func NewCodexGatewayStateStore(cfg CodexGatewayStateStoreConfig) *CodexGatewaySt
 		cfg.TTL = 24 * time.Hour
 	}
 	if cfg.MaxItems <= 0 {
-		cfg.MaxItems = 200
+		cfg.MaxItems = codexGatewayStateStoreDefaultMaxItems
 	}
 	now := cfg.Now
 	if now == nil {
