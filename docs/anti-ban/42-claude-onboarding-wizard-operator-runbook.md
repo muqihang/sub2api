@@ -51,6 +51,24 @@
 - ledger/usage warning：默认 observe-only；除非 P0 安全问题，不应 hard block Claude Code 能力。
 - activation 失败：账号保持不可调度，不应半写为 ready。
 
+## Formal Pool 存量账号手动恢复 SOP
+
+> 如本文与 doc40 的硬门禁描述冲突，以 doc40 为准。恢复流程不得绕过 2xx directed healthcheck、CC Gateway seen、raw capture、no fallback、no proxy mismatch 等门禁。
+
+1. 打开账号列表，过滤或搜索受影响账号。
+2. 打开 `Formal Pool 诊断/修复`，先查看账号当前 `onboarding_stage`、Gate 结果、最近失败来源和推荐动作。
+3. 确认 failure origin 后按来源处理：
+   - `local_gate`：先修复 stage、runtime 注册状态、scope 或配置问题；不要跳过本地门禁。
+   - `cc_gateway_control_plane`：先执行 runtime-register，检查 egress bucket 与代理映射，再运行 directed healthcheck。
+   - `upstream`：优先尝试 token repair，确认不是本地或 CC Gateway 控制面问题。
+   - `proxy`：更换代理后重新验证；proxy swap 后必须有完整 healthcheck evidence 才能进入 warming。若浏览器 egress attestation 尚未实现，作为 P1 follow-up 处理，但不得替代 healthcheck evidence。
+   - `token_exchange`：获取新的 `sk-ant-sid` 类型凭据后重试；文档和工单中只能记录字段/类型，不得记录真实值。
+4. 先尝试 token repair，再考虑替换账号。
+5. 如果 token repair 成功：依次执行 runtime-register -> healthcheck -> start warming。修复账号只能重新进入 warming，不能 direct-promote 到 production。
+6. 如果 token repair 失败：替换账号，并让新账号和出口代理重新走完整 onboarding wizard；不要把失败账号手工改成可调度。
+7. 任何修复账号都不得 direct-promote 到 production；必须保留健康检查证据，进入 warming 后再按正式流量策略递进。
+8. OAuth 存量账号如果不是 `setup-token`，不要走 ST token replacement；应走 refresh/runtime-register/healthcheck 路径。ST repair 仅用于 `setup-token` 账号。
+
 ## 禁止事项
 
 不要在向导外手动拼 token、cookie、sessionKey、raw account_ref、raw proxy URL、raw CCH、raw prompt/body。不要把 canary 的 `max_messages=1`、低 max_tokens 或旧 session/account hard budget 带入正式账号。
