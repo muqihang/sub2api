@@ -3,8 +3,14 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 )
 
 type FormalPoolFailureOrigin string
@@ -47,6 +53,38 @@ type FormalPoolOperationsDiagnostics struct {
 	RiskEventRef                 string                        `json:"risk_event_ref,omitempty"`
 	Checks                       []FormalPoolAcceptanceCheck   `json:"checks"`
 	RecommendedActions           []FormalPoolRecommendedAction `json:"recommended_actions,omitempty"`
+}
+
+type FormalPoolSetupTokenReplaceRequest struct {
+	SessionKey         string `json:"session_key"`
+	RunRuntimeRegister bool   `json:"run_runtime_register"`
+	RunHealthcheck     bool   `json:"run_healthcheck"`
+}
+
+type FormalPoolProxySwapRequest struct {
+	ProxyID            int64 `json:"proxy_id"`
+	RunProxyTest       bool  `json:"run_proxy_test"`
+	RunRuntimeRegister bool  `json:"run_runtime_register"`
+	RunHealthcheck     bool  `json:"run_healthcheck"`
+}
+
+type FormalPoolOperationsAccountResult struct {
+	Account     *Account                         `json:"-"`
+	Diagnostics *FormalPoolOperationsDiagnostics `json:"diagnostics,omitempty"`
+}
+
+type FormalPoolOperationFailure struct {
+	Code       string                             `json:"code"`
+	Message    string                             `json:"message"`
+	HTTPStatus int                                `json:"-"`
+	Result     *FormalPoolOperationsAccountResult `json:"result,omitempty"`
+}
+
+func (e *FormalPoolOperationFailure) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
 }
 
 type FormalPoolOperationsAccountStore interface {
@@ -161,7 +199,12 @@ func (s *FormalPoolOperationsAdminAccountStore) UpdateFormalPoolAccountProxy(ctx
 	for k, v := range extra {
 		merged[k] = v
 	}
-	return s.admin.UpdateAccount(ctx, id, &UpdateAccountInput{ProxyID: &proxyID, Extra: merged})
+	schedulable := false
+	input := &UpdateAccountInput{ProxyID: &proxyID, Extra: merged, Schedulable: &schedulable, Status: StatusActive}
+	if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraOnboardingStage])) == FormalPoolStageQuarantined {
+		input.Status = StatusError
+	}
+	return s.admin.UpdateAccount(ctx, id, input)
 }
 
 type FormalPoolOperationsAdminProxyStore struct {
@@ -202,6 +245,170 @@ func (s *FormalPoolOperationsService) Diagnostics(ctx context.Context, accountID
 		return nil, err
 	}
 	return formalPoolDiagnosticsFromAccount(account), nil
+}
+
+func (s *FormalPoolOperationsService) ReplaceSetupToken(ctx context.Context, accountID int64, req FormalPoolSetupTokenReplaceRequest) (*FormalPoolOperationsAccountResult, error) {
+	if s == nil || s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
+	}
+	sessionKey := strings.TrimSpace(req.SessionKey)
+	if sessionKey == "" {
+		return nil, infraerrors.BadRequest("SETUP_TOKEN_SESSION_KEY_REQUIRED", "setup-token session key is required")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if err := formalPoolRequireSetupTokenAccount(account); err != nil {
+		return nil, err
+	}
+	if s.oauth == nil {
+		return nil, infraerrors.ServiceUnavailable("SETUP_TOKEN_REPLACE_UNAVAILABLE", "setup-token replacement is unavailable")
+	}
+	summary, newCredentials, err := s.oauth.SetupTokenCookieAuth(ctx, sessionKey, *account.ProxyID)
+	if err != nil {
+		return s.failSetupTokenReplace(ctx, account)
+	}
+	if !summary.ScopeContainsUserInference {
+		return s.failSetupTokenReplace(ctx, account, "setup_token_missing_inference_scope")
+	}
+	if summary.ScopeContainsClaudeCode {
+		return s.failSetupTokenReplace(ctx, account, "setup_token_claude_code_scope_mismatch")
+	}
+	mergedCredentials := MergeCredentials(cloneCredentials(account.Credentials), cloneCredentials(newCredentials))
+	delete(mergedCredentials, "session_key")
+	delete(mergedCredentials, "sessionKey")
+	updated, err := s.accounts.UpdateFormalPoolAccountCredentials(ctx, account.ID, mergedCredentials)
+	if err != nil {
+		return nil, err
+	}
+	account = updated
+	if account == nil {
+		account, err = s.accounts.GetFormalPoolAccount(ctx, accountID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	extra := s.refreshedExtra(account)
+	account, err = s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, extra)
+	if err != nil {
+		return nil, err
+	}
+	if req.RunRuntimeRegister {
+		result, err := s.runtimeRegister(ctx, account.ID)
+		if err != nil {
+			return result, err
+		}
+		if result != nil && result.Account != nil {
+			account = result.Account
+		}
+	}
+	if req.RunHealthcheck {
+		result, err := s.healthcheckAccount(ctx, account.ID)
+		if err != nil {
+			return result, err
+		}
+		if result != nil && result.Account != nil {
+			account = result.Account
+		}
+	}
+	return s.accountResult(ctx, account.ID, account)
+}
+
+func (s *FormalPoolOperationsService) RuntimeRegister(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	return s.runtimeRegister(ctx, accountID)
+}
+
+func (s *FormalPoolOperationsService) Healthcheck(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	return s.healthcheckAccount(ctx, accountID)
+}
+
+func (s *FormalPoolOperationsService) StartWarming(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	if s == nil || s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if err := formalPoolRequireOperationsAccount(account); err != nil {
+		return nil, err
+	}
+	if !formalPoolStartWarmingEvidenceComplete(account) {
+		return nil, infraerrors.BadRequest("HEALTHCHECK_EVIDENCE_INCOMPLETE", "complete persisted healthcheck evidence is required before warming")
+	}
+	now := s.now()
+	extra := map[string]any{
+		"onboarding_state":                       FormalPoolOnboardingStatusWarming,
+		FormalPoolExtraOnboardingStage:           FormalPoolStageWarming,
+		FormalPoolExtraOnboardingStageUpdatedAt:  formalPoolTimestamp(now),
+		FormalPoolExtraWarmingStartedAt:          formalPoolTimestamp(now),
+		FormalPoolExtraWarmingUntil:              formalPoolTimestamp(now.Add(24 * time.Hour)),
+		FormalPoolExtraPoolProfileEffective:      PoolProfileNormal,
+		FormalPoolExtraPoolWeightMode:            FormalPoolWeightLow,
+		FormalPoolExtraLastFailureOrigin:         "",
+		FormalPoolExtraLastFailureCode:           "",
+		FormalPoolExtraLastFailureSource:         "",
+		FormalPoolExtraOnboardingLastErrorCode:   "",
+		FormalPoolExtraOnboardingLastErrorBucket: "",
+	}
+	updated, err := s.accounts.ActivateFormalPoolAccount(ctx, account.ID, extra)
+	if err != nil {
+		return nil, err
+	}
+	return s.accountResult(ctx, account.ID, updated)
+}
+
+func (s *FormalPoolOperationsService) SwapProxy(ctx context.Context, accountID int64, req FormalPoolProxySwapRequest) (*FormalPoolOperationsAccountResult, error) {
+	if s == nil || s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if err := formalPoolRequireOperationsAccount(account); err != nil {
+		return nil, err
+	}
+	if req.ProxyID <= 0 {
+		return nil, infraerrors.BadRequest("PROXY_REQUIRED", "proxy id is required")
+	}
+	if account.ProxyID != nil && *account.ProxyID == req.ProxyID {
+		return nil, infraerrors.BadRequest("PROXY_UNCHANGED", "replacement proxy must differ from current proxy")
+	}
+	if req.RunProxyTest {
+		if s.proxy == nil {
+			return nil, infraerrors.ServiceUnavailable("PROXY_TEST_UNAVAILABLE", "proxy test is unavailable")
+		}
+		if _, err := s.proxy.TestProxy(ctx, req.ProxyID); err != nil {
+			return nil, infraerrors.BadRequest("PROXY_TEST_FAILED", "proxy test failed")
+		}
+	}
+	extra := s.proxySwappedExtra(account)
+	updated, err := s.accounts.UpdateFormalPoolAccountProxy(ctx, account.ID, req.ProxyID, extra)
+	if err != nil {
+		return nil, err
+	}
+	account = updated
+	if req.RunRuntimeRegister {
+		result, err := s.runtimeRegister(ctx, account.ID)
+		if err != nil {
+			return result, err
+		}
+		if result != nil && result.Account != nil {
+			account = result.Account
+		}
+	}
+	if req.RunHealthcheck {
+		result, err := s.healthcheckAccount(ctx, account.ID)
+		if err != nil {
+			return result, err
+		}
+		if result != nil && result.Account != nil {
+			account = result.Account
+		}
+	}
+	return s.accountResult(ctx, account.ID, account)
 }
 
 type formalPoolFailureEvidence struct {
@@ -277,6 +484,7 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 		FailureCode:         out.FailureCode,
 		FailureSource:       out.FailureSource,
 		CCGatewayErrorCode:  formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraLastCCGatewayErrorCode)),
+		ControlPlaneMessage: out.QuarantineReason,
 		StatusCodeBucket:    out.StatusCodeBucket,
 		CCGatewaySeen:       out.CCGatewaySeen,
 		SafeRawCaptureRef:   out.RawCaptureRef,
@@ -287,7 +495,6 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 		CCGatewayEnabled:    account.GetExtraString("cc_gateway_enabled") == "true",
 		CCGatewayRoute:      account.GetExtraString("cc_gateway_routes"),
 		InferenceScope:      strings.Contains(account.GetCredential("scope"), "user:inference"),
-		ControlPlaneMessage: out.QuarantineReason,
 	}
 	origin := classifyFormalPoolFailureOrigin(evidence)
 	out.FailureOrigin = string(origin)
@@ -300,11 +507,103 @@ func formalPoolSafeDiagnosticText(s string) string {
 	if s == "" {
 		return ""
 	}
-	if ledgerUUIDLikeRe.MatchString(s) || ledgerEmailLikeRe.MatchString(s) || ledgerBearerRe.MatchString(s) || ledgerSensitiveKeyRe.MatchString(s) ||
-		strings.Contains(strings.ToLower(s), "sk-ant-sid") {
+	if formalPoolSafeOperationalDiagnosticCode(strings.ToLower(s)) {
+		return s
+	}
+	if formalPoolDiagnosticSensitiveKeyValueRe.MatchString(s) {
 		return ""
 	}
-	return s
+	tokens := strings.Fields(s)
+	if len(tokens) == 0 {
+		return ""
+	}
+	safe := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if formalPoolUnsafeDiagnosticText(token) {
+			continue
+		}
+		safe = append(safe, token)
+	}
+	return strings.Join(safe, " ")
+}
+
+var (
+	formalPoolDiagnosticURLLikeRe           = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*://`)
+	formalPoolDiagnosticTokenishRe          = regexp.MustCompile(`(?i)(authorization|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|raw[_ -]?token|token\s*[:=]|api[_ -]?key|x-api-key|cookie|cch|credential|password|passwd|secret|client[_ -]?secret|session[_ -]?key|proxy[_ -]?url|proxy[_ -]?(user|username|pass|password|credential)|account[_ -]?uuid|org[_ -]?uuid|organization[_ -]?uuid|bearer)`)
+	formalPoolDiagnosticRawMarkerRe         = regexp.MustCompile(`(?i)(raw[_ -]?body|raw[_ -]?prompt|raw[_ -]?telemetry|raw[_ -]?cch|raw[_ -]?cookie|raw[_ -]?token|sk-ant-sid)`)
+	formalPoolDiagnosticSafeCodeRe          = regexp.MustCompile(`^[a-z0-9_:-]+$`)
+	formalPoolDiagnosticSensitiveKeyValueRe = regexp.MustCompile(`(?i)(^|[\s,;{\[\(])\s*["'` + "`" + `]?(?:authorization|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|raw[_ -]?token|api[_ -]?key|x-api-key|cookie|raw[_ -]?cookie|cch|credential|password|passwd|secret|client[_ -]?secret|session[_ -]?key|proxy[_ -]?url|proxy[_ -]?(?:user|username|pass|password|credential)|account[_ -]?uuid|org[_ -]?uuid|organization[_ -]?uuid|bearer|raw[_ -]?body|raw[_ -]?prompt|raw[_ -]?telemetry|raw[_ -]?cch)["'` + "`" + `]?\s*(?::|=|\s+)\s*["'` + "`" + `]?\S+`)
+)
+
+func formalPoolUnsafeDiagnosticText(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	if strings.ContainsAny(s, "\r\n\t") {
+		return true
+	}
+	lower := strings.ToLower(s)
+	if formalPoolSafeOperationalDiagnosticCode(lower) {
+		return false
+	}
+	if formalPoolDiagnosticURLLikeRe.MatchString(s) || strings.Contains(s, "://") || strings.Contains(s, "@") {
+		return true
+	}
+	return ledgerUUIDLikeRe.MatchString(s) ||
+		ledgerEmailLikeRe.MatchString(s) ||
+		ledgerBearerRe.MatchString(s) ||
+		ledgerSensitiveKeyRe.MatchString(s) ||
+		formalPoolDiagnosticTokenishRe.MatchString(s) ||
+		formalPoolDiagnosticRawMarkerRe.MatchString(lower)
+}
+
+func formalPoolSafeOperationalDiagnosticCode(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" || len(s) > 128 || !formalPoolDiagnosticSafeCodeRe.MatchString(s) {
+		return false
+	}
+	switch s {
+	case "upstream_401", "formal_pool_healthcheck", "missing_account_identity", "reason_auth", "cookie_auth_failed", "setup_token_exchange_failed", "admin_ref_safe":
+		return true
+	}
+	for _, prefix := range []string{"setup_token_", "cookie_auth_", "token_exchange_"} {
+		if !strings.HasPrefix(s, prefix) {
+			continue
+		}
+		suffix := strings.TrimPrefix(s, prefix)
+		return suffix != "" &&
+			!ledgerSensitiveKeyRe.MatchString(suffix) &&
+			!formalPoolDiagnosticTokenishRe.MatchString(suffix) &&
+			!formalPoolDiagnosticRawMarkerRe.MatchString(suffix)
+	}
+	return false
+}
+
+func formalPoolSetupTokenFailureCode(codes ...string) string {
+	for _, code := range codes {
+		code = strings.TrimSpace(code)
+		if code == "" || formalPoolUnsafeDiagnosticText(code) {
+			continue
+		}
+		switch code {
+		case "setup_token_missing_inference_scope", "setup_token_claude_code_scope_mismatch", "setup_token_exchange_failed":
+			return code
+		}
+	}
+	return "setup_token_exchange_failed"
+}
+
+func formalPoolRiskEventRefFromLedgerEntry(entry RiskEventLedgerEntry) string {
+	if !isSafeLedgerRef(entry.AccountRef) || strings.TrimSpace(entry.Timestamp) == "" {
+		return ""
+	}
+	kind := sanitizeReasonCode(entry.Kind)
+	reason := sanitizeReasonCode(entry.SafeReason)
+	if kind == "" || reason == "" {
+		return ""
+	}
+	return formalPoolSafeRef("risk_event", entry.AccountRef+":"+entry.Timestamp+":"+kind+":"+reason)
 }
 
 func serviceFormalPoolAccount(account *Account) bool {
@@ -427,6 +726,372 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 		add("start_warming", "Start warming", "info")
 	}
 	return actions
+}
+
+func formalPoolRequireOperationsAccount(account *Account) error {
+	if account == nil {
+		return infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
+	}
+	if account.Platform != PlatformAnthropic || !account.IsAnthropicOAuthOrSetupToken() || !IsFormalPoolAccount(account) {
+		return infraerrors.BadRequest("FORMAL_POOL_ACCOUNT_REQUIRED", "operation requires an Anthropic formal pool OAuth/setup-token account")
+	}
+	if account.ProxyID == nil || *account.ProxyID <= 0 {
+		return infraerrors.BadRequest("FORMAL_POOL_PROXY_REQUIRED", "formal pool account requires a proxy")
+	}
+	return nil
+}
+
+func formalPoolRequireSetupTokenAccount(account *Account) error {
+	if err := formalPoolRequireOperationsAccount(account); err != nil {
+		return err
+	}
+	if account.Type != AccountTypeSetupToken {
+		return infraerrors.BadRequest("SETUP_TOKEN_ACCOUNT_REQUIRED", "setup-token replacement requires a setup-token account")
+	}
+	return nil
+}
+
+func (s *FormalPoolOperationsService) refreshedExtra(account *Account) map[string]any {
+	now := s.now()
+	return map[string]any{
+		"onboarding_state":                       FormalPoolStageRefreshed,
+		FormalPoolExtraOnboardingStage:           FormalPoolStageRefreshed,
+		FormalPoolExtraOnboardingStageUpdatedAt:  formalPoolTimestamp(now),
+		FormalPoolExtraHealthcheckStatus:         "pending",
+		FormalPoolExtraCredentialGeneration:      formalPoolNextCredentialGeneration(account),
+		FormalPoolExtraRepairedAt:                formalPoolTimestamp(now),
+		FormalPoolExtraRepairedBy:                "admin",
+		FormalPoolExtraLastFailureOrigin:         "",
+		FormalPoolExtraLastFailureCode:           "",
+		FormalPoolExtraLastFailureSource:         "",
+		FormalPoolExtraLastCCGatewayErrorCode:    "",
+		FormalPoolExtraOnboardingLastErrorCode:   "",
+		FormalPoolExtraOnboardingLastErrorBucket: "",
+		FormalPoolExtraQuarantineReason:          "",
+		FormalPoolExtraQuarantineAt:              "",
+	}
+}
+
+func formalPoolNextCredentialGeneration(account *Account) string {
+	if account == nil {
+		return "1"
+	}
+	current, err := strconv.Atoi(strings.TrimSpace(account.GetExtraString(FormalPoolExtraCredentialGeneration)))
+	if err != nil || current < 0 {
+		current = 0
+	}
+	return strconv.Itoa(current + 1)
+}
+
+func (s *FormalPoolOperationsService) runtimeRegister(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	if s == nil || s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if err := formalPoolRequireOperationsAccount(account); err != nil {
+		return nil, err
+	}
+	if s.ccGatewayRuntime == nil {
+		updated, updateErr := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, s.runtimeRegisterFailureExtra("runtime_registration_unavailable"))
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		result, _ := s.accountResult(ctx, account.ID, updated)
+		return result, infraerrors.ServiceUnavailable("CC_GATEWAY_RUNTIME_REGISTER_UNAVAILABLE", "cc gateway runtime registration is unavailable")
+	}
+	reg, err := s.runtimeRegistrationInput(ctx, account)
+	if err != nil {
+		updated, updateErr := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, s.runtimeRegisterFailureExtra("runtime_registration_proxy_unavailable"))
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		result, _ := s.accountResult(ctx, account.ID, updated)
+		return result, err
+	}
+	if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, reg); err != nil {
+		updated, updateErr := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, s.runtimeRegisterFailureExtra("runtime_registration_failed"))
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		result, _ := s.accountResult(ctx, account.ID, updated)
+		return result, infraerrors.BadRequest("RUNTIME_REGISTRATION_FAILED", "runtime registration failed")
+	}
+	now := s.now()
+	extra := map[string]any{
+		"onboarding_state":                      FormalPoolStageRuntimeRegistered,
+		FormalPoolExtraOnboardingStage:          FormalPoolStageRuntimeRegistered,
+		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now),
+		FormalPoolExtraRuntimeRegistered:        "true",
+		FormalPoolExtraRuntimeRegisteredAt:      formalPoolTimestamp(now),
+		FormalPoolExtraHealthcheckStatus:        "pending",
+		FormalPoolExtraLastFailureOrigin:        "",
+		FormalPoolExtraLastFailureCode:          "",
+		FormalPoolExtraLastFailureSource:        "",
+		FormalPoolExtraLastCCGatewayErrorCode:   "",
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, extra)
+	if err != nil {
+		return nil, err
+	}
+	return s.accountResult(ctx, account.ID, updated)
+}
+
+func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Context, account *Account) (FormalPoolCCGatewayRuntimeRegistration, error) {
+	if s.proxy == nil {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.ServiceUnavailable("PROXY_STORE_UNAVAILABLE", "proxy store is unavailable")
+	}
+	proxy, err := s.proxy.GetProxy(ctx, *account.ProxyID)
+	if err != nil {
+		return FormalPoolCCGatewayRuntimeRegistration{}, err
+	}
+	if proxy == nil || !proxy.IsActive() {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("PROXY_INACTIVE", "proxy is inactive")
+	}
+	normalized, _, err := proxyurl.Parse(proxy.URL())
+	if err != nil {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("PROXY_URL_INVALID", "proxy url is invalid")
+	}
+	return FormalPoolCCGatewayRuntimeRegistration{
+		AccountRef:     ccGatewayAccountRef(account),
+		EgressBucket:   resolveCCGatewayEgressBucket(account),
+		ProxyURL:       normalized,
+		ProxyRef:       formalPoolSafeRef("proxy", fmt.Sprintf("%d", *account.ProxyID)),
+		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
+		PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+		SessionPolicy:  "preserve_downstream_session_id",
+	}, nil
+}
+
+func (s *FormalPoolOperationsService) runtimeRegisterFailureExtra(code string) map[string]any {
+	now := s.now()
+	return map[string]any{
+		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now),
+		FormalPoolExtraRuntimeRegistered:        "false",
+		FormalPoolExtraHealthcheckStatus:        "pending",
+		FormalPoolExtraLastFailureOrigin:        string(FormalPoolFailureOriginCCGateway),
+		FormalPoolExtraLastFailureCode:          code,
+		FormalPoolExtraLastFailureSource:        "formal_pool_runtime_register",
+	}
+}
+
+func (s *FormalPoolOperationsService) healthcheckAccount(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	if s == nil || s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if err := formalPoolRequireOperationsAccount(account); err != nil {
+		return nil, err
+	}
+	if s.healthcheck == nil {
+		return nil, infraerrors.ServiceUnavailable("HEALTHCHECK_UNAVAILABLE", "formal pool healthcheck runner is unavailable")
+	}
+	input := formalPoolAccountHealthcheckInput(account)
+	result, err := s.healthcheck.RunHealthcheck(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	formalPoolFillAccountHealthcheckIdentity(result, input)
+	if reloaded, reloadErr := s.accounts.GetFormalPoolAccount(ctx, account.ID); reloadErr == nil && reloaded != nil {
+		account = reloaded
+	}
+	extra := s.healthcheckExtra(account, result)
+	status := ""
+	if result != nil && result.FormalPoolHealthcheckPassed() && !formalPoolAccountAlreadyQuarantined(account) {
+		status = StatusActive
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, status, extra)
+	if err != nil {
+		return nil, err
+	}
+	reloaded, err := s.accounts.GetFormalPoolAccount(ctx, account.ID)
+	if err == nil && reloaded != nil {
+		updated = reloaded
+	}
+	return s.accountResult(ctx, account.ID, updated)
+}
+
+func (s *FormalPoolOperationsService) healthcheckExtra(account *Account, result *FormalPoolAcceptanceResult) map[string]any {
+	now := s.now()
+	passed := result != nil && result.FormalPoolHealthcheckPassed()
+	healthStatus := "failed"
+	lastResult := "failed"
+	if passed {
+		healthStatus = "passed"
+		lastResult = "passed"
+	}
+	quarantined := formalPoolAccountAlreadyQuarantined(account)
+	if quarantined {
+		healthStatus = "quarantined"
+		lastResult = "quarantined"
+	}
+	extra := map[string]any{
+		FormalPoolExtraHealthcheckStatus:           healthStatus,
+		FormalPoolExtraHealthcheckStatusCodeBucket: "",
+		FormalPoolExtraHealthcheckCCGatewaySeen:    false,
+		FormalPoolExtraHealthcheckFallbackDetected: false,
+		FormalPoolExtraHealthcheckProxyMismatch:    false,
+		FormalPoolExtraHealthcheckRiskTextDetected: false,
+		FormalPoolExtraLastHealthcheckAt:           formalPoolTimestamp(now),
+		FormalPoolExtraLastHealthcheckResult:       lastResult,
+	}
+	if result != nil {
+		extra[FormalPoolExtraHealthcheckStatusCodeBucket] = result.StatusCodeBucket
+		extra[FormalPoolExtraHealthcheckCCGatewaySeen] = result.CCGatewaySeen
+		extra[FormalPoolExtraHealthcheckFallbackDetected] = result.FallbackDetected
+		extra[FormalPoolExtraHealthcheckProxyMismatch] = result.ProxyMismatch
+		extra[FormalPoolExtraHealthcheckRiskTextDetected] = result.RiskTextDetected
+		if isSafeLedgerRef(result.RawCaptureRef) {
+			extra[FormalPoolExtraHealthcheckRawRef] = strings.TrimSpace(result.RawCaptureRef)
+		} else {
+			extra[FormalPoolExtraHealthcheckRawRef] = ""
+		}
+	}
+	if passed && !quarantined {
+		extra["onboarding_state"] = FormalPoolStageHealthcheckPassed
+		extra[FormalPoolExtraOnboardingStage] = FormalPoolStageHealthcheckPassed
+		extra[FormalPoolExtraOnboardingStageUpdatedAt] = formalPoolTimestamp(now)
+		extra[FormalPoolExtraLastFailureOrigin] = ""
+		extra[FormalPoolExtraLastFailureCode] = ""
+		extra[FormalPoolExtraLastFailureSource] = ""
+	}
+	if !passed {
+		extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginUpstream)
+		extra[FormalPoolExtraLastFailureCode] = "formal_pool_healthcheck_failed"
+		extra[FormalPoolExtraLastFailureSource] = "formal_pool_healthcheck"
+	}
+	return extra
+}
+
+func formalPoolAccountAlreadyQuarantined(account *Account) bool {
+	return account != nil && FormalPoolAccountStage(account) == FormalPoolStageQuarantined
+}
+
+func formalPoolStartWarmingEvidenceComplete(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	return FormalPoolAccountStage(account) == FormalPoolStageHealthcheckPassed &&
+		formalPoolHealthcheckEvidencePersisted(account) &&
+		account.GetExtraString(FormalPoolExtraHealthcheckStatus) == "passed" &&
+		account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket) == "status_2xx" &&
+		isSafeLedgerRef(account.GetExtraString(FormalPoolExtraHealthcheckRawRef)) &&
+		formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen]) &&
+		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckFallbackDetected]) &&
+		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckProxyMismatch]) &&
+		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckRiskTextDetected]) &&
+		formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered])
+}
+
+func (s *FormalPoolOperationsService) proxySwappedExtra(account *Account) map[string]any {
+	now := s.now()
+	stage := FormalPoolStageRefreshed
+	healthStatus := "pending"
+	if !formalPoolHasCredentials(account) {
+		stage = FormalPoolStageQuarantined
+		healthStatus = "quarantined"
+	}
+	extra := map[string]any{
+		"onboarding_state":                         stage,
+		FormalPoolExtraOnboardingStage:             stage,
+		FormalPoolExtraOnboardingStageUpdatedAt:    formalPoolTimestamp(now),
+		FormalPoolExtraRuntimeRegistered:           "false",
+		FormalPoolExtraHealthcheckStatus:           healthStatus,
+		FormalPoolExtraHealthcheckStatusCodeBucket: "",
+		FormalPoolExtraHealthcheckRawRef:           "",
+		FormalPoolExtraHealthcheckCCGatewaySeen:    false,
+		FormalPoolExtraHealthcheckFallbackDetected: false,
+		FormalPoolExtraHealthcheckProxyMismatch:    false,
+		FormalPoolExtraHealthcheckRiskTextDetected: false,
+		FormalPoolExtraLastFailureOrigin:           string(FormalPoolFailureOriginProxy),
+		FormalPoolExtraLastFailureCode:             "proxy_swapped_revalidation_required",
+		FormalPoolExtraLastFailureSource:           "formal_pool_operations",
+		FormalPoolExtraOnboardingLastErrorCode:     "proxy_swapped_revalidation_required",
+		FormalPoolExtraOnboardingLastErrorBucket:   "",
+		FormalPoolExtraWarmingStartedAt:            "",
+		FormalPoolExtraWarmingUntil:                "",
+		FormalPoolExtraPoolProfileEffective:        PoolProfileNormal,
+		FormalPoolExtraPoolWeightMode:              FormalPoolWeightLow,
+		FormalPoolExtraLastCCGatewayErrorCode:      "",
+		FormalPoolExtraRuntimeRegisteredAt:         "",
+	}
+	if stage == FormalPoolStageQuarantined {
+		extra[FormalPoolExtraQuarantineReason] = "credential_missing_after_proxy_swap"
+		extra[FormalPoolExtraQuarantineAt] = formalPoolTimestamp(now)
+	}
+	return extra
+}
+
+func formalPoolHasCredentials(account *Account) bool {
+	return account != nil && strings.TrimSpace(account.GetCredential("access_token")) != "" && strings.TrimSpace(account.GetCredential("refresh_token")) != ""
+}
+
+func (s *FormalPoolOperationsService) failSetupTokenReplace(ctx context.Context, account *Account, failureCode ...string) (*FormalPoolOperationsAccountResult, error) {
+	if account == nil {
+		return nil, &FormalPoolOperationFailure{Code: "SETUP_TOKEN_REPLACE_FAILED", Message: "setup-token credential exchange failed", HTTPStatus: http.StatusBadRequest}
+	}
+	safeFailureCode := formalPoolSetupTokenFailureCode(failureCode...)
+	now := s.now()
+	riskRef := ""
+	if s.quarantine != nil {
+		if entry, err := s.quarantine.Quarantine(ctx, AccountQuarantineInput{
+			AccountID:  account.ID,
+			Kind:       RiskEventKindIdentityBoundaryFail,
+			Reason:     safeFailureCode,
+			Source:     "formal_pool_operations",
+			StatusCode: http.StatusUnauthorized,
+		}); err == nil {
+			riskRef = formalPoolRiskEventRefFromLedgerEntry(entry)
+		}
+	}
+	if !isSafeLedgerRef(riskRef) {
+		riskRef = strings.TrimSpace(account.GetExtraString(FormalPoolExtraRiskEventRef))
+	}
+	if !isSafeLedgerRef(riskRef) {
+		riskRef = formalPoolSafeRef("risk_event", fmt.Sprintf("%d:%s:%s", account.ID, formalPoolTimestamp(now), safeFailureCode))
+	}
+	extra := map[string]any{
+		"onboarding_state":                      FormalPoolStageQuarantined,
+		FormalPoolExtraOnboardingStage:          FormalPoolStageQuarantined,
+		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now),
+		FormalPoolExtraHealthcheckStatus:        "quarantined",
+		FormalPoolExtraLastFailureOrigin:        string(FormalPoolFailureOriginTokenExchange),
+		FormalPoolExtraLastFailureCode:          safeFailureCode,
+		FormalPoolExtraLastFailureSource:        "formal_pool_operations",
+		FormalPoolExtraQuarantineReason:         "reason_sensitive",
+		FormalPoolExtraQuarantineAt:             formalPoolTimestamp(now),
+		FormalPoolExtraRiskEventRef:             riskRef,
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusError, extra)
+	if err != nil {
+		return nil, err
+	}
+	result, _ := s.accountResult(ctx, account.ID, updated)
+	if result == nil {
+		result = &FormalPoolOperationsAccountResult{Account: updated, Diagnostics: formalPoolDiagnosticsFromAccount(updated)}
+	}
+	return result, &FormalPoolOperationFailure{
+		Code:       "SETUP_TOKEN_REPLACE_FAILED",
+		Message:    "setup-token credential exchange failed",
+		HTTPStatus: http.StatusBadRequest,
+		Result:     result,
+	}
+}
+
+func (s *FormalPoolOperationsService) accountResult(ctx context.Context, accountID int64, account *Account) (*FormalPoolOperationsAccountResult, error) {
+	if account == nil && s != nil && s.accounts != nil {
+		var err error
+		account, err = s.accounts.GetFormalPoolAccount(ctx, accountID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &FormalPoolOperationsAccountResult{Account: account, Diagnostics: formalPoolDiagnosticsFromAccount(account)}, nil
 }
 
 func formalPoolOpsBool(v any) bool {

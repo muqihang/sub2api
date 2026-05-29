@@ -3,8 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -136,6 +140,521 @@ func TestFormalPoolOperationsDiagnostics_DoesNotExposeSecrets(t *testing.T) {
 	require.Contains(t, body, "hmac-sha256:"+strings.Repeat("b", 64))
 }
 
+func TestFormalPoolOperationsDiagnostics_StronglySanitizesPersistedFailureFields(t *testing.T) {
+	t.Parallel()
+
+	safeRef := "hmac-sha256:" + strings.Repeat("4", 64)
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraHealthcheckRawRef:           safeRef,
+		FormalPoolExtraHealthcheckCCGatewaySeen:    true,
+		FormalPoolExtraHealthcheckStatusCodeBucket: "status_4xx",
+		FormalPoolExtraLastFailureOrigin:           "upstream raw_body access_token=generic-secret",
+		FormalPoolExtraLastFailureCode:             "upstream_401 missing_account_identity raw_prompt",
+		FormalPoolExtraLastFailureSource:           "formal_pool_healthcheck raw_telemetry",
+		FormalPoolExtraLastCCGatewayErrorCode:      "missing_account_identity raw_cch",
+		FormalPoolExtraQuarantineReason:            "reason_auth 2026-05-29T00:00:00Z admin_ref_safe http://proxy-user:proxy-pass@proxy.example.com:8080",
+	})
+
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+	got, err := svc.Diagnostics(context.Background(), 42)
+	require.NoError(t, err)
+	payload := strings.ToLower(mustJSON(t, got))
+	for _, unsafe := range []string{
+		"raw_body",
+		"raw_prompt",
+		"raw_telemetry",
+		"raw_cch",
+		"http://proxy-user:proxy-pass@proxy.example.com:8080",
+		"proxy-pass",
+		"access_token=generic-secret",
+		"secret",
+		"99999999-8888-4777-8666-555555555555",
+	} {
+		require.NotContains(t, payload, strings.ToLower(unsafe))
+	}
+	for _, safe := range []string{
+		"upstream_401",
+		"formal_pool_healthcheck",
+		"missing_account_identity",
+		"reason_auth",
+		"2026-05-29t00:00:00z",
+		"admin_ref_safe",
+		safeRef,
+	} {
+		require.Contains(t, payload, strings.ToLower(safe))
+	}
+}
+
+func TestFormalPoolOperationsDiagnostics_OmitsWholeFieldsWithSensitiveMarkersAndValues(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraLastFailureCode:        `"access_token": "abc123"`,
+		FormalPoolExtraLastFailureSource:      `"proxy_password": "pass"`,
+		FormalPoolExtraQuarantineReason:       "'session_key': 'sk-ant-sid01-secret'",
+		FormalPoolExtraLastCCGatewayErrorCode: "`refresh_token`: `refresh-secret`",
+	})
+
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+	got, err := svc.Diagnostics(context.Background(), 42)
+	require.NoError(t, err)
+	payload := strings.ToLower(mustJSON(t, got))
+
+	require.Empty(t, got.FailureCode)
+	require.Empty(t, got.FailureSource)
+	require.Empty(t, got.QuarantineReason)
+	for _, unsafe := range []string{
+		"access_token",
+		"abc123",
+		"proxy_password",
+		"pass",
+		"session_key",
+		"sk-ant-sid01-secret",
+		"refresh_token",
+		"refresh-secret",
+	} {
+		require.NotContains(t, payload, strings.ToLower(unsafe))
+	}
+}
+
+func TestFormalPoolOperationsDiagnostics_PreservesCookieAuthClassificationWithoutSecrets(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraLastFailureCode:   "cookie_auth_failed",
+		FormalPoolExtraLastFailureSource: "token_exchange",
+		FormalPoolExtraQuarantineReason:  "reason_auth raw_cookie session_key sk-ant-sid01-secret access_token abc123",
+		"raw_cookie":                     "session=raw-cookie-secret",
+		"access_token":                   "raw-access-secret",
+	})
+	account.Credentials = map[string]any{
+		"scope":         "user:inference",
+		"access_token":  "raw-access-secret",
+		"refresh_token": "raw-refresh-secret",
+		"session_key":   "sk-ant-sid01-secret",
+	}
+
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+	got, err := svc.Diagnostics(context.Background(), 42)
+	require.NoError(t, err)
+	payload := strings.ToLower(mustJSON(t, got))
+
+	require.Equal(t, "cookie_auth_failed", got.FailureCode)
+	require.Equal(t, "token_exchange", got.FailureSource)
+	require.Equal(t, string(FormalPoolFailureOriginTokenExchange), got.FailureOrigin)
+	require.Contains(t, actionKeys(got.RecommendedActions), "repair_token")
+	require.Contains(t, actionKeys(got.RecommendedActions), "replace_account_and_proxy")
+	for _, unsafe := range []string{
+		"raw_cookie",
+		"raw-cookie-secret",
+		"session_key",
+		"sk-ant-sid01-secret",
+		"access_token",
+		"abc123",
+		"raw-access-secret",
+		"raw-refresh-secret",
+	} {
+		require.NotContains(t, payload, strings.ToLower(unsafe))
+	}
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_UpdatesCredentialsAndMarksRefreshed(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraCredentialGeneration: "2",
+		FormalPoolExtraLastFailureOrigin:    "upstream",
+		FormalPoolExtraLastFailureCode:      "upstream_401",
+		FormalPoolExtraHealthcheckStatus:    "failed",
+	}))
+	store.account.Credentials = map[string]any{"refresh_token": "old-refresh", "access_token": "old-access", "scope": "user:inference", "keep": "preserve"}
+	oauth := &formalPoolOperationsOAuthFake{
+		summary:     FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ExpiresInBucket: "gt_1h"},
+		credentials: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:inference", "token_type": "Bearer"},
+	}
+	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: oauth, Now: func() time.Time { return now }})
+
+	got, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "  sk-ant-sid01-new-secret  "})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Account)
+	require.Equal(t, int64(7), oauth.proxyID)
+	require.Equal(t, "sk-ant-sid01-new-secret", oauth.sessionKey)
+	require.Equal(t, "new-access", store.account.GetCredential("access_token"))
+	require.Equal(t, "new-refresh", store.account.GetCredential("refresh_token"))
+	require.Equal(t, "preserve", store.account.GetCredential("keep"))
+	require.Empty(t, store.account.GetCredential("session_key"))
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, StatusActive, store.account.Status)
+	require.Equal(t, FormalPoolStageRefreshed, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "pending", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+	require.Equal(t, "3", store.account.GetExtraString(FormalPoolExtraCredentialGeneration))
+	require.Equal(t, formalPoolTimestamp(now), store.account.GetExtraString(FormalPoolExtraRepairedAt))
+	require.Equal(t, "admin", store.account.GetExtraString(FormalPoolExtraRepairedBy))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraLastFailureOrigin))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraLastFailureCode))
+	require.NotContains(t, mustJSON(t, got), "sk-ant-sid")
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_RejectsNonSetupToken(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(nil)
+	account.Type = AccountTypeOAuth
+	store := newFormalPoolOperationsMutableStore(account)
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: &formalPoolOperationsOAuthFake{}})
+
+	_, err := svc.ReplaceSetupToken(context.Background(), account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "sk-ant-sid01-secret"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "SETUP_TOKEN_ACCOUNT_REQUIRED")
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_MissingInferenceScopeQuarantinesWithTypedFailure(t *testing.T) {
+	t.Parallel()
+
+	secret := "sk-ant-sid01-missing-inference-secret"
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(nil))
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: &formalPoolOperationsOAuthFake{
+		summary:     FormalPoolOAuthTokenSummary{ScopeContainsUserInference: false},
+		credentials: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile"},
+	}})
+
+	result, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: secret})
+	require.Error(t, err)
+	var opErr *FormalPoolOperationFailure
+	require.True(t, errors.As(err, &opErr))
+	require.Equal(t, "SETUP_TOKEN_REPLACE_FAILED", opErr.Code)
+	require.Equal(t, http.StatusBadRequest, opErr.HTTPStatus)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Diagnostics)
+	require.Equal(t, StatusError, store.account.Status)
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, FormalPoolStageQuarantined, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "quarantined", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+	require.Equal(t, string(FormalPoolFailureOriginTokenExchange), store.account.GetExtraString(FormalPoolExtraLastFailureOrigin))
+	require.Equal(t, "setup_token_missing_inference_scope", store.account.GetExtraString(FormalPoolExtraLastFailureCode))
+	require.Equal(t, "formal_pool_operations", store.account.GetExtraString(FormalPoolExtraLastFailureSource))
+	require.Equal(t, string(FormalPoolFailureOriginTokenExchange), result.Diagnostics.FailureOrigin)
+	require.Contains(t, actionKeys(result.Diagnostics.RecommendedActions), "replace_account_and_proxy")
+	require.Equal(t, 0, store.credentialsUpdates)
+	for _, body := range []string{strings.ToLower(err.Error()), strings.ToLower(mustJSON(t, result)), strings.ToLower(mustJSON(t, opErr.Result))} {
+		require.NotContains(t, body, strings.ToLower(secret))
+		require.NotContains(t, body, "sk-ant-sid")
+	}
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_ClaudeCodeScopeMismatchQuarantinesWithTypedFailure(t *testing.T) {
+	t.Parallel()
+
+	secret := "sk-ant-sid01-claude-code-scope-secret"
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(nil))
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: &formalPoolOperationsOAuthFake{
+		summary:     FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true},
+		credentials: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:inference claude_code"},
+	}})
+
+	result, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: secret})
+	require.Error(t, err)
+	var opErr *FormalPoolOperationFailure
+	require.True(t, errors.As(err, &opErr))
+	require.Equal(t, "SETUP_TOKEN_REPLACE_FAILED", opErr.Code)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Diagnostics)
+	require.Equal(t, StatusError, store.account.Status)
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, FormalPoolStageQuarantined, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "setup_token_claude_code_scope_mismatch", store.account.GetExtraString(FormalPoolExtraLastFailureCode))
+	require.Equal(t, string(FormalPoolFailureOriginTokenExchange), result.Diagnostics.FailureOrigin)
+	require.Contains(t, actionKeys(result.Diagnostics.RecommendedActions), "replace_account_and_proxy")
+	require.Equal(t, 0, store.credentialsUpdates)
+	for _, body := range []string{strings.ToLower(err.Error()), strings.ToLower(mustJSON(t, result)), strings.ToLower(mustJSON(t, opErr.Result))} {
+		require.NotContains(t, body, strings.ToLower(secret))
+		require.NotContains(t, body, "sk-ant-sid")
+	}
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_DoesNotEchoSessionKeyOnError(t *testing.T) {
+	t.Parallel()
+
+	secret := "sk-ant-sid01-super-secret"
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(nil))
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: &formalPoolOperationsOAuthFake{err: fmt.Errorf("upstream failed for %s", secret)}})
+
+	result, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: secret})
+	require.Error(t, err)
+	require.NotContains(t, strings.ToLower(err.Error()), strings.ToLower(secret))
+	require.NotContains(t, strings.ToLower(err.Error()), "sk-ant-sid")
+	require.NotContains(t, strings.ToLower(mustJSON(t, result)), strings.ToLower(secret))
+	require.NotContains(t, strings.ToLower(mustJSON(t, result)), "sk-ant-sid")
+	var opErr *FormalPoolOperationFailure
+	require.True(t, errors.As(err, &opErr))
+	require.NotNil(t, opErr.Result)
+	require.NotContains(t, strings.ToLower(mustJSON(t, opErr.Result)), strings.ToLower(secret))
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_FailureReturnsSafeDiagnosticsAndReplacementRecommendation(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(nil))
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: &formalPoolOperationsOAuthFake{err: fmt.Errorf("raw token exchange 401")}})
+
+	result, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "sk-ant-sid01-secret"})
+	require.Error(t, err)
+	var opErr *FormalPoolOperationFailure
+	require.True(t, errors.As(err, &opErr))
+	require.Equal(t, "SETUP_TOKEN_REPLACE_FAILED", opErr.Code)
+	require.Equal(t, http.StatusBadRequest, opErr.HTTPStatus)
+	require.Equal(t, "setup-token credential exchange failed", opErr.Message)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Diagnostics)
+	require.Equal(t, string(FormalPoolFailureOriginTokenExchange), result.Diagnostics.FailureOrigin)
+	require.Contains(t, actionKeys(result.Diagnostics.RecommendedActions), "replace_account_and_proxy")
+	require.NotContains(t, mustJSON(t, result), "raw token exchange")
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_FailureWritesRiskEventRef(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(map[string]any{FormalPoolExtraRiskEventRef: ""}))
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: &formalPoolOperationsOAuthFake{err: fmt.Errorf("cookie auth failed")}, Now: func() time.Time { return time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC) }})
+
+	result, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "sk-ant-sid01-secret"})
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, StatusError, store.account.Status)
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, FormalPoolStageQuarantined, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "quarantined", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+	require.Equal(t, string(FormalPoolFailureOriginTokenExchange), store.account.GetExtraString(FormalPoolExtraLastFailureOrigin))
+	require.Equal(t, "setup_token_exchange_failed", store.account.GetExtraString(FormalPoolExtraLastFailureCode))
+	require.Equal(t, "formal_pool_operations", store.account.GetExtraString(FormalPoolExtraLastFailureSource))
+	require.Equal(t, "reason_sensitive", store.account.GetExtraString(FormalPoolExtraQuarantineReason))
+	riskRef := store.account.GetExtraString(FormalPoolExtraRiskEventRef)
+	require.NotEmpty(t, riskRef)
+	require.True(t, isSafeLedgerRef(riskRef), riskRef)
+	require.Equal(t, riskRef, result.Diagnostics.RiskEventRef)
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_RiskEventRefUsesQuarantineLedgerEntry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(map[string]any{FormalPoolExtraRiskEventRef: ""}))
+	repo := &formalPoolQuarantineRepo{accounts: map[int64]*Account{store.account.ID: formalPoolDiagnosticsAccount(nil)}}
+	quarantine := NewAccountQuarantineService(repo, nil)
+	quarantine.now = func() time.Time { return now }
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:   store,
+		OAuth:      &formalPoolOperationsOAuthFake{err: fmt.Errorf("cookie auth failed")},
+		Quarantine: quarantine,
+		Now:        func() time.Time { return now },
+	})
+
+	result, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "sk-ant-sid01-secret"})
+	require.Error(t, err)
+	require.NotNil(t, result)
+	entry, buildErr := BuildRiskEventLedgerEntry(RiskEventLedgerInput{
+		Kind:            RiskEventKindIdentityBoundaryFail,
+		Severity:        RiskSeverityP0,
+		RawAccountID:    fmt.Sprintf("%d", store.account.ID),
+		UnsafeRawReason: "setup_token_exchange_failed",
+		ObservedAt:      now,
+		Recommendation:  BudgetActionQuarantine,
+	})
+	require.NoError(t, buildErr)
+	expected := formalPoolSafeRef("risk_event", entry.AccountRef+":"+entry.Timestamp+":"+entry.Kind+":"+entry.SafeReason)
+	rawLedgerRef := entry.AccountRef + ":" + entry.Timestamp
+	riskRef := store.account.GetExtraString(FormalPoolExtraRiskEventRef)
+	require.Equal(t, expected, riskRef)
+	require.NotEqual(t, rawLedgerRef, riskRef)
+	require.True(t, isSafeLedgerRef(riskRef), riskRef)
+	require.Equal(t, expected, result.Diagnostics.RiskEventRef)
+}
+
+func TestFormalPoolOperationsReplaceSetupToken_CanRunRuntimeAndHealthcheck(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(nil))
+	runtime := &formalPoolOperationsRuntimeFake{}
+	health := &formalPoolOperationsHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "hmac-sha256:" + strings.Repeat("a", 64)}}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:         store,
+		OAuth:            &formalPoolOperationsOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true}, credentials: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:inference"}},
+		Proxy:            &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 7, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime: runtime,
+		Healthcheck:      health,
+	})
+
+	got, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "sk-ant-sid01-secret", RunRuntimeRegister: true, RunHealthcheck: true})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, FormalPoolStageHealthcheckPassed, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "passed", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+	require.True(t, runtime.called)
+	require.True(t, health.called)
+	require.False(t, store.account.Schedulable)
+}
+
+func TestFormalPoolOperationsRuntimeRegister_UsesAccountProxyAndBucket(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:   FormalPoolStageRefreshed,
+		"cc_gateway_egress_bucket":       "claude-bucket-from-account",
+		FormalPoolExtraRuntimeRegistered: "false",
+		FormalPoolExtraHealthcheckStatus: "failed",
+		FormalPoolExtraLastFailureCode:   "missing_account_identity",
+		FormalPoolExtraLastFailureSource: "cc_gateway_runtime_register",
+	}))
+	proxyID := int64(77)
+	store.account.ProxyID = &proxyID
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:         store,
+		Proxy:            &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 77, Protocol: "http", Host: "127.0.0.1", Port: 8080, Username: "user", Password: "pass", Status: StatusActive}},
+		CCGatewayRuntime: runtime,
+	})
+
+	got, err := svc.RuntimeRegister(context.Background(), store.account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.True(t, runtime.called)
+	require.Equal(t, ccGatewayAccountRef(store.account), runtime.input.AccountRef)
+	require.Equal(t, "claude-bucket-from-account", runtime.input.EgressBucket)
+	require.Equal(t, formalPoolSafeRef("proxy", "77"), runtime.input.ProxyRef)
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, runtime.input.PolicyVersion)
+	require.Equal(t, "preserve_downstream_session_id", runtime.input.SessionPolicy)
+	require.NotEmpty(t, runtime.input.ProxyURL)
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, StatusActive, store.account.Status)
+	require.Equal(t, FormalPoolStageRuntimeRegistered, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "true", store.account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.Equal(t, "pending", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+}
+
+func TestFormalPoolOperationsHealthcheck_UpdatesPassedEvidence(t *testing.T) {
+	t.Parallel()
+
+	rawRef := "hmac-sha256:" + strings.Repeat("1", 64)
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:   FormalPoolStageRuntimeRegistered,
+		FormalPoolExtraRuntimeRegistered: "true",
+	}))
+	health := &formalPoolOperationsHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef, FallbackDetected: false, ProxyMismatch: false, RiskTextDetected: false}}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Healthcheck: health})
+
+	got, err := svc.Healthcheck(context.Background(), store.account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.True(t, health.called)
+	require.Equal(t, FormalPoolStageHealthcheckPassed, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "passed", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+	require.Equal(t, "status_2xx", store.account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket))
+	require.Equal(t, rawRef, store.account.GetExtraString(FormalPoolExtraHealthcheckRawRef))
+	require.True(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen]))
+	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckFallbackDetected]))
+	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckProxyMismatch]))
+	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckRiskTextDetected]))
+	require.Equal(t, "passed", store.account.GetExtraString(FormalPoolExtraLastHealthcheckResult))
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, StatusActive, store.account.Status)
+}
+
+func TestFormalPoolOperationsHealthcheck_QuarantineResultStaysUnschedulable(t *testing.T) {
+	t.Parallel()
+
+	rawRef := "hmac-sha256:" + strings.Repeat("2", 64)
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:   FormalPoolStageRuntimeRegistered,
+		FormalPoolExtraRuntimeRegistered: "true",
+	}))
+	health := &formalPoolOperationsHealthcheckFake{
+		mutate: func() {
+			store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
+			store.account.Extra[FormalPoolExtraHealthcheckStatus] = "quarantined"
+			store.account.Status = StatusError
+			store.account.Schedulable = false
+		},
+		result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef},
+	}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Healthcheck: health})
+
+	got, err := svc.Healthcheck(context.Background(), store.account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, FormalPoolStageQuarantined, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "quarantined", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+}
+
+func TestFormalPoolOperationsStartWarming_RequiresHealthcheckPassedEvidence(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:             FormalPoolStageHealthcheckPassed,
+		FormalPoolExtraHealthcheckStatus:           "passed",
+		FormalPoolExtraHealthcheckStatusCodeBucket: "status_2xx",
+		FormalPoolExtraRuntimeRegistered:           "true",
+		FormalPoolExtraHealthcheckCCGatewaySeen:    true,
+	}))
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store})
+
+	_, err := svc.StartWarming(context.Background(), store.account.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "HEALTHCHECK_EVIDENCE_INCOMPLETE")
+	require.False(t, store.account.Schedulable)
+	require.NotEqual(t, FormalPoolStageWarming, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+}
+
+func TestFormalPoolOperationsStartWarming_SetsLowWeightNormalProfile(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Now: func() time.Time { return time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC) }})
+
+	got, err := svc.StartWarming(context.Background(), store.account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.True(t, store.account.Schedulable)
+	require.Equal(t, StatusActive, store.account.Status)
+	require.Equal(t, FormalPoolStageWarming, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.NotEqual(t, FormalPoolStageProduction, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, PoolProfileNormal, store.account.GetExtraString(FormalPoolExtraPoolProfileEffective))
+	require.Equal(t, FormalPoolWeightLow, store.account.GetExtraString(FormalPoolExtraPoolWeightMode))
+	require.NotEmpty(t, store.account.GetExtraString(FormalPoolExtraWarmingStartedAt))
+	require.NotEmpty(t, store.account.GetExtraString(FormalPoolExtraWarmingUntil))
+}
+
+func TestFormalPoolOperationsSwapProxy_SetsProxyAndResetsRuntimeAndHealthcheck(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	store.account.Schedulable = true
+	store.account.Status = StatusActive
+	store.account.Credentials = map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:inference"}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store})
+
+	got, err := svc.SwapProxy(context.Background(), store.account.ID, FormalPoolProxySwapRequest{ProxyID: 88})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, store.account.ProxyID)
+	require.Equal(t, int64(88), *store.account.ProxyID)
+	require.False(t, store.account.Schedulable)
+	require.Equal(t, FormalPoolStageRefreshed, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "false", store.account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.Equal(t, "pending", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraHealthcheckRawRef))
+	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen]))
+	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckFallbackDetected]))
+	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckProxyMismatch]))
+	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckRiskTextDetected]))
+	require.Equal(t, string(FormalPoolFailureOriginProxy), store.account.GetExtraString(FormalPoolExtraLastFailureOrigin))
+	require.Equal(t, "proxy_swapped_revalidation_required", store.account.GetExtraString(FormalPoolExtraLastFailureCode))
+}
+
 func TestClassifyFormalPoolFailureOrigin_Priority(t *testing.T) {
 	t.Parallel()
 
@@ -232,6 +751,148 @@ func formalPoolDiagnosticsAccount(extra map[string]any) *Account {
 		ProxyID:     &proxyID,
 		Extra:       merged,
 		Credentials: map[string]any{"scope": "user:inference"},
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+type formalPoolOperationsMutableStore struct {
+	account            *Account
+	credentialsUpdates int
+	stateUpdates       int
+	proxyUpdates       int
+}
+
+func newFormalPoolOperationsMutableStore(account *Account) *formalPoolOperationsMutableStore {
+	return &formalPoolOperationsMutableStore{account: account}
+}
+
+func (f *formalPoolOperationsMutableStore) GetFormalPoolAccount(context.Context, int64) (*Account, error) {
+	return f.account, nil
+}
+
+func (f *formalPoolOperationsMutableStore) UpdateFormalPoolAccountCredentials(_ context.Context, _ int64, credentials map[string]any) (*Account, error) {
+	f.credentialsUpdates++
+	f.account.Credentials = cloneCredentials(credentials)
+	return f.account, nil
+}
+
+func (f *formalPoolOperationsMutableStore) UpdateFormalPoolAccountState(_ context.Context, _ int64, schedulable bool, status string, extra map[string]any) (*Account, error) {
+	f.stateUpdates++
+	f.account.Schedulable = schedulable
+	if strings.TrimSpace(status) != "" {
+		f.account.Status = status
+	}
+	if f.account.Extra == nil {
+		f.account.Extra = map[string]any{}
+	}
+	for k, v := range extra {
+		f.account.Extra[k] = v
+	}
+	return f.account, nil
+}
+
+func (f *formalPoolOperationsMutableStore) ActivateFormalPoolAccount(ctx context.Context, id int64, extra map[string]any) (*Account, error) {
+	return f.UpdateFormalPoolAccountState(ctx, id, true, StatusActive, extra)
+}
+
+func (f *formalPoolOperationsMutableStore) UpdateFormalPoolAccountProxy(ctx context.Context, id int64, proxyID int64, extra map[string]any) (*Account, error) {
+	f.proxyUpdates++
+	f.account.ProxyID = &proxyID
+	return f.UpdateFormalPoolAccountState(ctx, id, false, StatusActive, extra)
+}
+
+type formalPoolOperationsOAuthFake struct {
+	summary     FormalPoolOAuthTokenSummary
+	credentials map[string]any
+	err         error
+	sessionKey  string
+	proxyID     int64
+}
+
+func (f *formalPoolOperationsOAuthFake) GenerateFormalAuthURL(context.Context, int64) (FormalPoolOAuthURL, error) {
+	return FormalPoolOAuthURL{}, nil
+}
+
+func (f *formalPoolOperationsOAuthFake) ExchangeCode(context.Context, string, string, int64) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	return FormalPoolOAuthTokenSummary{}, nil, nil
+}
+
+func (f *formalPoolOperationsOAuthFake) SetupTokenCookieAuth(_ context.Context, sessionKey string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	f.sessionKey = sessionKey
+	f.proxyID = proxyID
+	if f.err != nil {
+		return FormalPoolOAuthTokenSummary{}, nil, f.err
+	}
+	return f.summary, cloneCredentials(f.credentials), nil
+}
+
+type formalPoolOperationsRuntimeFake struct {
+	called bool
+	input  FormalPoolCCGatewayRuntimeRegistration
+	err    error
+}
+
+func (f *formalPoolOperationsRuntimeFake) RegisterCCGatewayRuntime(_ context.Context, input FormalPoolCCGatewayRuntimeRegistration) error {
+	f.called = true
+	f.input = input
+	return f.err
+}
+
+type formalPoolOperationsHealthcheckFake struct {
+	called bool
+	input  FormalPoolAcceptanceInput
+	result *FormalPoolAcceptanceResult
+	err    error
+	mutate func()
+}
+
+func (f *formalPoolOperationsHealthcheckFake) RunHealthcheck(_ context.Context, input FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error) {
+	f.called = true
+	f.input = input
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.mutate != nil {
+		f.mutate()
+	}
+	return f.result, nil
+}
+
+type formalPoolOperationsProxyFake struct {
+	proxy      *Proxy
+	testCalled bool
+	testErr    error
+}
+
+func (f *formalPoolOperationsProxyFake) GetProxy(context.Context, int64) (*Proxy, error) {
+	return f.proxy, nil
+}
+
+func (f *formalPoolOperationsProxyFake) TestProxy(context.Context, int64) (FormalPoolProxyTestSummary, error) {
+	f.testCalled = true
+	if f.testErr != nil {
+		return FormalPoolProxyTestSummary{}, f.testErr
+	}
+	return FormalPoolProxyTestSummary{Success: true, ProxyRef: formalPoolSafeRef("proxy", "test")}, nil
+}
+
+func completeHealthcheckEvidenceExtra() map[string]any {
+	return map[string]any{
+		FormalPoolExtraOnboardingStage:             FormalPoolStageHealthcheckPassed,
+		FormalPoolExtraHealthcheckStatus:           "passed",
+		FormalPoolExtraHealthcheckStatusCodeBucket: "status_2xx",
+		FormalPoolExtraHealthcheckRawRef:           "hmac-sha256:" + strings.Repeat("3", 64),
+		FormalPoolExtraHealthcheckCCGatewaySeen:    true,
+		FormalPoolExtraHealthcheckFallbackDetected: false,
+		FormalPoolExtraHealthcheckProxyMismatch:    false,
+		FormalPoolExtraHealthcheckRiskTextDetected: false,
+		FormalPoolExtraRuntimeRegistered:           "true",
 	}
 }
 
