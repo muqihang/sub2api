@@ -23,6 +23,7 @@ ALLOWED_CLAUDE_CODE_MODELS = [
     'claude-opus-4-7-thinking',
     'claude-opus-4-6',
     'claude-opus-4-6-thinking',
+    'claude-haiku-4-5-20251001',
 ]
 CANDIDATE_CLAUDE_CODE_MODELS = [
     'claude-sonnet-4-8',

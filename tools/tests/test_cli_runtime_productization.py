@@ -28,6 +28,7 @@ class CliRuntimeProductizationTest(unittest.TestCase):
         self.assertIn('claude-opus-4-7-thinking', manifest['cc_gateway']['shared_pool']['canary_cost_envelope']['allowed_models'])
         self.assertIn('claude-opus-4-6', manifest['cc_gateway']['shared_pool']['canary_cost_envelope']['allowed_models'])
         self.assertIn('claude-opus-4-6-thinking', manifest['cc_gateway']['shared_pool']['canary_cost_envelope']['allowed_models'])
+        self.assertIn('claude-haiku-4-5-20251001', manifest['cc_gateway']['shared_pool']['canary_cost_envelope']['allowed_models'])
         self.assertEqual(
             manifest['cc_gateway']['shared_pool']['canary_envelope_role'],
             'localhost_canary_guardrail_not_production_capability_ceiling',
