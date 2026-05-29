@@ -369,7 +369,14 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		}
 		nextReq, err := codexGatewayDeepSeekRequestWithHostedToolResults(ctx, req, calls, cfg.HostedWebSearch, cfg.HostedToolContext)
 		if err != nil {
-			return CodexGatewayDeepSeekAdapterResult{}, err
+			if termErr := state.finishHostedToolError(writer, err); termErr != nil {
+				return CodexGatewayDeepSeekAdapterResult{}, termErr
+			}
+			if flushErr := deferredWriter.Flush(); flushErr != nil {
+				return CodexGatewayDeepSeekAdapterResult{}, flushErr
+			}
+			result.ProviderResult = state.providerResult(resp.Header.Get("x-request-id"))
+			return result, nil
 		}
 		cfg.StreamSequenceNumber = writer.NextSequenceNumber()
 		return executeCodexGatewayDeepSeekStreamWithHostedToolTurns(ctx, client, baseURL, apiKey, model, nextReq, stateStore, reqCtx, cfg, dst, turn+1)
@@ -436,6 +443,7 @@ type codexGatewayDeepSeekStreamState struct {
 	reasoningIndex    int
 	messageText       strings.Builder
 	messageAdded      bool
+	messageStarted    bool
 	messageEmitted    bool
 	messagePhase      string
 	messageID         string
@@ -450,6 +458,7 @@ type codexGatewayDeepSeekStreamState struct {
 	createdSent       bool
 	prefixOutputItems map[int]json.RawMessage
 	blockedReason     string
+	hostedToolError   error
 }
 
 type codexGatewayDeepSeekStreamToolCall struct {
@@ -557,13 +566,9 @@ func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer 
 			}
 		}
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			if !s.messageAdded {
-				s.messageAdded = true
-				s.messageIndex = s.nextOutputIndex
-				s.messageID = codexGatewayDeepSeekMessageID(s.responseID, s.messageIndex)
-				s.nextOutputIndex++
+			if err := s.writeMessageTextDelta(writer, *choice.Delta.Content); err != nil {
+				return err
 			}
-			s.messageText.WriteString(*choice.Delta.Content)
 		}
 		for _, delta := range choice.Delta.ToolCalls {
 			if err := s.consumeToolCallDelta(delta, writer); err != nil {
@@ -608,7 +613,7 @@ func (s *codexGatewayDeepSeekStreamState) writeReasoningBeforeClientAction(write
 	// If DeepSeek sent assistant preamble text before a tool call, no message
 	// events have been emitted yet. Shift that pending message after a synthetic
 	// reasoning shell so Desktop groups the action trace like GPT native turns.
-	if s.messageAdded && !s.messageEmitted {
+	if s.messageAdded && !s.messageStarted && !s.messageEmitted {
 		s.reasoningIndex = s.messageIndex
 		s.messageIndex++
 		s.messageID = codexGatewayDeepSeekMessageID(s.responseID, s.messageIndex)
@@ -625,6 +630,54 @@ func (s *codexGatewayDeepSeekStreamState) writeReasoningBeforeClientAction(write
 		return err
 	}
 	return writer.WriteOutputItemAdded(s.responseID, s.reasoningIndex, item)
+}
+
+func (s *codexGatewayDeepSeekStreamState) ensureMessageStarted(writer *CodexGatewayResponseEventWriter) error {
+	if !s.messageAdded {
+		s.messageAdded = true
+		s.messageIndex = s.nextOutputIndex
+		s.messageID = codexGatewayDeepSeekMessageID(s.responseID, s.messageIndex)
+		s.nextOutputIndex++
+	}
+	if s.messageStarted {
+		return nil
+	}
+	phase := s.currentMessagePhase()
+	if strings.TrimSpace(s.messagePhase) == "" {
+		s.messagePhase = phase
+	}
+	item := map[string]any{
+		"type":    "message",
+		"id":      s.messageID,
+		"role":    "assistant",
+		"status":  "in_progress",
+		"phase":   phase,
+		"content": []map[string]any{},
+	}
+	rawItem, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	if err := writer.WriteOutputItemAdded(s.responseID, s.messageIndex, rawItem); err != nil {
+		return err
+	}
+	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
+	if err := writer.WriteContentPartAdded(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
+		return err
+	}
+	s.messageStarted = true
+	return nil
+}
+
+func (s *codexGatewayDeepSeekStreamState) writeMessageTextDelta(writer *CodexGatewayResponseEventWriter, delta string) error {
+	if delta == "" {
+		return nil
+	}
+	if err := s.ensureMessageStarted(writer); err != nil {
+		return err
+	}
+	s.messageText.WriteString(delta)
+	return writer.WriteOutputTextDelta(s.responseID, s.messageID, s.messageIndex, 0, delta)
 }
 
 func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.ChatToolCall, writer *CodexGatewayResponseEventWriter) error {
@@ -693,8 +746,10 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 			call.OutputIndex = s.nextOutputIndex
 			s.nextOutputIndex++
 		}
-		if s.messageAdded && !s.messageEmitted {
+		if s.messageAdded && !s.messageStarted {
 			s.messagePhase = "commentary"
+		}
+		if s.messageAdded && !s.messageEmitted {
 			if err := s.writeMessageEvents(writer); err != nil {
 				return err
 			}
@@ -810,6 +865,19 @@ func (s *codexGatewayDeepSeekStreamState) finishEarly(writer *CodexGatewayRespon
 	return "response.incomplete", nil
 }
 
+func (s *codexGatewayDeepSeekStreamState) finishHostedToolError(writer *CodexGatewayResponseEventWriter, err error) error {
+	s.hostedToolError = err
+	response := s.finalResponse("failed", "")
+	response.Error = &CodexGatewayResponseError{
+		Code:    "hosted_tool_error",
+		Message: "DeepSeek hosted web_search failed: " + sanitizeStreamError(err),
+		RawFields: map[string]json.RawMessage{
+			"type": json.RawMessage(`"api_error"`),
+		},
+	}
+	return writer.WriteResponseFailed(response)
+}
+
 func (s *codexGatewayDeepSeekStreamState) finishStreamTruncated(writer *CodexGatewayResponseEventWriter, deferredWriter *codexGatewayDeferredStreamWriter) error {
 	if _, err := s.finishEarly(writer); err != nil {
 		return err
@@ -900,27 +968,12 @@ func (s *codexGatewayDeepSeekStreamState) writeMessageEvents(writer *CodexGatewa
 		return nil
 	}
 	phase := s.currentMessagePhase()
-	item := map[string]any{
-		"type":    "message",
-		"id":      s.messageID,
-		"role":    "assistant",
-		"status":  "in_progress",
-		"phase":   phase,
-		"content": []map[string]any{},
-	}
-	rawItem, err := json.Marshal(item)
-	if err != nil {
-		return err
-	}
-	if err := writer.WriteOutputItemAdded(s.responseID, s.messageIndex, rawItem); err != nil {
-		return err
-	}
-	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": ""})
-	if err := writer.WriteContentPartAdded(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
+	alreadyStarted := s.messageStarted
+	if err := s.ensureMessageStarted(writer); err != nil {
 		return err
 	}
 	text := s.messageText.String()
-	if text != "" {
+	if text != "" && !alreadyStarted {
 		if err := writer.WriteOutputTextDelta(s.responseID, s.messageID, s.messageIndex, 0, text); err != nil {
 			return err
 		}
@@ -928,7 +981,7 @@ func (s *codexGatewayDeepSeekStreamState) writeMessageEvents(writer *CodexGatewa
 	if err := writer.WriteOutputTextDone(s.responseID, s.messageID, s.messageIndex, 0, text); err != nil {
 		return err
 	}
-	part, _ = json.Marshal(map[string]any{"type": "output_text", "text": text})
+	part, _ := json.Marshal(map[string]any{"type": "output_text", "text": text})
 	if err := writer.WriteContentPartDone(s.responseID, s.messageID, s.messageIndex, 0, part); err != nil {
 		return err
 	}
@@ -1093,11 +1146,26 @@ func codexGatewayDeepSeekStoredToolArguments(call *codexGatewayDeepSeekStreamToo
 func (s *codexGatewayDeepSeekStreamState) providerResult(upstreamRequestID string) CodexGatewayProviderResult {
 	status := codexGatewayDeepSeekFinishReasonStatusValue(s.finishReason, s.terminalSeen, s.hasPartialState())
 	incompleteReason := codexGatewayDeepSeekFinishReasonIncompleteReason(s.finishReason, s.terminalSeen, s.hasPartialState())
+	var responseError *CodexGatewayResponseError
+	if s.hostedToolError != nil {
+		status = "failed"
+		incompleteReason = ""
+		responseError = &CodexGatewayResponseError{
+			Code:    "hosted_tool_error",
+			Message: "DeepSeek hosted web_search failed: " + sanitizeStreamError(s.hostedToolError),
+			RawFields: map[string]json.RawMessage{
+				"type": json.RawMessage(`"api_error"`),
+			},
+		}
+	}
 	if blockedReason := s.blockedToolCallReason(); blockedReason != "" {
 		status = "incomplete"
 		incompleteReason = blockedReason
 	}
 	response := s.finalResponse(status, incompleteReason)
+	if responseError != nil {
+		response.Error = responseError
+	}
 	if !s.terminalSeen && !s.hasPartialState() {
 		response.Error = &CodexGatewayResponseError{
 			Code:    "upstream_error",
@@ -1180,7 +1248,7 @@ func (s *codexGatewayDeepSeekStreamState) hasExposedToolCall() bool {
 }
 
 func (s *codexGatewayDeepSeekStreamState) hasClientVisibleOutputStarted() bool {
-	if s.messageEmitted {
+	if s.messageStarted || s.messageEmitted {
 		return true
 	}
 	for _, call := range s.toolCalls {

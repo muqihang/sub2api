@@ -69,6 +69,197 @@ func TestCodexGatewayDeepSeekStream_PersistsOrdinaryAssistantState(t *testing.T)
 	require.Equal(t, "brief plan", replayAssistant["reasoning_content"])
 }
 
+func TestCodexGatewayDeepSeekStream_EmitsOutputTextDeltasAsChunksArrive(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+
+	firstChunkFlushed := make(chan string, 1)
+	secondChunkFlushed := make(chan string, 1)
+	secondChunk := make(chan struct{})
+	finishStream := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl_stream_live_text\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello \"},\"finish_reason\":null}]}\n\n")
+		flusher.Flush()
+		select {
+		case got := <-firstChunkFlushed:
+			require.Contains(t, got, "event: response.output_item.added")
+			require.Contains(t, got, "event: response.content_part.added")
+			require.Contains(t, got, "event: response.output_text.delta")
+			require.Contains(t, got, `"delta":"hello "`)
+		case <-time.After(2 * time.Second):
+			t.Fatal("first text chunk was not flushed before the next upstream chunk")
+		}
+		close(secondChunk)
+
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl_stream_live_text\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world\"},\"finish_reason\":null}]}\n\n")
+		flusher.Flush()
+		select {
+		case got := <-secondChunkFlushed:
+			require.Contains(t, got, `"delta":"world"`)
+		case <-time.After(2 * time.Second):
+			t.Fatal("second text chunk was not flushed before terminal chunk")
+		}
+		<-finishStream
+
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl_stream_live_text\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	dst := &observableBuffer{
+		onWrite: func(current string) {
+			if strings.Contains(current, `"delta":"hello "`) {
+				select {
+				case firstChunkFlushed <- current:
+				default:
+				}
+			}
+			if strings.Contains(current, `"delta":"world"`) {
+				select {
+				case secondChunkFlushed <- current:
+				default:
+				}
+			}
+		},
+	}
+	resultCh := make(chan struct {
+		result CodexGatewayDeepSeekAdapterResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := ExecuteCodexGatewayDeepSeekStream(
+			context.Background(),
+			server.Client(),
+			server.URL,
+			"test-key",
+			model,
+			req,
+			nil,
+			CodexGatewayDeepSeekRequestContext{SessionKey: "session_live_text", IsolationKey: "iso_live_text"},
+			CodexGatewayDeepSeekRequestConfig{},
+			dst,
+		)
+		resultCh <- struct {
+			result CodexGatewayDeepSeekAdapterResult
+			err    error
+		}{result: result, err: err}
+	}()
+	<-secondChunk
+	close(finishStream)
+	outcome := <-resultCh
+	require.NoError(t, outcome.err)
+	require.Equal(t, "completed", outcome.result.ProviderResult.Response.Status)
+
+	events := parseCodexGatewayOrderedEvents(t, dst.String())
+	require.Equal(t, 1, countCodexGatewayEvent(events, "response.output_item.added"))
+	require.Equal(t, 1, countCodexGatewayEvent(events, "response.content_part.added"))
+	require.Equal(t, 2, countCodexGatewayEvent(events, "response.output_text.delta"))
+	require.Equal(t, "hello ", gjson.GetBytes(nthCodexGatewayEventPayload(t, events, "response.output_text.delta", 0), "delta").String())
+	require.Equal(t, "world", gjson.GetBytes(nthCodexGatewayEventPayload(t, events, "response.output_text.delta", 1), "delta").String())
+	require.Equal(t, "hello world", gjson.GetBytes(firstCodexGatewayEventPayload(t, events, "response.output_text.done"), "text").String())
+	require.Equal(t, "hello world", gjson.GetBytes(firstCodexGatewayEventPayload(t, events, "response.content_part.done"), "part.text").String())
+	require.Equal(t, "response.completed", events[len(events)-1].Event)
+}
+
+func TestCodexGatewayDeepSeekStream_PreservesPartialTextWhenTerminalMissing(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_stream_partial_text","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"partial answer"},"finish_reason":null}]}`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{SessionKey: "session_partial_text", IsolationKey: "iso_partial_text"},
+		CodexGatewayDeepSeekRequestConfig{},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "incomplete", result.ProviderResult.Response.Status)
+	require.Contains(t, buf.String(), "event: response.output_text.delta")
+	require.Contains(t, buf.String(), `"delta":"partial answer"`)
+	events := parseCodexGatewayOrderedEvents(t, buf.String())
+	require.Equal(t, "response.incomplete", events[len(events)-1].Event)
+	require.Equal(t, "partial answer", gjson.GetBytes(events[len(events)-1].Payload, "response.output.0.content.0.text").String())
+}
+
+func TestCodexGatewayDeepSeekStream_HostedWebSearchErrorWritesTerminalEvent(t *testing.T) {
+	origSearch := codexGatewayExecuteHostedWebSearchFunc
+	t.Cleanup(func() { codexGatewayExecuteHostedWebSearchFunc = origSearch })
+	codexGatewayExecuteHostedWebSearchFunc = func(_ context.Context, query string) (string, error) {
+		return "", fmt.Errorf("search failed with marker FAKE_SECRET_MARKER for %s", query)
+	}
+
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"search current news"}]}
+		]`),
+		Tools: json.RawMessage(`[{"type":"web_search"}]`),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_stream_hosted_search_error","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"current news\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{SessionKey: "session_hosted_search_error", IsolationKey: "iso_hosted_search_error"},
+		CodexGatewayDeepSeekRequestConfig{},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "failed", result.ProviderResult.Response.Status)
+
+	stream := buf.String()
+	require.Contains(t, stream, "event: response.web_search_call.in_progress")
+	require.Contains(t, stream, "event: response.web_search_call.searching")
+	require.NotContains(t, stream, "FAKE_SECRET_MARKER")
+	events := parseCodexGatewayOrderedEvents(t, stream)
+	require.Equal(t, "response.failed", events[len(events)-1].Event)
+	require.NotEqual(t, "response.web_search_call.searching", events[len(events)-1].Event)
+	require.Equal(t, "hosted_tool_error", gjson.GetBytes(events[len(events)-1].Payload, "response.error.code").String())
+}
+
 func TestCodexGatewayDeepSeekStream(t *testing.T) {
 	t.Run("emits completed terminal event and swallows done", func(t *testing.T) {
 		model := CodexGatewayModel{
@@ -408,18 +599,19 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 
 		events := parseCodexGatewayOrderedEvents(t, buf.String())
 		firstAdded := nthCodexGatewayEventPayload(t, events, "response.output_item.added", 0)
-		require.Equal(t, "reasoning", gjson.GetBytes(firstAdded, "item.type").String())
+		require.Equal(t, "message", gjson.GetBytes(firstAdded, "item.type").String())
 		messageAdded := firstCodexGatewayOutputItemAddedPayloadByType(t, events, "message")
-		require.Equal(t, "commentary", gjson.GetBytes(messageAdded, "item.phase").String())
+		require.Equal(t, "final_answer", gjson.GetBytes(messageAdded, "item.phase").String())
 		toolAdded := firstCodexGatewayOutputItemAddedPayloadByType(t, events, CodexGatewayOutputItemTypeFunctionCall)
 		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(toolAdded, "item.type").String())
 		require.Less(t, indexCodexGatewayOutputItemDoneByType(events, "message"), indexCodexGatewayOutputItemAddedByType(events, CodexGatewayOutputItemTypeFunctionCall))
 
 		terminal := events[len(events)-1].Payload
 		messageOutput := codexGatewayTerminalOutputByType(t, terminal, "message")
-		require.Equal(t, "commentary", gjson.GetBytes(messageOutput, "phase").String())
+		require.Equal(t, "final_answer", gjson.GetBytes(messageOutput, "phase").String())
 		require.Equal(t, "我先检查项目结构。", gjson.GetBytes(messageOutput, "content.0.text").String())
 		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(codexGatewayTerminalOutputByType(t, terminal, CodexGatewayOutputItemTypeFunctionCall), "type").String())
+		requireCodexGatewayTextEventsMatchAddedMessage(t, events)
 	})
 
 	t.Run("allows repeated mutating tool calls without incomplete terminal", func(t *testing.T) {
@@ -718,11 +910,12 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 		events := parseCodexGatewayOrderedEvents(t, stream)
 		messageAdded := firstCodexGatewayOutputItemAddedPayloadByType(t, events, "message")
 		require.Equal(t, "message", gjson.GetBytes(messageAdded, "item.type").String())
-		require.Equal(t, "commentary", gjson.GetBytes(messageAdded, "item.phase").String())
+		require.Equal(t, "final_answer", gjson.GetBytes(messageAdded, "item.phase").String())
 		terminal := events[len(events)-1].Payload
 		messageOutput := codexGatewayTerminalOutputByType(t, terminal, "message")
-		require.Equal(t, "commentary", gjson.GetBytes(messageOutput, "phase").String())
+		require.Equal(t, "final_answer", gjson.GetBytes(messageOutput, "phase").String())
 		require.Equal(t, CodexGatewayOutputItemTypeFunctionCall, gjson.GetBytes(codexGatewayTerminalOutputByType(t, terminal, CodexGatewayOutputItemTypeFunctionCall), "type").String())
+		requireCodexGatewayTextEventsMatchAddedMessage(t, events)
 	})
 
 	t.Run("does not expose hosted web search as client function call", func(t *testing.T) {
@@ -1961,12 +2154,12 @@ func TestCodexGatewayDeepSeekStream(t *testing.T) {
 			CodexGatewayDeepSeekRequestConfig{},
 			&buf,
 		)
-		var failoverErr *UpstreamFailoverError
-		require.ErrorAs(t, err, &failoverErr)
-		require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-		require.Contains(t, string(failoverErr.ResponseBody), "missing terminal event")
-		require.Empty(t, result.ProviderResult.Response.Status)
-		require.Empty(t, buf.String())
+		require.NoError(t, err)
+		require.Equal(t, "incomplete", result.ProviderResult.Response.Status)
+		require.Contains(t, buf.String(), "event: response.output_text.delta")
+		events := parseCodexGatewayOrderedEvents(t, buf.String())
+		require.Equal(t, "response.incomplete", events[len(events)-1].Event)
+		require.Equal(t, "partial", gjson.GetBytes(events[len(events)-1].Payload, "response.output.0.content.0.text").String())
 	})
 
 	t.Run("returns failover error on connect refusal before output", func(t *testing.T) {
@@ -2409,6 +2602,19 @@ type codexGatewayOrderedEvent struct {
 	Payload []byte
 }
 
+type observableBuffer struct {
+	bytes.Buffer
+	onWrite func(string)
+}
+
+func (b *observableBuffer) Write(p []byte) (int, error) {
+	n, err := b.Buffer.Write(p)
+	if err == nil && b.onWrite != nil {
+		b.onWrite(b.Buffer.String())
+	}
+	return n, err
+}
+
 func parseCodexGatewayOrderedEvents(t *testing.T, stream string) []codexGatewayOrderedEvent {
 	t.Helper()
 
@@ -2510,6 +2716,58 @@ func requireSequentialCodexGatewayOrderedSequenceNumbers(t *testing.T, events []
 	require.NotEmpty(t, events)
 	for index, event := range events {
 		require.Equal(t, int64(index), gjson.GetBytes(event.Payload, "sequence_number").Int())
+	}
+}
+
+func requireCodexGatewayTextEventsMatchAddedMessage(t *testing.T, events []codexGatewayOrderedEvent) {
+	t.Helper()
+	addedByIndex := make(map[int64]struct {
+		itemID string
+		phase  string
+	})
+	for _, event := range events {
+		if event.Event != "response.output_item.added" {
+			continue
+		}
+		outputIndex := gjson.GetBytes(event.Payload, "output_index").Int()
+		itemType := gjson.GetBytes(event.Payload, "item.type").String()
+		if existing, ok := addedByIndex[outputIndex]; ok {
+			require.Equal(t, existing.itemID, gjson.GetBytes(event.Payload, "item.id").String(), "output_index %d must not be reused for a different item", outputIndex)
+			require.Equal(t, "message", itemType)
+			continue
+		}
+		if itemType == "message" {
+			addedByIndex[outputIndex] = struct {
+				itemID string
+				phase  string
+			}{
+				itemID: gjson.GetBytes(event.Payload, "item.id").String(),
+				phase:  gjson.GetBytes(event.Payload, "item.phase").String(),
+			}
+		} else {
+			addedByIndex[outputIndex] = struct {
+				itemID string
+				phase  string
+			}{itemID: gjson.GetBytes(event.Payload, "item.id").String()}
+		}
+	}
+	for _, event := range events {
+		switch event.Event {
+		case "response.output_text.delta", "response.output_text.done", "response.content_part.done":
+			outputIndex := gjson.GetBytes(event.Payload, "output_index").Int()
+			added, ok := addedByIndex[outputIndex]
+			require.True(t, ok, "text event %s references output_index %d without added message", event.Event, outputIndex)
+			require.Equal(t, added.itemID, gjson.GetBytes(event.Payload, "item_id").String())
+		case "response.output_item.done":
+			if gjson.GetBytes(event.Payload, "item.type").String() != "message" {
+				continue
+			}
+			outputIndex := gjson.GetBytes(event.Payload, "output_index").Int()
+			added, ok := addedByIndex[outputIndex]
+			require.True(t, ok, "message done references output_index %d without added message", outputIndex)
+			require.Equal(t, added.itemID, gjson.GetBytes(event.Payload, "item.id").String())
+			require.Equal(t, added.phase, gjson.GetBytes(event.Payload, "item.phase").String())
+		}
 	}
 }
 

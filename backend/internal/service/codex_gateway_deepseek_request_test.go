@@ -504,6 +504,133 @@ func TestCodexGatewayDeepSeekRequest_KeepsWebSearchBridgeAndFiltersUnsupportedHo
 	require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, "exec_command"))
 }
 
+func TestCodexGatewayDeepSeekRequest_ParallelToolCallsFalseAddsSerialToolInstruction(t *testing.T) {
+	parallel := false
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"use the available tool if needed"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"inspect_state","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}
+		]`),
+		ParallelToolCalls: &parallel,
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_serial_tools",
+		IsolationKey: "user_serial_tools",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	require.NotContains(t, prepared.Body, "parallel_tool_calls")
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	instruction, ok := messages[0].(map[string]any)["content"].(string)
+	require.True(t, ok)
+	require.Equal(t, "Serial tool calling is required for this request: before receiving tool output, emit at most one tool call. After the tool output is provided, you may decide whether another tool call is needed.", instruction)
+	require.Contains(t, instruction, "at most one tool call")
+	require.Contains(t, instruction, "before receiving tool output")
+	require.NotContains(t, instruction, "use the available tool if needed")
+	require.Equal(t, "user", messages[1].(map[string]any)["role"])
+
+	parallel = true
+	req.ParallelToolCalls = &parallel
+	parallelPrepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_parallel_tools",
+		IsolationKey: "user_parallel_tools",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	parallelMessages := parallelPrepared.Body["messages"].([]any)
+	require.Len(t, parallelMessages, 1)
+	require.NotContains(t, parallelMessages[0].(map[string]any)["content"], "Serial tool calling is required for this request")
+}
+
+func TestCodexGatewayDeepSeekRequest_ParallelToolCallsFalseDoesNotDuplicateSerialInstructionOnReplay(t *testing.T) {
+	parallel := false
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+
+	for _, tc := range []struct {
+		name         string
+		instructions json.RawMessage
+	}{
+		{name: "serial first"},
+		{name: "serial after instructions", instructions: json.RawMessage(`"Follow developer instructions."`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+			fullReq := CodexGatewayResponsesCreateRequest{
+				Model:             "deepseek-v4-pro",
+				Instructions:      tc.instructions,
+				ParallelToolCalls: &parallel,
+				Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ask one"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer one"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ask two"}]}
+		]`),
+				Tools: json.RawMessage(`[
+			{"type":"function","name":"inspect_state","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}
+		]`),
+			}
+			fullPrepared, err := BuildCodexGatewayDeepSeekRequest(model, fullReq, nil, CodexGatewayDeepSeekRequestContext{
+				SessionKey:   "session_serial_replay",
+				IsolationKey: "iso_serial_replay",
+			}, CodexGatewayDeepSeekRequestConfig{})
+			require.NoError(t, err)
+
+			replayReq := fullReq
+			replayReq.Input = json.RawMessage(`[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"ask one"}]}
+	]`)
+			firstPrepared, err := BuildCodexGatewayDeepSeekRequest(model, replayReq, nil, CodexGatewayDeepSeekRequestContext{
+				SessionKey:   "session_serial_replay",
+				IsolationKey: "iso_serial_replay",
+			}, CodexGatewayDeepSeekRequestConfig{})
+			require.NoError(t, err)
+			firstReplay := append([]json.RawMessage(nil), firstPrepared.ReplayMessages...)
+			assistant, err := json.Marshal(map[string]any{"role": "assistant", "content": "answer one"})
+			require.NoError(t, err)
+			firstReplay = append(firstReplay, assistant)
+			require.NoError(t, store.Put(CodexGatewayResponseState{
+				Key: CodexGatewayStateLookupKey{
+					ResponseID:    "resp_serial_replay",
+					SessionKey:    "session_serial_replay",
+					IsolationKey:  "iso_serial_replay",
+					Provider:      "deepseek",
+					UpstreamModel: "deepseek-v4-pro",
+				},
+				AssistantContent:        "answer one",
+				AssistantContentPresent: true,
+				ReplayMessages:          firstReplay,
+			}))
+
+			deltaPrepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+				Model:              "deepseek-v4-pro",
+				Instructions:       tc.instructions,
+				ParallelToolCalls:  &parallel,
+				PreviousResponseID: stringPtr("resp_serial_replay"),
+				Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ask two"}]}
+		]`),
+				Tools: fullReq.Tools,
+			}, store, CodexGatewayDeepSeekRequestContext{
+				SessionKey:   "session_serial_replay",
+				IsolationKey: "iso_serial_replay",
+			}, CodexGatewayDeepSeekRequestConfig{})
+			require.NoError(t, err)
+
+			require.Equal(t, fullPrepared.Body["messages"], deltaPrepared.Body["messages"])
+			require.Equal(t, 1, countDeepSeekSerialToolInstructions(deltaPrepared.Body["messages"].([]any)))
+			require.Equal(t, 1, countDeepSeekSerialToolInstructions(deltaPrepared.ReplayMessages))
+		})
+	}
+}
+
 func TestCodexGatewayDeepSeekRequest_StripsParallelToolCallsEvenWhenModelSupportsIt(t *testing.T) {
 	parallel := true
 	req := CodexGatewayResponsesCreateRequest{
@@ -2367,6 +2494,27 @@ func deepSeekRequestToolFunctionByName(t *testing.T, tools []any, name string) m
 	}
 	require.Failf(t, "deepseek request tool not found", "name=%s tools=%v", name, tools)
 	return nil
+}
+
+func countDeepSeekSerialToolInstructions(messages any) int {
+	count := 0
+	switch typed := messages.(type) {
+	case []any:
+		for _, msg := range typed {
+			m, ok := msg.(map[string]any)
+			if ok && m["role"] == "system" && m["content"] == codexGatewayDeepSeekSerialToolInstruction {
+				count++
+			}
+		}
+	case []json.RawMessage:
+		for _, raw := range typed {
+			var m map[string]any
+			if json.Unmarshal(raw, &m) == nil && m["role"] == "system" && m["content"] == codexGatewayDeepSeekSerialToolInstruction {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func deepSeekRequestToolFunctionByDescription(t *testing.T, tools []any, needle string) map[string]any {

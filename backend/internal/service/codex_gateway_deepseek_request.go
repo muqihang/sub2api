@@ -28,6 +28,8 @@ var codexGatewayDeepSeekChatCompletionsAllowlist = map[string]struct{}{
 	"user_id":           {},
 }
 
+const codexGatewayDeepSeekSerialToolInstruction = "Serial tool calling is required for this request: before receiving tool output, emit at most one tool call. After the tool output is provided, you may decide whether another tool call is needed."
+
 type codexGatewayDeepSeekReplayDiagnostics struct {
 	PreviousResponseIDPresent bool
 	StateLookupStatus         string
@@ -60,7 +62,6 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 			"content": instructions,
 		})
 	}
-
 	toolCfg := cfg.ToolMappingConfig
 	if toolCfg.DisableDeepSeekSchemaFlattening {
 		toolCfg.EnableDeepSeekSchemaFlattening = false
@@ -140,6 +141,13 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 	if len(messages) > 0 {
 		codexGatewayBackfillDeepSeekAssistantReasoning(messages)
+		if req.ParallelToolCalls != nil && !*req.ParallelToolCalls && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekSerialToolInstruction) {
+			leadingMessages = append(leadingMessages, map[string]any{
+				"role":    "system",
+				"content": codexGatewayDeepSeekSerialToolInstruction,
+			})
+		}
+		leadingMessages = codexGatewayDeepSeekDeduplicateLeadingSystemMessages(leadingMessages, messages)
 		if len(leadingMessages) > 0 {
 			messages = append(leadingMessages, messages...)
 		}
@@ -223,6 +231,35 @@ func codexGatewayDeepSeekRawMessages(messages []any) []json.RawMessage {
 		out = append(out, raw)
 	}
 	return out
+}
+
+func codexGatewayDeepSeekDeduplicateLeadingSystemMessages(leadingMessages, replayMessages []any) []any {
+	if len(leadingMessages) == 0 || len(replayMessages) == 0 {
+		return leadingMessages
+	}
+	out := leadingMessages[:0]
+	for _, msg := range leadingMessages {
+		m, ok := msg.(map[string]any)
+		content, contentOK := m["content"].(string)
+		if ok && m["role"] == "system" && contentOK && codexGatewayDeepSeekSystemPrefixHasContent(replayMessages, content) {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func codexGatewayDeepSeekSystemPrefixHasContent(messages []any, content string) bool {
+	for _, msg := range messages {
+		m, ok := msg.(map[string]any)
+		if !ok || m["role"] != "system" {
+			return false
+		}
+		if m["content"] == content {
+			return true
+		}
+	}
+	return false
 }
 
 func codexGatewayDeepSeekAllowlistedChatCompletionsBody(body map[string]any) map[string]any {
