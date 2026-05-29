@@ -7135,18 +7135,16 @@ func isCountTokensUnsupported404(statusCode int, body []byte) bool {
 }
 
 func (s *GatewayService) handleCCGatewayControlPlaneSideEffects(ctx context.Context, account *Account, statusCode int, code string, message string) {
-	if s == nil || s.accountRepo == nil || account == nil || !IsFormalPoolAccount(account) {
+	if s == nil || account == nil || !IsFormalPoolAccount(account) {
 		return
 	}
-	reason := strings.TrimSpace(code)
-	if msg := strings.TrimSpace(message); msg != "" {
-		if reason != "" {
-			reason += ":"
-		}
-		reason += msg
+	reason := ccGatewayControlPlaneReason(code, message)
+	if !shouldQuarantineCCGatewayControlPlane(code, message, statusCode) {
+		s.observeCCGatewayControlPlaneRisk(ctx, account, reason, BudgetActionObserve)
+		return
 	}
-	if reason == "" {
-		reason = "cc_gateway_control_plane"
+	if s.accountRepo == nil {
+		return
 	}
 	_, err := NewAccountQuarantineService(s.accountRepo, s.sessionBudgetObserve).Quarantine(ctx, AccountQuarantineInput{
 		AccountID:  account.ID,
@@ -7158,6 +7156,93 @@ func (s *GatewayService) handleCCGatewayControlPlaneSideEffects(ctx context.Cont
 	if err != nil {
 		slog.Warn("cc_gateway_control_plane_quarantine_failed", "account_id", account.ID, "status_code", statusCode, "code", code, "error", err)
 	}
+}
+
+func ccGatewayControlPlaneReason(code string, message string) string {
+	reason := strings.TrimSpace(code)
+	if msg := strings.TrimSpace(message); msg != "" {
+		if reason != "" {
+			reason += ":"
+		}
+		reason += msg
+	}
+	if reason == "" {
+		reason = "cc_gateway_control_plane"
+	}
+	return reason
+}
+
+func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCode int) bool {
+	text := strings.ToLower(strings.TrimSpace(code) + " " + strings.TrimSpace(message))
+	code = strings.ToLower(strings.TrimSpace(code))
+
+	quarantineSignals := []string{
+		"missing_account_identity",
+		"missing_identity",
+		"missing_egress_bucket",
+		"missing_egress",
+		"egress_proxy_failure",
+		"proxy_mismatch",
+		"fallback",
+		"verifier",
+		"sign_strip",
+		"invalid_auth",
+		"forbidden",
+		"risk",
+	}
+	for _, signal := range quarantineSignals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	if isCCGatewayModelAllowlistReject(code, text) {
+		return false
+	}
+	// Status is context only here: CC Gateway may return 403/422 for both
+	// model policy and hard identity/proxy risks, so text/code decide class.
+	return true
+}
+
+func isCCGatewayModelAllowlistReject(code string, text string) bool {
+	if code == "persona_reject_untrusted_model" || code == "reject_untrusted_model" || code == "canary_cost_envelope_model_blocked" {
+		return true
+	}
+	if strings.HasPrefix(code, "candidate_model_") && (strings.Contains(code, "blocked") || strings.Contains(code, "rejected")) {
+		return true
+	}
+	if strings.Contains(text, "candidate model") && (strings.Contains(text, "not enabled") || strings.Contains(text, "blocked") || strings.Contains(text, "rejected")) {
+		return true
+	}
+	modelRejectSignals := []string{
+		"untrusted model",
+		"model not trusted",
+		"model blocked",
+		"model rejected",
+		"model not enabled",
+	}
+	for _, signal := range modelRejectSignals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *GatewayService) observeCCGatewayControlPlaneRisk(ctx context.Context, account *Account, reason string, recommendation string) {
+	if s == nil || s.sessionBudgetObserve == nil {
+		return
+	}
+	risk, err := BuildRiskEventLedgerEntry(RiskEventLedgerInput{
+		Kind:            RiskEventKindControlPlaneModelPolicy,
+		Severity:        RiskSeverityP2,
+		RawAccountID:    accountBudgetRawID(account),
+		UnsafeRawReason: reason,
+		Recommendation:  recommendation,
+	})
+	if err != nil {
+		return
+	}
+	s.sessionBudgetObserve.ObserveSessionBudget(ctx, SessionBudgetObserveRecord{RiskEvents: []RiskEventLedgerEntry{risk}})
 }
 
 func (s *GatewayService) handleErrorResponseWithBudget(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, budgetObservation sessionBudgetRequestObservation) (*ForwardResult, error) {

@@ -15,6 +15,7 @@ const (
 	RiskEventKindRiskText                 = "risk_text"
 	RiskEventKindSensitiveLeak            = "sensitive_leak"
 	RiskEventKindControlPlaneUnsafeUpload = "control_plane_unsafe_upload"
+	RiskEventKindControlPlaneModelPolicy  = "control_plane_model_policy"
 	RiskEventKindIdentityBoundaryFail     = "identity_boundary_fail"
 
 	RiskSeverityP0 = "p0"
