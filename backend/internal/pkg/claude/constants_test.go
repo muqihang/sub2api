@@ -70,3 +70,17 @@ func TestClaudeCodeEndpointSpecificBetas(t *testing.T) {
 	require.Equal(t, strings.Join(ClaudeCodeMessagesBetas(), ","), MessageBetaHeaderWithTools)
 	require.Equal(t, strings.Join(ClaudeCodeCountTokensOAuthBetas(), ","), CountTokensBetaHeader)
 }
+
+func TestDefaultModels_ContainsOpus48(t *testing.T) {
+	t.Parallel()
+
+	for _, model := range DefaultModels {
+		if model.ID == "claude-opus-4-8" {
+			if model.DisplayName != "Claude Opus 4.8" {
+				t.Fatalf("unexpected display name: %q", model.DisplayName)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected claude-opus-4-8 in DefaultModels")
+}
