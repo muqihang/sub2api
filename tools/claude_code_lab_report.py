@@ -10,6 +10,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from tools.claude_code_lab_netwatch import load_netwatch_rows, summarize_netwatch_rows
+
 SENSITIVE_PATTERNS = {
     "authorization_value": re.compile(r"(?i)(authorization|x-api-key|cookie|proxy-authorization)\s*[:=]\s*(bearer|basic|sk-|sk-ant|session)[^\s\"']+"),
     "anthropic_session_key": re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}"),
@@ -50,7 +52,7 @@ def sensitive_scan(run_dir: Path) -> dict[str, Any]:
     return {"status": "PASS" if not findings else "FAIL", "findings": findings, "files_scanned": scanned}
 
 
-def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize(rows: list[dict[str, Any]], netwatch_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     events = Counter(str(row.get("event", "unknown")) for row in rows)
     decisions = Counter(str(row.get("decision", "none")) for row in rows)
     reasons = Counter(str(row.get("reason", "none")) for row in rows)
@@ -109,6 +111,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             cp_body_buckets[str(row["body_length_bucket"])] += 1
 
     statuses = Counter(str(row.get("status", "none")) for row in message_responses)
+    netwatch_summary = summarize_netwatch_rows(netwatch_rows or [])
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "row_count": len(rows),
@@ -136,12 +139,14 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "local_raw_redacted_artifacts": local_raw_refs,
         },
         "selected_header_presence": dict(selected_headers),
+        "process_netwatch": netwatch_summary,
     }
 
 
 def write_markdown(path: Path, summary: dict[str, Any], scan: dict[str, Any]) -> None:
     msg = summary["messages"]
     cp = summary["control_plane"]
+    netwatch = summary.get("process_netwatch", {})
     lines = [
         "# Claude Code 本机隔离捕获报告",
         "",
@@ -172,11 +177,20 @@ def write_markdown(path: Path, summary: dict[str, Any], scan: dict[str, Any]) ->
         f"- 最大声明内容长度：`{cp['max_declared_content_length']}`",
         f"- 本机打码细节包数量：`{cp['local_raw_redacted_artifacts']}`",
         "",
+        "## 进程级网络目的地摘要",
+        "",
+        f"- TCP 连接观测数：`{netwatch.get('connection_count', 0)}`",
+        f"- 疑似绕过 guard 连接数：`{netwatch.get('potential_guard_bypass_count', 0)}`",
+        f"- 远端地址桶：`{json.dumps(netwatch.get('remote_host_buckets', {}), ensure_ascii=False, sort_keys=True)}`",
+        f"- 远端端口 Top：`{json.dumps(netwatch.get('remote_ports_top', {}), ensure_ascii=False, sort_keys=True)}`",
+        f"- 进程 Top：`{json.dumps(netwatch.get('processes_top', {}), ensure_ascii=False, sort_keys=True)}`",
+        "",
         "## 安全说明",
         "",
         "- 报告不包含 raw body、raw prompt、raw token、raw telemetry、raw CCH。",
         "- Authorization / x-api-key / Cookie 只保留存在形态，不保留值。",
         "- 动态路径标识使用模板或引用，不输出原始账号、组织、用户 UUID。",
+        "- 进程级网络观测只记录目的地桶、端口、进程名、连接状态和疑似绕过标记，不记录请求内容。",
     ]
     if scan.get("findings"):
         lines += ["", "## 敏感扫描发现", "", f"`{json.dumps(scan['findings'], ensure_ascii=False)}`"]
@@ -189,7 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     run_dir = args.run_dir.expanduser()
     rows = load_jsonl(run_dir / "guard-summary.jsonl")
-    summary = summarize(rows)
+    netwatch_rows = load_netwatch_rows(run_dir / "process-netwatch.jsonl")
+    summary = summarize(rows, netwatch_rows)
     scan = sensitive_scan(run_dir)
     (run_dir / "report.json").write_text(json.dumps({"summary": summary, "sensitive_scan": scan}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_markdown(run_dir / "report.md", summary, scan)

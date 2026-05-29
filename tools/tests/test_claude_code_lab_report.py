@@ -52,6 +52,31 @@ class ClaudeCodeLabReportTests(unittest.TestCase):
             self.assertIn("PASS", text)
             self.assertNotIn("raw_body", text)
 
+    def test_report_includes_process_netwatch_summary_without_raw_destination_values(self):
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td)
+            rows = []
+            netwatch_rows = [
+                {
+                    "event": "process_net_connection",
+                    "remote_host_bucket": "anthropic_or_claude",
+                    "remote_port": 443,
+                    "state": "ESTABLISHED",
+                    "process_name": "node",
+                    "potential_guard_bypass": True,
+                }
+            ]
+            report = summarize(rows, netwatch_rows)
+            scan = sensitive_scan(run_dir)
+            write_markdown(run_dir / "report.md", report, scan)
+
+            text = (run_dir / "report.md").read_text(encoding="utf-8")
+            self.assertIn("进程级网络目的地摘要", text)
+            self.assertIn("疑似绕过 guard 连接数", text)
+            self.assertIn("anthropic_or_claude", text)
+            self.assertNotIn("api.anthropic.com", text)
+            self.assertNotIn("raw_telemetry", text)
+
 
 if __name__ == "__main__":
     unittest.main()
