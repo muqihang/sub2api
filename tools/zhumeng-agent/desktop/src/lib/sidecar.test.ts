@@ -38,6 +38,7 @@ describe("sidecar client", () => {
     });
     expect(payloads[0]?.timeoutMs).toBe(10000);
     expect(payloads[1]?.timeoutMs).toBe(15000);
+    expect(payloads[2]?.timeoutMs).toBe(10000);
   });
 
   it("throws structured errors when the envelope is not ok", async () => {

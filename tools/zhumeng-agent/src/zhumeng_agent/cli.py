@@ -190,6 +190,27 @@ def remember_desktop_enhancement_state(store: JsonStateStore, desktop_patches: d
     if hasattr(store, "update"):
         store.update(patch)
 
+
+def refresh_desktop_enhancement_state(state: dict[str, object], store: JsonStateStore | None = None) -> dict[str, object]:
+    if state.get("client") != "codex":
+        return state
+    app_path_value = state.get("codex_app_path")
+    app_path = Path(str(app_path_value)).expanduser() if app_path_value else default_codex_app_path()
+    if app_path is None:
+        return state
+    try:
+        enhancements = inspect_codex_enhancements(app_path)
+    except Exception:
+        return state
+    if not isinstance(enhancements, dict) or enhancements.get("status") != "ok":
+        return state
+    state["codex_app_path"] = str(app_path)
+    state["desktop_enhancements"] = enhancements
+    if store is not None and hasattr(store, "update"):
+        store.update({"codex_app_path": str(app_path), "desktop_enhancements": enhancements})
+    return state
+
+
 def patch_detected_codex_model_picker() -> dict[str, object]:
     app_path = default_codex_app_path()
     if app_path is None:
@@ -623,6 +644,7 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
 def desktop_status_data() -> dict[str, object]:
     store = default_state_store()
     state = store.read()
+    state = refresh_desktop_enhancement_state(state, store)
     if hasattr(store, "path"):
         state["state_file"] = str(store.path)
     return build_desktop_status(state)

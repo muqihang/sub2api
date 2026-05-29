@@ -358,6 +358,45 @@ def test_desktop_status_keeps_authorization_object(capsys):
     assert "managed-session-id-abcdef123456" not in json.dumps(payload)
 
 
+def test_desktop_status_uses_live_codex_enhancement_status(capsys):
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "proxy_port": 18081,
+        "desktop_enhancements": {
+            "status": "app_running_blocking_change",
+            "items": {
+                "model-picker": {"status": "unknown"},
+                "plugin-auth-gate": {"status": "unknown"},
+                "plugin-mention-marketplace": {"status": "unknown"},
+            },
+        },
+    })
+    cli.default_state_store = lambda: store
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.inspect_codex_enhancements = lambda app_path: {
+        "status": "ok",
+        "app_path": str(app_path),
+        "items": {
+            "model-picker": {"status": "patched", "integrity_ok": True},
+            "plugin-auth-gate": {"status": "patched", "integrity_ok": True},
+            "plugin-mention-marketplace": {"status": "patched", "integrity_ok": True},
+        },
+        "running_app_detected": True,
+    }
+
+    exit_code = main(["desktop", "status", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    enhancements = payload["data"]["adapters"]["codex"]["enhancements"]
+    assert enhancements["status"] == "ok"
+    assert payload["data"]["model_picker"]["status"] == "patched"
+    assert payload["data"]["plugin_auth_gate"]["status"] == "patched"
+    assert payload["data"]["plugin_mention_marketplace"]["status"] == "patched"
+    assert store.payload["desktop_enhancements"]["items"]["model-picker"]["status"] == "patched"
+
+
 def test_desktop_repair_enhancement_failure_is_not_ok(capsys):
     class FakeManager:
         def repair(self, *args, **kwargs):

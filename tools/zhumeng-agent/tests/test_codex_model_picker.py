@@ -745,3 +745,25 @@ def test_codex_enhancement_aggregate_refuses_running_app_without_patching(tmp_pa
 
     assert result["status"] == "app_running_blocking_change"
     assert result["restart_required"] is False
+
+
+def test_codex_enhancement_aggregate_allows_running_app_when_already_patched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from zhumeng_agent.adapters.codex import enhancements
+
+    app = tmp_path / "Codex.app"
+    (app / "Contents" / "Resources").mkdir(parents=True)
+    (app / "Contents" / "Resources" / "app.asar").write_bytes(b"dummy")
+    monkeypatch.setattr(enhancements, "codex_app_is_running", lambda app_path: True)
+    monkeypatch.setattr(enhancements, "inspect_model_picker_app", lambda app_path: {"status": "patched", "integrity_ok": True})
+    monkeypatch.setattr(enhancements, "inspect_plugin_auth_gate_app", lambda app_path: {"status": "patched", "integrity_ok": True})
+    monkeypatch.setattr(enhancements, "inspect_plugin_mention_marketplace_app", lambda app_path: {"status": "patched", "integrity_ok": True})
+    monkeypatch.setattr(enhancements, "patch_model_picker_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
+    monkeypatch.setattr(enhancements, "patch_plugin_auth_gate_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
+    monkeypatch.setattr(enhancements, "patch_plugin_mention_marketplace_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
+
+    result = enhancements.patch_codex_enhancements(app, item="all")
+
+    assert result["status"] == "patched"
+    assert result["restart_required"] is False
+    assert result["items"]["model-picker"]["status"] == "patched"
+    assert result["running_app_detected"] is True

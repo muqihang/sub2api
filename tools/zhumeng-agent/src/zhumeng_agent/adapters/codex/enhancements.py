@@ -35,6 +35,16 @@ def inspect_codex_enhancements(app_path: Path) -> dict[str, object]:
 
 
 def patch_codex_enhancements(app_path: Path, *, item: str = "all") -> dict[str, object]:
+    if codex_app_is_running(app_path):
+        already_patched = _already_patched_running_app_result(app_path, item)
+        if already_patched is not None:
+            return already_patched
+        return {
+            "status": "app_running_blocking_change",
+            "app_path": str(app_path),
+            "message": "Codex App is running; quit it before patching enhancements.",
+            "restart_required": False,
+        }
     preflight = _preflight_app_patch(app_path)
     if preflight is not None:
         return preflight
@@ -58,6 +68,31 @@ def patch_codex_enhancements(app_path: Path, *, item: str = "all") -> dict[str, 
         "items": results,
         "restart_required": status == "patched",
     }
+
+
+def _already_patched_running_app_result(app_path: Path, item: str) -> dict[str, object] | None:
+    inspected = inspect_codex_enhancements(app_path)
+    items = inspected.get("items")
+    if not isinstance(items, dict):
+        return None
+    selected: dict[str, dict[str, object]] = {}
+    for name in _selected_item_names(item):
+        raw = items.get(name)
+        if not isinstance(raw, dict) or raw.get("status") != "patched":
+            return None
+        selected[name] = raw
+    return {
+        "status": "patched",
+        "app_path": str(app_path),
+        "item": item,
+        "items": selected,
+        "running_app_detected": True,
+        "restart_required": False,
+    }
+
+
+def _selected_item_names(item: str) -> tuple[str, ...]:
+    return ENHANCEMENT_ORDER if item == "all" else (item,)
 
 
 def restore_codex_enhancements(app_path: Path, *, item: str = "all") -> dict[str, object]:
@@ -94,9 +129,8 @@ def restore_codex_enhancements(app_path: Path, *, item: str = "all") -> dict[str
 
 
 def _run_for_items(app_path: Path, item: str, operations: dict[str, Callable[[], dict[str, object]]]) -> dict[str, dict[str, object]]:
-    names = ENHANCEMENT_ORDER if item == "all" else (item,)
     results: dict[str, dict[str, object]] = {}
-    for name in names:
+    for name in _selected_item_names(item):
         operation = operations.get(name)
         if operation is None:
             results[name] = {"status": "failed", "message": f"unknown enhancement item: {name}"}
@@ -119,14 +153,6 @@ def _safe(operation: Callable[[], dict[str, object]]) -> dict[str, object]:
 
 
 def _preflight_app_patch(app_path: Path) -> dict[str, object] | None:
-    if codex_app_is_running(app_path):
-        return {
-            "status": "app_running_blocking_change",
-            "app_path": str(app_path),
-            "message": "Codex App is running; quit it before patching enhancements.",
-            "restart_required": False,
-        }
-    asar_path = app_path / "Contents" / "Resources" / "app.asar"
     return _preflight_app_writable(app_path)
 
 

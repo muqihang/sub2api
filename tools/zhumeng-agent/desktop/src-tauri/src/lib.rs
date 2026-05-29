@@ -85,7 +85,7 @@ fn run_sidecar_command_with_executable(
     executable: &str,
     request: SidecarRequest,
 ) -> Result<Value, SidecarFailure> {
-    let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(5_000));
+    let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(15_000));
     let mut child = Command::new(executable)
         .args(&request.args)
         .env("ZHUMENG_DESKTOP_TIMEOUT_MS", timeout.as_millis().to_string())

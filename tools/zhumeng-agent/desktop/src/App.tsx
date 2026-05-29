@@ -144,7 +144,7 @@ function App() {
           setPage("wizard");
         }
       } catch (error) {
-        setLastError(error instanceof Error ? error.message : String(error));
+        setLastError(sidecarErrorMessage(error));
       }
     };
 

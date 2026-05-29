@@ -50,7 +50,7 @@ func (r codexGatewayDatabaseModelPricingResolver) ResolveCodexGatewayModelPricin
 	}
 	for _, modelName := range codexEntryPricingModelCandidates(model) {
 		resolved := r.resolver.Resolve(ctx, PricingInput{Model: modelName, GroupID: groupID})
-		if resolved == nil || resolved.Source != PricingSourceChannel {
+		if resolved == nil {
 			continue
 		}
 		pricing := codexGatewayResolvedPricingToCatalog(resolved)
@@ -397,7 +397,7 @@ func codexGatewayStringSliceContains(values []string, expected string) bool {
 }
 
 func codexGatewayResolvedPricingToCatalog(resolved *ResolvedPricing) *CodexGatewayModelPricing {
-	if resolved == nil || resolved.Source != PricingSourceChannel {
+	if resolved == nil {
 		return nil
 	}
 	pricing := &CodexGatewayModelPricing{

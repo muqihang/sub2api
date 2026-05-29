@@ -634,6 +634,25 @@ func TestCodexGatewayModelRegistry_ModelsResponseIncludesCapabilitiesAndPricing(
 	require.Equal(t, "database_model_pricing", model.Pricing.Source)
 }
 
+func TestCodexGatewayResolvedPricingToCatalogIncludesLiteLLMBasePricing(t *testing.T) {
+	pricing := codexGatewayResolvedPricingToCatalog(&ResolvedPricing{
+		Mode:   BillingModeToken,
+		Source: PricingSourceLiteLLM,
+		BasePricing: &ModelPricing{
+			InputPricePerToken:         5e-6,
+			OutputPricePerToken:        30e-6,
+			CacheReadPricePerToken:     0.5e-6,
+			CacheCreationPricePerToken: 5e-6,
+		},
+	})
+
+	require.NotNil(t, pricing)
+	require.Equal(t, "5", *pricing.InputPrice)
+	require.Equal(t, "30", *pricing.OutputPrice)
+	require.Equal(t, "0.5", *pricing.CachedInputPrice)
+	require.Equal(t, "database_model_pricing", pricing.Source)
+}
+
 func TestCodexGatewayModelRegistry_CodexCLICatalogPreservesDesktopModelContract(t *testing.T) {
 	reg := NewCodexGatewayModelRegistry(
 		config.GatewayCodexConfig{EnabledModels: []string{"gpt-5.5"}},

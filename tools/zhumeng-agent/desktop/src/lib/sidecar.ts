@@ -56,7 +56,7 @@ export function sidecarErrorMessage(error: unknown): string {
 }
 
 export function createSidecarClient(invokeFn: InvokeFn = tauriInvoke as InvokeFn): SidecarClient {
-  const run = async <T>(args: string[], timeoutMs = 5000): Promise<T> => {
+  const run = async <T>(args: string[], timeoutMs = 15000): Promise<T> => {
     let envelope: SidecarEnvelope<unknown>;
     try {
       envelope = await invokeFn("run_sidecar", { args, timeoutMs });
@@ -78,7 +78,7 @@ export function createSidecarClient(invokeFn: InvokeFn = tauriInvoke as InvokeFn
     diagnose: () => run<Record<string, unknown>>(["desktop", "diagnose", "--redacted", "--json"], 10000),
     modelsStatus: () => run<Record<string, unknown>>(["desktop", "models", "status", "--client", "codex", "--json"], 15000),
     modelsSync: () => run<Record<string, unknown>>(["desktop", "models", "sync", "--client", "codex", "--json"], 20000),
-    openCodex: () => run<Record<string, unknown>>(["desktop", "open", "--app", "codex", "--json"]),
+    openCodex: () => run<Record<string, unknown>>(["desktop", "open", "--app", "codex", "--json"], 10000),
     setup: (client, code, server) => run<DesktopStatus>(["desktop", "setup", "--client", client, "--code", code, "--server", server, "--json"], 30000),
     reauth: (client, code, server) => run<DesktopStatus>(["desktop", "reauth", "--client", client, "--code", code, "--server", server, "--json"], 30000),
     enhancementsStatus: (appPath) =>
