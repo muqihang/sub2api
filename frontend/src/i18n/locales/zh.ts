@@ -2838,6 +2838,65 @@ export default {
           legacy_unknown: '旧账号未知'
         }
       },
+      formalPoolDiagnostics: {
+        title: 'Formal Pool 诊断/修复',
+        menuAction: 'Formal Pool 诊断/修复',
+        account: '账号',
+        evidence: '证据',
+        checks: '检查项',
+        noChecks: '暂无检查项',
+        recommendedActions: '建议操作',
+        noActions: '暂无建议操作',
+        manualActions: '手动操作',
+        sessionKeyLabel: '新的 sk-ant-sid 登录态',
+        sessionKeyPlaceholder: '粘贴 sk-ant-sid...',
+        proxyIdLabel: '新代理 ID',
+        proxyIdPlaceholder: '输入代理 ID',
+        runRuntimeAfterRepair: '修复后运行运行时注册',
+        runHealthcheckAfterRepair: '修复后运行健康检查',
+        operationSucceeded: 'Formal Pool 操作已完成',
+        startWarmingAllowed: '证据完整，可以进入预热',
+        startWarmingBlocked: '仅当建议操作包含开始预热或健康检查证据完整时可用',
+        noRawTokenWarning: 'ST token 不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
+        setupTokenSafetyCopy: '这里输入的是 sk-ant-sid 登录态。系统只用它换取新的 inference token；不会回显，也不会保存原始 sk-ant-sid。',
+        replacementGuidance: '如果 token 修复失败，再更换账号；更换账号时必须同时更换出口代理，并重新走完整上号流程。',
+        proxySwapSafetyCopy: '更换代理后仍必须重新完成运行时注册和健康检查证据，不能绕过预热门禁或直接进入生产。',
+        actions: {
+          refresh: '刷新诊断',
+          repairToken: '修复 Token',
+          runtimeRegister: '运行时注册',
+          healthcheck: '健康检查',
+          startWarming: '开始预热',
+          proxySwap: '更换代理并复检'
+        },
+        failureOrigins: {
+          local_gate: '本地门禁',
+          cc_gateway_control_plane: 'CC Gateway 控制面',
+          upstream: '上游',
+          proxy: '代理',
+          token_exchange: 'Token 交换',
+          unknown: '未知'
+        },
+        evidenceLabels: {
+          ccGatewaySeen: 'CC Gateway 已看到',
+          rawCapturePresent: '原始捕获存在',
+          rawCaptureRef: '原始捕获引用',
+          fallbackDetected: '检测到 fallback',
+          proxyMismatch: '代理不匹配',
+          riskTextDetected: '风险文本',
+          statusBucket: '状态码桶',
+          riskEventRef: '风险事件引用',
+          evidencePersisted: '健康检查证据已持久化'
+        },
+        recommendedActionKeys: {
+          repair_token: '优先修复 Token',
+          replace_account_and_proxy: '更换账号和出口代理',
+          swap_proxy: '更换代理并重新验证',
+          runtime_register: '运行运行时注册',
+          healthcheck: '运行定向健康检查',
+          start_warming: '开始预热'
+        }
+      },
       allPrivacyModes: '全部Privacy状态',
       privacyUnset: '未设置',
       privacyTrainingOff: '已关闭训练数据共享',

@@ -100,6 +100,8 @@ apiClient.interceptors.response.use(
           message: apiResponse.message || 'Unknown error',
           reason: resp.reason,
           metadata: resp.metadata,
+          account: resp.account,
+          diagnostics: resp.diagnostics,
         })
       }
     }
@@ -270,11 +272,14 @@ apiClient.interceptors.response.use(
       // Return structured error
       return Promise.reject({
         status,
-        code: apiData.code,
+        code: apiData.code ?? apiData.error,
         reason: apiData.reason,
         error: apiData.error,
         message: apiData.message || apiData.detail || error.message,
         metadata: apiData.metadata,
+        // Preserve safe partial-operation payloads for Formal Pool recovery flows.
+        account: apiData.account,
+        diagnostics: apiData.diagnostics,
       })
     }
 

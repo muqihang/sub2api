@@ -32,6 +32,7 @@ import adminPaymentAPI from './payment'
 import affiliatesAPI from './affiliates'
 import augmentGatewayAPI from './augmentGateway'
 import claudeOnboardingAPI from './claudeOnboarding'
+import formalPoolOperationsAPI from './formalPoolOperations'
 
 /**
  * Unified admin API object for convenient access
@@ -65,7 +66,8 @@ export const adminAPI = {
   payment: adminPaymentAPI,
   affiliates: affiliatesAPI,
   augmentGateway: augmentGatewayAPI,
-  claudeOnboarding: claudeOnboardingAPI
+  claudeOnboarding: claudeOnboardingAPI,
+  formalPoolOperations: formalPoolOperationsAPI
 }
 
 export {
@@ -97,7 +99,8 @@ export {
   adminPaymentAPI,
   affiliatesAPI,
   augmentGatewayAPI,
-  claudeOnboardingAPI
+  claudeOnboardingAPI,
+  formalPoolOperationsAPI
 }
 
 export default adminAPI

@@ -235,12 +235,27 @@
               <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
                 <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
               </button>
-              <span v-if="row.is_formal_pool && row.schedulable && row.effective_schedulable === false" class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" :title="t('admin.accounts.formalPool.effectiveBlocked')">Gate</span>
+              <button
+                v-if="row.is_formal_pool && row.schedulable && row.effective_schedulable === false"
+                type="button"
+                class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 transition hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
+                :title="t('admin.accounts.formalPool.effectiveBlocked')"
+                @click.stop="openFormalPoolDiagnostics(row)"
+              >Gate</button>
             </div>
           </template>
           <template #cell-onboarding_stage="{ row }">
             <div v-if="row.onboarding_stage" class="flex max-w-[180px] flex-col gap-1">
-              <span :class="['inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[10px] font-medium', getFormalPoolStageClass(row)]">
+              <button
+                v-if="row.is_formal_pool"
+                type="button"
+                :class="['inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[10px] font-medium transition hover:opacity-80', getFormalPoolStageClass(row)]"
+                :title="getFormalPoolStageTitle(row)"
+                @click.stop="openFormalPoolDiagnostics(row)"
+              >
+                {{ getFormalPoolStageLabel(row) }}
+              </button>
+              <span v-else :class="['inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[10px] font-medium', getFormalPoolStageClass(row)]">
                 {{ getFormalPoolStageLabel(row) }}
               </span>
               <span v-if="row.healthcheck_status || row.pool_weight_mode || row.quarantine_reason" class="truncate text-[10px] text-gray-500 dark:text-gray-400" :title="getFormalPoolStageTitle(row)">
@@ -333,7 +348,8 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @formal-pool-diagnostics="openFormalPoolDiagnostics" />
+    <FormalPoolDiagnosticsModal :show="showFormalPoolDiagnostics" :account="formalPoolDiagnosticsAccount" @close="closeFormalPoolDiagnostics" @updated="handleFormalPoolDiagnosticsUpdated" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -392,6 +408,7 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
+import FormalPoolDiagnosticsModal from '@/components/account/FormalPoolDiagnosticsModal.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
@@ -463,12 +480,14 @@ const showTest = ref(false)
 const showStats = ref(false)
 const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
+const showFormalPoolDiagnostics = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
 const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
 const statsAcc = ref<Account | null>(null)
+const formalPoolDiagnosticsAccount = ref<Account | null>(null)
 const showSchedulePanel = ref(false)
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
@@ -839,7 +858,8 @@ const isAnyModalOpen = computed(() => {
     showTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
-    showErrorPassthrough.value
+    showErrorPassthrough.value ||
+    showFormalPoolDiagnostics.value
   )
 })
 
@@ -873,6 +893,7 @@ const syncAccountRefs = (nextAccount: Account) => {
   if (tempUnschedAcc.value?.id === nextAccount.id) tempUnschedAcc.value = nextAccount
   if (deletingAcc.value?.id === nextAccount.id) deletingAcc.value = nextAccount
   if (menu.acc?.id === nextAccount.id) menu.acc = nextAccount
+  if (formalPoolDiagnosticsAccount.value?.id === nextAccount.id) formalPoolDiagnosticsAccount.value = nextAccount
 }
 
 const mergeAccountsIncrementally = (nextRows: Account[]) => {
@@ -1468,6 +1489,20 @@ const patchAccountInList = (updatedAccount: Account) => {
 }
 const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
+  enterAutoRefreshSilentWindow()
+}
+const openFormalPoolDiagnostics = (account: Account) => {
+  if (!account.is_formal_pool) return
+  formalPoolDiagnosticsAccount.value = account
+  showFormalPoolDiagnostics.value = true
+}
+const closeFormalPoolDiagnostics = () => {
+  showFormalPoolDiagnostics.value = false
+  formalPoolDiagnosticsAccount.value = null
+}
+const handleFormalPoolDiagnosticsUpdated = (updatedAccount: Account) => {
+  patchAccountInList(updatedAccount)
+  formalPoolDiagnosticsAccount.value = updatedAccount
   enterAutoRefreshSilentWindow()
 }
 const formatExportTimestamp = () => {

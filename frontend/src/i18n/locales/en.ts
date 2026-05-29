@@ -2718,7 +2718,6 @@ export default {
       apiKey: 'API Key',
       // Schedulable toggle
       schedulable: 'Schedulable',
-        onboardingStage: 'Onboarding',
       schedulableHint: 'Enable to include this account in API request scheduling',
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
@@ -2775,6 +2774,7 @@ export default {
         weight: 'Weight',
         status: 'Status',
         schedulable: 'Schedulable',
+        onboardingStage: 'Onboarding',
         todayStats: 'Today Stats',
         groups: 'Groups',
         usageWindows: 'Usage Windows',
@@ -2798,6 +2798,65 @@ export default {
           production: 'Production',
           quarantined: 'Quarantined',
           legacy_unknown: 'Legacy unknown'
+        }
+      },
+      formalPoolDiagnostics: {
+        title: 'Formal Pool diagnostics',
+        menuAction: 'Formal Pool diagnostics',
+        account: 'Account',
+        evidence: 'Evidence',
+        checks: 'Checks',
+        noChecks: 'No checks yet',
+        recommendedActions: 'Recommended actions',
+        noActions: 'No recommended actions',
+        manualActions: 'Manual actions',
+        sessionKeyLabel: 'New sk-ant-sid session',
+        sessionKeyPlaceholder: 'Paste sk-ant-sid...',
+        proxyIdLabel: 'New proxy ID',
+        proxyIdPlaceholder: 'Enter proxy ID',
+        runRuntimeAfterRepair: 'Run runtime registration after repair',
+        runHealthcheckAfterRepair: 'Run healthcheck after repair',
+        operationSucceeded: 'Formal Pool operation completed',
+        startWarmingAllowed: 'Evidence is complete; warming may start',
+        startWarmingBlocked: 'Enabled only when recommended or when healthcheck evidence is complete',
+        noRawTokenWarning: 'ST tokens are not echoed in the UI or saved raw; errors are scrubbed again before rendering.',
+        setupTokenSafetyCopy: 'The sk-ant-sid session is used only to exchange for a new inference token; it is never echoed or saved raw.',
+        replacementGuidance: 'If token repair fails, replace the account; replacement must also change the egress proxy and repeat full onboarding.',
+        proxySwapSafetyCopy: 'After proxy swap, full runtime registration and healthcheck evidence are still required before warming. Do not bypass the warming gate or jump to production.',
+        actions: {
+          refresh: 'Refresh diagnostics',
+          repairToken: 'Repair Token',
+          runtimeRegister: 'Runtime register',
+          healthcheck: 'Healthcheck',
+          startWarming: 'Start warming',
+          proxySwap: 'Swap proxy and revalidate'
+        },
+        failureOrigins: {
+          local_gate: 'Local gate',
+          cc_gateway_control_plane: 'CC Gateway control plane',
+          upstream: 'Upstream',
+          proxy: 'Proxy',
+          token_exchange: 'Token exchange',
+          unknown: 'Unknown'
+        },
+        evidenceLabels: {
+          ccGatewaySeen: 'CC Gateway seen',
+          rawCapturePresent: 'Raw capture present',
+          rawCaptureRef: 'Raw capture ref',
+          fallbackDetected: 'Fallback detected',
+          proxyMismatch: 'Proxy mismatch',
+          riskTextDetected: 'Risk text detected',
+          statusBucket: 'Status bucket',
+          riskEventRef: 'Risk event ref',
+          evidencePersisted: 'Healthcheck evidence persisted'
+        },
+        recommendedActionKeys: {
+          repair_token: 'Repair token first',
+          replace_account_and_proxy: 'Replace account and egress proxy',
+          swap_proxy: 'Swap proxy and revalidate',
+          runtime_register: 'Run runtime registration',
+          healthcheck: 'Run directed healthcheck',
+          start_warming: 'Start warming'
         }
       },
       allPrivacyModes: 'All Privacy States',

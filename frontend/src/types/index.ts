@@ -688,6 +688,55 @@ export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bed
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
+export type FormalPoolStage =
+  | 'imported'
+  | 'refreshed'
+  | 'runtime_registered'
+  | 'healthcheck_passed'
+  | 'warming'
+  | 'production'
+  | 'quarantined'
+  | 'legacy_unknown'
+
+export type FormalPoolFailureOrigin =
+  | 'local_gate'
+  | 'cc_gateway_control_plane'
+  | 'upstream'
+  | 'proxy'
+  | 'token_exchange'
+  | 'unknown'
+
+export interface FormalPoolRecommendedAction {
+  key: string
+  label: string
+  severity?: 'info' | 'warning' | 'danger' | string
+}
+
+export interface FormalPoolOperationsDiagnostics {
+  account_id: number
+  account_ref?: string
+  is_formal_pool: boolean
+  onboarding_stage?: FormalPoolStage | string
+  schedulable: boolean
+  effective_schedulable: boolean
+  failure_origin: FormalPoolFailureOrigin
+  failure_code?: string
+  failure_source?: string
+  healthcheck_status?: string
+  status_code_bucket?: string
+  cc_gateway_seen?: boolean
+  raw_capture_present?: boolean
+  raw_capture_ref?: string
+  fallback_detected?: boolean
+  proxy_mismatch?: boolean
+  risk_text_detected?: boolean
+  healthcheck_evidence_persisted?: boolean
+  quarantine_reason?: string
+  risk_event_ref?: string
+  checks: Array<{ name: string; status: 'pass' | 'warn' | 'fail'; message?: string }>
+  recommended_actions?: FormalPoolRecommendedAction[]
+}
+
 // Claude Model type (returned by /v1/models and account models API)
 export interface ClaudeModel {
   id: string
@@ -839,12 +888,26 @@ export interface Account {
   schedulable: boolean
   effective_schedulable?: boolean
   is_formal_pool?: boolean
-  onboarding_stage?: 'imported' | 'refreshed' | 'runtime_registered' | 'healthcheck_passed' | 'warming' | 'production' | 'quarantined' | 'legacy_unknown' | string
+  onboarding_stage?: FormalPoolStage | string
   pool_profile_requested?: 'normal' | 'aggressive' | string | null
   pool_profile_effective?: 'normal' | 'aggressive' | string | null
   pool_weight_mode?: 'low' | 'normal' | string | null
   healthcheck_status?: string | null
   healthcheck_last_status_code_bucket?: string | null
+  healthcheck_last_raw_ref?: string | null
+  formal_pool_last_failure_origin?: FormalPoolFailureOrigin | string | null
+  formal_pool_last_failure_code?: string | null
+  formal_pool_last_failure_source?: string | null
+  formal_pool_last_cc_gateway_error_code?: string | null
+  formal_pool_last_healthcheck_at?: string | null
+  formal_pool_last_healthcheck_result?: string | null
+  healthcheck_cc_gateway_seen?: boolean | string | null
+  healthcheck_fallback_detected?: boolean | string | null
+  healthcheck_proxy_mismatch?: boolean | string | null
+  healthcheck_risk_text_detected?: boolean | string | null
+  formal_pool_credential_generation?: number | null
+  formal_pool_repaired_at?: string | null
+  formal_pool_repaired_by?: string | null
   cc_gateway_runtime_registered?: boolean | string | null
   quarantine_reason?: string | null
   risk_event_ref?: string | null

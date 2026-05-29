@@ -143,6 +143,48 @@ describe('API Client', () => {
         })
       )
     })
+
+    it('preserves safe formal-pool account and diagnostics fields from non-2xx responses', async () => {
+      const diagnostics = {
+        account_id: 5,
+        is_formal_pool: true,
+        schedulable: false,
+        effective_schedulable: false,
+        failure_origin: 'token_exchange',
+        checks: [],
+        recommended_actions: [
+          { key: 'replace_account_and_proxy', label: 'Replace account and proxy', severity: 'danger' },
+        ],
+      }
+      const adapter = vi.fn().mockRejectedValue({
+        response: {
+          status: 400,
+          data: {
+            error: 'SETUP_TOKEN_REPLACE_FAILED',
+            message: 'setup-token credential exchange failed',
+            account: { id: 5, status: 'error', schedulable: false, onboarding_stage: 'quarantined' },
+            diagnostics,
+          },
+        },
+        config: { url: '/admin/accounts/5/setup-token/replace', headers: {} },
+        code: 'ERR_BAD_REQUEST',
+        message: 'Request failed with status code 400',
+      })
+      apiClient.defaults.adapter = adapter
+
+      await expect(apiClient.post('/admin/accounts/5/setup-token/replace', {
+        session_key: 'sk-ant-sid-test-secret',
+      })).rejects.toEqual(
+        expect.objectContaining({
+          status: 400,
+          code: 'SETUP_TOKEN_REPLACE_FAILED',
+          diagnostics: expect.objectContaining({
+            recommended_actions: [expect.objectContaining({ key: 'replace_account_and_proxy' })],
+          }),
+          account: expect.objectContaining({ id: 5 }),
+        })
+      )
+    })
   })
 
   // --- 401 Token 刷新 ---

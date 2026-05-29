@@ -1,0 +1,473 @@
+<template>
+  <BaseDialog
+    :show="show"
+    :title="t('admin.accounts.formalPoolDiagnostics.title')"
+    width="extra-wide"
+    @close="handleClose"
+  >
+    <div v-if="account" class="space-y-5" data-test="formal-pool-diagnostics-modal">
+      <div class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-700">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.formalPoolDiagnostics.account') }} #{{ account.id }}
+            </p>
+            <h4 class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">
+              {{ account.name }}
+            </h4>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <span :class="['inline-flex rounded px-2 py-1 text-xs font-medium', stageBadgeClass]">
+              {{ stageLabel }}
+            </span>
+            <span :class="['inline-flex rounded px-2 py-1 text-xs font-medium', failureBadgeClass]">
+              {{ failureOriginLabel }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200">
+        {{ t('admin.accounts.formalPoolDiagnostics.noRawTokenWarning') }}
+      </div>
+
+      <div v-if="errorMessage" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300" data-test="operation-error">
+        {{ errorMessage }}
+      </div>
+
+      <div v-if="loading" class="flex items-center justify-center py-8 text-sm text-gray-500 dark:text-gray-400">
+        {{ t('common.loading') }}
+      </div>
+
+      <template v-else>
+        <section class="space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.accounts.formalPoolDiagnostics.evidence') }}
+            </h5>
+            <button type="button" class="btn btn-secondary px-3 py-1.5 text-xs" :disabled="isBusy" @click="refreshDiagnostics">
+              {{ t('admin.accounts.formalPoolDiagnostics.actions.refresh') }}
+            </button>
+          </div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div v-for="item in evidenceItems" :key="item.key" class="rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ item.label }}</p>
+              <p class="mt-1 break-words text-sm font-medium text-gray-900 dark:text-gray-100">
+                {{ item.value }}
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="space-y-3">
+          <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
+            {{ t('admin.accounts.formalPoolDiagnostics.checks') }}
+          </h5>
+          <div v-if="currentDiagnostics?.checks?.length" class="space-y-2">
+            <div v-for="check in currentDiagnostics.checks" :key="`${check.name}-${check.message || ''}`" class="flex gap-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600">
+              <span :class="['mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full', checkStatusClass(check.status)]"></span>
+              <div>
+                <p class="font-medium text-gray-900 dark:text-gray-100">{{ check.name }}</p>
+                <p v-if="check.message" class="mt-1 text-gray-600 dark:text-gray-300">{{ check.message }}</p>
+              </div>
+            </div>
+          </div>
+          <p v-else class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.accounts.formalPoolDiagnostics.noChecks') }}</p>
+        </section>
+
+        <section class="space-y-3">
+          <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
+            {{ t('admin.accounts.formalPoolDiagnostics.recommendedActions') }}
+          </h5>
+          <div v-if="recommendedActions.length" class="flex flex-wrap gap-2">
+            <span v-for="action in recommendedActions" :key="action.key" :class="['rounded px-2 py-1 text-xs font-medium', actionClass(action.severity)]">
+              {{ actionLabel(action) }}
+            </span>
+          </div>
+          <p v-else class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.accounts.formalPoolDiagnostics.noActions') }}</p>
+          <p v-if="shouldShowReplacementGuidance" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+            {{ t('admin.accounts.formalPoolDiagnostics.replacementGuidance') }}
+          </p>
+        </section>
+
+        <section class="space-y-3">
+          <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
+            {{ t('admin.accounts.formalPoolDiagnostics.manualActions') }}
+          </h5>
+
+          <div v-if="canRepairSetupToken" class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+            <div class="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
+              <label class="block">
+                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.accounts.formalPoolDiagnostics.sessionKeyLabel') }}
+                </span>
+                <input
+                  v-model="sessionKey"
+                  data-test="session-key-input"
+                  type="password"
+                  autocomplete="off"
+                  class="input mt-1 w-full"
+                  :placeholder="t('admin.accounts.formalPoolDiagnostics.sessionKeyPlaceholder')"
+                />
+              </label>
+              <button
+                type="button"
+                data-test="repair-token-button"
+                class="btn btn-primary"
+                :disabled="isBusy || !sessionKey.trim()"
+                @click="handleReplaceSetupToken"
+              >
+                {{ busyAction === 'replace-token' ? t('common.loading') : t('admin.accounts.formalPoolDiagnostics.actions.repairToken') }}
+              </button>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-4 text-sm text-gray-600 dark:text-gray-300">
+              <label class="inline-flex items-center gap-2">
+                <input v-model="runRuntimeRegisterAfterTokenRepair" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+                {{ t('admin.accounts.formalPoolDiagnostics.runRuntimeAfterRepair') }}
+              </label>
+              <label class="inline-flex items-center gap-2">
+                <input v-model="runHealthcheckAfterTokenRepair" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+                {{ t('admin.accounts.formalPoolDiagnostics.runHealthcheckAfterRepair') }}
+              </label>
+            </div>
+            <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.formalPoolDiagnostics.setupTokenSafetyCopy') }}
+            </p>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="runAccountAction('runtime-register')">
+              {{ t('admin.accounts.formalPoolDiagnostics.actions.runtimeRegister') }}
+            </button>
+            <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="runAccountAction('healthcheck')">
+              {{ t('admin.accounts.formalPoolDiagnostics.actions.healthcheck') }}
+            </button>
+            <button
+              type="button"
+              data-test="start-warming-button"
+              class="btn btn-secondary"
+              :disabled="isBusy || !canStartWarming"
+              :title="startWarmingTitle"
+              @click="runAccountAction('start-warming')"
+            >
+              {{ t('admin.accounts.formalPoolDiagnostics.actions.startWarming') }}
+            </button>
+            <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="refreshDiagnostics">
+              {{ t('admin.accounts.formalPoolDiagnostics.actions.refresh') }}
+            </button>
+          </div>
+
+          <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+            <div class="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
+              <label class="block">
+                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.accounts.formalPoolDiagnostics.proxyIdLabel') }}
+                </span>
+                <input
+                  v-model="swapProxyId"
+                  type="number"
+                  min="1"
+                  class="input mt-1 w-full"
+                  :placeholder="t('admin.accounts.formalPoolDiagnostics.proxyIdPlaceholder')"
+                />
+              </label>
+              <button type="button" class="btn btn-secondary" :disabled="isBusy || !parsedSwapProxyId" @click="handleSwapProxy">
+                {{ t('admin.accounts.formalPoolDiagnostics.actions.proxySwap') }}
+              </button>
+            </div>
+            <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.formalPoolDiagnostics.proxySwapSafetyCopy') }}
+            </p>
+          </div>
+        </section>
+      </template>
+    </div>
+  </BaseDialog>
+</template>
+
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useAppStore } from '@/stores/app'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import type { Account, FormalPoolOperationsDiagnostics, FormalPoolRecommendedAction } from '@/types'
+import {
+  FormalPoolOperationError,
+  getDiagnostics,
+  healthcheck,
+  replaceSetupToken,
+  runtimeRegister,
+  startWarming,
+  swapProxy,
+  type FormalPoolOperationResult,
+} from '@/api/admin/formalPoolOperations'
+
+const props = defineProps<{
+  show: boolean
+  account: Account | null
+}>()
+
+const emit = defineEmits<{
+  close: []
+  updated: [account: Account]
+}>()
+
+const { t } = useI18n()
+const appStore = useAppStore()
+
+const diagnostics = ref<FormalPoolOperationsDiagnostics | null>(null)
+const latestAccount = ref<Account | null>(null)
+const loading = ref(false)
+const busyAction = ref<string | null>(null)
+const errorMessage = ref('')
+const sessionKey = ref('')
+const runRuntimeRegisterAfterTokenRepair = ref(true)
+const runHealthcheckAfterTokenRepair = ref(true)
+const swapProxyId = ref('')
+
+function scrubFormalPoolSecretText(input: unknown): string {
+  const secretKeyPattern = String.raw`(?:session[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|authorization|password|passwd|proxy[-_\s]?password|proxy[-_\s]?credentials?|api[-_\s]?key|apikey|cookie|raw[-_\s]?body|raw[-_\s]?prompt|raw[-_\s]?telemetry|raw[-_\s]?cch|raw(?:[-_\s]?cookie)?)`
+  const proxyUrlSecretKeyPattern = String.raw`(?:proxy[-_\s]?url|proxy)`
+  const quotedProxyUrlCredentialsPattern = new RegExp(String.raw`(["']?)\b(${proxyUrlSecretKeyPattern})\b\1(\s*[:=]\s*)(["'])[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#\s"'\`,;)}@]+@(?:(?!\4).)*\4`, 'gi')
+  const proxyUrlCredentialsPattern = new RegExp(String.raw`(["']?)\b(${proxyUrlSecretKeyPattern})\b\1(\s*[:=]\s*)[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#\s"'\`,;)}@]+@[^\s"'\`,;)}]+`, 'gi')
+  const quotedValuePattern = new RegExp(String.raw`(["']?)\b(${secretKeyPattern})\b\1(\s*[:=]\s*)(["'])(?:(?!\4).)*\4`, 'gi')
+  const tokenValuePattern = new RegExp(String.raw`(["']?)\b(${secretKeyPattern})\b\1(\s*[:=]\s*)(?:Bearer\s+)?[^\s"'\`,;)}]+`, 'gi')
+
+  return String(input ?? '')
+    .replace(/sk-ant-sid[^\s"'`,;)]*/gi, '[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(quotedProxyUrlCredentialsPattern, '$1$2$1$3$4[redacted]$4')
+    .replace(proxyUrlCredentialsPattern, '$1$2$1$3[redacted]')
+    .replace(quotedValuePattern, '$1$2$1$3$4[redacted]$4')
+    .replace(tokenValuePattern, '$1$2$1$3[redacted]')
+}
+
+const activeAccount = computed(() => latestAccount.value ?? props.account)
+const currentDiagnostics = computed(() => diagnostics.value)
+const isBusy = computed(() => Boolean(busyAction.value) || loading.value)
+
+const recommendedActions = computed<FormalPoolRecommendedAction[]>(() => currentDiagnostics.value?.recommended_actions ?? [])
+const recommendedKeys = computed(() => new Set(recommendedActions.value.map(action => action.key)))
+
+const canRepairSetupToken = computed(() => {
+  const account = activeAccount.value
+  return account?.platform === 'anthropic' && account.type === 'setup-token' && account.is_formal_pool === true
+})
+
+const evidenceComplete = computed(() => {
+  const d = currentDiagnostics.value
+  return Boolean(
+    d?.onboarding_stage === 'healthcheck_passed' &&
+    d.healthcheck_evidence_persisted &&
+    d.status_code_bucket === 'status_2xx' &&
+    d.cc_gateway_seen &&
+    d.raw_capture_present &&
+    !d.fallback_detected &&
+    !d.proxy_mismatch &&
+    !d.risk_text_detected
+  )
+})
+const canStartWarming = computed(() => recommendedKeys.value.has('start_warming') || evidenceComplete.value)
+const startWarmingTitle = computed(() => canStartWarming.value
+  ? t('admin.accounts.formalPoolDiagnostics.startWarmingAllowed')
+  : t('admin.accounts.formalPoolDiagnostics.startWarmingBlocked'))
+
+const shouldShowReplacementGuidance = computed(() =>
+  recommendedKeys.value.has('replace_account_and_proxy') || currentDiagnostics.value?.failure_origin === 'token_exchange'
+)
+
+const stageLabel = computed(() => {
+  const stage = currentDiagnostics.value?.onboarding_stage || activeAccount.value?.onboarding_stage || 'legacy_unknown'
+  return t(`admin.accounts.formalPool.stage.${stage}`, String(stage))
+})
+const failureOriginLabel = computed(() => {
+  const origin = currentDiagnostics.value?.failure_origin || 'unknown'
+  return t(`admin.accounts.formalPoolDiagnostics.failureOrigins.${origin}`, origin)
+})
+
+const stageBadgeClass = computed(() => {
+  switch (currentDiagnostics.value?.onboarding_stage || activeAccount.value?.onboarding_stage) {
+    case 'production': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+    case 'warming': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+    case 'quarantined': return 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+    case 'healthcheck_passed': return 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300'
+    case 'runtime_registered': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
+    case 'refreshed': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
+    default: return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  }
+})
+const failureBadgeClass = computed(() => {
+  switch (currentDiagnostics.value?.failure_origin) {
+    case 'upstream':
+    case 'token_exchange':
+      return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+    case 'proxy': return 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
+    case 'cc_gateway_control_plane': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+    case 'local_gate': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+    default: return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  }
+})
+
+const formatBoolean = (value: unknown) => {
+  if (value === true || value === 'true') return t('common.yes')
+  if (value === false || value === 'false') return t('common.no')
+  return '-'
+}
+const valueOrDash = (value: unknown) => {
+  const text = String(value ?? '').trim()
+  return text || '-'
+}
+
+const evidenceItems = computed(() => {
+  const d = currentDiagnostics.value
+  return [
+    { key: 'cc_gateway_seen', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.ccGatewaySeen'), value: formatBoolean(d?.cc_gateway_seen) },
+    { key: 'raw_capture_present', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rawCapturePresent'), value: formatBoolean(d?.raw_capture_present) },
+    { key: 'raw_capture_ref', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rawCaptureRef'), value: valueOrDash(d?.raw_capture_ref) },
+    { key: 'fallback_detected', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.fallbackDetected'), value: formatBoolean(d?.fallback_detected) },
+    { key: 'proxy_mismatch', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.proxyMismatch'), value: formatBoolean(d?.proxy_mismatch) },
+    { key: 'risk_text_detected', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.riskTextDetected'), value: formatBoolean(d?.risk_text_detected) },
+    { key: 'status_code_bucket', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.statusBucket'), value: valueOrDash(d?.status_code_bucket) },
+    { key: 'risk_event_ref', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.riskEventRef'), value: valueOrDash(d?.risk_event_ref) },
+    { key: 'healthcheck_evidence_persisted', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.evidencePersisted'), value: formatBoolean(d?.healthcheck_evidence_persisted) },
+  ]
+})
+
+const parsedSwapProxyId = computed(() => {
+  const id = Number(swapProxyId.value)
+  return Number.isInteger(id) && id > 0 ? id : 0
+})
+
+const checkStatusClass = (status: string) => {
+  switch (status) {
+    case 'pass': return 'bg-emerald-500'
+    case 'warn': return 'bg-amber-500'
+    case 'fail': return 'bg-red-500'
+    default: return 'bg-gray-400'
+  }
+}
+const actionClass = (severity?: string) => {
+  switch (severity) {
+    case 'danger': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+    case 'warning': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+    default: return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+  }
+}
+const actionLabel = (action: FormalPoolRecommendedAction) => {
+  const translated = t(`admin.accounts.formalPoolDiagnostics.recommendedActionKeys.${action.key}`, '')
+  return translated || action.label || action.key
+}
+
+const setError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : (error as { message?: string })?.message
+  errorMessage.value = scrubFormalPoolSecretText(message || t('common.error'))
+}
+
+const applyOperationResult = async (result: FormalPoolOperationResult) => {
+  latestAccount.value = result.account
+  emit('updated', result.account)
+  diagnostics.value = result.diagnostics ?? await getDiagnostics(result.account.id)
+  sessionKey.value = ''
+}
+
+const handleOperationError = (error: unknown) => {
+  if (error instanceof FormalPoolOperationError) {
+    if (error.account && activeAccount.value) latestAccount.value = { ...activeAccount.value, ...error.account }
+    if (error.diagnostics) diagnostics.value = error.diagnostics
+  }
+  setError(error)
+}
+
+const refreshDiagnostics = async () => {
+  const account = activeAccount.value
+  if (!account) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    diagnostics.value = await getDiagnostics(account.id)
+  } catch (error) {
+    setError(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+const runWithBusy = async (name: string, operation: () => Promise<FormalPoolOperationResult>) => {
+  if (isBusy.value) return
+  busyAction.value = name
+  errorMessage.value = ''
+  try {
+    const result = await operation()
+    await applyOperationResult(result)
+    appStore.showSuccess(t('admin.accounts.formalPoolDiagnostics.operationSucceeded'))
+  } catch (error) {
+    handleOperationError(error)
+  } finally {
+    busyAction.value = null
+  }
+}
+
+const handleReplaceSetupToken = async () => {
+  const account = activeAccount.value
+  const rawSessionKey = sessionKey.value.trim()
+  if (!account || !rawSessionKey || !canRepairSetupToken.value) return
+  try {
+    await runWithBusy('replace-token', () => replaceSetupToken(account.id, {
+      session_key: rawSessionKey,
+      run_runtime_register: runRuntimeRegisterAfterTokenRepair.value,
+      run_healthcheck: runHealthcheckAfterTokenRepair.value,
+    }))
+  } finally {
+    sessionKey.value = ''
+  }
+}
+
+const runAccountAction = async (action: 'runtime-register' | 'healthcheck' | 'start-warming') => {
+  const account = activeAccount.value
+  if (!account) return
+  if (action === 'runtime-register') {
+    await runWithBusy(action, () => runtimeRegister(account.id))
+  } else if (action === 'healthcheck') {
+    await runWithBusy(action, () => healthcheck(account.id))
+  } else if (canStartWarming.value) {
+    await runWithBusy(action, () => startWarming(account.id))
+  }
+}
+
+const handleSwapProxy = async () => {
+  const account = activeAccount.value
+  const proxyId = parsedSwapProxyId.value
+  if (!account || !proxyId) return
+  await runWithBusy('swap-proxy', () => swapProxy(account.id, {
+    proxy_id: proxyId,
+    run_proxy_test: true,
+    run_runtime_register: true,
+    run_healthcheck: true,
+  }))
+}
+
+const handleClose = () => {
+  emit('close')
+}
+
+watch(
+  () => [props.show, props.account?.id] as const,
+  ([visible]) => {
+    if (visible && props.account) {
+      latestAccount.value = props.account
+      diagnostics.value = null
+      errorMessage.value = ''
+      sessionKey.value = ''
+      swapProxyId.value = ''
+      refreshDiagnostics()
+      return
+    }
+    diagnostics.value = null
+    latestAccount.value = null
+    errorMessage.value = ''
+    sessionKey.value = ''
+    swapProxyId.value = ''
+  },
+  { immediate: true }
+)
+</script>
