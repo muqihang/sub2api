@@ -74,6 +74,7 @@ shared_pool:
       - claude-opus-4-7-thinking
       - claude-opus-4-6
       - claude-opus-4-6-thinking
+      - claude-haiku-4-5-20251001
   candidate_model_allowlist:
     - claude-sonnet-4-8
     - claude-opus-4-8
