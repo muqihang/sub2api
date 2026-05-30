@@ -14,6 +14,7 @@ func TestProvideAdminHandlersWiresEntityHandler(t *testing.T) {
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, entityHandler, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil,
 	)
 
 	require.Same(t, entityHandler, handlers.Entity)
