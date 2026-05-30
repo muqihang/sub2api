@@ -2818,7 +2818,8 @@ export default {
         runHealthcheckAfterRepair: 'Run healthcheck after repair',
         operationSucceeded: 'Formal Pool operation completed',
         startWarmingAllowed: 'Evidence is complete; warming may start',
-        startWarmingBlocked: 'Enabled only when recommended or when healthcheck evidence is complete',
+        startWarmingBlocked: 'Enabled only when runtime registration and full healthcheck evidence are complete',
+        startWarmingBlockedRuntime: 'Disabled until CC Gateway runtime registration evidence is present',
         noRawTokenWarning: 'ST tokens are not echoed in the UI or saved raw; errors are scrubbed again before rendering.',
         setupTokenSafetyCopy: 'The sk-ant-sid session is used only to exchange for a new inference token; it is never echoed or saved raw.',
         replacementGuidance: 'If token repair fails, replace the account; replacement must also change the egress proxy and repeat full onboarding.',
@@ -2841,6 +2842,7 @@ export default {
         },
         evidenceLabels: {
           ccGatewaySeen: 'CC Gateway seen',
+          runtimeRegistered: 'Runtime registered',
           rawCapturePresent: 'Raw capture present',
           rawCaptureRef: 'Raw capture ref',
           fallbackDetected: 'Fallback detected',

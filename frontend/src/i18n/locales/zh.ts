@@ -2856,7 +2856,8 @@ export default {
         runHealthcheckAfterRepair: '修复后运行健康检查',
         operationSucceeded: 'Formal Pool 操作已完成',
         startWarmingAllowed: '证据完整，可以进入预热',
-        startWarmingBlocked: '仅当建议操作包含开始预热或健康检查证据完整时可用',
+        startWarmingBlocked: '仅当运行时注册和完整健康检查证据均满足时可用',
+        startWarmingBlockedRuntime: '缺少 CC Gateway 运行时注册证据，暂不能开始预热',
         noRawTokenWarning: 'ST token 不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
         setupTokenSafetyCopy: '这里输入的是 sk-ant-sid 登录态。系统只用它换取新的 inference token；不会回显，也不会保存原始 sk-ant-sid。',
         replacementGuidance: '如果 token 修复失败，再更换账号；更换账号时必须同时更换出口代理，并重新走完整上号流程。',
@@ -2879,6 +2880,7 @@ export default {
         },
         evidenceLabels: {
           ccGatewaySeen: 'CC Gateway 已看到',
+          runtimeRegistered: '运行时已注册',
           rawCapturePresent: '原始捕获存在',
           rawCaptureRef: '原始捕获引用',
           fallbackDetected: '检测到 fallback',

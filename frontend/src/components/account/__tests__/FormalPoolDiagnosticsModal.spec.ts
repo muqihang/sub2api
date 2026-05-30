@@ -44,6 +44,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.failureOrigins.upstream': 'Upstream',
     'admin.accounts.formalPoolDiagnostics.actions.startWarming': 'Start warming',
     'admin.accounts.formalPoolDiagnostics.actions.repairToken': 'Repair Token',
+    'admin.accounts.formalPoolDiagnostics.startWarmingBlockedRuntime': 'Blocked until runtime registered',
   }
   return {
     ...actual,
@@ -154,7 +155,7 @@ describe('FormalPoolDiagnosticsModal', () => {
     expect(wrapper.text()).toContain('[redacted]')
   })
 
-  it('enables start warming only when recommended or evidence is complete', async () => {
+  it('enables start warming only when recommended and full evidence is complete', async () => {
     getDiagnostics.mockResolvedValueOnce(diagnostics({
       recommended_actions: [{ key: 'healthcheck', label: 'Run directed healthcheck', severity: 'info' }],
       onboarding_stage: 'healthcheck_passed',
@@ -167,11 +168,59 @@ describe('FormalPoolDiagnosticsModal', () => {
     getDiagnostics.mockResolvedValueOnce(diagnostics({
       recommended_actions: [{ key: 'start_warming', label: 'Start warming', severity: 'info' }],
       onboarding_stage: 'healthcheck_passed',
-      healthcheck_evidence_persisted: false,
+      healthcheck_evidence_persisted: true,
+      status_code_bucket: 'status_2xx',
+      cc_gateway_seen: true,
+      raw_capture_present: true,
+      fallback_detected: false,
+      proxy_mismatch: false,
+      risk_text_detected: false,
+      cc_gateway_runtime_registered: true,
     }))
     const allowed = mountModal(baseAccount({ onboarding_stage: 'healthcheck_passed' }))
     await flushPromises()
     expect(allowed.get('[data-test="start-warming-button"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not enable start warming without runtime registered evidence even when recommended', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      recommended_actions: [{ key: 'start_warming', label: 'Start warming', severity: 'info' }],
+      onboarding_stage: 'healthcheck_passed',
+      healthcheck_evidence_persisted: true,
+      status_code_bucket: 'status_2xx',
+      cc_gateway_seen: true,
+      raw_capture_present: true,
+      fallback_detected: false,
+      proxy_mismatch: false,
+      risk_text_detected: false,
+      cc_gateway_runtime_registered: false,
+    }))
+    const wrapper = mountModal(baseAccount({ onboarding_stage: 'healthcheck_passed' }))
+    await flushPromises()
+
+    const startButton = wrapper.get('[data-test="start-warming-button"]')
+    expect(startButton.attributes('disabled')).toBeDefined()
+    expect(startButton.attributes('title')).toContain('runtime')
+    expect(wrapper.text()).not.toContain('sk-ant-sid')
+  })
+
+  it('enables start warming with runtime registered and full healthcheck evidence', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      recommended_actions: [{ key: 'start_warming', label: 'Start warming', severity: 'info' }],
+      onboarding_stage: 'healthcheck_passed',
+      healthcheck_evidence_persisted: true,
+      status_code_bucket: 'status_2xx',
+      cc_gateway_seen: true,
+      raw_capture_present: true,
+      fallback_detected: false,
+      proxy_mismatch: false,
+      risk_text_detected: false,
+      cc_gateway_runtime_registered: true,
+    }))
+    const wrapper = mountModal(baseAccount({ onboarding_stage: 'healthcheck_passed' }))
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="start-warming-button"]').attributes('disabled')).toBeUndefined()
   })
 
   it('shows repair-token form only for Anthropic setup-token formal-pool accounts', async () => {

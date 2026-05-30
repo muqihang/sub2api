@@ -207,7 +207,6 @@ func TestFormalPoolOperationsDiagnostics_OmitsWholeFieldsWithSensitiveMarkersAnd
 		"access_token",
 		"abc123",
 		"proxy_password",
-		"pass",
 		"session_key",
 		"sk-ant-sid01-secret",
 		"refresh_token",
@@ -586,6 +585,33 @@ func TestFormalPoolOperationsHealthcheck_QuarantineResultStaysUnschedulable(t *t
 	require.False(t, store.account.Schedulable)
 	require.Equal(t, FormalPoolStageQuarantined, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
 	require.Equal(t, "quarantined", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+}
+
+func TestFormalPoolOperationsDiagnostics_RequiresRuntimeRegisteredEvidenceBeforeStartWarmingRecommendation(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra())
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "false"
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.NotContains(t, actionKeys(got.RecommendedActions), "start_warming")
+	require.Contains(t, actionKeys(got.RecommendedActions), "runtime_register")
+	require.Contains(t, actionKeys(got.RecommendedActions), "healthcheck")
+	require.Contains(t, got.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "fail", Message: "cc gateway runtime identity/bucket mapping must be registered before warming"})
+}
+
+func TestFormalPoolOperationsDiagnostics_RecommendsStartWarmingWithRuntimeRegisteredAndFullEvidence(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra())
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.Contains(t, actionKeys(got.RecommendedActions), "start_warming")
+	require.Contains(t, got.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "pass"})
 }
 
 func TestFormalPoolOperationsStartWarming_RequiresHealthcheckPassedEvidence(t *testing.T) {

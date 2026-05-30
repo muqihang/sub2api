@@ -260,6 +260,7 @@ const evidenceComplete = computed(() => {
     d?.onboarding_stage === 'healthcheck_passed' &&
     d.healthcheck_evidence_persisted &&
     d.status_code_bucket === 'status_2xx' &&
+    d.cc_gateway_runtime_registered === true &&
     d.cc_gateway_seen &&
     d.raw_capture_present &&
     !d.fallback_detected &&
@@ -267,10 +268,12 @@ const evidenceComplete = computed(() => {
     !d.risk_text_detected
   )
 })
-const canStartWarming = computed(() => recommendedKeys.value.has('start_warming') || evidenceComplete.value)
+const canStartWarming = computed(() => recommendedKeys.value.has('start_warming') && evidenceComplete.value)
 const startWarmingTitle = computed(() => canStartWarming.value
   ? t('admin.accounts.formalPoolDiagnostics.startWarmingAllowed')
-  : t('admin.accounts.formalPoolDiagnostics.startWarmingBlocked'))
+  : currentDiagnostics.value?.cc_gateway_runtime_registered !== true
+    ? t('admin.accounts.formalPoolDiagnostics.startWarmingBlockedRuntime')
+    : t('admin.accounts.formalPoolDiagnostics.startWarmingBlocked'))
 
 const shouldShowReplacementGuidance = computed(() =>
   recommendedKeys.value.has('replace_account_and_proxy') || currentDiagnostics.value?.failure_origin === 'token_exchange'
@@ -322,6 +325,7 @@ const evidenceItems = computed(() => {
   const d = currentDiagnostics.value
   return [
     { key: 'cc_gateway_seen', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.ccGatewaySeen'), value: formatBoolean(d?.cc_gateway_seen) },
+    { key: 'cc_gateway_runtime_registered', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeRegistered'), value: formatBoolean(d?.cc_gateway_runtime_registered) },
     { key: 'raw_capture_present', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rawCapturePresent'), value: formatBoolean(d?.raw_capture_present) },
     { key: 'raw_capture_ref', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rawCaptureRef'), value: valueOrDash(d?.raw_capture_ref) },
     { key: 'fallback_detected', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.fallbackDetected'), value: formatBoolean(d?.fallback_detected) },

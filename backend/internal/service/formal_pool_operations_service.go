@@ -42,6 +42,7 @@ type FormalPoolOperationsDiagnostics struct {
 	FailureSource                string                        `json:"failure_source,omitempty"`
 	HealthcheckStatus            string                        `json:"healthcheck_status,omitempty"`
 	StatusCodeBucket             string                        `json:"status_code_bucket,omitempty"`
+	CCGatewayRuntimeRegistered   bool                          `json:"cc_gateway_runtime_registered"`
 	CCGatewaySeen                bool                          `json:"cc_gateway_seen,omitempty"`
 	RawCapturePresent            bool                          `json:"raw_capture_present,omitempty"`
 	RawCaptureRef                string                        `json:"raw_capture_ref,omitempty"`
@@ -449,6 +450,7 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 	out.FailureSource = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraLastFailureSource))
 	out.HealthcheckStatus = account.GetExtraString(FormalPoolExtraHealthcheckStatus)
 	out.StatusCodeBucket = account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket)
+	out.CCGatewayRuntimeRegistered = formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered])
 	out.CCGatewaySeen = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen])
 	out.FallbackDetected = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckFallbackDetected])
 	out.ProxyMismatch = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckProxyMismatch])
@@ -472,6 +474,11 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 		return out
 	}
 	out.Checks = append(out.Checks, formalPoolStageGateCheck(account))
+	if out.CCGatewayRuntimeRegistered {
+		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "pass"})
+	} else {
+		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "fail", Message: "cc gateway runtime identity/bucket mapping must be registered before warming"})
+	}
 	out.HealthcheckEvidencePersisted = formalPoolHealthcheckEvidencePersisted(account)
 	if !out.HealthcheckEvidencePersisted {
 		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "healthcheck_evidence_persisted", Status: "warn", Message: "latest healthcheck evidence is required before warming"})
@@ -491,7 +498,7 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 		FallbackDetected:    out.FallbackDetected,
 		ProxyMismatch:       out.ProxyMismatch,
 		RiskTextDetected:    out.RiskTextDetected,
-		RuntimeRegistered:   formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]),
+		RuntimeRegistered:   out.CCGatewayRuntimeRegistered,
 		CCGatewayEnabled:    account.GetExtraString("cc_gateway_enabled") == "true",
 		CCGatewayRoute:      account.GetExtraString("cc_gateway_routes"),
 		InferenceScope:      strings.Contains(account.GetCredential("scope"), "user:inference"),
@@ -718,11 +725,12 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 		strings.Contains(strings.ToLower(d.FailureCode), "missing_egress_bucket")) {
 		add("runtime_register", "Run runtime registration", "warning")
 	}
-	if account != nil && serviceFormalPoolAccount(account) && formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]) && origin != FormalPoolFailureOriginProxy {
+	if account != nil && serviceFormalPoolAccount(account) && origin != FormalPoolFailureOriginProxy {
 		add("healthcheck", "Run directed healthcheck", "info")
 	}
 	if d != nil && d.OnboardingStage == FormalPoolStageHealthcheckPassed && d.HealthcheckEvidencePersisted &&
-		d.StatusCodeBucket == "status_2xx" && d.CCGatewaySeen && d.RawCapturePresent && !d.FallbackDetected && !d.ProxyMismatch && !d.RiskTextDetected {
+		d.StatusCodeBucket == "status_2xx" && d.CCGatewayRuntimeRegistered && d.CCGatewaySeen && d.RawCapturePresent &&
+		!d.FallbackDetected && !d.ProxyMismatch && !d.RiskTextDetected {
 		add("start_warming", "Start warming", "info")
 	}
 	return actions
