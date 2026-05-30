@@ -49,7 +49,7 @@
             <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
               {{ t('admin.accounts.formalPoolDiagnostics.evidence') }}
             </h5>
-            <button type="button" class="btn btn-secondary px-3 py-1.5 text-xs" :disabled="isBusy" @click="refreshDiagnostics">
+            <button type="button" class="btn btn-secondary px-3 py-1.5 text-xs" :disabled="isBusy" @click="() => refreshDiagnostics()">
               {{ t('admin.accounts.formalPoolDiagnostics.actions.refresh') }}
             </button>
           </div>
@@ -171,7 +171,7 @@
             >
               {{ t('admin.accounts.formalPoolDiagnostics.actions.startWarming') }}
             </button>
-            <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="refreshDiagnostics">
+            <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="() => refreshDiagnostics()">
               {{ t('admin.accounts.formalPoolDiagnostics.actions.refresh') }}
             </button>
           </div>
