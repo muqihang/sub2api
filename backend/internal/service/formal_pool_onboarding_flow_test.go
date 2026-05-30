@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -161,7 +162,7 @@ func (f formalAcceptanceFake) RunAcceptance(ctx context.Context, input FormalPoo
 	if f.result != nil {
 		return f.result, nil
 	}
-	return &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, NoRealMessagesRequestPerformed: false, ActivationRequired: true, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "ref_raw_healthcheck"}, nil
+	return &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, NoRealMessagesRequestPerformed: false, ActivationRequired: true, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "hmac-sha256:" + strings.Repeat("8", 64)}, nil
 }
 
 type formalHealthcheckFake struct {
@@ -178,7 +179,7 @@ func (f *formalHealthcheckFake) RunHealthcheck(ctx context.Context, input Formal
 	if f.result != nil {
 		return f.result, nil
 	}
-	return &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, NoRealMessagesRequestPerformed: false, ActivationRequired: true, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "ref_raw_healthcheck"}, nil
+	return &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, NoRealMessagesRequestPerformed: false, ActivationRequired: true, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "hmac-sha256:" + strings.Repeat("8", 64)}, nil
 }
 
 type formalRuntimeFake struct {
@@ -520,6 +521,210 @@ func TestFormalPoolAcceptanceRejectsHealthcheckWithoutRawCapture(t *testing.T) {
 	}
 	if accepted.Status != "failed_acceptance" || acct.account.Extra[FormalPoolExtraOnboardingStage] == FormalPoolStageHealthcheckPassed || acct.account.Schedulable {
 		t.Fatalf("healthcheck without raw capture must not pass: accepted=%#v extra=%#v", accepted, acct.account.Extra)
+	}
+}
+
+func TestFormalPoolRunAccountHealthcheckRejectsMissingRuntimeTimestampBeforeRunner(t *testing.T) {
+	acct := &formalAccountFake{}
+	proxyID := int64(6)
+	acct.account = &Account{
+		ID:          2,
+		Name:        "formal-existing",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: false,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"},
+		Extra: map[string]any{
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                string(ccGatewayRouteNativeMessages),
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-existing",
+			"cc_gateway_account_ref":           "hmac-sha256:" + strings.Repeat("b", 64),
+			FormalPoolExtraOnboardingStage:     FormalPoolStageRuntimeRegistered,
+			FormalPoolExtraRuntimeRegistered:   "true",
+			FormalPoolExtraRuntimeRegisteredAt: "",
+		},
+	}
+	healthcheck := &formalHealthcheckFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Accounts: acct, Healthcheck: healthcheck})
+
+	_, err := svc.RunAccountHealthcheck(context.Background(), 2)
+	if err == nil {
+		t.Fatalf("account healthcheck must reject incomplete runtime evidence")
+	}
+	if healthcheck.calls != 0 {
+		t.Fatalf("healthcheck runner must not be called before runtime timestamp evidence, calls=%d", healthcheck.calls)
+	}
+}
+
+func TestFormalPoolRunAcceptanceRejectsMissingPersistedRuntimeTimestampBeforeRunner(t *testing.T) {
+	acct := &formalAccountFake{}
+	healthcheck := &formalHealthcheckFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	acct.account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
+	acct.account.Extra[FormalPoolExtraRuntimeRegisteredAt] = ""
+
+	accepted, err := svc.RunAcceptance(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance should fail closed as a result, not infrastructure error: %v", err)
+	}
+	if accepted.Status != "failed_acceptance" {
+		t.Fatalf("expected failed acceptance, got %#v", accepted)
+	}
+	if healthcheck.calls != 0 {
+		t.Fatalf("acceptance healthcheck runner must not be called before runtime timestamp evidence, calls=%d", healthcheck.calls)
+	}
+}
+
+func TestFormalPoolRunAccountHealthcheckUsesExistingFormalAccountWithoutSession(t *testing.T) {
+	acct := &formalAccountFake{}
+	proxyID := int64(6)
+	acct.account = &Account{
+		ID:          2,
+		Name:        "formal-existing",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: false,
+		ProxyID:     &proxyID,
+		Concurrency: 10,
+		Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"},
+		Extra: map[string]any{
+			"cc_gateway_enabled":                "true",
+			"cc_gateway_canary_only":            "false",
+			"cc_gateway_policy_version":         ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
+			"cc_gateway_egress_bucket_enabled":  "true",
+			"cc_gateway_egress_bucket":          "bucket-existing",
+			"cc_gateway_account_ref":            "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			FormalPoolExtraOnboardingStage:      FormalPoolStageRuntimeRegistered,
+			FormalPoolExtraRuntimeRegistered:    "true",
+			FormalPoolExtraRuntimeRegisteredAt:  "2026-05-29T00:00:00Z",
+			FormalPoolExtraPoolProfileRequested: PoolProfileNormal,
+			FormalPoolExtraPoolProfileEffective: PoolProfileNormal,
+			FormalPoolExtraPoolWeightMode:       FormalPoolWeightLow,
+		},
+		GroupIDs:      []int64{42},
+		AccountGroups: []AccountGroup{{AccountID: 2, GroupID: 42}},
+	}
+	healthcheck := &formalHealthcheckFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Accounts: acct, CCGateway: formalCCFake{}, Healthcheck: healthcheck})
+
+	result, err := svc.RunAccountHealthcheck(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("account healthcheck: %v", err)
+	}
+
+	if healthcheck.calls != 1 {
+		t.Fatalf("expected one directed healthcheck call, got %d", healthcheck.calls)
+	}
+	if result.AccountID != 2 || result.AccountRef != "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || result.EgressBucket != "bucket-existing" || result.ProxyRef == "" {
+		t.Fatalf("account identity was not preserved: %#v", result)
+	}
+	if result.Status != FormalPoolOnboardingStatusHealthcheckPassed || !result.CCGatewaySeen || !result.RawCapturePresent {
+		t.Fatalf("expected healthcheck pass evidence: %#v", result)
+	}
+	if acct.account.Schedulable {
+		t.Fatalf("account-level healthcheck must not make account schedulable")
+	}
+	if acct.account.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageHealthcheckPassed {
+		t.Fatalf("successful account healthcheck should record healthcheck stage: %#v", acct.account.Extra)
+	}
+	if acct.account.Extra[FormalPoolExtraHealthcheckStatus] != "passed" || acct.account.Extra[FormalPoolExtraHealthcheckStatusCodeBucket] != "status_2xx" || acct.account.Extra[FormalPoolExtraHealthcheckRawRef] == "" {
+		t.Fatalf("successful account healthcheck should persist full evidence: %#v", acct.account.Extra)
+	}
+	if acct.account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen] != true || acct.account.Extra[FormalPoolExtraHealthcheckFallbackDetected] != false || acct.account.Extra[FormalPoolExtraHealthcheckProxyMismatch] != false || acct.account.Extra[FormalPoolExtraHealthcheckRiskTextDetected] != false {
+		t.Fatalf("successful account healthcheck should persist boolean evidence: %#v", acct.account.Extra)
+	}
+	if acct.account.Extra[FormalPoolExtraLastHealthcheckResult] != "passed" || stringFromAny(acct.account.Extra[FormalPoolExtraLastHealthcheckAt]) == "" {
+		t.Fatalf("successful account healthcheck should persist last result/time: %#v", acct.account.Extra)
+	}
+}
+
+func TestFormalPoolRunAcceptanceWritesFullHealthcheckEvidence(t *testing.T) {
+	acct := &formalAccountFake{}
+	rawRef := "hmac-sha256:" + strings.Repeat("a", 64)
+	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef, FallbackDetected: false, ProxyMismatch: false, RiskTextDetected: false}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	_, err := svc.RunAcceptance(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	extra := acct.account.Extra
+	if extra[FormalPoolExtraHealthcheckStatus] != "passed" || extra[FormalPoolExtraHealthcheckStatusCodeBucket] != "status_2xx" || extra[FormalPoolExtraHealthcheckRawRef] != rawRef {
+		t.Fatalf("missing persisted healthcheck status/raw evidence: %#v", extra)
+	}
+	if extra[FormalPoolExtraLastHealthcheckResult] != "passed" || stringFromAny(extra[FormalPoolExtraLastHealthcheckAt]) == "" {
+		t.Fatalf("missing persisted last healthcheck result/time: %#v", extra)
+	}
+	if extra[FormalPoolExtraHealthcheckCCGatewaySeen] != true || extra[FormalPoolExtraHealthcheckFallbackDetected] != false || extra[FormalPoolExtraHealthcheckProxyMismatch] != false || extra[FormalPoolExtraHealthcheckRiskTextDetected] != false {
+		t.Fatalf("missing persisted healthcheck boolean evidence: %#v", extra)
+	}
+}
+
+func TestFormalPoolRunAccountHealthcheckWritesFullFailureEvidence(t *testing.T) {
+	acct := &formalAccountFake{}
+	proxyID := int64(6)
+	acct.account = &Account{ID: 2, Name: "formal-existing", Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: false, ProxyID: &proxyID, Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, Extra: map[string]any{"cc_gateway_enabled": "true", "cc_gateway_routes": string(ccGatewayRouteNativeMessages), "cc_gateway_egress_bucket": "bucket-existing", "cc_gateway_account_ref": "hmac-sha256:" + strings.Repeat("b", 64), FormalPoolExtraOnboardingStage: FormalPoolStageRuntimeRegistered, FormalPoolExtraRuntimeRegistered: "true", FormalPoolExtraRuntimeRegisteredAt: "2026-05-29T00:00:00Z"}}
+	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: "failed_acceptance", Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "fail"}}, StatusCodeBucket: "status_4xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "https://sensitive.example/raw", FallbackDetected: true, ProxyMismatch: false, RiskTextDetected: true}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Accounts: acct, Healthcheck: healthcheck})
+
+	_, err := svc.RunAccountHealthcheck(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("account healthcheck: %v", err)
+	}
+	extra := acct.account.Extra
+	if extra[FormalPoolExtraHealthcheckStatus] != "failed" || extra[FormalPoolExtraHealthcheckStatusCodeBucket] != "status_4xx" || extra[FormalPoolExtraLastHealthcheckResult] != "failed" {
+		t.Fatalf("failure status evidence not persisted safely: %#v", extra)
+	}
+	if extra[FormalPoolExtraHealthcheckRawRef] != "" || extra[FormalPoolExtraLastFailureCode] != "formal_pool_healthcheck_failed" || extra[FormalPoolExtraLastFailureSource] != "formal_pool_healthcheck" {
+		t.Fatalf("unsafe raw ref or failure source not persisted correctly: %#v", extra)
+	}
+	if extra[FormalPoolExtraHealthcheckCCGatewaySeen] != true || extra[FormalPoolExtraHealthcheckFallbackDetected] != true || extra[FormalPoolExtraHealthcheckRiskTextDetected] != true {
+		t.Fatalf("failure boolean evidence not persisted: %#v", extra)
+	}
+	if acct.account.Schedulable || acct.account.GetExtraString(FormalPoolExtraOnboardingStage) == FormalPoolStageHealthcheckPassed {
+		t.Fatalf("failed healthcheck must stay unschedulable and not mark passed: %#v", acct.account)
+	}
+}
+
+func TestFormalPoolActivateRejectsIncompletePersistedEvidenceEvenWhenSessionPassed(t *testing.T) {
+	acct := &formalAccountFake{}
+	rawRef := "hmac-sha256:" + strings.Repeat("c", 64)
+	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	_, err := svc.RunAcceptance(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	acct.account.Extra[FormalPoolExtraHealthcheckRawRef] = ""
+
+	_, err = svc.Activate(context.Background(), sess.ID)
+	if err == nil {
+		t.Fatalf("activation must fail closed when persisted healthcheck evidence is incomplete")
+	}
+	if acct.activated || acct.account.Schedulable || acct.account.GetExtraString(FormalPoolExtraOnboardingStage) == FormalPoolStageWarming {
+		t.Fatalf("activation should not warm account with incomplete persisted evidence: %#v", acct.account.Extra)
 	}
 }
 

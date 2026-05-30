@@ -586,6 +586,9 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 		return nil, err
 	}
 	checks := formalPoolLocalAcceptanceChecks(account, rec)
+	if !runtimeEvidenceComplete(account) {
+		return &FormalPoolAcceptanceResult{Status: "failed_acceptance", AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile, Checks: checks, NoRealMessagesRequestPerformed: true, ActivationRequired: false}, nil
+	}
 	var healthResult *FormalPoolAcceptanceResult
 	runner := s.acceptance
 	if runner == nil && s.healthcheck != nil {
@@ -621,16 +624,8 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 	if !formalPoolChecksAllPass(checks) {
 		return &FormalPoolAcceptanceResult{Status: "failed_acceptance", AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile, Checks: checks, NoRealMessagesRequestPerformed: true, ActivationRequired: false}, nil
 	}
-	healthExtra := map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageHealthcheckPassed, FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(s.store.now()), FormalPoolExtraHealthcheckStatus: "passed", FormalPoolExtraHealthcheckStatusCodeBucket: "status_2xx"}
-	if healthResult != nil {
-		if strings.TrimSpace(healthResult.StatusCodeBucket) != "" {
-			healthExtra[FormalPoolExtraHealthcheckStatusCodeBucket] = healthResult.StatusCodeBucket
-		}
-		if strings.TrimSpace(healthResult.RawCaptureRef) != "" {
-			healthExtra[FormalPoolExtraHealthcheckRawRef] = healthResult.RawCaptureRef
-		}
-	}
 	if s.accounts != nil {
+		healthExtra := formalPoolOnboardingHealthcheckExtra(account, healthResult, s.store.now())
 		if _, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, healthExtra); err != nil {
 			return nil, err
 		}
@@ -654,6 +649,119 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 	return out, nil
 }
 
+func (s *FormalPoolOnboardingService) RunAccountHealthcheck(ctx context.Context, accountID int64) (*FormalPoolAcceptanceResult, error) {
+	if accountID <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_ACCOUNT_ID", "account id must be positive")
+	}
+	if s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("ACCOUNT_READER_UNAVAILABLE", "formal pool account reader is unavailable")
+	}
+	if s.healthcheck == nil {
+		return nil, infraerrors.ServiceUnavailable("HEALTHCHECK_UNAVAILABLE", "formal pool healthcheck runner is unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !IsFormalPoolAccount(account) {
+		return nil, infraerrors.BadRequest("FORMAL_POOL_ACCOUNT_REQUIRED", "account healthcheck requires a formal pool account")
+	}
+	if !runtimeEvidenceComplete(account) {
+		_, _ = s.accounts.UpdateFormalPoolAccountState(ctx, accountID, false, StatusActive, map[string]any{
+			FormalPoolExtraRuntimeRegistered:   "false",
+			FormalPoolExtraRuntimeRegisteredAt: "",
+			FormalPoolExtraLastFailureOrigin:   string(FormalPoolFailureOriginLocalGate),
+			FormalPoolExtraLastFailureCode:     "runtime_evidence_incomplete",
+			FormalPoolExtraLastFailureSource:   "formal_pool_account_healthcheck",
+		})
+		return nil, infraerrors.BadRequest("RUNTIME_EVIDENCE_INCOMPLETE", "complete persisted runtime registration evidence is required before healthcheck")
+	}
+	input := formalPoolAccountHealthcheckInput(account)
+	result, err := s.healthcheck.RunHealthcheck(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	formalPoolFillAccountHealthcheckIdentity(result, input)
+	healthExtra := formalPoolOnboardingHealthcheckExtra(account, result, s.store.now())
+	status := ""
+	if result != nil && result.FormalPoolHealthcheckPassed() {
+		status = StatusActive
+	}
+	if _, err := s.accounts.UpdateFormalPoolAccountState(ctx, accountID, false, status, healthExtra); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func formalPoolOnboardingHealthcheckExtra(account *Account, result *FormalPoolAcceptanceResult, now time.Time) map[string]any {
+	passed := result != nil && result.FormalPoolHealthcheckPassed()
+	healthStatus := "failed"
+	lastResult := "failed"
+	if passed {
+		healthStatus = "passed"
+		lastResult = "passed"
+	}
+	if formalPoolAccountAlreadyQuarantined(account) {
+		healthStatus = "quarantined"
+		lastResult = "quarantined"
+	}
+	extra := map[string]any{
+		FormalPoolExtraHealthcheckStatus:           healthStatus,
+		FormalPoolExtraHealthcheckStatusCodeBucket: "",
+		FormalPoolExtraHealthcheckRawRef:           "",
+		FormalPoolExtraHealthcheckCCGatewaySeen:    false,
+		FormalPoolExtraHealthcheckFallbackDetected: false,
+		FormalPoolExtraHealthcheckProxyMismatch:    false,
+		FormalPoolExtraHealthcheckRiskTextDetected: false,
+		FormalPoolExtraLastHealthcheckAt:           formalPoolTimestamp(now),
+		FormalPoolExtraLastHealthcheckResult:       lastResult,
+	}
+	if result != nil {
+		extra[FormalPoolExtraHealthcheckStatusCodeBucket] = result.StatusCodeBucket
+		extra[FormalPoolExtraHealthcheckCCGatewaySeen] = result.CCGatewaySeen
+		extra[FormalPoolExtraHealthcheckFallbackDetected] = result.FallbackDetected
+		extra[FormalPoolExtraHealthcheckProxyMismatch] = result.ProxyMismatch
+		extra[FormalPoolExtraHealthcheckRiskTextDetected] = result.RiskTextDetected
+		if isSafeLedgerRef(result.RawCaptureRef) {
+			extra[FormalPoolExtraHealthcheckRawRef] = strings.TrimSpace(result.RawCaptureRef)
+		}
+	}
+	if passed && !formalPoolAccountAlreadyQuarantined(account) {
+		extra["onboarding_state"] = FormalPoolStageHealthcheckPassed
+		extra[FormalPoolExtraOnboardingStage] = FormalPoolStageHealthcheckPassed
+		extra[FormalPoolExtraOnboardingStageUpdatedAt] = formalPoolTimestamp(now)
+		extra[FormalPoolExtraLastFailureOrigin] = ""
+		extra[FormalPoolExtraLastFailureCode] = ""
+		extra[FormalPoolExtraLastFailureSource] = ""
+	} else if !passed {
+		extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginUpstream)
+		extra[FormalPoolExtraLastFailureCode] = "formal_pool_healthcheck_failed"
+		extra[FormalPoolExtraLastFailureSource] = "formal_pool_healthcheck"
+	}
+	return extra
+}
+
+func formalPoolFillAccountHealthcheckIdentity(result *FormalPoolAcceptanceResult, input FormalPoolAcceptanceInput) {
+	if result == nil {
+		return
+	}
+	if result.AccountID == 0 {
+		result.AccountID = input.AccountID
+	}
+	if strings.TrimSpace(result.AccountRef) == "" {
+		result.AccountRef = input.AccountRef
+	}
+	if strings.TrimSpace(result.ProxyRef) == "" {
+		result.ProxyRef = input.ProxyRef
+	}
+	if strings.TrimSpace(result.EgressBucket) == "" {
+		result.EgressBucket = input.EgressBucket
+	}
+	if strings.TrimSpace(result.PoolProfile) == "" {
+		result.PoolProfile = input.PoolProfile
+	}
+}
+
 func (s *FormalPoolOnboardingService) Activate(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
 	rec, ok := s.store.get(id)
 	if !ok {
@@ -672,15 +780,19 @@ func (s *FormalPoolOnboardingService) Activate(ctx context.Context, id string) (
 	if s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("ACCOUNT_ACTIVATOR_UNAVAILABLE", "formal pool account activator is unavailable")
 	}
-	if rec.Status != FormalPoolOnboardingStatusHealthcheckPassed && !rec.HealthcheckPassed {
-		return nil, infraerrors.BadRequest("HEALTHCHECK_NOT_PASSED", "directed healthcheck must pass before warming")
+	account, err := s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	if !formalPoolStartWarmingEvidenceComplete(account) {
+		return nil, infraerrors.BadRequest("HEALTHCHECK_EVIDENCE_INCOMPLETE", "complete persisted healthcheck evidence is required before warming")
 	}
 	now := s.store.now()
 	warmingUntil := now.Add(24 * time.Hour)
 	if _, err := s.accounts.ActivateFormalPoolAccount(ctx, rec.AccountID, map[string]any{"onboarding_state": FormalPoolOnboardingStatusWarming, FormalPoolExtraOnboardingStage: FormalPoolStageWarming, FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now), FormalPoolExtraWarmingStartedAt: formalPoolTimestamp(now), FormalPoolExtraWarmingUntil: formalPoolTimestamp(warmingUntil), FormalPoolExtraPoolProfileEffective: PoolProfileNormal, FormalPoolExtraPoolWeightMode: FormalPoolWeightLow}); err != nil {
 		return nil, err
 	}
-	rec, err := s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
+	rec, err = s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
 		rec.Status = FormalPoolOnboardingStatusWarming
 		return nil
 	})
@@ -889,6 +1001,48 @@ func formalPoolAcceptanceInput(rec *formalPoolOnboardingSessionRecord) FormalPoo
 	return FormalPoolAcceptanceInput{SessionID: rec.ID, AccountID: rec.AccountID, AccountRef: rec.AccountRef, AccountName: rec.AccountName, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, GroupID: rec.GroupID, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile}
 }
 
+func formalPoolAccountHealthcheckInput(account *Account) FormalPoolAcceptanceInput {
+	if account == nil {
+		return FormalPoolAcceptanceInput{}
+	}
+	input := FormalPoolAcceptanceInput{
+		AccountID:    account.ID,
+		AccountRef:   ccGatewayAccountRef(account),
+		AccountName:  account.Name,
+		GroupID:      formalPoolFirstAccountGroupID(account),
+		EgressBucket: resolveCCGatewayEgressBucket(account),
+		PoolProfile:  normalizePoolProfile(account.GetExtraString(FormalPoolExtraPoolProfileRequested)),
+	}
+	if input.PoolProfile == "" {
+		input.PoolProfile = normalizePoolProfile(account.GetExtraString("pool_profile"))
+	}
+	if input.PoolProfile == "" {
+		input.PoolProfile = PoolProfileNormal
+	}
+	if account.ProxyID != nil {
+		input.ProxyID = *account.ProxyID
+		input.ProxyRef = formalPoolSafeRef("proxy", fmt.Sprintf("%d", *account.ProxyID))
+	}
+	return input
+}
+
+func formalPoolFirstAccountGroupID(account *Account) int64 {
+	if account == nil {
+		return 0
+	}
+	for _, id := range account.GroupIDs {
+		if id > 0 {
+			return id
+		}
+	}
+	for _, group := range account.AccountGroups {
+		if group.GroupID > 0 {
+			return group.GroupID
+		}
+	}
+	return 0
+}
+
 func formalPoolLocalAcceptanceChecks(account *Account, rec *formalPoolOnboardingSessionRecord) []FormalPoolAcceptanceCheck {
 	checks := []FormalPoolAcceptanceCheck{}
 	add := func(name string, pass bool, msg string) {
@@ -925,7 +1079,7 @@ func formalPoolLocalAcceptanceChecks(account *Account, rec *formalPoolOnboarding
 		add("oauth_refresh_fail_closed", account.GetExtraString("oauth_refresh_fail_closed") == "true", "refresh must fail closed")
 		add("no_dangerous_extra", !formalPoolHasDangerousExtra(account.Extra), "dangerous formal pool extras are forbidden")
 	}
-	add("cc_gateway_runtime_registered", rec.CCGatewayRuntimeRegistered, "cc gateway runtime identity/bucket mapping must be registered before activation")
+	add("cc_gateway_runtime_registered", runtimeEvidenceComplete(account), "cc gateway runtime identity/bucket mapping must be registered before activation")
 	checks = append(checks, FormalPoolAcceptanceCheck{Name: "ledger_probe_safe", Status: "pass", Message: "localhost-only redacted ledger probe placeholder; no upstream request performed"})
 	return checks
 }

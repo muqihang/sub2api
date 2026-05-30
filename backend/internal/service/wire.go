@@ -85,6 +85,34 @@ func ProvideFormalPoolOperationsService(adminService AdminService, oauthService 
 	})
 }
 
+func ProvideFormalPoolRuntimeRegistrationStartupReplay(accountRepo AccountRepository, adminService AdminService, cfg *config.Config) *FormalPoolRuntimeRegistrationStartupReplay {
+	return ProvideFormalPoolRuntimeRegistrationStartupReplayWithDeps(
+		NewFormalPoolRuntimeRegistrationReplayAccountStore(accountRepo),
+		NewFormalPoolOperationsAdminProxyStore(adminService),
+		NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		time.Now,
+	)
+}
+
+func ProvideFormalPoolRuntimeRegistrationStartupReplayWithDeps(
+	accounts FormalPoolRuntimeRegistrationReplayAccountStore,
+	proxy FormalPoolOperationsProxyStore,
+	registrar FormalPoolCCGatewayRuntimeRegistrar,
+	now func() time.Time,
+) *FormalPoolRuntimeRegistrationStartupReplay {
+	replay := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: accounts, Proxy: proxy, CCGatewayRuntime: registrar, Now: now})
+	runner := NewFormalPoolRuntimeRegistrationStartupReplay(replay)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := runner.Start(ctx)
+	if result.Error != nil {
+		logger.LegacyPrintf("service.formal_pool_runtime_replay", "startup replay failed: %v", result.Error)
+		return runner
+	}
+	logger.LegacyPrintf("service.formal_pool_runtime_replay", "startup replay completed scanned=%d registered=%d failed=%d skipped=%v", result.Scanned, result.Registered, result.Failed, result.Skipped)
+	return runner
+}
+
 // ProvideTokenRefreshService creates and starts TokenRefreshService
 func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
@@ -845,6 +873,7 @@ var ProviderSet = wire.NewSet(
 	NewOAuthService,
 	ProvideFormalPoolOnboardingService,
 	ProvideFormalPoolOperationsService,
+	ProvideFormalPoolRuntimeRegistrationStartupReplay,
 	ProvideOpenAIOAuthSessionStore,
 	ProvideOpenAIOAuthService,
 	ProvideGeminiOAuthSessionStore,

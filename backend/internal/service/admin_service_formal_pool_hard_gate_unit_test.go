@@ -111,7 +111,7 @@ func TestAdminServiceSetAccountSchedulable_FormalPoolAllowsWarming(t *testing.T)
 		Type:        AccountTypeSetupToken,
 		Status:      StatusActive,
 		Schedulable: false,
-		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageWarming},
+		Extra:       mergeFormalPoolTestExtra(FormalPoolStageWarming),
 	}}}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -130,7 +130,7 @@ func TestAdminServiceQuarantineFormalPoolAccount_WritesSafeLifecycleState(t *tes
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Schedulable: true,
-		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+		Extra:       mergeFormalPoolTestExtra(FormalPoolStageProduction),
 	}}}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -175,14 +175,14 @@ func TestAdminServiceUpdateAccount_FormalPoolAllowsAtomicWarmingTransition(t *te
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
 		Schedulable: false,
-		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageHealthcheckPassed},
+		Extra:       mergeFormalPoolTestExtra(FormalPoolStageHealthcheckPassed),
 	}}}}
 	svc := &adminServiceImpl{accountRepo: repo}
 	schedulable := true
 
 	got, err := svc.UpdateAccount(context.Background(), 205, &UpdateAccountInput{
 		Schedulable: &schedulable,
-		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageWarming},
+		Extra:       mergeFormalPoolTestExtra(FormalPoolStageWarming),
 	})
 
 	require.NoError(t, err)

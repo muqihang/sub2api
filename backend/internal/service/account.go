@@ -109,8 +109,13 @@ func (a *Account) IsSchedulable() bool {
 	if !a.IsActive() || !a.Schedulable {
 		return false
 	}
-	if IsFormalPoolAccount(a) && !IsFormalPoolSchedulableStage(FormalPoolAccountStage(a)) {
-		return false
+	if IsFormalPoolAccount(a) {
+		if !IsFormalPoolSchedulableStage(FormalPoolAccountStage(a)) {
+			return false
+		}
+		if !FormalPoolSchedulableEvidenceComplete(a) {
+			return false
+		}
 	}
 	now := time.Now()
 	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {

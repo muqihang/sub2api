@@ -279,7 +279,7 @@ func TestAdminService_BulkUpdateAccounts_FormalPoolProductionCanBeMadeSchedulabl
 			Type:        AccountTypeOAuth,
 			Status:      StatusActive,
 			Schedulable: false,
-			Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+			Extra:       mergeFormalPoolTestExtra(FormalPoolStageProduction),
 		}},
 	}
 	svc := &adminServiceImpl{accountRepo: repo}
@@ -303,7 +303,7 @@ func TestAdminService_BulkUpdateAccounts_FormalPoolHealthcheckPassedCanMoveToWar
 			Type:        AccountTypeOAuth,
 			Status:      StatusActive,
 			Schedulable: false,
-			Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageHealthcheckPassed},
+			Extra:       mergeFormalPoolTestExtra(FormalPoolStageHealthcheckPassed),
 		}},
 	}
 	svc := &adminServiceImpl{accountRepo: repo}
@@ -312,7 +312,7 @@ func TestAdminService_BulkUpdateAccounts_FormalPoolHealthcheckPassedCanMoveToWar
 	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
 		AccountIDs:  []int64{303},
 		Schedulable: &schedulable,
-		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageWarming},
+		Extra:       mergeFormalPoolTestExtra(FormalPoolStageWarming),
 	})
 
 	require.NoError(t, err)

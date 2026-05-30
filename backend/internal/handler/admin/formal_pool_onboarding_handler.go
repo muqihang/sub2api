@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -211,6 +212,24 @@ func (h *FormalPoolOnboardingHandler) Healthcheck(c *gin.Context) {
 		return
 	}
 	res, err := h.svc.RunAcceptance(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *FormalPoolOnboardingHandler) AccountHealthcheck(c *gin.Context) {
+	if h == nil || h.svc == nil {
+		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	res, err := h.svc.RunAccountHealthcheck(c.Request.Context(), accountID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

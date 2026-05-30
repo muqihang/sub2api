@@ -24,8 +24,9 @@ import (
 )
 
 type Application struct {
-	Server  *http.Server
-	Cleanup func()
+	Server                                     *http.Server
+	Cleanup                                    func()
+	FormalPoolRuntimeRegistrationStartupReplay *service.FormalPoolRuntimeRegistrationStartupReplay
 }
 
 func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
@@ -53,7 +54,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "Cleanup"),
+		wire.Struct(new(Application), "Server", "Cleanup", "FormalPoolRuntimeRegistrationStartupReplay"),
 	)
 	return nil, nil
 }

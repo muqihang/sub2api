@@ -105,6 +105,17 @@ func FormalPoolAccountStage(account *Account) string {
 	return stage
 }
 
+func FormalPoolSchedulableEvidenceComplete(account *Account) bool {
+	if !IsFormalPoolAccount(account) {
+		return true
+	}
+	stage := FormalPoolAccountStage(account)
+	if stage != FormalPoolStageWarming && stage != FormalPoolStageProduction {
+		return true
+	}
+	return runtimeEvidenceComplete(account) && healthcheckEvidenceComplete(account)
+}
+
 func IsFormalPoolSchedulableStage(stage string) bool {
 	switch strings.TrimSpace(stage) {
 	case "", FormalPoolStageLegacyUnknown:

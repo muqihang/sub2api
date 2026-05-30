@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -113,6 +114,20 @@ func (h *FormalPoolOperationsHandler) writeAccountResult(c *gin.Context, result 
 				"message":     opErr.Message,
 				"account":     formalPoolOperationFailureAccount(opErr.Result.Account),
 				"diagnostics": opErr.Result.Diagnostics,
+			})
+			return
+		}
+		if result != nil {
+			statusCode, status := infraerrors.ToHTTP(err)
+			if statusCode == http.StatusInternalServerError && status.Reason == infraerrors.UnknownReason {
+				status.Reason = "FORMAL_POOL_OPERATION_FAILED"
+				status.Message = "formal pool operation failed"
+			}
+			c.JSON(statusCode, gin.H{
+				"error":       status.Reason,
+				"message":     status.Message,
+				"account":     formalPoolOperationFailureAccount(result.Account),
+				"diagnostics": result.Diagnostics,
 			})
 			return
 		}

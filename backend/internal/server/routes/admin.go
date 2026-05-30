@@ -688,6 +688,10 @@ func registerFormalPoolOnboardingAdminRoutes(admin *gin.RouterGroup, h *handler.
 			sessions.POST("/:id/promote-production", h.Admin.FormalPoolOnboarding.PromoteProduction)
 			sessions.POST("/:id/abort", h.Admin.FormalPoolOnboarding.Abort)
 		}
+		accounts := onboarding.Group("/accounts")
+		{
+			accounts.POST("/:id/healthcheck", h.Admin.FormalPoolOnboarding.AccountHealthcheck)
+		}
 	}
 }
 

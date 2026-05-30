@@ -43,6 +43,8 @@ type FormalPoolOperationsDiagnostics struct {
 	HealthcheckStatus            string                        `json:"healthcheck_status,omitempty"`
 	StatusCodeBucket             string                        `json:"status_code_bucket,omitempty"`
 	CCGatewayRuntimeRegistered   bool                          `json:"cc_gateway_runtime_registered"`
+	CCGatewayRuntimeRegisteredAt string                        `json:"cc_gateway_runtime_registered_at,omitempty"`
+	RuntimeEvidenceComplete      bool                          `json:"runtime_evidence_complete"`
 	CCGatewaySeen                bool                          `json:"cc_gateway_seen,omitempty"`
 	RawCapturePresent            bool                          `json:"raw_capture_present,omitempty"`
 	RawCaptureRef                string                        `json:"raw_capture_ref,omitempty"`
@@ -451,6 +453,8 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 	out.HealthcheckStatus = account.GetExtraString(FormalPoolExtraHealthcheckStatus)
 	out.StatusCodeBucket = account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket)
 	out.CCGatewayRuntimeRegistered = formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered])
+	out.CCGatewayRuntimeRegisteredAt = strings.TrimSpace(account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+	out.RuntimeEvidenceComplete = runtimeEvidenceComplete(account)
 	out.CCGatewaySeen = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen])
 	out.FallbackDetected = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckFallbackDetected])
 	out.ProxyMismatch = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckProxyMismatch])
@@ -474,12 +478,15 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 		return out
 	}
 	out.Checks = append(out.Checks, formalPoolStageGateCheck(account))
-	if out.CCGatewayRuntimeRegistered {
+	runtimeRegisteredAt := strings.TrimSpace(account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+	if out.CCGatewayRuntimeRegistered && runtimeRegisteredAt != "" {
 		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "pass"})
+	} else if out.CCGatewayRuntimeRegistered {
+		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "fail", Message: "cc gateway runtime identity/bucket mapping must include registration timestamp before warming"})
 	} else {
 		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "fail", Message: "cc gateway runtime identity/bucket mapping must be registered before warming"})
 	}
-	out.HealthcheckEvidencePersisted = formalPoolHealthcheckEvidencePersisted(account)
+	out.HealthcheckEvidencePersisted = healthcheckEvidenceComplete(account)
 	if !out.HealthcheckEvidencePersisted {
 		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "healthcheck_evidence_persisted", Status: "warn", Message: "latest healthcheck evidence is required before warming"})
 	} else {
@@ -498,7 +505,7 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 		FallbackDetected:    out.FallbackDetected,
 		ProxyMismatch:       out.ProxyMismatch,
 		RiskTextDetected:    out.RiskTextDetected,
-		RuntimeRegistered:   out.CCGatewayRuntimeRegistered,
+		RuntimeRegistered:   out.RuntimeEvidenceComplete,
 		CCGatewayEnabled:    account.GetExtraString("cc_gateway_enabled") == "true",
 		CCGatewayRoute:      account.GetExtraString("cc_gateway_routes"),
 		InferenceScope:      strings.Contains(account.GetCredential("scope"), "user:inference"),
@@ -625,7 +632,7 @@ func formalPoolStageGateCheck(account *Account) FormalPoolAcceptanceCheck {
 	return FormalPoolAcceptanceCheck{Name: "stage_gate", Status: "fail", Message: stage + " accounts cannot be scheduled"}
 }
 
-func formalPoolHealthcheckEvidencePersisted(account *Account) bool {
+func healthcheckEvidenceComplete(account *Account) bool {
 	if account == nil || account.Extra == nil {
 		return false
 	}
@@ -634,7 +641,50 @@ func formalPoolHealthcheckEvidencePersisted(account *Account) bool {
 	_, proxyOK := account.Extra[FormalPoolExtraHealthcheckProxyMismatch]
 	_, riskOK := account.Extra[FormalPoolExtraHealthcheckRiskTextDetected]
 	rawRef := strings.TrimSpace(account.GetExtraString(FormalPoolExtraHealthcheckRawRef))
-	return seenOK && fallbackOK && proxyOK && riskOK && isSafeLedgerRef(rawRef)
+	return account.GetExtraString(FormalPoolExtraHealthcheckStatus) == "passed" &&
+		account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket) == "status_2xx" &&
+		seenOK && fallbackOK && proxyOK && riskOK && isSafeLedgerRef(rawRef) &&
+		formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen]) &&
+		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckFallbackDetected]) &&
+		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckProxyMismatch]) &&
+		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckRiskTextDetected])
+}
+
+func formalPoolHealthcheckEvidencePersisted(account *Account) bool {
+	return healthcheckEvidenceComplete(account)
+}
+
+func runtimeEvidenceComplete(account *Account) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	return formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]) &&
+		strings.TrimSpace(account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt)) != "" &&
+		isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))) &&
+		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) != ""
+}
+
+func formalPoolGeneratedRuntimeAccountRef(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if ref := strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef)); isSafeLedgerRef(ref) {
+		return ref
+	}
+	return formalPoolSafeRef("account", strconv.FormatInt(account.ID, 10))
+}
+
+func formalPoolGeneratedEgressBucket(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if bucket := strings.TrimSpace(resolveCCGatewayEgressBucket(account)); bucket != "" {
+		return bucket
+	}
+	if account.ProxyID == nil || *account.ProxyID <= 0 {
+		return ""
+	}
+	return formalPoolSafeBucket(formalPoolSafeRef("proxy", strconv.FormatInt(*account.ProxyID, 10)))
 }
 
 func classifyFormalPoolFailureOrigin(e formalPoolFailureEvidence) FormalPoolFailureOrigin {
@@ -720,7 +770,7 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 	case FormalPoolFailureOriginCCGateway:
 		add("runtime_register", "Run runtime registration", "warning")
 	}
-	if account != nil && (!formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]) ||
+	if account != nil && (!runtimeEvidenceComplete(account) ||
 		strings.Contains(strings.ToLower(d.FailureCode), "missing_account_identity") ||
 		strings.Contains(strings.ToLower(d.FailureCode), "missing_egress_bucket")) {
 		add("runtime_register", "Run runtime registration", "warning")
@@ -728,8 +778,8 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 	if account != nil && serviceFormalPoolAccount(account) && origin != FormalPoolFailureOriginProxy {
 		add("healthcheck", "Run directed healthcheck", "info")
 	}
-	if d != nil && d.OnboardingStage == FormalPoolStageHealthcheckPassed && d.HealthcheckEvidencePersisted &&
-		d.StatusCodeBucket == "status_2xx" && d.CCGatewayRuntimeRegistered && d.CCGatewaySeen && d.RawCapturePresent &&
+	if d != nil && account != nil && d.OnboardingStage == FormalPoolStageHealthcheckPassed && d.HealthcheckEvidencePersisted &&
+		d.StatusCodeBucket == "status_2xx" && d.RuntimeEvidenceComplete && d.CCGatewaySeen && d.RawCapturePresent &&
 		!d.FallbackDetected && !d.ProxyMismatch && !d.RiskTextDetected {
 		add("start_warming", "Start warming", "info")
 	}
@@ -766,6 +816,8 @@ func (s *FormalPoolOperationsService) refreshedExtra(account *Account) map[strin
 		FormalPoolExtraOnboardingStage:           FormalPoolStageRefreshed,
 		FormalPoolExtraOnboardingStageUpdatedAt:  formalPoolTimestamp(now),
 		FormalPoolExtraHealthcheckStatus:         "pending",
+		FormalPoolExtraRuntimeRegistered:         "false",
+		FormalPoolExtraRuntimeRegisteredAt:       "",
 		FormalPoolExtraCredentialGeneration:      formalPoolNextCredentialGeneration(account),
 		FormalPoolExtraRepairedAt:                formalPoolTimestamp(now),
 		FormalPoolExtraRepairedBy:                "admin",
@@ -809,6 +861,15 @@ func (s *FormalPoolOperationsService) runtimeRegister(ctx context.Context, accou
 		}
 		result, _ := s.accountResult(ctx, account.ID, updated)
 		return result, infraerrors.ServiceUnavailable("CC_GATEWAY_RUNTIME_REGISTER_UNAVAILABLE", "cc gateway runtime registration is unavailable")
+	}
+	account, err = s.ensureRuntimeIdentityEvidence(ctx, account)
+	if err != nil {
+		updated, updateErr := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, s.runtimeRegisterFailureExtra("runtime_identity_evidence_incomplete"))
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		result, _ := s.accountResult(ctx, account.ID, updated)
+		return result, err
 	}
 	reg, err := s.runtimeRegistrationInput(ctx, account)
 	if err != nil {
@@ -862,9 +923,17 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 	if err != nil {
 		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("PROXY_URL_INVALID", "proxy url is invalid")
 	}
+	accountRef := strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))
+	if !isSafeLedgerRef(accountRef) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_ACCOUNT_REF_REQUIRED", "safe cc gateway account ref is required")
+	}
+	egressBucket := strings.TrimSpace(resolveCCGatewayEgressBucket(account))
+	if egressBucket == "" {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_EGRESS_BUCKET_REQUIRED", "cc gateway egress bucket is required")
+	}
 	return FormalPoolCCGatewayRuntimeRegistration{
-		AccountRef:     ccGatewayAccountRef(account),
-		EgressBucket:   resolveCCGatewayEgressBucket(account),
+		AccountRef:     accountRef,
+		EgressBucket:   egressBucket,
 		ProxyURL:       normalized,
 		ProxyRef:       formalPoolSafeRef("proxy", fmt.Sprintf("%d", *account.ProxyID)),
 		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
@@ -873,11 +942,49 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 	}, nil
 }
 
+func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.Context, account *Account) (*Account, error) {
+	if account == nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_NOT_FOUND", "account not found")
+	}
+	accountRef := formalPoolGeneratedRuntimeAccountRef(account)
+	egressBucket := formalPoolGeneratedEgressBucket(account)
+	if !isSafeLedgerRef(accountRef) {
+		return account, infraerrors.BadRequest("CC_GATEWAY_ACCOUNT_REF_REQUIRED", "safe cc gateway account ref is required")
+	}
+	if strings.TrimSpace(egressBucket) == "" {
+		return account, infraerrors.BadRequest("CC_GATEWAY_EGRESS_BUCKET_REQUIRED", "cc gateway egress bucket is required")
+	}
+	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef && strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket {
+		return account, nil
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, map[string]any{
+		ccGatewayExtraAccountRef:   accountRef,
+		ccGatewayExtraEgressBucket: egressBucket,
+	})
+	if err != nil {
+		return account, err
+	}
+	return updated, nil
+}
+
+func (s *FormalPoolOperationsService) runtimeEvidenceFailureExtra(source string) map[string]any {
+	now := s.now()
+	return map[string]any{
+		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now),
+		FormalPoolExtraRuntimeRegistered:        "false",
+		FormalPoolExtraRuntimeRegisteredAt:      "",
+		FormalPoolExtraLastFailureOrigin:        string(FormalPoolFailureOriginLocalGate),
+		FormalPoolExtraLastFailureCode:          "runtime_evidence_incomplete",
+		FormalPoolExtraLastFailureSource:        source,
+	}
+}
+
 func (s *FormalPoolOperationsService) runtimeRegisterFailureExtra(code string) map[string]any {
 	now := s.now()
 	return map[string]any{
 		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now),
 		FormalPoolExtraRuntimeRegistered:        "false",
+		FormalPoolExtraRuntimeRegisteredAt:      "",
 		FormalPoolExtraHealthcheckStatus:        "pending",
 		FormalPoolExtraLastFailureOrigin:        string(FormalPoolFailureOriginCCGateway),
 		FormalPoolExtraLastFailureCode:          code,
@@ -898,6 +1005,14 @@ func (s *FormalPoolOperationsService) healthcheckAccount(ctx context.Context, ac
 	}
 	if s.healthcheck == nil {
 		return nil, infraerrors.ServiceUnavailable("HEALTHCHECK_UNAVAILABLE", "formal pool healthcheck runner is unavailable")
+	}
+	if !runtimeEvidenceComplete(account) {
+		updated, updateErr := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, s.runtimeEvidenceFailureExtra("formal_pool_healthcheck"))
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		result, _ := s.accountResult(ctx, account.ID, updated)
+		return result, infraerrors.BadRequest("RUNTIME_EVIDENCE_INCOMPLETE", "complete persisted runtime registration evidence is required before healthcheck")
 	}
 	input := formalPoolAccountHealthcheckInput(account)
 	result, err := s.healthcheck.RunHealthcheck(ctx, input)
@@ -985,15 +1100,8 @@ func formalPoolStartWarmingEvidenceComplete(account *Account) bool {
 		return false
 	}
 	return FormalPoolAccountStage(account) == FormalPoolStageHealthcheckPassed &&
-		formalPoolHealthcheckEvidencePersisted(account) &&
-		account.GetExtraString(FormalPoolExtraHealthcheckStatus) == "passed" &&
-		account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket) == "status_2xx" &&
-		isSafeLedgerRef(account.GetExtraString(FormalPoolExtraHealthcheckRawRef)) &&
-		formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen]) &&
-		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckFallbackDetected]) &&
-		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckProxyMismatch]) &&
-		!formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckRiskTextDetected]) &&
-		formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered])
+		healthcheckEvidenceComplete(account) &&
+		runtimeEvidenceComplete(account)
 }
 
 func (s *FormalPoolOperationsService) proxySwappedExtra(account *Account) map[string]any {

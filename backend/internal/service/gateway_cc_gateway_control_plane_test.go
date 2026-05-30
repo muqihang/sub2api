@@ -124,6 +124,7 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelDoesNotQuarantine(t *test
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusUnprocessableEntity, "persona_reject_untrusted_model")}
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
 	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
 	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
@@ -194,6 +195,7 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 
 func TestCCGatewayControlPlane_EstablishedTransientProxyFailureDoesNotQuarantine(t *testing.T) {
 	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
 
 	require.False(t, shouldQuarantineCCGatewayControlPlaneForAccount(account, "egress_proxy_failure", "", http.StatusBadGateway))
@@ -210,6 +212,7 @@ func TestCCGatewayControlPlane_FormalPoolMissingIdentityQuarantines(t *testing.T
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, "missing_account_identity")}
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
 	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
 	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
@@ -270,6 +273,7 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelResponsesAndCountTokensDo
 			upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusUnprocessableEntity, "persona_reject_untrusted_model")}
 			svc := newCCGatewayBoundaryService(upstream)
 			account := newCCGatewayBoundaryAccount()
+			formalPoolApplyCompleteSchedulingEvidenceForTest(account)
 			account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
 			account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
 			repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}

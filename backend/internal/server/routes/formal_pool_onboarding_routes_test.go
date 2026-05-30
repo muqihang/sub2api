@@ -53,10 +53,16 @@ func TestFormalPoolOnboardingRoutes_AdminAndPublicBrowserEgress(t *testing.T) {
 	require.Equal(t, 3, adminAuthCalls, "healthcheck route must remain admin protected")
 	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND")
 
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/accounts/2/healthcheck", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, 4, adminAuthCalls, "account-level healthcheck route must remain admin protected")
+	require.NotContains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND", "account-level healthcheck must not use expired onboarding sessions")
+
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/fpo_test/promote-production", nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	require.Equal(t, 4, adminAuthCalls, "production promotion route must remain admin protected")
+	require.Equal(t, 5, adminAuthCalls, "production promotion route must remain admin protected")
 	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND")
 
 }

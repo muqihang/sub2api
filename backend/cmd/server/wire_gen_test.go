@@ -83,3 +83,8 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		cleanup()
 	})
 }
+
+func TestApplicationCarriesFormalPoolRuntimeRegistrationStartupReplay(t *testing.T) {
+	app := &Application{FormalPoolRuntimeRegistrationStartupReplay: service.NewFormalPoolRuntimeRegistrationStartupReplay(nil)}
+	require.NotNil(t, app.FormalPoolRuntimeRegistrationStartupReplay)
+}
