@@ -170,6 +170,7 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 		{name: "candidate model blocked with verifier quarantines", code: "candidate_model_opus_blocked", message: "verifier failed", status: http.StatusUnprocessableEntity, want: true},
 		{name: "candidate model blocked with risk quarantines", code: "candidate_model_opus_blocked", message: "risk text detected", status: http.StatusUnprocessableEntity, want: true},
 		{name: "forbidden with model not trusted quarantines", code: "forbidden", message: "model not trusted", status: http.StatusForbidden, want: true},
+		{name: "untrusted billing input is request-level block", code: "signing_untrusted_billing_input", status: http.StatusForbidden, want: false},
 		{name: "missing account identity", code: "missing_account_identity", status: http.StatusForbidden, want: true},
 		{name: "missing identity", code: "missing_identity", status: http.StatusForbidden, want: true},
 		{name: "missing egress", code: "missing_egress", status: http.StatusForbidden, want: true},
@@ -189,6 +190,20 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 			require.Equal(t, tt.want, shouldQuarantineCCGatewayControlPlane(tt.code, tt.message, tt.status))
 		})
 	}
+}
+
+func TestCCGatewayControlPlane_EstablishedTransientProxyFailureDoesNotQuarantine(t *testing.T) {
+	account := newCCGatewayBoundaryAccount()
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+
+	require.False(t, shouldQuarantineCCGatewayControlPlaneForAccount(account, "egress_proxy_failure", "", http.StatusBadGateway))
+}
+
+func TestCCGatewayControlPlane_OnboardingProxyFailureStillQuarantines(t *testing.T) {
+	account := newCCGatewayBoundaryAccount()
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRuntimeRegistered
+
+	require.True(t, shouldQuarantineCCGatewayControlPlaneForAccount(account, "egress_proxy_failure", "", http.StatusBadGateway))
 }
 
 func TestCCGatewayControlPlane_FormalPoolMissingIdentityQuarantines(t *testing.T) {

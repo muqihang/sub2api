@@ -7139,7 +7139,7 @@ func (s *GatewayService) handleCCGatewayControlPlaneSideEffects(ctx context.Cont
 		return
 	}
 	reason := ccGatewayControlPlaneReason(code, message)
-	if !shouldQuarantineCCGatewayControlPlane(code, message, statusCode) {
+	if !shouldQuarantineCCGatewayControlPlaneForAccount(account, code, message, statusCode) {
 		s.observeCCGatewayControlPlaneRisk(ctx, account, reason, BudgetActionObserve)
 		return
 	}
@@ -7179,6 +7179,9 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	if isCCGatewayBenignBodyTooLargeReject(code, text) {
 		return false
 	}
+	if isCCGatewayRequestLevelBillingReject(code, text) {
+		return false
+	}
 
 	quarantineSignals := []string{
 		"missing_account_identity",
@@ -7205,6 +7208,26 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	// Status is context only here: CC Gateway may return 403/422 for both
 	// model policy and hard identity/proxy risks, so text/code decide class.
 	return true
+}
+
+func shouldQuarantineCCGatewayControlPlaneForAccount(account *Account, code string, message string, statusCode int) bool {
+	text := strings.ToLower(strings.TrimSpace(code) + " " + strings.TrimSpace(message))
+	if isCCGatewayEstablishedAccountTransientProxyFailure(account, text) {
+		return false
+	}
+	return shouldQuarantineCCGatewayControlPlane(code, message, statusCode)
+}
+
+func isCCGatewayRequestLevelBillingReject(code string, text string) bool {
+	return code == "signing_untrusted_billing_input" || strings.Contains(text, "signing_untrusted_billing_input")
+}
+
+func isCCGatewayEstablishedAccountTransientProxyFailure(account *Account, text string) bool {
+	if account == nil || !strings.Contains(text, "egress_proxy_failure") {
+		return false
+	}
+	stage := FormalPoolAccountStage(account)
+	return stage == FormalPoolStageWarming || stage == FormalPoolStageProduction
 }
 
 func isCCGatewayBenignBodyTooLargeReject(code string, text string) bool {
