@@ -2820,17 +2820,35 @@ export default {
         startWarmingAllowed: 'Evidence is complete; warming may start',
         startWarmingBlocked: 'Enabled only when runtime registration and full healthcheck evidence are complete',
         startWarmingBlockedRuntime: 'Disabled until CC Gateway runtime registration evidence is present',
-        noRawTokenWarning: 'ST tokens are not echoed in the UI or saved raw; errors are scrubbed again before rendering.',
+        noRawTokenWarning: 'Secrets are not echoed in the UI; errors are scrubbed again before rendering.',
+        noRawTokenWarningSetupToken: 'ST tokens are not echoed in the UI or saved raw; errors are scrubbed again before rendering.',
         setupTokenSafetyCopy: 'The sk-ant-sid session is used only to exchange for a new inference token; it is never echoed or saved raw.',
+        directedHealthcheckWarning: 'Directed healthcheck uses /admin/accounts/:id/formal-pool/healthcheck and sends one tiny real messages request through this account. Click only after administrator confirmation.',
         replacementGuidance: 'If token repair fails, replace the account; replacement must also change the egress proxy and repeat full onboarding.',
         proxySwapSafetyCopy: 'After proxy swap, full runtime registration and healthcheck evidence are still required before warming. Do not bypass the warming gate or jump to production.',
         actions: {
           refresh: 'Refresh diagnostics',
-          repairToken: 'Repair Token',
+          repairToken: 'Repair ST token',
           runtimeRegister: 'Runtime register',
-          healthcheck: 'Healthcheck',
+          healthcheck: 'Directed healthcheck',
           startWarming: 'Start warming',
           proxySwap: 'Swap proxy and revalidate'
+        },
+        oauthRecovery: {
+          title: 'OAuth recovery sequence',
+          body: 'OAuth formal-pool accounts cannot be repaired with an ST token. Use the global account menu to refresh-only or reauthorize first, then continue here with runtime register, directed healthcheck, and warming.',
+          stepRefresh: 'Refresh-only or reauthorize from the account action menu.',
+          stepRuntime: 'Run runtime register in this dialog.',
+          stepHealthcheck: 'Run directed healthcheck only after confirming it will send one tiny real messages request.',
+          stepWarming: 'Start warming after runtime and healthcheck evidence are complete.'
+        },
+        failureOriginDescriptions: {
+          local_gate: 'Local lifecycle gate is blocking scheduling. First click runtime register if runtime evidence is missing, then run directed healthcheck.',
+          cc_gateway_control_plane: 'CC Gateway control plane has not confirmed runtime registration. First click runtime register, then run directed healthcheck.',
+          upstream: 'Upstream rejected the directed check. Repair credentials or reauthorize/refresh first, then run directed healthcheck.',
+          proxy: 'Proxy evidence is invalid or mismatched. First swap proxy and revalidate, then repeat runtime register and directed healthcheck.',
+          token_exchange: 'Credential exchange failed. Setup-token accounts should repair ST token; OAuth accounts should refresh-only or reauthorize first.',
+          unknown: 'Failure origin is unknown. First refresh diagnostics, then follow the latest recommended action.'
         },
         failureOrigins: {
           local_gate: 'Local gate',
@@ -2843,6 +2861,8 @@ export default {
         evidenceLabels: {
           ccGatewaySeen: 'CC Gateway seen',
           runtimeRegistered: 'Runtime registered',
+          runtimeRegisteredAt: 'Runtime registered at',
+          runtimeEvidenceComplete: 'Runtime evidence complete',
           rawCapturePresent: 'Raw capture present',
           rawCaptureRef: 'Raw capture ref',
           fallbackDetected: 'Fallback detected',
@@ -2853,7 +2873,8 @@ export default {
           evidencePersisted: 'Healthcheck evidence persisted'
         },
         recommendedActionKeys: {
-          repair_token: 'Repair token first',
+          repair_token: 'Repair ST token',
+          repair_oauth: 'Refresh-only or reauthorize OAuth',
           replace_account_and_proxy: 'Replace account and egress proxy',
           swap_proxy: 'Swap proxy and revalidate',
           runtime_register: 'Run runtime registration',

@@ -725,6 +725,8 @@ export interface FormalPoolOperationsDiagnostics {
   healthcheck_status?: string
   status_code_bucket?: string
   cc_gateway_runtime_registered?: boolean
+  cc_gateway_runtime_registered_at?: string
+  runtime_evidence_complete?: boolean
   cc_gateway_seen?: boolean
   raw_capture_present?: boolean
   raw_capture_ref?: string

@@ -28,7 +28,11 @@
       </div>
 
       <div class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200">
-        {{ t('admin.accounts.formalPoolDiagnostics.noRawTokenWarning') }}
+        {{ t(canRepairSetupToken ? 'admin.accounts.formalPoolDiagnostics.noRawTokenWarningSetupToken' : 'admin.accounts.formalPoolDiagnostics.noRawTokenWarning') }}
+      </div>
+
+      <div v-if="failureOriginDescription" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200" data-test="failure-origin-guidance">
+        {{ failureOriginDescription }}
       </div>
 
       <div v-if="errorMessage" class="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300" data-test="operation-error">
@@ -135,6 +139,21 @@
             </p>
           </div>
 
+          <div v-else-if="canShowOAuthRecoveryGuidance" class="rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100" data-test="oauth-recovery-guidance">
+            <p class="font-semibold">{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.title') }}</p>
+            <p class="mt-2">{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.body') }}</p>
+            <ol class="mt-3 list-decimal space-y-1 pl-5">
+              <li>{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.stepRefresh') }}</li>
+              <li>{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.stepRuntime') }}</li>
+              <li>{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.stepHealthcheck') }}</li>
+              <li>{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.stepWarming') }}</li>
+            </ol>
+          </div>
+
+          <p class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200" data-test="directed-healthcheck-warning">
+            {{ t('admin.accounts.formalPoolDiagnostics.directedHealthcheckWarning') }}
+          </p>
+
           <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
             <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="runAccountAction('runtime-register')">
               {{ t('admin.accounts.formalPoolDiagnostics.actions.runtimeRegister') }}
@@ -165,6 +184,7 @@
                 </span>
                 <input
                   v-model="swapProxyId"
+                  data-test="proxy-id-input"
                   type="number"
                   min="1"
                   class="input mt-1 w-full"
@@ -246,12 +266,30 @@ const activeAccount = computed(() => latestAccount.value ?? props.account)
 const currentDiagnostics = computed(() => diagnostics.value)
 const isBusy = computed(() => Boolean(busyAction.value) || loading.value)
 
-const recommendedActions = computed<FormalPoolRecommendedAction[]>(() => currentDiagnostics.value?.recommended_actions ?? [])
+const recommendedActions = computed<FormalPoolRecommendedAction[]>(() => {
+  const actions = currentDiagnostics.value?.recommended_actions ?? []
+  if (!canShowOAuthRecoveryGuidance.value) return actions
+  return actions.map(action => action.key === 'repair_token'
+    ? { ...action, key: 'repair_oauth', label: t('admin.accounts.formalPoolDiagnostics.recommendedActionKeys.repair_oauth') }
+    : action
+  )
+})
 const recommendedKeys = computed(() => new Set(recommendedActions.value.map(action => action.key)))
 
 const canRepairSetupToken = computed(() => {
   const account = activeAccount.value
   return account?.platform === 'anthropic' && account.type === 'setup-token' && account.is_formal_pool === true
+})
+
+const canShowOAuthRecoveryGuidance = computed(() => {
+  const account = activeAccount.value
+  return account?.platform === 'anthropic' && account.type === 'oauth' && account.is_formal_pool === true
+})
+
+const failureOriginDescription = computed(() => {
+  const origin = currentDiagnostics.value?.failure_origin || 'unknown'
+  const translated = t(`admin.accounts.formalPoolDiagnostics.failureOriginDescriptions.${origin}`, '')
+  return translated || ''
 })
 
 const evidenceComplete = computed(() => {
@@ -261,6 +299,8 @@ const evidenceComplete = computed(() => {
     d.healthcheck_evidence_persisted &&
     d.status_code_bucket === 'status_2xx' &&
     d.cc_gateway_runtime_registered === true &&
+    d.runtime_evidence_complete !== false &&
+    Boolean(d.cc_gateway_runtime_registered_at) &&
     d.cc_gateway_seen &&
     d.raw_capture_present &&
     !d.fallback_detected &&
@@ -271,7 +311,7 @@ const evidenceComplete = computed(() => {
 const canStartWarming = computed(() => recommendedKeys.value.has('start_warming') && evidenceComplete.value)
 const startWarmingTitle = computed(() => canStartWarming.value
   ? t('admin.accounts.formalPoolDiagnostics.startWarmingAllowed')
-  : currentDiagnostics.value?.cc_gateway_runtime_registered !== true
+  : currentDiagnostics.value?.cc_gateway_runtime_registered !== true || currentDiagnostics.value?.runtime_evidence_complete === false || !currentDiagnostics.value?.cc_gateway_runtime_registered_at
     ? t('admin.accounts.formalPoolDiagnostics.startWarmingBlockedRuntime')
     : t('admin.accounts.formalPoolDiagnostics.startWarmingBlocked'))
 
@@ -326,6 +366,8 @@ const evidenceItems = computed(() => {
   return [
     { key: 'cc_gateway_seen', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.ccGatewaySeen'), value: formatBoolean(d?.cc_gateway_seen) },
     { key: 'cc_gateway_runtime_registered', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeRegistered'), value: formatBoolean(d?.cc_gateway_runtime_registered) },
+    { key: 'cc_gateway_runtime_registered_at', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeRegisteredAt'), value: valueOrDash(d?.cc_gateway_runtime_registered_at) },
+    { key: 'runtime_evidence_complete', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeEvidenceComplete'), value: formatBoolean(d?.runtime_evidence_complete) },
     { key: 'raw_capture_present', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rawCapturePresent'), value: formatBoolean(d?.raw_capture_present) },
     { key: 'raw_capture_ref', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rawCaptureRef'), value: valueOrDash(d?.raw_capture_ref) },
     { key: 'fallback_detected', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.fallbackDetected'), value: formatBoolean(d?.fallback_detected) },
@@ -374,19 +416,24 @@ const applyOperationResult = async (result: FormalPoolOperationResult) => {
   sessionKey.value = ''
 }
 
-const handleOperationError = (error: unknown) => {
+const handleOperationError = async (error: unknown) => {
+  let hasOperationDiagnostics = false
   if (error instanceof FormalPoolOperationError) {
     if (error.account && activeAccount.value) latestAccount.value = { ...activeAccount.value, ...error.account }
-    if (error.diagnostics) diagnostics.value = error.diagnostics
+    if (error.diagnostics) {
+      diagnostics.value = error.diagnostics
+      hasOperationDiagnostics = true
+    }
   }
   setError(error)
+  if (!hasOperationDiagnostics) await refreshDiagnostics({ keepError: true })
 }
 
-const refreshDiagnostics = async () => {
+const refreshDiagnostics = async (options: { keepError?: boolean } = {}) => {
   const account = activeAccount.value
   if (!account) return
   loading.value = true
-  errorMessage.value = ''
+  if (!options.keepError) errorMessage.value = ''
   try {
     diagnostics.value = await getDiagnostics(account.id)
   } catch (error) {
@@ -405,7 +452,7 @@ const runWithBusy = async (name: string, operation: () => Promise<FormalPoolOper
     await applyOperationResult(result)
     appStore.showSuccess(t('admin.accounts.formalPoolDiagnostics.operationSucceeded'))
   } catch (error) {
-    handleOperationError(error)
+    await handleOperationError(error)
   } finally {
     busyAction.value = null
   }

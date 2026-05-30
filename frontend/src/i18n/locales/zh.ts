@@ -2858,17 +2858,35 @@ export default {
         startWarmingAllowed: '证据完整，可以进入预热',
         startWarmingBlocked: '仅当运行时注册和完整健康检查证据均满足时可用',
         startWarmingBlockedRuntime: '缺少 CC Gateway 运行时注册证据，暂不能开始预热',
-        noRawTokenWarning: 'ST token 不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
+        noRawTokenWarning: '密钥不会在界面回显；错误信息会在前端再次脱敏。',
+        noRawTokenWarningSetupToken: 'ST token 不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
         setupTokenSafetyCopy: '这里输入的是 sk-ant-sid 登录态。系统只用它换取新的 inference token；不会回显，也不会保存原始 sk-ant-sid。',
+        directedHealthcheckWarning: '定向健康检查只使用 /admin/accounts/:id/formal-pool/healthcheck 这条 operations 路径，并会通过该账号发送一次极小真实 messages 请求；必须管理员确认后才点击。',
         replacementGuidance: '如果 token 修复失败，再更换账号；更换账号时必须同时更换出口代理，并重新走完整上号流程。',
         proxySwapSafetyCopy: '更换代理后仍必须重新完成运行时注册和健康检查证据，不能绕过预热门禁或直接进入生产。',
         actions: {
           refresh: '刷新诊断',
-          repairToken: '修复 Token',
+          repairToken: '修复 ST token',
           runtimeRegister: '运行时注册',
-          healthcheck: '健康检查',
+          healthcheck: '定向健康检查',
           startWarming: '开始预热',
           proxySwap: '更换代理并复检'
+        },
+        oauthRecovery: {
+          title: 'OAuth 恢复序列',
+          body: 'OAuth Formal Pool 账号不能用 ST token 修复。请先在账号全局菜单执行 refresh-only 或重新授权，然后回到本弹窗继续运行时注册、定向健康检查和预热。',
+          stepRefresh: '先在账号操作菜单执行 refresh-only 或重新授权。',
+          stepRuntime: '在本弹窗点击运行时注册。',
+          stepHealthcheck: '确认会发送一次极小真实 messages 请求后，再点击定向健康检查。',
+          stepWarming: '运行时和健康检查证据完整后，再开始预热。'
+        },
+        failureOriginDescriptions: {
+          local_gate: '本地生命周期门禁阻止调度。若缺少运行时证据，先点运行时注册，再运行定向健康检查。',
+          cc_gateway_control_plane: 'CC Gateway 控制面尚未确认运行时注册。先点运行时注册，再运行定向健康检查。',
+          upstream: '上游拒绝了定向检查。先修复凭据或刷新/重新授权，再运行定向健康检查。',
+          proxy: '代理证据无效或不匹配。先更换代理并复检，再重复运行时注册和定向健康检查。',
+          token_exchange: '凭据交换失败。setup-token 账号应修复 ST token；OAuth 账号应先 refresh-only 或重新授权。',
+          unknown: '失败来源未知。先刷新诊断，再按最新建议操作。'
         },
         failureOrigins: {
           local_gate: '本地门禁',
@@ -2881,6 +2899,8 @@ export default {
         evidenceLabels: {
           ccGatewaySeen: 'CC Gateway 已看到',
           runtimeRegistered: '运行时已注册',
+          runtimeRegisteredAt: '运行时注册时间',
+          runtimeEvidenceComplete: '运行时证据完整',
           rawCapturePresent: '原始捕获存在',
           rawCaptureRef: '原始捕获引用',
           fallbackDetected: '检测到 fallback',
@@ -2891,7 +2911,8 @@ export default {
           evidencePersisted: '健康检查证据已持久化'
         },
         recommendedActionKeys: {
-          repair_token: '优先修复 Token',
+          repair_token: '修复 ST token',
+          repair_oauth: '刷新或重新授权 OAuth',
           replace_account_and_proxy: '更换账号和出口代理',
           swap_proxy: '更换代理并重新验证',
           runtime_register: '运行运行时注册',

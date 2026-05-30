@@ -11,13 +11,44 @@ vi.mock('@/api/client', () => ({
 
 import {
   FormalPoolOperationError,
+  healthcheck,
   replaceSetupToken,
+  runtimeRegister,
+  startWarming,
+  swapProxy,
 } from '@/api/admin/formalPoolOperations'
 
 describe('formalPoolOperations API', () => {
   beforeEach(() => {
     get.mockReset()
     post.mockReset()
+  })
+
+
+  it('uses the formal-pool operations URLs and payloads for lifecycle actions', async () => {
+    post.mockResolvedValue({ data: { account: { id: 5 } } })
+
+    await runtimeRegister(5)
+    expect(post).toHaveBeenLastCalledWith('/admin/accounts/5/formal-pool/runtime-register')
+
+    await healthcheck(5)
+    expect(post).toHaveBeenLastCalledWith('/admin/accounts/5/formal-pool/healthcheck')
+
+    await startWarming(5)
+    expect(post).toHaveBeenLastCalledWith('/admin/accounts/5/formal-pool/start-warming')
+
+    await swapProxy(5, {
+      proxy_id: 9,
+      run_proxy_test: true,
+      run_runtime_register: true,
+      run_healthcheck: true,
+    })
+    expect(post).toHaveBeenLastCalledWith('/admin/accounts/5/formal-pool/proxy/swap', {
+      proxy_id: 9,
+      run_proxy_test: true,
+      run_runtime_register: true,
+      run_healthcheck: true,
+    })
   })
 
   it('preserves diagnostics recommendations from failed setup-token replacement', async () => {
