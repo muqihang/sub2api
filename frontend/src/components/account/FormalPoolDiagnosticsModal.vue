@@ -119,7 +119,7 @@
                 data-test="repair-token-button"
                 class="btn btn-primary"
                 :disabled="isBusy || !sessionKey.trim()"
-                @click="handleReplaceSetupToken"
+                @click="() => handleReplaceSetupToken()"
               >
                 {{ busyAction === 'replace-token' ? t('common.loading') : t('admin.accounts.formalPoolDiagnostics.actions.repairToken') }}
               </button>
@@ -191,7 +191,7 @@
                   :placeholder="t('admin.accounts.formalPoolDiagnostics.proxyIdPlaceholder')"
                 />
               </label>
-              <button type="button" class="btn btn-secondary" :disabled="isBusy || !parsedSwapProxyId" @click="handleSwapProxy">
+              <button type="button" class="btn btn-secondary" :disabled="isBusy || !parsedSwapProxyId" @click="() => handleSwapProxy()">
                 {{ t('admin.accounts.formalPoolDiagnostics.actions.proxySwap') }}
               </button>
             </div>
