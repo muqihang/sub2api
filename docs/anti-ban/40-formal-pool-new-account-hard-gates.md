@@ -13,7 +13,7 @@
 | `imported` | OAuth/setup-token 导入成功 | 否 | 默认 `schedulable=false`、`pool_profile_effective=normal`、`pool_weight_mode=low` |
 | `refreshed` | refresh-only 成功 | 否 | 只验证凭证刷新链路，不发 messages |
 | `runtime_registered` | CC Gateway runtime 注册成功 | 否 | 确认账号安全引用、代理引用、出口 bucket 已写入 runtime |
-| `healthcheck_passed` | 定向极小健康检查 200，且经过 CC Gateway，且 raw capture 存在 | 否 | 200 前不能进入预热或生产 |
+| `healthcheck_passed` | 最终定向健康检查 200，且经过 CC Gateway，且 raw capture 存在 | 否 | 200 前不能进入预热或生产；若启用真实 Claude Code 客户端健康检查，则以真实客户端定向检查 200 作为最终准入证据 |
 | `warming` | 后台显式 start-warming | 是 | 低权重、normal effective profile，禁止 aggressive 生效 |
 | `production` | 后台显式 promote-production，且已处于 warming | 是 | `pool_profile_requested` 才允许变为 effective |
 | `quarantined` | 命中硬风险 | 否 | 人工恢复前不可调度 |
@@ -158,7 +158,7 @@ POST /api/v1/admin/accounts/:id/quarantine
 4. 确认账号阶段为 `imported` 或 `runtime_registered`，且 `schedulable=false`。
 5. 执行 refresh-only；失败则隔离。
 6. 执行 runtime-register；失败则隔离。
-7. 执行 healthcheck；必须返回 200 且 CC Gateway raw capture 存在。
+7. 执行 healthcheck；必须返回 200 且 CC Gateway raw capture 存在。若启用真实 Claude Code 客户端健康检查，则后台生成短期单账号 healthcheck key，由真实 CLI 发起一次低成本请求，最终仍必须 200。
 8. 执行 start-warming；进入低权重 normal 预热，并写入 `warming_until`。
 9. 观察预热窗口；无 401/403、无代理异常、无风险文本后，执行 promote-production。
 10. production 后再允许 requested aggressive 生效。
