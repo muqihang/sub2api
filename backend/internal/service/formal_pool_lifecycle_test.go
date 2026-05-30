@@ -21,6 +21,7 @@ func formalPoolCompleteSchedulingEvidenceForTest() map[string]any {
 		FormalPoolExtraRuntimeRegistered:           "true",
 		FormalPoolExtraRuntimeRegisteredAt:         "2026-05-30T00:00:00Z",
 		"cc_gateway_account_ref":                   "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"cc_gateway_egress_bucket_enabled":         "true",
 		"cc_gateway_egress_bucket":                 "claude-safe-bucket",
 	}
 }

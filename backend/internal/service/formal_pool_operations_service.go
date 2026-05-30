@@ -661,7 +661,15 @@ func runtimeEvidenceComplete(account *Account) bool {
 	return formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]) &&
 		strings.TrimSpace(account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt)) != "" &&
 		isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))) &&
-		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) != ""
+		formalPoolEgressBucketEvidenceComplete(account)
+}
+
+func formalPoolEgressBucketEvidenceComplete(account *Account) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	bucketEnabled, ok := parseCCGatewayBool(account.GetExtraString(ccGatewayExtraEgressBucketEnabled))
+	return ok && bucketEnabled && strings.TrimSpace(resolveCCGatewayEgressBucket(account)) != ""
 }
 
 func formalPoolGeneratedRuntimeAccountRef(account *Account) string {

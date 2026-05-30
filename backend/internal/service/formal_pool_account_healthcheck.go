@@ -155,7 +155,7 @@ func validateFormalPoolHealthcheckAccount(account *Account, input FormalPoolAcce
 	if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version == "" || !ccGatewayPolicyVersionCompatible(version) {
 		return fmt.Errorf("cc gateway policy version mismatch for account %d", account.ID)
 	}
-	bucketEnabled, ok := parseCCGatewayBool(account.GetExtraString("cc_gateway_egress_bucket_enabled"))
+	bucketEnabled, ok := parseCCGatewayBool(account.GetExtraString(ccGatewayExtraEgressBucketEnabled))
 	if !ok || !bucketEnabled || strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == "" {
 		return fmt.Errorf("cc gateway egress bucket disabled or missing for account %d", account.ID)
 	}

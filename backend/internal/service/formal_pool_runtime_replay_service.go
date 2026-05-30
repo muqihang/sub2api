@@ -153,7 +153,10 @@ func (s *FormalPoolRuntimeRegistrationReplayService) Replay(ctx context.Context)
 }
 
 func formalPoolRuntimeReplayCandidate(account *Account) bool {
-	return formalPoolRuntimeReplayEligible(account)
+	if !formalPoolRuntimeReplayEligible(account) {
+		return false
+	}
+	return !runtimeEvidenceComplete(account)
 }
 
 func formalPoolRuntimeReplayEligible(account *Account) bool {

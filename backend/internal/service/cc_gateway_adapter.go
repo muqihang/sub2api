@@ -29,9 +29,10 @@ const (
 	ccGatewayErrorKindHeader        = "x-cc-gateway-error-kind"
 	ccGatewayErrorCodeHeader        = "x-cc-gateway-error-code"
 
-	ccGatewayExtraEgressBucket  = "cc_gateway_egress_bucket"
-	ccGatewayExtraPolicyVersion = "cc_gateway_policy_version"
-	ccGatewayExtraAccountRef    = "cc_gateway_account_ref"
+	ccGatewayExtraEgressBucket        = "cc_gateway_egress_bucket"
+	ccGatewayExtraEgressBucketEnabled = "cc_gateway_egress_bucket_enabled"
+	ccGatewayExtraPolicyVersion       = "cc_gateway_policy_version"
+	ccGatewayExtraAccountRef          = "cc_gateway_account_ref"
 
 	// First-wave shared-pool policy stays anchored to the verified Claude Code
 	// 2.1.150 registry profile. Same-minor CLI-through drift (for example
@@ -252,7 +253,7 @@ func (s *GatewayService) selectCCGatewayAnthropicRouteForMode(account *Account, 
 	if version := strings.TrimSpace(account.GetExtraString("cc_gateway_policy_version")); version == "" || !ccGatewayPolicyVersionCompatible(version) {
 		return false, fmt.Errorf("cc gateway policy version mismatch for account %d", account.ID)
 	}
-	bucketEnabled, ok := parseCCGatewayBool(account.GetExtraString("cc_gateway_egress_bucket_enabled"))
+	bucketEnabled, ok := parseCCGatewayBool(account.GetExtraString(ccGatewayExtraEgressBucketEnabled))
 	if !ok || !bucketEnabled {
 		return false, fmt.Errorf("cc gateway egress bucket disabled or missing for account %d", account.ID)
 	}
