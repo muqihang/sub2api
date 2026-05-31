@@ -63,6 +63,8 @@ type FormalPoolOnboardingDeps struct {
 	Acceptance       FormalPoolAcceptanceRunner
 	Healthcheck      FormalPoolAccountHealthcheckRunner
 	Refresh          FormalPoolRefreshOnlyRunner
+	CacheInvalidator TokenCacheInvalidator
+	SchedulerCache   SchedulerCache
 	PublicURLPrefix  string
 }
 
@@ -76,6 +78,8 @@ type FormalPoolOnboardingService struct {
 	acceptance       FormalPoolAcceptanceRunner
 	healthcheck      FormalPoolAccountHealthcheckRunner
 	refresh          FormalPoolRefreshOnlyRunner
+	cacheInvalidator TokenCacheInvalidator
+	schedulerCache   SchedulerCache
 	publicURLPrefix  string
 }
 
@@ -260,7 +264,7 @@ func NewFormalPoolOnboardingService(deps FormalPoolOnboardingDeps) *FormalPoolOn
 		store = NewFormalPoolOnboardingStore(FormalPoolOnboardingDefaultTTL, time.Now)
 	}
 	prefix := strings.TrimRight(strings.TrimSpace(deps.PublicURLPrefix), "/")
-	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, publicURLPrefix: prefix}
+	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, cacheInvalidator: deps.CacheInvalidator, schedulerCache: deps.SchedulerCache, publicURLPrefix: prefix}
 }
 
 func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req FormalPoolOnboardingStartRequest) (*FormalPoolOnboardingSession, error) {
@@ -844,14 +848,18 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 	summary, credentials, err := s.refresh.RefreshFormalPoolAccount(ctx, account)
 	if err != nil {
 		if s.accounts != nil {
+			bucket := formalPoolRefreshFailureBucket(err)
 			_, _ = s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusError, map[string]any{
 				FormalPoolExtraOnboardingStage:           FormalPoolStageQuarantined,
 				FormalPoolExtraOnboardingStageUpdatedAt:  formalPoolTimestamp(s.store.now()),
 				FormalPoolExtraOnboardingLastCheck:       FormalPoolStageRefreshed,
 				FormalPoolExtraOnboardingLastCheckAt:     formalPoolTimestamp(s.store.now()),
-				FormalPoolExtraOnboardingLastErrorCode:   "refresh_only_failed",
-				FormalPoolExtraOnboardingLastErrorBucket: reasonBucket(err.Error()),
-				FormalPoolExtraQuarantineReason:          "reason_sensitive",
+				FormalPoolExtraOnboardingLastErrorCode:   bucket,
+				FormalPoolExtraOnboardingLastErrorBucket: bucket,
+				FormalPoolExtraLastFailureOrigin:         string(FormalPoolFailureOriginTokenExchange),
+				FormalPoolExtraLastFailureCode:           bucket,
+				FormalPoolExtraLastFailureSource:         "formal_pool_refresh_only",
+				FormalPoolExtraQuarantineReason:          bucket,
 				FormalPoolExtraQuarantineAt:              formalPoolTimestamp(s.store.now()),
 			})
 		}
@@ -870,7 +878,7 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 		targetStage = FormalPoolStageRuntimeRegistered
 		targetStatus = FormalPoolOnboardingStatusRuntimeRegistered
 	}
-	if _, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, map[string]any{
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, map[string]any{
 		"onboarding_state":                       targetStatus,
 		FormalPoolExtraOnboardingStage:           targetStage,
 		FormalPoolExtraOnboardingStageUpdatedAt:  stamp,
@@ -878,9 +886,11 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 		FormalPoolExtraOnboardingLastCheckAt:     stamp,
 		FormalPoolExtraOnboardingLastErrorCode:   "",
 		FormalPoolExtraOnboardingLastErrorBucket: "",
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
+	s.syncRefreshedFormalPoolAccountCaches(ctx, updated)
 	rec, err = s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
 		rec.Status = targetStatus
 		rec.CCGatewayRuntimeRegistered = rec.CCGatewayRuntimeRegistered || targetStage == FormalPoolStageRuntimeRegistered
@@ -891,6 +901,25 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 		return nil, err
 	}
 	return s.sessionResponse(rec, nil), nil
+}
+
+func formalPoolRefreshFailureBucket(err error) string {
+	if isInvalidGrantError(err) {
+		return "refresh_token_invalid"
+	}
+	return "refresh_failed"
+}
+
+func (s *FormalPoolOnboardingService) syncRefreshedFormalPoolAccountCaches(ctx context.Context, account *Account) {
+	if s == nil || account == nil {
+		return
+	}
+	if s.cacheInvalidator != nil {
+		_ = s.cacheInvalidator.InvalidateToken(ctx, account)
+	}
+	if s.schedulerCache != nil {
+		_ = s.schedulerCache.SetAccount(ctx, account)
+	}
 }
 
 func (s *FormalPoolOnboardingService) RegisterRuntime(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {

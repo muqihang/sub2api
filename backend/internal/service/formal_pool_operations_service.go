@@ -104,6 +104,17 @@ type FormalPoolOperationAuditEvent struct {
 	Timestamp    string `json:"timestamp,omitempty"`
 }
 
+type FormalPoolOperationStructuredLogAuditWriter struct{}
+
+func NewFormalPoolOperationStructuredLogAuditWriter() *FormalPoolOperationStructuredLogAuditWriter {
+	return &FormalPoolOperationStructuredLogAuditWriter{}
+}
+
+func (w *FormalPoolOperationStructuredLogAuditWriter) WriteFormalPoolOperationAudit(_ context.Context, event FormalPoolOperationAuditEvent) error {
+	slog.Info("formal_pool_operation_audit", "operator", event.Operator, "account_id", event.AccountID, "before_stage", event.BeforeStage, "after_stage", event.AfterStage, "action", event.Action, "reason_bucket", event.ReasonBucket, "success", event.Success, "failure_code", event.FailureCode, "noop", event.Noop, "timestamp", event.Timestamp)
+	return nil
+}
+
 type FormalPoolOperationAuditWriter interface {
 	WriteFormalPoolOperationAudit(ctx context.Context, event FormalPoolOperationAuditEvent) error
 }
@@ -167,6 +178,8 @@ type FormalPoolOperationsDeps struct {
 	Healthcheck      FormalPoolAccountHealthcheckRunner
 	Quarantine       *AccountQuarantineService
 	Audit            FormalPoolOperationAuditWriter
+	CacheInvalidator TokenCacheInvalidator
+	SchedulerCache   SchedulerCache
 	Now              func() time.Time
 }
 
@@ -178,6 +191,8 @@ type FormalPoolOperationsService struct {
 	healthcheck      FormalPoolAccountHealthcheckRunner
 	quarantine       *AccountQuarantineService
 	audit            FormalPoolOperationAuditWriter
+	cacheInvalidator TokenCacheInvalidator
+	schedulerCache   SchedulerCache
 	now              func() time.Time
 }
 
@@ -194,6 +209,8 @@ func NewFormalPoolOperationsService(deps FormalPoolOperationsDeps) *FormalPoolOp
 		healthcheck:      deps.Healthcheck,
 		quarantine:       deps.Quarantine,
 		audit:            deps.Audit,
+		cacheInvalidator: deps.CacheInvalidator,
+		schedulerCache:   deps.SchedulerCache,
 		now:              now,
 	}
 }
@@ -362,6 +379,7 @@ func (s *FormalPoolOperationsService) replaceSetupToken(ctx context.Context, acc
 	if err != nil {
 		return nil, err
 	}
+	s.syncRefreshedAccountCaches(ctx, account)
 	if req.RunRuntimeRegister {
 		result, err := s.runtimeRegister(ctx, account.ID)
 		if err != nil {
@@ -381,6 +399,18 @@ func (s *FormalPoolOperationsService) replaceSetupToken(ctx context.Context, acc
 		}
 	}
 	return s.accountResult(ctx, account.ID, account)
+}
+
+func (s *FormalPoolOperationsService) syncRefreshedAccountCaches(ctx context.Context, account *Account) {
+	if s == nil || account == nil {
+		return
+	}
+	if s.cacheInvalidator != nil {
+		_ = s.cacheInvalidator.InvalidateToken(ctx, account)
+	}
+	if s.schedulerCache != nil {
+		_ = s.schedulerCache.SetAccount(ctx, account)
+	}
 }
 
 func (s *FormalPoolOperationsService) RuntimeRegister(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
@@ -1480,8 +1510,9 @@ func (s *FormalPoolOperationsService) writeOperationAudit(ctx context.Context, e
 		if err := s.audit.WriteFormalPoolOperationAudit(ctx, event); err != nil {
 			slog.Warn("formal_pool_operation_audit_write_failed", "action", event.Action, "account_id", event.AccountID, "error", err)
 		}
+		return
 	}
-	slog.Info("formal_pool_operation_audit", "operator", event.Operator, "account_id", event.AccountID, "before_stage", event.BeforeStage, "after_stage", event.AfterStage, "action", event.Action, "reason_bucket", event.ReasonBucket, "success", event.Success, "failure_code", event.FailureCode, "noop", event.Noop)
+	(&FormalPoolOperationStructuredLogAuditWriter{}).WriteFormalPoolOperationAudit(ctx, event)
 }
 
 func formalPoolOperationSafeStage(stage string) string {

@@ -57,7 +57,7 @@ func ProvideCodexEntryCenterConfig(cfg *config.Config) *CodexEntryCenterConfig {
 	return &CodexEntryCenterConfig{ServerOrigin: frontendURL, GatewayOrigin: ""}
 }
 
-func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream) *FormalPoolOnboardingService {
+func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOnboardingService {
 	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
 	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
 	return NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
@@ -68,10 +68,12 @@ func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService 
 		CCGateway:        NewFormalPoolStaticCCGatewayReadinessVerifier(),
 		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
 		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		CacheInvalidator: cacheInvalidator,
+		SchedulerCache:   schedulerCache,
 	})
 }
 
-func ProvideFormalPoolOperationsService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream) *FormalPoolOperationsService {
+func ProvideFormalPoolOperationsService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOperationsService {
 	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
 	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
 	return NewFormalPoolOperationsService(FormalPoolOperationsDeps{
@@ -81,6 +83,9 @@ func ProvideFormalPoolOperationsService(adminService AdminService, oauthService 
 		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
 		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
 		Quarantine:       quarantine,
+		Audit:            NewFormalPoolOperationStructuredLogAuditWriter(),
+		CacheInvalidator: cacheInvalidator,
+		SchedulerCache:   schedulerCache,
 		Now:              time.Now,
 	})
 }

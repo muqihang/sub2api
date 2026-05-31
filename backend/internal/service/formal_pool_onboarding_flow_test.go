@@ -486,6 +486,57 @@ func TestFormalPoolRefreshOnlyPerformsRefreshBeforeMarkingRefreshed(t *testing.T
 	}
 }
 
+func TestFormalPoolRefreshOnlyInvalidGrantMarksTerminalCredentialBucket(t *testing.T) {
+	acct := &formalAccountFake{}
+	oauth := &formalOAuthFake{
+		summary:        FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"},
+		creds:          map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"},
+		refreshErr:     errors.New("invalid_grant: refresh token revoked"),
+		refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"},
+	}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	_, err := svc.RefreshOnly(context.Background(), sess.ID)
+	if err == nil {
+		t.Fatalf("refresh-only invalid_grant must fail")
+	}
+	if got := acct.account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode); got != "refresh_token_invalid" {
+		t.Fatalf("last error code = %q, want refresh_token_invalid", got)
+	}
+	if got := acct.account.GetExtraString(FormalPoolExtraQuarantineReason); got != "refresh_token_invalid" {
+		t.Fatalf("quarantine reason = %q, want refresh_token_invalid", got)
+	}
+}
+
+func TestFormalPoolRefreshOnlyInvalidatesTokenAndSyncsSchedulerCache(t *testing.T) {
+	acct := &formalAccountFake{}
+	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
+	invalidator := &formalPoolTokenInvalidatorFake{}
+	scheduler := &formalPoolSchedulerCacheFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct, CacheInvalidator: invalidator, SchedulerCache: scheduler})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	_, err := svc.RefreshOnly(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("refresh-only: %v", err)
+	}
+	if len(invalidator.accounts) != 1 || invalidator.accounts[0].ID != acct.account.ID {
+		t.Fatalf("token cache invalidation calls = %#v", invalidator.accounts)
+	}
+	if len(scheduler.setAccountCalls) != 1 || scheduler.setAccountCalls[0].GetCredential("access_token") != "new-access" {
+		t.Fatalf("scheduler sync calls = %#v", scheduler.setAccountCalls)
+	}
+}
+
 func TestFormalPoolAcceptanceUsesHealthcheckRunnerWhenAcceptanceRunnerMissing(t *testing.T) {
 	acct := &formalAccountFake{}
 	healthcheck := &formalHealthcheckFake{}

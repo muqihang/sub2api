@@ -298,6 +298,28 @@ func TestFormalPoolOperationsReplaceSetupToken_UpdatesCredentialsAndMarksRefresh
 	require.NotContains(t, mustJSON(t, got), "sk-ant-sid")
 }
 
+func TestFormalPoolOperationsReplaceSetupTokenInvalidatesTokenAndSyncsSchedulerCache(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(nil))
+	store.account.Credentials = map[string]any{"refresh_token": "old-refresh", "access_token": "old-access", "scope": "user:inference"}
+	oauth := &formalPoolOperationsOAuthFake{
+		summary:     FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ExpiresInBucket: "gt_1h"},
+		credentials: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:inference"},
+	}
+	invalidator := &formalPoolTokenInvalidatorFake{}
+	scheduler := &formalPoolSchedulerCacheFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, OAuth: oauth, CacheInvalidator: invalidator, SchedulerCache: scheduler})
+
+	_, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "sk-ant-sid01-new-secret"})
+	require.NoError(t, err)
+	require.Len(t, invalidator.accounts, 1)
+	require.Equal(t, store.account.ID, invalidator.accounts[0].ID)
+	require.Len(t, scheduler.setAccountCalls, 1)
+	require.Equal(t, "new-access", scheduler.setAccountCalls[0].GetCredential("access_token"))
+	require.Equal(t, FormalPoolStageRefreshed, scheduler.setAccountCalls[0].GetExtraString(FormalPoolExtraOnboardingStage))
+}
+
 func TestFormalPoolOperationsReplaceSetupToken_RejectsNonSetupToken(t *testing.T) {
 	t.Parallel()
 
@@ -1586,6 +1608,25 @@ func TestFormalPoolRuntimeRegistrationStartupReplay_RegisterFailureStaysUnschedu
 	require.Empty(t, account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
 	require.Equal(t, "runtime_replay_registration_failed", account.GetExtraString(FormalPoolExtraLastFailureCode))
 	require.NotEqual(t, FormalPoolStageWarming, account.GetExtraString(FormalPoolExtraOnboardingStage))
+}
+
+type formalPoolTokenInvalidatorFake struct {
+	accounts []*Account
+}
+
+func (f *formalPoolTokenInvalidatorFake) InvalidateToken(_ context.Context, account *Account) error {
+	f.accounts = append(f.accounts, account)
+	return nil
+}
+
+type formalPoolSchedulerCacheFake struct {
+	SchedulerCache
+	setAccountCalls []*Account
+}
+
+func (f *formalPoolSchedulerCacheFake) SetAccount(_ context.Context, account *Account) error {
+	f.setAccountCalls = append(f.setAccountCalls, account)
+	return nil
 }
 
 type formalPoolOperationsAuditFake struct {

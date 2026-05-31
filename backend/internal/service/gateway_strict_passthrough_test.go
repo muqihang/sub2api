@@ -541,6 +541,27 @@ func TestFormalPoolAuth401Second401QuarantinesAfterSingleRefresh(t *testing.T) {
 	require.NotContains(t, repo.accountsByID[account.ID].Extra, "formal_pool_auth_refresh_attempted")
 }
 
+func TestFormalPoolAuth401RefreshFailureQuarantinesWithoutRetry(t *testing.T) {
+	account := newFormalPoolRefreshAccount(AccountTypeSetupToken)
+	upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newAnthropicSuccessResponse()}}
+	executor := &formalPoolGatewayRefreshExecutor{err: errors.New("refresh temporarily unavailable")}
+	svc, repo, schedulerCache, _ := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
+	repo.cloneOnGet = true
+	c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	require.Equal(t, 1, upstream.requests)
+	require.Equal(t, 1, executor.refreshCalls)
+	require.Empty(t, schedulerCache.setAccountCalls)
+	require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.NotEqual(t, "refresh_required", repo.accountsByID[account.ID].Extra[FormalPoolExtraLastFailureCode])
+	require.False(t, repo.accountsByID[account.ID].Schedulable)
+	require.Equal(t, StatusError, repo.accountsByID[account.ID].Status)
+}
+
 func TestFormalPoolAuth401InvalidGrantQuarantinesWithoutRetry(t *testing.T) {
 	for _, accountType := range []string{AccountTypeSetupToken, AccountTypeOAuth} {
 		t.Run(accountType, func(t *testing.T) {

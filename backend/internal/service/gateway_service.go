@@ -4746,8 +4746,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					continue
 				}
 			}
-			if refreshErr != nil && isInvalidGrantError(refreshErr) {
-				s.quarantineFormalPoolRefreshFailure(ctx, account, http.StatusUnauthorized, "refresh_token_invalid")
+			if refreshErr != nil {
+				reason := "refresh_failed"
+				if isInvalidGrantError(refreshErr) {
+					reason = "refresh_token_invalid"
+				}
+				s.quarantineFormalPoolRefreshFailure(ctx, account, http.StatusUnauthorized, reason)
 				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -7376,21 +7380,25 @@ func (s *GatewayService) quarantineFormalPoolRefreshFailure(ctx context.Context,
 	if s == nil || s.rateLimitService == nil || account == nil {
 		return
 	}
-	if reason == "refresh_token_invalid" {
+	failureCode := reason
+	if strings.TrimSpace(failureCode) == "" {
+		failureCode = "refresh_failed"
+	}
+	if failureCode == "refresh_token_invalid" || failureCode == "refresh_failed" {
 		if account.Extra == nil {
 			account.Extra = map[string]any{}
 		}
 		account.Extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginTokenExchange)
-		account.Extra[FormalPoolExtraLastFailureCode] = "refresh_token_invalid"
+		account.Extra[FormalPoolExtraLastFailureCode] = failureCode
 		account.Extra[FormalPoolExtraLastFailureSource] = "formal_pool_auth_refresh"
 		if s.rateLimitService.accountRepo != nil {
 			updates := map[string]any{
 				FormalPoolExtraLastFailureOrigin: string(FormalPoolFailureOriginTokenExchange),
-				FormalPoolExtraLastFailureCode:   "refresh_token_invalid",
+				FormalPoolExtraLastFailureCode:   failureCode,
 				FormalPoolExtraLastFailureSource: "formal_pool_auth_refresh",
 			}
 			if err := s.rateLimitService.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
-				slog.Warn("formal_pool_auth_refresh_invalid_grant_update_extra_failed", "account_id", account.ID, "error", err)
+				slog.Warn("formal_pool_auth_refresh_failure_update_extra_failed", "account_id", account.ID, "error", err)
 			}
 		}
 	}
