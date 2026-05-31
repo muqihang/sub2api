@@ -2810,6 +2810,7 @@ export default {
         recommendedActions: 'Recommended actions',
         noActions: 'No recommended actions',
         manualActions: 'Manual actions',
+        lifecycle: 'Lifecycle',
         sessionKeyLabel: 'New sk-ant-sid session',
         sessionKeyPlaceholder: 'Paste sk-ant-sid...',
         proxyIdLabel: 'New proxy ID',
@@ -2823,7 +2824,8 @@ export default {
         noRawTokenWarning: 'Secrets are not echoed in the UI; errors are scrubbed again before rendering.',
         noRawTokenWarningSetupToken: 'ST tokens are not echoed in the UI or saved raw; errors are scrubbed again before rendering.',
         setupTokenSafetyCopy: 'The sk-ant-sid session is used only to exchange for a new inference token; it is never echoed or saved raw.',
-        directedHealthcheckWarning: 'Directed healthcheck uses /admin/accounts/:id/formal-pool/healthcheck and sends one tiny real messages request through this account. Click only after administrator confirmation.',
+        directedHealthcheckWarning: 'Directed healthcheck sends one tiny real upstream request through this account. Click only after administrator confirmation.',
+        directedHealthcheckConfirm: 'Continue? This will send one tiny real upstream request.',
         replacementGuidance: 'If token repair fails, replace the account; replacement must also change the egress proxy and repeat full onboarding.',
         proxySwapSafetyCopy: 'After proxy swap, full runtime registration and healthcheck evidence are still required before warming. Do not bypass the warming gate or jump to production.',
         actions: {
@@ -2832,7 +2834,8 @@ export default {
           runtimeRegister: 'Runtime register',
           healthcheck: 'Directed healthcheck',
           startWarming: 'Start warming',
-          proxySwap: 'Swap proxy and revalidate'
+          promoteProduction: 'Promote production',
+          proxySwap: 'Swap egress proxy'
         },
         oauthRecovery: {
           title: 'OAuth recovery sequence',
@@ -2849,6 +2852,26 @@ export default {
           proxy: 'Proxy evidence is invalid or mismatched. First swap proxy and revalidate, then repeat runtime register and directed healthcheck.',
           token_exchange: 'Credential exchange failed. Setup-token accounts should repair ST token; OAuth accounts should refresh-only or reauthorize first.',
           unknown: 'Failure origin is unknown. First refresh diagnostics, then follow the latest recommended action.'
+        },
+        checkNames: {
+          account: 'Account existence',
+          not_formal_pool: 'Formal pool account type',
+          cc_gateway_runtime_registered: 'CC Gateway runtime registration',
+          healthcheck_evidence_persisted: 'Persisted healthcheck evidence',
+          stage_gate: 'Lifecycle stage gate'
+        },
+        checkMessages: {
+          account_not_found: 'Account not found',
+          account_is_not_a_formal_pool_anthropic_oauth_setup_token_account: 'Account is not a formal-pool Anthropic OAuth/Setup Token account',
+          cc_gateway_runtime_identity_bucket_mapping_must_be_registered_before_warming: 'CC Gateway runtime identity and bucket mapping must be registered before warming',
+          cc_gateway_runtime_identity_bucket_mapping_must_include_registration_timestamp_before_warming: 'CC Gateway runtime registration evidence must include a registration timestamp before warming',
+          latest_healthcheck_evidence_is_required_before_warming: 'Latest healthcheck evidence is required before warming',
+          imported_accounts_cannot_be_scheduled: 'Imported accounts cannot be scheduled',
+          refreshed_accounts_cannot_be_scheduled: 'Refreshed accounts cannot be scheduled',
+          runtime_registered_accounts_cannot_be_scheduled: 'Runtime-registered accounts cannot be scheduled',
+          healthcheck_passed_accounts_cannot_be_scheduled: 'Healthcheck-passed accounts cannot be scheduled before warming',
+          quarantined_accounts_cannot_be_scheduled: 'Quarantined accounts cannot be scheduled',
+          legacy_unknown_accounts_cannot_be_scheduled: 'Legacy unknown accounts cannot be scheduled'
         },
         failureOrigins: {
           local_gate: 'Local gate',
@@ -2873,13 +2896,41 @@ export default {
           evidencePersisted: 'Healthcheck evidence persisted'
         },
         recommendedActionKeys: {
-          repair_token: 'Repair ST token',
-          repair_oauth: 'Refresh-only or reauthorize OAuth',
-          replace_account_and_proxy: 'Replace account and egress proxy',
-          swap_proxy: 'Swap proxy and revalidate',
-          runtime_register: 'Run runtime registration',
-          healthcheck: 'Run directed healthcheck',
-          start_warming: 'Start warming'
+          refresh_only: 'Refresh login credential',
+          runtime_register: 'Runtime register/map',
+          healthcheck: 'Directed healthcheck',
+          start_warming: 'Start warming',
+          promote_production: 'Promote production',
+          replace_setup_token: 'Replace Setup Token login state',
+          reauthorize_oauth: 'Reauthorize OAuth',
+          monitor: 'No action; keep monitoring',
+          quarantine: 'Quarantine account',
+          swap_proxy: 'Swap egress proxy',
+          repair_token: 'Replace Setup Token login state',
+          repair_oauth: 'Reauthorize OAuth',
+          replace_account_and_proxy: 'Replace account and egress proxy'
+        },
+        blockedReasons: {
+          invalid_grant: 'Refresh credential is invalid; reauthorize or replace login state',
+          refresh_token_invalid: 'Refresh credential is invalid; reauthorize or replace login state',
+          missing_runtime_evidence: 'Missing runtime registration evidence',
+          missing_healthcheck_evidence: 'Missing persisted healthcheck evidence',
+          account_quarantined: 'Account is quarantined and cannot be scheduled',
+          warming_not_elapsed: 'Warming observation window has not elapsed',
+          production_healthy: 'Account is already healthy in production; no repeated healthcheck needed',
+          reason_auth: 'Credential issue',
+          reason_proxy: 'Egress proxy issue',
+          formal_pool_healthcheck: 'Directed healthcheck failed'
+        },
+        healthcheckStatus: {
+          passed: 'Healthcheck passed',
+          failed: 'Healthcheck failed',
+          pending: 'Pending healthcheck'
+        },
+        poolWeightMode: {
+          low: 'Low weight',
+          normal: 'Normal weight',
+          high: 'High weight'
         }
       },
       allPrivacyModes: 'All Privacy States',

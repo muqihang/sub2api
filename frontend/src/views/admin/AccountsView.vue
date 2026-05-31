@@ -1077,6 +1077,25 @@ function getAntigravityTierClass(row: any): string {
 }
 
 
+
+function scrubFormalPoolDisplayText(input: unknown): string {
+  return String(input ?? '')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[redacted]')
+    .replace(/sk-ant-sid[^\s"'`,;)]*/gi, '[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/(?:access|refresh|id)[-_ ]?token\s*[:=]\s*[^\s"'`,;)]*/gi, '[redacted]')
+    .replace(/raw[-_ ]?(?:body|prompt|telemetry|cch|token)\s*[:=]?\s*[^\s"'`,;)]*/gi, '[redacted]')
+    .trim()
+}
+
+function formatFormalPoolSummaryValue(kind: 'healthcheckStatus' | 'poolWeightMode' | 'blockedReasons', value: unknown): string {
+  const text = scrubFormalPoolDisplayText(value)
+  if (!text) return ''
+  const translated = t(`admin.accounts.formalPoolDiagnostics.${kind}.${text}`, '')
+  return translated || text
+}
+
 function getFormalPoolStageLabel(row: Account): string {
   const stage = row.onboarding_stage || 'legacy_unknown'
   return t(`admin.accounts.formalPool.stage.${stage}`, stage)
@@ -1096,7 +1115,11 @@ function getFormalPoolStageClass(row: Account): string {
 }
 
 function getFormalPoolStageSummary(row: Account): string {
-  const parts = [row.healthcheck_status, row.pool_weight_mode, row.quarantine_reason].filter(Boolean)
+  const parts = [
+    formatFormalPoolSummaryValue('healthcheckStatus', row.healthcheck_status),
+    formatFormalPoolSummaryValue('poolWeightMode', row.pool_weight_mode),
+    formatFormalPoolSummaryValue('blockedReasons', row.quarantine_reason)
+  ].filter(Boolean)
   return parts.join(' / ')
 }
 
@@ -1104,8 +1127,8 @@ function getFormalPoolStageTitle(row: Account): string {
   return [
     row.pool_profile_requested ? `${t('admin.accounts.formalPool.requested')}: ${row.pool_profile_requested}` : '',
     row.pool_profile_effective ? `${t('admin.accounts.formalPool.effective')}: ${row.pool_profile_effective}` : '',
-    row.healthcheck_last_status_code_bucket ? `${t('admin.accounts.formalPool.healthcheck')}: ${row.healthcheck_last_status_code_bucket}` : '',
-    row.risk_event_ref ? `${t('admin.accounts.formalPool.riskEvent')}: ${row.risk_event_ref}` : ''
+    row.healthcheck_last_status_code_bucket ? `${t('admin.accounts.formalPool.healthcheck')}: ${scrubFormalPoolDisplayText(row.healthcheck_last_status_code_bucket)}` : '',
+    row.risk_event_ref ? `${t('admin.accounts.formalPool.riskEvent')}: ${scrubFormalPoolDisplayText(row.risk_event_ref)}` : ''
   ].filter(Boolean).join(' | ')
 }
 

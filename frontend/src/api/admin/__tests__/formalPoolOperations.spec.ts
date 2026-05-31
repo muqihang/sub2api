@@ -15,6 +15,7 @@ import {
   replaceSetupToken,
   runtimeRegister,
   startWarming,
+  promoteProduction,
   swapProxy,
 } from '@/api/admin/formalPoolOperations'
 
@@ -36,6 +37,9 @@ describe('formalPoolOperations API', () => {
 
     await startWarming(5)
     expect(post).toHaveBeenLastCalledWith('/admin/accounts/5/formal-pool/start-warming')
+
+    await promoteProduction(5)
+    expect(post).toHaveBeenLastCalledWith('/admin/accounts/5/formal-pool/promote-production')
 
     await swapProxy(5, {
       proxy_id: 9,

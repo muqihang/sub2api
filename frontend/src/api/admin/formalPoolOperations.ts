@@ -86,6 +86,10 @@ export async function startWarming(accountId: number): Promise<FormalPoolOperati
   return runOperation(() => apiClient.post<FormalPoolOperationResult>(`/admin/accounts/${accountId}/formal-pool/start-warming`))
 }
 
+export async function promoteProduction(accountId: number): Promise<FormalPoolOperationResult> {
+  return runOperation(() => apiClient.post<FormalPoolOperationResult>(`/admin/accounts/${accountId}/formal-pool/promote-production`))
+}
+
 export async function swapProxy(accountId: number, payload: SwapProxyRequest): Promise<FormalPoolOperationResult> {
   return runOperation(() => apiClient.post<FormalPoolOperationResult>(`/admin/accounts/${accountId}/formal-pool/proxy/swap`, payload))
 }
@@ -96,6 +100,7 @@ const formalPoolOperationsAPI = {
   runtimeRegister,
   healthcheck,
   startWarming,
+  promoteProduction,
   swapProxy,
 }
 

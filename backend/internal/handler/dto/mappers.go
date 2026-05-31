@@ -465,8 +465,14 @@ func accountExtraForDTO(a *service.Account) map[string]any {
 				service.FormalPoolExtraLastHealthcheckAt,
 				service.FormalPoolExtraLastHealthcheckResult,
 				service.FormalPoolExtraRepairedAt,
-				service.FormalPoolExtraRepairedBy:
+				service.FormalPoolExtraRepairedBy,
+				service.FormalPoolExtraQuarantineReason,
+				service.FormalPoolExtraWarmingUntil:
 				if safe, ok := safeFormalPoolDTOText(v); ok {
+					out[key] = safe
+				}
+			case service.FormalPoolExtraRiskEventRef:
+				if safe, ok := safeFormalPoolDTORef(v); ok {
 					out[key] = safe
 				}
 			case service.FormalPoolExtraHealthcheckCCGatewaySeen,
@@ -633,7 +639,9 @@ func AccountFromService(a *service.Account) *Account {
 		return nil
 	}
 	out := AccountFromServiceShallow(a)
-	out.Proxy = ProxyFromService(a.Proxy)
+	if !service.IsFormalPoolAccount(a) {
+		out.Proxy = ProxyFromService(a.Proxy)
+	}
 	if len(a.AccountGroups) > 0 {
 		out.AccountGroups = make([]AccountGroup, 0, len(a.AccountGroups))
 		for i := range a.AccountGroups {
@@ -1093,10 +1101,21 @@ func applyFormalPoolAccountFields(out *Account, a *service.Account) {
 	out.FormalPoolRepairedAt = safeFormalPoolAccountText(a, service.FormalPoolExtraRepairedAt)
 	out.FormalPoolRepairedBy = safeFormalPoolAccountText(a, service.FormalPoolExtraRepairedBy)
 	out.CCGatewayRuntimeRegistered = formalPoolDTOBool(a.Extra[service.FormalPoolExtraRuntimeRegistered])
-	out.QuarantineReason = a.GetExtraString(service.FormalPoolExtraQuarantineReason)
-	out.RiskEventRef = a.GetExtraString(service.FormalPoolExtraRiskEventRef)
-	out.WarmingUntil = a.GetExtraString(service.FormalPoolExtraWarmingUntil)
+	out.QuarantineReason = safeFormalPoolAccountText(a, service.FormalPoolExtraQuarantineReason)
+	out.RiskEventRef = safeFormalPoolAccountRef(a, service.FormalPoolExtraRiskEventRef)
+	out.WarmingUntil = safeFormalPoolAccountText(a, service.FormalPoolExtraWarmingUntil)
 	out.ProductionReady = stage == service.FormalPoolStageProduction
+}
+
+func safeFormalPoolAccountRef(a *service.Account, key string) string {
+	if a == nil {
+		return ""
+	}
+	safe, ok := safeFormalPoolDTORef(a.Extra[key])
+	if !ok {
+		return ""
+	}
+	return safe
 }
 
 func safeFormalPoolAccountText(a *service.Account, key string) string {

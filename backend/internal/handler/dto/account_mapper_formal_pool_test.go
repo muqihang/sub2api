@@ -26,10 +26,19 @@ func TestAccountFromService_ExposesFormalPoolHardGateFields(t *testing.T) {
 			service.FormalPoolExtraPoolWeightMode:              service.FormalPoolWeightLow,
 			service.FormalPoolExtraHealthcheckStatus:           "passed",
 			service.FormalPoolExtraHealthcheckStatusCodeBucket: "status_2xx",
+			service.FormalPoolExtraHealthcheckRawRef:           "hmac-sha256:" + strings.Repeat("d", 64),
+			service.FormalPoolExtraHealthcheckCCGatewaySeen:    true,
+			service.FormalPoolExtraHealthcheckFallbackDetected: false,
+			service.FormalPoolExtraHealthcheckProxyMismatch:    false,
+			service.FormalPoolExtraHealthcheckRiskTextDetected: false,
 			service.FormalPoolExtraRuntimeRegistered:           "true",
+			service.FormalPoolExtraRuntimeRegisteredAt:         "2026-05-28T11:00:00Z",
 			service.FormalPoolExtraQuarantineReason:            "reason_proxy",
-			service.FormalPoolExtraRiskEventRef:                "risk_ref_safe",
+			service.FormalPoolExtraRiskEventRef:                "hmac-sha256:" + strings.Repeat("e", 64),
 			service.FormalPoolExtraWarmingUntil:                "2026-05-28T12:00:00Z",
+			"cc_gateway_account_ref":                           "hmac-sha256:" + strings.Repeat("a", 64),
+			"cc_gateway_egress_bucket_enabled":                 "true",
+			"cc_gateway_egress_bucket":                         "bucket-a",
 		},
 	}
 
@@ -44,7 +53,7 @@ func TestAccountFromService_ExposesFormalPoolHardGateFields(t *testing.T) {
 	require.Equal(t, "status_2xx", got.HealthcheckLastStatusCodeBucket)
 	require.True(t, got.CCGatewayRuntimeRegistered)
 	require.Equal(t, "reason_proxy", got.QuarantineReason)
-	require.Equal(t, "risk_ref_safe", got.RiskEventRef)
+	require.Equal(t, "hmac-sha256:"+strings.Repeat("e", 64), got.RiskEventRef)
 	require.Equal(t, "2026-05-28T12:00:00Z", got.WarmingUntil)
 	require.False(t, got.ProductionReady)
 }
@@ -193,6 +202,65 @@ func TestAccountFromService_FormalPoolRecoveryFieldsDoNotExposeSecrets(t *testin
 	require.Contains(t, body, "failed")
 	require.Contains(t, body, "status_4xx")
 	require.Contains(t, body, "hmac-sha256:"+strings.Repeat("f", 64))
+}
+
+func TestAccountFromService_FormalPoolHardGateFieldsDoNotExposeUnsafeDirectValuesOrProxy(t *testing.T) {
+	t.Parallel()
+
+	proxyID := int64(7)
+	account := &service.Account{
+		ID:       1,
+		Name:     "formal",
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeSetupToken,
+		Credentials: map[string]any{
+			"access_token":      "sk-ant-sid02-raw-secret",
+			"email":             "user@example.com",
+			"account_uuid":      "99999999-8888-4777-8666-555555555555",
+			"organization_uuid": "88888888-8888-4777-8666-555555555555",
+		},
+		ProxyID: &proxyID,
+		Proxy: &service.Proxy{
+			ID:       7,
+			Name:     "formal-proxy",
+			Protocol: "http",
+			Host:     "proxy.example.com",
+			Port:     8080,
+			Username: "proxy-user",
+			Password: "proxy-secret",
+		},
+		Extra: map[string]any{
+			service.FormalPoolExtraOnboardingStage:  service.FormalPoolStageQuarantined,
+			service.FormalPoolExtraQuarantineReason: "reason_auth admin@example.com raw_prompt",
+			service.FormalPoolExtraRiskEventRef:     "99999999-8888-4777-8666-555555555555:user@example.com",
+			service.FormalPoolExtraWarmingUntil:     "2026-05-28T12:00:00Z access_token=raw-token",
+		},
+	}
+
+	got := AccountFromService(account)
+	require.Nil(t, got.Proxy)
+	require.Empty(t, got.QuarantineReason)
+	require.Empty(t, got.RiskEventRef)
+	require.Empty(t, got.WarmingUntil)
+
+	payload, err := json.Marshal(got)
+	require.NoError(t, err)
+	body := strings.ToLower(string(payload))
+	for _, unsafe := range []string{
+		"sk-ant-sid02-raw-secret",
+		"user@example.com",
+		"admin@example.com",
+		"99999999-8888-4777-8666-555555555555",
+		"88888888-8888-4777-8666-555555555555",
+		"proxy.example.com",
+		"proxy-user",
+		"proxy-secret",
+		"raw_prompt",
+		"access_token",
+		"raw-token",
+	} {
+		require.NotContains(t, body, strings.ToLower(unsafe))
+	}
 }
 
 func TestAccountFromService_FormalPoolDTOOnlyExposesSafeGatewayRefs(t *testing.T) {

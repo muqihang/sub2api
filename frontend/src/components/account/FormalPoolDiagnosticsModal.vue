@@ -31,6 +31,17 @@
         {{ t(canRepairSetupToken ? 'admin.accounts.formalPoolDiagnostics.noRawTokenWarningSetupToken' : 'admin.accounts.formalPoolDiagnostics.noRawTokenWarning') }}
       </div>
 
+      <section v-if="!loading" class="space-y-2" data-test="formal-pool-stepper">
+        <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
+          {{ t('admin.accounts.formalPoolDiagnostics.lifecycle') }}
+        </h5>
+        <ol class="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+          <li v-for="step in lifecycleSteps" :key="step" :class="['rounded border px-3 py-2', lifecycleStepClass(step)]">
+            {{ t(`admin.accounts.formalPool.stage.${step}`, step) }}
+          </li>
+        </ol>
+      </section>
+
       <div v-if="failureOriginDescription" class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200" data-test="failure-origin-guidance">
         {{ failureOriginDescription }}
       </div>
@@ -71,8 +82,8 @@
             <div v-for="check in currentDiagnostics.checks" :key="`${check.name}-${check.message || ''}`" class="flex gap-2 rounded-lg border border-gray-200 p-3 text-sm dark:border-dark-600">
               <span :class="['mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full', checkStatusClass(check.status)]"></span>
               <div>
-                <p class="font-medium text-gray-900 dark:text-gray-100">{{ check.name }}</p>
-                <p v-if="check.message" class="mt-1 text-gray-600 dark:text-gray-300">{{ check.message }}</p>
+                <p class="font-medium text-gray-900 dark:text-gray-100">{{ checkNameLabel(check.name) }}</p>
+                <p v-if="check.message" class="mt-1 text-gray-600 dark:text-gray-300">{{ checkMessageLabel(check.message) }}</p>
               </div>
             </div>
           </div>
@@ -139,7 +150,7 @@
             </p>
           </div>
 
-          <div v-else-if="canShowOAuthRecoveryGuidance" class="rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100" data-test="oauth-recovery-guidance">
+          <div v-else-if="canShowOAuthRecoveryGuidance" class="rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100" data-test="oauth-reauthorize-guidance">
             <p class="font-semibold">{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.title') }}</p>
             <p class="mt-2">{{ t('admin.accounts.formalPoolDiagnostics.oauthRecovery.body') }}</p>
             <ol class="mt-3 list-decimal space-y-1 pl-5">
@@ -150,18 +161,19 @@
             </ol>
           </div>
 
-          <p class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200" data-test="directed-healthcheck-warning">
+          <p v-if="canDirectedHealthcheck" class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200" data-test="directed-healthcheck-warning">
             {{ t('admin.accounts.formalPoolDiagnostics.directedHealthcheckWarning') }}
           </p>
 
           <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="runAccountAction('runtime-register')">
+            <button v-if="canRuntimeRegister" type="button" class="btn btn-secondary" :disabled="isBusy" @click="runAccountAction('runtime-register')">
               {{ t('admin.accounts.formalPoolDiagnostics.actions.runtimeRegister') }}
             </button>
-            <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="runAccountAction('healthcheck')">
+            <button v-if="canDirectedHealthcheck" type="button" data-test="directed-healthcheck-button" class="btn btn-secondary" :disabled="isBusy" @click="runAccountAction('healthcheck')">
               {{ t('admin.accounts.formalPoolDiagnostics.actions.healthcheck') }}
             </button>
             <button
+              v-if="shouldShowStartWarming"
               type="button"
               data-test="start-warming-button"
               class="btn btn-secondary"
@@ -170,6 +182,16 @@
               @click="runAccountAction('start-warming')"
             >
               {{ t('admin.accounts.formalPoolDiagnostics.actions.startWarming') }}
+            </button>
+            <button
+              v-if="canPromoteProduction"
+              type="button"
+              data-test="promote-production-button"
+              class="btn btn-secondary"
+              :disabled="isBusy"
+              @click="runAccountAction('promote-production')"
+            >
+              {{ t('admin.accounts.formalPoolDiagnostics.actions.promoteProduction') }}
             </button>
             <button type="button" class="btn btn-secondary" :disabled="isBusy" @click="() => refreshDiagnostics()">
               {{ t('admin.accounts.formalPoolDiagnostics.actions.refresh') }}
@@ -215,6 +237,7 @@ import {
   FormalPoolOperationError,
   getDiagnostics,
   healthcheck,
+  promoteProduction,
   replaceSetupToken,
   runtimeRegister,
   startWarming,
@@ -246,6 +269,8 @@ const runHealthcheckAfterTokenRepair = ref(true)
 const swapProxyId = ref('')
 
 function scrubFormalPoolSecretText(input: unknown): string {
+  const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi
+  const uuidPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
   const secretKeyPattern = String.raw`(?:session[-_\s]?key|access[-_\s]?token|refresh[-_\s]?token|authorization|password|passwd|proxy[-_\s]?password|proxy[-_\s]?credentials?|api[-_\s]?key|apikey|cookie|raw[-_\s]?body|raw[-_\s]?prompt|raw[-_\s]?telemetry|raw[-_\s]?cch|raw(?:[-_\s]?cookie)?)`
   const proxyUrlSecretKeyPattern = String.raw`(?:proxy[-_\s]?url|proxy)`
   const quotedProxyUrlCredentialsPattern = new RegExp(String.raw`(["']?)\b(${proxyUrlSecretKeyPattern})\b\1(\s*[:=]\s*)(["'])[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#\s"'\`,;)}@]+@(?:(?!\4).)*\4`, 'gi')
@@ -254,6 +279,8 @@ function scrubFormalPoolSecretText(input: unknown): string {
   const tokenValuePattern = new RegExp(String.raw`(["']?)\b(${secretKeyPattern})\b\1(\s*[:=]\s*)(?:Bearer\s+)?[^\s"'\`,;)}]+`, 'gi')
 
   return String(input ?? '')
+    .replace(emailPattern, '[redacted]')
+    .replace(uuidPattern, '[redacted]')
     .replace(/sk-ant-sid[^\s"'`,;)]*/gi, '[redacted]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(quotedProxyUrlCredentialsPattern, '$1$2$1$3$4[redacted]$4')
@@ -262,34 +289,68 @@ function scrubFormalPoolSecretText(input: unknown): string {
     .replace(tokenValuePattern, '$1$2$1$3[redacted]')
 }
 
+const safeDisplayText = (input: unknown) => scrubFormalPoolSecretText(input)
+const translatedOrEmpty = (key: string) => {
+  const translated = t(key, '')
+  return translated && translated !== key ? translated : ''
+}
+
 const activeAccount = computed(() => latestAccount.value ?? props.account)
 const currentDiagnostics = computed(() => diagnostics.value)
 const isBusy = computed(() => Boolean(busyAction.value) || loading.value)
 
-const recommendedActions = computed<FormalPoolRecommendedAction[]>(() => {
-  const actions = currentDiagnostics.value?.recommended_actions ?? []
-  if (!canShowOAuthRecoveryGuidance.value) return actions
-  return actions.map(action => action.key === 'repair_token'
-    ? { ...action, key: 'repair_oauth', label: t('admin.accounts.formalPoolDiagnostics.recommendedActionKeys.repair_oauth') }
-    : action
-  )
-})
+const legacyActionAliases: Record<string, string> = {
+  repair_token: 'replace_setup_token',
+  repair_oauth: 'reauthorize_oauth',
+}
+
+const normalizeActionKey = (key: string) => legacyActionAliases[key] ?? key
+
+const recommendedActions = computed<FormalPoolRecommendedAction[]>(() =>
+  (currentDiagnostics.value?.recommended_actions ?? []).map(action => {
+    const account = activeAccount.value
+    const key = account?.type === 'oauth' && (action.key === 'repair_token' || action.key === 'replace_setup_token') ? 'reauthorize_oauth' : normalizeActionKey(action.key)
+    return { ...action, key }
+  })
+)
 const recommendedKeys = computed(() => new Set(recommendedActions.value.map(action => action.key)))
 
 const canRepairSetupToken = computed(() => {
   const account = activeAccount.value
-  return account?.platform === 'anthropic' && account.type === 'setup-token' && account.is_formal_pool === true
+  return account?.platform === 'anthropic' && account.type === 'setup-token' && account.is_formal_pool === true && recommendedKeys.value.has('replace_setup_token')
 })
 
 const canShowOAuthRecoveryGuidance = computed(() => {
   const account = activeAccount.value
-  return account?.platform === 'anthropic' && account.type === 'oauth' && account.is_formal_pool === true
+  return account?.platform === 'anthropic' && account.type === 'oauth' && account.is_formal_pool === true && recommendedKeys.value.has('reauthorize_oauth')
 })
+
+
+const normalizeI18nKey = (value: unknown) => String(value ?? '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '')
+
+const checkNameLabel = (name: unknown) => {
+  const raw = String(name ?? '').trim()
+  if (!raw) return '-'
+  const key = `admin.accounts.formalPoolDiagnostics.checkNames.${raw}`
+  const translated = translatedOrEmpty(key)
+  return translated || safeDisplayText(raw)
+}
+
+const checkMessageLabel = (message: unknown) => {
+  const raw = String(message ?? '').trim()
+  if (!raw) return ''
+  const key = normalizeI18nKey(raw)
+  const translated = key ? translatedOrEmpty(`admin.accounts.formalPoolDiagnostics.checkMessages.${key}`) : ''
+  return translated || safeDisplayText(raw)
+}
 
 const failureOriginDescription = computed(() => {
   const origin = currentDiagnostics.value?.failure_origin || 'unknown'
-  const translated = t(`admin.accounts.formalPoolDiagnostics.failureOriginDescriptions.${origin}`, '')
-  return translated || ''
+  return translatedOrEmpty(`admin.accounts.formalPoolDiagnostics.failureOriginDescriptions.${origin}`)
 })
 
 const evidenceComplete = computed(() => {
@@ -308,7 +369,13 @@ const evidenceComplete = computed(() => {
     !d.risk_text_detected
   )
 })
+const isMonitorOnly = computed(() => recommendedKeys.value.has('monitor'))
 const canStartWarming = computed(() => recommendedKeys.value.has('start_warming') && evidenceComplete.value)
+const shouldShowStartWarming = computed(() => recommendedKeys.value.has('start_warming') || currentDiagnostics.value?.onboarding_stage === 'healthcheck_passed')
+const canPromoteProduction = computed(() => recommendedKeys.value.has('promote_production'))
+const canRuntimeRegister = computed(() => !isMonitorOnly.value)
+const canDirectedHealthcheck = computed(() => !isMonitorOnly.value)
+const lifecycleSteps = ['imported', 'refreshed', 'runtime_registered', 'healthcheck_passed', 'warming', 'production'] as const
 const startWarmingTitle = computed(() => canStartWarming.value
   ? t('admin.accounts.formalPoolDiagnostics.startWarmingAllowed')
   : currentDiagnostics.value?.cc_gateway_runtime_registered !== true || currentDiagnostics.value?.runtime_evidence_complete === false || !currentDiagnostics.value?.cc_gateway_runtime_registered_at
@@ -316,7 +383,7 @@ const startWarmingTitle = computed(() => canStartWarming.value
     : t('admin.accounts.formalPoolDiagnostics.startWarmingBlocked'))
 
 const shouldShowReplacementGuidance = computed(() =>
-  recommendedKeys.value.has('replace_account_and_proxy') || currentDiagnostics.value?.failure_origin === 'token_exchange'
+  recommendedKeys.value.has('replace_account_and_proxy') || (currentDiagnostics.value?.failure_origin === 'token_exchange' && !recommendedKeys.value.has('monitor'))
 )
 
 const stageLabel = computed(() => {
@@ -339,6 +406,13 @@ const stageBadgeClass = computed(() => {
     default: return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
   }
 })
+const lifecycleStepClass = (step: string) => {
+  const stage = currentDiagnostics.value?.onboarding_stage || activeAccount.value?.onboarding_stage
+  if (stage === 'quarantined') return 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200'
+  if (stage === step) return 'border-primary-300 bg-primary-50 font-semibold text-primary-700 dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-200'
+  return 'border-gray-200 text-gray-600 dark:border-dark-600 dark:text-gray-300'
+}
+
 const failureBadgeClass = computed(() => {
   switch (currentDiagnostics.value?.failure_origin) {
     case 'upstream':
@@ -358,7 +432,7 @@ const formatBoolean = (value: unknown) => {
 }
 const valueOrDash = (value: unknown) => {
   const text = String(value ?? '').trim()
-  return text || '-'
+  return text ? safeDisplayText(text) : '-'
 }
 
 const evidenceItems = computed(() => {
@@ -400,8 +474,8 @@ const actionClass = (severity?: string) => {
   }
 }
 const actionLabel = (action: FormalPoolRecommendedAction) => {
-  const translated = t(`admin.accounts.formalPoolDiagnostics.recommendedActionKeys.${action.key}`, '')
-  return translated || action.label || action.key
+  const translated = translatedOrEmpty(`admin.accounts.formalPoolDiagnostics.recommendedActionKeys.${action.key}`)
+  return translated || safeDisplayText(action.label || action.key)
 }
 
 const setError = (error: unknown) => {
@@ -473,13 +547,16 @@ const handleReplaceSetupToken = async () => {
   }
 }
 
-const runAccountAction = async (action: 'runtime-register' | 'healthcheck' | 'start-warming') => {
+const runAccountAction = async (action: 'runtime-register' | 'healthcheck' | 'start-warming' | 'promote-production') => {
   const account = activeAccount.value
   if (!account) return
   if (action === 'runtime-register') {
     await runWithBusy(action, () => runtimeRegister(account.id))
   } else if (action === 'healthcheck') {
+    if (!window.confirm(t('admin.accounts.formalPoolDiagnostics.directedHealthcheckConfirm'))) return
     await runWithBusy(action, () => healthcheck(account.id))
+  } else if (action === 'promote-production') {
+    await runWithBusy(action, () => promoteProduction(account.id))
   } else if (canStartWarming.value) {
     await runWithBusy(action, () => startWarming(account.id))
   }

@@ -2828,14 +2828,14 @@ export default {
         healthcheck: '健康检查',
         riskEvent: '风险事件',
         stage: {
-          imported: '已导入',
-          refreshed: '已刷新',
-          runtime_registered: '已注册运行时',
-          healthcheck_passed: '健康检查通过',
-          warming: '预热中',
-          production: '生产',
-          quarantined: '已隔离',
-          legacy_unknown: '旧账号未知'
+          imported: '已导入，待刷新',
+          refreshed: '已刷新，待运行时注册',
+          runtime_registered: '已完成运行时注册，待健康检查',
+          healthcheck_passed: '健康检查通过，待进入预热',
+          warming: '预热中，低权重可调度',
+          production: '生产中，正常调度',
+          quarantined: '已隔离，需要修复',
+          legacy_unknown: '历史账号，状态未知'
         }
       },
       formalPoolDiagnostics: {
@@ -2848,6 +2848,7 @@ export default {
         recommendedActions: '建议操作',
         noActions: '暂无建议操作',
         manualActions: '手动操作',
+        lifecycle: '生命周期',
         sessionKeyLabel: '新的 sk-ant-sid 登录态',
         sessionKeyPlaceholder: '粘贴 sk-ant-sid...',
         proxyIdLabel: '新代理 ID',
@@ -2861,24 +2862,26 @@ export default {
         noRawTokenWarning: '密钥不会在界面回显；错误信息会在前端再次脱敏。',
         noRawTokenWarningSetupToken: 'ST token 不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
         setupTokenSafetyCopy: '这里输入的是 sk-ant-sid 登录态。系统只用它换取新的 inference token；不会回显，也不会保存原始 sk-ant-sid。',
-        directedHealthcheckWarning: '定向健康检查只使用 /admin/accounts/:id/formal-pool/healthcheck 这条 operations 路径，并会通过该账号发送一次极小真实 messages 请求；必须管理员确认后才点击。',
+        directedHealthcheckWarning: '定向健康检查会发起一次极小真实上游请求；必须管理员确认后才点击。',
+        directedHealthcheckConfirm: '确认继续？此操作会发起一次极小真实上游请求。',
         replacementGuidance: '如果 token 修复失败，再更换账号；更换账号时必须同时更换出口代理，并重新走完整上号流程。',
         proxySwapSafetyCopy: '更换代理后仍必须重新完成运行时注册和健康检查证据，不能绕过预热门禁或直接进入生产。',
         actions: {
           refresh: '刷新诊断',
-          repairToken: '修复 ST token',
-          runtimeRegister: '运行时注册',
+          repairToken: '替换 Setup Token 登录态',
+          runtimeRegister: '运行时注册/映射',
           healthcheck: '定向健康检查',
-          startWarming: '开始预热',
-          proxySwap: '更换代理并复检'
+          startWarming: '进入预热',
+          promoteProduction: '进入生产',
+          proxySwap: '更换出口代理'
         },
         oauthRecovery: {
           title: 'OAuth 恢复序列',
-          body: 'OAuth Formal Pool 账号不能用 ST token 修复。请先在账号全局菜单执行 refresh-only 或重新授权，然后回到本弹窗继续运行时注册、定向健康检查和预热。',
-          stepRefresh: '先在账号操作菜单执行 refresh-only 或重新授权。',
-          stepRuntime: '在本弹窗点击运行时注册。',
-          stepHealthcheck: '确认会发送一次极小真实 messages 请求后，再点击定向健康检查。',
-          stepWarming: '运行时和健康检查证据完整后，再开始预热。'
+          body: 'OAuth Formal Pool 账号需要重新 OAuth 授权，然后回到本弹窗继续运行时注册、定向健康检查和预热。',
+          stepRefresh: '重新 OAuth 授权。',
+          stepRuntime: '在本弹窗点击运行时注册/映射。',
+          stepHealthcheck: '定向健康检查会发起一次极小真实上游请求，点击前必须确认。',
+          stepWarming: '运行时和健康检查证据完整后，再进入预热。'
         },
         failureOriginDescriptions: {
           local_gate: '本地生命周期门禁阻止调度。若缺少运行时证据，先点运行时注册，再运行定向健康检查。',
@@ -2887,6 +2890,26 @@ export default {
           proxy: '代理证据无效或不匹配。先更换代理并复检，再重复运行时注册和定向健康检查。',
           token_exchange: '凭据交换失败。setup-token 账号应修复 ST token；OAuth 账号应先 refresh-only 或重新授权。',
           unknown: '失败来源未知。先刷新诊断，再按最新建议操作。'
+        },
+        checkNames: {
+          account: '账号存在性',
+          not_formal_pool: '正式号池账号类型',
+          cc_gateway_runtime_registered: 'CC Gateway 运行时注册',
+          healthcheck_evidence_persisted: '健康检查证据已持久化',
+          stage_gate: '生命周期阶段门禁'
+        },
+        checkMessages: {
+          account_not_found: '账号不存在',
+          account_is_not_a_formal_pool_anthropic_oauth_setup_token_account: '账号不是正式号池 Anthropic OAuth/Setup Token 账号',
+          cc_gateway_runtime_identity_bucket_mapping_must_be_registered_before_warming: '进入预热前必须完成 CC Gateway 运行时身份和桶映射注册',
+          cc_gateway_runtime_identity_bucket_mapping_must_include_registration_timestamp_before_warming: '进入预热前 CC Gateway 运行时注册证据必须包含注册时间',
+          latest_healthcheck_evidence_is_required_before_warming: '进入预热前必须保留最新健康检查证据',
+          imported_accounts_cannot_be_scheduled: '已导入账号不能调度',
+          refreshed_accounts_cannot_be_scheduled: '已刷新账号不能调度',
+          runtime_registered_accounts_cannot_be_scheduled: '已完成运行时注册账号不能调度',
+          healthcheck_passed_accounts_cannot_be_scheduled: '健康检查通过但尚未预热的账号不能调度',
+          quarantined_accounts_cannot_be_scheduled: '已隔离账号不能调度',
+          legacy_unknown_accounts_cannot_be_scheduled: '历史状态未知账号不能调度'
         },
         failureOrigins: {
           local_gate: '本地门禁',
@@ -2911,13 +2934,41 @@ export default {
           evidencePersisted: '健康检查证据已持久化'
         },
         recommendedActionKeys: {
-          repair_token: '修复 ST token',
-          repair_oauth: '刷新或重新授权 OAuth',
-          replace_account_and_proxy: '更换账号和出口代理',
-          swap_proxy: '更换代理并重新验证',
-          runtime_register: '运行运行时注册',
-          healthcheck: '运行定向健康检查',
-          start_warming: '开始预热'
+          refresh_only: '刷新登录凭证',
+          runtime_register: '运行时注册/映射',
+          healthcheck: '定向健康检查',
+          start_warming: '进入预热',
+          promote_production: '进入生产',
+          replace_setup_token: '替换 Setup Token 登录态',
+          reauthorize_oauth: '重新 OAuth 授权',
+          monitor: '无需操作，继续观测',
+          quarantine: '隔离账号',
+          swap_proxy: '更换出口代理',
+          repair_token: '替换 Setup Token 登录态',
+          repair_oauth: '重新 OAuth 授权',
+          replace_account_and_proxy: '更换账号和出口代理'
+        },
+        blockedReasons: {
+          invalid_grant: '刷新凭证已失效，需要重新授权或替换登录态',
+          refresh_token_invalid: '刷新凭证已失效，需要重新授权或替换登录态',
+          missing_runtime_evidence: '缺少运行时注册证据',
+          missing_healthcheck_evidence: '缺少健康检查通过证据',
+          account_quarantined: '账号处于隔离状态，不能调度',
+          warming_not_elapsed: '预热观察期未结束',
+          production_healthy: '账号已在生产期且证据完整，无需重复健康检查',
+          reason_auth: '登录凭证异常',
+          reason_proxy: '出口代理异常',
+          formal_pool_healthcheck: '定向健康检查未通过'
+        },
+        healthcheckStatus: {
+          passed: '健康检查通过',
+          failed: '健康检查失败',
+          pending: '待健康检查'
+        },
+        poolWeightMode: {
+          low: '低权重',
+          normal: '正常权重',
+          high: '高权重'
         }
       },
       allPrivacyModes: '全部Privacy状态',
