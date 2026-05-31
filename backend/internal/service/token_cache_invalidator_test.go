@@ -144,6 +144,24 @@ func TestCompositeTokenCacheInvalidator_Claude(t *testing.T) {
 	require.Equal(t, []string{"claude:account:600"}, cache.deletedKeys)
 }
 
+func TestCompositeTokenCacheInvalidator_ClaudeSetupToken(t *testing.T) {
+	cache := &geminiTokenCacheStub{}
+	invalidator := NewCompositeTokenCacheInvalidator(cache)
+	account := &Account{
+		ID:       601,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Credentials: map[string]any{
+			"access_token":  "claude-token",
+			"refresh_token": "claude-refresh",
+		},
+	}
+
+	err := invalidator.InvalidateToken(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"claude:account:601"}, cache.deletedKeys)
+}
+
 func TestCompositeTokenCacheInvalidator_SkipNonOAuth(t *testing.T) {
 	cache := &geminiTokenCacheStub{}
 	invalidator := NewCompositeTokenCacheInvalidator(cache)
@@ -174,14 +192,6 @@ func TestCompositeTokenCacheInvalidator_SkipNonOAuth(t *testing.T) {
 				ID:       3,
 				Platform: PlatformAnthropic,
 				Type:     AccountTypeAPIKey,
-			},
-		},
-		{
-			name: "claude_setup_token",
-			account: &Account{
-				ID:       4,
-				Platform: PlatformAnthropic,
-				Type:     AccountTypeSetupToken,
 			},
 		},
 	}

@@ -412,8 +412,8 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 			}
 		}
 	}
-	// 对所有 OAuth 账号调用缓存失效（InvalidateToken 内部根据平台判断是否需要处理）
-	if s.cacheInvalidator != nil && account.Type == AccountTypeOAuth {
+	// OAuth 与 Anthropic setup-token 刷新后都必须清 token cache，避免调度侧继续使用旧 access token。
+	if s.cacheInvalidator != nil && (account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken) {
 		if err := s.cacheInvalidator.InvalidateToken(ctx, account); err != nil {
 			slog.Warn("token_refresh.invalidate_token_cache_failed",
 				"account_id", account.ID,

@@ -90,6 +90,16 @@ func (s *tokenCacheInvalidatorStub) InvalidateToken(ctx context.Context, account
 	return s.err
 }
 
+type tokenRefreshSchedulerCacheStub struct {
+	SchedulerCache
+	setAccountCalls []*Account
+}
+
+func (s *tokenRefreshSchedulerCacheStub) SetAccount(ctx context.Context, account *Account) error {
+	s.setAccountCalls = append(s.setAccountCalls, account)
+	return nil
+}
+
 type tempUnschedCacheStub struct {
 	deleteCalls int
 }
@@ -159,6 +169,67 @@ func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
 	require.Equal(t, 0, repo.fullUpdateCalls)
 	require.Equal(t, 1, invalidator.calls)
 	require.Equal(t, "new-token", account.GetCredential("access_token"))
+}
+
+func TestTokenRefreshService_RefreshWithRetry_InvalidatesAnthropicOAuthAndSetupTokenCache(t *testing.T) {
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken} {
+		t.Run(accountType, func(t *testing.T) {
+			repo := &tokenRefreshAccountRepo{}
+			invalidator := &tokenCacheInvalidatorStub{}
+			cfg := &config.Config{
+				TokenRefresh: config.TokenRefreshConfig{
+					MaxRetries:          1,
+					RetryBackoffSeconds: 0,
+				},
+			}
+			service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
+			account := &Account{
+				ID:       50,
+				Platform: PlatformAnthropic,
+				Type:     accountType,
+			}
+			refresher := &tokenRefresherStub{
+				credentials: map[string]any{
+					"access_token": "new-token",
+				},
+			}
+
+			err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+			require.NoError(t, err)
+			require.Equal(t, 1, invalidator.calls)
+		})
+	}
+}
+
+func TestTokenRefreshService_RefreshWithRetry_SyncsSchedulerCacheAfterSuccess(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	schedulerCache := &tokenRefreshSchedulerCacheStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, schedulerCache, cfg, nil)
+	account := &Account{
+		ID:       51,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Credentials: map[string]any{
+			"access_token": "old-token",
+		},
+	}
+	refresher := &tokenRefresherStub{
+		credentials: map[string]any{
+			"access_token": "new-token",
+		},
+	}
+
+	err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	require.NoError(t, err)
+	require.Len(t, schedulerCache.setAccountCalls, 1)
+	require.Equal(t, int64(51), schedulerCache.setAccountCalls[0].ID)
+	require.Equal(t, "new-token", schedulerCache.setAccountCalls[0].GetCredential("access_token"))
 }
 
 func TestTokenRefreshService_ListManagedAccountsIncludesOpenAIQuarantine(t *testing.T) {
