@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -90,6 +91,61 @@ func (e *FormalPoolOperationFailure) Error() string {
 	return e.Message
 }
 
+type FormalPoolOperationAuditEvent struct {
+	Operator     string `json:"operator"`
+	AccountID    int64  `json:"account_id"`
+	BeforeStage  string `json:"before_stage"`
+	AfterStage   string `json:"after_stage"`
+	Action       string `json:"action"`
+	ReasonBucket string `json:"reason_bucket,omitempty"`
+	Success      bool   `json:"success"`
+	FailureCode  string `json:"failure_code,omitempty"`
+	Noop         bool   `json:"noop,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
+}
+
+type FormalPoolOperationAuditWriter interface {
+	WriteFormalPoolOperationAudit(ctx context.Context, event FormalPoolOperationAuditEvent) error
+}
+
+type formalPoolOperationOperatorContextKey struct{}
+
+func WithFormalPoolOperationOperator(ctx context.Context, operator string) context.Context {
+	operator = formalPoolSafeOperator(operator)
+	if operator == "" {
+		operator = "unknown"
+	}
+	return context.WithValue(ctx, formalPoolOperationOperatorContextKey{}, operator)
+}
+
+func formalPoolOperationOperator(ctx context.Context) string {
+	if ctx != nil {
+		if operator, ok := ctx.Value(formalPoolOperationOperatorContextKey{}).(string); ok {
+			if safe := formalPoolSafeOperator(operator); safe != "" {
+				return safe
+			}
+		}
+	}
+	return "system"
+}
+
+func formalPoolSafeOperator(operator string) string {
+	operator = strings.TrimSpace(operator)
+	if operator == "" || formalPoolUnsafeDiagnosticText(operator) || formalPoolDiagnosticSensitiveKeyValueRe.MatchString(operator) {
+		return ""
+	}
+	operator = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ':' || r == '_' || r == '-' {
+			return r
+		}
+		return -1
+	}, operator)
+	if len(operator) > 80 {
+		operator = operator[:80]
+	}
+	return operator
+}
+
 type FormalPoolOperationsAccountStore interface {
 	GetFormalPoolAccount(ctx context.Context, id int64) (*Account, error)
 	UpdateFormalPoolAccountCredentials(ctx context.Context, id int64, credentials map[string]any) (*Account, error)
@@ -110,6 +166,7 @@ type FormalPoolOperationsDeps struct {
 	CCGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
 	Healthcheck      FormalPoolAccountHealthcheckRunner
 	Quarantine       *AccountQuarantineService
+	Audit            FormalPoolOperationAuditWriter
 	Now              func() time.Time
 }
 
@@ -120,6 +177,7 @@ type FormalPoolOperationsService struct {
 	ccGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
 	healthcheck      FormalPoolAccountHealthcheckRunner
 	quarantine       *AccountQuarantineService
+	audit            FormalPoolOperationAuditWriter
 	now              func() time.Time
 }
 
@@ -135,6 +193,7 @@ func NewFormalPoolOperationsService(deps FormalPoolOperationsDeps) *FormalPoolOp
 		ccGatewayRuntime: deps.CCGatewayRuntime,
 		healthcheck:      deps.Healthcheck,
 		quarantine:       deps.Quarantine,
+		audit:            deps.Audit,
 		now:              now,
 	}
 }
@@ -251,6 +310,12 @@ func (s *FormalPoolOperationsService) Diagnostics(ctx context.Context, accountID
 }
 
 func (s *FormalPoolOperationsService) ReplaceSetupToken(ctx context.Context, accountID int64, req FormalPoolSetupTokenReplaceRequest) (*FormalPoolOperationsAccountResult, error) {
+	return s.withOperationAudit(ctx, accountID, "replace_setup_token", func() (*FormalPoolOperationsAccountResult, error) {
+		return s.replaceSetupToken(ctx, accountID, req)
+	})
+}
+
+func (s *FormalPoolOperationsService) replaceSetupToken(ctx context.Context, accountID int64, req FormalPoolSetupTokenReplaceRequest) (*FormalPoolOperationsAccountResult, error) {
 	if s == nil || s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
 	}
@@ -327,6 +392,12 @@ func (s *FormalPoolOperationsService) Healthcheck(ctx context.Context, accountID
 }
 
 func (s *FormalPoolOperationsService) StartWarming(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	return s.withOperationAudit(ctx, accountID, "start_warming", func() (*FormalPoolOperationsAccountResult, error) {
+		return s.startWarming(ctx, accountID)
+	})
+}
+
+func (s *FormalPoolOperationsService) startWarming(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
 	if s == nil || s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
 	}
@@ -354,6 +425,8 @@ func (s *FormalPoolOperationsService) StartWarming(ctx context.Context, accountI
 		FormalPoolExtraLastFailureSource:         "",
 		FormalPoolExtraOnboardingLastErrorCode:   "",
 		FormalPoolExtraOnboardingLastErrorBucket: "",
+		FormalPoolExtraQuarantineReason:          "",
+		FormalPoolExtraQuarantineAt:              "",
 	}
 	updated, err := s.accounts.ActivateFormalPoolAccount(ctx, account.ID, extra)
 	if err != nil {
@@ -362,7 +435,81 @@ func (s *FormalPoolOperationsService) StartWarming(ctx context.Context, accountI
 	return s.accountResult(ctx, account.ID, updated)
 }
 
+func (s *FormalPoolOperationsService) PromoteProduction(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	if s == nil || s.accounts == nil {
+		err := infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
+		if s != nil {
+			s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: accountID, Action: "promote_production", Success: false, FailureCode: "FORMAL_POOL_OPERATIONS_UNAVAILABLE"})
+		}
+		return nil, err
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: accountID, Action: "promote_production", Success: false, FailureCode: formalPoolAuditFailureCode(err)})
+		return nil, err
+	}
+	beforeStage := FormalPoolAccountStage(account)
+	reasonBucket := formalPoolOperationReasonBucket(account)
+	if err := formalPoolRequireOperationsAccount(account); err != nil {
+		s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: accountID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: false, FailureCode: formalPoolAuditFailureCode(err)})
+		return nil, err
+	}
+	if beforeStage == FormalPoolStageProduction {
+		result, resultErr := s.accountResult(ctx, account.ID, account)
+		s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: resultErr == nil, FailureCode: formalPoolAuditFailureCode(resultErr), Noop: resultErr == nil})
+		return result, resultErr
+	}
+	if beforeStage != FormalPoolStageWarming {
+		err := infraerrors.BadRequest("WARMING_NOT_STARTED", "account must be warming before production promotion")
+		s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: false, FailureCode: "WARMING_NOT_STARTED"})
+		return nil, err
+	}
+	if !runtimeEvidenceComplete(account) || !healthcheckEvidenceComplete(account) {
+		err := infraerrors.BadRequest("PRODUCTION_EVIDENCE_INCOMPLETE", "complete persisted runtime and healthcheck evidence is required before production promotion")
+		s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: false, FailureCode: "PRODUCTION_EVIDENCE_INCOMPLETE"})
+		return nil, err
+	}
+	now := s.now()
+	effective := normalizePoolProfile(account.GetExtraString(FormalPoolExtraPoolProfileRequested))
+	if effective == "" {
+		effective = PoolProfileNormal
+	}
+	extra := map[string]any{
+		"onboarding_state":                       FormalPoolOnboardingStatusProduction,
+		FormalPoolExtraOnboardingStage:           FormalPoolStageProduction,
+		FormalPoolExtraOnboardingStageUpdatedAt:  formalPoolTimestamp(now),
+		FormalPoolExtraPoolProfileEffective:      effective,
+		FormalPoolExtraPoolWeightMode:            FormalPoolWeightNormal,
+		FormalPoolExtraLastFailureOrigin:         "",
+		FormalPoolExtraLastFailureCode:           "",
+		FormalPoolExtraLastFailureSource:         "",
+		FormalPoolExtraLastCCGatewayErrorCode:    "",
+		FormalPoolExtraOnboardingLastErrorCode:   "",
+		FormalPoolExtraOnboardingLastErrorBucket: "",
+		FormalPoolExtraQuarantineReason:          "",
+		FormalPoolExtraQuarantineAt:              "",
+	}
+	updated, err := s.accounts.ActivateFormalPoolAccount(ctx, account.ID, extra)
+	if err != nil {
+		s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: false, FailureCode: formalPoolAuditFailureCode(err)})
+		return nil, err
+	}
+	result, err := s.accountResult(ctx, account.ID, updated)
+	afterStage := FormalPoolStageProduction
+	if result != nil && result.Account != nil {
+		afterStage = FormalPoolAccountStage(result.Account)
+	}
+	s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: afterStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: err == nil, FailureCode: formalPoolAuditFailureCode(err)})
+	return result, err
+}
+
 func (s *FormalPoolOperationsService) SwapProxy(ctx context.Context, accountID int64, req FormalPoolProxySwapRequest) (*FormalPoolOperationsAccountResult, error) {
+	return s.withOperationAudit(ctx, accountID, "swap_proxy", func() (*FormalPoolOperationsAccountResult, error) {
+		return s.swapProxy(ctx, accountID, req)
+	})
+}
+
+func (s *FormalPoolOperationsService) swapProxy(ctx context.Context, accountID int64, req FormalPoolProxySwapRequest) (*FormalPoolOperationsAccountResult, error) {
 	if s == nil || s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
 	}
@@ -578,7 +725,7 @@ func formalPoolSafeOperationalDiagnosticCode(s string) bool {
 		return false
 	}
 	switch s {
-	case "upstream_401", "formal_pool_healthcheck", "missing_account_identity", "reason_auth", "cookie_auth_failed", "setup_token_exchange_failed", "admin_ref_safe":
+	case "upstream_401", "formal_pool_healthcheck", "missing_account_identity", "reason_auth", "cookie_auth_failed", "setup_token_exchange_failed", "refresh_token_invalid", "invalid_grant", "admin_ref_safe":
 		return true
 	}
 	for _, prefix := range []string{"setup_token_", "cookie_auth_", "token_exchange_"} {
@@ -767,6 +914,33 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 		}
 		actions = append(actions, FormalPoolRecommendedAction{Key: key, Label: label, Severity: severity})
 	}
+	if account == nil || d == nil {
+		return actions
+	}
+	stage := d.OnboardingStage
+	if stage == FormalPoolStageProduction && d.RuntimeEvidenceComplete && d.HealthcheckEvidencePersisted && d.CCGatewaySeen && d.RawCapturePresent &&
+		!d.FallbackDetected && !d.ProxyMismatch && !d.RiskTextDetected && account.IsSchedulable() {
+		add("monitor", "Monitor only", "info")
+		return actions
+	}
+	if formalPoolTerminalInvalidGrant(account, d) {
+		if account.Type == AccountTypeSetupToken {
+			add("replace_setup_token", "Replace setup-token login state", "danger")
+		} else {
+			add("reauthorize_oauth", "Reauthorize OAuth", "danger")
+		}
+		return actions
+	}
+	runtimeComplete := runtimeEvidenceComplete(account)
+	healthComplete := healthcheckEvidenceComplete(account)
+	if stage == FormalPoolStageHealthcheckPassed && runtimeComplete && healthComplete {
+		add("start_warming", "Start warming", "info")
+		return actions
+	}
+	if stage == FormalPoolStageWarming && runtimeComplete && healthComplete {
+		add("promote_production", "Promote production", "info")
+		return actions
+	}
 	switch origin {
 	case FormalPoolFailureOriginTokenExchange:
 		add("repair_token", "Repair token first", "warning")
@@ -778,20 +952,21 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 	case FormalPoolFailureOriginCCGateway:
 		add("runtime_register", "Run runtime registration", "warning")
 	}
-	if account != nil && (!runtimeEvidenceComplete(account) ||
-		strings.Contains(strings.ToLower(d.FailureCode), "missing_account_identity") ||
-		strings.Contains(strings.ToLower(d.FailureCode), "missing_egress_bucket")) {
+	if !runtimeComplete || strings.Contains(strings.ToLower(d.FailureCode), "missing_account_identity") || strings.Contains(strings.ToLower(d.FailureCode), "missing_egress_bucket") {
 		add("runtime_register", "Run runtime registration", "warning")
 	}
-	if account != nil && serviceFormalPoolAccount(account) && origin != FormalPoolFailureOriginProxy {
+	if serviceFormalPoolAccount(account) && origin != FormalPoolFailureOriginProxy && origin != FormalPoolFailureOriginTokenExchange && runtimeComplete && !healthComplete {
 		add("healthcheck", "Run directed healthcheck", "info")
 	}
-	if d != nil && account != nil && d.OnboardingStage == FormalPoolStageHealthcheckPassed && d.HealthcheckEvidencePersisted &&
-		d.StatusCodeBucket == "status_2xx" && d.RuntimeEvidenceComplete && d.CCGatewaySeen && d.RawCapturePresent &&
-		!d.FallbackDetected && !d.ProxyMismatch && !d.RiskTextDetected {
-		add("start_warming", "Start warming", "info")
-	}
 	return actions
+}
+
+func formalPoolTerminalInvalidGrant(account *Account, d *FormalPoolOperationsDiagnostics) bool {
+	if account == nil || d == nil || d.OnboardingStage != FormalPoolStageQuarantined {
+		return false
+	}
+	combined := strings.ToLower(strings.Join([]string{d.FailureCode, d.QuarantineReason, account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode)}, " "))
+	return strings.Contains(combined, "invalid_grant") || strings.Contains(combined, "refresh_token_invalid")
 }
 
 func formalPoolRequireOperationsAccount(account *Account) error {
@@ -852,6 +1027,12 @@ func formalPoolNextCredentialGeneration(account *Account) string {
 }
 
 func (s *FormalPoolOperationsService) runtimeRegister(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	return s.withOperationAudit(ctx, accountID, "runtime_register", func() (*FormalPoolOperationsAccountResult, error) {
+		return s.runtimeRegisterUnlogged(ctx, accountID)
+	})
+}
+
+func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
 	if s == nil || s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
 	}
@@ -908,6 +1089,8 @@ func (s *FormalPoolOperationsService) runtimeRegister(ctx context.Context, accou
 		FormalPoolExtraLastFailureCode:          "",
 		FormalPoolExtraLastFailureSource:        "",
 		FormalPoolExtraLastCCGatewayErrorCode:   "",
+		FormalPoolExtraQuarantineReason:         "",
+		FormalPoolExtraQuarantineAt:             "",
 	}
 	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, extra)
 	if err != nil {
@@ -1001,6 +1184,12 @@ func (s *FormalPoolOperationsService) runtimeRegisterFailureExtra(code string) m
 }
 
 func (s *FormalPoolOperationsService) healthcheckAccount(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
+	return s.withOperationAudit(ctx, accountID, "healthcheck", func() (*FormalPoolOperationsAccountResult, error) {
+		return s.healthcheckAccountUnlogged(ctx, accountID)
+	})
+}
+
+func (s *FormalPoolOperationsService) healthcheckAccountUnlogged(ctx context.Context, accountID int64) (*FormalPoolOperationsAccountResult, error) {
 	if s == nil || s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_OPERATIONS_UNAVAILABLE", "formal pool operations account store unavailable")
 	}
@@ -1090,6 +1279,8 @@ func (s *FormalPoolOperationsService) healthcheckExtra(account *Account, result 
 		extra[FormalPoolExtraLastFailureOrigin] = ""
 		extra[FormalPoolExtraLastFailureCode] = ""
 		extra[FormalPoolExtraLastFailureSource] = ""
+		extra[FormalPoolExtraQuarantineReason] = ""
+		extra[FormalPoolExtraQuarantineAt] = ""
 	}
 	if !passed {
 		extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginUpstream)
@@ -1147,6 +1338,9 @@ func (s *FormalPoolOperationsService) proxySwappedExtra(account *Account) map[st
 	if stage == FormalPoolStageQuarantined {
 		extra[FormalPoolExtraQuarantineReason] = "credential_missing_after_proxy_swap"
 		extra[FormalPoolExtraQuarantineAt] = formalPoolTimestamp(now)
+	} else {
+		extra[FormalPoolExtraQuarantineReason] = ""
+		extra[FormalPoolExtraQuarantineAt] = ""
 	}
 	return extra
 }
@@ -1204,6 +1398,98 @@ func (s *FormalPoolOperationsService) failSetupTokenReplace(ctx context.Context,
 		Message:    "setup-token credential exchange failed",
 		HTTPStatus: http.StatusBadRequest,
 		Result:     result,
+	}
+}
+
+func (s *FormalPoolOperationsService) withOperationAudit(ctx context.Context, accountID int64, action string, op func() (*FormalPoolOperationsAccountResult, error)) (*FormalPoolOperationsAccountResult, error) {
+	before := s.safeLoadFormalPoolOperationAccount(ctx, accountID)
+	beforeStage := FormalPoolAccountStage(before)
+	reasonBucket := formalPoolOperationReasonBucket(before)
+	result, err := op()
+	afterStage := beforeStage
+	if result != nil && result.Account != nil {
+		afterStage = FormalPoolAccountStage(result.Account)
+	} else if after := s.safeLoadFormalPoolOperationAccount(ctx, accountID); after != nil {
+		afterStage = FormalPoolAccountStage(after)
+	}
+	s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{
+		AccountID:    accountID,
+		BeforeStage:  beforeStage,
+		AfterStage:   afterStage,
+		Action:       action,
+		ReasonBucket: reasonBucket,
+		Success:      err == nil,
+		FailureCode:  formalPoolAuditFailureCode(err),
+	})
+	return result, err
+}
+
+func (s *FormalPoolOperationsService) safeLoadFormalPoolOperationAccount(ctx context.Context, accountID int64) *Account {
+	if s == nil || s.accounts == nil || accountID <= 0 {
+		return nil
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil
+	}
+	return account
+}
+
+func formalPoolOperationReasonBucket(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	for _, v := range []string{
+		account.GetExtraString(FormalPoolExtraQuarantineReason),
+		account.GetExtraString(FormalPoolExtraLastFailureCode),
+		account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode),
+	} {
+		if safe := formalPoolSafeDiagnosticText(v); safe != "" {
+			return safe
+		}
+	}
+	return ""
+}
+
+func formalPoolAuditFailureCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	statusCode, status := infraerrors.ToHTTP(err)
+	_ = statusCode
+	if strings.TrimSpace(status.Reason) != "" && status.Reason != infraerrors.UnknownReason {
+		return formalPoolSafeDiagnosticText(status.Reason)
+	}
+	return "operation_failed"
+}
+
+func (s *FormalPoolOperationsService) writeOperationAudit(ctx context.Context, event FormalPoolOperationAuditEvent) {
+	if s == nil {
+		return
+	}
+	event.Operator = formalPoolOperationOperator(ctx)
+	if event.Timestamp == "" {
+		event.Timestamp = formalPoolTimestamp(s.now())
+	}
+	event.Action = formalPoolSafeDiagnosticText(event.Action)
+	event.BeforeStage = formalPoolOperationSafeStage(event.BeforeStage)
+	event.AfterStage = formalPoolOperationSafeStage(event.AfterStage)
+	event.ReasonBucket = formalPoolSafeDiagnosticText(event.ReasonBucket)
+	event.FailureCode = formalPoolSafeDiagnosticText(event.FailureCode)
+	if s.audit != nil {
+		if err := s.audit.WriteFormalPoolOperationAudit(ctx, event); err != nil {
+			slog.Warn("formal_pool_operation_audit_write_failed", "action", event.Action, "account_id", event.AccountID, "error", err)
+		}
+	}
+	slog.Info("formal_pool_operation_audit", "operator", event.Operator, "account_id", event.AccountID, "before_stage", event.BeforeStage, "after_stage", event.AfterStage, "action", event.Action, "reason_bucket", event.ReasonBucket, "success", event.Success, "failure_code", event.FailureCode, "noop", event.Noop)
+}
+
+func formalPoolOperationSafeStage(stage string) string {
+	switch strings.TrimSpace(stage) {
+	case FormalPoolStageImported, FormalPoolStageRefreshed, FormalPoolStageRuntimeRegistered, FormalPoolStageHealthcheckPassed, FormalPoolStageWarming, FormalPoolStageProduction, FormalPoolStageQuarantined, FormalPoolStageLegacyUnknown:
+		return strings.TrimSpace(stage)
+	default:
+		return ""
 	}
 }
 

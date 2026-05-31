@@ -316,6 +316,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			accounts.POST("/:id/formal-pool/runtime-register", h.Admin.FormalPoolOperations.RuntimeRegister)
 			accounts.POST("/:id/formal-pool/healthcheck", h.Admin.FormalPoolOperations.Healthcheck)
 			accounts.POST("/:id/formal-pool/start-warming", h.Admin.FormalPoolOperations.StartWarming)
+			accounts.POST("/:id/formal-pool/promote-production", h.Admin.FormalPoolOperations.PromoteProduction)
 			accounts.POST("/:id/formal-pool/proxy/swap", h.Admin.FormalPoolOperations.SwapProxy)
 		}
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)

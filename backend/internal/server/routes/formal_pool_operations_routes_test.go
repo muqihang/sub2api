@@ -31,6 +31,42 @@ func TestFormalPoolOperationsRoutes_AdminProtected(t *testing.T) {
 	require.NotEqual(t, http.StatusNotFound, rec.Code)
 	require.Equal(t, 2, *authCalls, "setup-token replacement route must be admin protected")
 	require.NotContains(t, rec.Body.String(), "sk-ant-sid-test-secret")
+
+	rec = performFormalPoolOperationsRequest(router, http.MethodPost, "/api/v1/admin/accounts/5/formal-pool/promote-production", nil)
+	require.NotEqual(t, http.StatusNotFound, rec.Code)
+	require.Equal(t, 3, *authCalls, "promote-production route must be admin protected")
+}
+
+func TestFormalPoolOperationsRoutes_PromoteProductionSuccessReturnsSafeAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := formalPoolOperationsRoutesAccount()
+	account.Status = service.StatusActive
+	account.Schedulable = true
+	account.Extra[service.FormalPoolExtraOnboardingStage] = service.FormalPoolStageWarming
+	account.Extra[service.FormalPoolExtraHealthcheckStatus] = "passed"
+	account.Extra[service.FormalPoolExtraHealthcheckStatusCodeBucket] = "status_2xx"
+	account.Extra[service.FormalPoolExtraHealthcheckRawRef] = "hmac-sha256:" + strings.Repeat("a", 64)
+	account.Extra[service.FormalPoolExtraHealthcheckCCGatewaySeen] = true
+	account.Extra[service.FormalPoolExtraHealthcheckFallbackDetected] = false
+	account.Extra[service.FormalPoolExtraHealthcheckProxyMismatch] = false
+	account.Extra[service.FormalPoolExtraHealthcheckRiskTextDetected] = false
+	account.Extra[service.FormalPoolExtraRuntimeRegistered] = "true"
+	account.Extra[service.FormalPoolExtraRuntimeRegisteredAt] = "2026-05-30T00:00:00Z"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra[service.FormalPoolExtraQuarantineReason] = "refresh_token_invalid"
+	account.Extra[service.FormalPoolExtraQuarantineAt] = "2026-05-29T00:00:00Z"
+	account.Credentials = map[string]any{"access_token": "access-secret", "refresh_token": "refresh-secret", "scope": "user:inference"}
+	account.Proxy = &service.Proxy{Host: "proxy-secret.example.com", Username: "proxy-user-secret", Password: "proxy-password-secret"}
+	router, _ := newFormalPoolOperationsRoutesRouter(t, newFormalPoolOperationsRoutesServiceWithAccount(t, account, nil))
+
+	rec := performFormalPoolOperationsRequest(router, http.MethodPost, "/api/v1/admin/accounts/5/formal-pool/promote-production", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	body := rec.Body.String()
+	require.Contains(t, body, service.FormalPoolStageProduction)
+	for _, unsafe := range []string{"access-secret", "refresh-secret", "proxy-secret.example.com", "proxy-user-secret", "proxy-password-secret"} {
+		require.NotContains(t, body, unsafe)
+	}
 }
 
 func TestFormalPoolOperationsRoutes_ReplacementErrorDoesNotEchoSessionKey(t *testing.T) {

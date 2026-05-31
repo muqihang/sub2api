@@ -37,6 +37,8 @@ func TestFormalPoolOperationsDiagnostics_ClassifiesCCGatewayControlPlane(t *test
 	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: formalPoolDiagnosticsAccount(map[string]any{
 		FormalPoolExtraLastFailureCode:   "missing_account_identity",
 		FormalPoolExtraLastFailureSource: "cc_gateway_runtime_register",
+		FormalPoolExtraQuarantineReason:  "reason_auth",
+		FormalPoolExtraQuarantineAt:      "2026-05-29T00:00:00Z",
 	})}})
 
 	got, err := svc.Diagnostics(context.Background(), 42)
@@ -594,6 +596,8 @@ func TestFormalPoolOperationsRuntimeRegister_UsesAccountProxyAndBucket(t *testin
 	require.False(t, store.account.Schedulable)
 	require.Equal(t, StatusActive, store.account.Status)
 	require.Equal(t, FormalPoolStageRuntimeRegistered, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineReason))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineAt))
 	require.Equal(t, "true", store.account.GetExtraString(FormalPoolExtraRuntimeRegistered))
 	require.Equal(t, "pending", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
 }
@@ -621,6 +625,8 @@ func TestFormalPoolOperationsHealthcheck_UpdatesPassedEvidence(t *testing.T) {
 		FormalPoolExtraOnboardingStage:     FormalPoolStageRuntimeRegistered,
 		FormalPoolExtraRuntimeRegistered:   "true",
 		FormalPoolExtraRuntimeRegisteredAt: "2026-05-29T00:00:00Z",
+		FormalPoolExtraQuarantineReason:    "reason_auth",
+		FormalPoolExtraQuarantineAt:        "2026-05-29T00:00:00Z",
 	}))
 	health := &formalPoolOperationsHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef, FallbackDetected: false, ProxyMismatch: false, RiskTextDetected: false}}
 	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Healthcheck: health})
@@ -633,6 +639,8 @@ func TestFormalPoolOperationsHealthcheck_UpdatesPassedEvidence(t *testing.T) {
 	require.Equal(t, "passed", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
 	require.Equal(t, "status_2xx", store.account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket))
 	require.Equal(t, rawRef, store.account.GetExtraString(FormalPoolExtraHealthcheckRawRef))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineReason))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineAt))
 	require.True(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen]))
 	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckFallbackDetected]))
 	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckProxyMismatch]))
@@ -681,7 +689,7 @@ func TestFormalPoolOperationsDiagnostics_RequiresRuntimeRegisteredEvidenceBefore
 	require.NoError(t, err)
 	require.NotContains(t, actionKeys(got.RecommendedActions), "start_warming")
 	require.Contains(t, actionKeys(got.RecommendedActions), "runtime_register")
-	require.Contains(t, actionKeys(got.RecommendedActions), "healthcheck")
+	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
 	require.Contains(t, got.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "fail", Message: "cc gateway runtime identity/bucket mapping must be registered before warming"})
 }
 
@@ -710,6 +718,278 @@ func TestFormalPoolOperationsDiagnostics_RecommendsStartWarmingWithRuntimeRegist
 	require.NoError(t, err)
 	require.Contains(t, actionKeys(got.RecommendedActions), "start_warming")
 	require.Contains(t, got.Checks, FormalPoolAcceptanceCheck{Name: "cc_gateway_runtime_registered", Status: "pass"})
+}
+
+func TestFormalPoolOperationsDiagnostics_HealthyProductionRecommendsMonitorOnly(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra())
+	account.Status = StatusActive
+	account.Schedulable = true
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraHealthcheckStatus] = "passed"
+	account.Extra[FormalPoolExtraLastFailureCode] = ""
+	account.Extra[FormalPoolExtraLastFailureSource] = ""
+	account.Extra[FormalPoolExtraQuarantineReason] = ""
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.Equal(t, string(FormalPoolFailureOriginUnknown), got.FailureOrigin)
+	require.Equal(t, []string{"monitor"}, actionKeys(got.RecommendedActions))
+	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
+}
+
+func TestFormalPoolOperationsDiagnostics_WarmingRecommendsPromoteProduction(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra())
+	account.Status = StatusActive
+	account.Schedulable = true
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.Contains(t, actionKeys(got.RecommendedActions), "promote_production")
+	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
+}
+
+func TestFormalPoolOperationsDiagnostics_InvalidGrantRecommendationsByAccountType(t *testing.T) {
+	t.Parallel()
+
+	setup := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:   FormalPoolStageQuarantined,
+		FormalPoolExtraHealthcheckStatus: FormalPoolOnboardingStatusQuarantined,
+		FormalPoolExtraLastFailureOrigin: string(FormalPoolFailureOriginTokenExchange),
+		FormalPoolExtraLastFailureCode:   "refresh_token_invalid",
+		FormalPoolExtraLastFailureSource: "rate_limit_service",
+		FormalPoolExtraQuarantineReason:  "refresh_token_invalid",
+	})
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: setup}})
+	got, err := svc.Diagnostics(context.Background(), setup.ID)
+	require.NoError(t, err)
+	require.Contains(t, actionKeys(got.RecommendedActions), "replace_setup_token")
+	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
+
+	oauth := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:   FormalPoolStageQuarantined,
+		FormalPoolExtraHealthcheckStatus: FormalPoolOnboardingStatusQuarantined,
+		FormalPoolExtraLastFailureOrigin: string(FormalPoolFailureOriginTokenExchange),
+		FormalPoolExtraLastFailureCode:   "refresh_token_invalid",
+		FormalPoolExtraLastFailureSource: "rate_limit_service",
+		FormalPoolExtraQuarantineReason:  "refresh_token_invalid",
+	})
+	oauth.Type = AccountTypeOAuth
+	svc = NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: oauth}})
+	got, err = svc.Diagnostics(context.Background(), oauth.ID)
+	require.NoError(t, err)
+	require.Contains(t, actionKeys(got.RecommendedActions), "reauthorize_oauth")
+	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
+}
+
+func TestFormalPoolOperationsPromoteProduction_EarlyFailureWritesAudit(t *testing.T) {
+	t.Parallel()
+
+	audit := &formalPoolOperationsAuditFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Audit: audit})
+	_, err := svc.PromoteProduction(context.Background(), 42)
+	require.Error(t, err)
+	require.Len(t, audit.events, 1)
+	require.Equal(t, "promote_production", audit.events[0].Action)
+	require.Equal(t, int64(42), audit.events[0].AccountID)
+	require.False(t, audit.events[0].Success)
+	require.Equal(t, "FORMAL_POOL_OPERATIONS_UNAVAILABLE", audit.events[0].FailureCode)
+
+	audit = &formalPoolOperationsAuditFake{}
+	svc = NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsErrorStore{err: errors.New("database unavailable")}, Audit: audit})
+	_, err = svc.PromoteProduction(context.Background(), 43)
+	require.Error(t, err)
+	require.Len(t, audit.events, 1)
+	require.Equal(t, "promote_production", audit.events[0].Action)
+	require.Equal(t, int64(43), audit.events[0].AccountID)
+	require.False(t, audit.events[0].Success)
+	require.Equal(t, "operation_failed", audit.events[0].FailureCode)
+}
+
+func TestFormalPoolOperationsPromoteProduction_RequiresWarmingAndCompleteEvidence(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageHealthcheckPassed
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store})
+
+	_, err := svc.PromoteProduction(context.Background(), store.account.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "WARMING_NOT_STARTED")
+	require.NotEqual(t, FormalPoolStageProduction, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+
+	store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	store.account.Extra[FormalPoolExtraHealthcheckRawRef] = ""
+	_, err = svc.PromoteProduction(context.Background(), store.account.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "PRODUCTION_EVIDENCE_INCOMPLETE")
+	require.NotEqual(t, FormalPoolStageProduction, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+}
+
+func TestFormalPoolOperationsPromoteProduction_SetsProductionClearsCurrentQuarantineAndAudits(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 30, 9, 10, 11, 0, time.UTC)
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	store.account.Status = StatusActive
+	store.account.Schedulable = true
+	store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	store.account.Extra[FormalPoolExtraQuarantineReason] = "refresh_token_invalid"
+	store.account.Extra[FormalPoolExtraQuarantineAt] = "2026-05-29T00:00:00Z"
+	store.account.Extra[FormalPoolExtraRiskEventRef] = "hmac-sha256:" + strings.Repeat("f", 64)
+	audit := &formalPoolOperationsAuditFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Audit: audit, Now: func() time.Time { return now }})
+
+	ctx := WithFormalPoolOperationOperator(context.Background(), "admin:99")
+	got, err := svc.PromoteProduction(ctx, store.account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.True(t, store.account.Schedulable)
+	require.Equal(t, StatusActive, store.account.Status)
+	require.Equal(t, FormalPoolStageProduction, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, PoolProfileNormal, store.account.GetExtraString(FormalPoolExtraPoolProfileEffective))
+	require.Equal(t, FormalPoolWeightNormal, store.account.GetExtraString(FormalPoolExtraPoolWeightMode))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineReason))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineAt))
+	require.NotEmpty(t, store.account.GetExtraString(FormalPoolExtraRiskEventRef), "historical safe risk ref must be preserved")
+	require.Len(t, audit.events, 1)
+	require.Equal(t, "admin:99", audit.events[0].Operator)
+	require.Equal(t, store.account.ID, audit.events[0].AccountID)
+	require.Equal(t, "promote_production", audit.events[0].Action)
+	require.Equal(t, FormalPoolStageWarming, audit.events[0].BeforeStage)
+	require.Equal(t, FormalPoolStageProduction, audit.events[0].AfterStage)
+	require.Equal(t, "refresh_token_invalid", audit.events[0].ReasonBucket)
+	require.True(t, audit.events[0].Success)
+}
+
+func TestFormalPoolOperationsPromoteProduction_AlreadyProductionNoopDoesNotMutateEvidence(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	store.account.Status = StatusActive
+	store.account.Schedulable = true
+	store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	beforeUpdates := store.stateUpdates
+	audit := &formalPoolOperationsAuditFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Audit: audit})
+
+	got, err := svc.PromoteProduction(context.Background(), store.account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, beforeUpdates, store.stateUpdates, "idempotent production no-op must not rewrite evidence")
+	require.Len(t, audit.events, 1)
+	require.Equal(t, "promote_production", audit.events[0].Action)
+	require.Equal(t, FormalPoolStageProduction, audit.events[0].BeforeStage)
+	require.Equal(t, FormalPoolStageProduction, audit.events[0].AfterStage)
+	require.True(t, audit.events[0].Success)
+	require.True(t, audit.events[0].Noop)
+}
+
+func TestFormalPoolOperationsMutatingOperations_WriteAuditEvents(t *testing.T) {
+	t.Parallel()
+
+	run := func(name string, wantAction, wantBefore, wantAfter string, setup func(*formalPoolOperationsMutableStore) *FormalPoolOperationsService, call func(*FormalPoolOperationsService, *formalPoolOperationsMutableStore) error) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+			audit := &formalPoolOperationsAuditFake{}
+			svc := setup(store)
+			svc.audit = audit
+
+			err := call(svc, store)
+			require.NoError(t, err)
+			require.NotEmpty(t, audit.events)
+			event := audit.events[len(audit.events)-1]
+			require.Equal(t, wantAction, event.Action)
+			require.Equal(t, store.account.ID, event.AccountID)
+			require.Equal(t, wantBefore, event.BeforeStage)
+			require.Equal(t, wantAfter, event.AfterStage)
+			require.True(t, event.Success)
+			require.NotEmpty(t, event.Operator)
+			require.NotEmpty(t, event.Timestamp)
+		})
+	}
+
+	run("replace setup token", "replace_setup_token", FormalPoolStageQuarantined, FormalPoolStageRefreshed,
+		func(store *formalPoolOperationsMutableStore) *FormalPoolOperationsService {
+			store.account.Type = AccountTypeSetupToken
+			store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
+			store.account.Extra[FormalPoolExtraHealthcheckStatus] = FormalPoolOnboardingStatusQuarantined
+			store.account.Status = StatusError
+			store.account.Schedulable = false
+			return NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+				Accounts: store,
+				OAuth: &formalPoolOperationsOAuthFake{
+					summary:     FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true},
+					credentials: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:inference"},
+				},
+			})
+		},
+		func(svc *FormalPoolOperationsService, store *formalPoolOperationsMutableStore) error {
+			_, err := svc.ReplaceSetupToken(context.Background(), store.account.ID, FormalPoolSetupTokenReplaceRequest{SessionKey: "sk-ant-sid01-new-secret"})
+			return err
+		})
+
+	run("runtime register", "runtime_register", FormalPoolStageRefreshed, FormalPoolStageRuntimeRegistered,
+		func(store *formalPoolOperationsMutableStore) *FormalPoolOperationsService {
+			store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRefreshed
+			store.account.Extra[FormalPoolExtraRuntimeRegistered] = "false"
+			proxyID := int64(77)
+			store.account.ProxyID = &proxyID
+			return NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+				Accounts:         store,
+				Proxy:            &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 77, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+				CCGatewayRuntime: &formalPoolOperationsRuntimeFake{},
+			})
+		},
+		func(svc *FormalPoolOperationsService, store *formalPoolOperationsMutableStore) error {
+			_, err := svc.RuntimeRegister(context.Background(), store.account.ID)
+			return err
+		})
+
+	run("healthcheck", "healthcheck", FormalPoolStageRuntimeRegistered, FormalPoolStageHealthcheckPassed,
+		func(store *formalPoolOperationsMutableStore) *FormalPoolOperationsService {
+			store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRuntimeRegistered
+			return NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+				Accounts: store,
+				Healthcheck: &formalPoolOperationsHealthcheckFake{result: &FormalPoolAcceptanceResult{
+					Status: FormalPoolOnboardingStatusHealthcheckPassed, StatusCodeBucket: "status_2xx", CCGatewaySeen: true,
+					RawCapturePresent: true, RawCaptureRef: "hmac-sha256:" + strings.Repeat("a", 64),
+				}},
+			})
+		},
+		func(svc *FormalPoolOperationsService, store *formalPoolOperationsMutableStore) error {
+			_, err := svc.Healthcheck(context.Background(), store.account.ID)
+			return err
+		})
+
+	run("start warming", "start_warming", FormalPoolStageHealthcheckPassed, FormalPoolStageWarming,
+		func(store *formalPoolOperationsMutableStore) *FormalPoolOperationsService {
+			return NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store})
+		},
+		func(svc *FormalPoolOperationsService, store *formalPoolOperationsMutableStore) error {
+			_, err := svc.StartWarming(context.Background(), store.account.ID)
+			return err
+		})
+
+	run("swap proxy", "swap_proxy", FormalPoolStageWarming, FormalPoolStageRefreshed,
+		func(store *formalPoolOperationsMutableStore) *FormalPoolOperationsService {
+			store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+			store.account.Schedulable = true
+			store.account.Status = StatusActive
+			store.account.Credentials = map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:inference"}
+			return NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store})
+		},
+		func(svc *FormalPoolOperationsService, store *formalPoolOperationsMutableStore) error {
+			_, err := svc.SwapProxy(context.Background(), store.account.ID, FormalPoolProxySwapRequest{ProxyID: 88})
+			return err
+		})
 }
 
 func TestFormalPoolOperationsStartWarming_RequiresHealthcheckPassedEvidence(t *testing.T) {
@@ -776,6 +1056,8 @@ func TestFormalPoolOperationsStartWarming_SetsLowWeightNormalProfile(t *testing.
 	t.Parallel()
 
 	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	store.account.Extra[FormalPoolExtraQuarantineReason] = "reason_auth"
+	store.account.Extra[FormalPoolExtraQuarantineAt] = "2026-05-29T00:00:00Z"
 	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Now: func() time.Time { return time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC) }})
 
 	got, err := svc.StartWarming(context.Background(), store.account.ID)
@@ -787,6 +1069,8 @@ func TestFormalPoolOperationsStartWarming_SetsLowWeightNormalProfile(t *testing.
 	require.NotEqual(t, FormalPoolStageProduction, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
 	require.Equal(t, PoolProfileNormal, store.account.GetExtraString(FormalPoolExtraPoolProfileEffective))
 	require.Equal(t, FormalPoolWeightLow, store.account.GetExtraString(FormalPoolExtraPoolWeightMode))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineReason))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineAt))
 	require.NotEmpty(t, store.account.GetExtraString(FormalPoolExtraWarmingStartedAt))
 	require.NotEmpty(t, store.account.GetExtraString(FormalPoolExtraWarmingUntil))
 }
@@ -799,6 +1083,8 @@ func TestFormalPoolOperationsSwapProxy_SetsProxyAndResetsRuntimeAndHealthcheck(t
 	store.account.Schedulable = true
 	store.account.Status = StatusActive
 	store.account.Credentials = map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:inference"}
+	store.account.Extra[FormalPoolExtraQuarantineReason] = "reason_proxy"
+	store.account.Extra[FormalPoolExtraQuarantineAt] = "2026-05-29T00:00:00Z"
 	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store})
 
 	got, err := svc.SwapProxy(context.Background(), store.account.ID, FormalPoolProxySwapRequest{ProxyID: 88})
@@ -808,6 +1094,8 @@ func TestFormalPoolOperationsSwapProxy_SetsProxyAndResetsRuntimeAndHealthcheck(t
 	require.Equal(t, int64(88), *store.account.ProxyID)
 	require.False(t, store.account.Schedulable)
 	require.Equal(t, FormalPoolStageRefreshed, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineReason))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraQuarantineAt))
 	require.Equal(t, "false", store.account.GetExtraString(FormalPoolExtraRuntimeRegistered))
 	require.Equal(t, "pending", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
 	require.Empty(t, store.account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket))
@@ -925,6 +1213,30 @@ func mustJSON(t *testing.T, v any) string {
 	raw, err := json.Marshal(v)
 	require.NoError(t, err)
 	return string(raw)
+}
+
+type formalPoolOperationsErrorStore struct {
+	err error
+}
+
+func (s formalPoolOperationsErrorStore) GetFormalPoolAccount(context.Context, int64) (*Account, error) {
+	return nil, s.err
+}
+
+func (s formalPoolOperationsErrorStore) UpdateFormalPoolAccountCredentials(context.Context, int64, map[string]any) (*Account, error) {
+	return nil, s.err
+}
+
+func (s formalPoolOperationsErrorStore) UpdateFormalPoolAccountState(context.Context, int64, bool, string, map[string]any) (*Account, error) {
+	return nil, s.err
+}
+
+func (s formalPoolOperationsErrorStore) ActivateFormalPoolAccount(context.Context, int64, map[string]any) (*Account, error) {
+	return nil, s.err
+}
+
+func (s formalPoolOperationsErrorStore) UpdateFormalPoolAccountProxy(context.Context, int64, int64, map[string]any) (*Account, error) {
+	return nil, s.err
 }
 
 type formalPoolOperationsMutableStore struct {
@@ -1274,6 +1586,16 @@ func TestFormalPoolRuntimeRegistrationStartupReplay_RegisterFailureStaysUnschedu
 	require.Empty(t, account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
 	require.Equal(t, "runtime_replay_registration_failed", account.GetExtraString(FormalPoolExtraLastFailureCode))
 	require.NotEqual(t, FormalPoolStageWarming, account.GetExtraString(FormalPoolExtraOnboardingStage))
+}
+
+type formalPoolOperationsAuditFake struct {
+	events []FormalPoolOperationAuditEvent
+	err    error
+}
+
+func (f *formalPoolOperationsAuditFake) WriteFormalPoolOperationAudit(_ context.Context, event FormalPoolOperationAuditEvent) error {
+	f.events = append(f.events, event)
+	return f.err
 }
 
 func actionKeys(actions []FormalPoolRecommendedAction) []string {

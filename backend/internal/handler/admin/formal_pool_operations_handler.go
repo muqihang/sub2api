@@ -1,13 +1,14 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
-	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -43,7 +44,7 @@ func (h *FormalPoolOperationsHandler) ReplaceSetupToken(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	res, err := h.svc.ReplaceSetupToken(c.Request.Context(), accountID, req)
+	res, err := h.svc.ReplaceSetupToken(h.operationContext(c), accountID, req)
 	h.writeAccountResult(c, res, err)
 }
 
@@ -52,7 +53,7 @@ func (h *FormalPoolOperationsHandler) RuntimeRegister(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := h.svc.RuntimeRegister(c.Request.Context(), accountID)
+	res, err := h.svc.RuntimeRegister(h.operationContext(c), accountID)
 	h.writeAccountResult(c, res, err)
 }
 
@@ -61,7 +62,7 @@ func (h *FormalPoolOperationsHandler) Healthcheck(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := h.svc.Healthcheck(c.Request.Context(), accountID)
+	res, err := h.svc.Healthcheck(h.operationContext(c), accountID)
 	h.writeAccountResult(c, res, err)
 }
 
@@ -70,7 +71,16 @@ func (h *FormalPoolOperationsHandler) StartWarming(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := h.svc.StartWarming(c.Request.Context(), accountID)
+	res, err := h.svc.StartWarming(h.operationContext(c), accountID)
+	h.writeAccountResult(c, res, err)
+}
+
+func (h *FormalPoolOperationsHandler) PromoteProduction(c *gin.Context) {
+	accountID, ok := h.parseAccountID(c)
+	if !ok {
+		return
+	}
+	res, err := h.svc.PromoteProduction(h.operationContext(c), accountID)
 	h.writeAccountResult(c, res, err)
 }
 
@@ -84,8 +94,16 @@ func (h *FormalPoolOperationsHandler) SwapProxy(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	res, err := h.svc.SwapProxy(c.Request.Context(), accountID, req)
+	res, err := h.svc.SwapProxy(h.operationContext(c), accountID, req)
 	h.writeAccountResult(c, res, err)
+}
+
+func (h *FormalPoolOperationsHandler) operationContext(c *gin.Context) context.Context {
+	ctx := c.Request.Context()
+	if subject, ok := servermiddleware.GetAuthSubjectFromContext(c); ok && subject.UserID > 0 {
+		ctx = service.WithFormalPoolOperationOperator(ctx, "admin:"+strconv.FormatInt(subject.UserID, 10))
+	}
+	return ctx
 }
 
 func (h *FormalPoolOperationsHandler) parseAccountID(c *gin.Context) (int64, bool) {
@@ -135,7 +153,7 @@ func (h *FormalPoolOperationsHandler) writeAccountResult(c *gin.Context, result 
 		return
 	}
 	response.Success(c, gin.H{
-		"account":     dto.AccountFromService(resultAccount(result)),
+		"account":     formalPoolOperationSafeAccount(resultAccount(result)),
 		"diagnostics": resultDiagnostics(result),
 	})
 }
@@ -154,7 +172,7 @@ func resultDiagnostics(result *service.FormalPoolOperationsAccountResult) *servi
 	return result.Diagnostics
 }
 
-type formalPoolOperationFailureAccountPayload struct {
+type formalPoolOperationAccountPayload struct {
 	ID                   int64  `json:"id"`
 	Status               string `json:"status"`
 	Schedulable          bool   `json:"schedulable"`
@@ -162,17 +180,21 @@ type formalPoolOperationFailureAccountPayload struct {
 	OnboardingStage      string `json:"onboarding_stage,omitempty"`
 }
 
-func formalPoolOperationFailureAccount(account *service.Account) *formalPoolOperationFailureAccountPayload {
+func formalPoolOperationSafeAccount(account *service.Account) *formalPoolOperationAccountPayload {
 	if account == nil {
 		return nil
 	}
-	return &formalPoolOperationFailureAccountPayload{
+	return &formalPoolOperationAccountPayload{
 		ID:                   account.ID,
 		Status:               formalPoolOperationFailureSafeStatus(account.Status),
 		Schedulable:          account.Schedulable,
 		EffectiveSchedulable: account.IsSchedulable(),
 		OnboardingStage:      formalPoolOperationFailureSafeStage(service.FormalPoolAccountStage(account)),
 	}
+}
+
+func formalPoolOperationFailureAccount(account *service.Account) *formalPoolOperationAccountPayload {
+	return formalPoolOperationSafeAccount(account)
 }
 
 func formalPoolOperationFailureSafeStatus(status string) string {
