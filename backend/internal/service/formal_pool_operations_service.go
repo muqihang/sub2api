@@ -176,7 +176,7 @@ func (s *FormalPoolOperationsAdminAccountStore) UpdateFormalPoolAccountState(ctx
 	for k, v := range extra {
 		merged[k] = v
 	}
-	input := &UpdateAccountInput{Schedulable: &schedulable, Extra: merged}
+	input := &UpdateAccountInput{Schedulable: &schedulable, Extra: merged, FormalPoolStateUpdate: true}
 	if strings.TrimSpace(status) != "" {
 		input.Status = status
 	}
@@ -203,7 +203,7 @@ func (s *FormalPoolOperationsAdminAccountStore) UpdateFormalPoolAccountProxy(ctx
 		merged[k] = v
 	}
 	schedulable := false
-	input := &UpdateAccountInput{ProxyID: &proxyID, Extra: merged, Schedulable: &schedulable, Status: StatusActive}
+	input := &UpdateAccountInput{ProxyID: &proxyID, Extra: merged, Schedulable: &schedulable, Status: StatusActive, FormalPoolStateUpdate: true}
 	if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraOnboardingStage])) == FormalPoolStageQuarantined {
 		input.Status = StatusError
 	}

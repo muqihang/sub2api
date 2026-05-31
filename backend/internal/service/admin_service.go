@@ -304,6 +304,7 @@ type UpdateAccountInput struct {
 	AutoPauseOnExpired    *bool
 	SkipMixedChannelCheck bool // 跳过混合渠道检查（用户已确认风险）
 	Schedulable           *bool
+	FormalPoolStateUpdate bool
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
@@ -2490,6 +2491,104 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	return account, nil
 }
 
+func shouldUseFormalPoolSafeAdminMerge(account *Account) bool {
+	return account != nil && account.IsAnthropicOAuthOrSetupToken() && IsFormalPoolAccount(account)
+}
+
+var formalPoolAdminProtectedCredentialKeys = map[string]struct{}{
+	"access_token":  {},
+	"refresh_token": {},
+	"scope":         {},
+	"token_type":    {},
+	"expires_in":    {},
+	"expires_at":    {},
+	"account_uuid":  {},
+	"org_uuid":      {},
+	"email_address": {},
+}
+
+func mergeFormalPoolAdminCredentials(existing, incoming map[string]any) map[string]any {
+	merged := cloneCredentials(existing)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	for key, value := range incoming {
+		if _, protected := formalPoolAdminProtectedCredentialKeys[key]; protected && isBlankAdminUpdateValue(value) {
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
+}
+
+var formalPoolAdminProtectedExtraKeys = map[string]struct{}{
+	"onboarding_state":                         {},
+	FormalPoolExtraOnboardingStage:             {},
+	FormalPoolExtraOnboardingStageUpdatedAt:    {},
+	FormalPoolExtraOnboardingLastCheck:         {},
+	FormalPoolExtraOnboardingLastCheckAt:       {},
+	FormalPoolExtraOnboardingLastErrorCode:     {},
+	FormalPoolExtraOnboardingLastErrorBucket:   {},
+	FormalPoolExtraHealthcheckStatus:           {},
+	FormalPoolExtraHealthcheckStatusCodeBucket: {},
+	FormalPoolExtraHealthcheckRawRef:           {},
+	FormalPoolExtraLastFailureOrigin:           {},
+	FormalPoolExtraLastFailureCode:             {},
+	FormalPoolExtraLastFailureSource:           {},
+	FormalPoolExtraLastCCGatewayErrorCode:      {},
+	FormalPoolExtraLastHealthcheckAt:           {},
+	FormalPoolExtraLastHealthcheckResult:       {},
+	FormalPoolExtraHealthcheckCCGatewaySeen:    {},
+	FormalPoolExtraHealthcheckFallbackDetected: {},
+	FormalPoolExtraHealthcheckProxyMismatch:    {},
+	FormalPoolExtraHealthcheckRiskTextDetected: {},
+	FormalPoolExtraCredentialGeneration:        {},
+	FormalPoolExtraRepairedAt:                  {},
+	FormalPoolExtraRepairedBy:                  {},
+	FormalPoolExtraRuntimeRegistered:           {},
+	FormalPoolExtraRuntimeRegisteredAt:         {},
+	FormalPoolExtraWarmingStartedAt:            {},
+	FormalPoolExtraWarmingUntil:                {},
+	FormalPoolExtraPoolProfileRequested:        {},
+	FormalPoolExtraPoolProfileEffective:        {},
+	FormalPoolExtraPoolWeightMode:              {},
+	FormalPoolExtraRiskEventRef:                {},
+	FormalPoolExtraQuarantineReason:            {},
+	FormalPoolExtraQuarantineAt:                {},
+	"cc_gateway_enabled":                       {},
+	"cc_gateway_canary_only":                   {},
+	"cc_gateway_routes":                        {},
+	"cc_gateway_policy_version":                {},
+	"cc_gateway_account_ref":                   {},
+	"cc_gateway_egress_bucket_enabled":         {},
+	"cc_gateway_egress_bucket":                 {},
+	"oauth_refresh_fail_closed":                {},
+}
+
+func mergeFormalPoolAdminExtra(existing, incoming map[string]any) map[string]any {
+	merged := cloneCredentials(existing)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	for key, value := range incoming {
+		if _, protected := formalPoolAdminProtectedExtraKeys[key]; protected && isBlankAdminUpdateValue(value) {
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
+}
+
+func isBlankAdminUpdateValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text) == ""
+	}
+	return false
+}
+
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
@@ -2507,7 +2606,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		account.Notes = normalizeAccountNotes(input.Notes)
 	}
 	if len(input.Credentials) > 0 {
-		account.Credentials = input.Credentials
+		if shouldUseFormalPoolSafeAdminMerge(account) {
+			account.Credentials = mergeFormalPoolAdminCredentials(account.Credentials, input.Credentials)
+		} else {
+			account.Credentials = input.Credentials
+		}
 	}
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
@@ -2526,6 +2629,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		input.Extra[OpenAIGatewayTLSExtraKey] = input.OpenAIGatewayTLS.ExtraMap()
 	}
 	if input.Extra != nil {
+		if shouldUseFormalPoolSafeAdminMerge(account) && !input.FormalPoolStateUpdate {
+			input.Extra = mergeFormalPoolAdminExtra(account.Extra, input.Extra)
+		}
 		// 保留配额用量字段，防止编辑账号时意外重置
 		for _, key := range []string{"quota_used", "quota_daily_used", "quota_daily_start", "quota_weekly_used", "quota_weekly_start"} {
 			if v, ok := account.Extra[key]; ok {

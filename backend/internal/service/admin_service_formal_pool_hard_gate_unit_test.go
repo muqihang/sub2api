@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -187,4 +188,69 @@ func TestAdminServiceUpdateAccount_FormalPoolAllowsAtomicWarmingTransition(t *te
 
 	require.NoError(t, err)
 	require.NotNil(t, got)
+}
+
+func TestAdminServiceUpdateAccount_FormalPoolCredentialPartialUpdatePreservesOAuthSecrets(t *testing.T) {
+	t.Parallel()
+
+	repo := &formalPoolCreateRepoStub{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{206: {
+		ID:          206,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token":  "access-secret",
+			"refresh_token": "refresh-secret",
+			"scope":         "user:profile user:inference user:sessions:claude_code",
+			"expires_at":    "1893456000",
+		},
+		Extra: mergeFormalPoolTestExtra(FormalPoolStageWarming),
+	}}}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	got, err := svc.UpdateAccount(context.Background(), 206, &UpdateAccountInput{
+		Credentials: map[string]any{"intercept_warmup_requests": true},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "access-secret", got.Credentials["access_token"])
+	require.Equal(t, "refresh-secret", got.Credentials["refresh_token"])
+	require.Equal(t, "user:profile user:inference user:sessions:claude_code", got.Credentials["scope"])
+	require.Equal(t, true, got.Credentials["intercept_warmup_requests"])
+}
+
+func TestAdminServiceUpdateAccount_FormalPoolExtraPartialUpdatePreservesRuntimeEvidence(t *testing.T) {
+	t.Parallel()
+
+	extra := mergeFormalPoolTestExtra(FormalPoolStageWarming)
+	extra["cc_gateway_enabled"] = "true"
+	extra["cc_gateway_routes"] = "native_messages"
+	extra["cc_gateway_account_ref"] = "hmac-sha256:" + strings.Repeat("b", 64)
+	extra["cc_gateway_egress_bucket_enabled"] = "true"
+	extra["cc_gateway_egress_bucket"] = "claude-hmac-sha256:4ad0"
+
+	repo := &formalPoolCreateRepoStub{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{207: {
+		ID:          207,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:inference"},
+		Extra:       extra,
+	}}}}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	got, err := svc.UpdateAccount(context.Background(), 207, &UpdateAccountInput{
+		Extra: map[string]any{"base_rpm": 3, "cc_gateway_egress_bucket": "", FormalPoolExtraRuntimeRegisteredAt: ""},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 3, got.Extra["base_rpm"])
+	require.Equal(t, FormalPoolStageWarming, got.Extra[FormalPoolExtraOnboardingStage])
+	require.Equal(t, "true", got.Extra[FormalPoolExtraRuntimeRegistered])
+	require.Equal(t, "2026-05-30T00:00:00Z", got.Extra[FormalPoolExtraRuntimeRegisteredAt])
+	require.Equal(t, "claude-hmac-sha256:4ad0", got.Extra["cc_gateway_egress_bucket"])
+	require.Equal(t, "hmac-sha256:"+strings.Repeat("b", 64), got.Extra["cc_gateway_account_ref"])
+	require.Equal(t, "passed", got.Extra[FormalPoolExtraHealthcheckStatus])
 }
