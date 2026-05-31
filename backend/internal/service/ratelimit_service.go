@@ -165,6 +165,17 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		if reason == "" {
 			reason = http.StatusText(statusCode)
 		}
+		authRefreshAttempted := boolFromAny(account.Extra["formal_pool_auth_refresh_attempted"])
+		if statusCode == http.StatusUnauthorized && s.shouldDeferFormalPool401ForRefresh(ctx, account, reason) {
+			return true
+		}
+		if statusCode == http.StatusUnauthorized && isInvalidGrantText(reason) {
+			s.markFormalPoolRefreshTokenInvalid(ctx, account, statusCode)
+			return true
+		}
+		if authRefreshAttempted && account.Extra != nil {
+			delete(account.Extra, "formal_pool_auth_refresh_attempted")
+		}
 		s.quarantineFormalPoolAccount(ctx, account, RiskEventKindIdentityBoundaryFail, "rate_limit_service", statusCode, reason)
 		return true
 	}
@@ -736,6 +747,74 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 		return 5 * time.Minute
 	}
 	return s.geminiQuotaService.CooldownForAccount(ctx, account)
+}
+
+func (s *RateLimitService) shouldDeferFormalPool401ForRefresh(ctx context.Context, account *Account, reason string) bool {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return false
+	}
+	if !account.IsOAuth() || strings.TrimSpace(account.GetCredential("refresh_token")) == "" {
+		return false
+	}
+	if isInvalidGrantText(reason) || boolFromAny(account.Extra["formal_pool_auth_refresh_attempted"]) {
+		return false
+	}
+	msg := "refresh_required: upstream 401 before terminal quarantine"
+	until := time.Now().Add(2 * time.Minute)
+	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+		slog.Warn("formal_pool_401_refresh_required_set_failed", "account_id", account.ID, "error", err)
+	}
+	if s.tempUnschedCache != nil {
+		state := &TempUnschedState{
+			UntilUnix:       until.Unix(),
+			TriggeredAtUnix: time.Now().Unix(),
+			StatusCode:      http.StatusUnauthorized,
+			MatchedKeyword:  "refresh_required",
+			RuleIndex:       -1,
+			ErrorMessage:    msg,
+		}
+		if err := s.tempUnschedCache.SetTempUnsched(ctx, account.ID, state); err != nil {
+			slog.Warn("formal_pool_401_refresh_required_cache_set_failed", "account_id", account.ID, "error", err)
+		}
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	account.Extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginTokenExchange)
+	account.Extra[FormalPoolExtraLastFailureCode] = "refresh_required"
+	account.Extra[FormalPoolExtraLastFailureSource] = "rate_limit_service"
+	account.Extra["formal_pool_auth_refresh_required"] = true
+	account.Extra[FormalPoolExtraOnboardingLastErrorCode] = "refresh_required"
+	account.Extra[FormalPoolExtraOnboardingLastErrorBucket] = statusBucketFromHTTP(http.StatusUnauthorized)
+	extraUpdates := map[string]any{
+		FormalPoolExtraLastFailureOrigin:         account.Extra[FormalPoolExtraLastFailureOrigin],
+		FormalPoolExtraLastFailureCode:           account.Extra[FormalPoolExtraLastFailureCode],
+		FormalPoolExtraLastFailureSource:         account.Extra[FormalPoolExtraLastFailureSource],
+		"formal_pool_auth_refresh_required":      account.Extra["formal_pool_auth_refresh_required"],
+		FormalPoolExtraOnboardingLastErrorCode:   account.Extra[FormalPoolExtraOnboardingLastErrorCode],
+		FormalPoolExtraOnboardingLastErrorBucket: account.Extra[FormalPoolExtraOnboardingLastErrorBucket],
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, extraUpdates); err != nil {
+		slog.Warn("formal_pool_401_refresh_required_update_extra_failed", "account_id", account.ID, "error", err)
+	}
+	return true
+}
+
+func (s *RateLimitService) markFormalPoolRefreshTokenInvalid(ctx context.Context, account *Account, statusCode int) {
+	if s == nil || account == nil {
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	account.Extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginTokenExchange)
+	account.Extra[FormalPoolExtraLastFailureCode] = "refresh_token_invalid"
+	account.Extra[FormalPoolExtraLastFailureSource] = "rate_limit_service"
+	s.quarantineFormalPoolAccount(ctx, account, RiskEventKindIdentityBoundaryFail, "rate_limit_service", statusCode, "refresh_token_invalid")
+}
+
+func isInvalidGrantText(text string) bool {
+	return strings.Contains(strings.ToLower(text), "invalid_grant")
 }
 
 // handleAuthError 处理认证类错误(401/403)，停止账号调度

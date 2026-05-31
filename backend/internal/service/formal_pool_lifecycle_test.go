@@ -84,6 +84,28 @@ func TestFormalPoolQuarantineServiceMarksAccountUnsafeAndWritesRisk(t *testing.T
 	require.NotEmpty(t, sink.risks)
 }
 
+func TestFormalPoolShouldQuarantineHTTPStatusHardSignalsAcrossStatuses(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "403 hold", status: http.StatusForbidden, body: `{"error":{"message":"account on hold"}}`},
+		{name: "422 proxy mismatch", status: http.StatusUnprocessableEntity, body: `{"error":{"message":"proxy_mismatch"}}`},
+		{name: "422 fallback", status: http.StatusUnprocessableEntity, body: `{"error":{"message":"fallback detected"}}`},
+		{name: "422 verifier", status: http.StatusUnprocessableEntity, body: `{"error":{"message":"verifier failed"}}`},
+		{name: "502 egress proxy", status: http.StatusBadGateway, body: `{"error":{"message":"egress_proxy_failure"}}`},
+		{name: "500 kyc", status: http.StatusInternalServerError, body: `{"error":{"message":"KYC verification required"}}`},
+		{name: "500 risk", status: http.StatusInternalServerError, body: `{"error":{"message":"risk text detected"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.True(t, FormalPoolShouldQuarantineHTTPStatus(tc.status, []byte(tc.body)))
+		})
+	}
+	require.False(t, FormalPoolShouldQuarantineHTTPStatus(http.StatusBadGateway, []byte(`{"error":{"message":"temporary upstream unavailable"}}`)))
+}
+
 type formalPoolQuarantineRepo struct {
 	stubOpenAIAccountRepo
 	accounts map[int64]*Account

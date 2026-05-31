@@ -3870,7 +3870,7 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 }
 
 func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (string, string, error) {
-	if IsCCGatewayExplicitCanaryLocalOnly(ctx) && account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth {
+	if IsCCGatewayExplicitCanaryLocalOnly(ctx) && account.Platform == PlatformAnthropic && (account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken) {
 		accessToken := account.GetCredential("access_token")
 		if accessToken == "" {
 			return "", "", errors.New("access_token not found in credentials")
@@ -3878,8 +3878,8 @@ func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (s
 		return accessToken, "oauth", nil
 	}
 
-	// 对于 Anthropic OAuth 账号，使用 ClaudeTokenProvider 获取缓存的 token
-	if account.Platform == PlatformAnthropic && account.Type == AccountTypeOAuth && s.claudeTokenProvider != nil {
+	// 对于 Anthropic OAuth/setup-token 账号，使用 ClaudeTokenProvider 获取缓存的 token
+	if account.Platform == PlatformAnthropic && (account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken) && s.claudeTokenProvider != nil {
 		accessToken, err := s.claudeTokenProvider.GetAccessToken(ctx, account)
 		if err != nil {
 			return "", "", err
@@ -3887,7 +3887,7 @@ func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (s
 		return accessToken, "oauth", nil
 	}
 
-	// 其他情况（Gemini 有自己的 TokenProvider，setup-token 类型等）直接从账号读取
+	// 其他情况（Gemini 有自己的 TokenProvider 等）直接从账号读取
 	accessToken := account.GetCredential("access_token")
 	if accessToken == "" {
 		return "", "", errors.New("access_token not found in credentials")
@@ -4646,6 +4646,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	// 重试循环
 	var resp *http.Response
+	auth401RefreshRetried := false
+	auth401RefreshAttemptMarked := false
+	defer func() {
+		if auth401RefreshAttemptMarked && account != nil && account.Extra != nil {
+			delete(account.Extra, "formal_pool_auth_refresh_attempted")
+		}
+	}()
 	retryStart := time.Now()
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
 		// 构建上游请求（每次重试需要重新构建，因为请求体需要重新读取）
@@ -4705,6 +4712,45 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, respBody)
 			writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
 			return nil, fmt.Errorf("cc gateway control-plane error: %s", code)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized && !auth401RefreshRetried && s.shouldRefreshFormalPoolAuth401(account) {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:               "formal_pool_auth_refresh_retry",
+				Message:            extractUpstreamErrorMessage(respBody),
+			})
+
+			refreshedAccount, refreshErr := s.refreshFormalPoolAuth401(ctx, account, token)
+			if refreshErr == nil && refreshedAccount != nil {
+				account = refreshedAccount
+				newToken := account.GetCredential("access_token")
+				if strings.TrimSpace(newToken) == "" {
+					newToken, _, refreshErr = s.GetAccessToken(ctx, account)
+				}
+				if refreshErr == nil && strings.TrimSpace(newToken) != "" {
+					if account.Extra == nil {
+						account.Extra = map[string]any{}
+					}
+					account.Extra["formal_pool_auth_refresh_attempted"] = true
+					auth401RefreshAttemptMarked = true
+					token = newToken
+					auth401RefreshRetried = true
+					continue
+				}
+			}
+			if refreshErr != nil && isInvalidGrantError(refreshErr) {
+				s.quarantineFormalPoolRefreshFailure(ctx, account, http.StatusUnauthorized, "refresh_token_invalid")
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		}
 
 		// 优先检测thinking block签名错误（400）并重试一次
@@ -7295,6 +7341,60 @@ func (s *GatewayService) observeCCGatewayControlPlaneRisk(ctx context.Context, a
 		return
 	}
 	s.sessionBudgetObserve.ObserveSessionBudget(ctx, SessionBudgetObserveRecord{RiskEvents: []RiskEventLedgerEntry{risk}})
+}
+
+func (s *GatewayService) shouldRefreshFormalPoolAuth401(account *Account) bool {
+	if s == nil || s.claudeTokenProvider == nil || account == nil {
+		return false
+	}
+	if !IsFormalPoolAccount(account) || account.Platform != PlatformAnthropic {
+		return false
+	}
+	if account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken {
+		return false
+	}
+	return strings.TrimSpace(account.GetCredential("refresh_token")) != ""
+}
+
+func (s *GatewayService) refreshFormalPoolAuth401(ctx context.Context, account *Account, staleAccessToken string) (*Account, error) {
+	if !s.shouldRefreshFormalPoolAuth401(account) {
+		return nil, errors.New("formal pool auth refresh unavailable")
+	}
+	refreshed, err := s.claudeTokenProvider.ForceRefresh(ctx, account, staleAccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if s.schedulerSnapshot != nil && refreshed != nil {
+		if syncErr := s.schedulerSnapshot.UpdateAccountInCache(ctx, refreshed); syncErr != nil {
+			slog.Warn("formal_pool_auth_refresh_scheduler_sync_failed", "account_id", refreshed.ID, "error", syncErr)
+		}
+	}
+	return refreshed, nil
+}
+
+func (s *GatewayService) quarantineFormalPoolRefreshFailure(ctx context.Context, account *Account, statusCode int, reason string) {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return
+	}
+	if reason == "refresh_token_invalid" {
+		if account.Extra == nil {
+			account.Extra = map[string]any{}
+		}
+		account.Extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginTokenExchange)
+		account.Extra[FormalPoolExtraLastFailureCode] = "refresh_token_invalid"
+		account.Extra[FormalPoolExtraLastFailureSource] = "formal_pool_auth_refresh"
+		if s.rateLimitService.accountRepo != nil {
+			updates := map[string]any{
+				FormalPoolExtraLastFailureOrigin: string(FormalPoolFailureOriginTokenExchange),
+				FormalPoolExtraLastFailureCode:   "refresh_token_invalid",
+				FormalPoolExtraLastFailureSource: "formal_pool_auth_refresh",
+			}
+			if err := s.rateLimitService.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+				slog.Warn("formal_pool_auth_refresh_invalid_grant_update_extra_failed", "account_id", account.ID, "error", err)
+			}
+		}
+	}
+	s.rateLimitService.quarantineFormalPoolAccount(ctx, account, RiskEventKindIdentityBoundaryFail, "formal_pool_auth_refresh", statusCode, reason)
 }
 
 func (s *GatewayService) handleErrorResponseWithBudget(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, budgetObservation sessionBudgetRequestObservation) (*ForwardResult, error) {

@@ -89,10 +89,23 @@ func FormalPoolShouldQuarantineHTTPStatus(status int, body []byte) bool {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return true
 	}
-	if status == http.StatusBadGateway || status == http.StatusUnprocessableEntity {
-		msg := strings.ToLower(extractUpstreamErrorMessage(body) + " " + string(body))
-		return strings.Contains(msg, "missing_account_identity") || strings.Contains(msg, "missing_identity") || strings.Contains(msg, "egress_proxy_failure")
-	}
 	msg := strings.ToLower(extractUpstreamErrorMessage(body) + " " + string(body))
-	return strings.Contains(msg, "unusual activity") || strings.Contains(msg, "account is on hold") || strings.Contains(msg, "kyc") || strings.Contains(msg, "risk")
+	if status == http.StatusBadGateway || status == http.StatusUnprocessableEntity {
+		return strings.Contains(msg, "missing_account_identity") ||
+			strings.Contains(msg, "missing_identity") ||
+			strings.Contains(msg, "egress_proxy_failure") ||
+			strings.Contains(msg, "proxy_mismatch") ||
+			strings.Contains(msg, "proxy mismatch") ||
+			strings.Contains(msg, "fallback") ||
+			strings.Contains(msg, "verifier") ||
+			strings.Contains(msg, "risk")
+	}
+	return strings.Contains(msg, "unusual activity") ||
+		strings.Contains(msg, "account is on hold") ||
+		strings.Contains(msg, "kyc") ||
+		strings.Contains(msg, "risk") ||
+		strings.Contains(msg, "proxy_mismatch") ||
+		strings.Contains(msg, "proxy mismatch") ||
+		strings.Contains(msg, "fallback") ||
+		strings.Contains(msg, "verifier")
 }

@@ -56,8 +56,8 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	if account == nil {
 		return "", errors.New("account is nil")
 	}
-	if account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeServiceAccount) {
-		return "", errors.New("not an anthropic oauth or service account")
+	if account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken && account.Type != AccountTypeServiceAccount) {
+		return "", errors.New("not an anthropic oauth, setup-token, or service account")
 	}
 	if account.Type == AccountTypeServiceAccount {
 		return p.getServiceAccountAccessToken(ctx, account)
@@ -160,6 +160,31 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	}
 
 	return accessToken, nil
+}
+
+// ForceRefresh refreshes Claude OAuth/setup-token credentials after an upstream 401.
+func (p *ClaudeTokenProvider) ForceRefresh(ctx context.Context, account *Account, staleAccessToken string) (*Account, error) {
+	if p == nil || p.refreshAPI == nil || p.executor == nil {
+		return nil, errors.New("claude token refresh unavailable")
+	}
+	if account == nil || account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken) {
+		return nil, errors.New("not an anthropic oauth or setup-token account")
+	}
+	result, err := p.refreshAPI.ForceRefresh(ctx, account, p.executor, staleAccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || result.LockHeld {
+		return nil, errors.New("claude token refresh lock held")
+	}
+	refreshed := result.Account
+	if refreshed == nil {
+		refreshed = account
+	}
+	if p.tokenCache != nil {
+		_ = p.tokenCache.DeleteAccessToken(ctx, ClaudeTokenCacheKey(account))
+	}
+	return refreshed, nil
 }
 
 func (p *ClaudeTokenProvider) getServiceAccountAccessToken(ctx context.Context, account *Account) (string, error) {

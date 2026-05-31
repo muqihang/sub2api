@@ -101,6 +101,71 @@ func (c *refreshAPICacheStub) ReleaseRefreshLock(context.Context, string) error 
 	return nil
 }
 
+type forceRefreshConcurrentRepo struct {
+	mockAccountRepoForGemini
+	mu      sync.Mutex
+	account *Account
+}
+
+func (r *forceRefreshConcurrentRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return cloneAccountForForceRefreshTest(r.account), nil
+}
+
+func (r *forceRefreshConcurrentRepo) UpdateCredentials(_ context.Context, id int64, credentials map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.account == nil || r.account.ID != id {
+		r.account = &Account{ID: id}
+	}
+	r.account.Credentials = cloneCredentials(credentials)
+	return nil
+}
+
+func cloneAccountForForceRefreshTest(account *Account) *Account {
+	if account == nil {
+		return nil
+	}
+	out := *account
+	out.Credentials = cloneCredentials(account.Credentials)
+	if account.Extra != nil {
+		out.Extra = map[string]any{}
+		for k, v := range account.Extra {
+			out.Extra[k] = v
+		}
+	}
+	return &out
+}
+
+type forceRefreshConcurrentExecutor struct {
+	cacheKey string
+	mu       sync.Mutex
+	calls    int
+}
+
+func (e *forceRefreshConcurrentExecutor) CanRefresh(*Account) bool                  { return true }
+func (e *forceRefreshConcurrentExecutor) NeedsRefresh(*Account, time.Duration) bool { return true }
+func (e *forceRefreshConcurrentExecutor) CacheKey(*Account) string                  { return e.cacheKey }
+func (e *forceRefreshConcurrentExecutor) Refresh(context.Context, *Account) (map[string]any, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+	time.Sleep(25 * time.Millisecond)
+	return map[string]any{
+		"access_token":  "new-at",
+		"refresh_token": "new-rt",
+		"refresh_call":  call,
+	}, nil
+}
+
+func (e *forceRefreshConcurrentExecutor) CallCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
 // ========== RefreshIfNeeded tests ==========
 
 func TestRefreshIfNeeded_Success(t *testing.T) {
@@ -651,4 +716,160 @@ func TestAntigravityProviderRefreshPolicy(t *testing.T) {
 	require.Equal(t, ProviderRefreshErrorReturn, p.OnRefreshError)
 	require.Equal(t, ProviderLockHeldUseExistingToken, p.OnLockHeld)
 	require.Equal(t, time.Duration(0), p.FailureTTL)
+}
+
+func TestForceRefresh_LocalMutexReusesFreshTokenForConcurrent401Recovery(t *testing.T) {
+	account := &Account{
+		ID:          30,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Credentials: map[string]any{"refresh_token": "old-rt", "access_token": "old-at"},
+	}
+	repo := &refreshAPIAccountRepo{account: account}
+	cache := &refreshAPICacheStub{lockResult: true}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials:  map[string]any{"refresh_token": "new-rt", "access_token": "new-at"},
+	}
+	api := NewOAuthRefreshAPI(repo, cache)
+
+	first, err := api.ForceRefresh(context.Background(), account, executor, "")
+	require.NoError(t, err)
+	require.True(t, first.Refreshed)
+	require.Equal(t, "new-at", repo.account.GetCredential("access_token"))
+
+	staleCaller := &Account{
+		ID:          30,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Credentials: map[string]any{"refresh_token": "old-rt", "access_token": "old-at"},
+	}
+	second, err := api.ForceRefresh(context.Background(), staleCaller, executor, "old-at")
+	require.NoError(t, err)
+	require.False(t, second.Refreshed, "second stale caller must reuse fresh DB credentials instead of refreshing again")
+	require.Equal(t, "new-at", second.Account.GetCredential("access_token"))
+	require.Equal(t, 1, executor.refreshCalls)
+}
+
+func TestForceRefresh_Concurrent401RecoverySingleRefresh(t *testing.T) {
+	account := &Account{
+		ID:          31,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Credentials: map[string]any{"refresh_token": "old-rt", "access_token": "old-at"},
+	}
+	repo := &forceRefreshConcurrentRepo{account: cloneAccountForForceRefreshTest(account)}
+	executor := &forceRefreshConcurrentExecutor{cacheKey: "test:force:31"}
+	api := NewOAuthRefreshAPI(repo, nil)
+
+	var wg sync.WaitGroup
+	results := make([]*OAuthRefreshResult, 8)
+	errs := make([]error, 8)
+	start := make(chan struct{})
+	for i := range results {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			caller := cloneAccountForForceRefreshTest(account)
+			results[idx], errs[idx] = api.ForceRefresh(context.Background(), caller, executor, "old-at")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i := range errs {
+		require.NoError(t, errs[i])
+		require.NotNil(t, results[i])
+		require.Equal(t, "new-at", results[i].Account.GetCredential("access_token"))
+	}
+	require.Equal(t, 1, executor.CallCount(), "concurrent 401 recovery must coalesce to one refresh")
+}
+
+func TestForceRefresh_ReusesFreshTokenWhenCallerPointerAlreadyMutated(t *testing.T) {
+	account := &Account{
+		ID:          32,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Credentials: map[string]any{"refresh_token": "old-rt", "access_token": "old-at"},
+	}
+	repo := &refreshAPIAccountRepo{account: account}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials:  map[string]any{"refresh_token": "new-rt", "access_token": "new-at"},
+	}
+	api := NewOAuthRefreshAPI(repo, nil)
+
+	first, err := api.ForceRefresh(context.Background(), account, executor, "old-at")
+	require.NoError(t, err)
+	require.True(t, first.Refreshed)
+	require.Equal(t, "new-at", account.GetCredential("access_token"))
+
+	second, err := api.ForceRefresh(context.Background(), account, executor, "old-at")
+	require.NoError(t, err)
+	require.False(t, second.Refreshed, "mutated shared account pointer should reuse the fresh token observed after DB reread")
+	require.Equal(t, "new-at", second.Account.GetCredential("access_token"))
+	require.Equal(t, 1, executor.refreshCalls)
+}
+
+func TestForceRefresh_LockHeldReusesFreshDBToken(t *testing.T) {
+	staleCaller := &Account{
+		ID:          33,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Credentials: map[string]any{"refresh_token": "old-rt", "access_token": "old-at"},
+	}
+	repo := &refreshAPIAccountRepo{account: &Account{
+		ID:          33,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Credentials: map[string]any{"refresh_token": "new-rt", "access_token": "new-at"},
+	}}
+	cache := &refreshAPICacheStub{lockResult: false}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials:  map[string]any{"refresh_token": "should-not-use", "access_token": "should-not-use"},
+	}
+	api := NewOAuthRefreshAPI(repo, cache)
+
+	result, err := api.ForceRefresh(context.Background(), staleCaller, executor, "old-at")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.LockHeld)
+	require.False(t, result.Refreshed)
+	require.Equal(t, "new-at", result.Account.GetCredential("access_token"))
+	require.Equal(t, 0, executor.refreshCalls)
+}
+
+func TestForceRefresh_LockHeldWaitsForPeerFreshToken(t *testing.T) {
+	staleCaller := &Account{
+		ID:          34,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Credentials: map[string]any{"refresh_token": "old-rt", "access_token": "old-at"},
+	}
+	repo := &forceRefreshConcurrentRepo{account: cloneAccountForForceRefreshTest(staleCaller)}
+	cache := &refreshAPICacheStub{lockResult: false}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials:  map[string]any{"refresh_token": "should-not-use", "access_token": "should-not-use"},
+	}
+	api := NewOAuthRefreshAPI(repo, cache)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = repo.UpdateCredentials(context.Background(), 34, map[string]any{"refresh_token": "new-rt", "access_token": "new-at"})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := api.ForceRefresh(ctx, staleCaller, executor, "old-at")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.LockHeld)
+	require.False(t, result.Refreshed)
+	require.Equal(t, "new-at", result.Account.GetCredential("access_token"))
+	require.Equal(t, 0, executor.refreshCalls)
 }

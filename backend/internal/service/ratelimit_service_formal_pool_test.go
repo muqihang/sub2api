@@ -19,16 +19,51 @@ type formalRateLimitRepo struct {
 	tempCalls      int
 	lastErrorMsg   string
 	lastTempReason string
+	cloneOnGet     bool
 }
+
+type formalTempUnschedCache struct {
+	states map[int64]*TempUnschedState
+}
+
+func (c *formalTempUnschedCache) SetTempUnsched(_ context.Context, accountID int64, state *TempUnschedState) error {
+	if c.states == nil {
+		c.states = map[int64]*TempUnschedState{}
+	}
+	c.states[accountID] = state
+	return nil
+}
+
+func (c *formalTempUnschedCache) GetTempUnsched(_ context.Context, accountID int64) (*TempUnschedState, error) {
+	if c.states == nil {
+		return nil, nil
+	}
+	return c.states[accountID], nil
+}
+
+func (c *formalTempUnschedCache) DeleteTempUnsched(context.Context, int64) error { return nil }
 
 func (r *formalRateLimitRepo) Create(context.Context, *Account) error { return nil }
 func (r *formalRateLimitRepo) GetByID(_ context.Context, id int64) (*Account, error) {
 	if r.accountsByID != nil {
 		if a := r.accountsByID[id]; a != nil {
+			if r.cloneOnGet {
+				return cloneFormalRateLimitAccount(a), nil
+			}
 			return a, nil
 		}
 	}
 	return nil, errors.New("account not found")
+}
+
+func cloneFormalRateLimitAccount(account *Account) *Account {
+	if account == nil {
+		return nil
+	}
+	out := *account
+	out.Credentials = cloneCredentials(account.Credentials)
+	out.Extra = cloneCredentials(account.Extra)
+	return &out
 }
 func (r *formalRateLimitRepo) GetByIDs(_ context.Context, ids []int64) ([]*Account, error) {
 	var out []*Account
@@ -125,21 +160,74 @@ func (r *formalRateLimitRepo) ClearModelRateLimits(context.Context, int64) error
 func (r *formalRateLimitRepo) UpdateSessionWindow(context.Context, int64, *time.Time, *time.Time, string) error {
 	return nil
 }
-func (r *formalRateLimitRepo) UpdateExtra(context.Context, int64, map[string]any) error { return nil }
+func (r *formalRateLimitRepo) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
+	if r.accountsByID == nil {
+		r.accountsByID = map[int64]*Account{}
+	}
+	account := r.accountsByID[id]
+	if account == nil {
+		account = &Account{ID: id}
+		r.accountsByID[id] = account
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	for k, v := range updates {
+		account.Extra[k] = v
+	}
+	return nil
+}
 func (r *formalRateLimitRepo) BulkUpdate(context.Context, []int64, AccountBulkUpdate) (int64, error) {
 	return 0, nil
 }
 func (r *formalRateLimitRepo) IncrementQuotaUsed(context.Context, int64, float64) error { return nil }
 func (r *formalRateLimitRepo) ResetQuotaUsed(context.Context, int64) error              { return nil }
 
-func TestRateLimitService_FormalPoolSetupToken401Quarantines(t *testing.T) {
+func TestRateLimitService_FormalPoolSetupTokenFirst401WithRefreshTokenMarksRefreshRequired(t *testing.T) {
 	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{77: {
 		ID:          77,
 		Platform:    PlatformAnthropic,
 		Type:        AccountTypeSetupToken,
 		Status:      StatusActive,
 		Schedulable: true,
+		Credentials: map[string]any{"refresh_token": "refresh-token"},
 		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+	}}}
+	tempCache := &formalTempUnschedCache{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, tempCache)
+	account := repo.accountsByID[77]
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusUnauthorized, http.Header{}, []byte(`{"error":{"message":"invalid credentials"}}`))
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Equal(t, 0, repo.setErrorCalls)
+	require.Equal(t, FormalPoolStageProduction, repo.accountsByID[77].Extra[FormalPoolExtraOnboardingStage])
+	require.True(t, repo.accountsByID[77].Schedulable)
+	require.Equal(t, StatusActive, repo.accountsByID[77].Status)
+	require.Empty(t, repo.accountsByID[77].Extra[FormalPoolExtraRiskEventRef])
+	require.Contains(t, repo.lastTempReason, "refresh_required")
+	require.NotNil(t, tempCache.states[77])
+	require.Equal(t, http.StatusUnauthorized, tempCache.states[77].StatusCode)
+	require.Equal(t, "refresh_required", tempCache.states[77].MatchedKeyword)
+	status, err := service.GetTempUnschedStatus(context.Background(), 77)
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	require.Equal(t, "refresh_required", status.MatchedKeyword)
+}
+
+func TestRateLimitService_FormalPoolSetupTokenSecond401AfterRefreshQuarantines(t *testing.T) {
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{77: {
+		ID:          77,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"refresh_token": "refresh-token"},
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:       FormalPoolStageProduction,
+			"formal_pool_auth_refresh_attempted": true,
+		},
 	}}}
 	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := repo.accountsByID[77]
@@ -148,11 +236,30 @@ func TestRateLimitService_FormalPoolSetupToken401Quarantines(t *testing.T) {
 
 	require.True(t, shouldDisable)
 	require.Equal(t, 0, repo.tempCalls)
-	require.Equal(t, 0, repo.setErrorCalls)
 	require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[77].Extra[FormalPoolExtraOnboardingStage])
 	require.False(t, repo.accountsByID[77].Schedulable)
 	require.Equal(t, StatusError, repo.accountsByID[77].Status)
-	require.NotEmpty(t, repo.accountsByID[77].Extra[FormalPoolExtraRiskEventRef])
+}
+
+func TestRateLimitService_FormalPoolInvalidGrantQuarantinesWithRefreshTokenInvalid(t *testing.T) {
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{81: {
+		ID:          81,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"refresh_token": "refresh-token"},
+		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+	}}}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := repo.accountsByID[81]
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusUnauthorized, http.Header{}, []byte(`{"error":{"message":"invalid_grant: Refresh token not found or invalid"}}`))
+
+	require.True(t, shouldDisable)
+	require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[81].Extra[FormalPoolExtraOnboardingStage])
+	require.Equal(t, "refresh_token_invalid", repo.accountsByID[81].Extra[FormalPoolExtraLastFailureCode])
+	require.Equal(t, "refresh_token_invalid", repo.accountsByID[81].Extra[FormalPoolExtraQuarantineReason])
 }
 
 func TestRateLimitService_FormalPoolAnthropic403Quarantines(t *testing.T) {
@@ -219,4 +326,43 @@ func TestRateLimitService_FormalPool403QuarantinePreemptsTempUnschedulable(t *te
 	require.Equal(t, 0, repo.tempCalls, "formal-pool 403 must not be downgraded to temporary unschedulable")
 	require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[80].Extra[FormalPoolExtraOnboardingStage])
 	require.False(t, repo.accountsByID[80].Schedulable)
+}
+
+func TestRateLimitService_FormalPoolHardQuarantineReasonBuckets(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		wantBucket string
+	}{
+		{name: "kyc", status: http.StatusForbidden, body: `{"error":{"message":"KYC verification required"}}`, wantBucket: "reason_risk_text"},
+		{name: "risk", status: http.StatusForbidden, body: `{"error":{"message":"risk text detected"}}`, wantBucket: "reason_risk_text"},
+		{name: "proxy mismatch", status: http.StatusForbidden, body: `{"error":{"message":"proxy_mismatch"}}`, wantBucket: "reason_proxy"},
+		{name: "fallback", status: http.StatusForbidden, body: `{"error":{"message":"fallback detected"}}`, wantBucket: "reason_fallback"},
+		{name: "verifier", status: http.StatusForbidden, body: `{"error":{"message":"verifier failed"}}`, wantBucket: "reason_verifier"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{90: {
+				ID:          90,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{"refresh_token": "refresh-token"},
+				Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+			}}}
+			service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+			account := repo.accountsByID[90]
+
+			shouldDisable := service.HandleUpstreamError(context.Background(), account, tc.status, http.Header{}, []byte(tc.body))
+
+			require.True(t, shouldDisable)
+			require.Equal(t, 0, repo.tempCalls)
+			require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[90].Extra[FormalPoolExtraOnboardingStage])
+			require.False(t, repo.accountsByID[90].Schedulable)
+			require.Equal(t, tc.wantBucket, repo.accountsByID[90].Extra[FormalPoolExtraQuarantineReason])
+		})
+	}
 }

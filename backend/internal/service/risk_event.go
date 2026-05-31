@@ -113,6 +113,8 @@ func reasonBucket(raw string) string {
 	}
 	lower := strings.ToLower(trimmed)
 	switch {
+	case strings.Contains(lower, "refresh_token_invalid") || strings.Contains(lower, "invalid_grant"):
+		return "refresh_token_invalid"
 	case strings.Contains(lower, "verifier"):
 		return "reason_verifier"
 	case strings.Contains(lower, "fallback"):

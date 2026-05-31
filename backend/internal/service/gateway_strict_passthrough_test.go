@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -365,4 +367,203 @@ func TestCountTokensMimicry_OverridesFakeMetadataAndSetsSessionHeader(t *testing
 	require.Equal(t, "acct-uuid", parsedUID.AccountUUID)
 	require.NotEqual(t, "fake-device", parsedUID.DeviceID)
 	require.Equal(t, parsedUID.SessionID, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
+}
+
+type formalPoolAuthRetryUpstream struct {
+	responses      []*http.Response
+	requests       int
+	bodies         [][]byte
+	authorizations []string
+}
+
+func (u *formalPoolAuthRetryUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.requests++
+	if req != nil {
+		u.authorizations = append(u.authorizations, getHeaderRaw(req.Header, "authorization"))
+		if req.Body != nil {
+			b, _ := io.ReadAll(req.Body)
+			u.bodies = append(u.bodies, append([]byte(nil), b...))
+			_ = req.Body.Close()
+			req.Body = io.NopCloser(bytes.NewReader(b))
+		}
+	}
+	if len(u.responses) == 0 {
+		return newAnthropicSuccessResponse(), nil
+	}
+	resp := u.responses[0]
+	u.responses = u.responses[1:]
+	return resp, nil
+}
+
+func (u *formalPoolAuthRetryUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func newFormalPool401Response() *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"x-request-id": []string{"req_401"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"Invalid authentication credentials"}}`)),
+	}
+}
+
+type formalPoolGatewayRefreshCache struct {
+	deletedKeys []string
+}
+
+func (c *formalPoolGatewayRefreshCache) GetAccessToken(context.Context, string) (string, error) {
+	return "", errors.New("cache miss")
+}
+func (c *formalPoolGatewayRefreshCache) SetAccessToken(context.Context, string, string, time.Duration) error {
+	return nil
+}
+func (c *formalPoolGatewayRefreshCache) DeleteAccessToken(_ context.Context, key string) error {
+	c.deletedKeys = append(c.deletedKeys, key)
+	return nil
+}
+func (c *formalPoolGatewayRefreshCache) AcquireRefreshLock(context.Context, string, time.Duration) (bool, error) {
+	return true, nil
+}
+func (c *formalPoolGatewayRefreshCache) ReleaseRefreshLock(context.Context, string) error { return nil }
+
+type formalPoolGatewaySchedulerCache struct {
+	SchedulerCache
+	setAccountCalls []*Account
+}
+
+func (c *formalPoolGatewaySchedulerCache) SetAccount(_ context.Context, account *Account) error {
+	c.setAccountCalls = append(c.setAccountCalls, account)
+	return nil
+}
+
+type formalPoolGatewayRefreshExecutor struct {
+	refreshCalls int
+	err          error
+}
+
+func (e *formalPoolGatewayRefreshExecutor) CanRefresh(*Account) bool                  { return true }
+func (e *formalPoolGatewayRefreshExecutor) NeedsRefresh(*Account, time.Duration) bool { return true }
+func (e *formalPoolGatewayRefreshExecutor) Refresh(context.Context, *Account) (map[string]any, error) {
+	e.refreshCalls++
+	if e.err != nil {
+		return nil, e.err
+	}
+	return map[string]any{
+		"access_token":  "new-token",
+		"refresh_token": "refresh-token",
+		"expires_at":    time.Now().Add(time.Hour).Format(time.RFC3339),
+	}, nil
+}
+func (e *formalPoolGatewayRefreshExecutor) CacheKey(account *Account) string {
+	return ClaudeTokenCacheKey(account)
+}
+
+func newFormalPoolAuthRetryGateway(t *testing.T, account *Account, upstream *formalPoolAuthRetryUpstream, executor *formalPoolGatewayRefreshExecutor) (*GatewayService, *formalRateLimitRepo, *formalPoolGatewaySchedulerCache, *formalPoolGatewayRefreshCache) {
+	t.Helper()
+	seedGatewayForwardingSettingsForTest()
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
+	cache := &formalPoolGatewayRefreshCache{}
+	refreshAPI := NewOAuthRefreshAPI(repo, cache)
+	provider := NewClaudeTokenProvider(repo, cache, nil)
+	provider.SetRefreshAPI(refreshAPI, executor)
+	schedulerCache := &formalPoolGatewaySchedulerCache{}
+	return &GatewayService{
+		accountRepo:         repo,
+		cfg:                 &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		identityService:     NewIdentityService(&identityCacheStub{}),
+		httpUpstream:        upstream,
+		claudeTokenProvider: provider,
+		rateLimitService:    NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+		schedulerSnapshot:   NewSchedulerSnapshotService(schedulerCache, nil, nil, nil, nil),
+	}, repo, schedulerCache, cache
+}
+
+func newFormalPoolRefreshAccount(accountType string) *Account {
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.ID = 1301
+	account.Type = accountType
+	account.Credentials["access_token"] = "old-token"
+	account.Credentials["refresh_token"] = "refresh-token"
+	account.Credentials["expires_at"] = time.Now().Add(time.Hour).Format(time.RFC3339)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	return account
+}
+
+func TestFormalPoolAuth401RefreshRetrySucceedsWithoutQuarantine(t *testing.T) {
+	for _, accountType := range []string{AccountTypeSetupToken, AccountTypeOAuth} {
+		t.Run(accountType, func(t *testing.T) {
+			account := newFormalPoolRefreshAccount(accountType)
+			upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newAnthropicSuccessResponse()}}
+			executor := &formalPoolGatewayRefreshExecutor{}
+			svc, repo, schedulerCache, refreshCache := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
+			c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
+			body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+			_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+			require.NoError(t, err)
+			require.Equal(t, 2, upstream.requests)
+			require.Equal(t, 1, executor.refreshCalls)
+			require.Equal(t, "Bearer old-token", upstream.authorizations[0])
+			require.Equal(t, "Bearer new-token", upstream.authorizations[1])
+			require.Len(t, upstream.bodies, 2)
+			require.True(t, bytes.Equal(body, upstream.bodies[0]))
+			require.True(t, bytes.Equal(body, upstream.bodies[1]))
+			require.Equal(t, FormalPoolStageProduction, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+			require.True(t, repo.accountsByID[account.ID].Schedulable)
+			require.Equal(t, StatusActive, repo.accountsByID[account.ID].Status)
+			require.Len(t, schedulerCache.setAccountCalls, 1)
+			require.Equal(t, "new-token", schedulerCache.setAccountCalls[0].GetCredential("access_token"))
+			require.Contains(t, refreshCache.deletedKeys, ClaudeTokenCacheKey(account))
+		})
+	}
+}
+
+func TestFormalPoolAuth401Second401QuarantinesAfterSingleRefresh(t *testing.T) {
+	account := newFormalPoolRefreshAccount(AccountTypeSetupToken)
+	upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newFormalPool401Response()}}
+	executor := &formalPoolGatewayRefreshExecutor{}
+	svc, repo, _, _ := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
+	c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	require.Equal(t, 2, upstream.requests)
+	require.Equal(t, 1, executor.refreshCalls)
+	require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.False(t, repo.accountsByID[account.ID].Schedulable)
+	require.Equal(t, StatusError, repo.accountsByID[account.ID].Status)
+	require.NotContains(t, repo.accountsByID[account.ID].Extra, "formal_pool_auth_refresh_attempted")
+}
+
+func TestFormalPoolAuth401InvalidGrantQuarantinesWithoutRetry(t *testing.T) {
+	for _, accountType := range []string{AccountTypeSetupToken, AccountTypeOAuth} {
+		t.Run(accountType, func(t *testing.T) {
+			account := newFormalPoolRefreshAccount(accountType)
+			upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newAnthropicSuccessResponse()}}
+			executor := &formalPoolGatewayRefreshExecutor{err: errors.New("invalid_grant: refresh token is invalid")}
+			svc, repo, schedulerCache, _ := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
+			repo.cloneOnGet = true
+			c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
+			body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+			_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+			require.Error(t, err)
+			require.Equal(t, 1, upstream.requests)
+			require.Equal(t, 1, executor.refreshCalls)
+			require.Empty(t, schedulerCache.setAccountCalls)
+			require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+			require.Equal(t, "refresh_token_invalid", repo.accountsByID[account.ID].Extra[FormalPoolExtraLastFailureCode])
+			require.Equal(t, "refresh_token_invalid", repo.accountsByID[account.ID].Extra[FormalPoolExtraQuarantineReason])
+			require.NotEqual(t, "refresh_required", repo.accountsByID[account.ID].Extra[FormalPoolExtraLastFailureCode])
+			require.False(t, repo.accountsByID[account.ID].Schedulable)
+			require.Equal(t, StatusError, repo.accountsByID[account.ID].Status)
+		})
+	}
 }
