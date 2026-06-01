@@ -747,6 +747,96 @@ export interface FormalPoolOperationsDiagnostics {
   recommended_actions?: FormalPoolRecommendedAction[]
 }
 
+
+export type FormalPoolDashboardState =
+  | 'normal'
+  | 'warming'
+  | 'production'
+  | 'rate_limited'
+  | 'manual_risk'
+  | 'error'
+  | 'quarantined'
+  | 'inactive'
+  | 'not_schedulable'
+  | 'evidence_missing'
+  | 'data_missing'
+  | string
+
+export type FormalPoolDashboardSeverity = 'success' | 'info' | 'warning' | 'danger' | 'muted' | string
+
+export interface FormalPoolStatusRuntime {
+  current: number
+  limit: number
+  utilization: number | null
+  available: boolean
+}
+
+export interface FormalPoolStatusWindow {
+  used: number
+  limit: number
+  remaining: number
+  utilization: number | null
+  reset_at: string | null
+  status: string
+  available: boolean
+}
+
+export interface FormalPoolStatusRecommendation {
+  label: string
+  detail: string
+  action_kind: string
+}
+
+export interface FormalPoolStatusDashboardAccount {
+  account_id: number
+  account_label: string
+  platform: AccountPlatform | string
+  type: AccountType | string
+  stage: FormalPoolStage | string
+  state: FormalPoolDashboardState
+  state_label: string
+  state_severity: FormalPoolDashboardSeverity
+  schedulable: boolean
+  effective_schedulable: boolean
+  production_ready: boolean
+  five_hour_window: FormalPoolStatusWindow
+  rpm: FormalPoolStatusRuntime
+  concurrency: FormalPoolStatusRuntime
+  sessions: FormalPoolStatusRuntime
+  last_used_at: string | null
+  last_success_hint: string | null
+  last_failure_code: string
+  last_failure_bucket: string
+  recommendation: FormalPoolStatusRecommendation
+}
+
+export interface FormalPoolStatusSummary {
+  total: number
+  normal: number
+  warming: number
+  production: number
+  rate_limited: number
+  manual_risk: number
+  error: number
+  quarantined: number
+  inactive: number
+  not_schedulable: number
+  evidence_missing: number
+  data_missing: number
+  schedulable: number
+  total_current_rpm: number
+  total_rpm_limit: number
+  rpm_available: boolean
+  five_hour_remaining_ratio: number | null
+  five_hour_window_available: boolean
+  generated_at: string
+}
+
+export interface FormalPoolStatusDashboard {
+  summary: FormalPoolStatusSummary
+  accounts: FormalPoolStatusDashboardAccount[]
+}
+
 // Claude Model type (returned by /v1/models and account models API)
 export interface ClaudeModel {
   id: string

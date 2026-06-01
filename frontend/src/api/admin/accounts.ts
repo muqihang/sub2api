@@ -17,7 +17,8 @@ import type {
   AdminDataPayload,
   AdminDataImportResult,
   CheckMixedChannelRequest,
-  CheckMixedChannelResponse
+  CheckMixedChannelResponse,
+  FormalPoolStatusDashboard
 } from '@/types'
 
 /**
@@ -60,6 +61,11 @@ export interface AccountListWithEtagResult {
   notModified: boolean
   etag: string | null
   data: PaginatedResponse<Account> | null
+}
+
+export async function getFormalPoolStatusDashboard(): Promise<FormalPoolStatusDashboard> {
+  const { data } = await apiClient.get<FormalPoolStatusDashboard>('/admin/formal-pool/status-dashboard')
+  return data
 }
 
 export async function listWithEtag(
@@ -659,6 +665,7 @@ export async function setPrivacy(id: number): Promise<Account> {
 export const accountsAPI = {
   list,
   listWithEtag,
+  getFormalPoolStatusDashboard,
   getById,
   create,
   update,
