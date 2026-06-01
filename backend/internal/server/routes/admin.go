@@ -98,6 +98,9 @@ func RegisterAdminRoutes(
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
 
+		// Claude formal pool status dashboard
+		registerFormalPoolStatusDashboardRoutes(admin, h)
+
 		// Claude formal pool onboarding
 		registerFormalPoolOnboardingAdminRoutes(admin, h)
 
@@ -279,6 +282,16 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.PUT("/:id/rpm-overrides", h.Admin.Group.BatchSetGroupRPMOverrides)
 		groups.DELETE("/:id/rpm-overrides", h.Admin.Group.ClearGroupRPMOverrides)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
+	}
+}
+
+func registerFormalPoolStatusDashboardRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Account == nil {
+		return
+	}
+	formalPool := admin.Group("/formal-pool")
+	{
+		formalPool.GET("/status-dashboard", h.Admin.Account.FormalPoolStatusDashboard)
 	}
 }
 

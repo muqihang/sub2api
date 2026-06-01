@@ -607,3 +607,11 @@ type PromoCodeUsage struct {
 
 	User *User `json:"user,omitempty"`
 }
+
+// Formal Pool status dashboard DTOs are aliases of the sanitized service contract.
+type FormalPoolStatusDashboard = service.FormalPoolStatusDashboard
+type FormalPoolStatusSummary = service.FormalPoolStatusSummary
+type FormalPoolStatusDashboardAccount = service.FormalPoolStatusDashboardAccount
+type FormalPoolStatusRuntime = service.FormalPoolStatusRuntime
+type FormalPoolStatusWindow = service.FormalPoolStatusWindow
+type FormalPoolStatusRecommendation = service.FormalPoolStatusRecommendation

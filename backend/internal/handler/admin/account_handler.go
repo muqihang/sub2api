@@ -224,6 +224,31 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 	return item
 }
 
+// FormalPoolStatusDashboard returns the sanitized full Formal Pool status dashboard.
+// GET /api/v1/admin/formal-pool/status-dashboard
+func (h *AccountHandler) FormalPoolStatusDashboard(c *gin.Context) {
+	deps := service.FormalPoolStatusDashboardDeps{Accounts: h.adminService}
+	if h.concurrencyService != nil {
+		deps.Concurrency = h.concurrencyService
+	}
+	if h.rpmCache != nil {
+		deps.RPM = h.rpmCache
+	}
+	if h.sessionLimitCache != nil {
+		deps.Sessions = h.sessionLimitCache
+	}
+	if h.accountUsageService != nil {
+		deps.WindowStats = h.accountUsageService
+	}
+	dashboardSvc := service.NewFormalPoolStatusDashboardService(deps)
+	dashboard, err := dashboardSvc.Build(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dashboard)
+}
+
 // List handles listing all accounts with pagination
 // GET /api/v1/admin/accounts
 func (h *AccountHandler) List(c *gin.Context) {
