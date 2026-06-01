@@ -113,10 +113,10 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
     const text = getDashboardRecommendationText(
       accountFixture({
         state: 'manual_risk',
-        state_label: '账号风险，需人工介入',
+        state_label: '需人工介入',
         recommendation: {
           label: '人工介入',
-          detail: '账号存在风险信号，请人工检查账号状态。',
+          detail: '需人工介入：查看具体失败分类后处理。',
           action_kind: 'manual_review'
         }
       })

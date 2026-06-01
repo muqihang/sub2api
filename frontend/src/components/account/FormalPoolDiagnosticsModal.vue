@@ -13,7 +13,7 @@
               {{ t('admin.accounts.formalPoolDiagnostics.account') }} #{{ account.id }}
             </p>
             <h4 class="mt-1 text-lg font-semibold text-gray-900 dark:text-white">
-              {{ account.name }}
+              {{ safeAccountName }}
             </h4>
           </div>
           <div class="flex flex-wrap gap-2">
@@ -334,8 +334,21 @@ const translatedOrEmpty = (key: string) => {
   return translated && translated !== key ? translated : ''
 }
 
+
+const accountNameUnsafePattern = /(?:sk-|token|access_token|refresh|session_key|setup|bearer|https?:\/\/|:\/\/|raw|prompt|body|cch|telemetry|proxy|password|credential|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9_-]{32,})/i
+const accountNameUserinfoPattern = /:\S+@/
+
+function safeOperationalAccountName(account: Account | null | undefined): string {
+  const fallback = account?.id ? `账号 #${account.id}` : '账号'
+  const name = String(account?.name ?? '').trim()
+  if (!name) return fallback
+  if (accountNameUnsafePattern.test(name) || accountNameUserinfoPattern.test(name)) return fallback
+  return name
+}
+
 const activeAccount = computed(() => latestAccount.value ?? props.account)
 const currentDiagnostics = computed(() => diagnostics.value)
+const safeAccountName = computed(() => safeOperationalAccountName(activeAccount.value))
 const isBusy = computed(() => Boolean(busyAction.value) || loading.value)
 
 const legacyActionAliases: Record<string, string> = {
@@ -491,6 +504,9 @@ const evidenceItems = computed(() => {
     { key: 'healthcheck_status', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.healthcheckStatus'), value: localizedBucketOrCode('healthcheckStatus', d?.healthcheck_status) },
     { key: 'failure_code', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.failureCode'), value: localizedBucketOrCode('failureCodes', d?.failure_code) },
     { key: 'failure_source', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.failureSource'), value: localizedBucketOrCode('failureSources', d?.failure_source) },
+    { key: 'last_cc_gateway_error_code', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.lastCCGatewayErrorCode'), value: localizedBucketOrCode('failureCodes', d?.last_cc_gateway_error_code) },
+    { key: 'onboarding_last_error_code', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.onboardingLastErrorCode'), value: localizedBucketOrCode('failureCodes', d?.onboarding_last_error_code) },
+    { key: 'onboarding_last_error_bucket', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.onboardingLastErrorBucket'), value: localizedBucketOrCode('statusBuckets', d?.onboarding_last_error_bucket) },
     { key: 'quarantine_reason', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.quarantineReason'), value: localizedBucketOrCode('failureCodes', d?.quarantine_reason) },
     { key: 'healthcheck_safe_error_code', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.safeErrorCode'), value: localizedBucketOrCode('failureCodes', d?.healthcheck_safe_error_code) },
     { key: 'healthcheck_safe_error_bucket', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.safeErrorBucket'), value: localizedBucketOrCode('failureCodes', d?.healthcheck_safe_error_bucket) },

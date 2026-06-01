@@ -724,6 +724,9 @@ export interface FormalPoolOperationsDiagnostics {
   failure_source?: string
   healthcheck_status?: string
   status_code_bucket?: string
+  last_cc_gateway_error_code?: string
+  onboarding_last_error_code?: string
+  onboarding_last_error_bucket?: string
   cc_gateway_runtime_registered?: boolean
   cc_gateway_runtime_registered_at?: string
   runtime_evidence_complete?: boolean

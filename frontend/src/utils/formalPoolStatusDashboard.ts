@@ -32,7 +32,7 @@ const STATE_PRESENTATION: Record<string, StatePresentation> = {
   },
   manual_risk: {
     className: 'formal-pool-state formal-pool-state--danger',
-    recommendation: '账号风险，需人工介入。'
+    recommendation: '需人工介入：查看具体失败分类后处理。'
   },
   error: {
     className: 'formal-pool-state formal-pool-state--danger',

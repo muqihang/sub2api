@@ -193,19 +193,33 @@ const MetricCell = defineComponent({
   },
 })
 
+const dashboardStatePriority: Record<FormalPoolDashboardState, number> = {
+  inactive: 0,
+  manual_risk: 1,
+  rate_limited: 2,
+  quarantined: 3,
+  error: 4,
+  not_schedulable: 5,
+  evidence_missing: 6,
+  data_missing: 7,
+  warming: 8,
+  production: 9,
+  normal: 10,
+}
+
 const filters = [
   { key: 'all', label: '全部' },
-  { key: 'normal', label: '正常' },
-  { key: 'warming', label: '预热' },
-  { key: 'production', label: '生产' },
-  { key: 'rate_limited', label: '限流' },
-  { key: 'manual_risk', label: '账号风险需人工介入' },
-  { key: 'error', label: '错误' },
-  { key: 'quarantined', label: '隔离' },
   { key: 'inactive', label: '已停用' },
+  { key: 'manual_risk', label: '需人工介入' },
+  { key: 'rate_limited', label: '限流' },
+  { key: 'quarantined', label: '隔离' },
+  { key: 'error', label: '错误' },
   { key: 'not_schedulable', label: '不可调度' },
   { key: 'evidence_missing', label: '证据不足' },
   { key: 'data_missing', label: '数据不足' },
+  { key: 'warming', label: '预热' },
+  { key: 'production', label: '生产' },
+  { key: 'normal', label: '正常' },
   { key: 'schedulable_only', label: '只看可调度' },
 ]
 
@@ -216,7 +230,7 @@ const summaryCards = computed(() => {
     { label: '预热中', value: s ? String(s.warming) : '-', className: 'text-sky-600 dark:text-sky-400' },
     { label: '生产中', value: s ? String(s.production) : '-', className: 'text-emerald-600 dark:text-emerald-400' },
     { label: '限流冷却', value: s ? String(s.rate_limited) : '-', className: 'text-orange-600 dark:text-orange-400' },
-    { label: '账号风险需人工介入', value: s ? String(s.manual_risk) : '-', className: 'text-red-600 dark:text-red-400' },
+    { label: '需人工介入', value: s ? String(s.manual_risk) : '-', className: 'text-red-600 dark:text-red-400' },
     { label: '错误/隔离', value: s ? String(s.error + s.quarantined) : '-', className: 'text-red-600 dark:text-red-400' },
     { label: '已停用', value: s ? String(s.inactive) : '-', className: 'text-gray-500 dark:text-gray-400' },
     { label: '不可调度', value: s ? String(s.not_schedulable) : '-', className: 'text-amber-600 dark:text-amber-400' },
@@ -227,8 +241,15 @@ const summaryCards = computed(() => {
   ]
 })
 
+const sortedDashboardRows = (rows: FormalPoolStatusDashboardAccount[]) => [...rows].sort((a, b) => {
+  const pa = dashboardStatePriority[a.state] ?? Number.MAX_SAFE_INTEGER
+  const pb = dashboardStatePriority[b.state] ?? Number.MAX_SAFE_INTEGER
+  if (pa !== pb) return pa - pb
+  return a.account_id - b.account_id
+})
+
 const filteredAccounts = computed(() => {
-  const rows = dashboard.value?.accounts ?? []
+  const rows = sortedDashboardRows(dashboard.value?.accounts ?? [])
   if (activeFilter.value === 'all') return rows
   if (activeFilter.value === 'schedulable_only') return rows.filter(row => row.effective_schedulable)
   return rows.filter(row => row.state === activeFilter.value)
@@ -301,7 +322,7 @@ function fallbackStateLabel(state: FormalPoolDashboardState) {
     warming: '预热中',
     production: '生产中',
     rate_limited: '限流冷却中',
-    manual_risk: '账号风险需人工介入',
+    manual_risk: '需人工介入',
     error: '错误',
     quarantined: '已隔离',
     inactive: '已停用',

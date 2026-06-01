@@ -77,8 +77,8 @@ const dashboardFixture = (): FormalPoolStatusDashboard => {
       account_id: 3,
       account_label: '风险账号',
       state: 'manual_risk',
-      state_label: '账号风险需人工介入',
-      recommendation: { label: '人工介入', detail: '账号风险，需人工介入。', action_kind: 'manual' },
+      state_label: '需人工介入',
+      recommendation: { label: '人工介入', detail: '需人工介入：查看具体失败分类后处理。', action_kind: 'manual' },
     }),
     account({
       account_id: 4,
@@ -177,7 +177,7 @@ describe('FormalPoolStatusDashboardModal', () => {
     expect(wrapper.text()).toContain('可正常调度')
     expect(wrapper.text()).toContain('生产中')
     expect(wrapper.text()).toContain('限流冷却')
-    expect(wrapper.text()).toContain('账号风险需人工介入')
+    expect(wrapper.text()).toContain('需人工介入')
     expect(wrapper.text()).toContain('当前总 RPM')
     expect(wrapper.text()).toContain('5 小时总体余量')
     expect(wrapper.text()).toContain('72.5%')
@@ -216,11 +216,25 @@ describe('FormalPoolStatusDashboardModal', () => {
 
     await wrapper.get('[data-filter="inactive"]').trigger('click')
     expect(wrapper.text()).toContain('停用账号')
-    expect(wrapper.text()).not.toContain('不可调度账号')
+    expect(wrapper.find('[data-account-row="7"]').exists()).toBe(false)
 
     await wrapper.get('[data-filter="not_schedulable"]').trigger('click')
     expect(wrapper.text()).toContain('不可调度账号')
-    expect(wrapper.text()).not.toContain('停用账号')
+    expect(wrapper.find('[data-account-row="6"]').exists()).toBe(false)
+  })
+
+
+  it('sorts rows by operational state priority before account id', async () => {
+    const wrapper = await mountModal()
+    const labels = wrapper.findAll('[data-account-row]').map(row => row.text())
+
+    expect(labels[0]).toContain('停用账号')
+    expect(labels[1]).toContain('风险账号')
+    expect(labels[2]).toContain('限流账号')
+    expect(labels[3]).toContain('不可调度账号')
+    expect(labels[4]).toContain('证据缺失账号')
+    expect(labels[5]).toContain('数据缺失账号')
+    expect(labels[6]).toContain('生产账号')
   })
 
   it('auto-refresh calls API when open and stops after close/unmount', async () => {

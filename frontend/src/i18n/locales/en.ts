@@ -2929,6 +2929,9 @@ export default {
           healthcheckStatus: 'Healthcheck status',
           failureCode: 'Failure classification',
           failureSource: 'Failure source',
+          lastCCGatewayErrorCode: 'Last CC Gateway error',
+          onboardingLastErrorCode: 'Last onboarding error',
+          onboardingLastErrorBucket: 'Last onboarding status bucket',
           quarantineReason: 'Quarantine reason',
           safeErrorCode: 'Healthcheck safe error code',
           safeErrorBucket: 'Healthcheck safe error bucket',
@@ -3034,7 +3037,8 @@ export default {
           wait_rate_limit: 'Wait for rate-limit recovery',
           repair_token: 'Replace Setup Token login state',
           repair_oauth: 'Reauthorize OAuth',
-          replace_account_and_proxy: 'Replace account and egress proxy'
+          replace_account_and_proxy: 'Replace account and egress proxy',
+          manual_review: 'Manual review failure classification'
         },
         blockedReasons: {
           invalid_grant: 'Refresh credential is invalid; reauthorize or replace login state',

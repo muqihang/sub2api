@@ -106,11 +106,16 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.evidenceLabels.failureCode': '失败分类',
     'admin.accounts.formalPoolDiagnostics.evidenceLabels.failureSource': '失败来源',
     'admin.accounts.formalPoolDiagnostics.evidenceLabels.quarantineReason': '隔离原因',
+    'admin.accounts.formalPoolDiagnostics.evidenceLabels.onboardingLastErrorBucket': '上号最近状态桶',
+    'admin.accounts.formalPoolDiagnostics.evidenceLabels.onboardingLastErrorCode': '上号最近错误',
+    'admin.accounts.formalPoolDiagnostics.evidenceLabels.lastCCGatewayErrorCode': 'CC Gateway 最近错误',
     'admin.accounts.formalPoolDiagnostics.statusBuckets.status_429': '429 / 上游限流',
     'admin.accounts.formalPoolDiagnostics.statusBuckets.status_401': '401 / 认证失败',
     'admin.accounts.formalPoolDiagnostics.statusBuckets.status_403': '403 / 禁止访问或风控',
     'admin.accounts.formalPoolDiagnostics.healthcheckStatus.quarantined': '健康检查隔离',
     'admin.accounts.formalPoolDiagnostics.failureCodes.status_429': '429 / 上游限流',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.rate_limit_exceeded': '上游限流',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.missing_account_identity': '缺少账号身份映射',
     'admin.accounts.formalPoolDiagnostics.failureCodes.5h': '5h 用量窗口已满',
     'admin.accounts.formalPoolDiagnostics.failureCodes.7d': '7d 用量窗口已满',
     'admin.accounts.formalPoolDiagnostics.failureCodes.both': '5h 与 7d 窗口均已满',
@@ -137,6 +142,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.wait_rate_limit': '等待限流恢复',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.repair_token': '替换 Setup Token 登录态',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.repair_oauth': '重新 OAuth 授权',
+    'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.manual_review': '人工查看具体失败分类',
     'admin.accounts.formalPoolDiagnostics.oauthRecovery.title': 'OAuth 恢复序列',
     'admin.accounts.formalPoolDiagnostics.oauthRecovery.body': '请重新 OAuth 授权，然后回到本弹窗继续运行时注册、定向健康检查和预热。',
     'admin.accounts.formalPoolDiagnostics.oauthRecovery.stepRefresh': '1. 重新 OAuth 授权。',
@@ -727,6 +733,54 @@ describe('FormalPoolDiagnosticsModal', () => {
     expect(wrapper.text()).toContain('进入预热前必须保留最新健康检查证据')
     expect(wrapper.text()).not.toContain('cc_gateway_runtime_registered')
     expect(wrapper.text()).not.toContain('latest healthcheck evidence is required before warming')
+  })
+
+
+  it('renders manual review recommendation in Chinese instead of backend English', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      recommended_actions: [{ key: 'manual_review', label: 'Manual review account risk', severity: 'danger' }],
+    }))
+    const wrapper = mountModal()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('人工查看具体失败分类')
+    expect(wrapper.text()).not.toContain('Manual review account risk')
+  })
+
+  it('renders gateway and onboarding safe signal fields in Chinese', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      last_cc_gateway_error_code: 'missing_account_identity',
+      onboarding_last_error_code: 'rate_limit_exceeded',
+      onboarding_last_error_bucket: 'status_429',
+      recommended_actions: [{ key: 'wait_rate_limit', label: 'Wait for rate-limit window recovery', severity: 'warning' }],
+    }))
+    const wrapper = mountModal()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('CC Gateway 最近错误')
+    expect(wrapper.text()).toContain('缺少账号身份映射')
+    expect(wrapper.text()).toContain('上号最近错误')
+    expect(wrapper.text()).toContain('上游限流')
+    expect(wrapper.text()).toContain('上号最近状态桶')
+    expect(wrapper.text()).toContain('429 / 上游限流')
+    expect(wrapper.text()).not.toContain('missing_account_identity')
+    expect(wrapper.text()).not.toContain('rate_limit_exceeded')
+  })
+
+
+  it('keeps ordinary account email labels but hides unsafe account names', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics())
+    const emailWrapper = mountModal(baseAccount({ name: 'ops-user@example.com' }))
+    await flushPromises()
+    expect(emailWrapper.text()).toContain('ops-user@example.com')
+
+    getDiagnostics.mockResolvedValueOnce(diagnostics())
+    const unsafeWrapper = mountModal(baseAccount({ name: 'ops-user@example.com sk-ant-sid-secret http://user:pass@proxy.local raw_body 123e4567-e89b-12d3-a456-426614174000' }))
+    await flushPromises()
+    expect(unsafeWrapper.text()).toContain('账号 #5')
+    expect(unsafeWrapper.text()).not.toContain('sk-ant-sid-secret')
+    expect(unsafeWrapper.text()).not.toContain('user:pass@proxy.local')
+    expect(unsafeWrapper.text()).not.toContain('123e4567-e89b-12d3-a456-426614174000')
   })
 
   it('scrubs unsafe diagnostics labels, check messages, and evidence values before rendering', async () => {

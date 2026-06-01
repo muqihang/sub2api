@@ -349,8 +349,8 @@ func buildFormalPoolStatusDashboardAccount(account *Account, runtime FormalPoolS
 		EffectiveSchedulable: account.IsSchedulable(),
 		LastUsedAt:           account.LastUsedAt,
 		LastSuccessHint:      formalPoolDashboardLastSuccessHint(account),
-		LastFailureCode:      sanitizeFormalPoolDashboardFailureField(formalPoolDashboardFirstNonEmpty(account.GetExtraString(FormalPoolExtraLastFailureCode), account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorCode), account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode))),
-		LastFailureBucket:    sanitizeFormalPoolDashboardFailureField(formalPoolDashboardFirstNonEmpty(account.GetExtraString(FormalPoolExtraOnboardingLastErrorBucket), account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorBucket), account.GetExtraString(FormalPoolExtraRateLimitErrorClass))),
+		LastFailureCode:      sanitizeFormalPoolDashboardFailureField(formalPoolDashboardFailureCode(account)),
+		LastFailureBucket:    sanitizeFormalPoolDashboardFailureField(formalPoolDashboardFirstNonEmpty(account.GetExtraString(FormalPoolExtraOnboardingLastErrorBucket), account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket), account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorBucket), account.GetExtraString(FormalPoolExtraRateLimitErrorClass))),
 	}
 	row.FiveHourWindow = buildFormalPoolStatusWindow(account, runtime)
 	row.RPM = buildFormalPoolStatusRuntimeInt(account.GetBaseRPM(), runtime.RPMByAccount, runtime.RPMAvailable, account.ID)
@@ -361,6 +361,17 @@ func buildFormalPoolStatusDashboardAccount(account *Account, runtime FormalPoolS
 	row.ProductionReady = row.State == FormalPoolDashboardStateProduction
 	row.Recommendation = formalPoolDashboardRecommendation(row.State)
 	return row
+}
+
+func formalPoolDashboardFailureCode(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	last := strings.TrimSpace(account.GetExtraString(FormalPoolExtraLastFailureCode))
+	if last == "formal_pool_healthcheck_failed" {
+		return formalPoolDashboardFirstNonEmpty(account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorCode), last, account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode))
+	}
+	return formalPoolDashboardFirstNonEmpty(last, account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorCode), account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode))
 }
 
 func buildFormalPoolStatusRuntimeInt(limit int, values map[int64]int, sourceAvailable bool, accountID int64) FormalPoolStatusRuntime {
@@ -462,6 +473,9 @@ func formalPoolDashboardHasRateLimit(account *Account, now time.Time) bool {
 		return true
 	}
 	action := strings.ToLower(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitAction)))
+	if formalPoolDashboardRateLimitActionIsPassThrough(action) && formalPoolDashboardHasNonCooldownPassThroughRateLimit(account) {
+		return false
+	}
 	if action != "" && !formalPoolDashboardRateLimitActionAllowsPassThrough(action) {
 		return true
 	}
@@ -497,9 +511,6 @@ func formalPoolDashboardHasRateLimit(account *Account, now time.Time) bool {
 	}
 	for _, marker := range markers {
 		if strings.Contains(combined, marker) {
-			if formalPoolDashboardRateLimitActionIsPassThrough(action) && formalPoolDashboardHasNonCooldownPassThroughRateLimit(account, combined, now) {
-				return false
-			}
 			return true
 		}
 	}
@@ -534,18 +545,27 @@ func formalPoolDashboardWindowRejected(account *Account, now time.Time) bool {
 	return now.Before(*account.SessionWindowEnd)
 }
 
-func formalPoolDashboardHasNonCooldownPassThroughRateLimit(account *Account, combined string, now time.Time) bool {
-	if account != nil && account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt) {
+func formalPoolDashboardHasNonCooldownPassThroughRateLimit(account *Account) bool {
+	if account == nil {
 		return false
 	}
-	markers := []string{
+	if strings.EqualFold(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitWindow)), "no_reset") &&
+		strings.EqualFold(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitResetBucket)), "missing") {
+		return true
+	}
+	combined := strings.ToLower(strings.Join([]string{
+		account.GetExtraString(FormalPoolExtraRateLimitErrorClass),
+		account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorCode),
+		account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorBucket),
+		account.ErrorMessage,
+	}, " "))
+	for _, marker := range []string{
 		"long_context_usage_credits",
 		"usage_credits_required",
 		"usage credits are required",
 		"long context requests",
 		"context-1m",
-	}
-	for _, marker := range markers {
+	} {
 		if strings.Contains(combined, marker) {
 			return true
 		}
@@ -663,7 +683,7 @@ func formalPoolDashboardStateLabelAndSeverity(state string) (string, string) {
 	case FormalPoolDashboardStateQuarantined:
 		return "已隔离", "danger"
 	case FormalPoolDashboardStateManualRisk:
-		return "账号风险，需人工介入", "danger"
+		return "需人工介入", "danger"
 	default:
 		return "数据不足", "warning"
 	}
@@ -678,7 +698,7 @@ func formalPoolDashboardRecommendation(state string) FormalPoolStatusRecommendat
 	case FormalPoolDashboardStateRateLimited:
 		return FormalPoolStatusRecommendation{Label: "等待恢复", Detail: "限流冷却中，等待 reset 后复查。", ActionKind: "wait_rate_limit"}
 	case FormalPoolDashboardStateManualRisk:
-		return FormalPoolStatusRecommendation{Label: "人工介入", Detail: "账号存在风险信号，请人工检查账号状态。", ActionKind: "manual_review"}
+		return FormalPoolStatusRecommendation{Label: "人工介入", Detail: "存在账号安全、身份或门禁信号，请人工查看具体失败分类。", ActionKind: "manual_review"}
 	case FormalPoolDashboardStateQuarantined:
 		return FormalPoolStatusRecommendation{Label: "查看隔离原因", Detail: "已隔离，先查看安全失败桶和操作诊断。", ActionKind: "inspect_quarantine"}
 	case FormalPoolDashboardStateError:

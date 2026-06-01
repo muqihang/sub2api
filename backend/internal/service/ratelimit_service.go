@@ -1333,12 +1333,21 @@ func (s *RateLimitService) persistFormalPoolAnthropic429Extra(ctx context.Contex
 	if s == nil || s.accountRepo == nil || account == nil || account.Platform != PlatformAnthropic || !IsFormalPoolAccount(account) {
 		return
 	}
+	now := time.Now()
+	class := sanitizeFormalPoolRateLimitSignal(errorClass, "unknown")
+	actionSignal := sanitizeFormalPoolRateLimitSignal(action, "unknown")
 	updates := map[string]any{
-		FormalPoolExtraRateLimitErrorClass:  sanitizeFormalPoolRateLimitSignal(errorClass, "unknown"),
+		FormalPoolExtraRateLimitErrorClass:  class,
 		FormalPoolExtraRateLimitWindow:      sanitizeFormalPoolRateLimitSignal(window, "unknown"),
-		FormalPoolExtraRateLimitAction:      sanitizeFormalPoolRateLimitSignal(action, "unknown"),
+		FormalPoolExtraRateLimitAction:      actionSignal,
 		FormalPoolExtraRateLimitResetBucket: sanitizeFormalPoolRateLimitSignal(resetBucketValue, "unknown"),
-		FormalPoolExtraRateLimitLastAt:      formalPoolTimestamp(time.Now()),
+		FormalPoolExtraRateLimitLastAt:      formalPoolTimestamp(now),
+	}
+	if !formalPoolDashboardRateLimitActionIsPassThrough(actionSignal) {
+		updates[FormalPoolExtraOnboardingLastCheck] = "rate_limit_service"
+		updates[FormalPoolExtraOnboardingLastCheckAt] = formalPoolTimestamp(now)
+		updates[FormalPoolExtraOnboardingLastErrorCode] = class
+		updates[FormalPoolExtraOnboardingLastErrorBucket] = statusBucketFromHTTP(http.StatusTooManyRequests)
 	}
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
 		slog.Warn("formal_pool_anthropic_429_extra_update_failed", "account_id", account.ID, "error", err)
@@ -1565,6 +1574,18 @@ func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) 
 		return err
 	}
 	if err := s.accountRepo.ClearModelRateLimits(ctx, accountID); err != nil {
+		return err
+	}
+	// 清除限流时一并清理 Formal Pool 429 诊断残留，避免窗口恢复后看板继续显示限流。
+	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
+		FormalPoolExtraRateLimitErrorClass:       "",
+		FormalPoolExtraRateLimitWindow:           "",
+		FormalPoolExtraRateLimitAction:           "",
+		FormalPoolExtraRateLimitResetBucket:      "",
+		FormalPoolExtraRateLimitLastAt:           "",
+		FormalPoolExtraOnboardingLastErrorCode:   "",
+		FormalPoolExtraOnboardingLastErrorBucket: "",
+	}); err != nil {
 		return err
 	}
 	// 清除限流时一并清理临时不可调度状态，避免周限/窗口重置后仍被本地临时状态阻断。

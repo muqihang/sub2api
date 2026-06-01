@@ -116,7 +116,7 @@ func TestFormalPoolStatusDashboard_ClassifiesRequiredStates(t *testing.T) {
 			name: "effective unschedulable account is not_schedulable and never normal",
 			account: func() Account {
 				acc := formalPoolDashboardTestAccount(8, FormalPoolStageProduction)
-				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(now.Add(time.Hour))
+				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(time.Now().Add(time.Hour))
 				return acc
 			}(),
 			runtime:   formalPoolDashboardCompleteRuntime(8),
@@ -129,7 +129,7 @@ func TestFormalPoolStatusDashboard_ClassifiesRequiredStates(t *testing.T) {
 			name: "effective unschedulable account with missing evidence is not_schedulable",
 			account: func() Account {
 				acc := formalPoolDashboardTestAccount(18, FormalPoolStageProduction)
-				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(now.Add(time.Hour))
+				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(time.Now().Add(time.Hour))
 				delete(acc.Extra, FormalPoolExtraHealthcheckRawRef)
 				return acc
 			}(),
@@ -572,7 +572,6 @@ func TestFormalPoolStatusDashboard_PassThroughActionWithExplicit429IsRateLimited
 }
 
 func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name      string
 		mutate    func(*Account)
@@ -614,7 +613,7 @@ func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
 		{
 			name: "rate limit outranks not schedulable",
 			mutate: func(acc *Account) {
-				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(now.Add(time.Hour))
+				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(time.Now().Add(time.Hour))
 				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 			},
 			wantState: FormalPoolDashboardStateRateLimited,
@@ -640,6 +639,147 @@ func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
 			require.Equal(t, tt.wantState, dashboard.Accounts[0].State)
 		})
 	}
+}
+
+func TestFormalPoolStatusDashboard_StatePriorityFullOrder(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*Account)
+		wantState string
+	}{
+		{
+			name: "inactive outranks all lower states",
+			mutate: func(acc *Account) {
+				acc.Status = StatusDisabled
+				acc.Extra[FormalPoolExtraHealthcheckSafeErrorCode] = "forbidden"
+				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
+			},
+			wantState: FormalPoolDashboardStateInactive,
+		},
+		{
+			name: "manual risk outranks rate limit and quarantine",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraHealthcheckSafeErrorCode] = "forbidden"
+				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
+			},
+			wantState: FormalPoolDashboardStateManualRisk,
+		},
+		{
+			name: "rate limit outranks quarantine and error",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
+				acc.Status = StatusError
+			},
+			wantState: FormalPoolDashboardStateRateLimited,
+		},
+		{
+			name: "quarantine outranks error and not schedulable",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
+				acc.Status = StatusError
+				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(time.Now().Add(time.Hour))
+			},
+			wantState: FormalPoolDashboardStateQuarantined,
+		},
+		{
+			name: "error outranks not schedulable and evidence missing",
+			mutate: func(acc *Account) {
+				acc.Status = StatusError
+				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(time.Now().Add(time.Hour))
+				delete(acc.Extra, FormalPoolExtraHealthcheckRawRef)
+			},
+			wantState: FormalPoolDashboardStateError,
+		},
+		{
+			name: "not schedulable outranks evidence missing",
+			mutate: func(acc *Account) {
+				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(time.Now().Add(time.Hour))
+				delete(acc.Extra, FormalPoolExtraHealthcheckRawRef)
+			},
+			wantState: FormalPoolDashboardStateNotSchedulable,
+		},
+		{
+			name: "evidence missing outranks runtime data missing for legacy schedulable stage",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageLegacyUnknown
+				acc.Extra[FormalPoolExtraHealthcheckStatus] = "failed"
+				acc.Extra[FormalPoolExtraHealthcheckRawRef] = "hmac-sha256:" + strings.Repeat("b", 64)
+				acc.Extra["base_rpm"] = 60
+			},
+			wantState: FormalPoolDashboardStateEvidenceMissing,
+		},
+		{
+			name: "data missing outranks warming",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+				acc.Extra["base_rpm"] = 60
+			},
+			wantState: FormalPoolDashboardStateDataMissing,
+		},
+		{
+			name: "warming outranks production fallback",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+			},
+			wantState: FormalPoolDashboardStateWarming,
+		},
+		{
+			name: "production outranks normal fallback",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+			},
+			wantState: FormalPoolDashboardStateProduction,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := int64(200 + i)
+			acc := formalPoolDashboardTestAccount(id, FormalPoolStageProduction)
+			tt.mutate(&acc)
+			runtime := formalPoolDashboardCompleteRuntime(id)
+			if tt.wantState == FormalPoolDashboardStateDataMissing {
+				runtime.RPMByAccount = map[int64]int{}
+			}
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, runtime)
+
+			require.Equal(t, tt.wantState, dashboard.Accounts[0].State)
+		})
+	}
+}
+
+func TestFormalPoolStatusDashboard_LastFailureBucketPrefersExplicitStatusBucket(t *testing.T) {
+	for _, bucket := range []string{"status_401", "status_403", "status_429"} {
+		t.Run(bucket, func(t *testing.T) {
+			acc := formalPoolDashboardTestAccount(220, FormalPoolStageProduction)
+			acc.Extra[FormalPoolExtraLastFailureCode] = "formal_pool_healthcheck_failed"
+			acc.Extra[FormalPoolExtraHealthcheckStatusCodeBucket] = bucket
+			acc.Extra[FormalPoolExtraHealthcheckSafeErrorBucket] = "auth"
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(220))
+
+			require.Equal(t, bucket, dashboard.Accounts[0].LastFailureBucket)
+		})
+	}
+}
+
+func TestFormalPoolStatusDashboard_PassThroughNoReset429IsNotRateLimited(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(230, FormalPoolStageProduction)
+	acc.Extra[FormalPoolExtraRateLimitErrorClass] = "unknown"
+	acc.Extra[FormalPoolExtraRateLimitWindow] = "no_reset"
+	acc.Extra[FormalPoolExtraRateLimitAction] = "pass_through"
+	acc.Extra[FormalPoolExtraRateLimitResetBucket] = "missing"
+	acc.Extra[FormalPoolExtraOnboardingLastErrorCode] = "unknown"
+	acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(230))
+
+	require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+	require.Equal(t, 0, dashboard.Summary.RateLimited)
 }
 
 func TestFormalPoolStatusDashboard_NormalLegacyRequiresCompleteEvidenceAndRuntime(t *testing.T) {
@@ -685,6 +825,16 @@ func TestFormalPoolStatusDashboard_SanitizesUnsafeAccountLabelsAndFields(t *test
 	for _, unsafe := range []string{"sk-ant-secret", "123e4567-e89b-12d3-a456-426614174000", "proxy-user", "proxy-pass", "access-secret", "refresh-secret", "proxy-secret.example.com"} {
 		require.NotContains(t, body, unsafe)
 	}
+}
+
+func TestFormalPoolStatusDashboard_LastFailureCodePrefersSpecificSafeCodeOverGenericHealthcheckFailure(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(231, FormalPoolStageProduction)
+	acc.Extra[FormalPoolExtraLastFailureCode] = "formal_pool_healthcheck_failed"
+	acc.Extra[FormalPoolExtraHealthcheckSafeErrorCode] = "forbidden"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(231))
+
+	require.Equal(t, "forbidden", dashboard.Accounts[0].LastFailureCode)
 }
 
 func TestFormalPoolStatusDashboard_RedactsSensitiveFailureFields(t *testing.T) {

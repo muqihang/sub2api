@@ -2967,6 +2967,9 @@ export default {
           healthcheckStatus: '健康检查状态',
           failureCode: '失败分类',
           failureSource: '失败来源',
+          lastCCGatewayErrorCode: 'CC Gateway 最近错误',
+          onboardingLastErrorCode: '上号最近错误',
+          onboardingLastErrorBucket: '上号最近状态桶',
           quarantineReason: '隔离原因',
           safeErrorCode: '安全错误分类',
           safeErrorBucket: '安全错误类别',
@@ -3072,7 +3075,8 @@ export default {
           wait_rate_limit: '等待限流恢复',
           repair_token: '替换 Setup Token 登录态',
           repair_oauth: '重新 OAuth 授权',
-          replace_account_and_proxy: '更换账号和出口代理'
+          replace_account_and_proxy: '更换账号和出口代理',
+          manual_review: '人工查看具体失败分类'
         },
         blockedReasons: {
           invalid_grant: '刷新凭证已失效，需要重新授权或替换登录态',

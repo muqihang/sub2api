@@ -837,6 +837,98 @@ func TestFormalPoolOperationsDiagnostics_InvalidGrantRecommendationsByAccountTyp
 	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
 }
 
+func TestFormalPoolOperationsDiagnostics_ExposesSafeGatewayAndOnboardingSignals(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:           FormalPoolStageQuarantined,
+		FormalPoolExtraLastCCGatewayErrorCode:    "missing_account_identity",
+		FormalPoolExtraOnboardingLastErrorCode:   "rate_limit_exceeded",
+		FormalPoolExtraOnboardingLastErrorBucket: "status_429",
+	})
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Equal(t, "missing_account_identity", got.LastCCGatewayErrorCode)
+	require.Equal(t, "rate_limit_exceeded", got.OnboardingLastErrorCode)
+	require.Equal(t, "status_429", got.OnboardingLastErrorBucket)
+	require.Contains(t, actionKeys(got.RecommendedActions), "wait_rate_limit")
+}
+
+func TestFormalPoolOperationsDiagnostics_SanitizesGatewayAndOnboardingSignals(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:           FormalPoolStageQuarantined,
+		FormalPoolExtraLastCCGatewayErrorCode:    "raw_cch",
+		FormalPoolExtraOnboardingLastErrorCode:   "admin@example.com sk-ant-sid01-secret",
+		FormalPoolExtraOnboardingLastErrorBucket: "status_401 access_token=secret",
+	})
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Empty(t, got.LastCCGatewayErrorCode)
+	require.Empty(t, got.OnboardingLastErrorCode)
+	require.Empty(t, got.OnboardingLastErrorBucket)
+}
+
+func TestFormalPoolOperationsDiagnostics_PassThroughNoReset429IsNotRateLimited(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:           FormalPoolStageProduction,
+		FormalPoolExtraRateLimitAction:           "pass_through",
+		FormalPoolExtraRateLimitWindow:           "no_reset",
+		FormalPoolExtraRateLimitResetBucket:      "missing",
+		FormalPoolExtraOnboardingLastErrorBucket: "status_429",
+		FormalPoolExtraOnboardingLastErrorCode:   "unknown_no_reset_429",
+	})
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.NotContains(t, actionKeys(got.RecommendedActions), "wait_rate_limit")
+}
+
+func TestFormalPoolOperationsDiagnostics_OnboardingOnlyStatusBucketsClassifyOrigin(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		bucket     string
+		code       string
+		wantOrigin string
+		wantAction string
+	}{
+		{name: "401", bucket: "status_401", code: "refresh_required", wantOrigin: string(FormalPoolFailureOriginUpstream), wantAction: "manual_review"},
+		{name: "403", bucket: "status_403", code: "forbidden", wantOrigin: string(FormalPoolFailureOriginUpstream), wantAction: "manual_review"},
+		{name: "429", bucket: "status_429", code: "rate_limited", wantOrigin: string(FormalPoolFailureOriginUpstream), wantAction: "wait_rate_limit"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			account := formalPoolDiagnosticsAccount(map[string]any{
+				FormalPoolExtraOnboardingStage:           FormalPoolStageQuarantined,
+				FormalPoolExtraOnboardingLastErrorCode:   tt.code,
+				FormalPoolExtraOnboardingLastErrorBucket: tt.bucket,
+			})
+			svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+			got, err := svc.Diagnostics(context.Background(), account.ID)
+
+			require.NoError(t, err)
+			require.Equal(t, tt.wantOrigin, got.FailureOrigin)
+			require.Contains(t, actionKeys(got.RecommendedActions), tt.wantAction)
+		})
+	}
+}
+
 func TestFormalPoolOperationsHealthcheckFailurePersistsSafeClassificationAndDiagnostics(t *testing.T) {
 	t.Parallel()
 
@@ -910,6 +1002,15 @@ func TestFormalPoolOperationsPromoteProduction_RequiresWarmingAndCompleteEvidenc
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "PRODUCTION_EVIDENCE_INCOMPLETE")
 	require.NotEqual(t, FormalPoolStageProduction, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+}
+
+func TestFormalPoolSafeOperator_AllowsOperationalEmailAndRejectsSecrets(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "ops-user@example.com", formalPoolSafeOperator("ops-user@example.com"))
+	require.Equal(t, "admin:99", formalPoolSafeOperator("admin:99"))
+	require.Empty(t, formalPoolSafeOperator("ops-user@example.com sk-ant-sid-secret"))
+	require.Empty(t, formalPoolSafeOperator("http://proxy-user:proxy-pass@example.com"))
 }
 
 func TestFormalPoolOperationsPromoteProduction_SetsProductionClearsCurrentQuarantineAndAudits(t *testing.T) {

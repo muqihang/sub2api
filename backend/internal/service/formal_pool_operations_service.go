@@ -43,6 +43,9 @@ type FormalPoolOperationsDiagnostics struct {
 	FailureSource                string                        `json:"failure_source,omitempty"`
 	HealthcheckStatus            string                        `json:"healthcheck_status,omitempty"`
 	StatusCodeBucket             string                        `json:"status_code_bucket,omitempty"`
+	LastCCGatewayErrorCode       string                        `json:"last_cc_gateway_error_code,omitempty"`
+	OnboardingLastErrorCode      string                        `json:"onboarding_last_error_code,omitempty"`
+	OnboardingLastErrorBucket    string                        `json:"onboarding_last_error_bucket,omitempty"`
 	CCGatewayRuntimeRegistered   bool                          `json:"cc_gateway_runtime_registered"`
 	CCGatewayRuntimeRegisteredAt string                        `json:"cc_gateway_runtime_registered_at,omitempty"`
 	RuntimeEvidenceComplete      bool                          `json:"runtime_evidence_complete"`
@@ -149,11 +152,19 @@ func formalPoolOperationOperator(ctx context.Context) string {
 
 func formalPoolSafeOperator(operator string) string {
 	operator = strings.TrimSpace(operator)
-	if operator == "" || formalPoolUnsafeDiagnosticText(operator) || formalPoolDiagnosticSensitiveKeyValueRe.MatchString(operator) {
+	if operator == "" || strings.ContainsAny(operator, "\r\n\t") || formalPoolDiagnosticSensitiveKeyValueRe.MatchString(operator) {
+		return ""
+	}
+	if ledgerEmailLikeRe.MatchString(operator) {
+		withoutEmail := strings.TrimSpace(ledgerEmailLikeRe.ReplaceAllString(operator, ""))
+		if withoutEmail != "" {
+			return ""
+		}
+	} else if formalPoolUnsafeDiagnosticText(operator) {
 		return ""
 	}
 	operator = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ':' || r == '_' || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ':' || r == '_' || r == '-' || r == '@' || r == '.' || r == '+' {
 			return r
 		}
 		return -1
@@ -599,22 +610,24 @@ func (s *FormalPoolOperationsService) swapProxy(ctx context.Context, accountID i
 }
 
 type formalPoolFailureEvidence struct {
-	IsFormalPool        bool
-	OnboardingStage     string
-	FailureCode         string
-	FailureSource       string
-	CCGatewayErrorCode  string
-	StatusCodeBucket    string
-	CCGatewaySeen       bool
-	SafeRawCaptureRef   string
-	FallbackDetected    bool
-	ProxyMismatch       bool
-	RiskTextDetected    bool
-	RuntimeRegistered   bool
-	CCGatewayEnabled    bool
-	CCGatewayRoute      string
-	InferenceScope      bool
-	ControlPlaneMessage string
+	IsFormalPool              bool
+	OnboardingStage           string
+	FailureCode               string
+	FailureSource             string
+	CCGatewayErrorCode        string
+	StatusCodeBucket          string
+	CCGatewaySeen             bool
+	SafeRawCaptureRef         string
+	FallbackDetected          bool
+	ProxyMismatch             bool
+	RiskTextDetected          bool
+	RuntimeRegistered         bool
+	CCGatewayEnabled          bool
+	CCGatewayRoute            string
+	InferenceScope            bool
+	ControlPlaneMessage       string
+	OnboardingLastErrorCode   string
+	OnboardingLastErrorBucket string
 }
 
 func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDiagnostics {
@@ -636,6 +649,9 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 	out.FailureSource = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraLastFailureSource))
 	out.HealthcheckStatus = account.GetExtraString(FormalPoolExtraHealthcheckStatus)
 	out.StatusCodeBucket = account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket)
+	out.LastCCGatewayErrorCode = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraLastCCGatewayErrorCode))
+	out.OnboardingLastErrorCode = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode))
+	out.OnboardingLastErrorBucket = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraOnboardingLastErrorBucket))
 	out.CCGatewayRuntimeRegistered = formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered])
 	out.CCGatewayRuntimeRegisteredAt = strings.TrimSpace(account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
 	out.RuntimeEvidenceComplete = runtimeEvidenceComplete(account)
@@ -684,22 +700,24 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 		out.Checks = append(out.Checks, FormalPoolAcceptanceCheck{Name: "healthcheck_evidence_persisted", Status: "pass"})
 	}
 	evidence := formalPoolFailureEvidence{
-		IsFormalPool:        out.IsFormalPool,
-		OnboardingStage:     out.OnboardingStage,
-		FailureCode:         out.FailureCode,
-		FailureSource:       out.FailureSource,
-		CCGatewayErrorCode:  formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraLastCCGatewayErrorCode)),
-		ControlPlaneMessage: out.QuarantineReason,
-		StatusCodeBucket:    out.StatusCodeBucket,
-		CCGatewaySeen:       out.CCGatewaySeen,
-		SafeRawCaptureRef:   out.RawCaptureRef,
-		FallbackDetected:    out.FallbackDetected,
-		ProxyMismatch:       out.ProxyMismatch,
-		RiskTextDetected:    out.RiskTextDetected,
-		RuntimeRegistered:   out.RuntimeEvidenceComplete,
-		CCGatewayEnabled:    account.GetExtraString("cc_gateway_enabled") == "true",
-		CCGatewayRoute:      account.GetExtraString("cc_gateway_routes"),
-		InferenceScope:      strings.Contains(account.GetCredential("scope"), "user:inference"),
+		IsFormalPool:              out.IsFormalPool,
+		OnboardingStage:           out.OnboardingStage,
+		FailureCode:               out.FailureCode,
+		FailureSource:             out.FailureSource,
+		CCGatewayErrorCode:        out.LastCCGatewayErrorCode,
+		ControlPlaneMessage:       out.QuarantineReason,
+		OnboardingLastErrorCode:   out.OnboardingLastErrorCode,
+		OnboardingLastErrorBucket: out.OnboardingLastErrorBucket,
+		StatusCodeBucket:          out.StatusCodeBucket,
+		CCGatewaySeen:             out.CCGatewaySeen,
+		SafeRawCaptureRef:         out.RawCaptureRef,
+		FallbackDetected:          out.FallbackDetected,
+		ProxyMismatch:             out.ProxyMismatch,
+		RiskTextDetected:          out.RiskTextDetected,
+		RuntimeRegistered:         out.RuntimeEvidenceComplete,
+		CCGatewayEnabled:          account.GetExtraString("cc_gateway_enabled") == "true",
+		CCGatewayRoute:            account.GetExtraString("cc_gateway_routes"),
+		InferenceScope:            strings.Contains(account.GetCredential("scope"), "user:inference"),
 	}
 	origin := classifyFormalPoolFailureOrigin(evidence)
 	out.FailureOrigin = string(origin)
@@ -936,8 +954,18 @@ func formalPoolHasUpstreamEvidence(e formalPoolFailureEvidence) bool {
 	source := strings.ToLower(strings.TrimSpace(e.FailureSource))
 	code := strings.ToLower(strings.TrimSpace(e.FailureCode))
 	status := strings.ToLower(strings.TrimSpace(e.StatusCodeBucket))
+	onboardingCode := strings.ToLower(strings.TrimSpace(e.OnboardingLastErrorCode))
+	onboardingBucket := strings.ToLower(strings.TrimSpace(e.OnboardingLastErrorBucket))
 	hasGatewayEvidence := e.CCGatewaySeen && isSafeLedgerRef(e.SafeRawCaptureRef)
 	explicitRateLimitUpstream := source == "rate_limit_service" && !formalPoolIsControlPlaneCode(code)
+	if onboardingBucket == "status_401" || onboardingBucket == "status_403" || onboardingBucket == "status_429" {
+		return true
+	}
+	if strings.Contains(onboardingCode, "401") || strings.Contains(onboardingCode, "403") || strings.Contains(onboardingCode, "429") ||
+		strings.Contains(onboardingCode, "rate_limit") || strings.Contains(onboardingCode, "rate_limited") || strings.Contains(onboardingCode, "forbidden") ||
+		strings.Contains(onboardingCode, "refresh_required") || strings.Contains(onboardingCode, "invalid_grant") {
+		return true
+	}
 	if !hasGatewayEvidence && !explicitRateLimitUpstream {
 		return false
 	}
@@ -985,6 +1013,9 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 	}
 	runtimeComplete := runtimeEvidenceComplete(account)
 	healthComplete := healthcheckEvidenceComplete(account)
+	if formalPoolDiagnosticsHasManualAuthOrRisk(d) {
+		add("manual_review", "Manual review account risk", "danger")
+	}
 	if stage == FormalPoolStageHealthcheckPassed && runtimeComplete && healthComplete {
 		add("start_warming", "Start warming", "info")
 		return actions
@@ -1017,6 +1048,9 @@ func formalPoolDiagnosticsHasRateLimit(d *FormalPoolOperationsDiagnostics) bool 
 	if d == nil {
 		return false
 	}
+	if formalPoolDiagnosticsHasPassThroughNoResetRateLimit(d) {
+		return false
+	}
 	combined := strings.ToLower(strings.Join([]string{
 		d.StatusCodeBucket,
 		d.FailureCode,
@@ -1028,6 +1062,9 @@ func formalPoolDiagnosticsHasRateLimit(d *FormalPoolOperationsDiagnostics) bool 
 		d.RateLimitAction,
 		d.RateLimitResetBucket,
 		d.QuarantineReason,
+		d.LastCCGatewayErrorCode,
+		d.OnboardingLastErrorCode,
+		d.OnboardingLastErrorBucket,
 	}, " "))
 	for _, marker := range []string{"status_429", "429", "too_many_requests", "rate_limit", "rate_limited", "quota_exceeded", "5h", "7d", "both", "long_context_usage_credits", "usage_credits"} {
 		if strings.Contains(combined, marker) {
@@ -1035,6 +1072,59 @@ func formalPoolDiagnosticsHasRateLimit(d *FormalPoolOperationsDiagnostics) bool 
 		}
 	}
 	return false
+}
+
+func formalPoolDiagnosticsHasPassThroughNoResetRateLimit(d *FormalPoolOperationsDiagnostics) bool {
+	if d == nil || !formalPoolDashboardRateLimitActionIsPassThrough(strings.ToLower(strings.TrimSpace(d.RateLimitAction))) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(d.RateLimitWindow), "no_reset") &&
+		strings.EqualFold(strings.TrimSpace(d.RateLimitResetBucket), "missing") {
+		return true
+	}
+	combined := strings.ToLower(strings.Join([]string{
+		d.RateLimitErrorClass,
+		d.HealthcheckSafeErrorCode,
+		d.HealthcheckSafeErrorBucket,
+	}, " "))
+	for _, marker := range []string{"long_context_usage_credits", "usage_credits_required", "usage credits are required", "long context requests", "context-1m"} {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func formalPoolDiagnosticsHasManualAuthOrRisk(d *FormalPoolOperationsDiagnostics) bool {
+	if d == nil {
+		return false
+	}
+	if d.RiskTextDetected || d.ProxyMismatch || d.FallbackDetected {
+		return true
+	}
+	combined := strings.ToLower(strings.Join([]string{
+		d.StatusCodeBucket,
+		d.FailureCode,
+		d.FailureSource,
+		d.HealthcheckSafeErrorCode,
+		d.HealthcheckSafeErrorBucket,
+		d.QuarantineReason,
+		d.LastCCGatewayErrorCode,
+		d.OnboardingLastErrorCode,
+		d.OnboardingLastErrorBucket,
+	}, " "))
+	for _, marker := range []string{
+		"status_401", "status_403", "401", "403", "unauthorized", "forbidden",
+		"invalid_auth", "authentication_error", "auth_error", "invalid_grant",
+		"refresh_token_invalid", "account_on_hold", "account_hold", "hold", "kyc",
+		"verification_required", "unusual_activity", "unusual activity", "risk_text",
+		"account_risk", "manual_risk",
+	} {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return formalPoolDashboardContainsToken(combined, "risk")
 }
 
 func formalPoolTerminalInvalidGrant(account *Account, d *FormalPoolOperationsDiagnostics) bool {

@@ -259,6 +259,76 @@ func TestRateLimitService_FormalPoolAnthropic429NoResetPersistsPassThroughExtra(
 	}
 }
 
+func TestRateLimitService_FormalPoolAnthropic429PersistsDashboardStatusBucket(t *testing.T) {
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{96: {
+		ID:          96,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+	}}}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "1.01")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", "1770998400")
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), repo.accountsByID[96], http.StatusTooManyRequests, headers, []byte(`{"error":{"message":"rate limit exceeded"}}`))
+
+	require.False(t, shouldDisable)
+	require.Equal(t, "status_429", repo.accountsByID[96].Extra[FormalPoolExtraOnboardingLastErrorBucket])
+	require.Equal(t, "rate_limited", repo.accountsByID[96].Extra[FormalPoolExtraOnboardingLastErrorCode])
+	require.Equal(t, "rate_limit_service", repo.accountsByID[96].Extra[FormalPoolExtraOnboardingLastCheck])
+}
+
+func TestRateLimitService_FormalPoolAnthropic429PassThroughDoesNotPersistOnboarding429Bucket(t *testing.T) {
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{97: {
+		ID:          97,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+	}}}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), repo.accountsByID[97], http.StatusTooManyRequests, http.Header{}, []byte(`{"error":{"message":"unknown no reset 429"}}`))
+
+	require.False(t, shouldDisable)
+	require.Equal(t, "pass_through", repo.accountsByID[97].Extra[FormalPoolExtraRateLimitAction])
+	require.Empty(t, repo.accountsByID[97].Extra[FormalPoolExtraOnboardingLastErrorBucket])
+}
+
+func TestRateLimitService_ClearRateLimitClearsFormalPoolRateLimitExtra(t *testing.T) {
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{98: {
+		ID:       98,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:           FormalPoolStageProduction,
+			FormalPoolExtraRateLimitErrorClass:       "rate_limited",
+			FormalPoolExtraRateLimitWindow:           "5h",
+			FormalPoolExtraRateLimitAction:           "rate_limited",
+			FormalPoolExtraRateLimitResetBucket:      "future",
+			FormalPoolExtraRateLimitLastAt:           "2026-06-01T00:00:00Z",
+			FormalPoolExtraOnboardingLastErrorCode:   "rate_limited",
+			FormalPoolExtraOnboardingLastErrorBucket: "status_429",
+		},
+	}}}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+
+	require.NoError(t, service.ClearRateLimit(context.Background(), 98))
+
+	account := repo.accountsByID[98]
+	require.Empty(t, account.Extra[FormalPoolExtraRateLimitErrorClass])
+	require.Empty(t, account.Extra[FormalPoolExtraRateLimitWindow])
+	require.Empty(t, account.Extra[FormalPoolExtraRateLimitAction])
+	require.Empty(t, account.Extra[FormalPoolExtraRateLimitResetBucket])
+	require.Empty(t, account.Extra[FormalPoolExtraRateLimitLastAt])
+	require.Empty(t, account.Extra[FormalPoolExtraOnboardingLastErrorCode])
+	require.Empty(t, account.Extra[FormalPoolExtraOnboardingLastErrorBucket])
+}
+
 func TestRateLimitService_FormalPoolSetupTokenFirst401WithRefreshTokenMarksRefreshRequired(t *testing.T) {
 	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{77: {
 		ID:          77,
