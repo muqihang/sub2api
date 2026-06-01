@@ -65,6 +65,14 @@
 
 
               <button
+                @click="showFormalPoolStatusDashboard = true"
+                class="btn btn-secondary"
+                title="号池实时看板"
+              >
+                号池实时看板
+              </button>
+
+              <button
                 @click="router.push('/admin/claude-onboarding')"
                 class="btn btn-primary"
                 title="Claude 正式号池上号向导"
@@ -175,6 +183,7 @@
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="72"
           :overscan="5"
+          density="compact"
         >
           <template #header-select>
             <input
@@ -350,6 +359,7 @@
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
     <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @formal-pool-diagnostics="openFormalPoolDiagnostics" />
     <FormalPoolDiagnosticsModal :show="showFormalPoolDiagnostics" :account="formalPoolDiagnosticsAccount" @close="closeFormalPoolDiagnostics" @updated="handleFormalPoolDiagnosticsUpdated" />
+    <FormalPoolStatusDashboardModal :show="showFormalPoolStatusDashboard" @close="showFormalPoolStatusDashboard = false" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -409,6 +419,7 @@ import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vu
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import FormalPoolDiagnosticsModal from '@/components/account/FormalPoolDiagnosticsModal.vue'
+import FormalPoolStatusDashboardModal from '@/components/account/FormalPoolStatusDashboardModal.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
@@ -481,6 +492,7 @@ const showStats = ref(false)
 const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
 const showFormalPoolDiagnostics = ref(false)
+const showFormalPoolStatusDashboard = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
@@ -859,7 +871,8 @@ const isAnyModalOpen = computed(() => {
     showStats.value ||
     showSchedulePanel.value ||
     showErrorPassthrough.value ||
-    showFormalPoolDiagnostics.value
+    showFormalPoolDiagnostics.value ||
+    showFormalPoolStatusDashboard.value
   )
 })
 
