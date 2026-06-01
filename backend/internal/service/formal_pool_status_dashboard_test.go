@@ -397,9 +397,29 @@ func TestFormalPoolStatusDashboard_NormalLegacyRequiresCompleteEvidenceAndRuntim
 	require.Equal(t, 1, dashboard.Summary.Normal)
 }
 
+func TestFormalPoolStatusDashboard_AllowsOperationalEmailAccountLabel(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(30, FormalPoolStageProduction)
+	acc.Name = "ops-user@example.com"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(30))
+
+	require.Equal(t, "ops-user@example.com", dashboard.Accounts[0].AccountLabel)
+}
+
+func TestFormalPoolStatusDashboard_SanitizesSchemeLessUserinfoAccountLabel(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(33, FormalPoolStageProduction)
+	acc.Name = "proxyuser:secret@example.com"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(33))
+	body := fmt.Sprintf("%+v", dashboard)
+
+	require.Equal(t, "账号 #33", dashboard.Accounts[0].AccountLabel)
+	require.NotContains(t, body, "proxyuser:secret@example.com")
+}
+
 func TestFormalPoolStatusDashboard_SanitizesUnsafeAccountLabelsAndFields(t *testing.T) {
 	acc := formalPoolDashboardTestAccount(31, FormalPoolStageProduction)
-	acc.Name = "user@example.com sk-ant-secret 123e4567-e89b-12d3-a456-426614174000 http://proxy-user:proxy-pass@example.com"
+	acc.Name = "ops-user@example.com sk-ant-secret 123e4567-e89b-12d3-a456-426614174000 http://proxy-user:proxy-pass@example.com"
 	acc.Credentials = map[string]any{"access_token": "access-secret", "refresh_token": "refresh-secret"}
 	acc.Proxy = &Proxy{Host: "proxy-secret.example.com", Username: "proxy-user-secret", Password: "proxy-pass-secret"}
 	acc.ErrorMessage = "raw body secret"
@@ -408,7 +428,7 @@ func TestFormalPoolStatusDashboard_SanitizesUnsafeAccountLabelsAndFields(t *test
 	body := fmt.Sprintf("%+v", dashboard)
 
 	require.Equal(t, "账号 #31", dashboard.Accounts[0].AccountLabel)
-	for _, unsafe := range []string{"user@example.com", "sk-ant-secret", "123e4567-e89b-12d3-a456-426614174000", "proxy-user", "proxy-pass", "access-secret", "refresh-secret", "proxy-secret.example.com"} {
+	for _, unsafe := range []string{"sk-ant-secret", "123e4567-e89b-12d3-a456-426614174000", "proxy-user", "proxy-pass", "access-secret", "refresh-secret", "proxy-secret.example.com"} {
 		require.NotContains(t, body, unsafe)
 	}
 }

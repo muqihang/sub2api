@@ -614,7 +614,7 @@ var (
 
 func formalPoolDashboardUnsafeLabel(label string) bool {
 	lower := strings.ToLower(label)
-	if formalPoolDashboardEmailRe.MatchString(label) || formalPoolDashboardUUIDRe.MatchString(label) || formalPoolDashboardLongSecretRe.MatchString(label) {
+	if formalPoolDashboardUUIDRe.MatchString(label) || formalPoolDashboardLongSecretRe.MatchString(label) {
 		return true
 	}
 	markers := []string{"sk-", "token", "access_token", "refresh", "session_key", "setup", "bearer", "http://", "https://", "://", "raw", "prompt", "body", "cch", "telemetry", "proxy", "password", "credential"}
