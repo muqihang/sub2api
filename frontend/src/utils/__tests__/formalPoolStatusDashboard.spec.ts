@@ -28,7 +28,7 @@ function accountFixture(
       used: 1.25,
       limit: 5,
       remaining: 3.75,
-      utilization: 25,
+      utilization: 0.25,
       reset_at: '2026-06-01T18:30:00Z',
       status: 'allowed',
       available: true
@@ -36,19 +36,19 @@ function accountFixture(
     rpm: {
       current: 12,
       limit: 60,
-      utilization: 20,
+      utilization: 0.2,
       available: true
     },
     concurrency: {
       current: 2,
       limit: 5,
-      utilization: 40,
+      utilization: 0.4,
       available: true
     },
     sessions: {
       current: 1,
       limit: 3,
-      utilization: 33.3333,
+      utilization: 0.333333,
       available: true
     },
     last_used_at: null,
@@ -69,7 +69,7 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
     expect(formatDashboardPercent(null)).toBe('数据不足')
     expect(formatDashboardPercent(undefined)).toBe('数据不足')
     expect(formatDashboardPercent(Number.NaN)).toBe('数据不足')
-    expect(formatDashboardPercent(12.345)).toBe('12.3%')
+    expect(formatDashboardPercent(0.12345)).toBe('12.3%')
 
     const unknownText = getDashboardRecommendationText(
       accountFixture({
@@ -91,7 +91,7 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
           used: 2,
           limit: 5,
           remaining: 3,
-          utilization: 40,
+          utilization: 0.4,
           reset_at: '2026-06-01T18:30:00Z',
           status: 'allowed',
           available: true
@@ -170,7 +170,7 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
       used: 1.25,
       limit: 5,
       remaining: 3.75,
-      utilization: 25,
+      utilization: 0.25,
       reset_at: '2026-06-01T18:30:00Z',
       status: 'allowed',
       available: true
@@ -183,8 +183,8 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
   })
 
   it('formats runtime counters defensively when unavailable', () => {
-    expect(formatRpmText({ current: 12, limit: 60, utilization: 20, available: true })).toBe('12 / 60 RPM (20.0%)')
-    expect(formatConcurrencyText({ current: 2, limit: 5, utilization: 40, available: true })).toBe('2 / 5 并发 (40.0%)')
+    expect(formatRpmText({ current: 12, limit: 60, utilization: 0.2, available: true })).toBe('12 / 60 RPM (20.0%)')
+    expect(formatConcurrencyText({ current: 2, limit: 5, utilization: 0.4, available: true })).toBe('2 / 5 并发 (40.0%)')
     expect(formatRpmText({ current: 0, limit: 60, utilization: null, available: false })).toBe('数据不足')
     expect(formatConcurrencyText({ current: 0, limit: 5, utilization: null, available: false })).toBe('数据不足')
   })

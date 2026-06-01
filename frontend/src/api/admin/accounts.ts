@@ -63,8 +63,12 @@ export interface AccountListWithEtagResult {
   data: PaginatedResponse<Account> | null
 }
 
-export async function getFormalPoolStatusDashboard(): Promise<FormalPoolStatusDashboard> {
-  const { data } = await apiClient.get<FormalPoolStatusDashboard>('/admin/formal-pool/status-dashboard')
+export async function getFormalPoolStatusDashboard(options?: {
+  signal?: AbortSignal
+}): Promise<FormalPoolStatusDashboard> {
+  const { data } = await apiClient.get<FormalPoolStatusDashboard>('/admin/formal-pool/status-dashboard', {
+    signal: options?.signal
+  })
   return data
 }
 

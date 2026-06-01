@@ -292,6 +292,31 @@ func TestFormalPoolStatusDashboard_RateLimitSourcesIncludeErrorMessageAndOnboard
 	}
 }
 
+func TestFormalPoolStatusDashboard_PassThroughActionIsNotRateLimitedWithoutCooldownSignal(t *testing.T) {
+	for _, action := range []string{"pass_through", "passthrough"} {
+		t.Run(action, func(t *testing.T) {
+			acc := formalPoolDashboardTestAccount(66, FormalPoolStageProduction)
+			acc.Extra[FormalPoolExtraRateLimitAction] = action
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(66))
+
+			require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+			require.Equal(t, 0, dashboard.Summary.RateLimited)
+		})
+	}
+}
+
+func TestFormalPoolStatusDashboard_PassThroughActionWithExplicit429IsRateLimited(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(67, FormalPoolStageProduction)
+	acc.Extra[FormalPoolExtraRateLimitAction] = "pass_through"
+	acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(67))
+
+	require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
+	require.Equal(t, 1, dashboard.Summary.RateLimited)
+}
+
 func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

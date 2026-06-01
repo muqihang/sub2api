@@ -146,6 +146,7 @@ import { adminAPI } from '@/api/admin'
 import type { FormalPoolDashboardState, FormalPoolStatusDashboard, FormalPoolStatusDashboardAccount, FormalPoolStatusRuntime } from '@/types'
 import {
   formatConcurrencyText,
+  dashboardRatioToPercent,
   formatDashboardPercent,
   formatFiveHourWindow,
   formatRpmText,
@@ -168,6 +169,7 @@ const activeFilter = ref('all')
 const lastUpdatedAt = ref<string | null>(null)
 let refreshTimer: number | null = null
 let inFlight = false
+let activeAbortController: AbortController | null = null
 
 const MetricCell = defineComponent({
   name: 'MetricCell',
@@ -183,7 +185,7 @@ const MetricCell = defineComponent({
         ? h('div', { class: 'mt-2 h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-dark-700' }, [
             h('div', {
               class: 'h-full rounded-full bg-primary-500',
-              style: { width: `${Math.max(0, Math.min(100, cellProps.percent ?? 0))}%` },
+              style: { width: `${dashboardRatioToPercent(cellProps.percent) ?? 0}%` },
             }),
           ])
         : null,
@@ -244,18 +246,27 @@ const autoRefreshDotClass = computed(() => (props.show && !error.value ? 'bg-eme
 
 async function refreshDashboard() {
   if (!props.show || inFlight) return
+  const controller = new AbortController()
+  activeAbortController = controller
   inFlight = true
   loading.value = true
   try {
-    const data = await adminAPI.accounts.getFormalPoolStatusDashboard()
+    const data = await adminAPI.accounts.getFormalPoolStatusDashboard({ signal: controller.signal })
+    if (!props.show || controller.signal.aborted || activeAbortController !== controller) return
     dashboard.value = data
     lastUpdatedAt.value = data.summary.generated_at || new Date().toISOString()
     error.value = null
   } catch (err: any) {
-    error.value = err?.response?.data?.message || err?.message || '刷新号池实时看板失败'
+    if (controller.signal.aborted || err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') return
+    if (props.show && activeAbortController === controller) {
+      error.value = err?.response?.data?.message || err?.message || '刷新号池实时看板失败'
+    }
   } finally {
-    loading.value = false
-    inFlight = false
+    if (activeAbortController === controller) {
+      activeAbortController = null
+      loading.value = false
+      inFlight = false
+    }
   }
 }
 
@@ -272,6 +283,12 @@ function stopAutoRefresh() {
     window.clearInterval(refreshTimer)
     refreshTimer = null
   }
+  if (activeAbortController) {
+    activeAbortController.abort()
+    activeAbortController = null
+  }
+  loading.value = false
+  inFlight = false
 }
 
 function manualRefresh() {
@@ -331,6 +348,7 @@ function stageLabel(stage: string) {
 
 function formatSessionsText(runtime: FormalPoolStatusRuntime | null | undefined) {
   if (!runtime?.available) return '数据不足'
+  if (runtime.limit <= 0) return '未配置会话'
   return `${runtime.current} / ${runtime.limit} 会话 (${formatDashboardPercent(runtime.utilization)})`
 }
 

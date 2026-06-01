@@ -6,6 +6,7 @@ import type {
 } from '@/types'
 
 const INSUFFICIENT_DATA_TEXT = '数据不足'
+const UNCONFIGURED_TEXT = '未配置'
 
 type StatePresentation = {
   className: string
@@ -88,11 +89,19 @@ function formatResetTime(value: string | null): string {
   })}`
 }
 
-export function formatDashboardPercent(value: number | null | undefined): string {
+export function dashboardRatioToPercent(value: number | null | undefined): number | null {
   if (!isFiniteNumber(value)) {
+    return null
+  }
+  return Math.max(0, Math.min(100, value * 100))
+}
+
+export function formatDashboardPercent(value: number | null | undefined): string {
+  const percent = dashboardRatioToPercent(value)
+  if (percent === null) {
     return INSUFFICIENT_DATA_TEXT
   }
-  return `${value.toFixed(1)}%`
+  return `${percent.toFixed(1)}%`
 }
 
 export function formatFiveHourWindow(window: FormalPoolStatusWindow | null | undefined): string {
@@ -108,6 +117,9 @@ export function formatRpmText(runtime: FormalPoolStatusRuntime | null | undefine
   if (!runtime?.available) {
     return INSUFFICIENT_DATA_TEXT
   }
+  if (runtime.limit <= 0) {
+    return `${UNCONFIGURED_TEXT} RPM`
+  }
 
   return `${runtime.current} / ${runtime.limit} RPM (${formatDashboardPercent(runtime.utilization)})`
 }
@@ -115,6 +127,9 @@ export function formatRpmText(runtime: FormalPoolStatusRuntime | null | undefine
 export function formatConcurrencyText(runtime: FormalPoolStatusRuntime | null | undefined): string {
   if (!runtime?.available) {
     return INSUFFICIENT_DATA_TEXT
+  }
+  if (runtime.limit <= 0) {
+    return `${UNCONFIGURED_TEXT} 并发`
   }
 
   return `${runtime.current} / ${runtime.limit} 并发 (${formatDashboardPercent(runtime.utilization)})`

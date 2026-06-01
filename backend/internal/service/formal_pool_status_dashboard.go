@@ -459,7 +459,7 @@ func formalPoolDashboardHasRateLimit(account *Account) bool {
 	if account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt) {
 		return true
 	}
-	if action := strings.ToLower(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitAction))); action != "" && action != "none" && action != "allow" {
+	if action := strings.ToLower(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitAction))); action != "" && !formalPoolDashboardRateLimitActionAllowsPassThrough(action) {
 		return true
 	}
 	combined := strings.ToLower(strings.Join([]string{
@@ -479,6 +479,15 @@ func formalPoolDashboardHasRateLimit(account *Account) bool {
 		account.ErrorMessage,
 	}, " "))
 	return strings.Contains(combined, "429") || strings.Contains(combined, "rate_limit") || strings.Contains(combined, "rate-limit") || strings.Contains(combined, "rate limited")
+}
+
+func formalPoolDashboardRateLimitActionAllowsPassThrough(action string) bool {
+	switch strings.TrimSpace(action) {
+	case "", "none", "allow", "pass_through", "passthrough":
+		return true
+	default:
+		return false
+	}
 }
 
 func formalPoolDashboardHasManualRisk(account *Account) bool {

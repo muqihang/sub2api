@@ -19,7 +19,7 @@ import FormalPoolStatusDashboardModal from '@/components/account/FormalPoolStatu
 const runtime = (overrides: Partial<FormalPoolStatusDashboardAccount['rpm']> = {}) => ({
   current: 1,
   limit: 10,
-  utilization: 10,
+  utilization: 0.1,
   available: true,
   ...overrides,
 })
@@ -28,7 +28,7 @@ const window5h = (overrides: Partial<FormalPoolStatusDashboardAccount['five_hour
   used: 100,
   limit: 1000,
   remaining: 900,
-  utilization: 10,
+  utilization: 0.1,
   reset_at: '2026-06-01T12:00:00Z',
   status: 'active',
   available: true,
@@ -49,8 +49,8 @@ const account = (overrides: Partial<FormalPoolStatusDashboardAccount> = {}): For
   production_ready: true,
   five_hour_window: window5h(),
   rpm: runtime({ current: 2, limit: 20 }),
-  concurrency: runtime({ current: 1, limit: 4, utilization: 25 }),
-  sessions: runtime({ current: 1, limit: 3, utilization: 33.3 }),
+  concurrency: runtime({ current: 1, limit: 4, utilization: 0.25 }),
+  sessions: runtime({ current: 1, limit: 3, utilization: 0.333 }),
   last_used_at: '2026-06-01T11:55:00Z',
   last_success_hint: '最近成功',
   last_failure_code: '',
@@ -132,7 +132,7 @@ const dashboardFixture = (): FormalPoolStatusDashboard => {
       total_current_rpm: 12,
       total_rpm_limit: 80,
       rpm_available: true,
-      five_hour_remaining_ratio: 72.5,
+      five_hour_remaining_ratio: 0.725,
       five_hour_window_available: true,
       generated_at: '2026-06-01T12:00:00Z',
     },
@@ -148,6 +148,16 @@ const mountModal = async (fixture = dashboardFixture()) => {
   })
   await flushPromises()
   return wrapper
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
 }
 
 describe('FormalPoolStatusDashboardModal', () => {
@@ -229,6 +239,30 @@ describe('FormalPoolStatusDashboardModal', () => {
     wrapper.unmount()
     await vi.advanceTimersByTimeAsync(10000)
     expect(getFormalPoolStatusDashboard).toHaveBeenCalledTimes(2)
+  })
+
+  it('aborts in-flight refresh and does not update rows after close', async () => {
+    const pending = deferred<FormalPoolStatusDashboard>()
+    getFormalPoolStatusDashboard.mockReturnValueOnce(pending.promise)
+
+    const wrapper = mount(FormalPoolStatusDashboardModal, {
+      props: { show: true },
+      attachTo: document.body,
+    })
+    await flushPromises()
+
+    const firstCallOptions = getFormalPoolStatusDashboard.mock.calls[0]?.[0]
+    expect(firstCallOptions?.signal).toBeInstanceOf(AbortSignal)
+    expect(firstCallOptions.signal.aborted).toBe(false)
+
+    await wrapper.setProps({ show: false })
+    expect(firstCallOptions.signal.aborted).toBe(true)
+
+    pending.resolve(dashboardFixture())
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('生产账号')
+    wrapper.unmount()
   })
 
   it('sensitive fixture strings are not rendered', async () => {
