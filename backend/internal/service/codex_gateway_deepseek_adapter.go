@@ -17,6 +17,11 @@ const (
 	codexGatewayDeepSeekStreamClosedReason   = "upstream_stream_closed"
 )
 
+const (
+	codexGatewayDeepSeekToolReplayMaxSystemMessages = 2
+	codexGatewayDeepSeekToolReplayMaxContextChars   = 2000
+)
+
 func ExecuteCodexGatewayDeepSeekAdapter(
 	ctx context.Context,
 	client *http.Client,
@@ -28,7 +33,11 @@ func ExecuteCodexGatewayDeepSeekAdapter(
 	reqCtx CodexGatewayDeepSeekRequestContext,
 	cfg CodexGatewayDeepSeekRequestConfig,
 ) (CodexGatewayDeepSeekAdapterResult, error) {
-	req, err := codexGatewayDeepSeekRequestWithHostedVision(ctx, req, cfg)
+	upstreamModel := strings.TrimSpace(model.UpstreamModel)
+	if upstreamModel == "" {
+		upstreamModel = strings.TrimSpace(model.Slug)
+	}
+	req, err := codexGatewayDeepSeekRequestWithHostedVision(ctx, req, stateStore, reqCtx, upstreamModel, cfg)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
@@ -53,7 +62,7 @@ func ExecuteCodexGatewayDeepSeekAdapter(
 		return result, nil
 	}
 
-	mapped, err := codexGatewayDeepSeekMapChatCompletionResponse(body, resp.Header.Get("x-request-id"), model, prepared.ToolNameMap, prepared.ReplayMessages, stateStore, reqCtx)
+	mapped, err := codexGatewayDeepSeekMapChatCompletionResponse(body, resp.Header.Get("x-request-id"), model, prepared.ToolNameMap, prepared.ToolSchemas, prepared.ReplayMessages, stateStore, reqCtx)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
@@ -105,6 +114,7 @@ func codexGatewayDeepSeekMapChatCompletionResponse(
 	upstreamRequestID string,
 	model CodexGatewayModel,
 	toolNameMap map[string]CodexGatewayToolNameMapEntry,
+	toolSchemas []json.RawMessage,
 	replayMessages []json.RawMessage,
 	stateStore *CodexGatewayStateStore,
 	reqCtx CodexGatewayDeepSeekRequestContext,
@@ -194,7 +204,7 @@ func codexGatewayDeepSeekMapChatCompletionResponse(
 	result.Response = response
 
 	if response.Status == "completed" {
-		if err := codexGatewayDeepSeekPersistState(stateStore, responseID, parsed.Model, reqCtx, text, true, result.ReasoningContent, reasoningPresent, !reasoningPresent, storedCalls, toolNameMap, codexGatewayDeepSeekStateReplayMessages(replayMessages, text, true, result.ReasoningContent, reasoningPresent, !reasoningPresent, storedCalls, toolNameMap)); err != nil {
+		if err := codexGatewayDeepSeekPersistState(stateStore, responseID, parsed.Model, reqCtx, text, true, result.ReasoningContent, reasoningPresent, !reasoningPresent, storedCalls, toolNameMap, toolSchemas, codexGatewayDeepSeekStateReplayMessages(replayMessages, text, true, result.ReasoningContent, reasoningPresent, !reasoningPresent, storedCalls, toolNameMap)); err != nil {
 			return CodexGatewayProviderResult{}, err
 		}
 	}
@@ -402,6 +412,7 @@ func codexGatewayDeepSeekPersistState(
 	reasoningContentSynthesized bool,
 	toolCalls []CodexGatewayStoredToolCall,
 	toolNameMap map[string]CodexGatewayToolNameMapEntry,
+	toolSchemas []json.RawMessage,
 	replayMessages []json.RawMessage,
 ) error {
 	shouldPersist := codexGatewayDeepSeekShouldPersistResponseState(assistantContent, assistantContentPresent, reasoningContent, reasoningContentPresent, reasoningContentSynthesized, toolCalls, replayMessages)
@@ -426,6 +437,7 @@ func codexGatewayDeepSeekPersistState(
 		ReasoningContentSynthesized: reasoningContentSynthesized,
 		ToolCalls:                   cloneCodexGatewayStoredToolCalls(toolCalls),
 		ToolNameMap:                 cloneCodexGatewayToolNameMap(toolNameMap),
+		ToolSchemas:                 cloneCodexGatewayRawMessages(toolSchemas),
 		ReplayMessages:              cloneCodexGatewayRawMessages(replayMessages),
 	})
 }
@@ -458,9 +470,68 @@ func codexGatewayDeepSeekStateReplayMessages(base []json.RawMessage, assistantCo
 	if err != nil || len(raw) == 0 {
 		return cloneCodexGatewayRawMessages(base)
 	}
+	if len(toolCalls) > 0 {
+		out := codexGatewayDeepSeekToolReplayContextMessages(base)
+		out = append(out, raw)
+		return out
+	}
 	out := cloneCodexGatewayRawMessages(base)
 	out = append(out, raw)
 	return out
+}
+
+func codexGatewayDeepSeekToolReplayContextMessages(base []json.RawMessage) []json.RawMessage {
+	if len(base) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, codexGatewayDeepSeekToolReplayMaxSystemMessages+1)
+	systemCount := 0
+	var lastUser json.RawMessage
+	for _, raw := range base {
+		var msg map[string]any
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+		role := strings.TrimSpace(firstCodexGatewayToolString(msg["role"]))
+		switch role {
+		case "system":
+			if systemCount >= codexGatewayDeepSeekToolReplayMaxSystemMessages {
+				continue
+			}
+			if clipped, ok := codexGatewayDeepSeekClipReplayContextMessage(msg); ok {
+				out = append(out, clipped)
+				systemCount++
+			}
+		case "user":
+			if clipped, ok := codexGatewayDeepSeekClipReplayContextMessage(msg); ok {
+				lastUser = clipped
+			}
+		}
+	}
+	if len(lastUser) > 0 {
+		out = append(out, lastUser)
+	}
+	return out
+}
+
+func codexGatewayDeepSeekClipReplayContextMessage(msg map[string]any) (json.RawMessage, bool) {
+	role := strings.TrimSpace(firstCodexGatewayToolString(msg["role"]))
+	if role != "system" && role != "user" {
+		return nil, false
+	}
+	content := strings.TrimSpace(firstCodexGatewayToolString(msg["content"]))
+	if content == "" {
+		return nil, false
+	}
+	content = codexGatewayDeepSeekTruncateString(content, codexGatewayDeepSeekToolReplayMaxContextChars)
+	out, err := json.Marshal(map[string]any{
+		"role":    role,
+		"content": content,
+	})
+	if err != nil || len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 func codexGatewayDeepSeekMapErrorBody(statusCode int, raw []byte) []byte {

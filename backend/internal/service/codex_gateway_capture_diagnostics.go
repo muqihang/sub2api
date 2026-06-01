@@ -492,6 +492,8 @@ func (m *CodexGatewayCaptureManager) deepSeekCacheMissAttribution(snapshot codex
 				attribution = append(attribution, "context_compaction_changed_prefix")
 			}
 		}
+	} else {
+		attribution = append(attribution, "no_prior_scope_sample")
 	}
 	if len(attribution) == 0 {
 		attribution = append(attribution, "upstream_best_effort_or_unknown")
@@ -532,4 +534,45 @@ func firstDeepSeekCacheScopeValue(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func codexGatewayDeepSeekSessionDiagnostics(requestDiag map[string]any) map[string]any {
+	raw, ok := requestDiag["deepseek_cache"].(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	copyKey := func(key string) {
+		if value, ok := raw[key]; ok {
+			out[key] = value
+		}
+	}
+	for _, key := range []string{
+		"request_prefix_hash",
+		"messages_full_hash",
+		"message_suffix_hash",
+		"message_last_hash",
+		"static_prefix_hash",
+		"tool_schema_hash",
+		"message_prefix_hash",
+		"request_shape_hash",
+		"previous_response_id_present",
+		"previous_response_replay_mode",
+		"state_lookup_status",
+		"user_id_hash",
+		"user_id_scope",
+		"user_id_source",
+		"workspace_scope_hash",
+		"managed_session_bucket_hash",
+		"message_count",
+		"message_prefix_count",
+	} {
+		copyKey(key)
+	}
+	if stable, ok := raw["stable_serialization"].(map[string]any); ok {
+		if value, ok := stable["version"]; ok {
+			out["stable_serialization_version"] = value
+		}
+	}
+	return out
 }

@@ -116,6 +116,50 @@ func (s *CodexGatewayStateStore) Get(key CodexGatewayStateLookupKey) (CodexGatew
 	return CodexGatewayResponseState{}, ErrCodexGatewayStateNotFound
 }
 
+func (s *CodexGatewayStateStore) LatestToolContext(key CodexGatewayStateLookupKey) (CodexGatewayStoredToolContext, bool) {
+	if s == nil {
+		return CodexGatewayStoredToolContext{}, false
+	}
+	key = normalizeCodexGatewayStateLookupKey(key)
+	if strings.TrimSpace(key.SessionKey) == "" || strings.TrimSpace(key.IsolationKey) == "" || strings.TrimSpace(key.Provider) == "" || strings.TrimSpace(key.UpstreamModel) == "" {
+		return CodexGatewayStoredToolContext{}, false
+	}
+
+	now := s.nowTime()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now)
+
+	var newest *codexGatewayStateEntry
+	for _, entry := range s.entries {
+		if now.After(entry.expiresAt) {
+			continue
+		}
+		storedKey := normalizeCodexGatewayStateLookupKey(entry.state.Key)
+		if storedKey.SessionKey != key.SessionKey ||
+			storedKey.IsolationKey != key.IsolationKey ||
+			storedKey.Provider != key.Provider ||
+			storedKey.UpstreamModel != key.UpstreamModel {
+			continue
+		}
+		if len(entry.state.ToolNameMap) == 0 || len(entry.state.ToolSchemas) == 0 {
+			continue
+		}
+		if newest == nil || entry.createdAt.After(newest.createdAt) {
+			copyEntry := entry
+			newest = &copyEntry
+		}
+	}
+	if newest == nil {
+		return CodexGatewayStoredToolContext{}, false
+	}
+	return CodexGatewayStoredToolContext{
+		ToolNameMap: cloneCodexGatewayToolNameMap(newest.state.ToolNameMap),
+		ToolSchemas: cloneCodexGatewayRawMessages(newest.state.ToolSchemas),
+	}, true
+}
+
 func (s *CodexGatewayStateStore) nowTime() time.Time {
 	if s == nil || s.now == nil {
 		return time.Now()
@@ -222,6 +266,7 @@ func cloneCodexGatewayResponseState(state CodexGatewayResponseState) CodexGatewa
 		state.ToolNameMap = cloneCodexGatewayToolNameMap(state.ToolNameMap)
 	}
 	state.AnthropicThinkingBlocks = cloneCodexGatewayRawMessages(state.AnthropicThinkingBlocks)
+	state.ToolSchemas = cloneCodexGatewayRawMessages(state.ToolSchemas)
 	state.ReplayMessages = cloneCodexGatewayRawMessages(state.ReplayMessages)
 	return state
 }

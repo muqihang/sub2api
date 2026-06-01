@@ -192,7 +192,11 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	if turn > codexGatewayDeepSeekHostedToolMaxTurns {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek hosted tool loop exceeded %d turns", codexGatewayDeepSeekHostedToolMaxTurns)
 	}
-	req, err := codexGatewayDeepSeekRequestWithHostedVision(ctx, req, cfg)
+	upstreamModel := strings.TrimSpace(model.UpstreamModel)
+	if upstreamModel == "" {
+		upstreamModel = strings.TrimSpace(model.Slug)
+	}
+	req, err := codexGatewayDeepSeekRequestWithHostedVision(ctx, req, stateStore, reqCtx, upstreamModel, cfg)
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
@@ -203,7 +207,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	body := cloneCodexGatewayStreamBody(prepared.Body)
 	body["stream"] = true
 	body["stream_options"] = map[string]any{"include_usage": true}
-	body = codexGatewayDeepSeekAllowlistedChatCompletionsBody(body)
+	body = codexGatewayDeepSeekFinalizeChatCompletionsBody(body)
 
 	if client == nil {
 		client = http.DefaultClient
@@ -420,6 +424,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 			!state.reasoningPresent,
 			storedToolCalls,
 			prepared.ToolNameMap,
+			prepared.ToolSchemas,
 			codexGatewayDeepSeekStateReplayMessages(prepared.ReplayMessages, state.messageText.String(), state.messageAdded, state.reasoningText.String(), state.reasoningPresent, !state.reasoningPresent, storedToolCalls, prepared.ToolNameMap),
 		); err != nil {
 			return CodexGatewayDeepSeekAdapterResult{}, err

@@ -30,6 +30,13 @@ var codexGatewayDeepSeekChatCompletionsAllowlist = map[string]struct{}{
 
 const codexGatewayDeepSeekSerialToolInstruction = "Serial tool calling is required for this request: before receiving tool output, emit at most one tool call. After the tool output is provided, you may decide whether another tool call is needed."
 
+const (
+	codexGatewayDeepSeekToolOutputMaxChars           = 3500
+	codexGatewayDeepSeekToolOutputStringPreviewChars = 1200
+	codexGatewayDeepSeekToolOutputFieldPreviewChars  = 512
+	codexGatewayDeepSeekToolOutputMaxArrayItems      = 24
+)
+
 type codexGatewayDeepSeekReplayDiagnostics struct {
 	PreviousResponseIDPresent bool
 	StateLookupStatus         string
@@ -79,12 +86,30 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 	toolMapping = codexGatewayDeepSeekRestrictHostedToolMapping(toolMapping)
 	toolMapping = codexGatewayDeepSeekAdaptToolMapping(toolMapping, toolCfg)
+	var toolSchemas []json.RawMessage
 	if len(toolMapping.Tools) > 0 {
 		tools := make([]any, 0, len(toolMapping.Tools))
 		for _, tool := range toolMapping.Tools {
 			tools = append(tools, tool)
 		}
 		body["tools"] = tools
+		toolSchemas = codexGatewayRawToolSchemas(tools)
+	} else if stateStore != nil && codexGatewayDeepSeekShouldRestoreReplayToolContext(req) {
+		if state, err := stateStore.Get(CodexGatewayStateLookupKey{
+			ResponseID:    strings.TrimSpace(*req.PreviousResponseID),
+			SessionKey:    ctx.SessionKey,
+			IsolationKey:  ctx.IsolationKey,
+			Provider:      "deepseek",
+			UpstreamModel: upstreamModel,
+		}); err == nil && len(state.ToolCalls) > 0 {
+			if restored := codexGatewayToolSchemasToAny(state.ToolSchemas); len(restored) > 0 {
+				body["tools"] = restored
+				toolSchemas = cloneCodexGatewayRawMessages(state.ToolSchemas)
+				if len(toolMapping.NameMap) == 0 {
+					toolMapping.NameMap = cloneCodexGatewayToolNameMap(state.ToolNameMap)
+				}
+			}
+		}
 	}
 	if len(toolMapping.IgnoredHostedToolTypes) > 0 {
 		leadingMessages = append(leadingMessages, map[string]any{
@@ -186,7 +211,7 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	if len(toolMapping.Tools) > 0 && body["tool_choice"] == nil {
 		delete(body, "tool_choice")
 	}
-	body = codexGatewayDeepSeekAllowlistedChatCompletionsBody(body)
+	body = codexGatewayDeepSeekFinalizeChatCompletionsBody(body)
 	if ctx.CaptureTrace != nil && ctx.CaptureTrace.manager != nil {
 		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, replayDiag, ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
 			ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, map[string]any{
@@ -201,8 +226,53 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	return CodexGatewayPreparedDeepSeekRequest{
 		Body:           body,
 		ToolNameMap:    toolMapping.NameMap,
+		ToolSchemas:    toolSchemas,
 		ReplayMessages: codexGatewayDeepSeekRawMessages(messages),
 	}, nil
+}
+
+func codexGatewayRawToolSchemas(tools []any) []json.RawMessage {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(tools))
+	for _, tool := range tools {
+		raw, err := json.Marshal(canonicalizeCodexGatewayToolSchema(tool))
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
+}
+
+func codexGatewayToolSchemasToAny(rawSchemas []json.RawMessage) []any {
+	if len(rawSchemas) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(rawSchemas))
+	for _, raw := range rawSchemas {
+		if len(raw) == 0 {
+			continue
+		}
+		var schema any
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			continue
+		}
+		out = append(out, schema)
+	}
+	return out
+}
+
+func codexGatewayDeepSeekShouldRestoreReplayToolContext(req CodexGatewayResponsesCreateRequest) bool {
+	if req.PreviousResponseID == nil || strings.TrimSpace(*req.PreviousResponseID) == "" {
+		return false
+	}
+	items, err := decodeCodexGatewayInputItems(req.Input)
+	if err != nil {
+		return false
+	}
+	return codexGatewayInputHasToolCallOutput(items)
 }
 
 func (d codexGatewayDeepSeekReplayDiagnostics) toCaptureMap() map[string]any {
@@ -274,6 +344,14 @@ func codexGatewayDeepSeekAllowlistedChatCompletionsBody(body map[string]any) map
 		out[key] = value
 	}
 	return out
+}
+
+func codexGatewayDeepSeekFinalizeChatCompletionsBody(body map[string]any) map[string]any {
+	body = codexGatewayDeepSeekAllowlistedChatCompletionsBody(body)
+	if tools, ok := body["tools"]; ok {
+		body["tools"] = canonicalizeCodexGatewayToolSchema(tools)
+	}
+	return body
 }
 
 func codexGatewayDeepSeekRestrictHostedToolMapping(mapping CodexGatewayToolMappingResult) CodexGatewayToolMappingResult {
@@ -844,7 +922,7 @@ func convertCodexGatewayFunctionCallOutputItem(m map[string]any) (map[string]any
 	if callID == "" {
 		return nil, nil, fmt.Errorf("function_call_output requires call_id")
 	}
-	output, err := normalizeCodexGatewayToolOutput(m["output"])
+	output, err := normalizeCodexGatewayDeepSeekToolOutput(m["output"])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1018,6 +1096,639 @@ func normalizeCodexGatewayToolOutput(value any) (string, error) {
 		}
 		return string(b), nil
 	}
+}
+
+func normalizeCodexGatewayDeepSeekToolOutput(value any) (string, error) {
+	switch typed := value.(type) {
+	case nil:
+		return "", nil
+	case string:
+		if parsed, ok := codexGatewayDeepSeekParseStructuredToolOutputString(typed); ok {
+			return normalizeCodexGatewayDeepSeekToolOutput(parsed)
+		}
+		if codexGatewayDeepSeekIsBinaryLikeToolField("", typed) {
+			return codexGatewayDeepSeekMarshalToolOutputSummary(codexGatewayDeepSeekSummarizeBinaryToolField("", typed))
+		}
+		if codexGatewayDeepSeekLooksLikeStandaloneVisualTree(typed) {
+			return codexGatewayDeepSeekMarshalToolOutputSummary(codexGatewayDeepSeekSummarizeAccessibilityTree("tool_output", typed))
+		}
+		return typed, nil
+	default:
+		summarized, changed := codexGatewayDeepSeekSummarizeToolOutputValue("", typed, 0)
+		raw, err := json.Marshal(summarized)
+		if err != nil {
+			return "", err
+		}
+		out := string(raw)
+		if !changed || len(out) <= codexGatewayDeepSeekToolOutputMaxChars {
+			return out, nil
+		}
+		return codexGatewayDeepSeekMarshalToolOutputSummary(map[string]any{
+			"truncated":      true,
+			"original_chars": len(out),
+			"sha256":         codexGatewayDeepSeekTextSHA256(out),
+			"preview":        codexGatewayDeepSeekTruncateString(out, codexGatewayDeepSeekToolOutputStringPreviewChars),
+		})
+	}
+}
+
+func codexGatewayDeepSeekParseStructuredToolOutputString(value string) (any, bool) {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+	first := trimmed[0]
+	if first != '{' && first != '[' {
+		return nil, false
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, false
+	}
+	if !codexGatewayDeepSeekStructuredToolOutputNeedsSummary(parsed) {
+		return nil, false
+	}
+	return parsed, true
+}
+
+func codexGatewayDeepSeekStructuredToolOutputNeedsSummary(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, raw := range typed {
+			if codexGatewayDeepSeekStructuredVisualStateNeedsSummary(key, raw) {
+				return true
+			}
+			if str, ok := raw.(string); ok {
+				if codexGatewayDeepSeekIsBinaryLikeToolField(key, str) || codexGatewayDeepSeekShouldSummarizeToolString(key, str) {
+					return true
+				}
+			}
+			if codexGatewayDeepSeekStructuredToolOutputNeedsSummary(raw) {
+				return true
+			}
+		}
+	case []any:
+		for _, raw := range typed {
+			if codexGatewayDeepSeekStructuredToolOutputNeedsSummary(raw) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexGatewayDeepSeekStructuredVisualStateNeedsSummary(field string, value any) bool {
+	field = strings.ToLower(strings.TrimSpace(field))
+	if field == "" || value == nil {
+		return false
+	}
+	if !codexGatewayDeepSeekIsAccessibilityTreeField(field) &&
+		!codexGatewayDeepSeekIsPageTreeField(field) &&
+		!codexGatewayDeepSeekIsDOMLikeField(field) &&
+		!strings.Contains(field, "html") &&
+		!strings.Contains(field, "page_content") &&
+		!strings.Contains(field, "page_source") &&
+		!strings.Contains(field, "snapshot") {
+		return false
+	}
+	if _, ok := value.(string); ok {
+		return false
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	return len(raw) > codexGatewayDeepSeekToolOutputFieldPreviewChars
+}
+
+func codexGatewayDeepSeekSummarizeToolOutputValue(field string, value any, depth int) (any, bool) {
+	if depth > 8 {
+		return map[string]any{
+			"truncated": true,
+			"reason":    "max_depth",
+		}, true
+	}
+	if summary, ok := codexGatewayDeepSeekSummarizeStructuredVisualState(field, value); ok {
+		return summary, true
+	}
+	switch typed := value.(type) {
+	case nil, bool, float64, float32, int, int64, int32, uint, uint64, uint32:
+		return typed, false
+	case string:
+		if codexGatewayDeepSeekIsBinaryLikeToolField(field, typed) {
+			return codexGatewayDeepSeekSummarizeBinaryToolField(field, typed), true
+		}
+		if codexGatewayDeepSeekIsAccessibilityTreeField(field) && codexGatewayDeepSeekShouldSummarizeToolString(field, typed) {
+			return codexGatewayDeepSeekSummarizeAccessibilityTree(field, typed), true
+		}
+		if codexGatewayDeepSeekShouldSummarizeToolString(field, typed) {
+			return codexGatewayDeepSeekSummarizeToolString(field, typed, codexGatewayDeepSeekToolOutputFieldPreviewChars), true
+		}
+		return typed, false
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		changed := false
+		for key, raw := range typed {
+			summarized, fieldChanged := codexGatewayDeepSeekSummarizeToolOutputValue(key, raw, depth+1)
+			out[key] = summarized
+			changed = changed || fieldChanged
+		}
+		return out, changed
+	case []any:
+		limit := len(typed)
+		truncated := false
+		if field != "" && codexGatewayDeepSeekShouldSummarizeToolString(field, "") && limit > codexGatewayDeepSeekToolOutputMaxArrayItems {
+			limit = codexGatewayDeepSeekToolOutputMaxArrayItems
+			truncated = true
+		}
+		out := make([]any, 0, limit)
+		changed := truncated
+		for i := 0; i < limit; i++ {
+			summarized, itemChanged := codexGatewayDeepSeekSummarizeToolOutputValue(field, typed[i], depth+1)
+			out = append(out, summarized)
+			changed = changed || itemChanged
+		}
+		if truncated {
+			return map[string]any{
+				"items":          out,
+				"truncated":      true,
+				"original_items": len(typed),
+			}, true
+		}
+		return out, changed
+	default:
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprint(typed), false
+		}
+		text := string(raw)
+		if codexGatewayDeepSeekShouldSummarizeToolString(field, text) {
+			return codexGatewayDeepSeekSummarizeToolString(field, text, codexGatewayDeepSeekToolOutputFieldPreviewChars), true
+		}
+		var normalized any
+		if err := json.Unmarshal(raw, &normalized); err == nil {
+			return normalized, false
+		}
+		return text, false
+	}
+}
+
+func codexGatewayDeepSeekShouldSummarizeToolString(field, value string) bool {
+	field = strings.ToLower(strings.TrimSpace(field))
+	if field == "" {
+		return false
+	}
+	if codexGatewayDeepSeekIsAccessibilityTreeField(field) {
+		return len(value) > codexGatewayDeepSeekToolOutputFieldPreviewChars
+	}
+	if codexGatewayDeepSeekIsPageTreeField(field) ||
+		codexGatewayDeepSeekIsDOMLikeField(field) ||
+		strings.Contains(field, "html") ||
+		strings.Contains(field, "page_content") ||
+		strings.Contains(field, "page_source") ||
+		strings.Contains(field, "snapshot") {
+		return len(value) > codexGatewayDeepSeekToolOutputFieldPreviewChars
+	}
+	return false
+}
+
+func codexGatewayDeepSeekSummarizeStructuredVisualState(field string, value any) (any, bool) {
+	field = strings.ToLower(strings.TrimSpace(field))
+	if field == "" || value == nil {
+		return nil, false
+	}
+	isAccessibility := codexGatewayDeepSeekIsAccessibilityTreeField(field)
+	isVisualTree := codexGatewayDeepSeekIsPageTreeField(field) ||
+		codexGatewayDeepSeekIsDOMLikeField(field) ||
+		strings.Contains(field, "html") ||
+		strings.Contains(field, "page_content") ||
+		strings.Contains(field, "page_source") ||
+		strings.Contains(field, "snapshot")
+	if !isAccessibility && !isVisualTree {
+		return nil, false
+	}
+	if _, ok := value.(string); ok {
+		return nil, false
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	text := string(raw)
+	if len(text) <= codexGatewayDeepSeekToolOutputFieldPreviewChars {
+		return nil, false
+	}
+	if lines := codexGatewayDeepSeekStructuredOperableLines(value); len(lines) > 0 {
+		contentClass := "visual_tree"
+		if isAccessibility {
+			contentClass = "accessibility_tree"
+		}
+		return map[string]any{
+			"content_class":   contentClass,
+			"field":           field,
+			"truncated":       true,
+			"original_chars":  len(text),
+			"sha256":          codexGatewayDeepSeekTextSHA256(text),
+			"operable_lines":  lines,
+			"extraction_mode": "structured_fields",
+		}, true
+	}
+	if isAccessibility {
+		return codexGatewayDeepSeekSummarizeAccessibilityTree(field, text), true
+	}
+	return codexGatewayDeepSeekSummarizeVisualTree(field, text), true
+}
+
+func codexGatewayDeepSeekStructuredOperableLines(value any) []string {
+	out := make([]string, 0, 8)
+	seen := make(map[string]struct{}, 8)
+	codexGatewayDeepSeekCollectStructuredOperableLines(value, &out, seen)
+	return out
+}
+
+func codexGatewayDeepSeekCollectStructuredOperableLines(value any, out *[]string, seen map[string]struct{}) {
+	if len(*out) >= 8 {
+		return
+	}
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			codexGatewayDeepSeekCollectStructuredOperableLines(item, out, seen)
+			if len(*out) >= 8 {
+				return
+			}
+		}
+	case map[string]any:
+		if line := codexGatewayDeepSeekStructuredNodeLine(typed); line != "" {
+			if _, ok := seen[line]; !ok {
+				seen[line] = struct{}{}
+				*out = append(*out, line)
+				if len(*out) >= 8 {
+					return
+				}
+			}
+		}
+		for _, key := range []string{"children", "nodes", "items", "elements", "tree"} {
+			if child, ok := typed[key]; ok {
+				codexGatewayDeepSeekCollectStructuredOperableLines(child, out, seen)
+				if len(*out) >= 8 {
+					return
+				}
+			}
+		}
+	}
+}
+
+func codexGatewayDeepSeekStructuredNodeLine(node map[string]any) string {
+	role := firstCodexGatewayToolString(
+		node["role"],
+		node["type"],
+		node["kind"],
+		node["tag"],
+	)
+	name := firstCodexGatewayToolString(
+		node["name"],
+		node["label"],
+		node["title"],
+		node["text"],
+		node["value"],
+		node["placeholder"],
+	)
+	stateParts := make([]string, 0, 4)
+	for _, key := range []string{"enabled", "disabled", "focused", "selected", "checked", "pressed", "visible"} {
+		if state, ok := codexGatewayDeepSeekStructuredBoolState(node, key); ok {
+			stateParts = append(stateParts, fmt.Sprintf("%s=%t", key, state))
+		}
+	}
+	locatorParts := make([]string, 0, 4)
+	for _, key := range []string{"element_index", "elementIndex", "id", "index"} {
+		if value := strings.TrimSpace(firstCodexGatewayToolString(node[key])); value != "" {
+			locatorParts = append(locatorParts, fmt.Sprintf("%s=%s", key, codexGatewayDeepSeekTruncateString(value, 40)))
+		}
+	}
+	if bounds := strings.TrimSpace(codexGatewayDeepSeekStructuredBounds(node)); bounds != "" {
+		locatorParts = append(locatorParts, "bounds="+bounds)
+	}
+	line := strings.TrimSpace(strings.Join([]string{
+		strings.TrimSpace(role),
+		strings.TrimSpace(name),
+		strings.Join(stateParts, " "),
+		strings.Join(locatorParts, " "),
+	}, " "))
+	if line == "" || !codexGatewayDeepSeekLooksOperableAccessibilityLine(line) {
+		return ""
+	}
+	return codexGatewayDeepSeekTruncateString(line, 180)
+}
+
+func codexGatewayDeepSeekStructuredBounds(node map[string]any) string {
+	for _, key := range []string{"bounds", "rect", "frame", "bbox"} {
+		if value, ok := node[key]; ok {
+			if text := strings.TrimSpace(codexGatewayDeepSeekCompactJSONValue(value)); text != "" {
+				return codexGatewayDeepSeekTruncateString(text, 80)
+			}
+		}
+	}
+	x := firstCodexGatewayToolString(node["x"], node["left"])
+	y := firstCodexGatewayToolString(node["y"], node["top"])
+	width := firstCodexGatewayToolString(node["width"], node["w"])
+	height := firstCodexGatewayToolString(node["height"], node["h"])
+	if strings.TrimSpace(x) != "" && strings.TrimSpace(y) != "" {
+		parts := []string{"x=" + strings.TrimSpace(x), "y=" + strings.TrimSpace(y)}
+		if strings.TrimSpace(width) != "" {
+			parts = append(parts, "w="+strings.TrimSpace(width))
+		}
+		if strings.TrimSpace(height) != "" {
+			parts = append(parts, "h="+strings.TrimSpace(height))
+		}
+		return strings.Join(parts, ",")
+	}
+	if center, ok := node["center"]; ok {
+		return codexGatewayDeepSeekTruncateString(strings.TrimSpace(codexGatewayDeepSeekCompactJSONValue(center)), 80)
+	}
+	return ""
+}
+
+func codexGatewayDeepSeekCompactJSONValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	default:
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprint(typed)
+		}
+		return string(raw)
+	}
+}
+
+func codexGatewayDeepSeekStructuredBoolState(node map[string]any, key string) (bool, bool) {
+	raw, ok := node[key]
+	if !ok {
+		return false, false
+	}
+	switch typed := raw.(type) {
+	case bool:
+		return typed, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "yes", "enabled", "selected", "focused", "checked", "pressed", "visible":
+			return true, true
+		case "false", "no", "disabled", "unselected", "unfocused", "unchecked", "hidden":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func codexGatewayDeepSeekIsAccessibilityTreeField(field string) bool {
+	field = strings.ToLower(strings.TrimSpace(field))
+	return strings.Contains(field, "accessibility_tree") ||
+		strings.Contains(field, "accessibilitytree") ||
+		strings.Contains(field, "accessibility_snapshot") ||
+		strings.Contains(field, "accessibilitysnapshot") ||
+		strings.Contains(field, "ax_tree") ||
+		strings.Contains(field, "ui_tree")
+}
+
+func codexGatewayDeepSeekIsPageTreeField(field string) bool {
+	field = strings.ToLower(strings.TrimSpace(field))
+	return strings.Contains(field, "page_tree") ||
+		strings.Contains(field, "pagetree") ||
+		strings.Contains(field, "browser_tree") ||
+		strings.Contains(field, "browsertree") ||
+		strings.Contains(field, "dom_snapshot") ||
+		strings.Contains(field, "domsnapshot") ||
+		strings.Contains(field, "ui_snapshot") ||
+		strings.Contains(field, "uisnapshot")
+}
+
+func codexGatewayDeepSeekIsDOMLikeField(field string) bool {
+	field = strings.ToLower(strings.TrimSpace(field))
+	switch field {
+	case "dom", "html":
+		return true
+	}
+	return strings.Contains(field, "dom_snapshot") ||
+		strings.Contains(field, "domsnapshot") ||
+		strings.Contains(field, "dom_tree") ||
+		strings.Contains(field, "domtree") ||
+		strings.Contains(field, "dom_nodes") ||
+		strings.Contains(field, "domnodes") ||
+		strings.Contains(field, "page_dom") ||
+		strings.Contains(field, "pagedom")
+}
+
+func codexGatewayDeepSeekIsBinaryLikeToolField(field, value string) bool {
+	field = strings.ToLower(strings.TrimSpace(field))
+	if strings.Contains(value, "data:image/") || strings.Contains(value, ";base64,") {
+		return true
+	}
+	if field == "" {
+		return false
+	}
+	return strings.Contains(field, "screenshot") ||
+		strings.Contains(field, "image_base64") ||
+		strings.Contains(field, "base64") ||
+		strings.Contains(field, "image_url")
+}
+
+func codexGatewayDeepSeekLooksLikeStandaloneVisualTree(value string) bool {
+	lines := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	if len(lines) < 3 {
+		return false
+	}
+	operable := 0
+	treeHints := 0
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if codexGatewayDeepSeekLooksOperableAccessibilityLine(line) {
+			operable++
+		}
+		lowered := strings.ToLower(line)
+		if strings.Contains(lowered, "ax") ||
+			strings.Contains(lowered, "role=") ||
+			strings.Contains(lowered, "children") ||
+			strings.Contains(lowered, "bounds") ||
+			strings.Contains(lowered, "element_index") {
+			treeHints++
+		}
+		if operable >= 2 && treeHints >= 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func codexGatewayDeepSeekSummarizeVisualTree(field, value string) map[string]any {
+	out := map[string]any{
+		"content_class":  "visual_tree",
+		"field":          field,
+		"truncated":      true,
+		"original_chars": len(value),
+		"sha256":         codexGatewayDeepSeekTextSHA256(value),
+	}
+	if lines := codexGatewayDeepSeekAccessibilityTreeLines(value); len(lines) > 0 {
+		out["operable_lines"] = lines
+		return out
+	}
+	if preview := codexGatewayDeepSeekAccessibilityPreview(value); preview != "" {
+		out["preview"] = preview
+	}
+	return out
+}
+
+func codexGatewayDeepSeekSummarizeBinaryToolField(field, value string) map[string]any {
+	summary := map[string]any{
+		"content_class":  "binary_or_image",
+		"field":          field,
+		"truncated":      true,
+		"original_chars": len(value),
+		"sha256":         codexGatewayDeepSeekTextSHA256(value),
+	}
+	if strings.HasPrefix(value, "data:image/") {
+		if comma := strings.Index(value, ","); comma > 0 {
+			summary["media_type"] = value[:comma]
+		}
+	}
+	return summary
+}
+
+func codexGatewayDeepSeekSummarizeAccessibilityTree(field, value string) map[string]any {
+	out := map[string]any{
+		"content_class":  "accessibility_tree",
+		"field":          field,
+		"truncated":      true,
+		"original_chars": len(value),
+		"sha256":         codexGatewayDeepSeekTextSHA256(value),
+	}
+	if lines := codexGatewayDeepSeekAccessibilityTreeLines(value); len(lines) > 0 {
+		out["operable_lines"] = lines
+		return out
+	}
+	if preview := codexGatewayDeepSeekAccessibilityPreview(value); preview != "" {
+		out["preview"] = preview
+	}
+	return out
+}
+
+func codexGatewayDeepSeekAccessibilityTreeLines(value string) []string {
+	rawLines := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	if len(rawLines) <= 1 {
+		rawLines = strings.Split(value, "},")
+	}
+	out := make([]string, 0, 8)
+	seen := make(map[string]struct{}, 8)
+	for _, raw := range rawLines {
+		line := strings.TrimSpace(raw)
+		if line == "" || !codexGatewayDeepSeekLooksOperableAccessibilityLine(line) {
+			continue
+		}
+		line = codexGatewayDeepSeekTruncateString(line, 160)
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		out = append(out, line)
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return out
+}
+
+func codexGatewayDeepSeekLooksOperableAccessibilityLine(line string) bool {
+	lowered := strings.ToLower(line)
+	keywords := []string{
+		"button", "checkbox", "radio", "textbox", "text field", "textfield", "input",
+		"menu", "menuitem", "tab", "link", "combobox", "slider", "switch", "option",
+		"selected", "focused", "enabled", "disabled", "error", "warning", "timeout",
+		"按钮", "输入", "菜单", "标签", "链接", "复选", "选中", "聚焦", "禁用", "启用", "错误", "报错", "警告", "超时",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(lowered, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexGatewayDeepSeekAccessibilityPreview(value string) string {
+	lines := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, 12)
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		out = append(out, codexGatewayDeepSeekTruncateString(line, 180))
+		if len(out) >= 12 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return codexGatewayDeepSeekTruncateString(value, codexGatewayDeepSeekToolOutputFieldPreviewChars)
+	}
+	return strings.Join(out, "\n")
+}
+
+func codexGatewayDeepSeekSummarizeToolString(field, value string, previewChars int) map[string]any {
+	return map[string]any{
+		"content_class":  "text",
+		"field":          field,
+		"truncated":      true,
+		"original_chars": len(value),
+		"sha256":         codexGatewayDeepSeekTextSHA256(value),
+		"preview":        codexGatewayDeepSeekTruncateString(value, previewChars),
+	}
+}
+
+func codexGatewayDeepSeekMarshalToolOutputSummary(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	out := string(raw)
+	if len(out) <= codexGatewayDeepSeekToolOutputMaxChars {
+		return out, nil
+	}
+	fallback := map[string]any{
+		"truncated":      true,
+		"original_chars": len(out),
+		"sha256":         codexGatewayDeepSeekTextSHA256(out),
+	}
+	raw, err = json.Marshal(fallback)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func codexGatewayDeepSeekTruncateString(value string, maxChars int) string {
+	if maxChars <= 0 || len(value) <= maxChars {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxChars {
+		return value
+	}
+	return string(runes[:maxChars])
+}
+
+func codexGatewayDeepSeekTextSHA256(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func buildCodexGatewayDeepSeekToolChoice(raw json.RawMessage, toolMapping CodexGatewayToolMappingResult, lookup map[string]CodexGatewayToolNameMapEntry) (any, bool, error) {

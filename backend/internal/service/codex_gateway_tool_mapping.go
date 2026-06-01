@@ -680,25 +680,39 @@ func prepareCodexGatewayToolSchema(schema any, strict bool, cfg CodexGatewayTool
 }
 
 func canonicalizeCodexGatewayToolSchema(value any) any {
+	return canonicalizeCodexGatewayToolSchemaWithContext(value, false)
+}
+
+func canonicalizeCodexGatewayToolSchemaWithContext(value any, propertyContainer bool) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, child := range typed {
-			if key == "required" {
-				if _, ok := child.([]any); ok {
-					out[key] = sortCodexGatewayRequiredSchemaKeys(child)
+			if propertyContainer {
+				if child == nil {
+					out[key] = map[string]any{}
 				} else {
-					out[key] = canonicalizeCodexGatewayToolSchema(child)
+					out[key] = canonicalizeCodexGatewayToolSchemaWithContext(child, false)
 				}
 				continue
 			}
-			out[key] = canonicalizeCodexGatewayToolSchema(child)
+			if key == "properties" {
+				out[key] = canonicalizeCodexGatewayToolSchemaWithContext(child, true)
+				continue
+			}
+			if key == "required" {
+				if required, ok := normalizeCodexGatewayRequiredSchemaKeys(child); ok {
+					out[key] = required
+				}
+				continue
+			}
+			out[key] = canonicalizeCodexGatewayToolSchemaWithContext(child, false)
 		}
 		return out
 	case []any:
 		out := make([]any, 0, len(typed))
 		for _, child := range typed {
-			out = append(out, canonicalizeCodexGatewayToolSchema(child))
+			out = append(out, canonicalizeCodexGatewayToolSchemaWithContext(child, false))
 		}
 		return out
 	default:
@@ -706,12 +720,29 @@ func canonicalizeCodexGatewayToolSchema(value any) any {
 	}
 }
 
-func sortCodexGatewayRequiredSchemaKeys(value any) any {
-	items, ok := value.([]any)
-	if !ok {
-		return value
+func normalizeCodexGatewayRequiredSchemaKeys(value any) ([]any, bool) {
+	var out []any
+	switch items := value.(type) {
+	case []any:
+		out = make([]any, 0, len(items))
+		for _, item := range items {
+			if key, ok := item.(string); ok && strings.TrimSpace(key) != "" {
+				out = append(out, key)
+			}
+		}
+	case []string:
+		out = make([]any, 0, len(items))
+		for _, item := range items {
+			if strings.TrimSpace(item) != "" {
+				out = append(out, item)
+			}
+		}
+	default:
+		return nil, false
 	}
-	out := append([]any(nil), items...)
+	if len(out) == 0 {
+		return nil, false
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		left, leftOK := out[i].(string)
 		right, rightOK := out[j].(string)
@@ -720,7 +751,7 @@ func sortCodexGatewayRequiredSchemaKeys(value any) any {
 		}
 		return left < right
 	})
-	return out
+	return out, true
 }
 
 func codexGatewayDeepSeekAdaptToolMapping(mapping CodexGatewayToolMappingResult, cfg CodexGatewayToolMappingConfig) CodexGatewayToolMappingResult {

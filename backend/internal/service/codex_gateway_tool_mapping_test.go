@@ -171,6 +171,84 @@ func TestCodexGatewayToolMapping_CanonicalizesPropertyNamedRequired(t *testing.T
 	require.Equal(t, []any{"a", "b"}, requiredProperty["required"])
 }
 
+func TestCodexGatewayToolMapping_DropsNullRequiredSchemaKeys(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"function","name":"get_goal","parameters":{
+			"type":"object",
+			"properties":{
+				"filter":{
+					"type":"object",
+					"properties":{"status":{"type":"string"}},
+					"required":null
+				}
+			},
+			"required":null
+		}}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+
+	function := result.Tools[0]["function"].(map[string]any)
+	params := function["parameters"].(map[string]any)
+	require.NotContains(t, params, "required")
+	filter := params["properties"].(map[string]any)["filter"].(map[string]any)
+	require.NotContains(t, filter, "required")
+	require.NotContains(t, mustMarshalJSON(t, result.Tools[0]), `"required":null`)
+}
+
+func TestCodexGatewayToolMapping_DropsInvalidRequiredSchemaKeywords(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"function","name":"get_goal","parameters":{
+			"type":"object",
+			"$defs":{
+				"GoalFilter":{
+					"type":"object",
+					"properties":{"status":{"type":"string"}},
+					"required":null
+				}
+			},
+			"properties":{
+				"filter":{"$ref":"#/$defs/GoalFilter"},
+				"items":{"type":"array","items":{"type":"object","required":"bad"}},
+				"required":null
+			},
+			"anyOf":[{"type":"object","required":null}],
+			"required":null
+		}}
+	]`)
+
+	result, err := BuildCodexGatewayToolMapping(raw, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+
+	body := mustMarshalJSON(t, result.Tools[0])
+	require.NotContains(t, body, `"required":null`)
+	require.NotContains(t, body, `"required":"bad"`)
+
+	params := result.Tools[0]["function"].(map[string]any)["parameters"].(map[string]any)
+	properties := params["properties"].(map[string]any)
+	require.Equal(t, map[string]any{}, properties["required"])
+}
+
+func TestCodexGatewayToolMapping_CanonicalizesRequiredStringSlices(t *testing.T) {
+	raw := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"b": map[string]any{"type": "string"},
+			"a": map[string]any{"type": "string"},
+		},
+		"required": []string{"b", "a"},
+		"items": map[string]any{
+			"type":     "object",
+			"required": []any{"z", nil, "a", float64(1)},
+		},
+	}
+
+	canonical := canonicalizeCodexGatewayToolSchema(raw).(map[string]any)
+	require.Equal(t, []any{"a", "b"}, canonical["required"])
+	require.Equal(t, []any{"a", "z"}, canonical["items"].(map[string]any)["required"])
+}
+
 func TestCodexGatewayToolMapping_CustomFormatBecomesInputSchema(t *testing.T) {
 	raw := json.RawMessage(`[
 		{

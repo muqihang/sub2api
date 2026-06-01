@@ -76,6 +76,9 @@ func (m *CodexGatewayCaptureManager) writeSessionReport(trace *CodexGatewayTrace
 			record["cache_miss_attribution"] = missAttribution
 		}
 	}
+	if deepSeekCache := codexGatewayDeepSeekSessionDiagnostics(requestDiag); len(deepSeekCache) > 0 {
+		record["deepseek_cache"] = deepSeekCache
+	}
 	if trace.Meta.ThreadID != "" {
 		record["thread_id_hash"] = m.redact.CorrelationHash("thread_id", trace.Meta.ThreadID)
 	}
@@ -122,6 +125,9 @@ func codexGatewayCaptureCacheEfficiency(cacheUsage map[string]any, provider any)
 	diagnostics := make([]string, 0, 2)
 	if inputTokens > 1000 && hitTokens == 0 {
 		diagnostics = append(diagnostics, "cache_cold_or_prefix_changed")
+	}
+	if inputTokens >= 50000 && hitTokens == 0 && strings.EqualFold(strings.TrimSpace(codexGatewayCaptureStringValue(provider)), string(CodexGatewayProviderDeepSeek)) {
+		diagnostics = append(diagnostics, "large_deepseek_cold_prompt")
 	}
 	if inputTokens > 1000 && hitRate < 0.5 {
 		diagnostics = append(diagnostics, "low_cache_hit_rate")

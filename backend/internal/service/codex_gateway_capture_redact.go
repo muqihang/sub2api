@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -111,6 +112,9 @@ func (r *CodexGatewayCaptureRedactor) redactJSONValue(key string, value any) any
 	if r.shouldRedactJSONKey(key) {
 		return r.redactValue
 	}
+	if r.shouldSummarizeRawJSONKey(key) {
+		return r.summarizeRawJSONValue(key, value)
+	}
 	switch typed := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
@@ -125,9 +129,94 @@ func (r *CodexGatewayCaptureRedactor) redactJSONValue(key string, value any) any
 		}
 		return out
 	case string:
+		if parsed, ok := r.redactStructuredJSONString(key, typed); ok {
+			return parsed
+		}
 		return r.RedactString(typed)
 	default:
 		return value
+	}
+}
+
+func (r *CodexGatewayCaptureRedactor) redactStructuredJSONString(key, value string) (any, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, false
+	}
+	first := trimmed[0]
+	if first != '{' && first != '[' {
+		return nil, false
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return nil, false
+	}
+	if !r.rawJSONValueNeedsSummary(key, parsed) {
+		return nil, false
+	}
+	return r.redactJSONValue(key, parsed), true
+}
+
+func (r *CodexGatewayCaptureRedactor) rawJSONValueNeedsSummary(key string, value any) bool {
+	if r.shouldSummarizeRawJSONKey(key) {
+		return true
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for childKey, childValue := range typed {
+			if r.rawJSONValueNeedsSummary(childKey, childValue) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if r.rawJSONValueNeedsSummary("", item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (r *CodexGatewayCaptureRedactor) shouldSummarizeRawJSONKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	return strings.Contains(key, "screenshot") ||
+		strings.Contains(key, "image_url") ||
+		strings.Contains(key, "image_base64") ||
+		strings.Contains(key, "base64") ||
+		strings.Contains(key, "accessibility_tree") ||
+		strings.Contains(key, "accessibilitytree") ||
+		strings.Contains(key, "accessibility_snapshot") ||
+		strings.Contains(key, "accessibilitysnapshot") ||
+		strings.Contains(key, "ax_tree") ||
+		strings.Contains(key, "ui_tree") ||
+		strings.Contains(key, "page_tree") ||
+		strings.Contains(key, "pagetree") ||
+		strings.Contains(key, "browser_tree") ||
+		strings.Contains(key, "browsertree") ||
+		strings.Contains(key, "dom_snapshot") ||
+		strings.Contains(key, "domsnapshot") ||
+		strings.Contains(key, "ui_snapshot") ||
+		strings.Contains(key, "uisnapshot") ||
+		strings.Contains(key, "page_source") ||
+		strings.Contains(key, "page_content")
+}
+
+func (r *CodexGatewayCaptureRedactor) summarizeRawJSONValue(key string, value any) any {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return map[string]any{
+			"redacted": true,
+			"field":    strings.TrimSpace(key),
+		}
+	}
+	return map[string]any{
+		"redacted": true,
+		"field":    strings.TrimSpace(key),
+		"hash":     r.HashText(string(raw)),
 	}
 }
 

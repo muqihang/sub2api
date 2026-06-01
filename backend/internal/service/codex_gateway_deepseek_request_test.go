@@ -20,6 +20,13 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func mustMarshalRawMessage(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	require.NoError(t, err)
+	return raw
+}
+
 func TestCodexGatewayDeepSeekRequest_BuildsMessagesToolsAndUserID(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		Model:        "deepseek-v4-pro",
@@ -361,7 +368,7 @@ func TestCodexGatewayDeepSeekRequest_StrictBetaIsOptInAndOnlySimpleSchemasQualif
 	require.NotContains(t, complexTools[1].(map[string]any)["function"].(map[string]any), "strict")
 }
 
-func TestCodexGatewayDeepSeekRequestWithVisionProxy_RewritesImageToHostedVisionText(t *testing.T) {
+func TestCodexGatewayDeepSeekRequestWithVisionProxy_SkipsPlainInputImages(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
 		Input: json.RawMessage(`[
@@ -373,27 +380,20 @@ func TestCodexGatewayDeepSeekRequestWithVisionProxy_RewritesImageToHostedVisionT
 					{"type":"input_image","image_url":"data:image/png;base64,AAAA"}
 				]
 			}
-		]`),
+			]`),
 	}
+	called := false
 	cfg := CodexGatewayDeepSeekRequestConfig{
 		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
-			require.Equal(t, "data:image/png;base64,AAAA", imageURL)
+			called = true
 			return "这是一张终端截图，主要内容是目录树。", nil
 		},
 	}
 
-	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, cfg)
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, nil, CodexGatewayDeepSeekRequestContext{}, "deepseek-v4-pro", cfg)
 	require.NoError(t, err)
-	require.JSONEq(t, `[
-		{
-			"type":"message",
-			"role":"user",
-			"content":[
-				{"type":"input_text","text":"请看这张图"},
-				{"type":"input_text","text":"[hosted_image_vision]\n这是一张终端截图，主要内容是目录树。"}
-			]
-		}
-	]`, string(rewritten.Input))
+	require.False(t, called)
+	require.JSONEq(t, string(req.Input), string(rewritten.Input))
 }
 
 func TestCodexGatewayDeepSeekRequestWithVisionProxy_SkipsRequestsWithoutImages(t *testing.T) {
@@ -417,7 +417,7 @@ func TestCodexGatewayDeepSeekRequestWithVisionProxy_SkipsRequestsWithoutImages(t
 		},
 	}
 
-	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, cfg)
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, nil, CodexGatewayDeepSeekRequestContext{}, "deepseek-v4-pro", cfg)
 	require.NoError(t, err)
 	require.False(t, called)
 	require.JSONEq(t, string(req.Input), string(rewritten.Input))
@@ -449,7 +449,7 @@ func TestCodexGatewayDeepSeekRequestWithVisionProxy_FallsBackToPlaceholderOnVisi
 		},
 	}
 
-	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, cfg)
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, nil, CodexGatewayDeepSeekRequestContext{}, "deepseek-v4-pro", cfg)
 	require.NoError(t, err)
 	prepared, err := BuildCodexGatewayDeepSeekRequest(model, rewritten, nil, CodexGatewayDeepSeekRequestContext{}, cfg)
 	require.NoError(t, err)
@@ -1250,6 +1250,7 @@ func TestCodexGatewayDeepSeekPersistState_AllowsOrdinaryAssistantTurns(t *testin
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1280,6 +1281,7 @@ func TestCodexGatewayDeepSeekPersistState_SkipsEmptyAssistantTurns(t *testing.T)
 		"",
 		false,
 		false,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -1803,6 +1805,567 @@ func TestCodexGatewayDeepSeekRequest_DropsStaleToolChoiceWhenReplayRequestHasNoT
 	require.Equal(t, "custom__edit", gjson.GetBytes(raw, "messages.0.tool_calls.0.function.name").String())
 }
 
+func TestCodexGatewayDeepSeekRequest_RestoresReplayToolSchemasWhenCurrentRequestHasNoTools(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_computer",
+			SessionKey:    "session_1",
+			IsolationKey:  "user_1",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "",
+		AssistantContentPresent: true,
+		ReasoningContent:        "need to click",
+		ReasoningContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{
+			{ID: "call_click", Type: CodexGatewayToolKindNamespace, Alias: "mcp__computer_use__click", Name: "click", Arguments: `{"x":1,"y":2}`},
+		},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"mcp__computer_use__click": {Alias: "mcp__computer_use__click", Kind: CodexGatewayToolKindNamespace, NamespacePath: "mcp__computer_use__", Name: "click"},
+		},
+		ToolSchemas: []json.RawMessage{
+			json.RawMessage(`{"type":"function","function":{"name":"mcp__computer_use__click","description":"click","parameters":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}}}`),
+		},
+	}))
+
+	req := CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_computer"),
+		Input: json.RawMessage(`[
+			{"type":"function_call_output","call_id":"call_click","output":"clicked"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "mcp__computer_use__click", gjson.GetBytes(raw, "tools.0.function.name").String())
+	require.Equal(t, "x", gjson.GetBytes(raw, "tools.0.function.parameters.required.0").String())
+	require.Equal(t, "y", gjson.GetBytes(raw, "tools.0.function.parameters.required.1").String())
+}
+
+func TestCodexGatewayDeepSeekRequest_DoesNotRestoreReplayToolSchemasForFreshRequests(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_previous",
+			SessionKey:    "session_1",
+			IsolationKey:  "user_1",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContent:        "",
+		AssistantContentPresent: true,
+		ReasoningContent:        "need to click",
+		ReasoningContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{
+			{ID: "call_click", Type: CodexGatewayToolKindNamespace, Alias: "mcp__computer_use__click", Name: "click", Arguments: `{"x":1,"y":2}`},
+		},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"mcp__computer_use__click": {Alias: "mcp__computer_use__click", Kind: CodexGatewayToolKindNamespace, NamespacePath: "mcp__computer_use__", Name: "click"},
+		},
+		ToolSchemas: []json.RawMessage{
+			json.RawMessage(`{"type":"function","function":{"name":"mcp__computer_use__click","description":"click","parameters":{"type":"object"}}}`),
+		},
+	}))
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"fresh request without tools"}]}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "tools").Exists())
+}
+
+func TestCodexGatewayDeepSeekStateReplayMessages_DoesNotAccumulateFullHistoryForToolLoops(t *testing.T) {
+	largeHistory := json.RawMessage(`{"role":"user","content":"task: click the Run button\n` + strings.Repeat("x", 20000) + `"}`)
+	toolCalls := []CodexGatewayStoredToolCall{
+		{ID: "call_click", Type: CodexGatewayToolKindNamespace, Alias: "mcp__computer_use__click", Name: "click", Arguments: `{"x":1,"y":2}`},
+	}
+	toolNameMap := map[string]CodexGatewayToolNameMapEntry{
+		"mcp__computer_use__click": {Alias: "mcp__computer_use__click", Kind: CodexGatewayToolKindNamespace, NamespacePath: "mcp__computer_use__", Name: "click"},
+	}
+
+	replay := codexGatewayDeepSeekStateReplayMessages(
+		[]json.RawMessage{largeHistory},
+		"",
+		true,
+		"need to click",
+		true,
+		false,
+		toolCalls,
+		toolNameMap,
+	)
+
+	require.Len(t, replay, 2)
+	require.Contains(t, string(replay[0]), `"role":"user"`)
+	require.Contains(t, string(replay[0]), "task: click the Run button")
+	require.Less(t, len(replay[0]), 3000)
+	require.NotContains(t, string(replay[0]), strings.Repeat("x", 2048))
+	require.Contains(t, string(replay[1]), `"tool_calls"`)
+	require.Contains(t, string(replay[1]), `"mcp__computer_use__click"`)
+}
+
+func TestCodexGatewayDeepSeekRequest_SummarizesLargeComputerUseToolOutput(t *testing.T) {
+	largeScreenshot := "data:image/png;base64," + strings.Repeat("A", 20000)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"Codex\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":{"screenshot":%q,"accessibility_tree":%q,"status":"ok"}}
+		]`, largeScreenshot, strings.Repeat("node ", 5000))),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, largeScreenshot)
+	require.NotContains(t, toolContent, strings.Repeat("node ", 128))
+	require.Contains(t, toolContent, "truncated")
+	require.Less(t, len(toolContent), 4096)
+}
+
+func TestCodexGatewayDeepSeekRequest_SummarizesPageTreeVariants(t *testing.T) {
+	pageTree := strings.Repeat(`role=button name="Continue" enabled
+role=textbox name="Search"
+node node node node node node node node node node
+`, 200)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_page","name":"mcp__browser__snapshot","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_page","output":{"page_tree":%q,"accessibilitySnapshot":%q,"domSnapshot":%q,"status":"ok"}}
+		]`, pageTree, pageTree, pageTree)),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__browser__","tools":[
+				{"type":"function","name":"snapshot","parameters":{"type":"object"}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, strings.Repeat("node ", 32))
+	require.Contains(t, toolContent, "truncated")
+	require.Contains(t, toolContent, "sha256")
+	require.Less(t, len(toolContent), 4096)
+}
+
+func TestCodexGatewayDeepSeekRequest_SummarizesStructuredComputerUseState(t *testing.T) {
+	nodes := make([]any, 0, 80)
+	for i := 0; i < 80; i++ {
+		nodes = append(nodes, map[string]any{
+			"role":          "button",
+			"name":          fmt.Sprintf("Run %02d", i),
+			"enabled":       true,
+			"element_index": fmt.Sprintf("el-%02d", i),
+			"bounds":        map[string]any{"x": i, "y": i + 1, "width": 120, "height": 32},
+			"description":   strings.Repeat("node ", 80),
+		})
+	}
+	output := map[string]any{
+		"accessibility_tree": nodes,
+		"domSnapshot": map[string]any{
+			"nodes": nodes,
+		},
+		"status": "ok",
+	}
+	outputText, err := json.Marshal(output)
+	require.NoError(t, err)
+	input, err := json.Marshal([]any{
+		map[string]any{
+			"type":      "function_call",
+			"call_id":   "call_state",
+			"name":      "mcp__computer_use__get_app_state",
+			"arguments": `{"app":"Codex"}`,
+		},
+		map[string]any{
+			"type":    "function_call_output",
+			"call_id": "call_state",
+			"output":  string(outputText),
+		},
+	})
+	require.NoError(t, err)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: input,
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, strings.Repeat("node ", 16))
+	require.Contains(t, toolContent, "accessibility_tree")
+	require.Contains(t, toolContent, "visual_tree")
+	require.Contains(t, toolContent, "operable_lines")
+	require.Contains(t, toolContent, "Run 00")
+	require.Contains(t, toolContent, "element_index=el-00")
+	require.Contains(t, toolContent, "bounds=")
+	require.Less(t, len(toolContent), 4096)
+}
+
+func TestCodexGatewayDeepSeekRequest_SummarizesStandaloneAccessibilityTreeOutput(t *testing.T) {
+	tree := strings.Repeat(`AXWindow "Codex" bounds={0,0,900,700}
+AXButton "Run" enabled element_index=run
+AXTextField "Prompt" focused bounds={20,60,500,40}
+AXButton "Stop" disabled
+`, 80)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"Codex\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":%q}
+		]`, tree)),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, strings.Repeat(`AXWindow "Codex"`, 2))
+	require.Contains(t, toolContent, "accessibility_tree")
+	require.Contains(t, toolContent, "operable_lines")
+	require.Contains(t, toolContent, "AXButton")
+	require.Less(t, len(toolContent), 4096)
+}
+
+func TestCodexGatewayDeepSeekRequest_SummarizesShortStandaloneAccessibilityTreeOutput(t *testing.T) {
+	tree := `AXWindow "Codex" bounds={0,0,900,700}
+AXButton "Run" enabled element_index=run
+AXTextField "Prompt" focused bounds={20,60,500,40}
+AXButton "Stop" disabled`
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"Codex\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":%q}
+		]`, tree)),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotEqual(t, tree, toolContent)
+	require.Contains(t, toolContent, "accessibility_tree")
+	require.Contains(t, toolContent, "operable_lines")
+	require.Contains(t, toolContent, "element_index=run")
+}
+
+func TestCodexGatewayDeepSeekRequest_DoesNotSummarizeOrdinaryMultilineTextOutput(t *testing.T) {
+	output := strings.Repeat("build log line without UI tree markers\n", 20)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_log","name":"read_log","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_log","output":%q}
+		]`, output)),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"read_log","parameters":{"type":"object"}}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.Equal(t, output, toolContent)
+	require.NotContains(t, toolContent, "accessibility_tree")
+}
+
+func TestCodexGatewayDeepSeekRequest_DoesNotSummarizeOrdinaryDomainFields(t *testing.T) {
+	domainItems := make([]any, 0, 32)
+	for i := 0; i < 32; i++ {
+		domainItems = append(domainItems, map[string]any{
+			"domain": fmt.Sprintf("service-%02d.example.com", i),
+			"random": strings.Repeat("value ", 40),
+		})
+	}
+	output := map[string]any{
+		"domain_results": domainItems,
+	}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{"type": "function_call", "call_id": "call_domains", "name": "domain_lookup", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "call_domains", "output": output},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"domain_lookup","parameters":{"type":"object"}}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, "visual_tree")
+	require.Contains(t, toolContent, "service-31.example.com")
+}
+
+func TestCodexGatewayDeepSeekRequestWithVisionProxy_RewritesComputerUseOutputForNativeOperation(t *testing.T) {
+	largeScreenshot := "data:image/png;base64," + strings.Repeat("B", 20000)
+	accessibilityTree := strings.Repeat(`window "Codex"
+button "Run" enabled focused
+textbox "Prompt" value ""
+button "Stop" disabled
+staticText "timeout: sidecar timed out after 5000ms"
+node node node node node node node node node node
+`, 200)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"Codex\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":{"screenshot":%q,"accessibility_tree":%q,"status":"ok"}}
+		]`, largeScreenshot, accessibilityTree)),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	visionCalls := 0
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			visionCalls++
+			require.Equal(t, largeScreenshot, imageURL)
+			return "Codex app window is visible. The prompt box is empty. Run is focused and clickable; Stop is disabled. A timeout error is visible.", nil
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, nil, CodexGatewayDeepSeekRequestContext{}, "deepseek-v4-pro", cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, visionCalls)
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, rewritten, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, cfg)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, largeScreenshot)
+	require.NotContains(t, toolContent, strings.Repeat("node ", 32))
+	require.Contains(t, toolContent, "computer_screenshot")
+	require.Contains(t, toolContent, "Codex app window is visible")
+	require.Contains(t, toolContent, "operable_lines")
+	require.Contains(t, toolContent, `button \"Run\" enabled focused`)
+	require.Contains(t, toolContent, `textbox \"Prompt\" value`)
+	require.Contains(t, toolContent, "timeout: sidecar timed out")
+	require.Less(t, len(toolContent), 4096)
+}
+
+func TestCodexGatewayDeepSeekRequestWithVisionProxy_SkipsNonComputerUseToolOutputImages(t *testing.T) {
+	imageURL := "data:image/png;base64," + strings.Repeat("C", 256)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_asset","name":"asset_screenshot_lookup","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_asset","output":{"image_url":%q,"status":"ok"}}
+		]`, imageURL)),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"asset_lookup","parameters":{"type":"object"}}
+		]`),
+	}
+	called := false
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			called = true
+			return "unexpected", nil
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, nil, CodexGatewayDeepSeekRequestContext{}, "deepseek-v4-pro", cfg)
+	require.NoError(t, err)
+	require.False(t, called)
+	require.JSONEq(t, string(req.Input), string(rewritten.Input))
+}
+
+func TestCodexGatewayDeepSeekRequestWithVisionProxy_RewritesPreviousComputerUseOutputFromState(t *testing.T) {
+	largeScreenshot := "data:image/png;base64," + strings.Repeat("D", 20000)
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_state",
+			SessionKey:    "session_1",
+			IsolationKey:  "user_1",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+		AssistantContentPresent: true,
+		ReasoningContent:        "need to inspect Codex",
+		ReasoningContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{
+			{ID: "call_state", Type: CodexGatewayToolKindNamespace, Alias: "mcp__computer_use__get_app_state", Name: "get_app_state", Arguments: `{"app":"Codex"}`},
+		},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"mcp__computer_use__get_app_state": {Alias: "mcp__computer_use__get_app_state", Kind: CodexGatewayToolKindNamespace, NamespacePath: "mcp__computer_use__", Name: "get_app_state"},
+		},
+	}))
+	req := CodexGatewayResponsesCreateRequest{
+		Model:              "deepseek-v4-pro",
+		PreviousResponseID: stringPtr("resp_state"),
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call_output","call_id":"call_state","output":{"screenshot":%q,"status":"ok"}}
+		]`, largeScreenshot)),
+	}
+	visionCalls := 0
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			visionCalls++
+			require.Equal(t, largeScreenshot, imageURL)
+			return "Codex window after click", nil
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_1",
+		IsolationKey: "user_1",
+	}, "deepseek-v4-pro", cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, visionCalls)
+	require.NotContains(t, string(rewritten.Input), largeScreenshot)
+	require.Contains(t, string(rewritten.Input), "Codex window after click")
+}
+
 func TestCodexGatewayDeepSeekRequest_ReplaysLegacyCustomToolCallWithoutCurrentTools(t *testing.T) {
 	model := CodexGatewayModel{
 		Slug:          "deepseek-v4-pro",
@@ -2110,6 +2673,16 @@ func TestCodexGatewayDeepSeekRequest_StripsResponsesOnlyFieldsFromPreparedBody(t
 		Input: json.RawMessage(`[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
 		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"get_goal","parameters":{
+				"type":"object",
+				"properties":{
+					"filter":{"type":"object","properties":{"status":{"type":"string"}},"required":null},
+					"required":null
+				},
+				"required":null
+			}}
+		]`),
 		Include:           json.RawMessage(`["reasoning.encrypted_content"]`),
 		Store:             &store,
 		ParallelToolCalls: &parallel,
@@ -2136,6 +2709,9 @@ func TestCodexGatewayDeepSeekRequest_StripsResponsesOnlyFieldsFromPreparedBody(t
 	require.NotContains(t, prepared.Body, "prompt_cache_key")
 	require.Equal(t, "deepseek-v4-pro", prepared.Body["model"])
 	require.Equal(t, "user", prepared.Body["messages"].([]any)[1].(map[string]any)["role"])
+	body := mustMarshalJSON(t, prepared.Body)
+	require.NotContains(t, body, `"required":null`)
+	require.Equal(t, map[string]any{}, gjson.Get(body, `tools.0.function.parameters.properties.required`).Value())
 }
 
 func TestCodexGatewayDeepSeekStreamRequest_StripsResponsesOnlyFieldsFromUpstreamBody(t *testing.T) {
@@ -2144,6 +2720,18 @@ func TestCodexGatewayDeepSeekStreamRequest_StripsResponsesOnlyFieldsFromUpstream
 		Model: "deepseek-v4-pro",
 		Input: json.RawMessage(`[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"get_goal","parameters":{
+				"type":"object",
+				"properties":{
+					"filter":{"type":"object","properties":{"status":{"type":"string"}},"required":null},
+					"required":null
+				},
+				"$defs":{"GoalFilter":{"type":"object","required":"bad"}},
+				"anyOf":[{"type":"object","required":null}],
+				"required":null
+			}}
 		]`),
 		Include: json.RawMessage(`["reasoning.encrypted_content"]`),
 		Store:   &store,
@@ -2161,6 +2749,9 @@ func TestCodexGatewayDeepSeekStreamRequest_StripsResponsesOnlyFieldsFromUpstream
 		require.False(t, gjson.GetBytes(body, "store").Exists())
 		require.True(t, gjson.GetBytes(body, "stream").Bool())
 		require.True(t, gjson.GetBytes(body, "stream_options.include_usage").Bool())
+		require.NotContains(t, string(body), `"required":null`)
+		require.NotContains(t, string(body), `"required":"bad"`)
+		require.Equal(t, map[string]any{}, gjson.GetBytes(body, `tools.0.function.parameters.properties.required`).Value())
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, strings.Join([]string{

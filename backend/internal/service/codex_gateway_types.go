@@ -186,6 +186,11 @@ type CodexGatewayToolMappingResult struct {
 	originalToAlias        map[string]string
 }
 
+type CodexGatewayStoredToolContext struct {
+	ToolNameMap map[string]CodexGatewayToolNameMapEntry
+	ToolSchemas []json.RawMessage
+}
+
 type CodexGatewayResponseState struct {
 	Key                         CodexGatewayStateLookupKey              `json:"key"`
 	AssistantContent            string                                  `json:"assistant_content,omitempty"`
@@ -196,6 +201,7 @@ type CodexGatewayResponseState struct {
 	AnthropicThinkingBlocks     []json.RawMessage                       `json:"anthropic_thinking_blocks,omitempty"`
 	ToolCalls                   []CodexGatewayStoredToolCall            `json:"tool_calls,omitempty"`
 	ToolNameMap                 map[string]CodexGatewayToolNameMapEntry `json:"tool_name_map,omitempty"`
+	ToolSchemas                 []json.RawMessage                       `json:"tool_schemas,omitempty"`
 	ReplayMessages              []json.RawMessage                       `json:"replay_messages,omitempty"`
 }
 
@@ -240,6 +246,7 @@ type CodexGatewayDeepSeekRequestConfig struct {
 type CodexGatewayPreparedDeepSeekRequest struct {
 	Body           map[string]any
 	ToolNameMap    map[string]CodexGatewayToolNameMapEntry
+	ToolSchemas    []json.RawMessage
 	ReplayMessages []json.RawMessage
 }
 

@@ -470,7 +470,7 @@ func (e *CodexGatewayProviderExecutor) executeOpenAIHostedImageVisionWithModel(c
 				"content": []any{
 					map[string]any{
 						"type": "input_text",
-						"text": "You are a vision preprocessing layer for another model. Describe the image concisely in plain text. Include the main subject, visible text, UI/code clues, and any uncertainty. Do not answer the user's task. Do not mention policies or your own process.",
+						"text": "You are a vision preprocessing layer for another model that will operate a computer UI. Describe the screenshot concisely in plain text. Prioritize window/app identity, visible text, actionable controls, focused/selected/disabled states, coordinates or relative positions when obvious, errors, and uncertainty. Do not answer the user's task. Do not mention policies or your own process.",
 					},
 					map[string]any{
 						"type":      "input_image",

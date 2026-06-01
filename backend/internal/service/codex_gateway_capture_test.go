@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,44 @@ func TestCodexGatewayCaptureRedactHeadersAndJSON(t *testing.T) {
 	require.Equal(t, "[REDACTED]", nested["authorization"])
 	require.NotContains(t, nested["text"], "sk-inline-token")
 	require.Contains(t, nested["text"], "Bearer [REDACTED]")
+}
+
+func TestCodexGatewayCaptureRedactsRawToolVisualPayloads(t *testing.T) {
+	redactor := NewCodexGatewayCaptureRedactor(config.GatewayCodexCaptureConfig{
+		HashKeyFile: t.TempDir() + "/capture.key",
+	})
+	stringOutput, err := json.Marshal(map[string]any{
+		"screenshot":         "data:image/png;base64," + strings.Repeat("B", 128),
+		"accessibility_tree": strings.Repeat(`textbox "Prompt" focused `, 64),
+	})
+	require.NoError(t, err)
+	payload := map[string]any{
+		"output": map[string]any{
+			"screenshot":         "data:image/png;base64," + strings.Repeat("A", 128),
+			"accessibility_tree": strings.Repeat(`button "Run" enabled `, 64),
+			"page_tree":          strings.Repeat(`role=button name="Continue" `, 64),
+			"safe":               "ok",
+		},
+		"string_output": string(stringOutput),
+	}
+
+	redacted := redactor.RedactJSONValue(payload).(map[string]any)
+	output := redacted["output"].(map[string]any)
+	for _, key := range []string{"screenshot", "accessibility_tree", "page_tree"} {
+		field := output[key].(map[string]any)
+		require.Equal(t, true, field["redacted"])
+		require.Contains(t, field["hash"], "hmac-sha256:")
+	}
+	stringOutputRedacted := redacted["string_output"].(map[string]any)
+	require.Equal(t, true, stringOutputRedacted["screenshot"].(map[string]any)["redacted"])
+	require.Equal(t, true, stringOutputRedacted["accessibility_tree"].(map[string]any)["redacted"])
+	require.Equal(t, "ok", output["safe"])
+	encoded, err := json.Marshal(redacted)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "data:image/png;base64")
+	require.NotContains(t, string(encoded), `button \"Run\" enabled`)
+	require.NotContains(t, string(encoded), `role=button name=\"Continue\"`)
+	require.NotContains(t, string(encoded), `textbox \"Prompt\" focused`)
 }
 
 func TestCodexGatewayCaptureHashUsesLocalKeyedHMACByDefault(t *testing.T) {
@@ -801,9 +840,9 @@ func TestCodexGatewayCaptureV2DeepSeekCacheMissAttribution(t *testing.T) {
 		manager.RecordProviderResult(trace, CodexGatewayProviderResult{
 			UpstreamModel: "deepseek-v4-pro",
 			Usage: CodexGatewayProviderUsage{
-				InputTokens:          1200,
+				InputTokens:          75000,
 				OutputTokens:         24,
-				TotalTokens:          1224,
+				TotalTokens:          75024,
 				CacheReadInputTokens: 0,
 			},
 		})
@@ -829,6 +868,7 @@ func TestCodexGatewayCaptureV2DeepSeekCacheMissAttribution(t *testing.T) {
 	report1 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_not_warmed", "trace_report.json"))
 	require.Contains(t, fmtAny(report1["request_diagnostics"]), "stable_serialization")
 	require.Contains(t, fmtAny(report1["cache_efficiency"]), "request_not_warmed")
+	require.Contains(t, fmtAny(report1["cache_efficiency"]), "no_prior_scope_sample")
 
 	report2 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_repeat", "trace_report.json"))
 	require.Contains(t, fmtAny(report2["cache_efficiency"]), "upstream_best_effort_or_unknown")
@@ -844,6 +884,13 @@ func TestCodexGatewayCaptureV2DeepSeekCacheMissAttribution(t *testing.T) {
 	report5 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_other_workspace", "trace_report.json"))
 	require.NotContains(t, fmtAny(report5["cache_efficiency"]), "tool_schema_changed")
 	require.NotContains(t, fmtAny(report5["cache_efficiency"]), "user_id_changed")
+
+	sessionReport, err := os.ReadFile(filepath.Join(dateDir, "session_report.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(sessionReport), `"deepseek_cache"`)
+	require.Contains(t, string(sessionReport), `"request_prefix_hash"`)
+	require.Contains(t, string(sessionReport), `"tool_schema_hash"`)
+	require.Contains(t, string(sessionReport), `"large_deepseek_cold_prompt"`)
 }
 
 func TestCodexGatewayCaptureV2DeepSeekRecordsFullPrefixDiagnostics(t *testing.T) {
