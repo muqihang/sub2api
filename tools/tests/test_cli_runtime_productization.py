@@ -173,6 +173,23 @@ class CliRuntimeProductizationTest(unittest.TestCase):
             self.assertIn('ALLOW_REAL_ANTHROPIC_CANARY', start)
             self.assertIn('localhost-preflight', start)
 
+    def test_write_runtime_artifacts_writes_server_staging_mock_runbook(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            manifest = build_runtime_manifest(mode='localhost-preflight', run_dir=out, raw_dir=out / 'raw')
+            paths = write_runtime_artifacts(manifest, out)
+
+            runbook = paths['server_mock_runbook'].read_text(encoding='utf-8')
+            self.assertIn('服务器 staging/mock smoke', runbook)
+            self.assertIn('ALLOW_REAL_ANTHROPIC_CANARY=0', runbook)
+            self.assertIn('ALLOW_REAL_ANTHROPIC_PRODUCTION=0', runbook)
+            self.assertIn('http://127.0.0.1:19082', runbook)
+            self.assertIn('SUB2API_SESSION_BUDGET_EXPORT_PATH', runbook)
+            self.assertIn('不要发真实 Anthropic 请求', runbook)
+            self.assertIn('不要 docker compose down -v', runbook)
+            self.assertIn('不要删除数据目录', runbook)
+            self.assertIn('python3 tools/safe_deliverable_sensitive_scan.py', runbook)
+
     def test_production_session_defaults_to_observe_only_budget_and_disables_raw_capture(self):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)

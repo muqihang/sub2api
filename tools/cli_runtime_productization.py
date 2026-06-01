@@ -315,11 +315,84 @@ def write_runtime_artifacts(manifest: Mapping[str, Any], output_dir: Path) -> di
     manifest_path = output_dir / 'runtime-manifest.json'
     config_path = output_dir / 'cc-gateway.yaml'
     start_path = output_dir / 'start-runtime.sh'
+    server_mock_runbook_path = output_dir / 'server-staging-mock-smoke.md'
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
     config_path.write_text(render_cc_gateway_config(manifest), encoding='utf-8')
     start_path.write_text(_render_start_script(manifest), encoding='utf-8')
+    server_mock_runbook_path.write_text(_render_server_staging_mock_runbook(manifest), encoding='utf-8')
     start_path.chmod(start_path.stat().st_mode | stat.S_IXUSR)
-    return {'manifest': manifest_path, 'cc_config': config_path, 'start_script': start_path}
+    return {
+        'manifest': manifest_path,
+        'cc_config': config_path,
+        'start_script': start_path,
+        'server_mock_runbook': server_mock_runbook_path,
+    }
+
+
+def _render_server_staging_mock_runbook(manifest: Mapping[str, Any]) -> str:
+    validate_runtime_manifest(manifest)
+    mode = str(manifest['mode'])
+    upstream_url = str(manifest['cc_gateway']['upstream']['url'])
+    run_dir = str(manifest['run_dir'])
+    raw_dir = str(manifest.get('raw_dir') or '')
+    if mode == 'localhost-preflight':
+        real_env = '''export ALLOW_REAL_ANTHROPIC_CANARY=0
+export ALLOW_REAL_ANTHROPIC_PRODUCTION=0'''
+    elif mode == 'real-canary':
+        real_env = 'export ALLOW_REAL_ANTHROPIC_CANARY=1'
+    else:
+        real_env = 'export ALLOW_REAL_ANTHROPIC_PRODUCTION=1'
+    return f'''# 服务器 staging/mock smoke runbook
+
+用途：在服务器上验证当前构建和 CC Gateway 配置的 localhost/mock 链路。默认不要发真实 Anthropic 请求，不要修改生产账号状态。
+
+## 安全边界
+
+- 不要发真实 Anthropic 请求。
+- 不要 docker compose down -v。
+- 不要删除数据目录。
+- 不要覆盖生产数据库、Redis、raw/capture/log 目录。
+- 如果需要上传源码到服务器构建，构建完成后只删除临时源码目录，保留运行数据和日志。
+
+## 本次模式
+
+- runtime mode: `{mode}`
+- CC Gateway upstream: `{upstream_url}`
+- run dir: `{run_dir}`
+- raw dir: `{raw_dir}`
+
+## 必设环境
+
+```bash
+{real_env}
+export SUB2API_SESSION_BUDGET_EXPORT_PATH=/opt/sub2api/runtime/session-budget/staging-mock.jsonl
+```
+
+## 服务器执行顺序
+
+1. 确认服务来源是当前 worktree/提交，不使用 main 根目录作为 source of truth。
+2. 构建 Sub2API 镜像或二进制，保留数据卷和日志目录。
+3. 构建 CC Gateway，并使用本目录生成的 `cc-gateway.yaml`。
+4. 启动 localhost mock upstream，监听 `http://127.0.0.1:19082`。
+5. 启动 CC Gateway localhost-preflight，确认 `ALLOW_REAL_ANTHROPIC_CANARY=0`、`ALLOW_REAL_ANTHROPIC_PRODUCTION=0`。
+6. 发送一条最小 mock 请求，只允许命中 localhost mock。
+7. 检查 CC Gateway raw capture 是否生成安全摘要，且没有 raw token、raw body、raw prompt、raw CCH、账号 UUID、代理密码。
+8. 检查 `SUB2API_SESSION_BUDGET_EXPORT_PATH` 是否产出 JSONL，且只包含安全桶、引用和决策。
+9. 对 staging artifact 运行：
+
+```bash
+python3 tools/safe_deliverable_sensitive_scan.py --max-findings 100
+```
+
+## 通过标准
+
+- localhost mock 收到且只收到预期请求。
+- 没有任何真实 Anthropic/Claude 域名出站。
+- CC Gateway 返回成功或 fail-closed 的安全错误。
+- Session Budget JSONL 存在且 scan-clean。
+- raw capture 只有安全摘要，无原文、无 token、无 CCH、无代理凭据。
+- 服务器数据目录和历史日志仍保留。
+'''
 
 
 def _render_start_script(manifest: Mapping[str, Any]) -> str:
