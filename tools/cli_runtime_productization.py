@@ -316,16 +316,59 @@ def write_runtime_artifacts(manifest: Mapping[str, Any], output_dir: Path) -> di
     config_path = output_dir / 'cc-gateway.yaml'
     start_path = output_dir / 'start-runtime.sh'
     server_mock_runbook_path = output_dir / 'server-staging-mock-smoke.md'
+    server_mock_checklist_path = output_dir / 'server-staging-mock-smoke.checklist.json'
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
     config_path.write_text(render_cc_gateway_config(manifest), encoding='utf-8')
     start_path.write_text(_render_start_script(manifest), encoding='utf-8')
     server_mock_runbook_path.write_text(_render_server_staging_mock_runbook(manifest), encoding='utf-8')
+    server_mock_checklist_path.write_text(
+        json.dumps(_server_staging_mock_checklist(manifest), ensure_ascii=False, indent=2, sort_keys=True),
+        encoding='utf-8',
+    )
     start_path.chmod(start_path.stat().st_mode | stat.S_IXUSR)
     return {
         'manifest': manifest_path,
         'cc_config': config_path,
         'start_script': start_path,
         'server_mock_runbook': server_mock_runbook_path,
+        'server_mock_checklist': server_mock_checklist_path,
+    }
+
+
+def _server_staging_mock_checklist(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    validate_runtime_manifest(manifest)
+    mode = str(manifest['mode'])
+    upstream_url = str(manifest['cc_gateway']['upstream']['url'])
+    return {
+        'schema_version': 1,
+        'mode': mode,
+        'upstream_url': upstream_url,
+        'allow_real_anthropic_canary': mode == 'real-canary',
+        'allow_real_anthropic_production': mode == 'production-session',
+        'session_budget_export_path': '/opt/sub2api/runtime/session-budget/staging-mock.jsonl',
+        'required_gates': [
+            'source_is_current_worktree_head',
+            'preserve_data_dirs',
+            'preserve_raw_capture_logs',
+            'localhost_mock_only',
+            'cc_gateway_seen',
+            'raw_capture_summary_present',
+            'session_budget_jsonl_present',
+            'sensitive_scan_clean',
+        ],
+        'forbidden_actions': [
+            'real_anthropic_request',
+            'docker_compose_down_v',
+            'delete_data_dirs',
+            'delete_raw_capture_logs',
+            'overwrite_database_or_redis',
+            'production_account_state_mutation',
+        ],
+        'expected_mock_upstream': 'http://127.0.0.1:19082',
+        'notes': [
+            'Use this checklist before any server staging/mock smoke.',
+            'Do not use it as approval for real directed healthcheck or production deploy.',
+        ],
     }
 
 

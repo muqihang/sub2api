@@ -190,6 +190,28 @@ class CliRuntimeProductizationTest(unittest.TestCase):
             self.assertIn('不要删除数据目录', runbook)
             self.assertIn('python3 tools/safe_deliverable_sensitive_scan.py', runbook)
 
+
+    def test_write_runtime_artifacts_writes_machine_readable_server_mock_checklist(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            manifest = build_runtime_manifest(mode='localhost-preflight', run_dir=out, raw_dir=out / 'raw')
+            paths = write_runtime_artifacts(manifest, out)
+
+            checklist = json.loads(paths['server_mock_checklist'].read_text(encoding='utf-8'))
+            self.assertEqual(checklist['schema_version'], 1)
+            self.assertEqual(checklist['mode'], 'localhost-preflight')
+            self.assertEqual(checklist['upstream_url'], 'http://127.0.0.1:19082')
+            self.assertFalse(checklist['allow_real_anthropic_canary'])
+            self.assertFalse(checklist['allow_real_anthropic_production'])
+            self.assertIn('preserve_data_dirs', checklist['required_gates'])
+            self.assertIn('localhost_mock_only', checklist['required_gates'])
+            self.assertIn('session_budget_jsonl_present', checklist['required_gates'])
+            self.assertIn('sensitive_scan_clean', checklist['required_gates'])
+            self.assertIn('real_anthropic_request', checklist['forbidden_actions'])
+            self.assertIn('docker_compose_down_v', checklist['forbidden_actions'])
+            self.assertIn('delete_data_dirs', checklist['forbidden_actions'])
+            self.assertEqual(checklist['session_budget_export_path'], '/opt/sub2api/runtime/session-budget/staging-mock.jsonl')
+
     def test_production_session_defaults_to_observe_only_budget_and_disables_raw_capture(self):
         with tempfile.TemporaryDirectory() as td:
             out = Path(td)
