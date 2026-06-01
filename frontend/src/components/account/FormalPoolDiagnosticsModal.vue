@@ -74,6 +74,22 @@
           </div>
         </section>
 
+        <section class="space-y-3" data-test="healthcheck-safety-classification">
+          <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
+            {{ t('admin.accounts.formalPoolDiagnostics.healthcheckSafety.title') }}
+          </h5>
+          <div class="grid grid-cols-1 gap-2 lg:grid-cols-2">
+            <div
+              v-for="notice in healthcheckSafetyNotices"
+              :key="notice.key"
+              :class="['rounded-lg border p-3 text-sm', healthcheckSafetyClass(notice.severity)]"
+            >
+              <p class="font-semibold">{{ t(`admin.accounts.formalPoolDiagnostics.healthcheckSafety.${notice.key}.title`) }}</p>
+              <p class="mt-1">{{ t(`admin.accounts.formalPoolDiagnostics.healthcheckSafety.${notice.key}.advice`) }}</p>
+            </div>
+          </div>
+        </section>
+
         <section class="space-y-3">
           <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
             {{ t('admin.accounts.formalPoolDiagnostics.checks') }}
@@ -161,8 +177,17 @@
             </ol>
           </div>
 
-          <p v-if="canDirectedHealthcheck" class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200" data-test="directed-healthcheck-warning">
-            {{ t('admin.accounts.formalPoolDiagnostics.directedHealthcheckWarning') }}
+          <p
+            v-if="canDirectedHealthcheck"
+            :class="[
+              'rounded-lg border p-3 text-sm',
+              hasHealthcheckHighRisk
+                ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100'
+                : 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200',
+            ]"
+            data-test="directed-healthcheck-warning"
+          >
+            {{ t(hasHealthcheckHighRisk ? 'admin.accounts.formalPoolDiagnostics.healthcheckHighRiskWarning' : 'admin.accounts.formalPoolDiagnostics.directedHealthcheckWarning') }}
           </p>
 
           <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -435,9 +460,29 @@ const valueOrDash = (value: unknown) => {
   return text ? safeDisplayText(text) : '-'
 }
 
+const localizedBucketOrCode = (namespace: 'statusBuckets' | 'failureCodes' | 'failureSources' | 'healthcheckStatus', value: unknown) => {
+  const raw = String(value ?? '').trim()
+  if (!raw) return '-'
+  const normalized = normalizeI18nKey(raw)
+  const translated = normalized ? translatedOrEmpty(`admin.accounts.formalPoolDiagnostics.${namespace}.${normalized}`) : ''
+  return translated || safeDisplayText(raw)
+}
+
+const diagnosticText = (value: unknown) => normalizeI18nKey(value)
+
 const evidenceItems = computed(() => {
   const d = currentDiagnostics.value
   return [
+    { key: 'healthcheck_status', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.healthcheckStatus'), value: localizedBucketOrCode('healthcheckStatus', d?.healthcheck_status) },
+    { key: 'failure_code', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.failureCode'), value: localizedBucketOrCode('failureCodes', d?.failure_code) },
+    { key: 'failure_source', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.failureSource'), value: localizedBucketOrCode('failureSources', d?.failure_source) },
+    { key: 'quarantine_reason', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.quarantineReason'), value: localizedBucketOrCode('failureCodes', d?.quarantine_reason) },
+    { key: 'healthcheck_safe_error_code', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.safeErrorCode'), value: localizedBucketOrCode('failureCodes', d?.healthcheck_safe_error_code) },
+    { key: 'healthcheck_safe_error_bucket', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.safeErrorBucket'), value: localizedBucketOrCode('failureCodes', d?.healthcheck_safe_error_bucket) },
+    { key: 'rate_limit_error_class', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rateLimitErrorClass'), value: localizedBucketOrCode('failureCodes', d?.formal_pool_rate_limit_error_class) },
+    { key: 'rate_limit_window', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rateLimitWindow'), value: localizedBucketOrCode('failureCodes', d?.formal_pool_rate_limit_window) },
+    { key: 'rate_limit_action', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rateLimitAction'), value: localizedBucketOrCode('failureCodes', d?.formal_pool_rate_limit_action) },
+    { key: 'rate_limit_reset_bucket', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.rateLimitResetBucket'), value: localizedBucketOrCode('failureCodes', d?.formal_pool_rate_limit_reset_bucket) },
     { key: 'cc_gateway_seen', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.ccGatewaySeen'), value: formatBoolean(d?.cc_gateway_seen) },
     { key: 'cc_gateway_runtime_registered', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeRegistered'), value: formatBoolean(d?.cc_gateway_runtime_registered) },
     { key: 'cc_gateway_runtime_registered_at', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeRegisteredAt'), value: valueOrDash(d?.cc_gateway_runtime_registered_at) },
@@ -447,11 +492,64 @@ const evidenceItems = computed(() => {
     { key: 'fallback_detected', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.fallbackDetected'), value: formatBoolean(d?.fallback_detected) },
     { key: 'proxy_mismatch', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.proxyMismatch'), value: formatBoolean(d?.proxy_mismatch) },
     { key: 'risk_text_detected', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.riskTextDetected'), value: formatBoolean(d?.risk_text_detected) },
-    { key: 'status_code_bucket', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.statusBucket'), value: valueOrDash(d?.status_code_bucket) },
+    { key: 'status_code_bucket', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.statusBucket'), value: localizedBucketOrCode('statusBuckets', d?.status_code_bucket) },
     { key: 'risk_event_ref', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.riskEventRef'), value: valueOrDash(d?.risk_event_ref) },
     { key: 'healthcheck_evidence_persisted', label: t('admin.accounts.formalPoolDiagnostics.evidenceLabels.evidencePersisted'), value: formatBoolean(d?.healthcheck_evidence_persisted) },
   ]
 })
+
+type HealthcheckSafetyNotice = {
+  key: 'status429' | 'rateLimitWindow' | 'auth' | 'hardRisk' | 'proxy' | 'gateway' | 'none'
+  severity: 'info' | 'warning' | 'danger'
+}
+
+const healthcheckSafetyNotices = computed<HealthcheckSafetyNotice[]>(() => {
+  const d = currentDiagnostics.value
+  const signals = new Set<string>()
+  const addText = (value: unknown) => {
+    const text = diagnosticText(value)
+    if (text) signals.add(text)
+  }
+  addText(d?.status_code_bucket)
+  addText(d?.failure_code)
+  addText(d?.failure_source)
+  addText(d?.healthcheck_status)
+  addText(d?.healthcheck_safe_error_code)
+  addText(d?.healthcheck_safe_error_bucket)
+  addText(d?.formal_pool_rate_limit_error_class)
+  addText(d?.formal_pool_rate_limit_window)
+  addText(d?.formal_pool_rate_limit_action)
+  addText(d?.quarantine_reason)
+  if (d?.status_code_bucket === 'status_429') signals.add('status_429')
+  if (d?.status_code_bucket === 'status_401') signals.add('status_401')
+  if (d?.status_code_bucket === 'status_403') signals.add('status_403')
+  if (d?.cc_gateway_seen === false) signals.add('cc_gateway_not_seen')
+  if (d?.raw_capture_present === false) signals.add('raw_capture_missing')
+  if (d?.fallback_detected) signals.add('fallback')
+  if (d?.proxy_mismatch) signals.add('proxy')
+  if (d?.risk_text_detected) signals.add('risk')
+
+  const has = (...needles: string[]) => {
+    const joined = Array.from(signals).join(' ')
+    return needles.some(needle => joined.includes(needle))
+  }
+
+  const notices: HealthcheckSafetyNotice[] = []
+  const add = (key: HealthcheckSafetyNotice['key'], severity: HealthcheckSafetyNotice['severity']) => {
+    if (!notices.some(notice => notice.key === key)) notices.push({ key, severity })
+  }
+
+  if (has('status_429', 'too_many_requests', 'rate_limit')) add('status429', 'warning')
+  if (has('5h', '7d', 'both', 'long_context_usage_credits', 'usage_credits')) add('rateLimitWindow', 'warning')
+  if (has('status_401', 'invalid_grant', 'refresh_token_invalid', 'refresh_required', 'invalid_auth')) add('auth', 'danger')
+  if (has('status_403', 'forbidden', 'hold', 'risk', 'kyc', 'unusual_activity', 'account_hold')) add('hardRisk', 'danger')
+  if (has('proxy', 'egress_proxy_failure', 'proxy_mismatch')) add('proxy', 'warning')
+  if (has('raw_capture_missing', 'cc_gateway_not_seen', 'fallback', 'missing_account_identity', 'missing_egress_bucket', 'verifier', 'sign_strip')) add('gateway', 'warning')
+  if (!notices.length) add('none', 'info')
+  return notices
+})
+
+const hasHealthcheckHighRisk = computed(() => healthcheckSafetyNotices.value.some(notice => notice.severity !== 'info'))
 
 const parsedSwapProxyId = computed(() => {
   const id = Number(swapProxyId.value)
@@ -471,6 +569,13 @@ const actionClass = (severity?: string) => {
     case 'danger': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
     case 'warning': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
     default: return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+  }
+}
+const healthcheckSafetyClass = (severity: HealthcheckSafetyNotice['severity']) => {
+  switch (severity) {
+    case 'danger': return 'border-red-200 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200'
+    case 'warning': return 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200'
+    default: return 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200'
   }
 }
 const actionLabel = (action: FormalPoolRecommendedAction) => {
@@ -553,7 +658,10 @@ const runAccountAction = async (action: 'runtime-register' | 'healthcheck' | 'st
   if (action === 'runtime-register') {
     await runWithBusy(action, () => runtimeRegister(account.id))
   } else if (action === 'healthcheck') {
-    if (!window.confirm(t('admin.accounts.formalPoolDiagnostics.directedHealthcheckConfirm'))) return
+    const confirmKey = hasHealthcheckHighRisk.value
+      ? 'admin.accounts.formalPoolDiagnostics.directedHealthcheckConfirmHighRisk'
+      : 'admin.accounts.formalPoolDiagnostics.directedHealthcheckConfirm'
+    if (!window.confirm(t(confirmKey))) return
     await runWithBusy(action, () => healthcheck(account.id))
   } else if (action === 'promote-production') {
     await runWithBusy(action, () => promoteProduction(account.id))

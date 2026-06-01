@@ -72,13 +72,47 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.actions.promoteProduction': '进入生产',
     'admin.accounts.formalPoolDiagnostics.actions.repairToken': '替换 Setup Token 登录态',
     'admin.accounts.formalPoolDiagnostics.actions.runtimeRegister': '运行时注册/映射',
-    'admin.accounts.formalPoolDiagnostics.actions.healthcheck': '定向健康检查',
+    'admin.accounts.formalPoolDiagnostics.actions.healthcheck': '确认后执行定向健康检查',
     'admin.accounts.formalPoolDiagnostics.actions.proxySwap': '更换出口代理',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.title': '健康检查安全分类',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.status429.title': '429 / 上游限流',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.status429.advice': '不要反复点击健康检查；等待 5h/7d/long-context 窗口恢复或换到已验证账号。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.rateLimitWindow.title': '用量窗口限流',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.rateLimitWindow.advice': '先查看 5h/7d/long-context usage credits 的 reset 时间；窗口恢复前不要再发真实请求。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.auth.title': '认证失败',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.auth.advice': '401 先 refresh-only 一次；invalid_grant/refresh 失败后替换登录态或重新 OAuth 授权。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.hardRisk.title': '硬风险/封禁信号',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.hardRisk.advice': '保持隔离，先处理 hold/risk/KYC/403；不要 refresh loop 或重复健康检查。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.proxy.title': '代理或链路证据异常',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.proxy.advice': '先更换出口代理并重新 runtime-register，再考虑一次确认后的健康检查。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.gateway.title': 'CC Gateway 证据缺失',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.gateway.advice': '先修复 runtime 映射、raw capture 或 fallback 问题；证据完整前不要进入预热。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.none.title': '未发现高风险健康检查失败桶',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.none.advice': '仅在需要准入或排障时点击；production 健康账号继续观测即可。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckHighRiskWarning': '当前诊断包含高风险/限流信号。健康检查会发起真实上游请求；请先处理上方建议，确需排障时再确认执行。',
     'admin.accounts.formalPoolDiagnostics.noRawTokenWarning': 'Secrets are scrubbed.',
     'admin.accounts.formalPoolDiagnostics.noRawTokenWarningSetupToken': 'ST tokens are scrubbed.',
     'admin.accounts.formalPoolDiagnostics.startWarmingBlockedRuntime': 'Blocked until runtime registered',
     'admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeRegisteredAt': 'Runtime registered at',
     'admin.accounts.formalPoolDiagnostics.evidenceLabels.runtimeEvidenceComplete': '运行时证据完整',
+    'admin.accounts.formalPoolDiagnostics.evidenceLabels.healthcheckStatus': '健康检查状态',
+    'admin.accounts.formalPoolDiagnostics.evidenceLabels.failureCode': '失败分类',
+    'admin.accounts.formalPoolDiagnostics.evidenceLabels.failureSource': '失败来源',
+    'admin.accounts.formalPoolDiagnostics.evidenceLabels.quarantineReason': '隔离原因',
+    'admin.accounts.formalPoolDiagnostics.statusBuckets.status_429': '429 / 上游限流',
+    'admin.accounts.formalPoolDiagnostics.statusBuckets.status_401': '401 / 认证失败',
+    'admin.accounts.formalPoolDiagnostics.statusBuckets.status_403': '403 / 禁止访问或风控',
+    'admin.accounts.formalPoolDiagnostics.healthcheckStatus.quarantined': '健康检查隔离',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.status_429': '429 / 上游限流',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.5h': '5h 用量窗口已满',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.7d': '7d 用量窗口已满',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.both': '5h 与 7d 窗口均已满',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.long_context_usage_credits': 'Long context usage credits 已满',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.raw_capture_missing': '缺少 raw capture 安全证据',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.cc_gateway_not_seen': '未看到 CC Gateway 证据',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.fallback': '检测到 fallback',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.hold': '账号 hold 风险',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.risk': '风险文本/风控命中',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.refresh_only': '刷新登录凭证',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.runtime_register': '运行时注册/映射',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.healthcheck': '定向健康检查',
@@ -99,6 +133,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.oauthRecovery.stepWarming': '4. 证据完整后进入预热。',
     'admin.accounts.formalPoolDiagnostics.directedHealthcheckWarning': '定向健康检查会发起一次极小真实上游请求；必须管理员确认后才点击。',
     'admin.accounts.formalPoolDiagnostics.directedHealthcheckConfirm': '确认继续？此操作会发起一次极小真实上游请求。',
+    'admin.accounts.formalPoolDiagnostics.directedHealthcheckConfirmHighRisk': '当前存在高风险/限流信号。确认仍要发起一次真实上游请求？',
     'admin.accounts.formalPoolDiagnostics.failureOriginDescriptions.local_gate': 'Local lifecycle gate blocked scheduling. Click runtime register first if runtime evidence is missing.',
     'admin.accounts.formalPoolDiagnostics.failureOriginDescriptions.cc_gateway_control_plane': 'CC Gateway has not confirmed runtime registration. Click runtime register, then directed healthcheck.',
     'admin.accounts.formalPoolDiagnostics.failureOriginDescriptions.upstream': 'The upstream provider rejected the directed check. Repair credentials or reauthorize, then directed healthcheck.',
@@ -476,7 +511,7 @@ describe('FormalPoolDiagnosticsModal', () => {
 
     expect(wrapper.get('[data-test="formal-pool-stepper"]').text()).toContain('已导入，待刷新')
     expect(wrapper.text()).toContain('已完成运行时注册，待健康检查')
-    expect(wrapper.text()).toContain('定向健康检查')
+    expect(wrapper.text()).toContain('确认后执行定向健康检查')
     expect(wrapper.text()).toContain('会发起一次极小真实上游请求')
 
     await wrapper.get('[data-test="directed-healthcheck-button"]').trigger('click')
@@ -484,6 +519,70 @@ describe('FormalPoolDiagnosticsModal', () => {
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('会发起一次极小真实上游请求'))
     expect(healthcheck).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
+  })
+
+  it('classifies 429/rate-limit diagnostics and warns before real healthcheck requests', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      onboarding_stage: 'runtime_registered',
+      failure_origin: 'upstream',
+      failure_code: 'long_context_usage_credits',
+      failure_source: 'rate_limit_service',
+      healthcheck_status: 'quarantined',
+      status_code_bucket: 'status_429',
+      quarantine_reason: '5h',
+      checks: [{ name: 'healthcheck_evidence_persisted', status: 'warn', message: 'latest healthcheck evidence is required before warming' }],
+      recommended_actions: [{ key: 'healthcheck', label: 'Run directed healthcheck', severity: 'info' }],
+    }))
+    const wrapper = mountModal(baseAccount({ onboarding_stage: 'runtime_registered' }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('健康检查安全分类')
+    expect(wrapper.text()).toContain('429 / 上游限流')
+    expect(wrapper.text()).toContain('用量窗口限流')
+    expect(wrapper.text()).toContain('Long context usage credits 已满')
+    expect(wrapper.text()).toContain('5h 用量窗口已满')
+    expect(wrapper.text()).toContain('不要反复点击健康检查')
+    expect(wrapper.text()).toContain('窗口恢复前不要再发真实请求')
+    expect(wrapper.text()).toContain('当前诊断包含高风险/限流信号')
+    expect(wrapper.get('[data-test="directed-healthcheck-button"]').text()).toContain('确认后执行定向健康检查')
+    expect(wrapper.text()).not.toContain('long_context_usage_credits')
+    expect(wrapper.text()).not.toContain('status_429')
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValueOnce(false)
+    await wrapper.get('[data-test="directed-healthcheck-button"]').trigger('click')
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('高风险/限流信号'))
+    expect(healthcheck).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+
+  it('classifies unsafe healthcheck evidence buckets before recommending another healthcheck', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      onboarding_stage: 'runtime_registered',
+      failure_origin: 'cc_gateway_control_plane',
+      failure_code: 'raw_capture_missing',
+      failure_source: 'formal_pool_healthcheck',
+      healthcheck_status: 'failed',
+      status_code_bucket: 'status_403',
+      cc_gateway_seen: false,
+      raw_capture_present: false,
+      fallback_detected: true,
+      proxy_mismatch: true,
+      risk_text_detected: true,
+      quarantine_reason: 'hold',
+      recommended_actions: [{ key: 'healthcheck', label: 'Run directed healthcheck', severity: 'info' }],
+    }))
+    const wrapper = mountModal(baseAccount({ onboarding_stage: 'runtime_registered' }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('硬风险/封禁信号')
+    expect(wrapper.text()).toContain('代理或链路证据异常')
+    expect(wrapper.text()).toContain('CC Gateway 证据缺失')
+    expect(wrapper.text()).toContain('缺少 raw capture 安全证据')
+    expect(wrapper.text()).toContain('账号 hold 风险')
+    expect(wrapper.text()).toContain('保持隔离')
+    expect(wrapper.text()).toContain('先更换出口代理')
+    expect(wrapper.text()).toContain('先修复 runtime 映射')
+    expect(wrapper.text()).not.toContain('raw_capture_missing')
   })
 
   it('does not show primary repair or directed healthcheck controls for healthy production monitor action', async () => {

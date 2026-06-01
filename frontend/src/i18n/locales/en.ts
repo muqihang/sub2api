@@ -2824,15 +2824,17 @@ export default {
         noRawTokenWarning: 'Secrets are not echoed in the UI; errors are scrubbed again before rendering.',
         noRawTokenWarningSetupToken: 'ST tokens are not echoed in the UI or saved raw; errors are scrubbed again before rendering.',
         setupTokenSafetyCopy: 'The sk-ant-sid session is used only to exchange for a new inference token; it is never echoed or saved raw.',
-        directedHealthcheckWarning: 'Directed healthcheck sends one tiny real upstream request through this account. Click only after administrator confirmation.',
+        directedHealthcheckWarning: 'Directed healthcheck sends one tiny real upstream request through this account. Use it only for onboarding or troubleshooting.',
+        healthcheckHighRiskWarning: 'Current diagnostics include high-risk or rate-limit signals. Healthcheck sends a real upstream request; handle the guidance above first, then confirm only if troubleshooting requires it.',
         directedHealthcheckConfirm: 'Continue? This will send one tiny real upstream request.',
+        directedHealthcheckConfirmHighRisk: 'High-risk or rate-limit signals are present. Still send one real upstream request?',
         replacementGuidance: 'If token repair fails, replace the account; replacement must also change the egress proxy and repeat full onboarding.',
         proxySwapSafetyCopy: 'After proxy swap, full runtime registration and healthcheck evidence are still required before warming. Do not bypass the warming gate or jump to production.',
         actions: {
           refresh: 'Refresh diagnostics',
           repairToken: 'Repair ST token',
           runtimeRegister: 'Runtime register',
-          healthcheck: 'Directed healthcheck',
+          healthcheck: 'Confirm and run directed healthcheck',
           startWarming: 'Start warming',
           promoteProduction: 'Promote production',
           proxySwap: 'Swap egress proxy'
@@ -2852,6 +2854,37 @@ export default {
           proxy: 'Proxy evidence is invalid or mismatched. First swap proxy and revalidate, then repeat runtime register and directed healthcheck.',
           token_exchange: 'Credential exchange failed. Setup-token accounts should repair ST token; OAuth accounts should refresh-only or reauthorize first.',
           unknown: 'Failure origin is unknown. First refresh diagnostics, then follow the latest recommended action.'
+        },
+        healthcheckSafety: {
+          title: 'Healthcheck safety classification',
+          status429: {
+            title: '429 / upstream rate limit',
+            advice: 'Do not repeatedly click healthcheck; wait for the 5h/7d/long-context window to recover or switch to a verified account.'
+          },
+          rateLimitWindow: {
+            title: 'Usage-window rate limit',
+            advice: 'Check the 5h/7d/long-context usage credits reset time first; do not send another real request until the window recovers.'
+          },
+          auth: {
+            title: 'Authentication failure',
+            advice: 'For 401, run refresh-only once; after invalid_grant or refresh failure, replace the login state or reauthorize OAuth.'
+          },
+          hardRisk: {
+            title: 'Hard risk / hold signal',
+            advice: 'Keep the account quarantined and handle hold/risk/KYC/403 first; do not refresh-loop or repeat healthcheck.'
+          },
+          proxy: {
+            title: 'Proxy or route evidence issue',
+            advice: 'Swap the egress proxy and rerun runtime-register before considering one confirmed healthcheck.'
+          },
+          gateway: {
+            title: 'CC Gateway evidence missing',
+            advice: 'Repair runtime mapping, raw capture, or fallback evidence first; do not start warming until evidence is complete.'
+          },
+          none: {
+            title: 'No high-risk healthcheck failure bucket detected',
+            advice: 'Click only for onboarding or troubleshooting; healthy production accounts should stay on monitor-only.'
+          }
         },
         checkNames: {
           account: 'Account existence',
@@ -2882,6 +2915,16 @@ export default {
           unknown: 'Unknown'
         },
         evidenceLabels: {
+          healthcheckStatus: 'Healthcheck status',
+          failureCode: 'Failure classification',
+          failureSource: 'Failure source',
+          quarantineReason: 'Quarantine reason',
+          safeErrorCode: 'Healthcheck safe error code',
+          safeErrorBucket: 'Healthcheck safe error bucket',
+          rateLimitErrorClass: '429 classification',
+          rateLimitWindow: '429 usage window',
+          rateLimitAction: '429 handling action',
+          rateLimitResetBucket: '429 reset-time bucket',
           ccGatewaySeen: 'CC Gateway seen',
           runtimeRegistered: 'Runtime registered',
           runtimeRegisteredAt: 'Runtime registered at',
@@ -2894,6 +2937,76 @@ export default {
           statusBucket: 'Status bucket',
           riskEventRef: 'Risk event ref',
           evidencePersisted: 'Healthcheck evidence persisted'
+        },
+        statusBuckets: {
+          status_2xx: '2xx / healthcheck succeeded',
+          status_401: '401 / authentication failed',
+          status_403: '403 / forbidden or risk control',
+          status_429: '429 / upstream rate limit',
+          status_4xx: '4xx / upstream client error',
+          status_5xx: '5xx / upstream or gateway error',
+          status_unknown: 'Unknown status bucket'
+        },
+        failureSources: {
+          formal_pool_healthcheck: 'Formal Pool directed healthcheck',
+          rate_limit_service: 'Rate-limit / usage-window service',
+          cc_gateway_runtime_register: 'CC Gateway runtime registration',
+          cc_gateway_control_plane: 'CC Gateway control plane',
+          runtime_register: 'Runtime registration',
+          token_exchange: 'Token exchange',
+          setup_token: 'Setup Token exchange',
+          cookie_auth: 'Cookie login-state exchange'
+        },
+        failureCodes: {
+          status_401: '401 / authentication failed',
+          status_403: '403 / forbidden or risk control',
+          status_429: '429 / upstream rate limit',
+          '401': '401 / authentication failed',
+          '403': '403 / forbidden or risk control',
+          '429': '429 / upstream rate limit',
+          upstream_401: 'Upstream 401 authentication failed',
+          invalid_auth: 'Invalid authentication',
+          invalid_grant: 'Refresh credential / login relationship expired',
+          refresh_required: 'Refresh login credential first',
+          refresh_token_invalid: 'Refresh token expired',
+          forbidden: '403 forbidden',
+          hold: 'Account hold risk',
+          account_hold: 'Account hold risk',
+          risk: 'Risk text / risk control hit',
+          risk_text: 'Risk text / risk control hit',
+          kyc: 'KYC / account verification required',
+          unusual_activity: 'Unusual activity risk control',
+          proxy: 'Egress proxy issue',
+          proxy_mismatch: 'Proxy mismatch',
+          egress_proxy_failure: 'Egress proxy failure',
+          fallback: 'Fallback detected',
+          fallback_detected: 'Fallback detected',
+          raw_capture_missing: 'Missing safe raw-capture evidence',
+          cc_gateway_not_seen: 'CC Gateway evidence not seen',
+          missing_account_identity: 'Missing runtime account identity mapping',
+          missing_egress_bucket: 'Missing egress bucket mapping',
+          verifier: 'CC Gateway verifier failed',
+          sign_strip: 'Signature strip / downgrade risk',
+          '5h': '5h usage window exhausted',
+          '7d': '7d usage window exhausted',
+          both: 'Both 5h and 7d windows exhausted',
+          long_context_usage_credits: 'Long-context usage credits exhausted',
+          usage_credits: 'Usage credits exhausted',
+          usage_credits_required: 'Usage credits required',
+          no_reset: 'No reset time provided',
+          pass_through: 'Do not mark rate-limited; pass through error',
+          fallback_rate_limited: 'Parse failed; use fallback cooldown',
+          rfc3339: 'RFC3339 reset time',
+          millis: 'Millisecond reset timestamp',
+          unix_seconds: 'Unix-seconds reset timestamp',
+          past: 'Reset time is past or invalid',
+          missing: 'Missing reset information',
+          setup_token_exchange_failed: 'Setup Token exchange failed',
+          setup_token_missing_inference_scope: 'Setup Token missing inference scope',
+          setup_token_claude_code_scope_mismatch: 'Setup Token Claude Code scope mismatch',
+          token_exchange_failed: 'Token exchange failed',
+          cookie_auth_failed: 'Cookie login state expired',
+          healthcheck_failed: 'Healthcheck failed'
         },
         recommendedActionKeys: {
           refresh_only: 'Refresh login credential',
@@ -2925,7 +3038,9 @@ export default {
         healthcheckStatus: {
           passed: 'Healthcheck passed',
           failed: 'Healthcheck failed',
-          pending: 'Pending healthcheck'
+          pending: 'Pending healthcheck',
+          quarantined: 'Healthcheck quarantined',
+          failed_acceptance: 'Acceptance healthcheck failed'
         },
         poolWeightMode: {
           low: 'Low weight',

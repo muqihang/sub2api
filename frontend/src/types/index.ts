@@ -733,6 +733,13 @@ export interface FormalPoolOperationsDiagnostics {
   fallback_detected?: boolean
   proxy_mismatch?: boolean
   risk_text_detected?: boolean
+  healthcheck_safe_error_code?: string
+  healthcheck_safe_error_bucket?: string
+  formal_pool_rate_limit_error_class?: string
+  formal_pool_rate_limit_window?: string
+  formal_pool_rate_limit_action?: string
+  formal_pool_rate_limit_reset_bucket?: string
+  formal_pool_rate_limit_last_at?: string
   healthcheck_evidence_persisted?: boolean
   quarantine_reason?: string
   risk_event_ref?: string

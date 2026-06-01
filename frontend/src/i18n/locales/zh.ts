@@ -2862,15 +2862,17 @@ export default {
         noRawTokenWarning: '密钥不会在界面回显；错误信息会在前端再次脱敏。',
         noRawTokenWarningSetupToken: 'ST token 不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
         setupTokenSafetyCopy: '这里输入的是 sk-ant-sid 登录态。系统只用它换取新的 inference token；不会回显，也不会保存原始 sk-ant-sid。',
-        directedHealthcheckWarning: '定向健康检查会发起一次极小真实上游请求；必须管理员确认后才点击。',
+        directedHealthcheckWarning: '定向健康检查会发起一次极小真实上游请求；仅在准入或排障需要时点击。',
+        healthcheckHighRiskWarning: '当前诊断包含高风险/限流信号。健康检查会发起真实上游请求；请先处理上方建议，确需排障时再确认执行。',
         directedHealthcheckConfirm: '确认继续？此操作会发起一次极小真实上游请求。',
+        directedHealthcheckConfirmHighRisk: '当前存在高风险/限流信号。确认仍要发起一次真实上游请求？',
         replacementGuidance: '如果 token 修复失败，再更换账号；更换账号时必须同时更换出口代理，并重新走完整上号流程。',
         proxySwapSafetyCopy: '更换代理后仍必须重新完成运行时注册和健康检查证据，不能绕过预热门禁或直接进入生产。',
         actions: {
           refresh: '刷新诊断',
           repairToken: '替换 Setup Token 登录态',
           runtimeRegister: '运行时注册/映射',
-          healthcheck: '定向健康检查',
+          healthcheck: '确认后执行定向健康检查',
           startWarming: '进入预热',
           promoteProduction: '进入生产',
           proxySwap: '更换出口代理'
@@ -2890,6 +2892,37 @@ export default {
           proxy: '代理证据无效或不匹配。先更换代理并复检，再重复运行时注册和定向健康检查。',
           token_exchange: '凭据交换失败。setup-token 账号应修复 ST token；OAuth 账号应先 refresh-only 或重新授权。',
           unknown: '失败来源未知。先刷新诊断，再按最新建议操作。'
+        },
+        healthcheckSafety: {
+          title: '健康检查安全分类',
+          status429: {
+            title: '429 / 上游限流',
+            advice: '不要反复点击健康检查；等待 5h/7d/long-context 窗口恢复或换到已验证账号。'
+          },
+          rateLimitWindow: {
+            title: '用量窗口限流',
+            advice: '先查看 5h/7d/long-context usage credits 的 reset 时间；窗口恢复前不要再发真实请求。'
+          },
+          auth: {
+            title: '认证失败',
+            advice: '401 先 refresh-only 一次；invalid_grant/refresh 失败后替换登录态或重新 OAuth 授权。'
+          },
+          hardRisk: {
+            title: '硬风险/封禁信号',
+            advice: '保持隔离，先处理 hold/risk/KYC/403；不要 refresh loop 或重复健康检查。'
+          },
+          proxy: {
+            title: '代理或链路证据异常',
+            advice: '先更换出口代理并重新 runtime-register，再考虑一次确认后的健康检查。'
+          },
+          gateway: {
+            title: 'CC Gateway 证据缺失',
+            advice: '先修复 runtime 映射、raw capture 或 fallback 问题；证据完整前不要进入预热。'
+          },
+          none: {
+            title: '未发现高风险健康检查失败桶',
+            advice: '仅在需要准入或排障时点击；production 健康账号继续观测即可。'
+          }
         },
         checkNames: {
           account: '账号存在性',
@@ -2920,6 +2953,16 @@ export default {
           unknown: '未知'
         },
         evidenceLabels: {
+          healthcheckStatus: '健康检查状态',
+          failureCode: '失败分类',
+          failureSource: '失败来源',
+          quarantineReason: '隔离原因',
+          safeErrorCode: '健康检查安全错误码',
+          safeErrorBucket: '健康检查安全错误桶',
+          rateLimitErrorClass: '429 分类',
+          rateLimitWindow: '429 用量窗口',
+          rateLimitAction: '429 处理动作',
+          rateLimitResetBucket: '429 重置时间桶',
           ccGatewaySeen: 'CC Gateway 已看到',
           runtimeRegistered: '运行时已注册',
           runtimeRegisteredAt: '运行时注册时间',
@@ -2932,6 +2975,76 @@ export default {
           statusBucket: '状态码桶',
           riskEventRef: '风险事件引用',
           evidencePersisted: '健康检查证据已持久化'
+        },
+        statusBuckets: {
+          status_2xx: '2xx / 健康检查成功',
+          status_401: '401 / 认证失败',
+          status_403: '403 / 禁止访问或风控',
+          status_429: '429 / 上游限流',
+          status_4xx: '4xx / 上游客户端错误',
+          status_5xx: '5xx / 上游或网关错误',
+          status_unknown: '未知状态码桶'
+        },
+        failureSources: {
+          formal_pool_healthcheck: 'Formal Pool 定向健康检查',
+          rate_limit_service: '限流/用量窗口服务',
+          cc_gateway_runtime_register: 'CC Gateway 运行时注册',
+          cc_gateway_control_plane: 'CC Gateway 控制面',
+          runtime_register: '运行时注册',
+          token_exchange: 'Token 交换',
+          setup_token: 'Setup Token 交换',
+          cookie_auth: 'Cookie 登录态交换'
+        },
+        failureCodes: {
+          status_401: '401 / 认证失败',
+          status_403: '403 / 禁止访问或风控',
+          status_429: '429 / 上游限流',
+          '401': '401 / 认证失败',
+          '403': '403 / 禁止访问或风控',
+          '429': '429 / 上游限流',
+          upstream_401: '上游 401 认证失败',
+          invalid_auth: '认证信息无效',
+          invalid_grant: 'refresh credential / 登录关系已失效',
+          refresh_required: '需要先刷新登录凭证',
+          refresh_token_invalid: 'Refresh token 已失效',
+          forbidden: '403 禁止访问',
+          hold: '账号 hold 风险',
+          account_hold: '账号 hold 风险',
+          risk: '风险文本/风控命中',
+          risk_text: '风险文本/风控命中',
+          kyc: 'KYC / 账号验证要求',
+          unusual_activity: '异常活动风控',
+          proxy: '出口代理异常',
+          proxy_mismatch: '代理不匹配',
+          egress_proxy_failure: '出口代理失败',
+          fallback: '检测到 fallback',
+          fallback_detected: '检测到 fallback',
+          raw_capture_missing: '缺少 raw capture 安全证据',
+          cc_gateway_not_seen: '未看到 CC Gateway 证据',
+          missing_account_identity: '缺少账号 runtime 身份映射',
+          missing_egress_bucket: '缺少出口 bucket 映射',
+          verifier: 'CC Gateway verifier 失败',
+          sign_strip: '签名剥离/降级风险',
+          '5h': '5h 用量窗口已满',
+          '7d': '7d 用量窗口已满',
+          both: '5h 与 7d 窗口均已满',
+          long_context_usage_credits: 'Long context usage credits 已满',
+          usage_credits: 'Usage credits 已满',
+          usage_credits_required: '需要 usage credits',
+          no_reset: '未提供重置时间',
+          pass_through: '不标记限流，透传错误',
+          fallback_rate_limited: '解析失败，使用默认限流回避',
+          rfc3339: 'RFC3339 重置时间',
+          millis: '毫秒时间戳重置时间',
+          unix_seconds: '秒级时间戳重置时间',
+          past: '重置时间已过或无效',
+          missing: '缺少重置信息',
+          setup_token_exchange_failed: 'Setup Token 交换失败',
+          setup_token_missing_inference_scope: 'Setup Token 缺少 inference scope',
+          setup_token_claude_code_scope_mismatch: 'Setup Token Claude Code scope 不匹配',
+          token_exchange_failed: 'Token 交换失败',
+          cookie_auth_failed: 'Cookie 登录态失效',
+          healthcheck_failed: '健康检查失败'
         },
         recommendedActionKeys: {
           refresh_only: '刷新登录凭证',
@@ -2963,7 +3076,9 @@ export default {
         healthcheckStatus: {
           passed: '健康检查通过',
           failed: '健康检查失败',
-          pending: '待健康检查'
+          pending: '待健康检查',
+          quarantined: '健康检查隔离',
+          failed_acceptance: '准入健康检查失败'
         },
         poolWeightMode: {
           low: '低权重',
