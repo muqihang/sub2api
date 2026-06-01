@@ -404,10 +404,13 @@ func buildFormalPoolStatusWindow(account *Account, runtime FormalPoolStatusRunti
 }
 
 func classifyFormalPoolDashboardState(account *Account, row FormalPoolStatusDashboardAccount, runtime FormalPoolStatusRuntimeSnapshot) string {
+	if formalPoolDashboardInactive(account) {
+		return FormalPoolDashboardStateInactive
+	}
 	if formalPoolDashboardHasManualRisk(account) {
 		return FormalPoolDashboardStateManualRisk
 	}
-	if formalPoolDashboardHasRateLimit(account) {
+	if formalPoolDashboardHasRateLimit(account, runtime.GeneratedAt) {
 		return FormalPoolDashboardStateRateLimited
 	}
 	if FormalPoolAccountStage(account) == FormalPoolStageQuarantined {
@@ -415,9 +418,6 @@ func classifyFormalPoolDashboardState(account *Account, row FormalPoolStatusDash
 	}
 	if account.Status == StatusError {
 		return FormalPoolDashboardStateError
-	}
-	if formalPoolDashboardInactive(account) {
-		return FormalPoolDashboardStateInactive
 	}
 	if !row.EffectiveSchedulable {
 		return FormalPoolDashboardStateNotSchedulable
@@ -454,12 +454,18 @@ func formalPoolDashboardInactive(account *Account) bool {
 	return status == StatusDisabled || status == "inactive" || status == "disabled"
 }
 
-func formalPoolDashboardHasRateLimit(account *Account) bool {
-	now := time.Now()
+func formalPoolDashboardHasRateLimit(account *Account, now time.Time) bool {
+	if now.IsZero() {
+		now = time.Now()
+	}
 	if account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt) {
 		return true
 	}
-	if action := strings.ToLower(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitAction))); action != "" && !formalPoolDashboardRateLimitActionAllowsPassThrough(action) {
+	action := strings.ToLower(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitAction)))
+	if action != "" && !formalPoolDashboardRateLimitActionAllowsPassThrough(action) {
+		return true
+	}
+	if formalPoolDashboardWindowRejected(account, now) {
 		return true
 	}
 	combined := strings.ToLower(strings.Join([]string{
@@ -478,7 +484,26 @@ func formalPoolDashboardHasRateLimit(account *Account) bool {
 		account.GetExtraString(FormalPoolExtraOnboardingLastErrorBucket),
 		account.ErrorMessage,
 	}, " "))
-	return strings.Contains(combined, "429") || strings.Contains(combined, "rate_limit") || strings.Contains(combined, "rate-limit") || strings.Contains(combined, "rate limited")
+	markers := []string{
+		"429",
+		"too_many_requests",
+		"too many requests",
+		"rate_limit",
+		"rate-limit",
+		"rate limited",
+		"rate_limited",
+		"quota_exceeded",
+		"quota exceeded",
+	}
+	for _, marker := range markers {
+		if strings.Contains(combined, marker) {
+			if formalPoolDashboardRateLimitActionIsPassThrough(action) && formalPoolDashboardHasNonCooldownPassThroughRateLimit(account, combined, now) {
+				return false
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func formalPoolDashboardRateLimitActionAllowsPassThrough(action string) bool {
@@ -490,8 +515,50 @@ func formalPoolDashboardRateLimitActionAllowsPassThrough(action string) bool {
 	}
 }
 
+func formalPoolDashboardRateLimitActionIsPassThrough(action string) bool {
+	switch strings.TrimSpace(action) {
+	case "pass_through", "passthrough":
+		return true
+	default:
+		return false
+	}
+}
+
+func formalPoolDashboardWindowRejected(account *Account, now time.Time) bool {
+	if account == nil || !strings.EqualFold(strings.TrimSpace(account.SessionWindowStatus), "rejected") {
+		return false
+	}
+	if account.SessionWindowEnd == nil {
+		return true
+	}
+	return now.Before(*account.SessionWindowEnd)
+}
+
+func formalPoolDashboardHasNonCooldownPassThroughRateLimit(account *Account, combined string, now time.Time) bool {
+	if account != nil && account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt) {
+		return false
+	}
+	markers := []string{
+		"long_context_usage_credits",
+		"usage_credits_required",
+		"usage credits are required",
+		"long context requests",
+		"context-1m",
+	}
+	for _, marker := range markers {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func formalPoolDashboardHasManualRisk(account *Account) bool {
 	if formalPoolDashboardBoolExtra(account, FormalPoolExtraHealthcheckRiskTextDetected) {
+		return true
+	}
+	if formalPoolDashboardBoolExtra(account, FormalPoolExtraHealthcheckFallbackDetected) ||
+		formalPoolDashboardBoolExtra(account, FormalPoolExtraHealthcheckProxyMismatch) {
 		return true
 	}
 	combined := strings.ToLower(strings.Join([]string{
@@ -506,7 +573,39 @@ func formalPoolDashboardHasManualRisk(account *Account) bool {
 		account.GetExtraString(FormalPoolExtraQuarantineReason),
 		account.ErrorMessage,
 	}, " "))
-	markers := []string{"401", "403", "hold", "kyc", "unusual_activity", "unusual activity", "risk_text", "risk text", "account_risk", "manual_risk"}
+	markers := []string{
+		"401",
+		"403",
+		"unauthorized",
+		"forbidden",
+		"invalid_auth",
+		"authentication_error",
+		"auth_error",
+		"invalid_grant",
+		"refresh_token_invalid",
+		"refresh_required",
+		"hold",
+		"account_hold",
+		"account_on_hold",
+		"kyc",
+		"verification_required",
+		"unusual_activity",
+		"unusual activity",
+		"risk_text",
+		"risk text",
+		"account_risk",
+		"manual_risk",
+		"missing_account_identity",
+		"missing_identity",
+		"missing_egress_bucket",
+		"missing_egress",
+		"proxy_mismatch",
+		"fallback",
+		"direct_fallback",
+		"verifier",
+		"sign_strip",
+		"sign-to-strip",
+	}
 	for _, marker := range markers {
 		if strings.Contains(combined, marker) {
 			return true

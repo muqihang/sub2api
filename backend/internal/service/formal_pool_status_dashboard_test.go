@@ -247,6 +247,260 @@ func TestFormalPoolStatusDashboard_ManualRiskSourcesIncludeBareRisk(t *testing.T
 	}
 }
 
+func TestFormalPoolStatusDashboard_InactiveOutranksStaleRiskAndRateLimitSignals(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Account)
+	}{
+		{
+			name: "disabled with stale 429",
+			mutate: func(acc *Account) {
+				acc.Status = StatusDisabled
+				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
+			},
+		},
+		{
+			name: "disabled with stale 403",
+			mutate: func(acc *Account) {
+				acc.Status = StatusDisabled
+				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_403"
+			},
+		},
+		{
+			name: "inactive with invalid auth",
+			mutate: func(acc *Account) {
+				acc.Status = "inactive"
+				acc.Extra[FormalPoolExtraLastFailureCode] = "invalid_auth"
+			},
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := int64(110 + i)
+			acc := formalPoolDashboardTestAccount(id, FormalPoolStageProduction)
+			tt.mutate(&acc)
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(id))
+
+			require.Equal(t, FormalPoolDashboardStateInactive, dashboard.Accounts[0].State)
+			require.Equal(t, 1, dashboard.Summary.Inactive)
+			require.Equal(t, 0, dashboard.Summary.ManualRisk)
+			require.Equal(t, 0, dashboard.Summary.RateLimited)
+		})
+	}
+}
+
+func TestFormalPoolStatusDashboard_ManualRiskSourcesIncludeIdentityBoundarySignals(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Account)
+	}{
+		{
+			name: "missing account identity",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraLastCCGatewayErrorCode] = "missing_account_identity"
+			},
+		},
+		{
+			name: "missing egress bucket",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraLastFailureCode] = "missing_egress_bucket"
+			},
+		},
+		{
+			name: "proxy mismatch",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraHealthcheckSafeErrorCode] = "proxy_mismatch"
+			},
+		},
+		{
+			name: "direct fallback",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraHealthcheckSafeErrorCode] = "direct_fallback"
+			},
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := int64(120 + i)
+			acc := formalPoolDashboardTestAccount(id, FormalPoolStageProduction)
+			tt.mutate(&acc)
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(id))
+
+			require.Equal(t, FormalPoolDashboardStateManualRisk, dashboard.Accounts[0].State)
+			require.Equal(t, 1, dashboard.Summary.ManualRisk)
+		})
+	}
+}
+
+func TestFormalPoolStatusDashboard_PassThroughUsageCredit429IsNotAccountRateLimited(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(130, FormalPoolStageProduction)
+	acc.Extra[FormalPoolExtraRateLimitAction] = "pass_through"
+	acc.Extra[FormalPoolExtraRateLimitErrorClass] = "long_context_usage_credits"
+	acc.Extra[FormalPoolExtraHealthcheckStatusCodeBucket] = "status_429"
+	acc.ErrorMessage = "Usage credits are required for long context requests"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(130))
+
+	require.Equal(t, FormalPoolDashboardStateNotSchedulable, dashboard.Accounts[0].State)
+	require.Equal(t, 0, dashboard.Summary.RateLimited)
+}
+
+func TestFormalPoolStatusDashboard_WindowRejectedWithFutureResetIsRateLimited(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(2 * time.Hour)
+	acc := formalPoolDashboardTestAccount(131, FormalPoolStageProduction)
+	acc.SessionWindowStatus = "rejected"
+	acc.SessionWindowEnd = &reset
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, FormalPoolStatusRuntimeSnapshot{
+		GeneratedAt:           now,
+		ConcurrencyAvailable:  true,
+		ConcurrencyByAccount:  map[int64]int{131: 0},
+		RPMAvailable:          true,
+		RPMByAccount:          map[int64]int{131: 0},
+		SessionCountAvailable: true,
+		SessionsByAccount:     map[int64]int{131: 0},
+		WindowCostAvailable:   true,
+		WindowCostByAccount:   map[int64]float64{131: 0},
+	})
+
+	require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
+	require.Equal(t, 1, dashboard.Summary.RateLimited)
+}
+
+func TestFormalPoolStatusDashboard_ManualRiskSourcesIncludeHealthcheckBoundaryBooleans(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Account)
+	}{
+		{
+			name: "fallback boolean",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraHealthcheckFallbackDetected] = true
+			},
+		},
+		{
+			name: "proxy mismatch boolean",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraHealthcheckProxyMismatch] = true
+			},
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := int64(140 + i)
+			acc := formalPoolDashboardTestAccount(id, FormalPoolStageProduction)
+			tt.mutate(&acc)
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(id))
+
+			require.Equal(t, FormalPoolDashboardStateManualRisk, dashboard.Accounts[0].State)
+			require.Equal(t, 1, dashboard.Summary.ManualRisk)
+		})
+	}
+}
+
+func TestFormalPoolStatusDashboard_UsageCredit429WithoutExplicitPassThroughStaysRateLimited(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(142, FormalPoolStageProduction)
+	acc.Extra[FormalPoolExtraRateLimitErrorClass] = "long_context_usage_credits"
+	acc.Extra[FormalPoolExtraHealthcheckStatusCodeBucket] = "status_429"
+	acc.ErrorMessage = "Usage credits are required for long context requests"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(142))
+
+	require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
+	require.Equal(t, 1, dashboard.Summary.RateLimited)
+}
+
+func TestFormalPoolStatusDashboard_ManualRiskSourcesIncludeAuthAndForbiddenText(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Account)
+	}{
+		{
+			name: "last failure code invalid auth",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraLastFailureCode] = "invalid_auth"
+			},
+		},
+		{
+			name: "cc gateway error unauthorized",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraLastCCGatewayErrorCode] = "unauthorized"
+			},
+		},
+		{
+			name: "error message forbidden",
+			mutate: func(acc *Account) {
+				acc.ErrorMessage = "upstream forbidden response"
+			},
+		},
+		{
+			name: "healthcheck safe code authentication error",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraHealthcheckSafeErrorCode] = "authentication_error"
+			},
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := int64(90 + i)
+			acc := formalPoolDashboardTestAccount(id, FormalPoolStageProduction)
+			tt.mutate(&acc)
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(id))
+
+			require.Equal(t, FormalPoolDashboardStateManualRisk, dashboard.Accounts[0].State)
+			require.Equal(t, 1, dashboard.Summary.ManualRisk)
+		})
+	}
+}
+
+func TestFormalPoolStatusDashboard_RateLimitSourcesIncludeTooManyRequestsText(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Account)
+	}{
+		{
+			name: "last failure code too many requests",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraLastFailureCode] = "too_many_requests"
+			},
+		},
+		{
+			name: "error message too many requests",
+			mutate: func(acc *Account) {
+				acc.ErrorMessage = "Too Many Requests from upstream"
+			},
+		},
+		{
+			name: "healthcheck safe bucket quota exceeded",
+			mutate: func(acc *Account) {
+				acc.Extra[FormalPoolExtraHealthcheckSafeErrorBucket] = "quota_exceeded"
+			},
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := int64(100 + i)
+			acc := formalPoolDashboardTestAccount(id, FormalPoolStageProduction)
+			tt.mutate(&acc)
+
+			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(id))
+
+			require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
+			require.Equal(t, 1, dashboard.Summary.RateLimited)
+		})
+	}
+}
+
 func TestFormalPoolStatusDashboard_RateLimitSourcesIncludeErrorMessageAndOnboarding(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -350,12 +604,12 @@ func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
 			wantState: FormalPoolDashboardStateRateLimited,
 		},
 		{
-			name: "rate limit outranks inactive",
+			name: "inactive outranks stale rate limit",
 			mutate: func(acc *Account) {
 				acc.Status = StatusDisabled
 				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 			},
-			wantState: FormalPoolDashboardStateRateLimited,
+			wantState: FormalPoolDashboardStateInactive,
 		},
 		{
 			name: "rate limit outranks not schedulable",
