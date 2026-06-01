@@ -2870,8 +2870,8 @@ export default {
             advice: 'For 401, run refresh-only once; after invalid_grant or refresh failure, replace the login state or reauthorize OAuth.'
           },
           hardRisk: {
-            title: 'Hard risk / hold signal',
-            advice: 'Keep the account quarantined and handle hold/risk/KYC/403 first; do not refresh-loop or repeat healthcheck.'
+            title: 'Account risk: manual review required',
+            advice: 'Keep the account quarantined. Check the upstream account page first; do not repeat healthcheck or refresh credentials in a loop.'
           },
           proxy: {
             title: 'Proxy or route evidence issue',
@@ -2885,6 +2885,17 @@ export default {
             title: 'No high-risk healthcheck failure bucket detected',
             advice: 'Click only for onboarding or troubleshooting; healthy production accounts should stay on monitor-only.'
           }
+        },
+        manualRisk: {
+          title: 'Manual review required',
+          summary: 'This is not a normal rate limit or token expiry. The system will not auto-recover it.',
+          items: {
+            accountRestricted: 'Account paused or restricted upstream: check the upstream account page first.',
+            accountVerification: 'Account verification required: follow the upstream page. Retrying will not fix it.',
+            riskSignal: 'Upstream returned an account-risk notice: keep quarantined until manually confirmed.',
+            forbidden: 'Upstream rejected access: check subscription, region, organization, and permissions.'
+          },
+          nextSteps: 'After confirming the account is recovered, restore in order: refresh credentials, runtime register, directed healthcheck, then warming.'
         },
         checkNames: {
           account: 'Account existence',
@@ -2970,12 +2981,13 @@ export default {
           refresh_required: 'Refresh login credential first',
           refresh_token_invalid: 'Refresh token expired',
           forbidden: '403 forbidden',
-          hold: 'Account hold risk',
-          account_hold: 'Account hold risk',
-          risk: 'Risk text / risk control hit',
-          risk_text: 'Risk text / risk control hit',
-          kyc: 'KYC / account verification required',
-          unusual_activity: 'Unusual activity risk control',
+          hold: 'Account paused or restricted upstream',
+          account_hold: 'Account paused or restricted upstream',
+          account_on_hold: 'Account paused or restricted upstream',
+          risk: 'Upstream account-risk notice',
+          risk_text: 'Upstream account-risk notice',
+          kyc: 'Account verification required',
+          unusual_activity: 'Unusual activity notice from upstream',
           proxy: 'Egress proxy issue',
           proxy_mismatch: 'Proxy mismatch',
           egress_proxy_failure: 'Egress proxy failure',

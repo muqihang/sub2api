@@ -81,14 +81,21 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.rateLimitWindow.advice': '先查看 5h/7d/long-context usage credits 的 reset 时间；窗口恢复前不要再发真实请求。',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.auth.title': '认证失败',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.auth.advice': '401 先 refresh-only 一次；invalid_grant/refresh 失败后替换登录态或重新 OAuth 授权。',
-    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.hardRisk.title': '硬风险/封禁信号',
-    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.hardRisk.advice': '保持隔离，先处理 hold/risk/KYC/403；不要 refresh loop 或重复健康检查。',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.hardRisk.title': '账号风险，需要人工介入',
+    'admin.accounts.formalPoolDiagnostics.healthcheckSafety.hardRisk.advice': '保持隔离。先登录上游网页查看账号状态；不要重复健康检查，也不要反复刷新凭证。',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.proxy.title': '代理或链路证据异常',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.proxy.advice': '先更换出口代理并重新 runtime-register，再考虑一次确认后的健康检查。',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.gateway.title': 'CC Gateway 证据缺失',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.gateway.advice': '先修复 runtime 映射、raw capture 或 fallback 问题；证据完整前不要进入预热。',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.none.title': '未发现高风险健康检查失败桶',
     'admin.accounts.formalPoolDiagnostics.healthcheckSafety.none.advice': '仅在需要准入或排障时点击；production 健康账号继续观测即可。',
+    'admin.accounts.formalPoolDiagnostics.manualRisk.title': '需要人工介入',
+    'admin.accounts.formalPoolDiagnostics.manualRisk.summary': '这类信号不是普通限流或 token 过期，系统不会自动恢复。',
+    'admin.accounts.formalPoolDiagnostics.manualRisk.items.accountRestricted': '账号已被上游暂停或限制：先登录上游网页查看账号状态。',
+    'admin.accounts.formalPoolDiagnostics.manualRisk.items.accountVerification': '需要完成账号验证：按上游页面要求处理，不能通过重试恢复。',
+    'admin.accounts.formalPoolDiagnostics.manualRisk.items.riskSignal': '上游返回账号风险提示：保持隔离，等待人工确认。',
+    'admin.accounts.formalPoolDiagnostics.manualRisk.items.forbidden': '上游拒绝访问：先确认账号订阅、地区、组织和权限状态。',
+    'admin.accounts.formalPoolDiagnostics.manualRisk.nextSteps': '确认账号恢复后，再按刷新凭证、运行时注册、定向健康检查、预热的顺序恢复。',
     'admin.accounts.formalPoolDiagnostics.healthcheckHighRiskWarning': '当前诊断包含高风险/限流信号。健康检查会发起真实上游请求；请先处理上方建议，确需排障时再确认执行。',
     'admin.accounts.formalPoolDiagnostics.noRawTokenWarning': 'Secrets are scrubbed.',
     'admin.accounts.formalPoolDiagnostics.noRawTokenWarningSetupToken': 'ST tokens are scrubbed.',
@@ -111,8 +118,12 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.failureCodes.raw_capture_missing': '缺少 raw capture 安全证据',
     'admin.accounts.formalPoolDiagnostics.failureCodes.cc_gateway_not_seen': '未看到 CC Gateway 证据',
     'admin.accounts.formalPoolDiagnostics.failureCodes.fallback': '检测到 fallback',
-    'admin.accounts.formalPoolDiagnostics.failureCodes.hold': '账号 hold 风险',
-    'admin.accounts.formalPoolDiagnostics.failureCodes.risk': '风险文本/风控命中',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.hold': '账号已被上游暂停或限制',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.account_on_hold': '账号已被上游暂停或限制',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.risk': '上游返回账号风险提示',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.risk_text': '上游返回账号风险提示',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.kyc': '需要完成账号验证',
+    'admin.accounts.formalPoolDiagnostics.failureCodes.unusual_activity': '上游提示异常活动',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.refresh_only': '刷新登录凭证',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.runtime_register': '运行时注册/映射',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.healthcheck': '定向健康检查',
@@ -555,6 +566,57 @@ describe('FormalPoolDiagnosticsModal', () => {
     confirmSpy.mockRestore()
   })
 
+
+  it('explains terminal account-risk quarantines in plain Chinese with manual next steps', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      onboarding_stage: 'quarantined',
+      failure_origin: 'upstream',
+      failure_code: 'account_on_hold',
+      healthcheck_safe_error_code: 'risk_text',
+      healthcheck_safe_error_bucket: 'risk',
+      healthcheck_status: 'quarantined',
+      status_code_bucket: 'status_403',
+      quarantine_reason: 'kyc',
+      risk_text_detected: true,
+      recommended_actions: [{ key: 'quarantine', label: 'Quarantine', severity: 'danger' }],
+    }))
+    const wrapper = mountModal(baseAccount({ onboarding_stage: 'quarantined' }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('需要人工介入')
+    expect(wrapper.text()).toContain('账号已被上游暂停或限制')
+    expect(wrapper.text()).toContain('需要完成账号验证')
+    expect(wrapper.text()).toContain('上游返回账号风险提示')
+    expect(wrapper.text()).toContain('不要重复健康检查')
+    expect(wrapper.text()).toContain('先登录上游网页查看账号状态')
+    expect(wrapper.text()).not.toContain('account_on_hold')
+    expect(wrapper.text()).not.toContain('risk_text')
+    expect(wrapper.text()).not.toContain('KYC')
+    expect(wrapper.text()).not.toContain('hold/risk')
+    expect(wrapper.text()).not.toContain('先修复凭据或刷新/重新授权，再运行定向健康检查')
+  })
+
+
+  it('shows unusual activity as manual review and suppresses generic upstream repair guidance', async () => {
+    getDiagnostics.mockResolvedValueOnce(diagnostics({
+      onboarding_stage: 'quarantined',
+      failure_origin: 'upstream',
+      failure_code: 'unusual_activity',
+      healthcheck_safe_error_code: 'unusual_activity',
+      healthcheck_safe_error_bucket: 'risk',
+      status_code_bucket: 'status_403',
+      quarantine_reason: 'risk',
+      recommended_actions: [{ key: 'quarantine', label: 'Quarantine', severity: 'danger' }],
+    }))
+    const wrapper = mountModal(baseAccount({ onboarding_stage: 'quarantined' }))
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="manual-risk-guidance"]').text()).toContain('需要人工介入')
+    expect(wrapper.text()).toContain('上游返回账号风险提示')
+    expect(wrapper.text()).not.toContain('先修复凭据或刷新/重新授权，再运行定向健康检查')
+    expect(wrapper.text()).not.toContain('unusual_activity')
+  })
+
   it('classifies unsafe healthcheck evidence buckets before recommending another healthcheck', async () => {
     getDiagnostics.mockResolvedValueOnce(diagnostics({
       onboarding_stage: 'runtime_registered',
@@ -574,11 +636,11 @@ describe('FormalPoolDiagnosticsModal', () => {
     const wrapper = mountModal(baseAccount({ onboarding_stage: 'runtime_registered' }))
     await flushPromises()
 
-    expect(wrapper.text()).toContain('硬风险/封禁信号')
+    expect(wrapper.text()).toContain('账号风险，需要人工介入')
     expect(wrapper.text()).toContain('代理或链路证据异常')
     expect(wrapper.text()).toContain('CC Gateway 证据缺失')
     expect(wrapper.text()).toContain('缺少 raw capture 安全证据')
-    expect(wrapper.text()).toContain('账号 hold 风险')
+    expect(wrapper.text()).toContain('账号已被上游暂停或限制')
     expect(wrapper.text()).toContain('保持隔离')
     expect(wrapper.text()).toContain('先更换出口代理')
     expect(wrapper.text()).toContain('先修复 runtime 映射')

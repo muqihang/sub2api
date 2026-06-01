@@ -90,6 +90,20 @@
           </div>
         </section>
 
+
+        <section v-if="manualRiskGuidanceItems.length" class="space-y-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200" data-test="manual-risk-guidance">
+          <h5 class="font-semibold">
+            {{ t('admin.accounts.formalPoolDiagnostics.manualRisk.title') }}
+          </h5>
+          <p>{{ t('admin.accounts.formalPoolDiagnostics.manualRisk.summary') }}</p>
+          <ul class="list-disc space-y-1 pl-5">
+            <li v-for="item in manualRiskGuidanceItems" :key="item">
+              {{ t(`admin.accounts.formalPoolDiagnostics.manualRisk.items.${item}`) }}
+            </li>
+          </ul>
+          <p class="font-medium">{{ t('admin.accounts.formalPoolDiagnostics.manualRisk.nextSteps') }}</p>
+        </section>
+
         <section class="space-y-3">
           <h5 class="text-sm font-semibold text-gray-900 dark:text-white">
             {{ t('admin.accounts.formalPoolDiagnostics.checks') }}
@@ -374,6 +388,7 @@ const checkMessageLabel = (message: unknown) => {
 }
 
 const failureOriginDescription = computed(() => {
+  if (manualRiskGuidanceItems.value.length > 0) return ''
   const origin = currentDiagnostics.value?.failure_origin || 'unknown'
   return translatedOrEmpty(`admin.accounts.formalPoolDiagnostics.failureOriginDescriptions.${origin}`)
 })
@@ -503,6 +518,9 @@ type HealthcheckSafetyNotice = {
   severity: 'info' | 'warning' | 'danger'
 }
 
+type ManualRiskGuidanceKey = 'accountRestricted' | 'accountVerification' | 'riskSignal' | 'forbidden'
+
+
 const healthcheckSafetyNotices = computed<HealthcheckSafetyNotice[]>(() => {
   const d = currentDiagnostics.value
   const signals = new Set<string>()
@@ -550,6 +568,26 @@ const healthcheckSafetyNotices = computed<HealthcheckSafetyNotice[]>(() => {
 })
 
 const hasHealthcheckHighRisk = computed(() => healthcheckSafetyNotices.value.some(notice => notice.severity !== 'info'))
+const manualRiskGuidanceItems = computed<ManualRiskGuidanceKey[]>(() => {
+  const d = currentDiagnostics.value
+  const values = [
+    d?.status_code_bucket,
+    d?.failure_code,
+    d?.healthcheck_safe_error_code,
+    d?.healthcheck_safe_error_bucket,
+    d?.quarantine_reason,
+  ].map(diagnosticText).join(' ')
+  const out: ManualRiskGuidanceKey[] = []
+  const add = (item: ManualRiskGuidanceKey) => {
+    if (!out.includes(item)) out.push(item)
+  }
+  if (values.includes('account_on_hold') || values.includes('account_hold') || values.includes('hold')) add('accountRestricted')
+  if (values.includes('kyc') || values.includes('verification')) add('accountVerification')
+  if (values.includes('risk') || values.includes('unusual_activity') || d?.risk_text_detected) add('riskSignal')
+  if (values.includes('status_403') || values.includes('forbidden') || values.includes('403')) add('forbidden')
+  return out
+})
+
 
 const parsedSwapProxyId = computed(() => {
   const id = Number(swapProxyId.value)

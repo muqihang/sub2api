@@ -2839,8 +2839,8 @@ export default {
         }
       },
       formalPoolDiagnostics: {
-        title: 'Formal Pool 诊断/修复',
-        menuAction: 'Formal Pool 诊断/修复',
+        title: '正式号池诊断/修复',
+        menuAction: '正式号池诊断/修复',
         account: '账号',
         evidence: '证据',
         checks: '检查项',
@@ -2855,18 +2855,18 @@ export default {
         proxyIdPlaceholder: '输入代理 ID',
         runRuntimeAfterRepair: '修复后运行运行时注册',
         runHealthcheckAfterRepair: '修复后运行健康检查',
-        operationSucceeded: 'Formal Pool 操作已完成',
+        operationSucceeded: '正式号池操作已完成',
         startWarmingAllowed: '证据完整，可以进入预热',
         startWarmingBlocked: '仅当运行时注册和完整健康检查证据均满足时可用',
         startWarmingBlockedRuntime: '缺少 CC Gateway 运行时注册证据，暂不能开始预热',
         noRawTokenWarning: '密钥不会在界面回显；错误信息会在前端再次脱敏。',
-        noRawTokenWarningSetupToken: 'ST token 不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
-        setupTokenSafetyCopy: '这里输入的是 sk-ant-sid 登录态。系统只用它换取新的 inference token；不会回显，也不会保存原始 sk-ant-sid。',
+        noRawTokenWarningSetupToken: 'Setup Token 登录态不会在界面回显，也不会保存原始 sk-ant-sid；错误信息会在前端再次脱敏。',
+        setupTokenSafetyCopy: '这里输入的是 sk-ant-sid 登录态。系统只用它换取新的推理访问凭证；不会回显，也不会保存原始 sk-ant-sid。',
         directedHealthcheckWarning: '定向健康检查会发起一次极小真实上游请求；仅在准入或排障需要时点击。',
-        healthcheckHighRiskWarning: '当前诊断包含高风险/限流信号。健康检查会发起真实上游请求；请先处理上方建议，确需排障时再确认执行。',
+        healthcheckHighRiskWarning: '当前诊断包含账号风险或限流信号。健康检查会发起真实上游请求；请先处理上方建议，确需排障时再确认执行。',
         directedHealthcheckConfirm: '确认继续？此操作会发起一次极小真实上游请求。',
-        directedHealthcheckConfirmHighRisk: '当前存在高风险/限流信号。确认仍要发起一次真实上游请求？',
-        replacementGuidance: '如果 token 修复失败，再更换账号；更换账号时必须同时更换出口代理，并重新走完整上号流程。',
+        directedHealthcheckConfirmHighRisk: '当前存在账号风险或限流信号。确认仍要发起一次真实上游请求？',
+        replacementGuidance: '如果凭证修复失败，再更换账号；更换账号时必须同时更换出口代理，并重新走完整上号流程。',
         proxySwapSafetyCopy: '更换代理后仍必须重新完成运行时注册和健康检查证据，不能绕过预热门禁或直接进入生产。',
         actions: {
           refresh: '刷新诊断',
@@ -2879,7 +2879,7 @@ export default {
         },
         oauthRecovery: {
           title: 'OAuth 恢复序列',
-          body: 'OAuth Formal Pool 账号需要重新 OAuth 授权，然后回到本弹窗继续运行时注册、定向健康检查和预热。',
+          body: 'OAuth 正式号池账号需要重新 OAuth 授权，然后回到本弹窗继续运行时注册、定向健康检查和预热。',
           stepRefresh: '重新 OAuth 授权。',
           stepRuntime: '在本弹窗点击运行时注册/映射。',
           stepHealthcheck: '定向健康检查会发起一次极小真实上游请求，点击前必须确认。',
@@ -2890,39 +2890,50 @@ export default {
           cc_gateway_control_plane: 'CC Gateway 控制面尚未确认运行时注册。先点运行时注册，再运行定向健康检查。',
           upstream: '上游拒绝了定向检查。先修复凭据或刷新/重新授权，再运行定向健康检查。',
           proxy: '代理证据无效或不匹配。先更换代理并复检，再重复运行时注册和定向健康检查。',
-          token_exchange: '凭据交换失败。setup-token 账号应修复 ST token；OAuth 账号应先 refresh-only 或重新授权。',
+          token_exchange: '凭据交换失败。Setup Token 账号应替换登录态；OAuth 账号应先只刷新凭证或重新授权。',
           unknown: '失败来源未知。先刷新诊断，再按最新建议操作。'
         },
         healthcheckSafety: {
           title: '健康检查安全分类',
           status429: {
             title: '429 / 上游限流',
-            advice: '不要反复点击健康检查；等待 5h/7d/long-context 窗口恢复或换到已验证账号。'
+            advice: '不要反复点击健康检查；等待 5 小时/7 天/长上下文额度窗口恢复，或换到已验证账号。'
           },
           rateLimitWindow: {
             title: '用量窗口限流',
-            advice: '先查看 5h/7d/long-context usage credits 的 reset 时间；窗口恢复前不要再发真实请求。'
+            advice: '先查看 5 小时、7 天或长上下文额度的恢复时间；窗口恢复前不要再发真实请求。'
           },
           auth: {
             title: '认证失败',
-            advice: '401 先 refresh-only 一次；invalid_grant/refresh 失败后替换登录态或重新 OAuth 授权。'
+            advice: '401 先只刷新凭证一次；如果刷新关系失效或刷新失败，再替换登录态或重新 OAuth 授权。'
           },
           hardRisk: {
-            title: '硬风险/封禁信号',
-            advice: '保持隔离，先处理 hold/risk/KYC/403；不要 refresh loop 或重复健康检查。'
+            title: '账号风险，需要人工介入',
+            advice: '保持隔离。先登录上游网页查看账号状态；不要重复健康检查，也不要反复刷新凭证。'
           },
           proxy: {
             title: '代理或链路证据异常',
-            advice: '先更换出口代理并重新 runtime-register，再考虑一次确认后的健康检查。'
+            advice: '先更换出口代理并重新完成运行时注册，再考虑执行一次已确认的健康检查。'
           },
           gateway: {
             title: 'CC Gateway 证据缺失',
-            advice: '先修复 runtime 映射、raw capture 或 fallback 问题；证据完整前不要进入预热。'
+            advice: '先修复运行时映射、原始捕获证据或降级旁路问题；证据完整前不要进入预热。'
           },
           none: {
             title: '未发现高风险健康检查失败桶',
             advice: '仅在需要准入或排障时点击；production 健康账号继续观测即可。'
           }
+        },
+        manualRisk: {
+          title: '需要人工介入',
+          summary: '这类信号不是普通限流或 token 过期，系统不会自动恢复。',
+          items: {
+            accountRestricted: '账号已被上游暂停或限制：先登录上游网页查看账号状态。',
+            accountVerification: '需要完成账号验证：按上游页面要求处理，不能通过重试恢复。',
+            riskSignal: '上游返回账号风险提示：保持隔离，等待人工确认。',
+            forbidden: '上游拒绝访问：先确认账号订阅、地区、组织和权限状态。'
+          },
+          nextSteps: '确认账号恢复后，再按刷新凭证、运行时注册、定向健康检查、预热的顺序恢复。'
         },
         checkNames: {
           account: '账号存在性',
@@ -2957,8 +2968,8 @@ export default {
           failureCode: '失败分类',
           failureSource: '失败来源',
           quarantineReason: '隔离原因',
-          safeErrorCode: '健康检查安全错误码',
-          safeErrorBucket: '健康检查安全错误桶',
+          safeErrorCode: '安全错误分类',
+          safeErrorBucket: '安全错误类别',
           rateLimitErrorClass: '429 分类',
           rateLimitWindow: '429 用量窗口',
           rateLimitAction: '429 处理动作',
@@ -2969,7 +2980,7 @@ export default {
           runtimeEvidenceComplete: '运行时证据完整',
           rawCapturePresent: '原始捕获存在',
           rawCaptureRef: '原始捕获引用',
-          fallbackDetected: '检测到 fallback',
+          fallbackDetected: '检测到降级旁路',
           proxyMismatch: '代理不匹配',
           riskTextDetected: '风险文本',
           statusBucket: '状态码桶',
@@ -2986,7 +2997,7 @@ export default {
           status_unknown: '未知状态码桶'
         },
         failureSources: {
-          formal_pool_healthcheck: 'Formal Pool 定向健康检查',
+          formal_pool_healthcheck: '正式号池定向健康检查',
           rate_limit_service: '限流/用量窗口服务',
           cc_gateway_runtime_register: 'CC Gateway 运行时注册',
           cc_gateway_control_plane: 'CC Gateway 控制面',
@@ -3008,41 +3019,42 @@ export default {
           refresh_required: '需要先刷新登录凭证',
           refresh_token_invalid: 'Refresh token 已失效',
           forbidden: '403 禁止访问',
-          hold: '账号 hold 风险',
-          account_hold: '账号 hold 风险',
-          risk: '风险文本/风控命中',
-          risk_text: '风险文本/风控命中',
-          kyc: 'KYC / 账号验证要求',
-          unusual_activity: '异常活动风控',
+          hold: '账号已被上游暂停或限制',
+          account_hold: '账号已被上游暂停或限制',
+          account_on_hold: '账号已被上游暂停或限制',
+          risk: '上游返回账号风险提示',
+          risk_text: '上游返回账号风险提示',
+          kyc: '需要完成账号验证',
+          unusual_activity: '上游提示异常活动',
           proxy: '出口代理异常',
           proxy_mismatch: '代理不匹配',
           egress_proxy_failure: '出口代理失败',
-          fallback: '检测到 fallback',
-          fallback_detected: '检测到 fallback',
-          raw_capture_missing: '缺少 raw capture 安全证据',
+          fallback: '检测到降级旁路',
+          fallback_detected: '检测到降级旁路',
+          raw_capture_missing: '缺少原始捕获安全证据',
           cc_gateway_not_seen: '未看到 CC Gateway 证据',
-          missing_account_identity: '缺少账号 runtime 身份映射',
+          missing_account_identity: '缺少账号运行时身份映射',
           missing_egress_bucket: '缺少出口 bucket 映射',
           verifier: 'CC Gateway verifier 失败',
           sign_strip: '签名剥离/降级风险',
           '5h': '5h 用量窗口已满',
           '7d': '7d 用量窗口已满',
           both: '5h 与 7d 窗口均已满',
-          long_context_usage_credits: 'Long context usage credits 已满',
-          usage_credits: 'Usage credits 已满',
-          usage_credits_required: '需要 usage credits',
-          no_reset: '未提供重置时间',
-          pass_through: '不标记限流，透传错误',
-          fallback_rate_limited: '解析失败，使用默认限流回避',
-          rfc3339: 'RFC3339 重置时间',
-          millis: '毫秒时间戳重置时间',
+          long_context_usage_credits: '长上下文额度已满',
+          usage_credits: '用量额度已满',
+          usage_credits_required: '需要额外用量额度',
+          no_reset: '未提供恢复时间',
+          pass_through: '不进入限流状态，仅透传错误',
+          fallback_rate_limited: '恢复时间解析失败，使用默认限流回避',
+          rfc3339: '标准格式恢复时间',
+          millis: '毫秒时间戳恢复时间',
           unix_seconds: '秒级时间戳重置时间',
           past: '重置时间已过或无效',
           missing: '缺少重置信息',
-          setup_token_exchange_failed: 'Setup Token 交换失败',
-          setup_token_missing_inference_scope: 'Setup Token 缺少 inference scope',
-          setup_token_claude_code_scope_mismatch: 'Setup Token Claude Code scope 不匹配',
-          token_exchange_failed: 'Token 交换失败',
+          setup_token_exchange_failed: 'Setup Token 登录态交换失败',
+          setup_token_missing_inference_scope: 'Setup Token 缺少推理访问权限',
+          setup_token_claude_code_scope_mismatch: 'Setup Token 与 Claude Code 的权限范围不匹配',
+          token_exchange_failed: '凭证交换失败',
           cookie_auth_failed: 'Cookie 登录态失效',
           healthcheck_failed: '健康检查失败'
         },
