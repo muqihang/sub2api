@@ -3031,6 +3031,7 @@ export default {
           monitor: 'No action; keep monitoring',
           quarantine: 'Quarantine account',
           swap_proxy: 'Swap egress proxy',
+          wait_rate_limit: 'Wait for rate-limit recovery',
           repair_token: 'Replace Setup Token login state',
           repair_oauth: 'Reauthorize OAuth',
           replace_account_and_proxy: 'Replace account and egress proxy'

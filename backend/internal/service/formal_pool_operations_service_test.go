@@ -777,6 +777,33 @@ func TestFormalPoolOperationsDiagnostics_WarmingRecommendsPromoteProduction(t *t
 	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
 }
 
+func TestFormalPoolOperationsDiagnostics_RateLimitRecommendsWaitingNotHealthcheck(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:             FormalPoolStageQuarantined,
+		FormalPoolExtraHealthcheckStatus:           FormalPoolOnboardingStatusQuarantined,
+		FormalPoolExtraHealthcheckStatusCodeBucket: "status_429",
+		FormalPoolExtraLastFailureCode:             "long_context_usage_credits",
+		FormalPoolExtraLastFailureSource:           "rate_limit_service",
+		FormalPoolExtraRateLimitErrorClass:         "long_context_usage_credits",
+		FormalPoolExtraRateLimitWindow:             "5h",
+		FormalPoolExtraRateLimitAction:             "cooldown",
+		FormalPoolExtraRateLimitResetBucket:        "5h",
+	})
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: formalPoolOperationsAccountFake{account: account}})
+
+	got, err := svc.Diagnostics(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Equal(t, string(FormalPoolFailureOriginUpstream), got.FailureOrigin)
+	require.Equal(t, "long_context_usage_credits", got.RateLimitErrorClass)
+	require.Equal(t, "5h", got.RateLimitWindow)
+	require.Contains(t, actionKeys(got.RecommendedActions), "wait_rate_limit")
+	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
+	require.NotContains(t, actionKeys(got.RecommendedActions), "repair_token")
+}
+
 func TestFormalPoolOperationsDiagnostics_InvalidGrantRecommendationsByAccountType(t *testing.T) {
 	t.Parallel()
 

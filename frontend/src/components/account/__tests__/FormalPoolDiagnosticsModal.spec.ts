@@ -134,6 +134,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.monitor': '无需操作，继续观测',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.quarantine': '隔离账号',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.swap_proxy': '更换出口代理',
+    'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.wait_rate_limit': '等待限流恢复',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.repair_token': '替换 Setup Token 登录态',
     'admin.accounts.formalPoolDiagnostics.recommendedActionKeys.repair_oauth': '重新 OAuth 授权',
     'admin.accounts.formalPoolDiagnostics.oauthRecovery.title': 'OAuth 恢复序列',
@@ -542,7 +543,7 @@ describe('FormalPoolDiagnosticsModal', () => {
       status_code_bucket: 'status_429',
       quarantine_reason: '5h',
       checks: [{ name: 'healthcheck_evidence_persisted', status: 'warn', message: 'latest healthcheck evidence is required before warming' }],
-      recommended_actions: [{ key: 'healthcheck', label: 'Run directed healthcheck', severity: 'info' }],
+      recommended_actions: [{ key: 'wait_rate_limit', label: 'Wait for rate-limit window recovery', severity: 'warning' }],
     }))
     const wrapper = mountModal(baseAccount({ onboarding_stage: 'runtime_registered' }))
     await flushPromises()
@@ -554,6 +555,7 @@ describe('FormalPoolDiagnosticsModal', () => {
     expect(wrapper.text()).toContain('5h 用量窗口已满')
     expect(wrapper.text()).toContain('不要反复点击健康检查')
     expect(wrapper.text()).toContain('窗口恢复前不要再发真实请求')
+    expect(wrapper.text()).toContain('等待限流恢复')
     expect(wrapper.text()).toContain('当前诊断包含高风险/限流信号')
     expect(wrapper.get('[data-test="directed-healthcheck-button"]').text()).toContain('确认后执行定向健康检查')
     expect(wrapper.text()).not.toContain('long_context_usage_credits')

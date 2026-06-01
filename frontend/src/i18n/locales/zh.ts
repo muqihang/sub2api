@@ -3069,6 +3069,7 @@ export default {
           monitor: '无需操作，继续观测',
           quarantine: '隔离账号',
           swap_proxy: '更换出口代理',
+          wait_rate_limit: '等待限流恢复',
           repair_token: '替换 Setup Token 登录态',
           repair_oauth: '重新 OAuth 授权',
           replace_account_and_proxy: '更换账号和出口代理'

@@ -976,6 +976,13 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 		}
 		return actions
 	}
+	if formalPoolDiagnosticsHasRateLimit(d) {
+		add("wait_rate_limit", "Wait for rate-limit window recovery", "warning")
+		if !runtimeEvidenceComplete(account) {
+			add("runtime_register", "Run runtime registration after cooldown", "warning")
+		}
+		return actions
+	}
 	runtimeComplete := runtimeEvidenceComplete(account)
 	healthComplete := healthcheckEvidenceComplete(account)
 	if stage == FormalPoolStageHealthcheckPassed && runtimeComplete && healthComplete {
@@ -1004,6 +1011,30 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 		add("healthcheck", "Run directed healthcheck", "info")
 	}
 	return actions
+}
+
+func formalPoolDiagnosticsHasRateLimit(d *FormalPoolOperationsDiagnostics) bool {
+	if d == nil {
+		return false
+	}
+	combined := strings.ToLower(strings.Join([]string{
+		d.StatusCodeBucket,
+		d.FailureCode,
+		d.FailureSource,
+		d.HealthcheckSafeErrorCode,
+		d.HealthcheckSafeErrorBucket,
+		d.RateLimitErrorClass,
+		d.RateLimitWindow,
+		d.RateLimitAction,
+		d.RateLimitResetBucket,
+		d.QuarantineReason,
+	}, " "))
+	for _, marker := range []string{"status_429", "429", "too_many_requests", "rate_limit", "rate_limited", "quota_exceeded", "5h", "7d", "both", "long_context_usage_credits", "usage_credits"} {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func formalPoolTerminalInvalidGrant(account *Account, d *FormalPoolOperationsDiagnostics) bool {
