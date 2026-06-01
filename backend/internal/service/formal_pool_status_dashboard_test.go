@@ -868,6 +868,37 @@ func TestFormalPoolStatusDashboardService_ReturnsAllFormalPoolAccountsAcrossPage
 	require.GreaterOrEqual(t, lister.calls, 2, "OAuth and setup-token formal pool account types should be enumerated")
 }
 
+func TestFormalPoolStatusDashboardService_MissingConcurrencyReaderMarksLimitedAccountDataMissing(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(40, FormalPoolStageProduction)
+	acc.Concurrency = 2
+	lister := &formalPoolDashboardPagedLister{accounts: []Account{acc}}
+	svc := NewFormalPoolStatusDashboardService(FormalPoolStatusDashboardDeps{
+		Accounts: lister,
+		Now:      func() time.Time { return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC) },
+	})
+
+	dashboard, err := svc.Build(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, dashboard.Accounts, 1)
+	require.Equal(t, FormalPoolDashboardStateDataMissing, dashboard.Accounts[0].State)
+	require.False(t, dashboard.Accounts[0].Concurrency.Available)
+}
+
+func TestFormalPoolStatusDashboardService_MissingConcurrencyReaderAllowsUnlimitedAccount(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(42, FormalPoolStageProduction)
+	acc.Concurrency = 0
+	lister := &formalPoolDashboardPagedLister{accounts: []Account{acc}}
+	svc := NewFormalPoolStatusDashboardService(FormalPoolStatusDashboardDeps{Accounts: lister})
+
+	dashboard, err := svc.Build(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, dashboard.Accounts, 1)
+	require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+	require.True(t, dashboard.Accounts[0].Concurrency.Available)
+}
+
 func TestFormalPoolStatusDashboardService_RuntimeReadFailureMarksDataMissing(t *testing.T) {
 	acc := formalPoolDashboardTestAccount(41, FormalPoolStageProduction)
 	acc.Extra["base_rpm"] = 30

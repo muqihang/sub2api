@@ -223,14 +223,13 @@ func (s *FormalPoolStatusDashboardService) readRuntimeSnapshot(ctx context.Conte
 		snapshot.WindowCostAvailable = true
 		return snapshot
 	}
-	if s.deps.Concurrency != nil {
+	if len(ids) == 0 {
+		snapshot.ConcurrencyAvailable = true
+	} else if s.deps.Concurrency != nil {
 		if counts, err := s.deps.Concurrency.GetAccountConcurrencyBatch(ctx, ids); err == nil && counts != nil {
 			snapshot.ConcurrencyAvailable = true
 			snapshot.ConcurrencyByAccount = counts
 		}
-	} else {
-		// Without a configured concurrency reader, zero-concurrency rows are still unambiguous.
-		snapshot.ConcurrencyAvailable = true
 	}
 	if len(rpmIDs) == 0 {
 		snapshot.RPMAvailable = true
