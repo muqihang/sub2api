@@ -72,6 +72,21 @@ risk_text=false
 
 当前实现已经把 acceptance/healthcheck 接口改为必须依赖定向健康检查 runner；runner 不存在时，acceptance fail closed。Sub2API 要求 CC Gateway 返回安全证据头：`X-CC-Gateway-Seen: 1` 与 `X-CC-Gateway-Raw-Capture-Ref: hmac-sha256:<64hex>`。raw capture 未启用或未实际生成时，健康检查不得通过。
 
+### 5.1 健康检查失败桶处理
+
+前端诊断面板必须把后端 safe bucket 中文化，并在高风险/明显不该点 healthcheck 的场景中提高按钮和确认提示强度。处理规则：
+
+| 分类 | 机器字段/安全桶 | 门禁结果 | 操作员下一步 |
+| --- | --- | --- | --- |
+| 429 / 上游限流 | `status_429` | 不通过；不自动隔离为 hard risk，但禁止重复真实请求 | 等待窗口恢复，查看 5h/7d/long-context usage credits；必要时换已验证账号 |
+| 用量窗口满 | `5h`、`7d`、`both`、`long_context_usage_credits` | 不通过；保留 safe failure bucket | 等 reset，不连续 healthcheck，不通过修改用户请求能力规避 |
+| 认证失败 | `status_401`、`invalid_auth`、`refresh_required` | 首次 stale 401 可 refresh-and-retry；失败后隔离 | refresh-only 一次；`invalid_grant`/refresh 失败后替换登录态或重新 OAuth 授权 |
+| 硬风险/封禁 | `status_403`、`hold`、`risk`、`kyc`、`unusual_activity` | hard quarantine | 保持隔离并处理账号风控；不要 refresh loop |
+| 代理异常 | `proxy`、`proxy_mismatch`、`egress_proxy_failure` | hard quarantine 或 fail closed | 更换出口代理，重新 runtime-register，再做一次确认后的 healthcheck |
+| CC Gateway 证据缺失 | `cc_gateway_not_seen`、`raw_capture_missing`、`fallback`、`missing_account_identity`、`missing_egress_bucket` | fail closed，不得进入 warming | 修复 runtime 映射、raw capture、fallback/verifier 问题 |
+
+这些字段只能是 safe bucket、布尔值或 HMAC ref；不得把 raw upstream response、raw body、prompt、token、email、UUID 或 proxy credential 传给前端。
+
 ## 6. 自动隔离条件
 
 以下情况必须自动隔离账号：
@@ -87,6 +102,7 @@ risk_text=false
 - verifier fail
 - raw token/body/prompt/CCH 泄漏风险
 - control-plane unsafe upload
+- 429 / 5h / 7d / long-context credits 不是 hard-risk 隔离信号，但必须 fail closed：不通过 healthcheck，不重复真实请求，等待窗口恢复或换已验证账号。
 
 隔离行为：
 
@@ -216,5 +232,17 @@ POST /api/v1/admin/accounts/:id/formal-pool/proxy/swap
 | `monitor` | 无需操作，继续观测 |
 | `quarantine` | 隔离账号 |
 | `swap_proxy` | 更换出口代理 |
+| `status_429` | 429 / 上游限流 |
+| `status_401` | 401 / 认证失败 |
+| `status_403` | 403 / 禁止访问或风控 |
+| `5h` | 5h 用量窗口已满 |
+| `7d` | 7d 用量窗口已满 |
+| `both` | 5h 与 7d 窗口均已满 |
+| `long_context_usage_credits` | Long context usage credits 已满 |
+| `raw_capture_missing` | 缺少 raw capture 安全证据 |
+| `cc_gateway_not_seen` | 未看到 CC Gateway 证据 |
+| `fallback` | 检测到 fallback |
+| `proxy` / `proxy_mismatch` | 出口代理异常/不匹配 |
+| `hold` / `risk` | 账号 hold / 风控命中 |
 
-定向健康检查按钮必须提示并确认：该操作会发起一次极小真实上游请求。健康 `production` 账号不显示主修复按钮，也不推荐例行定向健康检查。
+定向健康检查按钮必须提示并确认：该操作会发起一次极小真实上游请求。若当前诊断含 429、401/403、hold/risk、proxy、fallback、raw capture missing 或 CC Gateway not seen，按钮/警示文案必须明确“先处理建议，确需排障时再确认”。健康 `production` 账号不显示主修复按钮，也不推荐例行定向健康检查。
