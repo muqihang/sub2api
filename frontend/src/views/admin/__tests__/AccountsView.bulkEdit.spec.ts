@@ -51,6 +51,16 @@ vi.mock('@/stores/auth', () => ({
   })
 }))
 
+const { routerPush } = vi.hoisted(() => ({
+  routerPush: vi.fn()
+}))
+
+vi.mock('vue-router', () => ({
+  useRouter: () => ({
+    push: routerPush
+  })
+}))
+
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return {
@@ -134,6 +144,7 @@ describe('admin AccountsView bulk edit scope', () => {
     getBatchTodayStats.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
+    routerPush.mockReset()
 
     listAccounts.mockResolvedValue({
       items: [],
