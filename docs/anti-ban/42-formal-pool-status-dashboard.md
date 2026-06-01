@@ -150,7 +150,7 @@ cd backend
 go test ./internal/service ./internal/handler ./internal/server/routes -run 'FormalPool|StatusDashboard|Account|RateLimit|DTO' -count=1 -timeout=240s
 
 cd frontend
-npm run test:run -- FormalPoolStatusDashboardModal formalPoolStatusDashboard
+npm run test:run -- AccountsView.bulkEdit FormalPoolStatusDashboardModal formalPoolStatusDashboard
 npm run typecheck
 
 cd ..

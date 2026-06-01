@@ -38,6 +38,21 @@ func TestFormalPoolStatusDashboardRoute_AdminOnlyAndSafe(t *testing.T) {
 	require.Contains(t, body, "账号 #1")
 }
 
+func TestFormalPoolStatusDashboardRoute_AllowsOperationalEmailLabel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	adminSvc := &formalPoolStatusDashboardRouteAdminStub{accounts: []service.Account{
+		formalPoolStatusDashboardRouteAccount(3, "ops-user@example.com"),
+	}}
+	router, _ := newFormalPoolStatusDashboardRouter(adminSvc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/formal-pool/status-dashboard", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "ops-user@example.com")
+}
+
 func TestFormalPoolStatusDashboardRoute_ReturnsAllAccountsNotCurrentPagination(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	accounts := make([]service.Account, 0, 25)
