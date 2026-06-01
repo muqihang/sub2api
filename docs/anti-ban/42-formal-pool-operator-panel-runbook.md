@@ -9,7 +9,7 @@
 - 不在没有明确批准时部署生产。
 - 不在没有明确批准时发起真实 directed 健康检查。
 - 不修改生产数据，除非该操作本身就是已批准的后台账号操作。
-- 不泄露 raw token、raw prompt、raw body、raw telemetry、raw CCH、email、账号/组织 UUID、代理凭据、完整代理对象；setup-token 只允许通过专用导入/替换 secret-ingress 一次性输入。
+- 不泄露 raw token、raw prompt、raw body、raw telemetry、raw CCH、账号/组织 UUID、代理凭据或完整代理对象；普通运营账号名/邮箱可作为显示名，但不得出现在风险事件、日志摘要或安全失败字段中；setup-token 只允许通过专用导入/替换 secret-ingress 一次性输入。
 - 不限制 tools、thinking、stream、1m/long context、Opus/Sonnet、max_tokens，也不改写用户 request body / response body。
 
 ## 2. 生命周期总览
@@ -158,6 +158,8 @@ risk_text=false
 | 上游 5xx/临时失败 | `status_5xx`、`healthcheck_failed` 且无硬风险 | 先刷新诊断和观测；确认不是代理/网关/风控后再排障 | 只允许一次明确确认的排障健康检查 |
 | 无高风险桶 | 证据完整或只缺最新健康检查证据 | 仅准入/排障时执行 | 按按钮二次确认执行 |
 
+`missing_account_identity` / `missing_egress_bucket` 表示运行时身份或出口映射证据缺失，不代表上游账号被封，也不应作为“坏号”结论。操作员应先执行运行时注册/映射并复查证据链。
+
 ## 10. warming
 
 `warming` 是预热阶段，低权重可调度：
@@ -256,7 +258,7 @@ POST /api/v1/admin/accounts/:id/formal-pool/promote-production
 | `onboarding_stage` | 生命周期阶段 | 英文机器字段，界面中文显示 |
 | `recommended_actions` | 下一步推荐动作 | key 稳定英文，label 可中文化 |
 | `failure_origin` | 失败来源：本地门禁 / 控制面 / 上游 / 代理 / 凭证交换 | 不含 raw 响应 |
-| `failure_code` | 安全失败桶 | 不含 email/UUID/token |
+| `failure_code` | 安全失败桶 | 不含 email/UUID/token；邮箱只允许作为账号显示名，不允许混入失败桶 |
 | `healthcheck_status` | 健康检查状态 | 中文摘要展示 |
 | `status_code_bucket` | 状态码桶，如 `status_2xx` / `status_401` | 只显示桶 |
 | `cc_gateway_runtime_registered` | 运行时证据是否存在 | 布尔值 |
@@ -266,20 +268,21 @@ POST /api/v1/admin/accounts/:id/formal-pool/promote-production
 
 ## 16. 敏感字段规则
 
-正式号池后端 DTO、前端展示、审计日志、文档和测试不得包含：
+正式号池风险事件、日志摘要、安全失败字段、审计账号标识、运行时映射证据和普通 DTO 安全字段不得包含：
 
 - 原始 token / Setup Token / cookie / Authorization。
 - 原始 prompt / 原始 body / 原始 telemetry / 原始 CCH。
-- email。
+- email（普通运营账号名/邮箱作为账号显示名除外）。
 - account UUID / org UUID。
 - 代理凭据。
 - 完整代理对象。
 - 原始主机身份。
-- 审计日志中的账号标识只能使用内部数值 id 或 安全 HMAC 账号引用，不能使用账号/组织 UUID。
+- 审计日志中的账号标识只能使用内部数值 id 或 安全 HMAC 账号引用，不能使用账号/组织 UUID 或 email。
 - credentials object。
 
 允许展示：
 
+- 普通运营账号名/邮箱形式的账号显示名；如果显示名混入 token、代理凭据、UUID、raw 字段或 user:pass@host，必须回退为 `账号 #<id>`。
 - HMAC ref。
 - bucket。
 - 布尔值。

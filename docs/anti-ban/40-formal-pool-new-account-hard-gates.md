@@ -44,7 +44,7 @@
 - `quarantine_reason`
 - `quarantine_at`
 
-这些字段不得包含 raw token、Authorization、x-api-key、email、账号/组织 UUID、raw body、raw prompt、raw telemetry、raw CCH 或 proxy credential。
+这些字段不得包含 raw token、Authorization、x-api-key、账号/组织 UUID、raw body、raw prompt、raw telemetry、raw CCH 或 proxy credential；普通运营账号名/邮箱只允许作为账号显示名。
 
 ## 4. 上号默认策略
 
@@ -87,6 +87,8 @@ risk_text=false
 
 这些字段只能是 safe bucket、布尔值或 HMAC ref；不得把 raw upstream response、raw body、prompt、token、email、UUID 或 proxy credential 传给前端。
 
+其中 `missing_account_identity` / `missing_egress_bucket` 属于运行时身份映射或出口证据链 fail-closed。系统可以因此隔离账号以停止调度，但这不是上游账号被封、账号 on hold 或订阅失效的结论。操作员应优先修复 runtime mapping / egress bucket，再重新进入健康检查门禁。
+
 ## 6. 自动隔离条件
 
 以下情况必须自动隔离账号：
@@ -122,7 +124,7 @@ risk_event_ref=<safe ref>
 第二号异常暴露出的风险点在本策略中分别由以下防线覆盖：
 
 1. 新号不可直接生产：`imported/refreshed/runtime_registered/healthcheck_passed` 都不可调度。
-2. runtime mapping 缺失：CC Gateway control-plane 返回 `missing_account_identity` 会隔离。
+2. runtime mapping 缺失：CC Gateway control-plane 返回 `missing_account_identity` 会触发证据链隔离，停止调度；这不是账号被封结论。
 3. 代理失败：`egress_proxy_failure` 会隔离，不继续调度。
 4. 401/403：正式号池 Anthropic OAuth/setup-token 账号的首次 stale-token 401 先走一次 refresh-and-retry；`invalid_grant`、refresh 不可用、重试仍 401、403/hold/risk 仍硬隔离，不进入重复 refresh loop。
 5. 200 健康检查前不可生产：`activate/start-warming` 要求 `healthcheck_passed`。
@@ -199,7 +201,7 @@ POST /api/v1/admin/accounts/:id/formal-pool/proxy/swap
 
 - raw token / cookie / setup token
 - Authorization / x-api-key 值
-- email
+- email（风险事件、日志摘要、安全失败字段中禁止；普通运营账号名/邮箱作为显示名除外）
 - account UUID / org UUID
 - raw body / raw prompt / raw telemetry
 - raw CCH
