@@ -99,6 +99,42 @@ func TestAccountFromService_ExposesFormalPoolRecoveryFields(t *testing.T) {
 	require.Equal(t, "admin_ref_safe", got.FormalPoolRepairedBy)
 }
 
+func TestAccountFromService_ExposesFormalPoolRateLimitAndHealthcheckSafeFields(t *testing.T) {
+	t.Parallel()
+
+	account := &service.Account{
+		ID:       43,
+		Name:     "formal-signals",
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeSetupToken,
+		Extra: map[string]any{
+			service.FormalPoolExtraOnboardingStage: "production",
+			"formal_pool_rate_limit_error_class":   "rate_limited",
+			"formal_pool_rate_limit_window":        "both",
+			"formal_pool_rate_limit_action":        "rate_limited",
+			"formal_pool_rate_limit_reset_bucket":  "rfc3339",
+			"formal_pool_rate_limit_last_at":       "2026-05-31T12:00:00Z",
+			"healthcheck_safe_error_code":          "rate_limited",
+			"healthcheck_safe_error_bucket":        "rate_limited",
+		},
+	}
+
+	got := AccountFromService(account)
+	payload, err := json.Marshal(got)
+	require.NoError(t, err)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(payload, &body))
+	require.Equal(t, "rate_limited", body["formal_pool_rate_limit_error_class"])
+	require.Equal(t, "both", body["formal_pool_rate_limit_window"])
+	require.Equal(t, "rate_limited", body["formal_pool_rate_limit_action"])
+	require.Equal(t, "rfc3339", body["formal_pool_rate_limit_reset_bucket"])
+	require.Equal(t, "2026-05-31T12:00:00Z", body["formal_pool_rate_limit_last_at"])
+	require.Equal(t, "rate_limited", body["healthcheck_safe_error_code"])
+	require.Equal(t, "rate_limited", body["healthcheck_safe_error_bucket"])
+	require.Equal(t, "rate_limited", got.Extra["formal_pool_rate_limit_error_class"])
+	require.Equal(t, "rate_limited", got.Extra["healthcheck_safe_error_code"])
+}
+
 func TestAccountFromService_FormalPoolLegacyUnknownWhenMissing(t *testing.T) {
 	t.Parallel()
 

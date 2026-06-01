@@ -91,6 +91,8 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 	resp, err := r.upstream.DoWithTLS(req, "", account.ID, account.Concurrency, nil)
 	if err != nil {
 		add("directed_healthcheck_request", false, "request failed")
+		result.SafeErrorCode = "egress_proxy_failure"
+		result.SafeErrorBucket = "proxy"
 		_ = r.quarantineHardRisk(ctx, account.ID, RiskEventKindProxyMismatch, "egress_proxy_failure", 502)
 		return result, nil
 	}
@@ -103,6 +105,7 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 	result.FallbackDetected = headerTruthy(resp.Header.Get("X-CC-Gateway-Fallback-Detected")) || strings.Contains(strings.ToLower(string(responseBody)), "fallback")
 	result.ProxyMismatch = headerTruthy(resp.Header.Get("X-CC-Gateway-Proxy-Mismatch"))
 	result.RiskTextDetected = formalPoolRiskTextDetected(responseBody)
+	result.SafeErrorCode, result.SafeErrorBucket = formalPoolHealthcheckSafeClassification(resp.StatusCode, responseBody, result)
 
 	add("directed_healthcheck_status_200", resp.StatusCode == http.StatusOK, result.StatusCodeBucket)
 	add("cc_gateway_seen", result.CCGatewaySeen, "cc gateway response evidence required")
@@ -111,7 +114,11 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 	add("proxy_match", !result.ProxyMismatch, "proxy mismatch must not occur")
 	add("no_risk_text", !result.RiskTextDetected, "risk text must not occur")
 
-	if FormalPoolShouldQuarantineHTTPStatus(resp.StatusCode, responseBody) || result.FallbackDetected || result.ProxyMismatch || result.RiskTextDetected {
+	shouldQuarantine := FormalPoolShouldQuarantineHTTPStatus(resp.StatusCode, responseBody) || result.FallbackDetected || result.ProxyMismatch || result.RiskTextDetected
+	if resp.StatusCode == http.StatusTooManyRequests && !result.FallbackDetected && !result.ProxyMismatch && !result.RiskTextDetected {
+		shouldQuarantine = false
+	}
+	if shouldQuarantine {
 		kind, reason := formalPoolHealthcheckRiskKind(resp.StatusCode, responseBody, result)
 		_ = r.quarantineHardRisk(ctx, account.ID, kind, reason, resp.StatusCode)
 	}
@@ -199,6 +206,58 @@ func headerTruthy(v string) bool {
 func formalPoolRiskTextDetected(body []byte) bool {
 	msg := strings.ToLower(extractUpstreamErrorMessage(body) + " " + string(body))
 	return strings.Contains(msg, "unusual activity") || strings.Contains(msg, "account on hold") || strings.Contains(msg, "account is on hold") || strings.Contains(msg, "kyc") || strings.Contains(msg, "risk")
+}
+
+func formalPoolHealthcheckSafeClassification(status int, body []byte, result *FormalPoolAcceptanceResult) (string, string) {
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
+	if result != nil {
+		if result.ProxyMismatch || strings.Contains(msg, "proxy_mismatch") || strings.Contains(msg, "proxy mismatch") {
+			return "proxy_mismatch", "proxy"
+		}
+		if result.FallbackDetected || strings.Contains(msg, "fallback") {
+			return "fallback", "fallback"
+		}
+	}
+	if strings.Contains(msg, "missing_account_identity") || strings.Contains(msg, "missing_identity") {
+		return "missing_account_identity", "cc_gateway"
+	}
+	if strings.Contains(msg, "egress_proxy_failure") {
+		return "egress_proxy_failure", "proxy"
+	}
+	if strings.Contains(msg, "account is on hold") || strings.Contains(msg, "account on hold") {
+		return "account_on_hold", "hold"
+	}
+	if formalPoolRiskTextDetected(body) {
+		return "risk_text", "risk"
+	}
+	switch status {
+	case http.StatusUnauthorized:
+		if isInvalidGrantText(msg) || strings.Contains(msg, "invalid_grant") {
+			return "invalid_grant", "auth"
+		}
+		return "auth", "auth"
+	case http.StatusForbidden:
+		return "forbidden", "auth"
+	case http.StatusTooManyRequests:
+		if formalPoolLongContextUsageCreditsText(msg) {
+			return "long_context_usage_credits", "long_context"
+		}
+		return "rate_limited", "rate_limited"
+	}
+	if result != nil {
+		if !result.RawCapturePresent {
+			return "raw_capture_missing", "raw_capture"
+		}
+		if !result.CCGatewaySeen {
+			return "cc_gateway_not_seen", "cc_gateway"
+		}
+	}
+	return "unknown", "unknown"
+}
+
+func formalPoolLongContextUsageCreditsText(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	return strings.Contains(msg, "long context") && (strings.Contains(msg, "usage credit") || strings.Contains(msg, "usage_credits"))
 }
 
 func formalPoolHealthcheckRiskKind(status int, body []byte, result *FormalPoolAcceptanceResult) (string, string) {

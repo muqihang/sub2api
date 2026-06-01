@@ -100,6 +100,12 @@ func FormalPoolShouldQuarantineHTTPStatus(status int, body []byte) bool {
 			strings.Contains(msg, "verifier") ||
 			strings.Contains(msg, "risk")
 	}
+	if status == http.StatusTooManyRequests {
+		return strings.Contains(msg, "unusual activity") ||
+			strings.Contains(msg, "account is on hold") ||
+			strings.Contains(msg, "kyc") ||
+			strings.Contains(msg, "risk")
+	}
 	return strings.Contains(msg, "unusual activity") ||
 		strings.Contains(msg, "account is on hold") ||
 		strings.Contains(msg, "kyc") ||

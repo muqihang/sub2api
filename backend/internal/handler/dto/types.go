@@ -201,6 +201,13 @@ type Account struct {
 	HealthcheckFallbackDetected      bool   `json:"healthcheck_fallback_detected,omitempty"`
 	HealthcheckProxyMismatch         bool   `json:"healthcheck_proxy_mismatch,omitempty"`
 	HealthcheckRiskTextDetected      bool   `json:"healthcheck_risk_text_detected,omitempty"`
+	HealthcheckSafeErrorCode         string `json:"healthcheck_safe_error_code,omitempty"`
+	HealthcheckSafeErrorBucket       string `json:"healthcheck_safe_error_bucket,omitempty"`
+	FormalPoolRateLimitErrorClass    string `json:"formal_pool_rate_limit_error_class,omitempty"`
+	FormalPoolRateLimitWindow        string `json:"formal_pool_rate_limit_window,omitempty"`
+	FormalPoolRateLimitAction        string `json:"formal_pool_rate_limit_action,omitempty"`
+	FormalPoolRateLimitResetBucket   string `json:"formal_pool_rate_limit_reset_bucket,omitempty"`
+	FormalPoolRateLimitLastAt        string `json:"formal_pool_rate_limit_last_at,omitempty"`
 	FormalPoolCredentialGeneration   int    `json:"formal_pool_credential_generation,omitempty"`
 	FormalPoolRepairedAt             string `json:"formal_pool_repaired_at,omitempty"`
 	FormalPoolRepairedBy             string `json:"formal_pool_repaired_by,omitempty"`

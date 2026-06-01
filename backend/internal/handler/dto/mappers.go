@@ -421,6 +421,13 @@ func accountExtraForDTO(a *service.Account) map[string]any {
 		service.FormalPoolExtraHealthcheckFallbackDetected,
 		service.FormalPoolExtraHealthcheckProxyMismatch,
 		service.FormalPoolExtraHealthcheckRiskTextDetected,
+		service.FormalPoolExtraHealthcheckSafeErrorCode,
+		service.FormalPoolExtraHealthcheckSafeErrorBucket,
+		service.FormalPoolExtraRateLimitErrorClass,
+		service.FormalPoolExtraRateLimitWindow,
+		service.FormalPoolExtraRateLimitAction,
+		service.FormalPoolExtraRateLimitResetBucket,
+		service.FormalPoolExtraRateLimitLastAt,
 		service.FormalPoolExtraCredentialGeneration,
 		service.FormalPoolExtraRepairedAt,
 		service.FormalPoolExtraRepairedBy,
@@ -467,7 +474,14 @@ func accountExtraForDTO(a *service.Account) map[string]any {
 				service.FormalPoolExtraRepairedAt,
 				service.FormalPoolExtraRepairedBy,
 				service.FormalPoolExtraQuarantineReason,
-				service.FormalPoolExtraWarmingUntil:
+				service.FormalPoolExtraWarmingUntil,
+				service.FormalPoolExtraHealthcheckSafeErrorCode,
+				service.FormalPoolExtraHealthcheckSafeErrorBucket,
+				service.FormalPoolExtraRateLimitErrorClass,
+				service.FormalPoolExtraRateLimitWindow,
+				service.FormalPoolExtraRateLimitAction,
+				service.FormalPoolExtraRateLimitResetBucket,
+				service.FormalPoolExtraRateLimitLastAt:
 				if safe, ok := safeFormalPoolDTOText(v); ok {
 					out[key] = safe
 				}
@@ -1095,6 +1109,13 @@ func applyFormalPoolAccountFields(out *Account, a *service.Account) {
 	out.HealthcheckFallbackDetected, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckFallbackDetected])
 	out.HealthcheckProxyMismatch, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckProxyMismatch])
 	out.HealthcheckRiskTextDetected, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckRiskTextDetected])
+	out.HealthcheckSafeErrorCode = safeFormalPoolAccountText(a, service.FormalPoolExtraHealthcheckSafeErrorCode)
+	out.HealthcheckSafeErrorBucket = safeFormalPoolAccountText(a, service.FormalPoolExtraHealthcheckSafeErrorBucket)
+	out.FormalPoolRateLimitErrorClass = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitErrorClass)
+	out.FormalPoolRateLimitWindow = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitWindow)
+	out.FormalPoolRateLimitAction = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitAction)
+	out.FormalPoolRateLimitResetBucket = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitResetBucket)
+	out.FormalPoolRateLimitLastAt = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitLastAt)
 	if gen, ok := safeFormalPoolDTOInt(a.Extra[service.FormalPoolExtraCredentialGeneration]); ok {
 		out.FormalPoolCredentialGeneration = gen
 	}

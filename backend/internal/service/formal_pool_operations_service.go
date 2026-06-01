@@ -52,6 +52,13 @@ type FormalPoolOperationsDiagnostics struct {
 	FallbackDetected             bool                          `json:"fallback_detected,omitempty"`
 	ProxyMismatch                bool                          `json:"proxy_mismatch,omitempty"`
 	RiskTextDetected             bool                          `json:"risk_text_detected,omitempty"`
+	HealthcheckSafeErrorCode     string                        `json:"healthcheck_safe_error_code,omitempty"`
+	HealthcheckSafeErrorBucket   string                        `json:"healthcheck_safe_error_bucket,omitempty"`
+	RateLimitErrorClass          string                        `json:"formal_pool_rate_limit_error_class,omitempty"`
+	RateLimitWindow              string                        `json:"formal_pool_rate_limit_window,omitempty"`
+	RateLimitAction              string                        `json:"formal_pool_rate_limit_action,omitempty"`
+	RateLimitResetBucket         string                        `json:"formal_pool_rate_limit_reset_bucket,omitempty"`
+	RateLimitLastAt              string                        `json:"formal_pool_rate_limit_last_at,omitempty"`
 	HealthcheckEvidencePersisted bool                          `json:"healthcheck_evidence_persisted,omitempty"`
 	QuarantineReason             string                        `json:"quarantine_reason,omitempty"`
 	RiskEventRef                 string                        `json:"risk_event_ref,omitempty"`
@@ -636,6 +643,13 @@ func formalPoolDiagnosticsFromAccount(account *Account) *FormalPoolOperationsDia
 	out.FallbackDetected = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckFallbackDetected])
 	out.ProxyMismatch = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckProxyMismatch])
 	out.RiskTextDetected = formalPoolOpsBool(account.Extra[FormalPoolExtraHealthcheckRiskTextDetected])
+	out.HealthcheckSafeErrorCode = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorCode))
+	out.HealthcheckSafeErrorBucket = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorBucket))
+	out.RateLimitErrorClass = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraRateLimitErrorClass))
+	out.RateLimitWindow = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraRateLimitWindow))
+	out.RateLimitAction = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraRateLimitAction))
+	out.RateLimitResetBucket = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraRateLimitResetBucket))
+	out.RateLimitLastAt = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraRateLimitLastAt))
 	out.QuarantineReason = formalPoolSafeDiagnosticText(account.GetExtraString(FormalPoolExtraQuarantineReason))
 	if ref := strings.TrimSpace(account.GetExtraString(FormalPoolExtraRiskEventRef)); isSafeLedgerRef(ref) {
 		out.RiskEventRef = ref
@@ -755,7 +769,8 @@ func formalPoolSafeOperationalDiagnosticCode(s string) bool {
 		return false
 	}
 	switch s {
-	case "upstream_401", "formal_pool_healthcheck", "missing_account_identity", "reason_auth", "cookie_auth_failed", "setup_token_exchange_failed", "refresh_token_invalid", "invalid_grant", "admin_ref_safe":
+	case "upstream_401", "formal_pool_healthcheck", "missing_account_identity", "reason_auth", "cookie_auth_failed", "setup_token_exchange_failed", "refresh_token_invalid", "invalid_grant", "admin_ref_safe",
+		"auth", "forbidden", "risk_text", "risk", "account_on_hold", "hold", "rate_limited", "long_context_usage_credits", "long_context", "proxy_mismatch", "proxy", "fallback", "raw_capture_missing", "raw_capture", "cc_gateway_not_seen", "cc_gateway", "egress_proxy_failure", "unknown":
 		return true
 	}
 	for _, prefix := range []string{"setup_token_", "cookie_auth_", "token_exchange_"} {
@@ -1287,6 +1302,8 @@ func (s *FormalPoolOperationsService) healthcheckExtra(account *Account, result 
 		FormalPoolExtraHealthcheckFallbackDetected: false,
 		FormalPoolExtraHealthcheckProxyMismatch:    false,
 		FormalPoolExtraHealthcheckRiskTextDetected: false,
+		FormalPoolExtraHealthcheckSafeErrorCode:    "",
+		FormalPoolExtraHealthcheckSafeErrorBucket:  "",
 		FormalPoolExtraLastHealthcheckAt:           formalPoolTimestamp(now),
 		FormalPoolExtraLastHealthcheckResult:       lastResult,
 	}
@@ -1296,6 +1313,8 @@ func (s *FormalPoolOperationsService) healthcheckExtra(account *Account, result 
 		extra[FormalPoolExtraHealthcheckFallbackDetected] = result.FallbackDetected
 		extra[FormalPoolExtraHealthcheckProxyMismatch] = result.ProxyMismatch
 		extra[FormalPoolExtraHealthcheckRiskTextDetected] = result.RiskTextDetected
+		extra[FormalPoolExtraHealthcheckSafeErrorCode] = sanitizeReasonCode(result.SafeErrorCode)
+		extra[FormalPoolExtraHealthcheckSafeErrorBucket] = sanitizeReasonCode(result.SafeErrorBucket)
 		if isSafeLedgerRef(result.RawCaptureRef) {
 			extra[FormalPoolExtraHealthcheckRawRef] = strings.TrimSpace(result.RawCaptureRef)
 		} else {
@@ -1316,6 +1335,12 @@ func (s *FormalPoolOperationsService) healthcheckExtra(account *Account, result 
 		extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginUpstream)
 		extra[FormalPoolExtraLastFailureCode] = "formal_pool_healthcheck_failed"
 		extra[FormalPoolExtraLastFailureSource] = "formal_pool_healthcheck"
+		if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorCode])) == "" {
+			extra[FormalPoolExtraHealthcheckSafeErrorCode] = "unknown"
+		}
+		if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorBucket])) == "" {
+			extra[FormalPoolExtraHealthcheckSafeErrorBucket] = "unknown"
+		}
 	}
 	return extra
 }

@@ -997,6 +997,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 
 	// 2. Anthropic 平台：尝试解析 per-window 头（5h / 7d），选择实际触发的窗口
 	if result := calculateAnthropic429ResetTime(headers); result != nil {
+		s.persistFormalPoolAnthropic429Extra(ctx, account, "rate_limited", result.window, "rate_limited", result.resetBucket)
 		if err := s.accountRepo.SetRateLimited(ctx, account.ID, result.resetAt); err != nil {
 			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 			return
@@ -1049,6 +1050,8 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		// Anthropic 平台：没有限流重置时间的 429 可能是非真实限流（如 Extra usage required），
 		// 不标记账号限流状态，直接透传错误给客户端
 		if account.Platform == PlatformAnthropic {
+			class := classifyFormalPoolAnthropic429NoReset(responseBody)
+			s.persistFormalPoolAnthropic429Extra(ctx, account, class, "no_reset", "pass_through", "missing")
 			slog.Warn("rate_limit_429_no_reset_time_skipped",
 				"account_id", account.ID,
 				"platform", account.Platform,
@@ -1063,11 +1066,13 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 
 	resetAt, ok := parseAnthropicUnifiedReset(resetTimestamp)
 	if !ok {
+		s.persistFormalPoolAnthropic429Extra(ctx, account, "unknown", "unknown", "fallback_rate_limited", resetBucket(resetTimestamp))
 		slog.Warn("rate_limit_reset_parse_failed", "reset_bucket", resetBucket(resetTimestamp))
 		s.apply429FallbackRateLimit(ctx, account, "reset_parse_failed")
 		return
 	}
 
+	s.persistFormalPoolAnthropic429Extra(ctx, account, "rate_limited", "unknown", "rate_limited", resetBucket(resetTimestamp))
 	// 标记限流状态
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
@@ -1182,6 +1187,8 @@ func (s *RateLimitService) calculateOpenAI429ResetTime(headers http.Header) *tim
 type anthropic429Result struct {
 	resetAt       time.Time  // The correct reset time to use for SetRateLimited
 	fiveHourReset *time.Time // 5h window reset timestamp (for session window calculation), nil if not available
+	window        string
+	resetBucket   string
 }
 
 // calculateAnthropic429ResetTime parses Anthropic's per-window rate-limit headers
@@ -1223,26 +1230,49 @@ func calculateAnthropic429ResetTime(headers http.Header) *anthropic429Result {
 
 	// Select the correct reset time based on which window(s) are exceeded.
 	var chosen *time.Time
+	window := "unknown"
+	chosenRaw := ""
 	switch {
 	case is5hExceeded && is7dExceeded:
 		// Both exceeded → prefer 7d (longer cooldown), fall back to 5h
+		window = "both"
 		chosen = reset7d
+		chosenRaw = reset7dStr
 		if chosen == nil {
 			chosen = reset5h
+			chosenRaw = reset5hStr
 		}
 	case is5hExceeded:
+		window = "5h"
 		chosen = reset5h
+		chosenRaw = reset5hStr
 	case is7dExceeded:
+		window = "7d"
 		chosen = reset7d
+		chosenRaw = reset7dStr
 	default:
 		// Neither flag clearly exceeded — pick the sooner reset as best guess
 		chosen = pickSooner(reset5h, reset7d)
+		chosenRaw = anthropic429ChosenResetRaw(chosen, reset5h, reset7d, reset5hStr, reset7dStr)
 	}
 
 	if chosen == nil {
 		return nil
 	}
-	return &anthropic429Result{resetAt: *chosen, fiveHourReset: reset5h}
+	return &anthropic429Result{resetAt: *chosen, fiveHourReset: reset5h, window: window, resetBucket: resetBucket(chosenRaw)}
+}
+
+func anthropic429ChosenResetRaw(chosen, reset5h, reset7d *time.Time, reset5hRaw, reset7dRaw string) string {
+	if chosen == nil {
+		return ""
+	}
+	if reset5h != nil && chosen.Equal(*reset5h) {
+		return reset5hRaw
+	}
+	if reset7d != nil && chosen.Equal(*reset7d) {
+		return reset7dRaw
+	}
+	return ""
 }
 
 // isAnthropicWindowExceeded checks whether a given Anthropic rate-limit window
@@ -1297,6 +1327,48 @@ func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, accou
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
 		slog.Warn("openai_codex_snapshot_persist_failed", "account_id", account.ID, "error", err)
 	}
+}
+
+func (s *RateLimitService) persistFormalPoolAnthropic429Extra(ctx context.Context, account *Account, errorClass, window, action, resetBucketValue string) {
+	if s == nil || s.accountRepo == nil || account == nil || account.Platform != PlatformAnthropic || !IsFormalPoolAccount(account) {
+		return
+	}
+	updates := map[string]any{
+		FormalPoolExtraRateLimitErrorClass:  sanitizeFormalPoolRateLimitSignal(errorClass, "unknown"),
+		FormalPoolExtraRateLimitWindow:      sanitizeFormalPoolRateLimitSignal(window, "unknown"),
+		FormalPoolExtraRateLimitAction:      sanitizeFormalPoolRateLimitSignal(action, "unknown"),
+		FormalPoolExtraRateLimitResetBucket: sanitizeFormalPoolRateLimitSignal(resetBucketValue, "unknown"),
+		FormalPoolExtraRateLimitLastAt:      formalPoolTimestamp(time.Now()),
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("formal_pool_anthropic_429_extra_update_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	for k, v := range updates {
+		account.Extra[k] = v
+	}
+}
+
+func sanitizeFormalPoolRateLimitSignal(value, fallback string) string {
+	value = sanitizeReasonCode(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func classifyFormalPoolAnthropic429NoReset(body []byte) string {
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
+	if formalPoolLongContextUsageCreditsText(msg) {
+		return "long_context_usage_credits"
+	}
+	if strings.Contains(msg, "usage credit") || strings.Contains(msg, "usage_credits") || strings.Contains(msg, "credits required") {
+		return "usage_credits_required"
+	}
+	return "unknown"
 }
 
 // parseOpenAIRateLimitResetTime 解析 OpenAI 格式的 429 响应，返回重置时间的 Unix 时间戳

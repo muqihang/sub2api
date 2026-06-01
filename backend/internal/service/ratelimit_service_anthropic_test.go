@@ -48,6 +48,61 @@ func TestCalculateAnthropic429ResetTime_BothExceeded(t *testing.T) {
 
 	result := calculateAnthropic429ResetTime(headers)
 	assertAnthropicResult(t, result, 1771549200)
+	if result.window != "both" {
+		t.Errorf("expected window=both, got %q", result.window)
+	}
+}
+
+func TestCalculateAnthropic429ResetTime_ClassifiesWindowForSafeExtra(t *testing.T) {
+	cases := []struct {
+		name       string
+		headers    func() http.Header
+		wantWindow string
+	}{
+		{
+			name: "5h",
+			headers: func() http.Header {
+				h := http.Header{}
+				h.Set("anthropic-ratelimit-unified-5h-utilization", "1.01")
+				h.Set("anthropic-ratelimit-unified-5h-reset", "1770998400")
+				return h
+			},
+			wantWindow: "5h",
+		},
+		{
+			name: "7d",
+			headers: func() http.Header {
+				h := http.Header{}
+				h.Set("anthropic-ratelimit-unified-7d-surpassed-threshold", "true")
+				h.Set("anthropic-ratelimit-unified-7d-reset", "1771549200")
+				return h
+			},
+			wantWindow: "7d",
+		},
+		{
+			name: "unknown",
+			headers: func() http.Header {
+				h := http.Header{}
+				h.Set("anthropic-ratelimit-unified-5h-utilization", "0.80")
+				h.Set("anthropic-ratelimit-unified-5h-reset", "1770998400")
+				h.Set("anthropic-ratelimit-unified-7d-utilization", "0.70")
+				h.Set("anthropic-ratelimit-unified-7d-reset", "1771549200")
+				return h
+			},
+			wantWindow: "unknown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := calculateAnthropic429ResetTime(tc.headers())
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if result.window != tc.wantWindow {
+				t.Fatalf("expected window=%q, got %q", tc.wantWindow, result.window)
+			}
+		})
+	}
 }
 
 func TestCalculateAnthropic429ResetTime_NoPerWindowHeaders(t *testing.T) {

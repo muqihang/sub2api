@@ -810,6 +810,37 @@ func TestFormalPoolOperationsDiagnostics_InvalidGrantRecommendationsByAccountTyp
 	require.NotContains(t, actionKeys(got.RecommendedActions), "healthcheck")
 }
 
+func TestFormalPoolOperationsHealthcheckFailurePersistsSafeClassificationAndDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:     FormalPoolStageRuntimeRegistered,
+		FormalPoolExtraRuntimeRegistered:   "true",
+		FormalPoolExtraRuntimeRegisteredAt: "2026-05-29T00:00:00Z",
+	})
+	account.Status = StatusActive
+	store := newFormalPoolOperationsMutableStore(account)
+	rawRef := "hmac-sha256:" + strings.Repeat("7", 64)
+	healthcheck := &formalPoolOperationsHealthcheckFake{result: &FormalPoolAcceptanceResult{
+		Status:            "failed_acceptance",
+		StatusCodeBucket:  "status_4xx",
+		CCGatewaySeen:     true,
+		RawCapturePresent: true,
+		RawCaptureRef:     rawRef,
+	}}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Healthcheck: healthcheck})
+
+	result, err := svc.healthcheckAccountUnlogged(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "unknown", store.account.Extra["healthcheck_safe_error_code"])
+	require.Equal(t, "unknown", store.account.Extra["healthcheck_safe_error_bucket"])
+	payload := mustJSON(t, result.Diagnostics)
+	require.Contains(t, payload, `"healthcheck_safe_error_code":"unknown"`)
+	require.Contains(t, payload, `"healthcheck_safe_error_bucket":"unknown"`)
+}
+
 func TestFormalPoolOperationsPromoteProduction_EarlyFailureWritesAudit(t *testing.T) {
 	t.Parallel()
 

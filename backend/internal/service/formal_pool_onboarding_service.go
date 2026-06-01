@@ -240,6 +240,8 @@ type FormalPoolAcceptanceResult struct {
 	FallbackDetected               bool                        `json:"fallback_detected,omitempty"`
 	ProxyMismatch                  bool                        `json:"proxy_mismatch,omitempty"`
 	RiskTextDetected               bool                        `json:"risk_text_detected,omitempty"`
+	SafeErrorCode                  string                      `json:"safe_error_code,omitempty"`
+	SafeErrorBucket                string                      `json:"safe_error_bucket,omitempty"`
 }
 
 type formalPoolHealthcheckAcceptanceAdapter struct {
@@ -717,6 +719,8 @@ func formalPoolOnboardingHealthcheckExtra(account *Account, result *FormalPoolAc
 		FormalPoolExtraHealthcheckFallbackDetected: false,
 		FormalPoolExtraHealthcheckProxyMismatch:    false,
 		FormalPoolExtraHealthcheckRiskTextDetected: false,
+		FormalPoolExtraHealthcheckSafeErrorCode:    "",
+		FormalPoolExtraHealthcheckSafeErrorBucket:  "",
 		FormalPoolExtraLastHealthcheckAt:           formalPoolTimestamp(now),
 		FormalPoolExtraLastHealthcheckResult:       lastResult,
 	}
@@ -726,6 +730,8 @@ func formalPoolOnboardingHealthcheckExtra(account *Account, result *FormalPoolAc
 		extra[FormalPoolExtraHealthcheckFallbackDetected] = result.FallbackDetected
 		extra[FormalPoolExtraHealthcheckProxyMismatch] = result.ProxyMismatch
 		extra[FormalPoolExtraHealthcheckRiskTextDetected] = result.RiskTextDetected
+		extra[FormalPoolExtraHealthcheckSafeErrorCode] = sanitizeReasonCode(result.SafeErrorCode)
+		extra[FormalPoolExtraHealthcheckSafeErrorBucket] = sanitizeReasonCode(result.SafeErrorBucket)
 		if isSafeLedgerRef(result.RawCaptureRef) {
 			extra[FormalPoolExtraHealthcheckRawRef] = strings.TrimSpace(result.RawCaptureRef)
 		}
@@ -741,6 +747,12 @@ func formalPoolOnboardingHealthcheckExtra(account *Account, result *FormalPoolAc
 		extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginUpstream)
 		extra[FormalPoolExtraLastFailureCode] = "formal_pool_healthcheck_failed"
 		extra[FormalPoolExtraLastFailureSource] = "formal_pool_healthcheck"
+		if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorCode])) == "" {
+			extra[FormalPoolExtraHealthcheckSafeErrorCode] = "unknown"
+		}
+		if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorBucket])) == "" {
+			extra[FormalPoolExtraHealthcheckSafeErrorBucket] = "unknown"
+		}
 	}
 	return extra
 }
