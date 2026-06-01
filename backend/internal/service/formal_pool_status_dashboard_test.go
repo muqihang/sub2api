@@ -800,6 +800,15 @@ func TestFormalPoolStatusDashboard_AllowsOperationalEmailAccountLabel(t *testing
 	require.Equal(t, "ops-user@example.com", dashboard.Accounts[0].AccountLabel)
 }
 
+func TestFormalPoolStatusDashboard_AllowsOperationalSetupNamedAccountLabel(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(34, FormalPoolStageProduction)
+	acc.Name = "setup max 01"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(34))
+
+	require.Equal(t, "setup max 01", dashboard.Accounts[0].AccountLabel)
+}
+
 func TestFormalPoolStatusDashboard_SanitizesSchemeLessUserinfoAccountLabel(t *testing.T) {
 	acc := formalPoolDashboardTestAccount(33, FormalPoolStageProduction)
 	acc.Name = "proxyuser:secret@example.com"

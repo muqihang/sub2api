@@ -735,7 +735,7 @@ func formalPoolDashboardUnsafeLabel(label string) bool {
 	if formalPoolDashboardUUIDRe.MatchString(label) || formalPoolDashboardLongSecretRe.MatchString(label) {
 		return true
 	}
-	markers := []string{"sk-", "token", "access_token", "refresh", "session_key", "setup", "bearer", "http://", "https://", "://", "raw", "prompt", "body", "cch", "telemetry", "proxy", "password", "credential"}
+	markers := []string{"sk-", "access_token", "refresh_token", "session_key", "bearer", "http://", "https://", "://", "raw", "prompt", "body", "cch", "telemetry", "proxy", "password", "credential"}
 	for _, marker := range markers {
 		if strings.Contains(lower, marker) {
 			return true
