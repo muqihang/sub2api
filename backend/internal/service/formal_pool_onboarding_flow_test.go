@@ -728,6 +728,36 @@ func TestFormalPoolRunAcceptanceWritesFullHealthcheckEvidence(t *testing.T) {
 	}
 }
 
+func TestFormalPoolRunAcceptanceWritesFailedHealthcheckEvidence(t *testing.T) {
+	acct := &formalAccountFake{}
+	rawRef := "hmac-sha256:" + strings.Repeat("d", 64)
+	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: "failed_acceptance", Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck_status_200", Status: "fail", Message: "status_4xx"}}, StatusCodeBucket: "status_4xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef, FallbackDetected: false, ProxyMismatch: false, RiskTextDetected: false, SafeErrorCode: "bad_request", SafeErrorBucket: "request_shape"}}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	_, _ = svc.GenerateAuthURL(context.Background(), sess.ID)
+	_, _ = svc.ExchangeCodeAndCreate(context.Background(), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+
+	accepted, err := svc.RunAcceptance(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	if accepted.Status != "failed_acceptance" || accepted.ActivationRequired {
+		t.Fatalf("failed healthcheck must not activate: %#v", accepted)
+	}
+	extra := acct.account.Extra
+	if extra[FormalPoolExtraHealthcheckStatus] != "failed" || extra[FormalPoolExtraHealthcheckStatusCodeBucket] != "status_4xx" || extra[FormalPoolExtraHealthcheckRawRef] != rawRef {
+		t.Fatalf("failed healthcheck evidence not persisted: %#v", extra)
+	}
+	if extra[FormalPoolExtraHealthcheckSafeErrorCode] != "bad_request" || extra[FormalPoolExtraHealthcheckSafeErrorBucket] != "request_shape" {
+		t.Fatalf("safe error classification not persisted: %#v", extra)
+	}
+	if acct.account.Schedulable || acct.account.GetExtraString(FormalPoolExtraOnboardingStage) == FormalPoolStageHealthcheckPassed {
+		t.Fatalf("failed healthcheck must stay blocked: %#v", acct.account)
+	}
+}
+
 func TestFormalPoolRunAccountHealthcheckWritesFullFailureEvidence(t *testing.T) {
 	acct := &formalAccountFake{}
 	proxyID := int64(6)

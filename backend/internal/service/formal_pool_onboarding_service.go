@@ -628,6 +628,12 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 		checks = append(checks, FormalPoolAcceptanceCheck{Name: "healthcheck_200_required", Status: "fail", Message: "directed healthcheck must return 200 before activation"})
 	}
 	if !formalPoolChecksAllPass(checks) {
+		if s.accounts != nil && healthResult != nil {
+			healthExtra := formalPoolOnboardingHealthcheckExtra(account, healthResult, s.store.now())
+			if _, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, "", healthExtra); err != nil {
+				return nil, err
+			}
+		}
 		return &FormalPoolAcceptanceResult{Status: "failed_acceptance", AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile, Checks: checks, NoRealMessagesRequestPerformed: true, ActivationRequired: false}, nil
 	}
 	if s.accounts != nil {

@@ -188,9 +188,17 @@ func (r *FormalPoolGatewayHealthcheckRunner) ccGatewayMessagesURL() (string, err
 func formalPoolHealthcheckBody() ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"model":      "claude-sonnet-4-6",
-		"messages":   []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "hi"}}}},
-		"max_tokens": 1,
-		"stream":     true,
+		"max_tokens": 1024,
+		"metadata":   map[string]any{"user_id": `{"session_id":"formal-pool-healthcheck"}`},
+		"stream":     false,
+		"system":     []map[string]any{},
+		"messages":   []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "local lite healthcheck"}}}},
+		"tools":      []map[string]any{},
+		"thinking":   map[string]any{"type": "disabled"},
+		"output_config": map[string]any{
+			"effort": "low",
+		},
+		"context_management": map[string]any{"edits": []map[string]any{}},
 	})
 }
 

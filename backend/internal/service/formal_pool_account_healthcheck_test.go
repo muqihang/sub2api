@@ -24,6 +24,7 @@ type formalPoolHealthcheckUpstream struct {
 	lastAccountID int64
 	lastProxy     string
 	lastBody      []byte
+	lastHeaders   http.Header
 }
 
 func (u *formalPoolHealthcheckUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -35,6 +36,7 @@ func (u *formalPoolHealthcheckUpstream) DoWithTLS(req *http.Request, proxyURL st
 	u.lastURL = req.URL.String()
 	u.lastAccountID = accountID
 	u.lastProxy = proxyURL
+	u.lastHeaders = req.Header.Clone()
 	if req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
 		u.lastBody = body
@@ -95,6 +97,30 @@ func TestFormalPoolGatewayHealthcheckRunnerPassesWithSafeEvidence(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, got.FormalPoolHealthcheckPassed(), "%#v", got)
 	require.Equal(t, "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got.RawCaptureRef)
+}
+
+func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMillionContext(t *testing.T) {
+	t.Parallel()
+	account := newFormalPoolHealthcheckAccount()
+	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
+	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{Enabled: true, BaseURL: "http://cc-gateway:8443", Providers: config.GatewayCCGatewayProvidersConfig{Anthropic: true}}}}, nil)
+
+	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: "hmac-sha256:acct-ref", EgressBucket: "bucket-a", ProxyRef: "hmac-sha256:proxy-ref", PoolProfile: PoolProfileNormal})
+
+	require.NoError(t, err)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(upstream.lastBody, &body))
+	require.Equal(t, "claude-sonnet-4-6", body["model"])
+	require.EqualValues(t, 1024, body["max_tokens"])
+	require.Equal(t, false, body["stream"])
+	require.Contains(t, body, "metadata")
+	require.Contains(t, body, "system")
+	require.Contains(t, body, "tools")
+	require.Contains(t, body, "thinking")
+	require.Contains(t, body, "output_config")
+	require.Contains(t, body, "context_management")
+	require.NotContains(t, strings.ToLower(upstream.lastHeaders.Get("anthropic-beta")), "context-1m")
 }
 
 func TestFormalPoolGatewayHealthcheckRunnerQuarantinesAuthFailure(t *testing.T) {
