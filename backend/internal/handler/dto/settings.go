@@ -197,6 +197,9 @@ type SystemSettings struct {
 	// Available Channels feature switch (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 
+	// New Account Management UX V2 feature switch
+	UseNewAccountManagementUX bool `json:"use_new_account_management_ux"`
+
 	// Affiliate (邀请返利) feature switch
 	AffiliateEnabled bool `json:"affiliate_enabled"`
 
@@ -254,6 +257,8 @@ type PublicSettings struct {
 	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
 
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
+
+	UseNewAccountManagementUX bool `json:"use_new_account_management_ux"`
 
 	AffiliateEnabled bool `json:"affiliate_enabled"`
 }

@@ -247,6 +247,8 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
 
+		UseNewAccountManagementUX: settings.UseNewAccountManagementUX,
+
 		AffiliateEnabled: settings.AffiliateEnabled,
 	}
 
@@ -493,6 +495,9 @@ type UpdateSettingsRequest struct {
 
 	// Available Channels feature switch (user-facing)
 	AvailableChannelsEnabled *bool `json:"available_channels_enabled"`
+
+	// New Account Management UX V2 feature switch
+	UseNewAccountManagementUX *bool `json:"use_new_account_management_ux"`
 
 	// Affiliate (邀请返利) feature switch
 	AffiliateEnabled *bool `json:"affiliate_enabled"`
@@ -1359,6 +1364,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.AvailableChannelsEnabled
 		}(),
+		UseNewAccountManagementUX: func() bool {
+			if req.UseNewAccountManagementUX != nil {
+				return *req.UseNewAccountManagementUX
+			}
+			return previousSettings.UseNewAccountManagementUX
+		}(),
 		AffiliateEnabled: func() bool {
 			if req.AffiliateEnabled != nil {
 				return *req.AffiliateEnabled
@@ -1614,6 +1625,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		ChannelMonitorDefaultIntervalSeconds: updatedSettings.ChannelMonitorDefaultIntervalSeconds,
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
+
+		UseNewAccountManagementUX: updatedSettings.UseNewAccountManagementUX,
 
 		AffiliateEnabled: updatedSettings.AffiliateEnabled,
 	}
@@ -2000,6 +2013,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.AvailableChannelsEnabled != after.AvailableChannelsEnabled {
 		changed = append(changed, "available_channels_enabled")
+	}
+	if before.UseNewAccountManagementUX != after.UseNewAccountManagementUX {
+		changed = append(changed, "use_new_account_management_ux")
 	}
 	if before.AffiliateEnabled != after.AffiliateEnabled {
 		changed = append(changed, "affiliate_enabled")

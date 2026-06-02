@@ -280,6 +280,10 @@ const (
 	// sidebar entry is hidden. Defaults to false (opt-in feature).
 	SettingKeyAvailableChannelsEnabled = "available_channels_enabled"
 
+	// SettingKeyUseNewAccountManagementUX gates the new account management UX V2 at runtime.
+	// Defaults to false (opt-in rollout).
+	SettingKeyUseNewAccountManagementUX = "use_new_account_management_ux"
+
 	// =========================
 	// Overload Cooldown (529)
 	// =========================

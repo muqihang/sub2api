@@ -91,6 +91,43 @@ func TestSettingService_GetPublicSettings_ExposesForceEmailOnThirdPartySignup(t 
 	require.True(t, settings.ForceEmailOnThirdPartySignup)
 }
 
+func TestSettingService_GetPublicSettings_NewAccountManagementUXDefaultsFalse(t *testing.T) {
+	repo := &settingPublicRepoStub{values: map[string]string{}}
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.False(t, settings.UseNewAccountManagementUX)
+}
+
+func TestSettingService_GetPublicSettings_ExposesNewAccountManagementUX(t *testing.T) {
+	repo := &settingPublicRepoStub{
+		values: map[string]string{
+			SettingKeyUseNewAccountManagementUX: "true",
+		},
+	}
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetPublicSettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, settings.UseNewAccountManagementUX)
+}
+
+func TestSettingService_GetPublicSettingsForInjection_IncludesNewAccountManagementUX(t *testing.T) {
+	repo := &settingPublicRepoStub{
+		values: map[string]string{
+			SettingKeyUseNewAccountManagementUX: "true",
+		},
+	}
+	svc := NewSettingService(repo, &config.Config{})
+
+	payload, err := svc.GetPublicSettingsForInjection(context.Background())
+	require.NoError(t, err)
+	injection, ok := payload.(*PublicSettingsInjectionPayload)
+	require.True(t, ok)
+	require.True(t, injection.UseNewAccountManagementUX)
+}
+
 func TestSettingService_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *testing.T) {
 	svc := NewSettingService(&settingPublicRepoStub{
 		values: map[string]string{
