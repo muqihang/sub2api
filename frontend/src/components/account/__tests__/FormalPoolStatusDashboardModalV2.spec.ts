@@ -269,7 +269,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
   it('uses safe row DOM refs and labels without raw account IDs', async () => {
     const rawAccountId = 987654321
     const wrapper = await mountWithFixture([
-      accountFixture({ account_id: rawAccountId, account_label: '' }),
+      accountFixture({ account_id: rawAccountId, account_label: `账号 #${rawAccountId}` }),
     ])
 
     const html = wrapper.html()

@@ -573,7 +573,8 @@ function formatSessionsText(runtime: FormalPoolStatusRuntime | null | undefined)
 }
 
 function displayAccountLabel(row: FormalPoolStatusDashboardAccount): string {
-  return scrubFormalPoolDisplayText(row.account_label, '账号（未命名）')
+  const label = scrubFormalPoolDisplayText(row.account_label, '账号（未命名）')
+  return /^账号\s*#\d+$/i.test(label) ? '账号（未命名）' : label
 }
 
 function rowDomRef(row: FormalPoolStatusDashboardAccount, index: number): string {
