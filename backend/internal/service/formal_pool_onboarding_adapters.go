@@ -15,11 +15,38 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 )
 
-type FormalPoolAdminProxyVerifier struct{ admin AdminService }
+type formalPoolProxyAdminService interface {
+	GetProxy(ctx context.Context, id int64) (*Proxy, error)
+	CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error)
+	TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error)
+}
+
+type FormalPoolAdminProxyVerifier struct {
+	admin       formalPoolProxyAdminService
+	egressCache *ProxyEgressCache
+	egressProbe ProxyEgressProbe
+}
 
 func NewFormalPoolAdminProxyVerifier(admin AdminService) *FormalPoolAdminProxyVerifier {
-	return &FormalPoolAdminProxyVerifier{admin: admin}
+	probe := NewSideEffectFreeProxyEgressProbe(ProxyEgressProbeOptions{})
+	return NewFormalPoolAdminProxyVerifierWithEgressProbe(
+		admin,
+		NewProxyEgressCache(ProxyEgressCacheOptions{}),
+		probe.Probe,
+	)
 }
+
+func NewFormalPoolAdminProxyVerifierWithEgressProbe(admin formalPoolProxyAdminService, cache *ProxyEgressCache, probe ProxyEgressProbe) *FormalPoolAdminProxyVerifier {
+	if cache == nil {
+		cache = NewProxyEgressCache(ProxyEgressCacheOptions{})
+	}
+	if probe == nil {
+		defaultProbe := NewSideEffectFreeProxyEgressProbe(ProxyEgressProbeOptions{})
+		probe = defaultProbe.Probe
+	}
+	return &FormalPoolAdminProxyVerifier{admin: admin, egressCache: cache, egressProbe: probe}
+}
+
 func (v *FormalPoolAdminProxyVerifier) ResolveOrCreateProxy(ctx context.Context, req FormalPoolOnboardingStartRequest) (FormalPoolProxyResolution, error) {
 	if v == nil || v.admin == nil {
 		return FormalPoolProxyResolution{}, ErrFormalPoolOnboardingNotFound
@@ -54,6 +81,7 @@ func (v *FormalPoolAdminProxyVerifier) TestProxy(ctx context.Context, proxyID in
 	if v == nil || v.admin == nil {
 		return FormalPoolProxyTestSummary{}, ErrFormalPoolOnboardingNotFound
 	}
+	v.InvalidateProxyEgress(proxyID)
 	proxy, err := v.admin.GetProxy(ctx, proxyID)
 	if err != nil {
 		return FormalPoolProxyTestSummary{}, err
@@ -72,6 +100,30 @@ func (v *FormalPoolAdminProxyVerifier) TestProxy(ctx context.Context, proxyID in
 		return FormalPoolProxyTestSummary{}, fmt.Errorf("proxy test failed")
 	}
 	return FormalPoolProxyTestSummary{Success: true, ProxyRef: formalPoolSafeRef("proxy", fmt.Sprintf("%d", proxyID)), ExitIPRef: formalPoolSafeRef("exit_ip", res.IPAddress), LatencyBucket: formalPoolLatencyBucket(res.LatencyMs)}, nil
+}
+
+func (v *FormalPoolAdminProxyVerifier) InvalidateProxyEgress(proxyID int64) {
+	if v == nil || v.egressCache == nil {
+		return
+	}
+	v.egressCache.InvalidateProxy(proxyID)
+}
+
+func (v *FormalPoolAdminProxyVerifier) GetRawEgressIP(ctx context.Context, proxyID int64, normalizedProxyURL string) (string, error) {
+	if v == nil {
+		return "", ErrFormalPoolOnboardingNotFound
+	}
+	cache := v.egressCache
+	if cache == nil {
+		cache = NewProxyEgressCache(ProxyEgressCacheOptions{})
+	}
+	probe := v.egressProbe
+	if probe == nil {
+		defaultProbe := NewSideEffectFreeProxyEgressProbe(ProxyEgressProbeOptions{})
+		probe = defaultProbe.Probe
+	}
+	rawIP, _, err := cache.GetOrProbe(ctx, proxyID, normalizedProxyURL, probe)
+	return rawIP, err
 }
 
 func formalPoolLatencyBucket(ms int64) string {

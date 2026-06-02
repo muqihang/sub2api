@@ -2267,3 +2267,23 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 		t.Fatalf("image stream timeout = %d, want greater than ordinary stream timeout %d", cfg.Gateway.ImageStreamDataIntervalTimeout, cfg.Gateway.StreamDataIntervalTimeout)
 	}
 }
+
+func TestLoadDefaultFormalPoolRuntimeConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.Equal(t, 5*time.Minute, cfg.FormalPool.NonceTTL)
+	require.Empty(t, cfg.FormalPool.EgressMatchCIDRWhitelist)
+	require.Equal(t, 60*time.Second, cfg.FormalPool.ProxyEgressCacheSuccessTTL)
+	require.Equal(t, 15*time.Second, cfg.FormalPool.ProxyEgressCacheFailureTTL)
+	require.Equal(t, 3*time.Second, cfg.FormalPool.ProxyEgressProbeTimeout)
+	require.Equal(t, 10, cfg.FormalPool.PublicRouteRatePerNonce)
+	require.Equal(t, 30, cfg.FormalPool.PublicRouteRatePerIP)
+	require.Equal(t, 20, cfg.FormalPool.PublicRouteTotalPerNonce)
+	require.Equal(t, 3, cfg.FormalPool.PublicRouteFallbackPerIP)
+	require.Equal(t, 80*time.Millisecond, cfg.FormalPool.PublicRouteConstantDelayMin)
+	require.Equal(t, 150*time.Millisecond, cfg.FormalPool.PublicRouteConstantDelayMax)
+	require.Empty(t, cfg.FormalPool.RateLimitHMACSecret)
+}

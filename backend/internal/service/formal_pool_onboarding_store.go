@@ -32,31 +32,39 @@ const (
 )
 
 type formalPoolOnboardingSessionRecord struct {
-	ID                         string
-	Status                     string
-	ProxyMode                  string
-	ProxyID                    int64
-	CreatedProxyInput          *FormalPoolProxyInput
-	ProxyRef                   string
-	NormalizedProxyURL         string
-	GroupID                    int64
-	AccountName                string
-	Notes                      string
-	PoolProfile                string
-	Concurrency                int
-	EgressBucket               string
-	BrowserNonce               string
-	BrowserVerified            bool
-	OAuthSessionID             string
-	AuthURL                    string
-	AccountID                  int64
-	AccountRef                 string
-	OAuthSummary               *FormalPoolOAuthTokenSummary
-	AcceptancePassed           bool
-	HealthcheckPassed          bool
-	CCGatewayRuntimeRegistered bool
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
+	ID                           string
+	Version                      int64
+	Status                       string
+	ProxyMode                    string
+	ProxyID                      int64
+	CreatedProxyInput            *FormalPoolProxyInput
+	ProxyRef                     string
+	NormalizedProxyURL           string
+	GroupID                      int64
+	AccountName                  string
+	Notes                        string
+	PoolProfile                  string
+	Concurrency                  int
+	EgressBucket                 string
+	BrowserNonce                 string
+	NonceExpiresAt               time.Time
+	BrowserVerified              bool
+	BrowserEgressCheckStatus     string
+	BrowserVerifiedAt            time.Time
+	BrowserEgressMismatchAt      time.Time
+	BrowserEgressBrowserIPBucket string
+	BrowserEgressProxyIPBucket   string
+	BrowserEgressLastErrorCode   string
+	OAuthSessionID               string
+	AuthURL                      string
+	AccountID                    int64
+	AccountRef                   string
+	OAuthSummary                 *FormalPoolOAuthTokenSummary
+	AcceptancePassed             bool
+	HealthcheckPassed            bool
+	CCGatewayRuntimeRegistered   bool
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
 }
 
 type FormalPoolOnboardingStore struct {
@@ -80,6 +88,9 @@ func (s *FormalPoolOnboardingStore) save(rec *formalPoolOnboardingSessionRecord)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	copy := *rec
+	if copy.Version <= 0 {
+		copy.Version = 1
+	}
 	s.sessions[rec.ID] = &copy
 }
 
@@ -107,6 +118,53 @@ func (s *FormalPoolOnboardingStore) update(id string, fn func(*formalPoolOnboard
 	rec.UpdatedAt = s.now()
 	copy := *rec
 	return &copy, nil
+}
+
+func (s *FormalPoolOnboardingStore) snapshotByNonce(nonce string) (*formalPoolOnboardingSessionRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	nonce = strings.TrimSpace(nonce)
+	if nonce == "" {
+		return nil, ErrFormalPoolOnboardingNotFound
+	}
+	now := s.now()
+	for _, rec := range s.sessions {
+		if rec != nil && rec.BrowserNonce == nonce && !s.sessionExpired(rec, now) {
+			copy := *rec
+			return &copy, nil
+		}
+	}
+	return nil, ErrFormalPoolOnboardingNotFound
+}
+
+func (s *FormalPoolOnboardingStore) casUpdate(id string, expectedVersion int64, mutate func(*formalPoolOnboardingSessionRecord) error) (*formalPoolOnboardingSessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.sessions[strings.TrimSpace(id)]
+	now := s.now()
+	if !ok || rec == nil || s.sessionExpired(rec, now) {
+		return nil, ErrFormalPoolOnboardingNotFound
+	}
+	if rec.Version != expectedVersion {
+		return nil, ErrFormalPoolOnboardingVersionConflict
+	}
+	next := *rec
+	if err := mutate(&next); err != nil {
+		return nil, err
+	}
+	next.Version = rec.Version + 1
+	next.UpdatedAt = now
+	s.sessions[rec.ID] = &next
+	copy := next
+	return &copy, nil
+}
+
+func (s *FormalPoolOnboardingStore) sessionExpired(rec *formalPoolOnboardingSessionRecord, now time.Time) bool {
+	return rec == nil || now.Sub(rec.CreatedAt) > s.ttl
+}
+
+func nonceExpired(rec *formalPoolOnboardingSessionRecord, now time.Time) bool {
+	return rec != nil && !rec.NonceExpiresAt.IsZero() && now.After(rec.NonceExpiresAt)
 }
 
 func formalPoolRandomID(prefix string) string {

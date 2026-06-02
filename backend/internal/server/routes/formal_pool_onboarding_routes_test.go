@@ -2,9 +2,13 @@ package routes
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	ihandler "github.com/Wei-Shaw/sub2api/internal/handler"
 	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
@@ -31,8 +35,10 @@ func TestFormalPoolOnboardingRoutes_AdminAndPublicBrowserEgress(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/bad-nonce", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNotFound, rec.Code)
-	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"ok":false,"message":"Browser egress check received."}`, rec.Body.String())
+	require.NotContains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND")
+	require.NotContains(t, rec.Body.String(), "bad-nonce")
 	require.Equal(t, 0, adminAuthCalls, "browser egress check must not require admin session")
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions", bytes.NewBufferString(`{}`))
@@ -65,4 +71,168 @@ func TestFormalPoolOnboardingRoutes_AdminAndPublicBrowserEgress(t *testing.T) {
 	require.Equal(t, 5, adminAuthCalls, "production promotion route must remain admin protected")
 	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND")
 
+}
+
+func TestFormalPoolOnboardingBrowserEgressPublicRouteSafeFailureBodiesAreEqual(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
+	store := service.NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
+	proxy := &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}
+	cfg := service.DefaultFormalPoolConfig()
+	cfg.NonceTTL = time.Minute
+	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Config: cfg})
+	router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), nil)
+
+	mismatchNonce := createFormalPoolOnboardingRoutesNonce(t, svc)
+	expiredNonce := createFormalPoolOnboardingRoutesNonce(t, svc)
+
+	unknown := performFormalPoolOnboardingRoutesRequest(router, http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/raw-unknown-nonce", "203.0.113.44")
+	mismatch := performFormalPoolOnboardingRoutesRequest(router, http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/"+mismatchNonce, "203.0.113.44")
+	now = now.Add(2 * time.Minute)
+	expired := performFormalPoolOnboardingRoutesRequest(router, http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/"+expiredNonce, "198.51.100.10")
+
+	for _, rec := range []*httptest.ResponseRecorder{unknown, mismatch, expired} {
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `{"ok":false,"message":"Browser egress check received."}`, rec.Body.String())
+		body := rec.Body.String()
+		require.NotContains(t, body, "raw-unknown-nonce")
+		require.NotContains(t, body, mismatchNonce)
+		require.NotContains(t, body, expiredNonce)
+		require.NotContains(t, body, "203.0.113.44")
+		require.NotContains(t, body, "198.51.100.10")
+		require.NotContains(t, body, "FORMAL_POOL_ONBOARDING_NOT_FOUND")
+		require.NotContains(t, body, "FORMAL_POOL_ONBOARDING_NONCE_EXPIRED")
+		require.NotContains(t, body, "FORMAL_POOL_ONBOARDING_EGRESS_MISMATCH")
+	}
+	require.Equal(t, unknown.Body.String(), mismatch.Body.String())
+	require.Equal(t, unknown.Body.String(), expired.Body.String())
+}
+
+func TestFormalPoolOnboardingBrowserEgressPublicRouteLimiterDeniedRecordsSafeRisk(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	limiter := &formalPoolOnboardingRoutesLimiter{decision: service.FormalPoolEgressRateLimitDecision{
+		Allowed: false, NonceBucket: "nonce_bucket_safe1234", IPBucket: "ip_bucket_safe5678", Reason: "per_ip",
+	}}
+	risk := &formalPoolOnboardingRoutesRiskWriter{}
+	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{})
+	h := adminhandler.NewFormalPoolOnboardingHandlerWithPublicDeps(svc, limiter, risk)
+	router := newFormalPoolOnboardingRoutesRouter(h, nil)
+
+	rec := performFormalPoolOnboardingRoutesRequest(router, http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/raw-denied-nonce", "198.51.100.99")
+
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.JSONEq(t, `{"ok":false}`, rec.Body.String())
+	require.Len(t, risk.rateLimited, 1)
+	require.Equal(t, "nonce_bucket_safe1234", risk.rateLimited[0].nonceBucket)
+	require.Equal(t, "ip_bucket_safe5678", risk.rateLimited[0].ipBucket)
+	require.Equal(t, "per_ip", risk.rateLimited[0].reason)
+	require.NotContains(t, rec.Body.String(), "raw-denied-nonce")
+	require.NotContains(t, rec.Body.String(), "198.51.100.99")
+}
+
+func TestFormalPoolOnboardingBrowserEgressPublicRouteSuccessOnlyReturnsOK(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
+	nonce := createFormalPoolOnboardingRoutesNonce(t, svc)
+	router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), nil)
+
+	rec := performFormalPoolOnboardingRoutesRequest(router, http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/"+nonce, "198.51.100.10")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"ok":true}`, rec.Body.String())
+	body := strings.ToLower(rec.Body.String())
+	for _, forbidden := range []string{"session", "id", "safe_summary", "proxy", "account", "browser_egress_check_url", nonce} {
+		require.NotContains(t, body, strings.ToLower(forbidden))
+	}
+}
+
+func newFormalPoolOnboardingRoutesRouter(h *adminhandler.FormalPoolOnboardingHandler, adminAuth gin.HandlerFunc) *gin.Engine {
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	handlers := &ihandler.Handlers{Admin: &ihandler.AdminHandlers{FormalPoolOnboarding: h}}
+	RegisterFormalPoolOnboardingPublicRoutes(v1, handlers)
+	if adminAuth != nil {
+		RegisterAdminRoutes(v1, handlers, middleware.AdminAuthMiddleware(adminAuth))
+	}
+	return router
+}
+
+func performFormalPoolOnboardingRoutesRequest(router *gin.Engine, method, path, remoteIP string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	if strings.TrimSpace(remoteIP) != "" {
+		req.RemoteAddr = fmt.Sprintf("%s:1234", remoteIP)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func createFormalPoolOnboardingRoutesNonce(t *testing.T, svc *service.FormalPoolOnboardingService) string {
+	t.Helper()
+	created, err := svc.StartSession(context.Background(), service.FormalPoolOnboardingStartRequest{
+		ProxyMode: "existing", ProxyID: formalPoolOnboardingRoutesPtrInt64(7), GroupID: 42, AccountName: "acct",
+	})
+	require.NoError(t, err)
+	tested, err := svc.TestProxy(context.Background(), created.ID)
+	require.NoError(t, err)
+	parts := strings.Split(strings.TrimRight(tested.BrowserEgressCheckURL, "/"), "/")
+	nonce := parts[len(parts)-1]
+	require.NotEmpty(t, nonce)
+	return nonce
+}
+
+func formalPoolOnboardingRoutesPtrInt64(v int64) *int64 { return &v }
+
+type formalPoolOnboardingRoutesProxy struct{ rawIP string }
+
+func (p *formalPoolOnboardingRoutesProxy) ResolveOrCreateProxy(ctx context.Context, req service.FormalPoolOnboardingStartRequest) (service.FormalPoolProxyResolution, error) {
+	id := int64(7)
+	if req.ProxyID != nil {
+		id = *req.ProxyID
+	}
+	return service.FormalPoolProxyResolution{ProxyID: id, ProxyRef: "proxy_ref_safe", NormalizedProxyURL: "socks5h://proxy.local:1080"}, nil
+}
+
+func (p *formalPoolOnboardingRoutesProxy) TestProxy(ctx context.Context, proxyID int64) (service.FormalPoolProxyTestSummary, error) {
+	return service.FormalPoolProxyTestSummary{Success: true, ProxyRef: "proxy_ref_safe", ExitIPRef: "exit_ip_safe", LatencyBucket: "lt_500ms"}, nil
+}
+
+func (p *formalPoolOnboardingRoutesProxy) GetRawEgressIP(ctx context.Context, proxyID int64, normalizedProxyURL string) (string, error) {
+	if strings.TrimSpace(p.rawIP) == "" {
+		return "198.51.100.10", nil
+	}
+	return p.rawIP, nil
+}
+
+type formalPoolOnboardingRoutesLimiter struct {
+	decision service.FormalPoolEgressRateLimitDecision
+}
+
+func (l *formalPoolOnboardingRoutesLimiter) CheckEgressCheck(ctx context.Context, nonce, ip string) service.FormalPoolEgressRateLimitDecision {
+	return l.decision
+}
+
+type formalPoolOnboardingRoutesRiskWriter struct {
+	rateLimited []struct{ nonceBucket, ipBucket, reason string }
+}
+
+func (w *formalPoolOnboardingRoutesRiskWriter) RecordEgressVerified(ctx context.Context, input service.FormalPoolRiskEventInput) error {
+	return nil
+}
+func (w *formalPoolOnboardingRoutesRiskWriter) RecordEgressMismatch(ctx context.Context, input service.FormalPoolRiskEventInput) error {
+	return nil
+}
+func (w *formalPoolOnboardingRoutesRiskWriter) RecordNonceExpired(ctx context.Context, input service.FormalPoolRiskEventInput) error {
+	return nil
+}
+func (w *formalPoolOnboardingRoutesRiskWriter) RecordEgressNoProxy(ctx context.Context, input service.FormalPoolRiskEventInput) error {
+	return nil
+}
+func (w *formalPoolOnboardingRoutesRiskWriter) RecordPublicRouteRateLimited(ctx context.Context, input service.FormalPoolRiskEventInput) error {
+	w.rateLimited = append(w.rateLimited, struct{ nonceBucket, ipBucket, reason string }{input.NonceBucket, input.IPBucket, input.SafeReasonCode})
+	return nil
+}
+func (w *formalPoolOnboardingRoutesRiskWriter) RecordPublicRouteRateLimitedBuckets(ctx context.Context, nonceBucket, ipBucket, reason string) error {
+	w.rateLimited = append(w.rateLimited, struct{ nonceBucket, ipBucket, reason string }{nonceBucket, ipBucket, reason})
+	return nil
 }

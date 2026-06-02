@@ -90,6 +90,7 @@ type Config struct {
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
+	FormalPool              FormalPoolRuntimeConfig       `mapstructure:"formal_pool"`
 }
 
 type LogConfig struct {
@@ -158,6 +159,21 @@ type UpdateConfig struct {
 	// 支持 http/https/socks5/socks5h 协议
 	// 例如: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080"
 	ProxyURL string `mapstructure:"proxy_url"`
+}
+
+type FormalPoolRuntimeConfig struct {
+	NonceTTL                    time.Duration `mapstructure:"nonce_ttl"`
+	EgressMatchCIDRWhitelist    []string      `mapstructure:"egress_match_cidr_whitelist"`
+	ProxyEgressCacheSuccessTTL  time.Duration `mapstructure:"proxy_egress_cache_success_ttl"`
+	ProxyEgressCacheFailureTTL  time.Duration `mapstructure:"proxy_egress_cache_failure_ttl"`
+	ProxyEgressProbeTimeout     time.Duration `mapstructure:"proxy_egress_probe_timeout"`
+	PublicRouteRatePerNonce     int           `mapstructure:"public_route_rate_per_nonce"`
+	PublicRouteRatePerIP        int           `mapstructure:"public_route_rate_per_ip"`
+	PublicRouteTotalPerNonce    int           `mapstructure:"public_route_total_per_nonce"`
+	PublicRouteFallbackPerIP    int           `mapstructure:"public_route_fallback_per_ip"`
+	PublicRouteConstantDelayMin time.Duration `mapstructure:"public_route_constant_delay_min"`
+	PublicRouteConstantDelayMax time.Duration `mapstructure:"public_route_constant_delay_max"`
+	RateLimitHMACSecret         string        `mapstructure:"rate_limit_hmac_secret"`
 }
 
 type IdempotencyConfig struct {
@@ -1851,6 +1867,20 @@ func setDefaults() {
 	viper.SetDefault("idempotency.max_stored_response_len", 64*1024)
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
+
+	// Formal pool
+	viper.SetDefault("formal_pool.nonce_ttl", 5*time.Minute)
+	viper.SetDefault("formal_pool.egress_match_cidr_whitelist", []string{})
+	viper.SetDefault("formal_pool.proxy_egress_cache_success_ttl", 60*time.Second)
+	viper.SetDefault("formal_pool.proxy_egress_cache_failure_ttl", 15*time.Second)
+	viper.SetDefault("formal_pool.proxy_egress_probe_timeout", 3*time.Second)
+	viper.SetDefault("formal_pool.public_route_rate_per_nonce", 10)
+	viper.SetDefault("formal_pool.public_route_rate_per_ip", 30)
+	viper.SetDefault("formal_pool.public_route_total_per_nonce", 20)
+	viper.SetDefault("formal_pool.public_route_fallback_per_ip", 3)
+	viper.SetDefault("formal_pool.public_route_constant_delay_min", 80*time.Millisecond)
+	viper.SetDefault("formal_pool.public_route_constant_delay_max", 150*time.Millisecond)
+	viper.SetDefault("formal_pool.rate_limit_hmac_secret", "")
 
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久

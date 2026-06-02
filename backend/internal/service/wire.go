@@ -57,10 +57,23 @@ func ProvideCodexEntryCenterConfig(cfg *config.Config) *CodexEntryCenterConfig {
 	return &CodexEntryCenterConfig{ServerOrigin: frontendURL, GatewayOrigin: ""}
 }
 
-func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOnboardingService {
+func ProvideFormalPoolConfig(cfg *config.Config) (FormalPoolConfig, error) {
+	return formalPoolConfigFromAppConfig(cfg)
+}
+
+func ProvideFormalPoolRiskEventWriter() FormalPoolRiskEventWriter {
+	return NewFormalPoolRiskEventWriter(newDefaultSessionBudgetObserveSink())
+}
+
+func ProvideFormalPoolEgressRateLimiter(formalPoolCfg FormalPoolConfig) FormalPoolEgressRateLimiter {
+	return NewFormalPoolEgressRateLimiter(formalPoolCfg, time.Now)
+}
+
+func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, formalPoolCfg FormalPoolConfig, riskWriter FormalPoolRiskEventWriter, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOnboardingService {
 	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
 	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
 	return NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+		Config:           formalPoolCfg,
 		OAuth:            oauthFacade,
 		Refresh:          oauthFacade,
 		Proxy:            NewFormalPoolAdminProxyVerifier(adminService),
@@ -68,9 +81,61 @@ func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService 
 		CCGateway:        NewFormalPoolStaticCCGatewayReadinessVerifier(),
 		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
 		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		Risk:             riskWriter,
 		CacheInvalidator: cacheInvalidator,
 		SchedulerCache:   schedulerCache,
 	})
+}
+
+func formalPoolConfigFromAppConfig(cfg *config.Config) (FormalPoolConfig, error) {
+	formalPoolCfg := DefaultFormalPoolConfig()
+	if cfg == nil {
+		return formalPoolCfg, nil
+	}
+	runtimeCfg := cfg.FormalPool
+	if runtimeCfg.NonceTTL > 0 {
+		formalPoolCfg.NonceTTL = runtimeCfg.NonceTTL
+	}
+	allowlist, err := ParseFormalPoolCIDRAllowlist(runtimeCfg.EgressMatchCIDRWhitelist)
+	if err != nil {
+		return FormalPoolConfig{}, fmt.Errorf("invalid formal_pool egress_match_cidr_whitelist")
+	}
+	formalPoolCfg.EgressMatchCIDRWhitelist = allowlist
+	if runtimeCfg.ProxyEgressCacheSuccessTTL > 0 {
+		formalPoolCfg.ProxyEgressCacheSuccessTTL = runtimeCfg.ProxyEgressCacheSuccessTTL
+	}
+	if runtimeCfg.ProxyEgressCacheFailureTTL > 0 {
+		formalPoolCfg.ProxyEgressCacheFailureTTL = runtimeCfg.ProxyEgressCacheFailureTTL
+	}
+	if runtimeCfg.ProxyEgressProbeTimeout > 0 {
+		formalPoolCfg.ProxyEgressProbeTimeout = runtimeCfg.ProxyEgressProbeTimeout
+	}
+	if runtimeCfg.PublicRouteRatePerNonce > 0 {
+		formalPoolCfg.PublicRouteRatePerNonce = runtimeCfg.PublicRouteRatePerNonce
+	}
+	if runtimeCfg.PublicRouteRatePerIP > 0 {
+		formalPoolCfg.PublicRouteRatePerIP = runtimeCfg.PublicRouteRatePerIP
+	}
+	if runtimeCfg.PublicRouteTotalPerNonce > 0 {
+		formalPoolCfg.PublicRouteTotalPerNonce = runtimeCfg.PublicRouteTotalPerNonce
+	}
+	if runtimeCfg.PublicRouteFallbackPerIP > 0 {
+		formalPoolCfg.PublicRouteFallbackPerIP = runtimeCfg.PublicRouteFallbackPerIP
+	}
+	if runtimeCfg.PublicRouteConstantDelayMin > 0 {
+		formalPoolCfg.PublicRouteConstantDelayMin = runtimeCfg.PublicRouteConstantDelayMin
+	}
+	if runtimeCfg.PublicRouteConstantDelayMax > 0 {
+		formalPoolCfg.PublicRouteConstantDelayMax = runtimeCfg.PublicRouteConstantDelayMax
+	}
+	if strings.TrimSpace(runtimeCfg.RateLimitHMACSecret) != "" {
+		secret, err := ParseFormalPoolHMACSecretHex(runtimeCfg.RateLimitHMACSecret)
+		if err != nil {
+			return FormalPoolConfig{}, fmt.Errorf("invalid formal_pool rate_limit_hmac_secret")
+		}
+		formalPoolCfg.RateLimitHMACSecret = secret
+	}
+	return formalPoolCfg, nil
 }
 
 func ProvideFormalPoolOperationsService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOperationsService {
@@ -876,6 +941,9 @@ var ProviderSet = wire.NewSet(
 	NewEntityRateLimitService,
 	ProvideOpenAIGatewayService,
 	NewOAuthService,
+	ProvideFormalPoolConfig,
+	ProvideFormalPoolRiskEventWriter,
+	ProvideFormalPoolEgressRateLimiter,
 	ProvideFormalPoolOnboardingService,
 	ProvideFormalPoolOperationsService,
 	ProvideFormalPoolRuntimeRegistrationStartupReplay,

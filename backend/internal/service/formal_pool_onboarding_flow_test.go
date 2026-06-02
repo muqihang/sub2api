@@ -34,6 +34,10 @@ func (f *formalProxyFake) TestProxy(ctx context.Context, proxyID int64) (FormalP
 	return FormalPoolProxyTestSummary{Success: true, ProxyRef: formalPoolSafeRef("proxy", "9"), ExitIPRef: formalPoolSafeRef("exit_ip", "203.0.113.10"), LatencyBucket: "lt_500ms"}, nil
 }
 
+func (f *formalProxyFake) GetRawEgressIP(ctx context.Context, proxyID int64, normalizedProxyURL string) (string, error) {
+	return "203.0.113.10", nil
+}
+
 type formalOAuthFake struct {
 	summary         FormalPoolOAuthTokenSummary
 	creds           map[string]any

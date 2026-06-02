@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -11,7 +13,10 @@ import (
 )
 
 var (
-	ErrFormalPoolOnboardingNotFound = infraerrors.NotFound("FORMAL_POOL_ONBOARDING_NOT_FOUND", "formal pool onboarding session not found")
+	ErrFormalPoolOnboardingNotFound        = infraerrors.NotFound("FORMAL_POOL_ONBOARDING_NOT_FOUND", "formal pool onboarding session not found")
+	ErrFormalPoolOnboardingVersionConflict = infraerrors.Conflict("FORMAL_POOL_ONBOARDING_VERSION_CONFLICT", "formal pool onboarding session version conflict")
+	ErrFormalPoolOnboardingNonceExpired    = infraerrors.BadRequest("FORMAL_POOL_ONBOARDING_NONCE_EXPIRED", "formal pool onboarding nonce expired")
+	ErrFormalPoolOnboardingEgressMismatch  = infraerrors.BadRequest("FORMAL_POOL_ONBOARDING_EGRESS_MISMATCH", "formal pool browser egress does not match proxy egress")
 )
 
 type FormalPoolOAuthFacade interface {
@@ -27,6 +32,7 @@ type FormalPoolRefreshOnlyRunner interface {
 type FormalPoolProxyVerifier interface {
 	ResolveOrCreateProxy(ctx context.Context, req FormalPoolOnboardingStartRequest) (FormalPoolProxyResolution, error)
 	TestProxy(ctx context.Context, proxyID int64) (FormalPoolProxyTestSummary, error)
+	GetRawEgressIP(ctx context.Context, proxyID int64, normalizedProxyURL string) (string, error)
 }
 
 type FormalPoolAccountCreator interface {
@@ -55,6 +61,7 @@ type FormalPoolAccountHealthcheckRunner interface {
 
 type FormalPoolOnboardingDeps struct {
 	Store            *FormalPoolOnboardingStore
+	Config           FormalPoolConfig
 	OAuth            FormalPoolOAuthFacade
 	Proxy            FormalPoolProxyVerifier
 	Accounts         FormalPoolAccountCreator
@@ -63,6 +70,7 @@ type FormalPoolOnboardingDeps struct {
 	Acceptance       FormalPoolAcceptanceRunner
 	Healthcheck      FormalPoolAccountHealthcheckRunner
 	Refresh          FormalPoolRefreshOnlyRunner
+	Risk             FormalPoolRiskEventWriter
 	CacheInvalidator TokenCacheInvalidator
 	SchedulerCache   SchedulerCache
 	PublicURLPrefix  string
@@ -78,9 +86,11 @@ type FormalPoolOnboardingService struct {
 	acceptance       FormalPoolAcceptanceRunner
 	healthcheck      FormalPoolAccountHealthcheckRunner
 	refresh          FormalPoolRefreshOnlyRunner
+	risk             FormalPoolRiskEventWriter
 	cacheInvalidator TokenCacheInvalidator
 	schedulerCache   SchedulerCache
 	publicURLPrefix  string
+	config           FormalPoolConfig
 }
 
 type FormalPoolOnboardingStartRequest struct {
@@ -109,27 +119,33 @@ type FormalPoolProxyInput struct {
 }
 
 type FormalPoolOnboardingSession struct {
-	ID                         string                       `json:"id"`
-	Status                     string                       `json:"status"`
-	ProxyID                    int64                        `json:"proxy_id,omitempty"`
-	ProxyRef                   string                       `json:"proxy_ref,omitempty"`
-	EgressBucket               string                       `json:"egress_bucket"`
-	PoolProfile                string                       `json:"pool_profile"`
-	GroupID                    int64                        `json:"group_id"`
-	AccountName                string                       `json:"account_name"`
-	Concurrency                int                          `json:"concurrency"`
-	AuthURL                    string                       `json:"auth_url,omitempty"`
-	OAuthSessionID             string                       `json:"oauth_session_id,omitempty"`
-	BrowserEgressCheckURL      string                       `json:"browser_egress_check_url,omitempty"`
-	BrowserEgressVerified      bool                         `json:"browser_egress_verified"`
-	AccountID                  int64                        `json:"account_id,omitempty"`
-	AccountRef                 string                       `json:"account_ref,omitempty"`
-	OAuthSummary               *FormalPoolOAuthTokenSummary `json:"oauth_summary,omitempty"`
-	SafeSummary                map[string]any               `json:"safe_summary"`
-	Checks                     []FormalPoolAcceptanceCheck  `json:"checks,omitempty"`
-	CCGatewayRuntimeRegistered bool                         `json:"cc_gateway_runtime_registered"`
-	HealthcheckPassed          bool                         `json:"healthcheck_passed"`
-	ProductionReady            bool                         `json:"production_ready"`
+	ID                           string                       `json:"id"`
+	Status                       string                       `json:"status"`
+	ProxyID                      int64                        `json:"proxy_id,omitempty"`
+	ProxyRef                     string                       `json:"proxy_ref,omitempty"`
+	EgressBucket                 string                       `json:"egress_bucket"`
+	PoolProfile                  string                       `json:"pool_profile"`
+	GroupID                      int64                        `json:"group_id"`
+	AccountName                  string                       `json:"account_name"`
+	Concurrency                  int                          `json:"concurrency"`
+	AuthURL                      string                       `json:"auth_url,omitempty"`
+	OAuthSessionID               string                       `json:"oauth_session_id,omitempty"`
+	BrowserEgressCheckURL        string                       `json:"browser_egress_check_url,omitempty"`
+	BrowserEgressCheckStatus     string                       `json:"browser_egress_check_status"`
+	BrowserEgressBrowserIPBucket string                       `json:"browser_egress_browser_ip_bucket,omitempty"`
+	BrowserEgressProxyIPBucket   string                       `json:"browser_egress_proxy_ip_bucket,omitempty"`
+	BrowserEgressLastErrorCode   string                       `json:"browser_egress_last_error_code,omitempty"`
+	BrowserEgressMismatchAt      string                       `json:"browser_egress_mismatch_at,omitempty"`
+	NonceExpiresAt               string                       `json:"nonce_expires_at,omitempty"`
+	BrowserEgressVerified        bool                         `json:"browser_egress_verified"`
+	AccountID                    int64                        `json:"account_id,omitempty"`
+	AccountRef                   string                       `json:"account_ref,omitempty"`
+	OAuthSummary                 *FormalPoolOAuthTokenSummary `json:"oauth_summary,omitempty"`
+	SafeSummary                  map[string]any               `json:"safe_summary"`
+	Checks                       []FormalPoolAcceptanceCheck  `json:"checks,omitempty"`
+	CCGatewayRuntimeRegistered   bool                         `json:"cc_gateway_runtime_registered"`
+	HealthcheckPassed            bool                         `json:"healthcheck_passed"`
+	ProductionReady              bool                         `json:"production_ready"`
 }
 
 type FormalPoolOAuthURL struct {
@@ -266,7 +282,16 @@ func NewFormalPoolOnboardingService(deps FormalPoolOnboardingDeps) *FormalPoolOn
 		store = NewFormalPoolOnboardingStore(FormalPoolOnboardingDefaultTTL, time.Now)
 	}
 	prefix := strings.TrimRight(strings.TrimSpace(deps.PublicURLPrefix), "/")
-	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, cacheInvalidator: deps.CacheInvalidator, schedulerCache: deps.SchedulerCache, publicURLPrefix: prefix}
+	cfg := formalPoolOnboardingConfigWithDefaults(deps.Config)
+	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, risk: deps.Risk, cacheInvalidator: deps.CacheInvalidator, schedulerCache: deps.SchedulerCache, publicURLPrefix: prefix, config: cfg}
+}
+
+func formalPoolOnboardingConfigWithDefaults(cfg FormalPoolConfig) FormalPoolConfig {
+	defaults := DefaultFormalPoolConfig()
+	if cfg.NonceTTL <= 0 {
+		cfg.NonceTTL = defaults.NonceTTL
+	}
+	return cfg
 }
 
 func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req FormalPoolOnboardingStartRequest) (*FormalPoolOnboardingSession, error) {
@@ -301,8 +326,8 @@ func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req Form
 		NormalizedProxyURL: normalizedProxyURL,
 		GroupID:            req.GroupID, AccountName: strings.TrimSpace(req.AccountName), Notes: strings.TrimSpace(req.Notes),
 		PoolProfile: profile, Concurrency: concurrency,
-		EgressBucket: formalPoolSafeBucket(proxyRef), BrowserNonce: formalPoolRandomID("nonce_"),
-		CreatedAt: now, UpdatedAt: now,
+		EgressBucket: formalPoolSafeBucket(proxyRef),
+		CreatedAt:    now, UpdatedAt: now,
 	}
 	if req.Proxy != nil {
 		copy := *req.Proxy
@@ -346,13 +371,212 @@ func (s *FormalPoolOnboardingService) MarkBrowserEgressVerifiedForTest(_ context
 	return s.sessionResponse(rec, nil), nil
 }
 
-func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(_ context.Context, nonce, remoteIP string) (*FormalPoolOnboardingSession, error) {
-	_ = remoteIP
-	_, ok := s.store.findByNonce(nonce)
-	if !ok {
+func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Context, nonce, remoteIP string) (*FormalPoolOnboardingSession, error) {
+	nonce = strings.TrimSpace(nonce)
+	if nonce == "" {
 		return nil, ErrFormalPoolOnboardingNotFound
 	}
-	return nil, infraerrors.BadRequest("BROWSER_EGRESS_ATTESTATION_REQUIRED", "automatic browser egress matching is not yet available; use explicit attestation")
+	for attempt := 0; attempt < 3; attempt++ {
+		snap, err := s.store.snapshotByNonce(nonce)
+		if err != nil {
+			return nil, err
+		}
+		if snap.BrowserEgressCheckStatus == "verified" || snap.BrowserVerified {
+			return s.sessionResponse(snap, []FormalPoolAcceptanceCheck{{Name: "browser_egress_verification", Status: "pass"}}), nil
+		}
+		if nonceExpired(snap, s.store.now()) {
+			updated, err := s.casExpireNonce(snap)
+			if err != nil {
+				if errors.Is(err, ErrFormalPoolOnboardingVersionConflict) {
+					continue
+				}
+				return nil, err
+			}
+			s.recordFormalPoolNonceExpired(ctx, updated, nonce, remoteIP)
+			return nil, ErrFormalPoolOnboardingNonceExpired
+		}
+		if s.proxy == nil {
+			return nil, infraerrors.ServiceUnavailable("PROXY_VERIFIER_UNAVAILABLE", "formal pool proxy verifier is unavailable")
+		}
+		proxyIP, probeErr := s.proxy.GetRawEgressIP(ctx, snap.ProxyID, snap.NormalizedProxyURL)
+		if probeErr != nil {
+			updated, err := s.casUpdateNoProxyEgress(snap)
+			if err != nil {
+				if errors.Is(err, ErrFormalPoolOnboardingVersionConflict) {
+					continue
+				}
+				return nil, err
+			}
+			if updated.BrowserEgressCheckStatus == "expired" {
+				s.recordFormalPoolNonceExpired(ctx, updated, nonce, remoteIP)
+				return nil, ErrFormalPoolOnboardingNonceExpired
+			}
+			s.recordFormalPoolEgressNoProxy(ctx, updated, nonce, remoteIP)
+			return nil, probeErr
+		}
+		browserBucket := formalPoolNetworkBucket("browser_bucket_", remoteIP)
+		proxyBucket := formalPoolNetworkBucket("proxy_bucket_", proxyIP)
+		matched := formalPoolEgressIPsMatch(remoteIP, proxyIP, s.config.EgressMatchCIDRWhitelist)
+		updated, err := s.casUpdateBrowserEgressResult(snap, matched, browserBucket, proxyBucket)
+		if err != nil {
+			if errors.Is(err, ErrFormalPoolOnboardingVersionConflict) {
+				continue
+			}
+			return nil, err
+		}
+		if updated.BrowserEgressCheckStatus == "expired" {
+			s.recordFormalPoolNonceExpired(ctx, updated, nonce, remoteIP)
+			return nil, ErrFormalPoolOnboardingNonceExpired
+		}
+		if updated.BrowserEgressCheckStatus == "verified" || updated.BrowserVerified {
+			s.recordFormalPoolEgressVerified(ctx, updated, nonce, browserBucket, proxyBucket)
+			return s.sessionResponse(updated, []FormalPoolAcceptanceCheck{{Name: "browser_egress_verification", Status: "pass"}}), nil
+		}
+		s.recordFormalPoolEgressMismatch(ctx, updated, nonce, browserBucket, proxyBucket)
+		return nil, ErrFormalPoolOnboardingEgressMismatch
+	}
+	return nil, ErrFormalPoolOnboardingVersionConflict
+}
+
+func (s *FormalPoolOnboardingService) casExpireNonce(snap *formalPoolOnboardingSessionRecord) (*formalPoolOnboardingSessionRecord, error) {
+	return s.store.casUpdate(snap.ID, snap.Version, func(rec *formalPoolOnboardingSessionRecord) error {
+		rec.BrowserEgressCheckStatus = "expired"
+		rec.BrowserEgressLastErrorCode = "nonce_expired"
+		return nil
+	})
+}
+
+func (s *FormalPoolOnboardingService) casUpdateNoProxyEgress(snap *formalPoolOnboardingSessionRecord) (*formalPoolOnboardingSessionRecord, error) {
+	return s.store.casUpdate(snap.ID, snap.Version, func(rec *formalPoolOnboardingSessionRecord) error {
+		if nonceExpired(rec, s.store.now()) {
+			rec.BrowserEgressCheckStatus = "expired"
+			rec.BrowserEgressLastErrorCode = "nonce_expired"
+			return nil
+		}
+		if strings.TrimSpace(rec.BrowserEgressCheckStatus) == "" {
+			rec.BrowserEgressCheckStatus = "waiting"
+		}
+		rec.BrowserEgressLastErrorCode = "no_proxy_egress"
+		return nil
+	})
+}
+
+func (s *FormalPoolOnboardingService) casUpdateBrowserEgressResult(snap *formalPoolOnboardingSessionRecord, matched bool, browserBucket, proxyBucket string) (*formalPoolOnboardingSessionRecord, error) {
+	now := s.store.now()
+	return s.store.casUpdate(snap.ID, snap.Version, func(rec *formalPoolOnboardingSessionRecord) error {
+		if nonceExpired(rec, s.store.now()) {
+			rec.BrowserEgressCheckStatus = "expired"
+			rec.BrowserEgressLastErrorCode = "nonce_expired"
+			return nil
+		}
+		rec.BrowserEgressBrowserIPBucket = browserBucket
+		rec.BrowserEgressProxyIPBucket = proxyBucket
+		if matched {
+			rec.BrowserEgressCheckStatus = "verified"
+			rec.BrowserVerified = true
+			rec.BrowserVerifiedAt = now
+			rec.Status = FormalPoolOnboardingStatusBrowserEgressVerified
+			rec.BrowserEgressLastErrorCode = ""
+			return nil
+		}
+		rec.BrowserEgressCheckStatus = "mismatch"
+		rec.BrowserEgressMismatchAt = now
+		rec.BrowserEgressLastErrorCode = "mismatch"
+		return nil
+	})
+}
+
+func formalPoolEgressIPsMatch(browserIP, proxyIP string, allowlist []net.IPNet) bool {
+	browserIP = strings.TrimSpace(browserIP)
+	proxyIP = strings.TrimSpace(proxyIP)
+	if browserIP == "" || proxyIP == "" {
+		return false
+	}
+	parsedBrowser := net.ParseIP(browserIP)
+	parsedProxy := net.ParseIP(proxyIP)
+	if parsedBrowser != nil && parsedProxy != nil {
+		if parsedBrowser.Equal(parsedProxy) {
+			return true
+		}
+		for _, network := range allowlist {
+			if network.Contains(parsedBrowser) && network.Contains(parsedProxy) {
+				return true
+			}
+		}
+		return false
+	}
+	return browserIP == proxyIP
+}
+
+func formalPoolNetworkBucket(prefix, raw string) string {
+	ref := formalPoolSafeRef("network_bucket_"+prefix, strings.TrimSpace(raw))
+	suffix := strings.TrimPrefix(ref, "hmac-sha256:")
+	if len(suffix) > 16 {
+		suffix = suffix[:16]
+	}
+	return prefix + suffix
+}
+
+func formalPoolNonceBucket(nonce string) string {
+	ref := formalPoolSafeRef("nonce_bucket", strings.TrimSpace(nonce))
+	suffix := strings.TrimPrefix(ref, "hmac-sha256:")
+	if len(suffix) > 16 {
+		suffix = suffix[:16]
+	}
+	return "nonce_bucket_" + suffix
+}
+
+func (s *FormalPoolOnboardingService) formalPoolRiskInput(rec *formalPoolOnboardingSessionRecord, nonce string, buckets ...string) FormalPoolRiskEventInput {
+	input := FormalPoolRiskEventInput{
+		RawSessionID: rec.ID,
+		NonceBucket:  formalPoolNonceBucket(nonce),
+		ObservedAt:   s.store.now(),
+	}
+	for _, bucket := range buckets {
+		if strings.HasPrefix(bucket, "browser_bucket_") {
+			input.IPBucket = bucket
+			continue
+		}
+		if strings.TrimSpace(bucket) != "" {
+			input.SafeContextBuckets = append(input.SafeContextBuckets, bucket)
+		}
+	}
+	if rec.AccountID != 0 {
+		input.RawAccountID = fmt.Sprintf("%d", rec.AccountID)
+	}
+	return input
+}
+
+func (s *FormalPoolOnboardingService) recordFormalPoolEgressVerified(ctx context.Context, rec *formalPoolOnboardingSessionRecord, nonce, browserBucket, proxyBucket string) {
+	if s.risk != nil {
+		input := s.formalPoolRiskInput(rec, nonce, browserBucket, proxyBucket)
+		input.SafeReasonCode = "egress_verified"
+		_ = s.risk.RecordEgressVerified(ctx, input)
+	}
+}
+
+func (s *FormalPoolOnboardingService) recordFormalPoolEgressMismatch(ctx context.Context, rec *formalPoolOnboardingSessionRecord, nonce, browserBucket, proxyBucket string) {
+	if s.risk != nil {
+		input := s.formalPoolRiskInput(rec, nonce, browserBucket, proxyBucket)
+		input.SafeReasonCode = "egress_mismatch"
+		_ = s.risk.RecordEgressMismatch(ctx, input)
+	}
+}
+
+func (s *FormalPoolOnboardingService) recordFormalPoolNonceExpired(ctx context.Context, rec *formalPoolOnboardingSessionRecord, nonce, remoteIP string) {
+	if s.risk != nil {
+		input := s.formalPoolRiskInput(rec, nonce, formalPoolNetworkBucket("browser_bucket_", remoteIP))
+		input.SafeReasonCode = "nonce_expired"
+		_ = s.risk.RecordNonceExpired(ctx, input)
+	}
+}
+
+func (s *FormalPoolOnboardingService) recordFormalPoolEgressNoProxy(ctx context.Context, rec *formalPoolOnboardingSessionRecord, nonce, remoteIP string) {
+	if s.risk != nil {
+		input := s.formalPoolRiskInput(rec, nonce, formalPoolNetworkBucket("browser_bucket_", remoteIP))
+		input.SafeReasonCode = "egress_no_proxy"
+		_ = s.risk.RecordEgressNoProxy(ctx, input)
+	}
 }
 
 func (s *FormalPoolOnboardingService) TestProxy(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
@@ -375,6 +599,15 @@ func (s *FormalPoolOnboardingService) TestProxy(ctx context.Context, id string) 
 		if strings.TrimSpace(summary.ProxyRef) != "" {
 			rec.ProxyRef = summary.ProxyRef
 		}
+		rec.BrowserNonce = formalPoolRandomID("nonce_")
+		rec.NonceExpiresAt = s.store.now().Add(s.config.NonceTTL)
+		rec.BrowserEgressCheckStatus = "waiting"
+		rec.BrowserVerified = false
+		rec.BrowserVerifiedAt = time.Time{}
+		rec.BrowserEgressMismatchAt = time.Time{}
+		rec.BrowserEgressBrowserIPBucket = ""
+		rec.BrowserEgressProxyIPBucket = ""
+		rec.BrowserEgressLastErrorCode = ""
 		return nil
 	})
 	if err != nil {
@@ -1239,28 +1472,90 @@ func normalizeFormalPoolProfile(v string) string {
 }
 
 func (s *FormalPoolOnboardingService) sessionResponse(rec *formalPoolOnboardingSessionRecord, checks []FormalPoolAcceptanceCheck) *FormalPoolOnboardingSession {
+	checkStatus := formalPoolSafeBrowserEgressStatus(rec.BrowserEgressCheckStatus)
+	lastErrorCode := formalPoolSafeBrowserEgressLastErrorCode(rec.BrowserEgressLastErrorCode)
+	browserBucket := formalPoolSafeResponseBucket(rec.BrowserEgressBrowserIPBucket)
+	proxyBucket := formalPoolSafeResponseBucket(rec.BrowserEgressProxyIPBucket)
+	mismatchAt := formalPoolRFC3339UTC(rec.BrowserEgressMismatchAt)
+	nonceExpiresAt := formalPoolRFC3339UTC(rec.NonceExpiresAt)
 	summary := map[string]any{
-		"session_ref":                   formalPoolSafeRef("session", rec.ID),
-		"proxy_ref":                     rec.ProxyRef,
-		"pool_profile":                  rec.PoolProfile,
-		"browser_egress_verified":       rec.BrowserVerified,
-		"oauth_url_generated":           rec.AuthURL != "",
-		"cc_gateway_runtime_registered": rec.CCGatewayRuntimeRegistered,
-		"healthcheck_passed":            rec.HealthcheckPassed,
+		"session_ref":                          formalPoolSafeRef("session", rec.ID),
+		"proxy_ref":                            rec.ProxyRef,
+		"pool_profile":                         rec.PoolProfile,
+		"browser_egress_verified":              rec.BrowserVerified,
+		"browser_egress_check_status":          checkStatus,
+		"browser_egress_browser_ip_bucket_set": browserBucket != "",
+		"browser_egress_proxy_ip_bucket_set":   proxyBucket != "",
+		"oauth_url_generated":                  rec.AuthURL != "",
+		"cc_gateway_runtime_registered":        rec.CCGatewayRuntimeRegistered,
+		"healthcheck_passed":                   rec.HealthcheckPassed,
+	}
+	if lastErrorCode != "" {
+		summary["browser_egress_last_error_code"] = lastErrorCode
 	}
 	return &FormalPoolOnboardingSession{
 		ID: rec.ID, Status: rec.Status, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket,
 		PoolProfile: rec.PoolProfile, GroupID: rec.GroupID, AccountName: rec.AccountName, Concurrency: rec.Concurrency,
 		AuthURL: rec.AuthURL, OAuthSessionID: rec.OAuthSessionID, BrowserEgressCheckURL: s.browserURL(rec.BrowserNonce),
-		BrowserEgressVerified: rec.BrowserVerified, AccountID: rec.AccountID, AccountRef: rec.AccountRef, OAuthSummary: rec.OAuthSummary, SafeSummary: summary, Checks: checks,
-		CCGatewayRuntimeRegistered: rec.CCGatewayRuntimeRegistered,
-		HealthcheckPassed:          rec.HealthcheckPassed,
-		ProductionReady:            rec.Status == FormalPoolOnboardingStatusProduction,
+		BrowserEgressCheckStatus:     checkStatus,
+		BrowserEgressBrowserIPBucket: browserBucket,
+		BrowserEgressProxyIPBucket:   proxyBucket,
+		BrowserEgressLastErrorCode:   lastErrorCode,
+		BrowserEgressMismatchAt:      mismatchAt,
+		NonceExpiresAt:               nonceExpiresAt,
+		BrowserEgressVerified:        rec.BrowserVerified,
+		AccountID:                    rec.AccountID,
+		AccountRef:                   rec.AccountRef,
+		OAuthSummary:                 rec.OAuthSummary,
+		SafeSummary:                  summary,
+		Checks:                       checks,
+		CCGatewayRuntimeRegistered:   rec.CCGatewayRuntimeRegistered,
+		HealthcheckPassed:            rec.HealthcheckPassed,
+		ProductionReady:              rec.Status == FormalPoolOnboardingStatusProduction,
 	}
 }
 
+func formalPoolSafeBrowserEgressStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "", "idle":
+		return "idle"
+	case "waiting", "verified", "mismatch", "expired":
+		return strings.TrimSpace(status)
+	default:
+		return "idle"
+	}
+}
+
+func formalPoolSafeBrowserEgressLastErrorCode(code string) string {
+	switch strings.TrimSpace(code) {
+	case "nonce_expired", "mismatch", "no_proxy_egress":
+		return strings.TrimSpace(code)
+	default:
+		return ""
+	}
+}
+
+func formalPoolSafeResponseBucket(bucket string) string {
+	bucket = strings.TrimSpace(bucket)
+	if formalPoolSafeBucketAllowed(bucket) {
+		return bucket
+	}
+	return ""
+}
+
+func formalPoolRFC3339UTC(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 func (s *FormalPoolOnboardingService) browserURL(nonce string) string {
-	path := formalPoolBrowserEgressPublicPathPrefix + strings.TrimSpace(nonce)
+	nonce = strings.TrimSpace(nonce)
+	if nonce == "" {
+		return ""
+	}
+	path := formalPoolBrowserEgressPublicPathPrefix + nonce
 	if s.publicURLPrefix == "" {
 		return path
 	}
@@ -1294,7 +1589,11 @@ func FormalPoolSensitivePathForTest(v any) string {
 func formalPoolSensitivePath(v reflect.Value, key string) string {
 	if key != "" {
 		lk := strings.ToLower(key)
-		if !(strings.HasSuffix(lk, "_present") || strings.HasSuffix(lk, "_bucket") || strings.HasSuffix(lk, "_ref") || strings.Contains(lk, "_contains_")) {
+		if handled, allowed := formalPoolSensitiveKeyValueAllowed(lk, v); handled {
+			if !allowed {
+				return key
+			}
+		} else if !(strings.HasSuffix(lk, "_present") || strings.HasSuffix(lk, "_bucket") || strings.HasSuffix(lk, "_ref") || strings.Contains(lk, "_contains_")) {
 			for _, frag := range formalPoolSensitiveKeyFragments {
 				if strings.Contains(lk, frag) {
 					return key
@@ -1350,7 +1649,11 @@ func formalPoolSensitivePath(v reflect.Value, key string) string {
 func formalPoolContainsSensitive(v reflect.Value, key string) bool {
 	if key != "" {
 		lk := strings.ToLower(key)
-		if strings.HasSuffix(lk, "_present") || strings.HasSuffix(lk, "_bucket") || strings.HasSuffix(lk, "_ref") || strings.Contains(lk, "_contains_") {
+		if handled, allowed := formalPoolSensitiveKeyValueAllowed(lk, v); handled {
+			if !allowed {
+				return true
+			}
+		} else if strings.HasSuffix(lk, "_present") || strings.HasSuffix(lk, "_bucket") || strings.HasSuffix(lk, "_ref") || strings.Contains(lk, "_contains_") {
 			// Presence/bucket/ref fields are the allowed redacted form for identity checks.
 		} else {
 			for _, frag := range formalPoolSensitiveKeyFragments {
@@ -1403,4 +1706,33 @@ func formalPoolContainsSensitive(v reflect.Value, key string) bool {
 		}
 	}
 	return false
+}
+
+func formalPoolSensitiveKeyValueAllowed(lk string, v reflect.Value) (bool, bool) {
+	switch lk {
+	case "browser_egress_last_error_code":
+		val, ok := formalPoolStringReflectValue(v)
+		return true, ok && (val == "" || formalPoolSafeBrowserEgressLastErrorCode(val) == val)
+	case "browser_egress_browser_ip_bucket", "browser_egress_proxy_ip_bucket":
+		val, ok := formalPoolStringReflectValue(v)
+		return true, ok && (val == "" || formalPoolSafeBucketAllowed(val))
+	default:
+		return false, false
+	}
+}
+
+func formalPoolStringReflectValue(v reflect.Value) (string, bool) {
+	for v.IsValid() && (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) {
+		if v.IsNil() {
+			return "", true
+		}
+		v = v.Elem()
+	}
+	if !v.IsValid() {
+		return "", true
+	}
+	if v.Kind() != reflect.String {
+		return "", false
+	}
+	return strings.TrimSpace(v.String()), true
 }

@@ -191,14 +191,22 @@ func formalPoolHealthcheckBody() ([]byte, error) {
 		"max_tokens": 1024,
 		"metadata":   map[string]any{"user_id": `{"session_id":"formal-pool-healthcheck"}`},
 		"stream":     false,
-		"system":     []map[string]any{},
-		"messages":   []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "local lite healthcheck"}}}},
-		"tools":      []map[string]any{},
-		"thinking":   map[string]any{"type": "disabled"},
+		"system": []map[string]any{
+			{"type": "text", "text": "<env>\nPlatform: darwin\nShell: zsh\nOS Version: Darwin 24.4.0\nWorking directory: /tmp/formal-pool-healthcheck\n</env>"},
+			{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for software engineering tasks. This is a formal-pool directed healthcheck. Keep the response minimal and do not inspect files or call tools."},
+		},
+		"messages": []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "Return a compact healthcheck JSON object with ok true."}}}},
+		"tools":    []map[string]any{},
 		"output_config": map[string]any{
 			"effort": "low",
+			"format": map[string]any{
+				"type": "json_schema",
+				"schema": map[string]any{
+					"type":                 "object",
+					"additionalProperties": true,
+				},
+			},
 		},
-		"context_management": map[string]any{"edits": []map[string]any{}},
 	})
 }
 

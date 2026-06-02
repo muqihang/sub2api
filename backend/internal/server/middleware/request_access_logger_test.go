@@ -2,6 +2,9 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -174,9 +177,71 @@ func TestLogger_AccessLogIncludesCoreFields(t *testing.T) {
 		if event.Fields["platform"] != "openai" || event.Fields["model"] != "gpt-5" {
 			t.Fatalf("platform/model mismatch: %+v", event.Fields)
 		}
+		if got := event.Fields["path"]; got != "/api/test" {
+			t.Fatalf("path field mismatch: %v", got)
+		}
+		if got := event.Fields["client_ip"]; got == "" || got == nil {
+			t.Fatalf("client_ip should be recorded for ordinary route: %+v", event.Fields)
+		}
 	}
 	if !found {
 		t.Fatalf("access log event not found")
+	}
+}
+
+func TestLogger_BrowserEgressAccessLogRedactsNonceAndClientIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := initMiddlewareTestLogger(t)
+
+	r := gin.New()
+	r.Use(Logger())
+	r.GET("/api/v1/claude-onboarding/browser-egress-check/:nonce", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/raw-nonce-secret", nil)
+	req.RemoteAddr = "198.51.100.77:1234"
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+
+	event := findTestLogEvent(t, sink.list(), "http request completed")
+	if got := event.Fields["path"]; got != "/api/v1/claude-onboarding/browser-egress-check/:nonce" {
+		t.Fatalf("path=%q, want browser egress template", got)
+	}
+	if got, ok := event.Fields["client_ip"]; ok && got == "198.51.100.77" {
+		t.Fatalf("client_ip should not contain raw IP: %+v", event.Fields)
+	}
+	requireFieldsNotContain(t, event, "raw-nonce-secret")
+	requireFieldsNotContain(t, event, "198.51.100.77")
+}
+
+func TestLogger_BrowserEgressGinErrorsRedactsNonceAndClientIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := initMiddlewareTestLogger(t)
+
+	r := gin.New()
+	r.Use(Logger())
+	r.GET("/api/v1/claude-onboarding/browser-egress-check/:nonce", func(c *gin.Context) {
+		_ = c.Error(errors.New("raw-nonce-secret 198.51.100.77"))
+		c.Status(http.StatusBadRequest)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/raw-nonce-secret", nil)
+	req.RemoteAddr = "198.51.100.77:1234"
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", w.Code)
+	}
+
+	event := findTestLogEvent(t, sink.list(), "http request contains gin errors")
+	requireFieldsNotContain(t, event, "raw-nonce-secret")
+	requireFieldsNotContain(t, event, "198.51.100.77")
+	if got, ok := event.Fields["errors"]; ok && got != "redacted" {
+		t.Fatalf("browser egress gin errors should be redacted, got %q", got)
 	}
 }
 
@@ -224,5 +289,28 @@ func TestLogger_AccessLogDroppedWhenLevelWarn(t *testing.T) {
 		if event != nil && event.Message == "http request completed" {
 			t.Fatalf("access log should not be indexed when level=warn: %+v", event)
 		}
+	}
+}
+
+func findTestLogEvent(t *testing.T, events []*logger.LogEvent, message string) *logger.LogEvent {
+	t.Helper()
+	for _, event := range events {
+		if event != nil && event.Message == message {
+			return event
+		}
+	}
+	t.Fatalf("log event %q not found in %+v", message, events)
+	return nil
+}
+
+func requireFieldsNotContain(t *testing.T, event *logger.LogEvent, secret string) {
+	t.Helper()
+	fieldsJSON, err := json.Marshal(event.Fields)
+	if err != nil {
+		t.Fatalf("marshal fields: %v", err)
+	}
+	fieldsText := string(fieldsJSON) + " " + fmt.Sprintf("%#v", event.Fields)
+	if strings.Contains(fieldsText, secret) {
+		t.Fatalf("log fields for %q contain %q: %s", event.Message, secret, fieldsText)
 	}
 }

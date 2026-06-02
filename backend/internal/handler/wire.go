@@ -104,6 +104,14 @@ func ProvideCodexGatewayAdminHandler(
 	return admin.NewCodexGatewayHandler(adminSvc)
 }
 
+func ProvideFormalPoolOnboardingHandler(
+	svc *service.FormalPoolOnboardingService,
+	limiter service.FormalPoolEgressRateLimiter,
+	riskWriter service.FormalPoolRiskEventWriter,
+) *admin.FormalPoolOnboardingHandler {
+	return admin.NewFormalPoolOnboardingHandlerWithPublicDeps(svc, limiter, riskWriter)
+}
+
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
 func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo) *SettingHandler {
 	return NewSettingHandler(settingService, buildInfo.Version)
@@ -268,7 +276,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAffiliateHandler,
 	ProvideAugmentGatewayHandler,
 	ProvideCodexGatewayAdminHandler,
-	admin.NewFormalPoolOnboardingHandler,
+	ProvideFormalPoolOnboardingHandler,
 	admin.NewFormalPoolOperationsHandler,
 
 	// AdminHandlers and Handlers constructors

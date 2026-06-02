@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/zeromicro/go-zero/core/collection"
 )
 
@@ -65,5 +66,109 @@ func TestProvideFormalPoolRuntimeRegistrationStartupReplayUsesCCGatewayRegistrar
 	}
 	if account.Schedulable || account.GetExtraString(FormalPoolExtraRuntimeRegistered) != "true" || account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt) != "2026-05-30T03:04:05Z" {
 		t.Fatalf("startup replay should not make account schedulable and should record timestamp: %#v", account)
+	}
+}
+
+func TestFormalPoolConfigFromAppConfigParsesValidCIDRAllowlist(t *testing.T) {
+	got, err := formalPoolConfigFromAppConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{
+		NonceTTL:                 2 * time.Minute,
+		EgressMatchCIDRWhitelist: []string{"198.51.100.0/24", "2001:db8::/32"},
+	}})
+	if err != nil {
+		t.Fatalf("formalPoolConfigFromAppConfig() error = %v", err)
+	}
+	if got.NonceTTL != 2*time.Minute {
+		t.Fatalf("NonceTTL = %v, want 2m", got.NonceTTL)
+	}
+	if len(got.EgressMatchCIDRWhitelist) != 2 {
+		t.Fatalf("allowlist len = %d, want 2", len(got.EgressMatchCIDRWhitelist))
+	}
+	if got.EgressMatchCIDRWhitelist[0].String() != "198.51.100.0/24" || got.EgressMatchCIDRWhitelist[1].String() != "2001:db8::/32" {
+		t.Fatalf("unexpected allowlist = %#v", got.EgressMatchCIDRWhitelist)
+	}
+}
+
+func TestFormalPoolConfigFromAppConfigInvalidCIDRFailsClosedAndSanitizesError(t *testing.T) {
+	rawInvalid := "203.0.113.7/not-a-prefix"
+	_, err := formalPoolConfigFromAppConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{
+		EgressMatchCIDRWhitelist: []string{rawInvalid},
+	}})
+	if err == nil {
+		t.Fatalf("formalPoolConfigFromAppConfig() error = nil, want invalid CIDR error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "invalid formal_pool egress_match_cidr_whitelist") {
+		t.Fatalf("error %q missing sanitized reason", msg)
+	}
+	if strings.Contains(msg, rawInvalid) || strings.Contains(msg, "not-a-prefix") || strings.Contains(msg, "203.0.113.7") {
+		t.Fatalf("error leaked raw invalid CIDR: %q", msg)
+	}
+}
+
+func TestFormalPoolConfigFromAppConfigMapsRateLimitAndSecret(t *testing.T) {
+	rawSecret := strings.Repeat("ab", 32)
+	got, err := formalPoolConfigFromAppConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{
+		NonceTTL:                    7 * time.Minute,
+		EgressMatchCIDRWhitelist:    []string{"198.51.100.0/24"},
+		ProxyEgressCacheSuccessTTL:  45 * time.Second,
+		ProxyEgressCacheFailureTTL:  9 * time.Second,
+		ProxyEgressProbeTimeout:     2 * time.Second,
+		PublicRouteRatePerNonce:     4,
+		PublicRouteRatePerIP:        5,
+		PublicRouteTotalPerNonce:    6,
+		PublicRouteFallbackPerIP:    7,
+		PublicRouteConstantDelayMin: 11 * time.Millisecond,
+		PublicRouteConstantDelayMax: 22 * time.Millisecond,
+		RateLimitHMACSecret:         rawSecret,
+	}})
+	if err != nil {
+		t.Fatalf("formalPoolConfigFromAppConfig() error = %v", err)
+	}
+	if len(got.RateLimitHMACSecret) != 32 {
+		t.Fatalf("RateLimitHMACSecret len = %d, want 32", len(got.RateLimitHMACSecret))
+	}
+	if got.PublicRouteRatePerNonce != 4 || got.PublicRouteRatePerIP != 5 || got.PublicRouteTotalPerNonce != 6 || got.PublicRouteFallbackPerIP != 7 {
+		t.Fatalf("rate limit values not mapped: %#v", got)
+	}
+	if got.ProxyEgressCacheSuccessTTL != 45*time.Second || got.ProxyEgressCacheFailureTTL != 9*time.Second || got.ProxyEgressProbeTimeout != 2*time.Second {
+		t.Fatalf("proxy egress values not mapped: %#v", got)
+	}
+	if got.PublicRouteConstantDelayMin != 11*time.Millisecond || got.PublicRouteConstantDelayMax != 22*time.Millisecond {
+		t.Fatalf("public route delay values not mapped: %#v", got)
+	}
+}
+
+func TestFormalPoolConfigFromAppConfigInvalidHMACSecretFailsClosedAndSanitizesError(t *testing.T) {
+	rawSecret := "not-a-64-hex-secret-with-sensitive-value"
+	_, err := formalPoolConfigFromAppConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{
+		RateLimitHMACSecret: rawSecret,
+	}})
+	if err == nil {
+		t.Fatalf("formalPoolConfigFromAppConfig() error = nil, want invalid hmac secret error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "invalid formal_pool rate_limit_hmac_secret") {
+		t.Fatalf("error %q missing sanitized reason", msg)
+	}
+	if strings.Contains(msg, rawSecret) || strings.Contains(msg, "sensitive-value") || strings.Contains(msg, "not-a-64") {
+		t.Fatalf("error leaked raw hmac secret: %q", msg)
+	}
+}
+
+func TestFormalPoolProvidersReturnProductionPublicDeps(t *testing.T) {
+	cfg, err := ProvideFormalPoolConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{
+		RateLimitHMACSecret: strings.Repeat("cd", 32),
+	}})
+	if err != nil {
+		t.Fatalf("ProvideFormalPoolConfig() error = %v", err)
+	}
+	if len(cfg.RateLimitHMACSecret) != 32 {
+		t.Fatalf("provided hmac secret len = %d, want 32", len(cfg.RateLimitHMACSecret))
+	}
+	if got := ProvideFormalPoolRiskEventWriter(); got == nil {
+		t.Fatal("ProvideFormalPoolRiskEventWriter() returned nil")
+	}
+	if got := ProvideFormalPoolEgressRateLimiter(cfg); got == nil {
+		t.Fatal("ProvideFormalPoolEgressRateLimiter() returned nil")
 	}
 }

@@ -275,8 +275,14 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	codexGatewayStateStore := service.ProvideCodexGatewayStateStore(configConfig)
 	codexGatewayAdminService := service.ProvideCodexGatewayAdminServiceWithVariantChecker(configConfig, codexGatewayStateStore, gatewayService)
 	codexGatewayHandler := handler.ProvideCodexGatewayAdminHandler(codexGatewayAdminService)
-	formalPoolOnboardingService := service.ProvideFormalPoolOnboardingService(adminService, oAuthService, configConfig, accountRepository, httpUpstream, compositeTokenCacheInvalidator, schedulerCache)
-	formalPoolOnboardingHandler := admin.NewFormalPoolOnboardingHandler(formalPoolOnboardingService)
+	formalPoolConfig, err := service.ProvideFormalPoolConfig(configConfig)
+	if err != nil {
+		return nil, err
+	}
+	formalPoolRiskEventWriter := service.ProvideFormalPoolRiskEventWriter()
+	formalPoolOnboardingService := service.ProvideFormalPoolOnboardingService(adminService, oAuthService, configConfig, formalPoolConfig, formalPoolRiskEventWriter, accountRepository, httpUpstream, compositeTokenCacheInvalidator, schedulerCache)
+	formalPoolEgressRateLimiter := service.ProvideFormalPoolEgressRateLimiter(formalPoolConfig)
+	formalPoolOnboardingHandler := handler.ProvideFormalPoolOnboardingHandler(formalPoolOnboardingService, formalPoolEgressRateLimiter, formalPoolRiskEventWriter)
 	formalPoolOperationsService := service.ProvideFormalPoolOperationsService(adminService, oAuthService, configConfig, accountRepository, httpUpstream, compositeTokenCacheInvalidator, schedulerCache)
 	formalPoolOperationsHandler := admin.NewFormalPoolOperationsHandler(formalPoolOperationsService)
 	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, geminiHealthHandler, antigravityOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, entityHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, paymentHandler, affiliateHandler, augmentGatewayHandler, codexGatewayHandler, formalPoolOnboardingHandler, formalPoolOperationsHandler)
