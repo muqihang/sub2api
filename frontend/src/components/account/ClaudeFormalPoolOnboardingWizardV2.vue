@@ -33,7 +33,7 @@
                 <h2 class="mt-1 text-xl font-bold">{{ currentStepTitle }}</h2>
               </div>
               <div class="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-semibold dark:border-slate-700 dark:bg-slate-800">
-                Session: <span data-testid="session-id">{{ safeText(session?.id, '未创建') }}</span>
+                Session ref: <span data-testid="session-ref">{{ displaySessionRef }}</span>
               </div>
             </div>
             <div class="mt-4 grid gap-2 md:grid-cols-7">
@@ -118,7 +118,10 @@
                 <button data-testid="test-proxy" class="btn btn-secondary" :disabled="busy || !session" @click="testProxyStep">测试代理并生成同出口校验 URL</button>
                 <div v-if="session?.browser_egress_check_url" class="rounded-2xl border border-cyan-300 bg-white p-3 dark:border-cyan-800 dark:bg-slate-900">
                   <p class="font-semibold">只在即将登录 Claude 的同出口浏览器中复制打开：</p>
-                  <p data-testid="browser-egress-check-url" class="mt-2 break-all font-mono text-xs text-cyan-700 dark:text-cyan-300">{{ safeUrl(session.browser_egress_check_url) }}</p>
+                  <p data-testid="browser-egress-check-url" class="mt-2 text-xs text-cyan-700 dark:text-cyan-300">已生成一次性校验链接</p>
+                  <p class="mt-1 font-mono text-xs text-cyan-700 dark:text-cyan-300">browser-egress-check/:nonce</p>
+                  <button data-testid="copy-browser-egress-check-url" class="btn btn-secondary mt-3" type="button" @click="copyBrowserEgressCheckUrl">复制校验链接</button>
+                  <p v-if="copyStatus" class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ copyStatus }}</p>
                 </div>
                 <div v-else class="rounded-2xl border border-dashed border-slate-300 p-3 text-slate-500 dark:border-slate-700 dark:text-slate-400">TestProxy 成功前不展示 check URL。</div>
 
@@ -233,6 +236,7 @@ const acceptance = ref<FormalPoolAcceptanceResult | null>(null)
 const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
 const oauthCode = ref('')
 const setupSessionKey = ref('')
+const copyStatus = ref('')
 
 const form = reactive<{
   proxy_mode: FormalPoolProxyMode
@@ -263,6 +267,7 @@ const egressPolling = useEgressCheckPolling()
 const currentStepTitle = computed(() => steps.find((step) => step.key === activeStep.value)?.title ?? 'Onboarding')
 const canStart = computed(() => !!form.group_id && !!form.account_name && (form.proxy_mode === 'existing' ? !!form.proxy_id : !!proxy.host && !!proxy.port))
 const browserStatus = computed(() => session.value?.browser_egress_check_status ?? egressPolling.status.value ?? 'idle')
+const displaySessionRef = computed(() => safeSessionRef(session.value))
 const canStartWarming = computed(() => session.value?.healthcheck_passed || acceptance.value?.status === 'healthcheck_passed')
 const safeChecks = computed(() => (session.value?.checks ?? []).map(sanitizeCheckForDisplay))
 const safeSession = computed(() => JSON.stringify(sanitizeForDisplay({
@@ -301,6 +306,13 @@ function setStep(step: StepKey) {
   activeStep.value = step
 }
 
+function safeSessionRef(value: FormalPoolSession | null): string {
+  const summary = value?.safe_summary as Record<string, unknown> | undefined
+  const ref = summary?.session_ref
+  if (typeof ref === 'string' && ref.trim()) return safeText(ref, 'session ref unavailable')
+  return value ? 'session ref unavailable' : '未创建'
+}
+
 function safeText(value: unknown, fallback = '—'): string {
   if (typeof value !== 'string') {
     if (value === null || value === undefined) return fallback
@@ -322,6 +334,21 @@ function scrubExtra(value: string, fallback = '—'): string {
 
 function safeUrl(value: string): string {
   return safeText(value).replace(/([?&](?:code|token|session|nonce)=)[^&\s]+/gi, '$1[redacted]')
+}
+
+async function copyBrowserEgressCheckUrl() {
+  const url = session.value?.browser_egress_check_url
+  if (!url) return
+  copyStatus.value = ''
+  try {
+    if (!navigator?.clipboard?.writeText) {
+      throw new Error('clipboard unavailable')
+    }
+    await navigator.clipboard.writeText(url)
+    copyStatus.value = '已复制校验链接'
+  } catch {
+    copyStatus.value = '复制失败，请稍后重试'
+  }
 }
 
 const REDACTED_TEXT = '[redacted]'

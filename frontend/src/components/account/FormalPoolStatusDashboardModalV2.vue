@@ -281,13 +281,13 @@
                     暂无匹配账号
                   </td>
                 </tr>
-                <template v-for="row in filteredRows" :key="row.account_id">
+                <template v-for="(row, rowIndex) in filteredRows" :key="row.account_id">
                   <tr
                     :class="rowRailClass(row)"
                     :data-bucket="getDashboardBucket(row.state)"
                     :data-warming="isWarmingState(row.state) ? 'true' : 'false'"
-                    :data-account-row="row.account_id"
-                    :data-testid="`row-${row.account_id}`"
+                    :data-account-row="rowDomRef(row, rowIndex)"
+                    :data-testid="`row-${rowDomRef(row, rowIndex)}`"
                   >
                     <!-- 账号 -->
                     <td class="px-4 py-3 align-top">
@@ -346,7 +346,7 @@
                       <button
                         type="button"
                         class="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 dark:border-dark-600 dark:text-slate-200 dark:hover:bg-dark-800"
-                        :data-testid="`expand-${row.account_id}`"
+                        :data-testid="`expand-${rowDomRef(row, rowIndex)}`"
                         :aria-expanded="expandedRowId === row.account_id"
                         @click="toggleRow(row.account_id)"
                       >
@@ -357,7 +357,7 @@
                   <tr
                     v-if="expandedRowId === row.account_id"
                     :class="rowRailClass(row)"
-                    :data-testid="`drawer-${row.account_id}`"
+                    :data-testid="`drawer-${rowDomRef(row, rowIndex)}`"
                   >
                     <td
                       :colspan="primaryColumns.length"
@@ -573,7 +573,12 @@ function formatSessionsText(runtime: FormalPoolStatusRuntime | null | undefined)
 }
 
 function displayAccountLabel(row: FormalPoolStatusDashboardAccount): string {
-  return scrubFormalPoolDisplayText(row.account_label, `账号 #${row.account_id}`)
+  return scrubFormalPoolDisplayText(row.account_label, '账号（未命名）')
+}
+
+function rowDomRef(row: FormalPoolStatusDashboardAccount, index: number): string {
+  const bucket = getDashboardBucket(row.state).replace(/[^a-z0-9_-]/gi, '-')
+  return `acct-${bucket}-${index}`
 }
 
 function displayPlatformType(row: FormalPoolStatusDashboardAccount): string {

@@ -1,9 +1,13 @@
 package admin
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -11,17 +15,33 @@ import (
 )
 
 type FormalPoolOnboardingHandler struct {
-	svc         *service.FormalPoolOnboardingService
-	rateLimiter service.FormalPoolEgressRateLimiter
-	riskWriter  service.FormalPoolRiskEventWriter
+	svc              *service.FormalPoolOnboardingService
+	rateLimiter      service.FormalPoolEgressRateLimiter
+	riskWriter       service.FormalPoolRiskEventWriter
+	publicRouteDelay func(context.Context)
+}
+
+type FormalPoolOnboardingHandlerOption func(*FormalPoolOnboardingHandler)
+
+func WithPublicRouteDelay(delay func(context.Context)) FormalPoolOnboardingHandlerOption {
+	return func(h *FormalPoolOnboardingHandler) {
+		h.publicRouteDelay = delay
+	}
 }
 
 func NewFormalPoolOnboardingHandler(svc *service.FormalPoolOnboardingService) *FormalPoolOnboardingHandler {
-	return &FormalPoolOnboardingHandler{svc: svc}
+	return NewFormalPoolOnboardingHandlerWithPublicDeps(svc, nil, nil)
 }
 
-func NewFormalPoolOnboardingHandlerWithPublicDeps(svc *service.FormalPoolOnboardingService, limiter service.FormalPoolEgressRateLimiter, riskWriter service.FormalPoolRiskEventWriter) *FormalPoolOnboardingHandler {
-	return &FormalPoolOnboardingHandler{svc: svc, rateLimiter: limiter, riskWriter: riskWriter}
+func NewFormalPoolOnboardingHandlerWithPublicDeps(svc *service.FormalPoolOnboardingService, limiter service.FormalPoolEgressRateLimiter, riskWriter service.FormalPoolRiskEventWriter, opts ...FormalPoolOnboardingHandlerOption) *FormalPoolOnboardingHandler {
+	h := &FormalPoolOnboardingHandler{svc: svc, rateLimiter: limiter, riskWriter: riskWriter}
+	h.publicRouteDelay = h.constantDelayFromService
+	for _, opt := range opts {
+		if opt != nil {
+			opt(h)
+		}
+	}
+	return h
 }
 
 func (h *FormalPoolOnboardingHandler) CreateSession(c *gin.Context) {
@@ -90,6 +110,7 @@ func (h *FormalPoolOnboardingHandler) BrowserEgressCheck(c *gin.Context) {
 	nonce := strings.TrimSpace(c.Param("nonce"))
 	remoteIP := c.ClientIP()
 	if h == nil || h.svc == nil {
+		h.applyPublicRouteDelay(c.Request.Context())
 		formalPoolBrowserEgressSafeFailure(c)
 		return
 	}
@@ -99,15 +120,18 @@ func (h *FormalPoolOnboardingHandler) BrowserEgressCheck(c *gin.Context) {
 			if h.riskWriter != nil {
 				_ = h.riskWriter.RecordPublicRouteRateLimitedBuckets(c.Request.Context(), decision.NonceBucket, decision.IPBucket, decision.Reason)
 			}
+			h.applyPublicRouteDelay(c.Request.Context())
 			c.JSON(http.StatusTooManyRequests, formalPoolBrowserEgressRateLimitedResponse{OK: false})
 			return
 		}
 	}
 	_, err := h.svc.VerifyBrowserEgressByNonce(c.Request.Context(), nonce, remoteIP)
 	if err != nil {
+		h.applyPublicRouteDelay(c.Request.Context())
 		formalPoolBrowserEgressSafeFailure(c)
 		return
 	}
+	h.applyPublicRouteDelay(c.Request.Context())
 	c.JSON(http.StatusOK, formalPoolBrowserEgressSuccessResponse{OK: true})
 }
 
@@ -126,6 +150,44 @@ type formalPoolBrowserEgressFailureResponse struct {
 
 func formalPoolBrowserEgressSafeFailure(c *gin.Context) {
 	c.JSON(http.StatusOK, formalPoolBrowserEgressFailureResponse{OK: false, Message: "Browser egress check received."})
+}
+
+func (h *FormalPoolOnboardingHandler) applyPublicRouteDelay(ctx context.Context) {
+	if h == nil || h.publicRouteDelay == nil {
+		return
+	}
+	h.publicRouteDelay(ctx)
+}
+
+func (h *FormalPoolOnboardingHandler) constantDelayFromService(ctx context.Context) {
+	if h == nil || h.svc == nil {
+		return
+	}
+	minDelay, maxDelay := h.svc.PublicRouteConstantDelayBounds()
+	boundedConstantDelay(ctx, minDelay, maxDelay)
+}
+
+func boundedConstantDelay(ctx context.Context, minDelay, maxDelay time.Duration) {
+	if minDelay <= 0 || maxDelay <= 0 {
+		return
+	}
+	if maxDelay < minDelay {
+		maxDelay = minDelay
+	}
+	delay := minDelay
+	if maxDelay > minDelay {
+		span := uint64(maxDelay - minDelay + 1)
+		var buf [8]byte
+		if _, err := rand.Read(buf[:]); err == nil {
+			delay += time.Duration(binary.LittleEndian.Uint64(buf[:]) % span)
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 func (h *FormalPoolOnboardingHandler) GenerateAuthURL(c *gin.Context) {

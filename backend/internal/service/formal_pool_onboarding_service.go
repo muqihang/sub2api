@@ -291,7 +291,31 @@ func formalPoolOnboardingConfigWithDefaults(cfg FormalPoolConfig) FormalPoolConf
 	if cfg.NonceTTL <= 0 {
 		cfg.NonceTTL = defaults.NonceTTL
 	}
+	if cfg.PublicRouteConstantDelayMin <= 0 {
+		cfg.PublicRouteConstantDelayMin = defaults.PublicRouteConstantDelayMin
+	}
+	if cfg.PublicRouteConstantDelayMax <= 0 {
+		cfg.PublicRouteConstantDelayMax = defaults.PublicRouteConstantDelayMax
+	}
+	if cfg.PublicRouteConstantDelayMax < cfg.PublicRouteConstantDelayMin {
+		cfg.PublicRouteConstantDelayMax = cfg.PublicRouteConstantDelayMin
+	}
 	return cfg
+}
+
+func (s *FormalPoolOnboardingService) PublicRouteConstantDelayBounds() (time.Duration, time.Duration) {
+	if s == nil {
+		return 0, 0
+	}
+	minDelay := s.config.PublicRouteConstantDelayMin
+	maxDelay := s.config.PublicRouteConstantDelayMax
+	if minDelay <= 0 || maxDelay <= 0 {
+		return 0, 0
+	}
+	if maxDelay < minDelay {
+		maxDelay = minDelay
+	}
+	return minDelay, maxDelay
 }
 
 func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req FormalPoolOnboardingStartRequest) (*FormalPoolOnboardingSession, error) {

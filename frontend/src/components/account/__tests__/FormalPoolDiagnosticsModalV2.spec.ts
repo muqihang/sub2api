@@ -9,6 +9,7 @@ const {
   healthcheck,
   swapProxy,
   quarantine,
+  routerPush,
 } = vi.hoisted(() => ({
   getDiagnostics: vi.fn(),
   replaceSetupToken: vi.fn(),
@@ -16,6 +17,7 @@ const {
   healthcheck: vi.fn(),
   swapProxy: vi.fn(),
   quarantine: vi.fn(),
+  routerPush: vi.fn(),
 }))
 
 vi.mock('@/api/admin/formalPoolOperations', async () => {
@@ -36,7 +38,7 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: routerPush }),
 }))
 
 import FormalPoolDiagnosticsModalV2 from '../FormalPoolDiagnosticsModalV2.vue'
@@ -102,6 +104,7 @@ async function mountModal(options: { account?: Account; diagnostics?: FormalPool
 describe('FormalPoolDiagnosticsModalV2', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    routerPush.mockResolvedValue(undefined)
   })
 
   it('renders a compact command bar with environment badge, generated time, refresh state, and primary action', async () => {
@@ -242,6 +245,32 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(quarantine).toHaveBeenCalledWith(42, expect.stringContaining('manual-risk'))
     expect(getDiagnostics).toHaveBeenCalledTimes(2)
     expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ id: 42, onboarding_stage: 'quarantined' })
+  })
+
+
+
+  it('does not render raw account id in title and guides OAuth reauth without raw id query params', async () => {
+    const rawAccountId = 987654321
+    const rawProxyId = 7654321
+    const wrapper = await mountModal({
+      account: account({ id: rawAccountId, name: '', proxy_id: rawProxyId }),
+      diagnostics: diagnostics({ account_id: rawAccountId }),
+    })
+
+    expect(wrapper.html()).not.toContain(`#${rawAccountId}`)
+    expect(wrapper.text()).not.toContain(`#${rawAccountId}`)
+    expect(wrapper.text()).toContain('账号（未命名）')
+
+    await wrapper.get('[data-testid="diagnostics-v2-primary-action"]').trigger('click')
+    await flushPromises()
+
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/admin/claude-onboarding',
+      query: { source: 'diagnostics-v2' },
+    })
+    const pushed = JSON.stringify(routerPush.mock.calls)
+    expect(pushed).not.toContain(String(rawAccountId))
+    expect(pushed).not.toContain(String(rawProxyId))
   })
 
   it('scrubs sensitive backend and account text at DOM level', async () => {

@@ -146,6 +146,41 @@ func TestFormalPoolOnboardingBrowserEgressPublicRouteSuccessOnlyReturnsOK(t *tes
 	}
 }
 
+func TestFormalPoolOnboardingBrowserEgressPublicRouteAppliesConstantDelay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	minDelay := 20 * time.Millisecond
+
+	newDelayedService := func(deps service.FormalPoolOnboardingDeps) *service.FormalPoolOnboardingService {
+		cfg := service.DefaultFormalPoolConfig()
+		cfg.PublicRouteConstantDelayMin = minDelay
+		cfg.PublicRouteConstantDelayMax = minDelay
+		deps.Config = cfg
+		return service.NewFormalPoolOnboardingService(deps)
+	}
+
+	assertDelayed := func(t *testing.T, name string, router *gin.Engine, path string, remoteIP string, wantStatus int) {
+		t.Helper()
+		started := time.Now()
+		rec := performFormalPoolOnboardingRoutesRequest(router, http.MethodGet, path, remoteIP)
+		elapsed := time.Since(started)
+		require.Equal(t, wantStatus, rec.Code, name)
+		require.GreaterOrEqual(t, elapsed, minDelay, "%s route returned before configured constant delay", name)
+	}
+
+	successSvc := newDelayedService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
+	successNonce := createFormalPoolOnboardingRoutesNonce(t, successSvc)
+	successRouter := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(successSvc), nil)
+	assertDelayed(t, "success", successRouter, "/api/v1/claude-onboarding/browser-egress-check/"+successNonce, "198.51.100.10", http.StatusOK)
+
+	failureSvc := newDelayedService(service.FormalPoolOnboardingDeps{})
+	failureRouter := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(failureSvc), nil)
+	assertDelayed(t, "safe failure", failureRouter, "/api/v1/claude-onboarding/browser-egress-check/raw-unknown-nonce", "203.0.113.44", http.StatusOK)
+
+	limiter := &formalPoolOnboardingRoutesLimiter{decision: service.FormalPoolEgressRateLimitDecision{Allowed: false, Reason: "per_ip"}}
+	rateLimitedRouter := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandlerWithPublicDeps(failureSvc, limiter, nil), nil)
+	assertDelayed(t, "rate limit", rateLimitedRouter, "/api/v1/claude-onboarding/browser-egress-check/raw-denied-nonce", "198.51.100.99", http.StatusTooManyRequests)
+}
+
 func newFormalPoolOnboardingRoutesRouter(h *adminhandler.FormalPoolOnboardingHandler, adminAuth gin.HandlerFunc) *gin.Engine {
 	router := gin.New()
 	v1 := router.Group("/api/v1")

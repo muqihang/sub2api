@@ -163,7 +163,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     const rows = wrapper.findAll('tr[data-bucket]')
     expect(rows.length).toBeGreaterThanOrEqual(4)
     // The first row should be the needs_intervention one (quarantined).
-    expect(rows[0].attributes('data-account-row')).toBe('12')
+    expect(rows[0].attributes('data-account-row')).not.toContain('12')
     expect(rows[0].attributes('data-bucket')).toBe('needs_intervention')
     expect(rows[0].classes().join(' ')).toContain('rose')
   })
@@ -173,7 +173,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
       accountFixture({ account_id: 21, state: 'warming', state_label: '预热中' }),
     ])
 
-    const warmingRow = wrapper.find('[data-account-row="21"]')
+    const warmingRow = wrapper.find('tr[data-bucket="active"]')
     expect(warmingRow.exists()).toBe(true)
     expect(warmingRow.attributes('data-warming')).toBe('true')
     expect(warmingRow.classes().join(' ')).toContain('sky')
@@ -194,17 +194,20 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     await wrapper.find('[data-testid="lane-needs_intervention"]').trigger('click')
     const rows = wrapper.findAll('tr[data-account-row]')
     expect(rows).toHaveLength(1)
-    expect(rows[0].attributes('data-account-row')).toBe('32')
+    expect(rows[0].attributes('data-account-row')).not.toContain('32')
+    expect(rows[0].attributes('data-bucket')).toBe('needs_intervention')
   })
 
   it('toggles the row detail drawer when the action button is clicked', async () => {
     const wrapper = await mountWithFixture([accountFixture({ account_id: 41 })])
 
-    expect(wrapper.find('[data-testid="drawer-41"]').exists()).toBe(false)
-    await wrapper.find('[data-testid="expand-41"]').trigger('click')
-    expect(wrapper.find('[data-testid="drawer-41"]').exists()).toBe(true)
-    await wrapper.find('[data-testid="expand-41"]').trigger('click')
-    expect(wrapper.find('[data-testid="drawer-41"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid^="drawer-"]').exists()).toBe(false)
+    const expand = wrapper.find('[data-testid^="expand-"]')
+    expect(expand.attributes('data-testid')).not.toContain('41')
+    await expand.trigger('click')
+    expect(wrapper.find('[data-testid^="drawer-"]').exists()).toBe(true)
+    await expand.trigger('click')
+    expect(wrapper.find('[data-testid^="drawer-"]').exists()).toBe(false)
   })
 
   it('jump-to-needs-intervention shortcut activates the rose lane filter', async () => {
@@ -219,7 +222,8 @@ describe('FormalPoolStatusDashboardModalV2', () => {
 
     const rows = wrapper.findAll('tr[data-account-row]')
     expect(rows).toHaveLength(1)
-    expect(rows[0].attributes('data-account-row')).toBe('52')
+    expect(rows[0].attributes('data-account-row')).not.toContain('52')
+    expect(rows[0].attributes('data-bucket')).toBe('needs_intervention')
   })
 
   it('scrubs raw sensitive backend display fields before rendering them in the DOM', async () => {
@@ -252,12 +256,33 @@ describe('FormalPoolStatusDashboardModalV2', () => {
       }),
     ])
 
-    await wrapper.find('[data-testid="expand-61"]').trigger('click')
+    await wrapper.find('[data-testid^="expand-"]').trigger('click')
     const html = wrapper.html()
     for (const fragment of sensitiveFragments) {
       expect(html).not.toContain(fragment)
     }
     expect(html).toContain('[redacted]')
+  })
+
+
+
+  it('uses safe row DOM refs and labels without raw account IDs', async () => {
+    const rawAccountId = 987654321
+    const wrapper = await mountWithFixture([
+      accountFixture({ account_id: rawAccountId, account_label: '' }),
+    ])
+
+    const html = wrapper.html()
+    const rows = wrapper.findAll('tr[data-bucket]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].attributes('data-account-row')).not.toContain(String(rawAccountId))
+    expect(rows[0].attributes('data-testid')).not.toContain(String(rawAccountId))
+    expect(html).not.toContain(`row-${rawAccountId}`)
+    expect(html).not.toContain(`expand-${rawAccountId}`)
+    expect(html).not.toContain(`drawer-${rawAccountId}`)
+    expect(html).not.toContain(`账号 #${rawAccountId}`)
+    expect(wrapper.text()).not.toContain(`账号 #${rawAccountId}`)
+    expect(wrapper.text()).toContain('账号（未命名）')
   })
 
   it('emits close when the close button is clicked', async () => {

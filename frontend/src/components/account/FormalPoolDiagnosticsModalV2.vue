@@ -15,7 +15,7 @@
         <div class="min-w-0">
           <p class="text-xs uppercase tracking-wide text-slate-400">Diagnostics command center</p>
           <h2 id="diagnostics-v2-title" class="mt-0.5 truncate text-lg font-semibold text-slate-950 dark:text-white">
-            {{ safeAccountName }} · #{{ activeAccount.id }}
+            {{ safeAccountName }}
           </h2>
           <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
             <span data-testid="diagnostics-v2-environment" class="rounded-full bg-indigo-50 px-2 py-0.5 font-medium text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-200">
@@ -250,7 +250,7 @@ function safeValue(value: unknown, fallback = '—'): string {
 
 const safeAccountName = computed(() => {
   const account = activeAccount.value
-  return safeValue(account?.name, account?.id ? `账号 #${account.id}` : '账号')
+  return safeValue(account?.name, '账号（未命名）')
 })
 
 const generatedAtText = computed(() => {
@@ -438,7 +438,7 @@ async function handleAction(key: FormalPoolDiagnosticsActionKey): Promise<void> 
   const account = activeAccount.value
   if (!account || forbiddenKeys.value.has(key)) return
   if (key === 'guideOAuthReauth') {
-    await router.push({ path: '/admin/claude-onboarding', query: { account_id: String(account.id), proxy_id: String(account.proxy_id ?? '') } }).catch(() => undefined)
+    await router.push({ path: '/admin/claude-onboarding', query: { source: 'diagnostics-v2' } }).catch(() => undefined)
     return
   }
   if (key === 'manualReview') {

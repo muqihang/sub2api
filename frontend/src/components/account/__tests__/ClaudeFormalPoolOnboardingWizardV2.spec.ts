@@ -99,21 +99,49 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.text()).not.toContain('/browser-egress-check/')
   })
 
-  it('shows the browser egress check URL only after TestProxy succeeds', async () => {
+  it('does not render the raw browser egress nonce while copy still uses the real URL', async () => {
+    const rawNonce = 'raw-nonce-DO-NOT-LEAK-12345'
+    const realUrl = `https://safe.example/api/v1/claude-onboarding/browser-egress-check/${rawNonce}`
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
     const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
     await startSession(wrapper)
 
     onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({
       status: 'proxy_tested',
       browser_egress_check_status: 'waiting',
-      browser_egress_check_url: 'https://safe.example/api/v1/claude-onboarding/browser-egress-check/nonce-bucket',
+      browser_egress_check_url: realUrl,
     }))
     await wrapper.find('[data-testid="test-proxy"]').trigger('click')
     await flushPromises()
 
-    const url = wrapper.find('[data-testid="browser-egress-check-url"]')
-    expect(url.exists()).toBe(true)
-    expect(url.text()).toContain('https://safe.example')
+    expect(wrapper.html()).not.toContain(rawNonce)
+    expect(wrapper.text()).not.toContain(rawNonce)
+    expect(wrapper.html()).not.toContain(realUrl)
+    expect(wrapper.text()).toContain('已生成一次性校验链接')
+
+    await wrapper.find('[data-testid="copy-browser-egress-check-url"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith(realUrl)
+    vi.unstubAllGlobals()
+  })
+
+
+
+  it('uses safe session ref in the badge instead of raw session id', async () => {
+    const rawSessionId = '987654321'
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+
+    await startSession(wrapper, {
+      id: rawSessionId,
+      safe_summary: { session_ref: 'session_bucket_safe_abc' },
+    })
+
+    const badge = wrapper.find('[data-testid="session-ref"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('session_bucket_safe_abc')
+    expect(wrapper.html()).not.toContain(rawSessionId)
+    expect(wrapper.text()).not.toContain(rawSessionId)
   })
 
   it('does not render a current-browser open button or attestation code input', async () => {
@@ -147,7 +175,8 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await flushPromises()
 
     expect(onboardingApi.createSession).toHaveBeenCalledTimes(2)
-    expect(wrapper.text()).toContain('session-2')
+    expect(wrapper.text()).not.toContain('session-2')
+    expect(wrapper.get('[data-testid="session-ref"]').text()).toContain('session ref unavailable')
   })
 
   it('shows mismatch buckets or generic copy and never raw IP addresses', async () => {
