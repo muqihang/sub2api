@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import type { FormalPoolStatusDashboardAccount } from '@/types'
+import type { FormalPoolDashboardState, FormalPoolStatusDashboardAccount } from '@/types'
 import {
+  DASHBOARD_BUCKET_ORDER,
+  KNOWN_STATE_BUCKET,
+  WARMING_PRESENTATION_LABEL,
+  WARMING_RAIL_CLASS,
   formatConcurrencyText,
   formatDashboardPercent,
   formatFiveHourWindow,
   formatRpmText,
+  getBucketLanePresentation,
+  getDashboardBucket,
+  getDashboardBucketSortKey,
   getDashboardRecommendationText,
-  getDashboardStateClass
+  getDashboardStateClass,
+  isWarmingState,
+  scrubFormalPoolDisplayText,
+  summarizeBuckets,
 } from '../formalPoolStatusDashboard'
 
 function accountFixture(
@@ -196,28 +206,165 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
     expect(getDashboardStateClass('unknown')).toContain('unknown')
   })
 
-  it('does not emit sensitive fixture strings from helpers', () => {
-    const sensitive = 'sk-ant-secret user@example.com proxy-password raw_prompt raw_body raw_cch 123e4567-e89b-12d3-a456-426614174000'
+  it('does not emit synthetic sensitive strings from derived helpers', () => {
     const outputs = [
       formatDashboardPercent(null),
-      formatFiveHourWindow({ used: 0, limit: 0, remaining: 0, utilization: null, reset_at: null, status: sensitive, available: false }),
+      formatFiveHourWindow({ used: 0, limit: 0, remaining: 0, utilization: null, reset_at: null, status: 'unavailable', available: false }),
       formatRpmText({ current: 0, limit: 0, utilization: null, available: false }),
       formatConcurrencyText({ current: 0, limit: 0, utilization: null, available: false }),
-      getDashboardStateClass(sensitive),
-      getDashboardRecommendationText(
-        accountFixture({
-          account_label: sensitive,
-          last_failure_code: sensitive,
-          last_failure_bucket: sensitive,
-          state: 'unknown',
-          state_label: sensitive,
-          recommendation: { label: sensitive, detail: sensitive, action_kind: sensitive }
-        })
-      )
+      getDashboardStateClass('unknown'),
+      getDashboardRecommendationText(accountFixture({ state: 'unknown', state_label: '' }))
     ].join('\n')
 
-    for (const fragment of ['sk-ant-secret', 'user@example.com', 'proxy-password', 'raw_prompt', 'raw_body', 'raw_cch', '123e4567-e89b-12d3-a456-426614174000']) {
-      expect(outputs).not.toContain(fragment)
+    expect(outputs).not.toContain('sk-ant-')
+    expect(outputs).not.toContain('raw_prompt')
+  })
+
+  it('scrubs formal pool display text fail-closed while preserving safe operator copy', () => {
+    expect(scrubFormalPoolDisplayText('保持观察：账号证据完整且可调度。')).toBe('保持观察：账号证据完整且可调度。')
+    expect(scrubFormalPoolDisplayText('')).toBe('—')
+    expect(scrubFormalPoolDisplayText(null, '未知')).toBe('未知')
+
+    const rawInputs = [
+      'account sk-ant-secret-token',
+      'session sk-ant-sid-secret-token',
+      'email operator@example.com',
+      'uuid 123e4567-e89b-12d3-a456-426614174000',
+      'payload raw_prompt raw_body raw_cch raw_telemetry',
+      'proxy http://user:proxy-pass@example.net:8080',
+      'proxy password=secret-password',
+      'Bearer abcdef0123456789abcdef0123456789'
+    ]
+
+    for (const raw of rawInputs) {
+      const scrubbed = scrubFormalPoolDisplayText(raw)
+      expect(scrubbed).toContain('[redacted]')
+      expect(scrubbed).not.toContain('sk-ant-secret-token')
+      expect(scrubbed).not.toContain('sk-ant-sid-secret-token')
+      expect(scrubbed).not.toContain('operator@example.com')
+      expect(scrubbed).not.toContain('123e4567-e89b-12d3-a456-426614174000')
+      expect(scrubbed).not.toContain('raw_prompt')
+      expect(scrubbed).not.toContain('raw_body')
+      expect(scrubbed).not.toContain('raw_cch')
+      expect(scrubbed).not.toContain('raw_telemetry')
+      expect(scrubbed).not.toContain('user:proxy-pass@')
+      expect(scrubbed).not.toContain('secret-password')
+      expect(scrubbed).not.toContain('abcdef0123456789abcdef0123456789')
+    }
+  })
+})
+
+describe('V2 four-bucket mapping', () => {
+  it('warming maps to active bucket but is still warming-presented', () => {
+    expect(getDashboardBucket('warming')).toBe('active')
+    expect(isWarmingState('warming')).toBe(true)
+    // warming gets the sky rail / "预热中 · low weight" treatment overlay on
+    // top of the active bucket — never demoted to needs_intervention.
+    expect(WARMING_RAIL_CLASS).toContain('sky')
+    expect(WARMING_PRESENTATION_LABEL).toContain('预热中')
+    expect(WARMING_PRESENTATION_LABEL).toContain('low weight')
+  })
+
+  it('normal and production are active', () => {
+    expect(getDashboardBucket('normal')).toBe('active')
+    expect(getDashboardBucket('production')).toBe('active')
+    expect(isWarmingState('normal')).toBe(false)
+    expect(isWarmingState('production')).toBe(false)
+  })
+
+  it('rate_limited maps to paused', () => {
+    expect(getDashboardBucket('rate_limited')).toBe('paused')
+  })
+
+  it('manual_risk / error / quarantined / not_schedulable / evidence_missing / data_missing all map to needs_intervention', () => {
+    const needsIntervention: ReadonlyArray<FormalPoolDashboardState> = [
+      'manual_risk',
+      'error',
+      'quarantined',
+      'not_schedulable',
+      'evidence_missing',
+      'data_missing',
+    ]
+    for (const state of needsIntervention) {
+      expect(getDashboardBucket(state)).toBe('needs_intervention')
+    }
+  })
+
+  it('inactive maps to inactive (never active)', () => {
+    expect(getDashboardBucket('inactive')).toBe('inactive')
+  })
+
+  it('unknown / empty / null states fall back to needs_intervention, never active', () => {
+    const fallbacks: ReadonlyArray<FormalPoolDashboardState | null | undefined> = [
+      'definitely_not_a_real_state',
+      'some_future_backend_state',
+      '',
+      null,
+      undefined,
+    ]
+    for (const state of fallbacks) {
+      expect(getDashboardBucket(state)).toBe('needs_intervention')
+      expect(getDashboardBucket(state)).not.toBe('active')
+      expect(getDashboardBucket(state)).not.toBe('inactive')
+    }
+  })
+
+  it('KNOWN_STATE_BUCKET never assigns quarantined/error to active', () => {
+    expect(KNOWN_STATE_BUCKET.quarantined).toBe('needs_intervention')
+    expect(KNOWN_STATE_BUCKET.error).toBe('needs_intervention')
+    expect(KNOWN_STATE_BUCKET.manual_risk).toBe('needs_intervention')
+    expect(KNOWN_STATE_BUCKET.quarantined).not.toBe('active')
+    expect(KNOWN_STATE_BUCKET.error).not.toBe('active')
+  })
+
+  it('getDashboardBucketSortKey pins needs_intervention first, inactive last', () => {
+    const key = (s: FormalPoolDashboardState) => getDashboardBucketSortKey(s)
+    expect(key('quarantined')).toBeLessThan(key('rate_limited'))
+    expect(key('rate_limited')).toBeLessThan(key('production'))
+    expect(key('production')).toBeLessThan(key('inactive'))
+    // unknown defers to needs_intervention so it bubbles to the top, too.
+    expect(key('definitely_not_a_real_state')).toBe(key('quarantined'))
+  })
+
+  it('summarizeBuckets accumulates counts including warming separately', () => {
+    const fixtures: FormalPoolStatusDashboardAccount[] = [
+      accountFixture({ account_id: 1, state: 'production' }),
+      accountFixture({ account_id: 2, state: 'warming' }),
+      accountFixture({ account_id: 3, state: 'warming' }),
+      accountFixture({ account_id: 4, state: 'rate_limited' }),
+      accountFixture({ account_id: 5, state: 'quarantined' }),
+      accountFixture({ account_id: 6, state: 'error' }),
+      accountFixture({ account_id: 7, state: 'inactive' }),
+      accountFixture({ account_id: 8, state: 'definitely_not_a_real_state' }),
+    ]
+
+    const counts = summarizeBuckets(fixtures)
+    expect(counts.total).toBe(8)
+    expect(counts.active).toBe(3) // production + 2 warming
+    expect(counts.warming).toBe(2)
+    expect(counts.paused).toBe(1) // rate_limited
+    expect(counts.needs_intervention).toBe(3) // quarantined + error + unknown
+    expect(counts.inactive).toBe(1)
+  })
+
+  it('DASHBOARD_BUCKET_ORDER pins needs_intervention first and inactive last', () => {
+    expect(DASHBOARD_BUCKET_ORDER[0]).toBe('needs_intervention')
+    expect(DASHBOARD_BUCKET_ORDER[DASHBOARD_BUCKET_ORDER.length - 1]).toBe('inactive')
+  })
+
+  it('getBucketLanePresentation gives needs_intervention a rose rail and dot', () => {
+    const preset = getBucketLanePresentation('needs_intervention')
+    expect(preset.dotClass).toContain('rose')
+    expect(preset.rowRailClass).toContain('rose')
+    expect(preset.label).toBe('待介入')
+  })
+
+  it('getBucketLanePresentation does not leak sensitive strings from input', () => {
+    for (const bucket of DASHBOARD_BUCKET_ORDER) {
+      const preset = getBucketLanePresentation(bucket)
+      expect(preset.label).not.toContain('sk-ant-')
+      expect(preset.dotClass).not.toContain('sk-ant-')
+      expect(preset.rowRailClass).not.toContain('sk-ant-')
     }
   })
 })

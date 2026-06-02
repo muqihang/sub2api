@@ -38,6 +38,22 @@ export interface FormalPoolCheck {
   message?: string
 }
 
+export type KnownBrowserEgressCheckStatus =
+  | 'idle'
+  | 'waiting'
+  | 'verified'
+  | 'mismatch'
+  | 'expired'
+
+export type BrowserEgressCheckStatus = KnownBrowserEgressCheckStatus | string
+
+export type KnownBrowserEgressErrorCode =
+  | 'nonce_expired'
+  | 'mismatch'
+  | 'no_proxy_egress'
+
+export type BrowserEgressErrorCode = KnownBrowserEgressErrorCode | string
+
 export interface FormalPoolSession {
   id: string
   status: string
@@ -52,6 +68,12 @@ export interface FormalPoolSession {
   oauth_session_id?: string
   browser_egress_check_url?: string
   browser_egress_verified?: boolean
+  browser_egress_check_status?: BrowserEgressCheckStatus
+  browser_egress_browser_ip_bucket?: string
+  browser_egress_proxy_ip_bucket?: string
+  browser_egress_last_error_code?: BrowserEgressErrorCode
+  browser_egress_mismatch_at?: string
+  nonce_expires_at?: string
   account_id?: number
   account_ref?: string
   oauth_summary?: FormalPoolOAuthSummary
@@ -92,8 +114,8 @@ export async function createSession(payload: FormalPoolStartRequest): Promise<Fo
   return data
 }
 
-export async function getSession(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.get<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}`)
+export async function getSession(id: string, signal?: AbortSignal): Promise<FormalPoolSession> {
+  const { data } = await apiClient.get<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}`, { signal })
   return data
 }
 

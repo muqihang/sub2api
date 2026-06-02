@@ -220,6 +220,14 @@ export interface PublicSettings {
   channel_monitor_default_interval_seconds: number
   available_channels_enabled: boolean
   affiliate_enabled: boolean
+  /**
+   * Opt-in toggle that switches accounts management surfaces to the new V2 UX
+   * (dashboard + onboarding wizard). Backend default is `false`; admins flip it
+   * from the settings page. Frontend code should consume this through
+   * `FeatureFlags.newAccountManagement` so the opt-in fallback (hidden when the
+   * settings payload omits the field) stays consistent.
+   */
+  use_new_account_management_ux: boolean
 }
 
 export interface AuthResponse {

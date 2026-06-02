@@ -358,8 +358,30 @@
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
     <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @formal-pool-diagnostics="openFormalPoolDiagnostics" />
-    <FormalPoolDiagnosticsModal :show="showFormalPoolDiagnostics" :account="formalPoolDiagnosticsAccount" @close="closeFormalPoolDiagnostics" @updated="handleFormalPoolDiagnosticsUpdated" />
-    <FormalPoolStatusDashboardModal :show="showFormalPoolStatusDashboard" @close="showFormalPoolStatusDashboard = false" />
+    <FormalPoolDiagnosticsModal
+      v-if="!appStore.useNewAccountManagementUx"
+      :show="showFormalPoolDiagnostics"
+      :account="formalPoolDiagnosticsAccount"
+      @close="closeFormalPoolDiagnostics"
+      @updated="handleFormalPoolDiagnosticsUpdated"
+    />
+    <FormalPoolDiagnosticsModalV2
+      v-else
+      :show="showFormalPoolDiagnostics"
+      :account="formalPoolDiagnosticsAccount"
+      @close="closeFormalPoolDiagnostics"
+      @updated="handleFormalPoolDiagnosticsUpdated"
+    />
+    <FormalPoolStatusDashboardModal
+      v-if="!appStore.useNewAccountManagementUx"
+      :show="showFormalPoolStatusDashboard"
+      @close="showFormalPoolStatusDashboard = false"
+    />
+    <FormalPoolStatusDashboardModalV2
+      v-else
+      :show="showFormalPoolStatusDashboard"
+      @close="showFormalPoolStatusDashboard = false"
+    />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -419,7 +441,9 @@ import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vu
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import FormalPoolDiagnosticsModal from '@/components/account/FormalPoolDiagnosticsModal.vue'
+import FormalPoolDiagnosticsModalV2 from '@/components/account/FormalPoolDiagnosticsModalV2.vue'
 import FormalPoolStatusDashboardModal from '@/components/account/FormalPoolStatusDashboardModal.vue'
+import FormalPoolStatusDashboardModalV2 from '@/components/account/FormalPoolStatusDashboardModalV2.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'

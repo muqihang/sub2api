@@ -1,0 +1,497 @@
+<template>
+  <div data-testid="onboarding-v2" class="mx-auto max-w-7xl p-4 md:p-6">
+    <div class="overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 text-white shadow-xl dark:border-slate-700">
+      <div class="grid gap-0 lg:grid-cols-[18rem_1fr]">
+        <aside class="border-b border-white/10 bg-gradient-to-b from-slate-900 via-indigo-950 to-slate-950 p-5 lg:border-b-0 lg:border-r">
+          <p class="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-300">Onboarding V2</p>
+          <h1 class="mt-3 text-2xl font-bold">Claude 正式号池上号门禁</h1>
+          <p class="mt-3 text-sm leading-6 text-slate-300">不限制 Claude Code 能力；只展示代理、同出口、runtime、真实 directed healthcheck 与预热门禁。</p>
+
+          <nav class="mt-8 space-y-3" aria-label="Onboarding steps">
+            <button
+              v-for="step in steps"
+              :key="step.key"
+              class="flex w-full items-start gap-3 rounded-2xl border p-3 text-left transition"
+              :class="activeStep === step.key ? 'border-cyan-300 bg-white/15 shadow-lg shadow-cyan-950/30' : 'border-white/10 bg-white/5 hover:bg-white/10'"
+              :data-testid="`stepper-${step.key}`"
+              @click="setStep(step.key)"
+            >
+              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-400 text-sm font-bold text-slate-950">{{ step.index }}</span>
+              <span>
+                <span class="block text-sm font-semibold">{{ step.title }}</span>
+                <span class="mt-1 block text-xs text-slate-300">{{ step.caption }}</span>
+              </span>
+            </button>
+          </nav>
+        </aside>
+
+        <main class="bg-slate-50 p-5 text-slate-900 dark:bg-slate-950 dark:text-slate-100 md:p-8">
+          <section class="mb-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">状态机阶段</p>
+                <h2 class="mt-1 text-xl font-bold">{{ currentStepTitle }}</h2>
+              </div>
+              <div class="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-semibold dark:border-slate-700 dark:bg-slate-800">
+                Session: <span data-testid="session-id">{{ safeText(session?.id, '未创建') }}</span>
+              </div>
+            </div>
+            <div class="mt-4 grid gap-2 md:grid-cols-7">
+              <div
+                v-for="stage in stageList"
+                :key="stage"
+                :data-testid="`stage-${stage}`"
+                class="rounded-2xl border px-3 py-2 text-xs font-semibold"
+                :class="stageClass(stage)"
+              >
+                {{ stage }}
+              </div>
+            </div>
+            <p class="mt-3 text-sm text-slate-600 dark:text-slate-300">新号进入 warming 时是 <strong>新号 low weight</strong>；production 后 normal effective 生效；aggressive requested 只表示请求策略，不绕过健康门禁。</p>
+          </section>
+
+          <section v-if="activeStep === 'proxy'" class="grid gap-4 xl:grid-cols-2">
+            <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <h3 class="text-lg font-bold">Proxy setup</h3>
+              <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">先创建 idle session；StartSession 后不显示 browser egress check URL。</p>
+              <div class="mt-4 grid gap-3">
+                <label class="text-sm font-medium">代理模式
+                  <select v-model="form.proxy_mode" class="input mt-1 w-full">
+                    <option value="existing">选择已有代理</option>
+                    <option value="create">创建新代理</option>
+                  </select>
+                </label>
+                <label v-if="form.proxy_mode === 'existing'" class="text-sm font-medium">已有代理 ID
+                  <input data-testid="proxy-id-input" v-model.number="form.proxy_id" type="number" min="1" class="input mt-1 w-full" />
+                </label>
+                <template v-else>
+                  <label class="text-sm font-medium">代理名称
+                    <input v-model="proxy.name" class="input mt-1 w-full" placeholder="代理备注名称" />
+                  </label>
+                  <label class="text-sm font-medium">协议
+                    <select v-model="proxy.protocol" class="input mt-1 w-full">
+                      <option value="socks5">socks5</option>
+                      <option value="socks5h">socks5h</option>
+                      <option value="http">http</option>
+                      <option value="https">https</option>
+                    </select>
+                  </label>
+                  <label class="text-sm font-medium">Host
+                    <input v-model="proxy.host" class="input mt-1 w-full" autocomplete="off" placeholder="代理 host" />
+                  </label>
+                  <label class="text-sm font-medium">Port
+                    <input v-model.number="proxy.port" type="number" class="input mt-1 w-full" />
+                  </label>
+                  <label class="text-sm font-medium">Username
+                    <input v-model="proxy.username" class="input mt-1 w-full" autocomplete="off" placeholder="代理用户名" />
+                  </label>
+                  <label class="text-sm font-medium">Password
+                    <input v-model="proxy.password" type="password" class="input mt-1 w-full" autocomplete="new-password" placeholder="代理密码，只提交不回显" />
+                  </label>
+                </template>
+                <label class="text-sm font-medium">Claude Code 专用分组 ID
+                  <input data-testid="group-id-input" v-model.number="form.group_id" type="number" min="1" class="input mt-1 w-full" />
+                </label>
+                <label class="text-sm font-medium">账号名称
+                  <input data-testid="account-name-input" v-model="form.account_name" class="input mt-1 w-full" placeholder="claude-oauth-01" />
+                </label>
+                <label class="text-sm font-medium">用量策略
+                  <select v-model="form.pool_profile" class="input mt-1 w-full">
+                    <option value="normal">normal effective：7 天平滑消耗</option>
+                    <option value="aggressive">aggressive requested：请求速刷，但不降低安全门禁</option>
+                  </select>
+                </label>
+                <label class="text-sm font-medium">账号并发上限
+                  <input v-model.number="form.concurrency" type="number" min="1" max="10" class="input mt-1 w-full" />
+                </label>
+              </div>
+              <button data-testid="start-session" class="btn btn-primary mt-4" :disabled="busy || !canStart" @click="startSession">创建上号会话</button>
+            </div>
+
+            <div class="rounded-3xl border border-cyan-200 bg-cyan-50 p-5 shadow-sm dark:border-cyan-900 dark:bg-cyan-950/30">
+              <h3 class="text-lg font-bold">Browser egress check</h3>
+              <div class="mt-4 space-y-3 text-sm">
+                <div class="rounded-2xl bg-white p-3 dark:bg-slate-900">
+                  <span class="text-slate-500">状态：</span>
+                  <strong data-testid="browser-egress-status">{{ browserStatus }}</strong>
+                </div>
+                <button data-testid="test-proxy" class="btn btn-secondary" :disabled="busy || !session" @click="testProxyStep">测试代理并生成同出口校验 URL</button>
+                <div v-if="session?.browser_egress_check_url" class="rounded-2xl border border-cyan-300 bg-white p-3 dark:border-cyan-800 dark:bg-slate-900">
+                  <p class="font-semibold">只在即将登录 Claude 的同出口浏览器中复制打开：</p>
+                  <p data-testid="browser-egress-check-url" class="mt-2 break-all font-mono text-xs text-cyan-700 dark:text-cyan-300">{{ safeUrl(session.browser_egress_check_url) }}</p>
+                </div>
+                <div v-else class="rounded-2xl border border-dashed border-slate-300 p-3 text-slate-500 dark:border-slate-700 dark:text-slate-400">TestProxy 成功前不展示 check URL。</div>
+
+                <div v-if="browserStatus === 'expired'" class="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                  <p>校验 nonce 已过期。为了避免复用旧链接，必须重新开一个上号会话。</p>
+                  <button data-testid="expired-start-new-session" class="btn btn-primary mt-3" :disabled="busy" @click="startSession">重新开一个上号会话</button>
+                </div>
+
+                <div v-if="browserStatus === 'mismatch'" data-testid="browser-egress-mismatch" class="rounded-2xl border border-rose-300 bg-rose-50 p-3 text-rose-900 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-100">
+                  <p class="font-semibold">浏览器出口与代理出口不一致，不能继续授权。</p>
+                  <p class="mt-1">Browser bucket: {{ safeText(session?.browser_egress_browser_ip_bucket, '未返回 browser bucket') }}</p>
+                  <p>Proxy bucket: {{ safeText(session?.browser_egress_proxy_ip_bucket, '未返回 proxy bucket') }}</p>
+                  <p class="mt-1 text-xs">如果 bucket 不可用，请按泛化 mismatch 处理：更换浏览器出口或代理后重新开会话。</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section v-else-if="activeStep === 'auth'" class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <h3 class="text-lg font-bold">授权与创建不可调度账号</h3>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">同出口 verified 后才能继续。页面不提供人工校验输入框。</p>
+            <div class="mt-4 flex flex-wrap gap-4 text-sm">
+              <label class="inline-flex items-center gap-2"><input v-model="authMode" type="radio" value="oauth" /> OAuth URL</label>
+              <label class="inline-flex items-center gap-2"><input v-model="authMode" type="radio" value="setup-token-cookie" /> Setup Token 登录态</label>
+            </div>
+            <div v-if="authMode === 'oauth'" class="mt-4 space-y-3">
+              <button class="btn btn-secondary" :disabled="busy || !session?.browser_egress_verified" @click="generateOAuth">生成 OAuth URL</button>
+              <p v-if="session?.auth_url" class="break-all rounded-2xl bg-slate-100 p-3 font-mono text-xs dark:bg-slate-800">{{ safeUrl(session.auth_url) }}</p>
+              <textarea v-model="oauthCode" class="input h-24 w-full" placeholder="粘贴授权 code；只提交，不回显 token"></textarea>
+              <button class="btn btn-primary" :disabled="busy || !session?.browser_egress_verified || !oauthCode" @click="exchangeCreate">Exchange code 并创建账号</button>
+            </div>
+            <div v-else class="mt-4 space-y-3">
+              <input data-testid="setup-token-input" v-model="setupSessionKey" type="password" class="input w-full" autocomplete="new-password" placeholder="粘贴 Setup Token" />
+              <button class="btn btn-primary" :disabled="busy || !session?.browser_egress_verified || !setupSessionKey" @click="setupTokenCreate">导入 Setup Token 并创建账号</button>
+            </div>
+          </section>
+
+          <section v-else-if="activeStep === 'gates'" class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <h3 class="text-lg font-bold">Refresh / Runtime / Healthcheck / Warming / Production</h3>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">真实 messages 只由管理员显式按钮触发。健康检查按钮会发起一次真实 directed healthcheck/上游请求。</p>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <button data-testid="refresh-only" class="btn btn-secondary" :disabled="busy || !session?.account_id" @click="refreshOnlyStep">Refresh-only</button>
+              <button data-testid="runtime-register" class="btn btn-secondary" :disabled="busy || !session?.account_id" @click="runtimeRegisterStep">Runtime 注册</button>
+              <button data-testid="healthcheck" class="btn btn-secondary" :disabled="busy || !session?.account_id || !session?.cc_gateway_runtime_registered" @click="healthcheckStep">定向健康检查（一次真实 directed healthcheck/上游请求）</button>
+              <button data-testid="start-warming" class="btn btn-primary" :disabled="busy || !canStartWarming" @click="startWarmingStep">进入 warming（新号 low weight）</button>
+              <button data-testid="promote-production" class="btn btn-primary" :disabled="busy || session?.status !== 'warming'" @click="promoteProductionStep">Promote production（normal effective / aggressive requested）</button>
+            </div>
+            <div class="mt-4 grid gap-3 md:grid-cols-3">
+              <div class="rounded-2xl border border-slate-200 p-3 dark:border-slate-800"><strong>imported/refreshed</strong><p class="text-sm text-slate-500">账号导入后仍不可调度。</p></div>
+              <div class="rounded-2xl border border-slate-200 p-3 dark:border-slate-800"><strong>runtime_registered</strong><p class="text-sm text-slate-500">CC Gateway runtime 证据就绪。</p></div>
+              <div class="rounded-2xl border border-slate-200 p-3 dark:border-slate-800"><strong>healthcheck_passed</strong><p class="text-sm text-slate-500">一次真实 directed healthcheck 通过后才能 warming。</p></div>
+            </div>
+            <div v-if="acceptance" class="mt-4 rounded-2xl bg-slate-100 p-3 text-sm dark:bg-slate-800">
+              <p>Healthcheck status: {{ safeText(acceptance.status) }}</p>
+              <p>CC Gateway seen: {{ acceptance.cc_gateway_seen ? 'yes' : 'no' }} · Raw capture: {{ acceptance.raw_capture_present ? 'yes' : 'no' }}</p>
+            </div>
+          </section>
+
+          <section v-else class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <h3 class="text-lg font-bold">脱敏证据与检查</h3>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">所有后端/账号来源自由文本在进入 DOM 前 fail-closed scrub。</p>
+            <dl class="mt-4 grid gap-3 md:grid-cols-2 text-sm">
+              <div><dt class="text-slate-500">状态</dt><dd>{{ safeText(session?.status) }}</dd></div>
+              <div><dt class="text-slate-500">账号</dt><dd>{{ safeText(session?.account_ref || session?.account_name) }}</dd></div>
+              <div><dt class="text-slate-500">Proxy ref</dt><dd>{{ safeFieldText('proxy_ref', session?.proxy_ref) }}</dd></div>
+              <div><dt class="text-slate-500">Egress bucket</dt><dd>{{ safeText(session?.egress_bucket) }}</dd></div>
+            </dl>
+            <ul v-if="safeChecks.length" class="mt-4 space-y-2 text-sm">
+              <li v-for="(check, index) in safeChecks" :key="`${check.name}-${index}`" class="rounded-2xl border border-slate-200 p-3 dark:border-slate-800">
+                <strong>{{ check.status }} · {{ check.name }}</strong>
+                <p v-if="check.message">{{ check.message }}</p>
+              </li>
+            </ul>
+            <pre class="mt-4 max-h-80 overflow-auto rounded-2xl bg-slate-100 p-3 text-xs dark:bg-slate-800">{{ safeSession }}</pre>
+          </section>
+
+          <p v-if="error" class="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-100">{{ safeText(error) }}</p>
+        </main>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, reactive, ref, watch } from 'vue'
+
+import claudeOnboarding, {
+  type FormalPoolAcceptanceResult,
+  type FormalPoolCheck,
+  type FormalPoolProfile,
+  type FormalPoolProxyMode,
+  type FormalPoolSession,
+} from '@/api/admin/claudeOnboarding'
+import { useEgressCheckPolling } from '@/composables/useEgressCheckPolling'
+import { scrubFormalPoolDisplayText } from '@/utils/formalPoolStatusDashboard'
+
+type StepKey = 'proxy' | 'auth' | 'gates' | 'evidence'
+
+const steps: Array<{ key: StepKey; index: number; title: string; caption: string }> = [
+  { key: 'proxy', index: 1, title: '代理与同出口', caption: 'Proxy setup + Browser egress check' },
+  { key: 'auth', index: 2, title: '授权创建', caption: 'OAuth / Setup Token' },
+  { key: 'gates', index: 3, title: '运行门禁', caption: 'runtime + healthcheck + warming' },
+  { key: 'evidence', index: 4, title: '脱敏证据', caption: 'safe summary only' },
+]
+const stageList = ['imported', 'refreshed', 'runtime_registered', 'healthcheck_passed', 'warming', 'production', 'quarantined']
+
+const activeStep = ref<StepKey>('proxy')
+const busy = ref(false)
+const error = ref('')
+const session = ref<FormalPoolSession | null>(null)
+const acceptance = ref<FormalPoolAcceptanceResult | null>(null)
+const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
+const oauthCode = ref('')
+const setupSessionKey = ref('')
+
+const form = reactive<{
+  proxy_mode: FormalPoolProxyMode
+  proxy_id?: number
+  group_id?: number
+  account_name: string
+  pool_profile: FormalPoolProfile
+  concurrency: number
+}>({
+  proxy_mode: 'existing',
+  proxy_id: undefined,
+  group_id: undefined,
+  account_name: '',
+  pool_profile: 'normal',
+  concurrency: 10,
+})
+const proxy = reactive({
+  name: '',
+  protocol: 'socks5' as 'http' | 'https' | 'socks5' | 'socks5h',
+  host: '',
+  port: 1080,
+  username: '',
+  password: '',
+})
+
+const egressPolling = useEgressCheckPolling()
+
+const currentStepTitle = computed(() => steps.find((step) => step.key === activeStep.value)?.title ?? 'Onboarding')
+const canStart = computed(() => !!form.group_id && !!form.account_name && (form.proxy_mode === 'existing' ? !!form.proxy_id : !!proxy.host && !!proxy.port))
+const browserStatus = computed(() => session.value?.browser_egress_check_status ?? egressPolling.status.value ?? 'idle')
+const canStartWarming = computed(() => session.value?.healthcheck_passed || acceptance.value?.status === 'healthcheck_passed')
+const safeChecks = computed(() => (session.value?.checks ?? []).map(sanitizeCheckForDisplay))
+const safeSession = computed(() => JSON.stringify(sanitizeForDisplay({
+  safe_summary: session.value?.safe_summary || {},
+  status: session.value?.status,
+  proxy_ref: session.value?.proxy_ref,
+  egress_bucket: session.value?.egress_bucket,
+  pool_profile: session.value?.pool_profile,
+  browser_egress_verified: session.value?.browser_egress_verified,
+  browser_egress_check_status: session.value?.browser_egress_check_status,
+  browser_egress_browser_ip_bucket: session.value?.browser_egress_browser_ip_bucket,
+  browser_egress_proxy_ip_bucket: session.value?.browser_egress_proxy_ip_bucket,
+  cc_gateway_runtime_registered: session.value?.cc_gateway_runtime_registered,
+  healthcheck_passed: session.value?.healthcheck_passed,
+  production_ready: session.value?.production_ready,
+  account_ref: session.value?.account_ref,
+  oauth_summary: session.value?.oauth_summary,
+}), null, 2))
+
+watch(() => egressPolling.session.value, (nextSession) => {
+  if (nextSession && nextSession.id === session.value?.id) {
+    const mergedSession: FormalPoolSession = {
+      ...(session.value as FormalPoolSession),
+      ...(nextSession as FormalPoolSession),
+      browser_egress_check_url: nextSession.browser_egress_check_url || session.value.browser_egress_check_url,
+    }
+    session.value = mergedSession
+  }
+})
+
+watch(activeStep, () => {
+  egressPolling.stop()
+})
+
+function setStep(step: StepKey) {
+  activeStep.value = step
+}
+
+function safeText(value: unknown, fallback = '—'): string {
+  if (typeof value !== 'string') {
+    if (value === null || value === undefined) return fallback
+    return scrubExtra(String(value), fallback)
+  }
+  return scrubExtra(value, fallback)
+}
+
+function safeFieldText(key: string, value: unknown, fallback = '—'): string {
+  if (value === null || value === undefined) return fallback
+  return hasSensitiveKeySemantic(key) ? REDACTED_TEXT : safeText(value, fallback)
+}
+
+function scrubExtra(value: string, fallback = '—'): string {
+  return scrubFormalPoolDisplayText(value, fallback)
+    .replace(RAW_IPV6_PATTERN, '$1[redacted]')
+    .replace(RAW_IPV4_PATTERN, REDACTED_TEXT)
+}
+
+function safeUrl(value: string): string {
+  return safeText(value).replace(/([?&](?:code|token|session|nonce)=)[^&\s]+/gi, '$1[redacted]')
+}
+
+const REDACTED_TEXT = '[redacted]'
+const RAW_IPV4_PATTERN = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
+const RAW_IPV6_PATTERN = /(^|[^\w:])((?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}|[0-9a-f]{1,4}:(?:(?::[0-9a-f]{1,4}){1,6})|:(?:(?::[0-9a-f]{1,4}){1,7}|:)|::ffff:(?:\d{1,3}\.){3}\d{1,3}))(?![\w:])/gi
+const SENSITIVE_KEY_PARTS = [
+  'prompt',
+  'body',
+  'telemetry',
+  'cch',
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'pwd',
+  'proxy',
+  'email',
+  'uuid',
+  'raw',
+  'capture',
+  'credential',
+  'credentials',
+  'session_key',
+  'access_token',
+  'refresh_token',
+  'api_key',
+] as const
+
+function normalizeDisplayKey(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+}
+
+function isSafeDisplayKey(key: string): boolean {
+  const normalized = normalizeDisplayKey(key)
+  return normalized === 'status' ||
+    normalized === 'stage' ||
+    normalized.includes('bucket') ||
+    normalized.startsWith('boolean_')
+}
+
+function hasSensitiveKeySemantic(key: string): boolean {
+  const normalized = normalizeDisplayKey(key)
+  if (isSafeDisplayKey(normalized)) return false
+  return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part))
+}
+
+function sanitizeForDisplay(value: unknown, key = ''): unknown {
+  if (key && hasSensitiveKeySemantic(key)) return REDACTED_TEXT
+  if (typeof value === 'string') return safeText(value)
+  if (Array.isArray(value)) return value.map((child) => sanitizeForDisplay(child))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([childKey, child]) => [safeText(childKey), sanitizeForDisplay(child, childKey)]),
+    )
+  }
+  return value
+}
+
+function sanitizeCheckForDisplay(check: FormalPoolCheck) {
+  const rawName = String(check.name ?? '')
+  const redactCheckText = hasSensitiveKeySemantic(rawName)
+  return {
+    name: redactCheckText ? REDACTED_TEXT : safeText(rawName),
+    status: safeText(check.status),
+    message: check.message
+      ? redactCheckText || hasSensitiveKeySemantic(String(check.message))
+        ? REDACTED_TEXT
+        : safeText(check.message)
+      : '',
+  }
+}
+
+function stageClass(stage: string) {
+  const current = session.value?.status
+  const active = current === stage || (stage === 'healthcheck_passed' && canStartWarming.value)
+  return active
+    ? 'is-active border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-100'
+    : 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400'
+}
+
+async function run<T>(fn: () => Promise<T>): Promise<T | null> {
+  busy.value = true
+  error.value = ''
+  try {
+    return await fn()
+  } catch (err: any) {
+    error.value = err?.response?.data?.message || err?.message || '操作失败'
+    return null
+  } finally {
+    busy.value = false
+  }
+}
+
+function sessionPayload() {
+  const payload: any = { ...form }
+  if (form.proxy_mode === 'create') payload.proxy = { ...proxy }
+  return payload
+}
+
+async function startSession() {
+  egressPolling.stop()
+  acceptance.value = null
+  const res = await run(() => claudeOnboarding.createSession(sessionPayload()))
+  if (res) {
+    session.value = res
+    activeStep.value = 'proxy'
+  }
+}
+
+async function testProxyStep() {
+  if (!session.value) return
+  egressPolling.stop()
+  const res = await run(() => claudeOnboarding.testProxy(session.value!.id))
+  if (res) {
+    session.value = res
+    if (res.browser_egress_check_url) egressPolling.start(res.id)
+  }
+}
+
+async function generateOAuth() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!.id))
+  if (res) session.value = res
+}
+
+async function exchangeCreate() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!.id, oauthCode.value))
+  if (res) session.value = res
+}
+
+async function setupTokenCreate() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!.id, setupSessionKey.value))
+  if (res) {
+    session.value = res
+    setupSessionKey.value = ''
+  }
+}
+
+async function refreshOnlyStep() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.refreshOnly(session.value!.id))
+  if (res) session.value = res
+}
+
+async function runtimeRegisterStep() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.runtimeRegister(session.value!.id))
+  if (res) session.value = res
+}
+
+async function healthcheckStep() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.healthcheck(session.value!.id))
+  if (res) {
+    acceptance.value = res
+    session.value = { ...session.value, healthcheck_passed: res.status === 'healthcheck_passed', status: res.status }
+  }
+}
+
+async function startWarmingStep() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.startWarming(session.value!.id))
+  if (res) session.value = res
+}
+
+async function promoteProductionStep() {
+  if (!session.value) return
+  const res = await run(() => claudeOnboarding.promoteProduction(session.value!.id))
+  if (res) session.value = res
+}
+</script>

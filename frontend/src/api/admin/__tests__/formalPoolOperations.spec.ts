@@ -17,6 +17,7 @@ import {
   startWarming,
   promoteProduction,
   swapProxy,
+  quarantine,
 } from '@/api/admin/formalPoolOperations'
 
 describe('formalPoolOperations API', () => {
@@ -74,17 +75,38 @@ describe('formalPoolOperations API', () => {
       },
     })
 
-    await expect(replaceSetupToken(5, { session_key: 'sk-ant-sid-test-secret' })).rejects.toMatchObject({
+    await expect(replaceSetupToken(5, { session_key: 'SETUP_TOKEN_PLACEHOLDER' })).rejects.toMatchObject({
       name: 'FormalPoolOperationError',
       diagnostics: {
         recommended_actions: [expect.objectContaining({ key: 'replace_account_and_proxy' })],
       },
     })
 
-    await replaceSetupToken(5, { session_key: 'sk-ant-sid-test-secret' }).catch((error) => {
+    await replaceSetupToken(5, { session_key: 'SETUP_TOKEN_PLACEHOLDER' }).catch((error) => {
       expect(error).toBeInstanceOf(FormalPoolOperationError)
       expect(error.diagnostics?.recommended_actions?.[0]?.key).toBe('replace_account_and_proxy')
     })
+  })
+
+  it('normalizes legacy quarantine Account responses into a FormalPoolOperationResult', async () => {
+    const account = { id: 5, status: 'error' as const, schedulable: false, onboarding_stage: 'quarantined' }
+    post.mockResolvedValueOnce({ data: account })
+    get.mockResolvedValueOnce({ data: {
+      account_id: 5,
+      is_formal_pool: true,
+      schedulable: false,
+      effective_schedulable: false,
+      failure_origin: 'upstream',
+      checks: [],
+      recommended_actions: [{ key: 'monitor', label: 'Monitor' }],
+    } })
+
+    await expect(quarantine(5, 'manual-risk: kyc')).resolves.toEqual({
+      account,
+      diagnostics: expect.objectContaining({ account_id: 5 }),
+    })
+    expect(post).toHaveBeenLastCalledWith('/admin/accounts/5/quarantine', { reason: 'manual-risk: kyc' })
+    expect(get).toHaveBeenLastCalledWith('/admin/accounts/5/formal-pool/diagnostics')
   })
 
   it('allows FormalPoolOperationError to carry the backend safe account payload', () => {

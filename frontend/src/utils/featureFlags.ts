@@ -81,10 +81,18 @@ export interface FeatureFlagDefinition {
   readonly mode: FeatureFlagMode
   /** Short human label for logs and debug tooling. */
   readonly label: string
+  /**
+   * Optional Vite env key (`VITE_*`) consulted **only** in dev builds
+   * (`import.meta.env.DEV === true`). Production bundles ignore this entirely,
+   * so it can never be used to flip a feature on in prod by accident — the
+   * backend toggle is the only production signal. Values: `'true'` forces
+   * enable, `'false'` forces disable, anything else falls through to settings.
+   */
+  readonly devOverrideEnvKey?: string
 }
 
 function defineFlag<K extends keyof PublicSettings>(
-  def: { key: K; mode: FeatureFlagMode; label: string },
+  def: { key: K; mode: FeatureFlagMode; label: string; devOverrideEnvKey?: string },
 ): FeatureFlagDefinition {
   return def
 }
@@ -114,6 +122,12 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Affiliate',
   }),
+  newAccountManagement: defineFlag({
+    key: 'use_new_account_management_ux',
+    mode: 'opt-in',
+    label: 'New Account Management UX',
+    devOverrideEnvKey: 'VITE_NEW_ACCOUNT_UX',
+  }),
 } as const
 
 export type RegisteredFeatureFlag = keyof typeof FeatureFlags
@@ -124,6 +138,13 @@ export type RegisteredFeatureFlag = keyof typeof FeatureFlags
  * `false` → the feature is disabled (menu/route should hide).
  */
 export function isFeatureFlagEnabled(flag: FeatureFlagDefinition): boolean {
+  if (import.meta.env.DEV && flag.devOverrideEnvKey) {
+    const override = (import.meta.env as Record<string, string | undefined>)[
+      flag.devOverrideEnvKey
+    ]
+    if (override === 'true') return true
+    if (override === 'false') return false
+  }
   const appStore = useAppStore()
   const raw = appStore.cachedPublicSettings?.[flag.key] as
     | boolean

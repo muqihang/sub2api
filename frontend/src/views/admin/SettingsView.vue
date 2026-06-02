@@ -4741,6 +4741,34 @@
           </div>
         </div>
 
+        <!-- Account Management V2 UX rollout feature card -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.features.newAccountManagement.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.newAccountManagement.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.features.newAccountManagement.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.newAccountManagement.enabledHint') }}
+                </p>
+              </div>
+              <Toggle
+                v-model="form.use_new_account_management_ux"
+                data-testid="use-new-account-management-ux-toggle"
+              />
+            </div>
+          </div>
+        </div>
+
         </div><!-- /Tab: Features -->
 
         <!-- Tab: Email -->
@@ -6047,6 +6075,8 @@ const form = reactive<SettingsForm>({
   available_channels_enabled: false,
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: false,
+  // Account Management V2 UX rollout flag (opt-in)
+  use_new_account_management_ux: false,
 });
 
 const authSourceDefaults = reactive<AuthSourceDefaultsState>(
@@ -6997,6 +7027,8 @@ async function saveSettings() {
       available_channels_enabled: form.available_channels_enabled,
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
+      // Account Management V2 UX rollout flag (opt-in)
+      use_new_account_management_ux: form.use_new_account_management_ux,
     };
 
     // 仅当 openai_fast_policy_settings 已成功从后端加载时才回写，

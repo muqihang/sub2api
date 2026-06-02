@@ -49,6 +49,15 @@ export const useAppStore = defineStore('app', () => {
 
   const hasActiveToasts = computed(() => toasts.value.length > 0)
   const backendModeEnabled = computed(() => cachedPublicSettings.value?.backend_mode_enabled ?? false)
+  // V2 account management UX rollout flag. Read directly from the cached
+  // public settings; the canonical resolver (with dev override) lives in
+  // `@/utils/featureFlags` — this computed exists for places that want a
+  // reactive boolean without importing the flag registry (e.g. sidebar items
+  // that don't go through `makeSidebarFlag`). Default is `false` so first
+  // render before settings hydrate keeps the legacy UI visible.
+  const useNewAccountManagementUx = computed(
+    () => cachedPublicSettings.value?.use_new_account_management_ux ?? false,
+  )
 
   const loadingCount = ref<number>(0)
 
@@ -359,6 +368,7 @@ export const useAppStore = defineStore('app', () => {
         channel_monitor_default_interval_seconds: 60,
         available_channels_enabled: false,
         affiliate_enabled: false,
+        use_new_account_management_ux: false,
       }
     }
 
@@ -432,6 +442,7 @@ export const useAppStore = defineStore('app', () => {
     // Computed
     hasActiveToasts,
     backendModeEnabled,
+    useNewAccountManagementUx,
 
     // Actions
     toggleSidebar,

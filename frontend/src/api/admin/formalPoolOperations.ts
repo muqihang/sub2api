@@ -94,6 +94,14 @@ export async function swapProxy(accountId: number, payload: SwapProxyRequest): P
   return runOperation(() => apiClient.post<FormalPoolOperationResult>(`/admin/accounts/${accountId}/formal-pool/proxy/swap`, payload))
 }
 
+export async function quarantine(accountId: number, reason: string): Promise<FormalPoolOperationResult> {
+  return runOperation(async () => {
+    const { data: account } = await apiClient.post<Account>(`/admin/accounts/${accountId}/quarantine`, { reason })
+    const diagnostics = await getDiagnostics(account.id).catch(() => undefined)
+    return { data: { account, diagnostics } }
+  })
+}
+
 const formalPoolOperationsAPI = {
   getDiagnostics,
   replaceSetupToken,
@@ -102,6 +110,7 @@ const formalPoolOperationsAPI = {
   startWarming,
   promoteProduction,
   swapProxy,
+  quarantine,
 }
 
 export default formalPoolOperationsAPI

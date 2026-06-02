@@ -5404,6 +5404,12 @@ export default {
           enabled: '启用可用渠道',
           enabledHint: '关闭后用户端侧边栏入口隐藏，接口返回空数组。',
         },
+        newAccountManagement: {
+          title: '账号管理 V2 体验',
+          description: '把"账号管理"页面切换到新的看板与上号引导。默认关闭，确认稳定后再向所有管理员开放；可随时关回 Legacy 界面，不需要重新构建前端。',
+          enabled: '启用账号管理 V2',
+          enabledHint: '关闭后管理员看到的是当前已有的账号管理界面；打开后切换到 V2 看板和上号引导。出问题随时关回。',
+        },
         affiliate: {
           title: '邀请返利',
           description: '老用户邀请新用户注册，新用户充值后老用户按比例获得返利额度。默认关闭。',

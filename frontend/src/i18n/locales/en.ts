@@ -5241,6 +5241,12 @@ export default {
           enabled: 'Enable Available Channels',
           enabledHint: 'When off, the sidebar entry is hidden and the endpoint returns an empty list.',
         },
+        newAccountManagement: {
+          title: 'Account Management V2 UX',
+          description: 'Switch the account management surfaces (dashboard + onboarding wizard) to the V2 experience. Disabled by default; enable per environment once it is verified, and you can flip it back to the legacy UI at any time without rebuilding the frontend.',
+          enabled: 'Enable Account Management V2',
+          enabledHint: 'When off, admins see the legacy account management UI. When on, the V2 dashboard and onboarding wizard take over. Flip it back any time if something goes wrong.',
+        },
         affiliate: {
           title: 'Affiliate (Invite Rebate)',
           description: 'Existing users invite new ones; the inviter earns a percentage rebate on the invitee’s recharges. Disabled by default.',
