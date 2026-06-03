@@ -51,7 +51,7 @@
           <button
             type="button"
             class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100 dark:border-dark-600 dark:text-slate-200 dark:hover:bg-dark-800"
-            @click="emit('close')"
+            @click="handleClose"
           >
             关闭
           </button>
@@ -192,6 +192,19 @@
         </section>
       </main>
     </section>
+
+    <ConfirmDialog
+      :show="pendingHealthcheckConfirm"
+      :z-index="160"
+      title="执行定向健康检查"
+      message="将通过当前代理与 CC Gateway 发起一次真实上游请求，可能消耗少量配额。确认继续？"
+      confirm-text="确认执行"
+      cancel-text="取消"
+      :danger="true"
+      data-testid="healthcheck-confirm-dialog"
+      @confirm="confirmHealthcheck"
+      @cancel="cancelHealthcheckConfirm"
+    />
   </div>
 </template>
 
@@ -216,6 +229,7 @@ import {
   type FormalPoolDiagnosticsHeroAction,
 } from '@/utils/formalPoolDiagnosticsHero'
 import { scrubFormalPoolDisplayText } from '@/utils/formalPoolStatusDashboard'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const props = defineProps<{
   show: boolean
@@ -239,6 +253,7 @@ const sessionKey = ref('')
 const proxyId = ref('')
 const evidenceOpen = ref(false)
 const evidenceQuery = ref('')
+const pendingHealthcheckConfirm = ref(false)
 
 const activeAccount = computed(() => latestAccount.value ?? props.account)
 const hero = computed(() => deriveFormalPoolDiagnosticsHero({ account: activeAccount.value, diagnostics: diagnostics.value }))
@@ -453,8 +468,11 @@ async function handleAction(key: FormalPoolDiagnosticsActionKey): Promise<void> 
   }
   if (key === 'runtimeRegister') return runWithBusy(key, () => runtimeRegister(account.id))
   if (key === 'healthcheck') {
-    if (!window.confirm('确认执行定向健康检查？此操作会发起一次真实上游请求。')) return
-    return runWithBusy(key, () => healthcheck(account.id))
+    // Native browser confirm inside a custom modal is jarring and inaccessible;
+    // route through the project's ConfirmDialog instead. The actual healthcheck
+    // API call is gated behind the dialog's @confirm handler below.
+    pendingHealthcheckConfirm.value = true
+    return
   }
   if (key === 'swapProxy') {
     const id = parsedProxyId()
@@ -462,6 +480,25 @@ async function handleAction(key: FormalPoolDiagnosticsActionKey): Promise<void> 
     return runWithBusy(key, () => swapProxy(account.id, { proxy_id: id, run_proxy_test: true, run_runtime_register: true, run_healthcheck: true }))
   }
   if (key === 'quarantine') return runWithBusy(key, () => quarantine(account.id, `manual-risk:${hero.value.scenario}`))
+}
+
+async function confirmHealthcheck(): Promise<void> {
+  const account = activeAccount.value
+  if (!account) {
+    pendingHealthcheckConfirm.value = false
+    return
+  }
+  pendingHealthcheckConfirm.value = false
+  await runWithBusy('healthcheck', () => healthcheck(account.id))
+}
+
+function cancelHealthcheckConfirm(): void {
+  pendingHealthcheckConfirm.value = false
+}
+
+function handleClose(): void {
+  pendingHealthcheckConfirm.value = false
+  emit('close')
 }
 
 watch(
@@ -475,6 +512,7 @@ watch(
       proxyId.value = props.account.proxy_id ? String(props.account.proxy_id) : ''
       evidenceOpen.value = false
       evidenceQuery.value = ''
+      pendingHealthcheckConfirm.value = false
       refreshDiagnostics()
       return
     }
@@ -483,6 +521,7 @@ watch(
     errorMessage.value = ''
     sessionKey.value = ''
     proxyId.value = ''
+    pendingHealthcheckConfirm.value = false
   },
   { immediate: true },
 )

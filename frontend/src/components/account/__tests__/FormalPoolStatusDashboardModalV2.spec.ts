@@ -97,6 +97,12 @@ async function mountWithFixture(
   return wrapper
 }
 
+function expectNoRailBorderClasses(classes: string[]) {
+  const classText = classes.join(' ')
+  expect(classes).not.toContain('border-l-4')
+  expect(classText).not.toMatch(/(?:^|\s)(?:dark:)?border-(?:rose|sky|amber|emerald|slate)-/)
+}
+
 describe('FormalPoolStatusDashboardModalV2', () => {
   beforeEach(() => {
     getFormalPoolStatusDashboard.mockReset()
@@ -152,7 +158,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(columnHeaders).toHaveLength(5)
   })
 
-  it('pins needs-intervention rows above active/paused/inactive and gives them a rose rail', async () => {
+  it('pins needs-intervention rows above active/paused/inactive and gives them a rose rail element', async () => {
     const wrapper = await mountWithFixture([
       accountFixture({ account_id: 10, state: 'production' }),
       accountFixture({ account_id: 11, state: 'rate_limited' }),
@@ -165,10 +171,19 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     // The first row should be the needs_intervention one (quarantined).
     expect(rows[0].attributes('data-account-row')).not.toContain('12')
     expect(rows[0].attributes('data-bucket')).toBe('needs_intervention')
-    expect(rows[0].classes().join(' ')).toContain('rose')
+    // Visible rail element lives inside the first <td>, not as a <tr> border
+    // class (which is unreliable under border-collapse).
+    const rail = rows[0].find('[data-testid^="row-rail-"]')
+    expect(rail.exists()).toBe(true)
+    expect(rail.attributes('data-rail-tone')).toBe('rose')
+    expect(rail.attributes('data-rail-warming')).toBe('false')
+    expect(rail.classes().join(' ')).toContain('rose-500')
+    expect(rail.classes().join(' ')).toContain('absolute')
+    expect(rail.classes()).toContain('w-1')
+    expectNoRailBorderClasses(rows[0].classes())
   })
 
-  it('renders the warming row with a sky rail and the "预热中 · low weight" copy', async () => {
+  it('renders the warming row with a sky rail element and the "预热中 · low weight" copy', async () => {
     const wrapper = await mountWithFixture([
       accountFixture({ account_id: 21, state: 'warming', state_label: '预热中' }),
     ])
@@ -176,12 +191,70 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     const warmingRow = wrapper.find('tr[data-bucket="active"]')
     expect(warmingRow.exists()).toBe(true)
     expect(warmingRow.attributes('data-warming')).toBe('true')
-    expect(warmingRow.classes().join(' ')).toContain('sky')
+    const rail = warmingRow.find('[data-testid^="row-rail-"]')
+    expect(rail.exists()).toBe(true)
+    expect(rail.attributes('data-rail-tone')).toBe('sky')
+    expect(rail.attributes('data-rail-warming')).toBe('true')
+    expect(rail.classes().join(' ')).toContain('sky-500')
+    expect(rail.classes()).toContain('w-1')
+    expectNoRailBorderClasses(warmingRow.classes())
 
     const label = warmingRow.find('[data-testid="warming-presentation-label"]')
     expect(label.exists()).toBe(true)
     expect(label.text()).toContain('预热中')
     expect(label.text()).toContain('low weight')
+  })
+
+  it('renders a visible row rail element per row whose tone matches the bucket', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({ account_id: 71, state: 'production' }),
+      accountFixture({ account_id: 72, state: 'rate_limited' }),
+      accountFixture({ account_id: 73, state: 'quarantined' }),
+      accountFixture({ account_id: 74, state: 'inactive' }),
+      accountFixture({ account_id: 75, state: 'warming' }),
+    ])
+
+    const rows = wrapper.findAll('tr[data-bucket]')
+    expect(rows.length).toBe(5)
+    for (const row of rows) {
+      const rail = row.find('[data-testid^="row-rail-"]')
+      expect(rail.exists()).toBe(true)
+      // Rails are positioned absolutely inside the first <td>; this guarantees
+      // they paint regardless of <table> border-collapse behavior.
+      expect(rail.classes().join(' ')).toContain('absolute')
+      expect(rail.classes()).toContain('w-1')
+      expectNoRailBorderClasses(row.classes())
+      const tone = rail.attributes('data-rail-tone')
+      expect(['rose', 'sky', 'amber', 'emerald', 'slate']).toContain(tone)
+      const warming = row.attributes('data-warming') === 'true'
+      if (warming) {
+        expect(tone).toBe('sky')
+      } else {
+        const bucket = row.attributes('data-bucket')
+        if (bucket === 'needs_intervention') expect(tone).toBe('rose')
+        if (bucket === 'paused') expect(tone).toBe('amber')
+        if (bucket === 'active') expect(tone).toBe('emerald')
+        if (bucket === 'inactive') expect(tone).toBe('slate')
+      }
+    }
+  })
+
+  it('also renders a rail element inside the expanded drawer row', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({ account_id: 81, state: 'quarantined' }),
+    ])
+
+    const row = wrapper.find('tr[data-bucket="needs_intervention"]')
+    expect(row.exists()).toBe(true)
+    await row.find('[data-testid^="expand-"]').trigger('click')
+
+    const drawerRail = wrapper.find('[data-testid^="drawer-rail-"]')
+    expect(drawerRail.exists()).toBe(true)
+    expect(drawerRail.attributes('data-rail-tone')).toBe('rose')
+    expect(drawerRail.classes().join(' ')).toContain('absolute')
+    expect(drawerRail.classes().join(' ')).toContain('rose-500')
+    expect(drawerRail.classes()).toContain('w-1')
+    expectNoRailBorderClasses(wrapper.find('[data-testid^="drawer-"]').classes())
   })
 
   it('filters the table when a lane is clicked', async () => {

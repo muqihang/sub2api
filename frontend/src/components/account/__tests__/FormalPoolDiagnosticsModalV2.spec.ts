@@ -1,6 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { defineComponent } from 'vue'
 import type { Account, FormalPoolOperationsDiagnostics } from '@/types'
+
+// Stub the project ConfirmDialog at module scope so every test in this file
+// gets the same lightweight stand-in. The real ConfirmDialog uses BaseDialog +
+// vue-i18n and would otherwise crash without a configured i18n plugin.
+vi.mock('@/components/common/ConfirmDialog.vue', () => ({
+  default: defineComponent({
+    name: 'ConfirmDialog',
+    props: ['show', 'title', 'message', 'confirmText', 'cancelText', 'danger', 'zIndex'],
+    emits: ['confirm', 'cancel'],
+    template:
+      '<div v-if="show" data-testid="confirm-dialog-stub" :data-title="title" :data-message="message" :data-danger="String(danger)" :data-z-index="String(zIndex ?? \'\')" :style="{ zIndex }">' +
+      '<button data-testid="confirm-dialog-stub-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button>' +
+      '<button data-testid="confirm-dialog-stub-cancel" @click="$emit(\'cancel\')">{{ cancelText }}</button>' +
+      '</div>',
+  }),
+}))
 
 const {
   getDiagnostics,
@@ -99,6 +116,28 @@ async function mountModal(options: { account?: Account; diagnostics?: FormalPool
   })
   await flushPromises()
   return wrapper
+}
+
+// Diagnostics fixture that drives the hero into the evidence_missing scenario
+// where `runtime_evidence_complete` is true but `healthcheck_evidence_persisted`
+// is false. That picks `healthcheck` as the primary action so we can exercise
+// the confirm flow without changing the hero's safety semantics.
+function healthcheckScenarioDiagnostics(): FormalPoolOperationsDiagnostics {
+  return diagnostics({
+    onboarding_stage: 'runtime_registered',
+    schedulable: false,
+    effective_schedulable: false,
+    failure_origin: 'control_plane',
+    failure_code: 'healthcheck_evidence_missing',
+    status_code_bucket: 'status_2xx',
+    cc_gateway_seen: true,
+    cc_gateway_runtime_registered: true,
+    cc_gateway_runtime_registered_at: '2026-06-01T00:00:00Z',
+    runtime_evidence_complete: true,
+    healthcheck_evidence_persisted: false,
+    raw_capture_present: true,
+    recommended_actions: [{ key: 'healthcheck', label: 'Healthcheck', severity: 'info' }],
+  })
 }
 
 describe('FormalPoolDiagnosticsModalV2', () => {
@@ -271,6 +310,51 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     const pushed = JSON.stringify(routerPush.mock.calls)
     expect(pushed).not.toContain(String(rawAccountId))
     expect(pushed).not.toContain(String(rawProxyId))
+  })
+
+  it('clicking healthcheck opens ConfirmDialog and does NOT call healthcheck API', async () => {
+    const wrapper = await mountModal({ diagnostics: healthcheckScenarioDiagnostics() })
+    expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="action-healthcheck"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="action-healthcheck"]').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.find('[data-testid="healthcheck-confirm-dialog"]')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.attributes('data-danger')).toBe('true')
+    expect(dialog.attributes('data-message')).toContain('真实上游请求')
+    expect(dialog.attributes('data-title')).toContain('定向健康检查')
+    expect(dialog.attributes('data-z-index')).toBe('160')
+    expect(healthcheck).not.toHaveBeenCalled()
+  })
+
+  it('confirming the dialog calls the healthcheck API exactly once', async () => {
+    healthcheck.mockResolvedValue({ account: account({ status: 'healthcheck_passed' }) })
+    const wrapper = await mountModal({ diagnostics: healthcheckScenarioDiagnostics() })
+    await wrapper.get('[data-testid="action-healthcheck"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(healthcheck).toHaveBeenCalledTimes(1)
+    expect(healthcheck).toHaveBeenCalledWith(42)
+    // Dialog closes after confirmation.
+    expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').exists()).toBe(false)
+  })
+
+  it('cancelling the dialog closes it and does NOT call the healthcheck API', async () => {
+    const wrapper = await mountModal({ diagnostics: healthcheckScenarioDiagnostics() })
+    await wrapper.get('[data-testid="action-healthcheck"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="confirm-dialog-stub-cancel"]').trigger('click')
+    await flushPromises()
+
+    expect(healthcheck).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').exists()).toBe(false)
   })
 
   it('scrubs sensitive backend and account text at DOM level', async () => {

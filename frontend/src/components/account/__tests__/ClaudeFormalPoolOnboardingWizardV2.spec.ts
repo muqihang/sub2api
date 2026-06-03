@@ -201,6 +201,8 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
 
   it('uses a non-token-shaped Setup Token placeholder', async () => {
     const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    // Auth step is locked until browser egress is verified.
+    await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
     await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
     await wrapper.find('input[value="setup-token-cookie"]').setValue()
 
@@ -311,6 +313,144 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.html()).not.toContain('::ffff:192.0.2.128')
   })
 
+  it('starts with proxy as the active step and auth/gates/evidence all locked', async () => {
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="stepper-evidence"]').attributes('data-step-status')).toBe('locked')
+
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('aria-disabled')).toBe('true')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('aria-disabled')).toBe('true')
+    expect(wrapper.find('[data-testid="stepper-evidence"]').attributes('aria-disabled')).toBe('true')
+
+    // Locked steps expose a visible prerequisite hint and a hover-tooltip title.
+    const authBtn = wrapper.find('[data-testid="stepper-auth"]')
+    expect(authBtn.attributes('title')).toContain('需先在第 1 步')
+    expect(wrapper.find('[data-testid="stepper-lock-reason-auth"]').text()).toContain('需先在第 1 步')
+    expect(wrapper.find('[data-testid="stepper-lock-reason-gates"]').text()).toContain('需先在第 2 步')
+    expect(wrapper.find('[data-testid="stepper-lock-reason-evidence"]').text()).toContain('需先在第 1 步')
+  })
+
+  it('locked stepper buttons refuse click and do NOT change the active step', async () => {
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+
+    // proxy is active by default; clicking a locked step must not move there.
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('locked')
+
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
+
+    await wrapper.find('[data-testid="stepper-evidence"]').trigger('click')
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-evidence"]').attributes('data-step-status')).toBe('locked')
+  })
+
+  it('creating a session keeps auth/gates locked until browser egress and account gates are satisfied', async () => {
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    await startSession(wrapper)
+
+    // After StartSession, proxy is still the active step. Auth stays locked
+    // until browser egress is verified, so operators cannot jump into a disabled
+    // authorization form before completing the same-egress gate.
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="stepper-evidence"]').attributes('data-step-status')).toBe('available')
+    expect(wrapper.find('[data-testid="stepper-lock-reason-auth"]').text()).toContain('同出口校验')
+    expect(wrapper.find('[data-testid="stepper-lock-reason-gates"]').text()).toContain('授权')
+
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
+  })
+
+  it('verified browser egress unlocks auth while gates stay locked until an account exists', async () => {
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
+
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('available')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('locked')
+
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('done')
+  })
+
+  it('falls back from auth when browser egress is no longer verified', async () => {
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('active')
+
+    onboardingApi.generateAuthUrl.mockResolvedValueOnce(sessionFixture({
+      browser_egress_verified: false,
+      browser_egress_check_status: 'mismatch',
+    }))
+    const generateAuthButton = wrapper.findAll('button').find((button) => button.text().includes('生成 OAuth URL'))
+    expect(generateAuthButton).toBeTruthy()
+    await generateAuthButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('aria-current')).toBeUndefined()
+    expect(wrapper.text()).toContain('Proxy setup')
+    expect(wrapper.text()).not.toContain('授权与创建不可调度账号')
+  })
+
+  it('falls back from gates when the account gate is no longer satisfied', async () => {
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    await startSession(wrapper, {
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+    })
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('active')
+
+    onboardingApi.refreshOnly.mockResolvedValueOnce(sessionFixture({
+      browser_egress_verified: false,
+      browser_egress_check_status: 'mismatch',
+    }))
+    await wrapper.find('[data-testid="refresh-only"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('aria-current')).toBeUndefined()
+    expect(wrapper.text()).toContain('Proxy setup')
+    expect(wrapper.text()).not.toContain('Refresh / Runtime / Healthcheck / Warming / Production')
+  })
+
+  it('once an account is created and healthcheck passes, every reachable step shows done/active visuals', async () => {
+    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    await startSession(wrapper, {
+      status: 'healthcheck_passed',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      healthcheck_passed: true,
+    })
+    // Move focus to evidence so the other three settle into "done".
+    await wrapper.find('[data-testid="stepper-evidence"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('done')
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('done')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('done')
+    expect(wrapper.find('[data-testid="stepper-evidence"]').attributes('data-step-status')).toBe('active')
+
+    // Done steps render a checkmark icon; locked icons no longer appear.
+    expect(wrapper.find('[data-testid="stepper-icon-proxy"] [data-testid="stepper-icon-done"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="stepper-icon-auth"] [data-testid="stepper-icon-done"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="stepper-icon-gates"] [data-testid="stepper-icon-done"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-testid="stepper-icon-locked"]')).toHaveLength(0)
+  })
+
   it('stops the active browser egress poller when changing steps', async () => {
     const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
     await startSession(wrapper)
@@ -326,9 +466,10 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(egressPollingMock.start).toHaveBeenCalledWith('session-1')
     const stopCallsBeforeStepChange = egressPollingMock.stop.mock.calls.length
 
-    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+    await wrapper.find('[data-testid="stepper-evidence"]').trigger('click')
     await flushPromises()
 
+    expect(wrapper.find('[data-testid="stepper-evidence"]').attributes('data-step-status')).toBe('active')
     expect(egressPollingMock.stop.mock.calls.length).toBeGreaterThan(stopCallsBeforeStepChange)
   })
 })

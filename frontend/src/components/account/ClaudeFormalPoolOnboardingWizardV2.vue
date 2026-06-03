@@ -11,15 +11,52 @@
             <button
               v-for="step in steps"
               :key="step.key"
-              class="flex w-full items-start gap-3 rounded-2xl border p-3 text-left transition"
-              :class="activeStep === step.key ? 'border-cyan-300 bg-white/15 shadow-lg shadow-cyan-950/30' : 'border-white/10 bg-white/5 hover:bg-white/10'"
+              type="button"
+              :class="stepperButtonClass(step.key)"
               :data-testid="`stepper-${step.key}`"
-              @click="setStep(step.key)"
+              :data-step-status="getStepStatus(step.key)"
+              :disabled="getStepStatus(step.key) === 'locked'"
+              :aria-disabled="getStepStatus(step.key) === 'locked' ? 'true' : 'false'"
+              :aria-current="getStepStatus(step.key) === 'active' ? 'step' : undefined"
+              :title="getStepLockReason(step.key) || undefined"
+              @click="onStepperClick(step.key)"
             >
-              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-400 text-sm font-bold text-slate-950">{{ step.index }}</span>
-              <span>
+              <span
+                :class="stepperIconClass(step.key)"
+                :data-testid="`stepper-icon-${step.key}`"
+                :data-step-status="getStepStatus(step.key)"
+                aria-hidden="true"
+              >
+                <svg
+                  v-if="getStepStatus(step.key) === 'done'"
+                  class="h-4 w-4"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  data-testid="stepper-icon-done"
+                >
+                  <path fill-rule="evenodd" d="M16.704 5.29a1 1 0 0 1 0 1.42l-7.5 7.5a1 1 0 0 1-1.42 0l-3.5-3.5a1 1 0 1 1 1.42-1.42l2.79 2.79 6.79-6.79a1 1 0 0 1 1.42 0Z" clip-rule="evenodd" />
+                </svg>
+                <svg
+                  v-else-if="getStepStatus(step.key) === 'locked'"
+                  class="h-4 w-4"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  data-testid="stepper-icon-locked"
+                >
+                  <path fill-rule="evenodd" d="M5 9V7a5 5 0 1 1 10 0v2h.5A1.5 1.5 0 0 1 17 10.5v6A1.5 1.5 0 0 1 15.5 18h-11A1.5 1.5 0 0 1 3 16.5v-6A1.5 1.5 0 0 1 4.5 9H5Zm2 0V7a3 3 0 0 1 6 0v2H7Z" clip-rule="evenodd" />
+                </svg>
+                <template v-else>{{ step.index }}</template>
+              </span>
+              <span class="min-w-0">
                 <span class="block text-sm font-semibold">{{ step.title }}</span>
                 <span class="mt-1 block text-xs text-slate-300">{{ step.caption }}</span>
+                <span
+                  v-if="getStepStatus(step.key) === 'locked'"
+                  class="mt-1 block text-xs text-amber-200"
+                  :data-testid="`stepper-lock-reason-${step.key}`"
+                >
+                  {{ getStepLockReason(step.key) }}
+                </span>
               </span>
             </button>
           </nav>
@@ -50,7 +87,7 @@
             <p class="mt-3 text-sm text-slate-600 dark:text-slate-300">新号进入 warming 时是 <strong>新号 low weight</strong>；production 后 normal effective 生效；aggressive requested 只表示请求策略，不绕过健康门禁。</p>
           </section>
 
-          <section v-if="activeStep === 'proxy'" class="grid gap-4 xl:grid-cols-2">
+          <section v-if="renderStep === 'proxy'" class="grid gap-4 xl:grid-cols-2">
             <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <h3 class="text-lg font-bold">Proxy setup</h3>
               <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">先创建 idle session；StartSession 后不显示 browser egress check URL。</p>
@@ -140,7 +177,7 @@
             </div>
           </section>
 
-          <section v-else-if="activeStep === 'auth'" class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <section v-else-if="renderStep === 'auth'" class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <h3 class="text-lg font-bold">授权与创建不可调度账号</h3>
             <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">同出口 verified 后才能继续。页面不提供人工校验输入框。</p>
             <div class="mt-4 flex flex-wrap gap-4 text-sm">
@@ -159,7 +196,7 @@
             </div>
           </section>
 
-          <section v-else-if="activeStep === 'gates'" class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <section v-else-if="renderStep === 'gates'" class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <h3 class="text-lg font-bold">Refresh / Runtime / Healthcheck / Warming / Production</h3>
             <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">真实 messages 只由管理员显式按钮触发。健康检查按钮会发起一次真实 directed healthcheck/上游请求。</p>
             <div class="mt-4 flex flex-wrap gap-2">
@@ -264,7 +301,8 @@ const proxy = reactive({
 
 const egressPolling = useEgressCheckPolling()
 
-const currentStepTitle = computed(() => steps.find((step) => step.key === activeStep.value)?.title ?? 'Onboarding')
+const renderStep = computed(() => safeEnterableStep(activeStep.value))
+const currentStepTitle = computed(() => steps.find((step) => step.key === renderStep.value)?.title ?? 'Onboarding')
 const canStart = computed(() => !!form.group_id && !!form.account_name && (form.proxy_mode === 'existing' ? !!form.proxy_id : !!proxy.host && !!proxy.port))
 const browserStatus = computed(() => session.value?.browser_egress_check_status ?? egressPolling.status.value ?? 'idle')
 const displaySessionRef = computed(() => safeSessionRef(session.value))
@@ -302,8 +340,115 @@ watch(activeStep, () => {
   egressPolling.stop()
 })
 
+watch(session, () => {
+  const nextStep = safeEnterableStep(activeStep.value)
+  if (nextStep !== activeStep.value) {
+    activeStep.value = nextStep
+  }
+})
+
 function setStep(step: StepKey) {
   activeStep.value = step
+}
+
+// ─── Stepper gating ──────────────────────────────────────────────────────────
+//
+// Each step has an explicit prerequisite. Locked steps refuse navigation
+// (setStep is bypassed via onStepperClick) and surface a clear reason both as
+// visible copy and an aria-disabled/title attribute.
+
+type StepStatus = 'done' | 'active' | 'available' | 'locked'
+
+function canEnterStep(stepKey: StepKey): boolean {
+  const s = session.value
+  switch (stepKey) {
+    case 'proxy':
+      return true
+    case 'auth':
+      return s !== null && s.browser_egress_verified === true
+    case 'gates':
+      return s !== null && typeof s.account_id === 'number'
+    case 'evidence':
+      return s !== null
+  }
+}
+
+function safeEnterableStep(stepKey: StepKey): StepKey {
+  if (canEnterStep(stepKey)) return stepKey
+  return 'proxy'
+}
+
+function isStepDone(stepKey: StepKey): boolean {
+  const s = session.value
+  if (!s) return false
+  switch (stepKey) {
+    case 'proxy':
+      // Once a session has been created the proxy step is considered settled.
+      return true
+    case 'auth':
+      return typeof s.account_id === 'number'
+    case 'gates': {
+      if (s.healthcheck_passed === true) return true
+      const status = String(s.status ?? '')
+      return status === 'warming' || status === 'production' || status === 'quarantined'
+    }
+    case 'evidence':
+      // Evidence is an inspector view; it has no terminal "done" state.
+      return false
+  }
+}
+
+function getStepStatus(stepKey: StepKey): StepStatus {
+  if (!canEnterStep(stepKey)) return 'locked'
+  if (safeEnterableStep(activeStep.value) === stepKey) return 'active'
+  if (stepKey !== 'proxy' && isStepDone(stepKey)) return 'done'
+  if (stepKey === 'proxy' && isStepDone(stepKey) && safeEnterableStep(activeStep.value) !== 'proxy') return 'done'
+  return 'available'
+}
+
+function getStepLockReason(stepKey: StepKey): string {
+  if (canEnterStep(stepKey)) return ''
+  switch (stepKey) {
+    case 'auth':
+      return '需先在第 1 步完成代理与同出口校验'
+    case 'gates':
+      return '需先在第 2 步完成授权并创建账号'
+    case 'evidence':
+      return '需先在第 1 步创建上号会话'
+    default:
+      return ''
+  }
+}
+
+function onStepperClick(stepKey: StepKey) {
+  if (!canEnterStep(stepKey)) return
+  setStep(stepKey)
+}
+
+function stepperButtonClass(stepKey: StepKey): string {
+  const base = 'flex w-full items-start gap-3 rounded-2xl border p-3 text-left transition'
+  switch (getStepStatus(stepKey)) {
+    case 'active':
+      return `${base} border-cyan-300 bg-white/15 shadow-lg shadow-cyan-950/30`
+    case 'done':
+      return `${base} border-emerald-300/60 bg-emerald-500/10 hover:bg-emerald-500/15`
+    case 'locked':
+      return `${base} cursor-not-allowed border-white/5 bg-white/[0.02] opacity-60`
+    default:
+      return `${base} border-white/10 bg-white/5 hover:bg-white/10`
+  }
+}
+
+function stepperIconClass(stepKey: StepKey): string {
+  const base = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold'
+  switch (getStepStatus(stepKey)) {
+    case 'done':
+      return `${base} bg-emerald-400 text-emerald-950`
+    case 'locked':
+      return `${base} bg-white/10 text-slate-400`
+    default:
+      return `${base} bg-cyan-400 text-slate-950`
+  }
 }
 
 function safeSessionRef(value: FormalPoolSession | null): string {

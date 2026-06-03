@@ -283,14 +283,21 @@
                 </tr>
                 <template v-for="(row, rowIndex) in filteredRows" :key="row.account_id">
                   <tr
-                    :class="rowRailClass(row)"
+                    :class="rowTintClass(row)"
                     :data-bucket="getDashboardBucket(row.state)"
                     :data-warming="isWarmingState(row.state) ? 'true' : 'false'"
                     :data-account-row="rowDomRef(row, rowIndex)"
                     :data-testid="`row-${rowDomRef(row, rowIndex)}`"
                   >
                     <!-- 账号 -->
-                    <td class="px-4 py-3 align-top">
+                    <td class="relative px-4 py-3 align-top">
+                      <span
+                        :class="['pointer-events-none absolute inset-y-0 left-0 w-1', railElementClass(row)]"
+                        :data-testid="`row-rail-${rowDomRef(row, rowIndex)}`"
+                        :data-rail-tone="railTone(row)"
+                        :data-rail-warming="isWarmingState(row.state) ? 'true' : 'false'"
+                        aria-hidden="true"
+                      ></span>
                       <div class="font-medium text-slate-950 dark:text-white">
                         {{ displayAccountLabel(row) }}
                       </div>
@@ -356,13 +363,20 @@
                   </tr>
                   <tr
                     v-if="expandedRowId === row.account_id"
-                    :class="rowRailClass(row)"
+                    :class="rowTintClass(row)"
                     :data-testid="`drawer-${rowDomRef(row, rowIndex)}`"
                   >
                     <td
                       :colspan="primaryColumns.length"
-                      class="px-4 py-4"
+                      class="relative px-4 py-4"
                     >
+                      <span
+                        :class="['pointer-events-none absolute inset-y-0 left-0 w-1', railElementClass(row)]"
+                        :data-testid="`drawer-rail-${rowDomRef(row, rowIndex)}`"
+                        :data-rail-tone="railTone(row)"
+                        :data-rail-warming="isWarmingState(row.state) ? 'true' : 'false'"
+                        aria-hidden="true"
+                      ></span>
                       <div class="grid grid-cols-1 gap-3 sm:grid-cols-4">
                         <article class="rounded-lg bg-slate-50 p-3 dark:bg-dark-800/70">
                           <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">RPM</div>
@@ -424,7 +438,6 @@ import type {
 import {
   DASHBOARD_BUCKET_ORDER,
   WARMING_PRESENTATION_LABEL,
-  WARMING_RAIL_CLASS,
   dashboardRatioToPercent,
   formatConcurrencyText,
   formatDashboardPercent,
@@ -535,9 +548,55 @@ const autoRefreshDotClass = computed(() =>
 
 // ─── Row rendering helpers ───────────────────────────────────────────────────
 
-function rowRailClass(row: FormalPoolStatusDashboardAccount): string {
-  if (isWarmingState(row.state)) return WARMING_RAIL_CLASS
-  return getBucketLanePresentation(getDashboardBucket(row.state)).rowRailClass
+const WARMING_ROW_TINT_CLASS = 'bg-sky-50/40 dark:bg-sky-900/10'
+
+const ROW_TINT_CLASS: Record<FormalPoolFourBucket, string> = {
+  needs_intervention: 'bg-rose-50/40 dark:bg-rose-900/10',
+  paused: '',
+  active: '',
+  inactive: '',
+}
+
+function rowTintClass(row: FormalPoolStatusDashboardAccount): string {
+  if (isWarmingState(row.state)) return WARMING_ROW_TINT_CLASS
+  return ROW_TINT_CLASS[getDashboardBucket(row.state)]
+}
+
+// railTone / railElementClass drive a visible <span> inside the first <td>.
+// The legacy approach put border-l on the <tr>, but Tailwind's default
+// border-collapse: collapse makes <tr> borders unreliable across browsers,
+// so the actual rail bar lives inside the cell.
+type RailTone = 'rose' | 'sky' | 'amber' | 'emerald' | 'slate'
+
+function railTone(row: FormalPoolStatusDashboardAccount): RailTone {
+  if (isWarmingState(row.state)) return 'sky'
+  switch (getDashboardBucket(row.state)) {
+    case 'needs_intervention':
+      return 'rose'
+    case 'paused':
+      return 'amber'
+    case 'active':
+      return 'emerald'
+    case 'inactive':
+      return 'slate'
+    default:
+      return 'rose'
+  }
+}
+
+function railElementClass(row: FormalPoolStatusDashboardAccount): string {
+  switch (railTone(row)) {
+    case 'rose':
+      return 'bg-rose-500 dark:bg-rose-400'
+    case 'sky':
+      return 'bg-sky-500 dark:bg-sky-400'
+    case 'amber':
+      return 'bg-amber-400 dark:bg-amber-500/80'
+    case 'emerald':
+      return 'bg-emerald-500/80 dark:bg-emerald-500/70'
+    case 'slate':
+      return 'bg-slate-300 dark:bg-dark-600'
+  }
 }
 
 function stateBadgeClass(row: FormalPoolStatusDashboardAccount): string {
