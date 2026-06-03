@@ -251,3 +251,86 @@ func TestSetGetClaudeCodeVersion(t *testing.T) {
 	ctx = SetClaudeCodeVersion(ctx, "2.1.63")
 	require.Equal(t, "2.1.63", GetClaudeCodeVersion(ctx))
 }
+
+func TestParseMetadataUserIDRejectsAllZeroJSONPlaceholder(t *testing.T) {
+	placeholder := `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"00000000-0000-4000-8000-000000000000"}`
+
+	require.Nil(t, ParseMetadataUserID(placeholder))
+}
+
+func TestParseMetadataUserIDRejectsAllZeroLegacyPlaceholder(t *testing.T) {
+	placeholder := "user_0000000000000000000000000000000000000000000000000000000000000000_account__session_00000000-0000-4000-8000-000000000000"
+
+	require.Nil(t, ParseMetadataUserID(placeholder))
+}
+
+func TestDetectSuspiciousClaudeCodeProbeBlocksZeroMetadataTestBillingHeader(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-opus-4-8",
+		"system":[
+			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.126.test; cc_entrypoint=sdk-cli; cch=00000;"},
+			{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}
+		],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
+		"max_tokens":1,
+		"stream":true,
+		"metadata":{"user_id":"{\"device_id\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"account_uuid\":\"\",\"session_id\":\"00000000-0000-4000-8000-000000000000\"}"}
+	}`)
+
+	result := DetectSuspiciousClaudeCodeProbe(body)
+
+	require.True(t, result.Block)
+	require.Contains(t, result.Reasons, "zero_metadata_user_id")
+	require.Contains(t, result.Reasons, "test_cc_version")
+	require.Contains(t, result.Reasons, "old_cc_version")
+	require.Contains(t, result.Reasons, "placeholder_cch")
+}
+
+func TestDetectSuspiciousClaudeCodeProbeDoesNotBlockRealMetadataWithPlaceholderCCH(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-opus-4-8",
+		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.161; cc_entrypoint=sdk-cli; cch=00000;"}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
+		"max_tokens":1,
+		"stream":true,
+		"metadata":{"user_id":"{\"device_id\":\"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\",\"account_uuid\":\"\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"}
+	}`)
+
+	result := DetectSuspiciousClaudeCodeProbe(body)
+
+	require.False(t, result.Block)
+	require.Contains(t, result.Reasons, "placeholder_cch")
+	require.NotContains(t, result.Reasons, "zero_metadata_user_id")
+}
+
+func TestDetectSuspiciousClaudeCodeProbeRequiresStreamingOneTokenProbeShape(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-opus-4-8",
+		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.126.test; cc_entrypoint=sdk-cli; cch=00000;"}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
+		"max_tokens":128,
+		"stream":true,
+		"metadata":{"user_id":"{\"device_id\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"account_uuid\":\"\",\"session_id\":\"00000000-0000-4000-8000-000000000000\"}"}
+	}`)
+
+	result := DetectSuspiciousClaudeCodeProbe(body)
+
+	require.False(t, result.Block)
+	require.NotContains(t, result.Reasons, "streaming_one_token_probe")
+}
+
+func TestDetectSuspiciousClaudeCodeProbeBlocksLegacyZeroMetadataPlaceholder(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-opus-4-8",
+		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.126.test; cc_entrypoint=sdk-cli; cch=00000;"}],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
+		"max_tokens":1,
+		"stream":true,
+		"metadata":{"user_id":"user_0000000000000000000000000000000000000000000000000000000000000000_account__session_00000000-0000-4000-8000-000000000000"}
+	}`)
+
+	result := DetectSuspiciousClaudeCodeProbe(body)
+
+	require.True(t, result.Block)
+	require.Contains(t, result.Reasons, "zero_metadata_user_id")
+}

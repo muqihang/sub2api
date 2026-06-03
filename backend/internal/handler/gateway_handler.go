@@ -187,6 +187,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 		return
 	}
+	if probe := service.DetectSuspiciousClaudeCodeProbe(body); probe.Block {
+		clearOpsRequestBodyContext(c)
+		reqLog.Warn("gateway.suspicious_claude_code_probe_blocked", zap.Strings("reasons", probe.Reasons))
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Suspicious Claude Code probe request blocked")
+		return
+	}
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))

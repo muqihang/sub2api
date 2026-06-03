@@ -348,6 +348,13 @@ func setOpsRequestContext(c *gin.Context, model string, stream bool, requestBody
 	}
 }
 
+func clearOpsRequestBodyContext(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(opsRequestBodyKey, []byte(nil))
+}
+
 // setOpsEndpointContext stores upstream model and request type for ops error logging.
 // Called by handlers after model mapping and request type determination.
 func setOpsEndpointContext(c *gin.Context, upstreamModel string, requestType int16) {

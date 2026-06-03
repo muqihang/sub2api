@@ -23,6 +23,11 @@ type ParsedUserID struct {
 //	user_{64hex}_account_{optional_uuid}_session_{uuid}
 var legacyUserIDRegex = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account_([a-fA-F0-9-]*)_session_([a-fA-F0-9-]{36})$`)
 
+const (
+	zeroDeviceID  = "0000000000000000000000000000000000000000000000000000000000000000"
+	zeroSessionID = "00000000-0000-4000-8000-000000000000"
+)
+
 // jsonUserID is the JSON structure for the new metadata.user_id format.
 type jsonUserID struct {
 	DeviceID    string `json:"device_id"`
@@ -44,7 +49,7 @@ func ParseMetadataUserID(raw string) *ParsedUserID {
 		if err := json.Unmarshal([]byte(raw), &j); err != nil {
 			return nil
 		}
-		if j.DeviceID == "" || j.SessionID == "" {
+		if j.DeviceID == "" || j.SessionID == "" || isPlaceholderMetadataUserID(j.DeviceID, j.SessionID) {
 			return nil
 		}
 		return &ParsedUserID{
@@ -60,12 +65,20 @@ func ParseMetadataUserID(raw string) *ParsedUserID {
 	if matches == nil {
 		return nil
 	}
+	if isPlaceholderMetadataUserID(matches[1], matches[3]) {
+		return nil
+	}
 	return &ParsedUserID{
 		DeviceID:    matches[1],
 		AccountUUID: matches[2],
 		SessionID:   matches[3],
 		IsNewFormat: false,
 	}
+}
+
+func isPlaceholderMetadataUserID(deviceID, sessionID string) bool {
+	return strings.EqualFold(strings.TrimSpace(deviceID), zeroDeviceID) &&
+		strings.EqualFold(strings.TrimSpace(sessionID), zeroSessionID)
 }
 
 // FormatMetadataUserID builds a metadata.user_id string in the format
