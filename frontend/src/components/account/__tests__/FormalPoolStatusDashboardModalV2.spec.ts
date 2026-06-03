@@ -6,6 +6,7 @@ import type {
   FormalPoolDashboardState,
   FormalPoolStatusDashboard,
   FormalPoolStatusDashboardAccount,
+  FormalPoolStatusSummary,
 } from '@/types'
 
 const { getFormalPoolStatusDashboard } = vi.hoisted(() => ({
@@ -58,6 +59,7 @@ function accountFixture(
 
 function buildDashboard(
   accounts: FormalPoolStatusDashboardAccount[],
+  summaryOverrides: Partial<FormalPoolStatusSummary> = {},
 ): FormalPoolStatusDashboard {
   return {
     accounts,
@@ -81,6 +83,7 @@ function buildDashboard(
       five_hour_remaining_ratio: null,
       five_hour_window_available: false,
       generated_at: '2026-06-01T14:32:08Z',
+      ...summaryOverrides,
     },
   }
 }
@@ -88,8 +91,9 @@ function buildDashboard(
 async function mountWithFixture(
   accounts: FormalPoolStatusDashboardAccount[],
   show = true,
+  summaryOverrides: Partial<FormalPoolStatusSummary> = {},
 ) {
-  getFormalPoolStatusDashboard.mockResolvedValue(buildDashboard(accounts))
+  getFormalPoolStatusDashboard.mockResolvedValue(buildDashboard(accounts, summaryOverrides))
   const wrapper = mount(FormalPoolStatusDashboardModalV2, {
     props: { show },
   })
@@ -139,6 +143,50 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(wrapper.find('[data-testid="command-metric-usable-capacity"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="command-metric-cooling-window"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="command-metric-intervention-queue"]').exists()).toBe(true)
+  })
+
+  it('renders total RPM capacity in the top command metrics when summary RPM is available', async () => {
+    const wrapper = await mountWithFixture(
+      [accountFixture()],
+      true,
+      {
+        total_current_rpm: 0,
+        total_rpm_limit: 170,
+        rpm_available: true,
+      },
+    )
+
+    const metrics = wrapper.find('[data-testid="dashboard-v2-command-metrics"]')
+    expect(metrics.text()).toContain('总 RPM 可供调用')
+    expect(metrics.text()).toContain('当前 0 / 总 170 RPM')
+  })
+
+  it('still renders total RPM capacity when runtime RPM data is unavailable', async () => {
+    const wrapper = await mountWithFixture(
+      [accountFixture()],
+      true,
+      {
+        total_current_rpm: 0,
+        total_rpm_limit: 170,
+        rpm_available: false,
+      },
+    )
+
+    expect(wrapper.find('[data-testid="dashboard-v2-command-metrics"]').text()).toContain('当前数据不足 / 总 170 RPM')
+  })
+
+  it('renders an unconfigured RPM fallback only when total RPM capacity is not configured', async () => {
+    const wrapper = await mountWithFixture(
+      [accountFixture()],
+      true,
+      {
+        total_current_rpm: 0,
+        total_rpm_limit: 0,
+        rpm_available: false,
+      },
+    )
+
+    expect(wrapper.find('[data-testid="dashboard-v2-command-metrics"]').text()).toContain('未配置 RPM 容量')
   })
 
   it('renders four segmented lanes plus the "全部" lane', async () => {
@@ -297,6 +345,21 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].attributes('data-account-row')).not.toContain('52')
     expect(rows[0].attributes('data-bucket')).toBe('needs_intervention')
+  })
+
+  it('shows ordinary operator email labels but hides mixed secret labels and raw numeric fallbacks', async () => {
+    const rawAccountId = 87654321
+    const wrapper = await mountWithFixture([
+      accountFixture({ account_id: 81, account_label: 'ops-user@example.com' }),
+      accountFixture({ account_id: 82, account_label: 'ops-user@example.com sk-ant-secret-token' }),
+      accountFixture({ account_id: rawAccountId, account_label: `账号 #${rawAccountId}` }),
+    ])
+
+    const text = wrapper.text()
+    expect(text).toContain('ops-user@example.com')
+    expect(text).not.toContain('sk-ant-secret-token')
+    expect(text).not.toContain(`账号 #${rawAccountId}`)
+    expect(text).toContain('账号（未命名）')
   })
 
   it('scrubs raw sensitive backend display fields before rendering them in the DOM', async () => {

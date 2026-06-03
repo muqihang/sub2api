@@ -192,6 +192,64 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(wrapper.find('[data-testid="evidence-item-cc_gateway_seen"]').exists()).toBe(false)
   })
 
+
+
+  it('shows Chinese primary copy for proxy mismatch evidence while keeping diagnostic codes secondary', async () => {
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'proxy_mismatch' as FormalPoolOperationsDiagnostics['failure_origin'],
+        failure_code: 'bucket_mismatch',
+        status_code_bucket: 'rate_limit_5h',
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        proxy_mismatch: true,
+        fallback_detected: true,
+        checks: [{ name: 'runtime_evidence_incomplete', status: 'fail', message: 'bucket_mismatch' }],
+        recommended_actions: [{ key: 'wait_rate_limit', label: 'wait_rate_limit', severity: 'warning' }],
+      }),
+    })
+
+    const rootCause = wrapper.get('[data-testid="diagnostics-v2-root-cause"]').text()
+    expect(rootCause).toContain('代理出口不一致')
+    expect(rootCause).toContain('出口分组不一致')
+    expect(rootCause).not.toContain('失败来源：proxy_mismatch')
+    expect(rootCause).not.toContain('失败分类：bucket_mismatch')
+
+    await wrapper.get('[data-testid="evidence-toggle"]').trigger('click')
+    const originValue = wrapper.get('[data-testid="evidence-item-failure_origin"] div').text()
+    const codeValue = wrapper.get('[data-testid="evidence-item-failure_code"] div').text()
+    const statusValue = wrapper.get('[data-testid="evidence-item-status_code_bucket"] div').text()
+    const checkText = wrapper.get('[data-testid="evidence-group-checks"]').text()
+    const actionsText = wrapper.get('[data-testid="evidence-group-actions"]').text()
+
+    expect(originValue).toMatch(/^代理出口不一致/)
+    expect(codeValue).toMatch(/^出口分组不一致/)
+    expect(statusValue).toMatch(/^5 小时窗口冷却\/限流/)
+    expect(checkText).toContain('运行证据不完整')
+    expect(actionsText).toContain('等待 5 小时窗口冷却/限流恢复')
+    expect(originValue).not.toBe('proxy_mismatch')
+    expect(codeValue).not.toBe('bucket_mismatch')
+  })
+
+
+  it('keeps ordinary diagnostic prose as scrubbed text without unknown-code wrappers', async () => {
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        checks: [{ name: 'stage_gate', status: 'fail', message: 'latest healthcheck evidence is required before warming' }],
+        recommended_actions: [{ key: 'swap_proxy', label: 'Swap proxy and revalidate', severity: 'warning' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="evidence-toggle"]').trigger('click')
+    const checksText = wrapper.get('[data-testid="evidence-group-checks"]').text()
+    const actionsText = wrapper.get('[data-testid="evidence-group-actions"]').text()
+
+    expect(checksText).toContain('latest healthcheck evidence is required before warming')
+    expect(checksText).not.toContain('未知分类')
+    expect(actionsText).toContain('Swap proxy and revalidate')
+    expect(actionsText).not.toContain('未知动作')
+  })
+
   it('does not show forbidden healthcheck for 5h rate limits or direct healthcheck for proxy mismatch', async () => {
     const rateLimited = await mountModal({
       diagnostics: diagnostics({
@@ -355,6 +413,34 @@ describe('FormalPoolDiagnosticsModalV2', () => {
 
     expect(healthcheck).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').exists()).toBe(false)
+  })
+
+  it('shows ordinary account email in account chrome but hides mixed secret account names', async () => {
+    const ordinary = await mountModal({ account: account({ name: 'ops-user@example.com' }) })
+    expect(ordinary.get('#diagnostics-v2-title').text()).toContain('ops-user@example.com')
+    expect(ordinary.get('[data-testid="diagnostics-v2-command-bar"]').text()).toContain('ops-user@example.com')
+
+    const mixed = await mountModal({ account: account({ name: 'ops-user@example.com sk-ant-secret-token' }) })
+    expect(mixed.html()).not.toContain('ops-user@example.com')
+    expect(mixed.html()).not.toContain('sk-ant-secret-token')
+    expect(mixed.get('#diagnostics-v2-title').text()).toContain('账号（未命名）')
+  })
+
+  it('still scrubs ordinary emails from diagnostic evidence text', async () => {
+    const wrapper = await mountModal({
+      account: account({ name: 'ops-user@example.com' }),
+      diagnostics: diagnostics({
+        raw_capture_ref: 'evidence for evidence-user@example.com',
+        risk_event_ref: 'risk event evidence-user@example.com',
+        checks: [{ name: 'stage_gate', status: 'fail', message: 'message evidence-user@example.com' }],
+      }),
+    })
+    await wrapper.get('[data-testid="evidence-toggle"]').trigger('click')
+
+    const evidenceText = wrapper.find('[data-testid="evidence-group-gateway"]').text() + wrapper.find('[data-testid="evidence-group-upstream"]').text() + wrapper.find('[data-testid="evidence-group-checks"]').text()
+    expect(evidenceText).not.toContain('evidence-user@example.com')
+    expect(evidenceText).toContain('[redacted]')
+    expect(wrapper.get('#diagnostics-v2-title').text()).toContain('ops-user@example.com')
   })
 
   it('scrubs sensitive backend and account text at DOM level', async () => {

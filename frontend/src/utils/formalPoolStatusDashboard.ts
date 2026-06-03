@@ -197,6 +197,19 @@ const SCRUB_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(?:https?|socks5?):\/\/[^\s/@:]+:[^\s/@]+@/gi,
   /\b(?=[A-Za-z0-9_-]{32,}\b)(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]+\b/g,
 ]
+
+const OPERATOR_LABEL_HIGH_RISK_PATTERNS: ReadonlyArray<RegExp> = [
+  /sk-ant(?:-sid)?-[A-Za-z0-9][A-Za-z0-9_-]*/i,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i,
+  /\braw(?:_[A-Za-z0-9_:-]*)?\b/i,
+  /\b(?:bearer|token|nonce)\b/i,
+  /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|password|passwd|pwd|proxy[_-]?(?:password|secret)|proxy\s+(?:password|secret)|cch)\b/i,
+  /\b(?:https?|socks5?):\/\/\S+/i,
+  /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/,
+  /(?:^|[\s(\[])\[?(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]{1,}\]?(?=$|[\s)\],:]|:\d)/i,
+  /(?:^|\s)(?![A-Za-z0-9._%+-]+@)[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]:(?:[1-9]\d{1,4})(?=$|\s)/,
+  /\b(?=[A-Za-z0-9_-]{32,}\b)(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]+\b/,
+]
 /**
  * V2 dashboard displays backend-provided diagnostic labels. Treat them as
  * untrusted and redact obvious secrets fail-closed before they reach the DOM.
@@ -216,6 +229,28 @@ export function scrubFormalPoolDisplayText(
   }
 
   return text.trim() || fallbackText
+}
+
+/**
+ * Admin operator labels may be ordinary account names or emails. Unlike strict
+ * evidence text, email is allowed unless the label contains high-risk material;
+ * then fail closed to the fallback so mixed secrets cannot leak nearby emails.
+ */
+export function safeFormalPoolOperatorLabel(
+  value: string | null | undefined,
+  fallback = DEFAULT_DISPLAY_FALLBACK,
+): string {
+  const fallbackText = fallback.trim() || DEFAULT_DISPLAY_FALLBACK
+  if (value === null || value === undefined) return fallbackText
+
+  const text = String(value).trim()
+  if (!text) return fallbackText
+
+  if (OPERATOR_LABEL_HIGH_RISK_PATTERNS.some((pattern) => pattern.test(text))) {
+    return fallbackText
+  }
+
+  return text
 }
 
 

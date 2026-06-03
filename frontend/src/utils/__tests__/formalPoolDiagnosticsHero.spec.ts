@@ -120,6 +120,8 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     expect(hero.primaryAction?.key).toBe('wait')
     expect(hero.primaryAction?.behavior).toBe('none')
     expect(keys(hero.secondaryActions)).toEqual(['refreshDiagnostics'])
+    expect(hero.rootCauseBullets.join('\n')).toContain('窗口：5 小时窗口（5h）')
+    expect(hero.rootCauseBullets.join('\n')).not.toContain('未知状态（5h）')
     expectForbidden(hero, ['healthcheck'])
   })
 
@@ -240,6 +242,47 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     expect(hero.primaryAction?.key).toBe('runtimeRegister')
     expect(keys(hero.secondaryActions)).not.toContain('promoteProduction')
     expectForbidden(hero, ['promoteProduction'])
+  })
+
+
+
+  it('localizes proxy_mismatch and bucket_mismatch in hero bullets without making codes the primary copy', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account(),
+      diagnostics: diagnostics({
+        failure_origin: 'proxy_mismatch' as FormalPoolOperationsDiagnostics['failure_origin'],
+        failure_code: 'bucket_mismatch',
+        status_code_bucket: 'rate_limit_5h',
+        proxy_mismatch: true,
+        fallback_detected: true,
+        recommended_actions: [{ key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' }],
+      }),
+    })
+
+    const bullets = hero.rootCauseBullets.join('\n')
+    expect(bullets).toContain('代理出口不一致')
+    expect(bullets).toContain('出口分组不一致')
+    expect(bullets).toContain('发现 fallback')
+    expect(bullets).not.toContain('失败来源：proxy_mismatch')
+    expect(bullets).not.toContain('失败分类：bucket_mismatch')
+    expect(bullets).not.toContain('proxy_mismatch：true')
+    expect(bullets).not.toContain('fallback_detected：true')
+  })
+
+  it('uses Chinese fallback copy for unknown diagnostic codes while retaining the code for troubleshooting', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account(),
+      diagnostics: diagnostics({
+        failure_origin: 'custom_origin' as FormalPoolOperationsDiagnostics['failure_origin'],
+        failure_code: 'custom_bucket_mystery',
+      }),
+    })
+
+    const bullets = hero.rootCauseBullets.join('\n')
+    expect(bullets).toContain('未知来源（custom_origin）')
+    expect(bullets).toContain('未知分类（custom_bucket_mystery）')
+    expect(bullets).not.toContain('失败来源：custom_origin')
+    expect(bullets).not.toContain('失败分类：custom_bucket_mystery')
   })
 
   it('monitor uses no primary repair, allows refresh diagnostics, and forbids all repair buttons', () => {

@@ -68,7 +68,7 @@
             <div class="max-w-3xl">
               <div class="flex flex-wrap items-center gap-2 text-xs font-medium uppercase tracking-wide">
                 <span :class="lanePillClass">{{ laneLabel }}</span>
-                <span>{{ hero.scenario }}</span>
+                <span>{{ scenarioLabel }}（{{ hero.scenario }}）</span>
               </div>
               <h3 class="mt-2 text-2xl font-semibold">{{ hero.title }}</h3>
               <p class="mt-2 text-sm leading-6">{{ hero.summary }}</p>
@@ -225,10 +225,11 @@ import {
 } from '@/api/admin/formalPoolOperations'
 import {
   deriveFormalPoolDiagnosticsHero,
+  formatFormalPoolDiagnosticCodeWithRaw,
   type FormalPoolDiagnosticsActionKey,
   type FormalPoolDiagnosticsHeroAction,
 } from '@/utils/formalPoolDiagnosticsHero'
-import { scrubFormalPoolDisplayText } from '@/utils/formalPoolStatusDashboard'
+import { safeFormalPoolOperatorLabel, scrubFormalPoolDisplayText } from '@/utils/formalPoolStatusDashboard'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const props = defineProps<{
@@ -265,7 +266,7 @@ function safeValue(value: unknown, fallback = '—'): string {
 
 const safeAccountName = computed(() => {
   const account = activeAccount.value
-  return safeValue(account?.name, '账号（未命名）')
+  return safeFormalPoolOperatorLabel(account?.name, '账号（未命名）')
 })
 
 const generatedAtText = computed(() => {
@@ -273,13 +274,26 @@ const generatedAtText = computed(() => {
   return safeValue(generatedAt, diagnostics.value ? '刚刚' : '等待刷新')
 })
 
+const scenarioLabel = computed(() => {
+  switch (hero.value.scenario) {
+    case 'oauth_invalid_grant': return 'OAuth 授权失效'
+    case 'setup_token_expired': return 'Setup Token 过期'
+    case 'rate_limited_5h': return '5 小时限流冷却'
+    case 'manual_risk': return '上游风控需人工处理'
+    case 'proxy_mismatch': return '代理出口不一致'
+    case 'evidence_missing': return '运行证据不完整'
+    case 'monitor': return '继续观测'
+    default: return '未知诊断场景'
+  }
+})
+
 const laneLabel = computed(() => {
   switch (hero.value.lane) {
-    case 'active': return 'Active / usable'
-    case 'paused': return 'Paused / cooling down'
-    case 'needs_intervention': return 'Needs intervention'
-    case 'inactive': return 'Inactive'
-    default: return 'Needs intervention'
+    case 'active': return '可用 / 可调度'
+    case 'paused': return '暂停 / 冷却中'
+    case 'needs_intervention': return '需要介入'
+    case 'inactive': return '未启用'
+    default: return '需要介入'
   }
 })
 
@@ -303,10 +317,10 @@ const lanePillClass = computed(() => {
 })
 
 const lanes = [
-  { key: 'active', label: 'Active / usable', copy: '证据完整，可调度', activeClass: 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200' },
-  { key: 'paused', label: 'Paused / cooling down', copy: '限流或冷却，默认等待', activeClass: 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200' },
-  { key: 'needs_intervention', label: 'Needs intervention', copy: '需要安全修复或人工处理', activeClass: 'border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200' },
-  { key: 'inactive', label: 'Inactive', copy: '不参与调度', activeClass: 'border-slate-300 bg-slate-100 text-slate-700 dark:border-dark-600 dark:bg-dark-800 dark:text-slate-200' },
+  { key: 'active', label: '可用 / 可调度', copy: '证据完整，可调度', activeClass: 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200' },
+  { key: 'paused', label: '暂停 / 冷却中', copy: '限流或冷却，默认等待', activeClass: 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200' },
+  { key: 'needs_intervention', label: '需要介入', copy: '需要安全修复或人工处理', activeClass: 'border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200' },
+  { key: 'inactive', label: '未启用', copy: '不参与调度', activeClass: 'border-slate-300 bg-slate-100 text-slate-700 dark:border-dark-600 dark:bg-dark-800 dark:text-slate-200' },
 ]
 
 const showSetupTokenForm = computed(() => hero.value.primaryAction?.key === 'replaceSetupToken' || hero.value.secondaryActions.some((item) => item.key === 'replaceSetupToken'))
@@ -334,9 +348,17 @@ function isActionDisabled(key: FormalPoolDiagnosticsActionKey): boolean {
 }
 
 function boolText(value: unknown): string {
-  if (value === true) return 'true'
-  if (value === false) return 'false'
+  if (value === true) return '是'
+  if (value === false) return '否'
   return '—'
+}
+
+function diagnosticValue(value: unknown, kind: 'origin' | 'classification' | 'status' | 'check' | 'action' = 'classification'): string {
+  return formatFormalPoolDiagnosticCodeWithRaw(value, kind, '—')
+}
+
+function diagnosticProse(value: unknown): string {
+  return scrubFormalPoolDisplayText(String(value ?? ''), '—')
 }
 
 const evidenceGroups = computed(() => {
@@ -344,43 +366,61 @@ const evidenceGroups = computed(() => {
   return [
     {
       key: 'lifecycle',
-      label: 'Lifecycle',
+      label: '生命周期',
       items: [
-        { key: 'onboarding_stage', label: 'onboarding stage', value: safeValue(d?.onboarding_stage) },
-        { key: 'schedulable', label: 'schedulable', value: boolText(d?.schedulable) },
-        { key: 'effective_schedulable', label: 'effective schedulable', value: boolText(d?.effective_schedulable) },
-        { key: 'quarantine_reason', label: 'quarantine reason', value: safeValue(d?.quarantine_reason) },
+        { key: 'onboarding_stage', label: '上号阶段', value: safeValue(d?.onboarding_stage) },
+        { key: 'schedulable', label: '可调度', value: boolText(d?.schedulable) },
+        { key: 'effective_schedulable', label: '实际可调度', value: boolText(d?.effective_schedulable) },
+        { key: 'quarantine_reason', label: '隔离原因', value: diagnosticValue(d?.quarantine_reason) },
       ],
     },
     {
       key: 'gateway',
-      label: 'Gateway',
+      label: '网关证据',
       items: [
-        { key: 'cc_gateway_seen', label: 'cc gateway seen', value: boolText(d?.cc_gateway_seen) },
-        { key: 'cc_gateway_runtime_registered', label: 'runtime registered', value: boolText(d?.cc_gateway_runtime_registered) },
-        { key: 'runtime_evidence_complete', label: 'runtime evidence complete', value: boolText(d?.runtime_evidence_complete) },
-        { key: 'raw_capture_present', label: 'raw capture present', value: boolText(d?.raw_capture_present) },
-        { key: 'raw_capture_ref', label: 'raw capture ref', value: safeValue(d?.raw_capture_ref) },
+        { key: 'cc_gateway_seen', label: '看到 CC Gateway 证据', value: boolText(d?.cc_gateway_seen) },
+        { key: 'cc_gateway_runtime_registered', label: '运行时已注册', value: boolText(d?.cc_gateway_runtime_registered) },
+        { key: 'runtime_evidence_complete', label: '运行证据完整', value: boolText(d?.runtime_evidence_complete) },
+        { key: 'raw_capture_present', label: 'Raw capture 证据存在', value: boolText(d?.raw_capture_present) },
+        { key: 'raw_capture_ref', label: 'Raw capture 引用', value: safeValue(d?.raw_capture_ref) },
       ],
     },
     {
       key: 'proxy',
-      label: 'Proxy',
+      label: '代理出口',
       items: [
-        { key: 'proxy_mismatch', label: 'proxy mismatch', value: boolText(d?.proxy_mismatch) },
-        { key: 'fallback_detected', label: 'fallback detected', value: boolText(d?.fallback_detected) },
+        { key: 'proxy_mismatch', label: '代理出口不一致', value: boolText(d?.proxy_mismatch) },
+        { key: 'fallback_detected', label: '发现 fallback', value: boolText(d?.fallback_detected) },
       ],
     },
     {
       key: 'upstream',
-      label: 'Upstream',
+      label: '上游失败',
       items: [
-        { key: 'failure_origin', label: 'failure origin', value: safeValue(d?.failure_origin) },
-        { key: 'failure_code', label: 'failure code', value: safeValue(d?.failure_code) },
-        { key: 'failure_source', label: 'failure source', value: safeValue(d?.failure_source) },
-        { key: 'status_code_bucket', label: 'status code bucket', value: safeValue(d?.status_code_bucket) },
-        { key: 'risk_event_ref', label: 'risk event ref', value: safeValue(d?.risk_event_ref) },
+        { key: 'failure_origin', label: '失败来源', value: diagnosticValue(d?.failure_origin, 'origin') },
+        { key: 'failure_code', label: '失败分类', value: diagnosticValue(d?.failure_code) },
+        { key: 'failure_source', label: '失败触发环节', value: diagnosticValue(d?.failure_source) },
+        { key: 'status_code_bucket', label: '状态分组', value: diagnosticValue(d?.status_code_bucket, 'status') },
+        { key: 'risk_event_ref', label: '风控事件引用', value: safeValue(d?.risk_event_ref) },
       ],
+    },
+    {
+      key: 'checks',
+      label: '检查项',
+      items: (d?.checks ?? []).map((check, index) => ({
+        key: `check_${index}_${safeValue(check.name, 'unknown')}`,
+        label: `${diagnosticValue(check.name, 'check')} / ${check.status === 'pass' ? '通过' : check.status === 'warn' ? '警告' : '失败'}`,
+        value: check.message ? diagnosticProse(check.message) : '—',
+      })),
+    },
+    {
+      key: 'actions',
+      label: '建议动作',
+      items: (d?.recommended_actions ?? []).map((item, index) => ({
+        key: `action_${index}_${safeValue(item.key, 'unknown')}`,
+        label: diagnosticValue(item.key, 'action'),
+        value: item.label ? diagnosticProse(item.label) : '—',
+      })),
     },
   ]
 })
@@ -390,7 +430,7 @@ const filteredEvidenceGroups = computed(() => {
   if (!query) return evidenceGroups.value
   return evidenceGroups.value.map((group) => ({
     ...group,
-    items: group.items.filter((item) => `${item.key} ${item.label} ${item.value}`.toLowerCase().includes(query)),
+    items: group.items.filter((item) => `${item.key} ${item.key.replace(/_/g, ' ')} ${item.label} ${item.value}`.toLowerCase().includes(query)),
   }))
 })
 

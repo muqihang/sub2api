@@ -175,6 +175,127 @@ function safe(value: unknown, fallback = '数据不足'): string {
   return scrubFormalPoolDisplayText(String(value ?? ''), fallback)
 }
 
+type FormalPoolDiagnosticDisplayKind = 'origin' | 'classification' | 'status' | 'check' | 'action' | 'generic'
+
+const originDisplayNames: Record<string, string> = {
+  local_gate: '本地准入门禁',
+  cc_gateway_control_plane: 'CC Gateway 控制面',
+  control_plane: '控制面证据',
+  upstream: '上游返回异常',
+  proxy: '代理出口异常',
+  proxy_mismatch: '代理出口不一致',
+  token_exchange: '授权换取失败',
+  unknown: '未知来源',
+}
+
+const classificationDisplayNames: Record<string, string> = {
+  '5h': '5 小时窗口',
+  proxy_mismatch: '浏览器与代理出口不一致',
+  bucket_mismatch: '出口分组不一致',
+  token_exchange: '授权换取失败',
+  invalid_grant: '授权已失效或授权码无效',
+  refresh_token_invalid: '授权已失效或授权码无效',
+  setup_token_expired: 'Setup Token 登录态已过期',
+  status_401: '401 / 认证失败',
+  status_403: '403 / 禁止访问或风控',
+  status_429: '5 小时窗口冷却/限流',
+  '401': '401 / 认证失败',
+  '403': '403 / 禁止访问或风控',
+  '429': '5 小时窗口冷却/限流',
+  rate_limit_5h: '5 小时窗口冷却/限流',
+  reset_bucket: '5 小时窗口冷却/限流',
+  rate_limit_reset_bucket: '5 小时窗口冷却/限流',
+  long_context_usage_credits: '长上下文额度触发 5 小时窗口冷却/限流',
+  evidence_missing: '运行证据不完整',
+  runtime_evidence_incomplete: '运行证据不完整',
+  healthcheck_evidence_missing: '健康检查证据不完整',
+  raw_capture_missing: '运行证据不完整：缺少 raw capture 证据',
+  cc_gateway_not_seen: '运行证据不完整：未看到 CC Gateway 证据',
+  fallback_detected: '发现 fallback',
+  fallback: '发现 fallback',
+  account_on_hold: '上游账号被暂停或限制',
+  account_hold: '上游账号被暂停或限制',
+  hold: '上游账号被暂停或限制',
+  kyc: '需要完成账号验证',
+  risk: '上游账号风控提示',
+  unusual_activity: '上游提示异常活动',
+}
+
+const checkDisplayNames: Record<string, string> = {
+  cc_gateway_runtime_registered: '运行时注册映射',
+  runtime_evidence_complete: '运行证据完整性',
+  runtime_evidence_incomplete: '运行证据不完整',
+  healthcheck_evidence_persisted: '健康检查证据持久化',
+  raw_capture_present: 'Raw capture 证据',
+  cc_gateway_seen: 'CC Gateway 证据',
+  proxy_mismatch: '代理出口不一致',
+  fallback_detected: '发现 fallback',
+  stage_gate: '阶段准入检查',
+}
+
+const actionDisplayNames: Record<string, string> = {
+  refresh_only: '刷新诊断/凭证状态',
+  runtime_register: '运行时注册/映射',
+  healthcheck: '定向健康检查',
+  start_warming: '进入预热',
+  promote_production: '进入生产',
+  replace_setup_token: '替换 Setup Token 登录态',
+  reauthorize_oauth: '重新 OAuth 授权',
+  monitor: '无需操作，继续观测',
+  quarantine: '隔离账号',
+  swap_proxy: '更换出口代理',
+  wait_rate_limit: '等待 5 小时窗口冷却/限流恢复',
+  repair_token: '替换 Setup Token 登录态',
+  repair_oauth: '重新 OAuth 授权',
+  replace_account_and_proxy: '更换账号和出口代理',
+  manual_review: '人工查看具体失败分类',
+}
+
+function normalizedCode(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function codeDisplayMap(kind: FormalPoolDiagnosticDisplayKind): Record<string, string> {
+  if (kind === 'origin') return originDisplayNames
+  if (kind === 'check') return { ...classificationDisplayNames, ...checkDisplayNames }
+  if (kind === 'action') return { ...classificationDisplayNames, ...actionDisplayNames }
+  if (kind === 'status') return classificationDisplayNames
+  return classificationDisplayNames
+}
+
+function unknownPrefix(kind: FormalPoolDiagnosticDisplayKind): string {
+  if (kind === 'origin') return '未知来源'
+  if (kind === 'status') return '未知状态'
+  if (kind === 'check') return '未知检查项'
+  if (kind === 'action') return '未知动作'
+  return '未知分类'
+}
+
+export function formatFormalPoolDiagnosticCode(
+  value: unknown,
+  kind: FormalPoolDiagnosticDisplayKind = 'classification',
+  fallback = '数据不足',
+): string {
+  const raw = safe(value, '').trim()
+  if (!raw) return fallback
+  const normalized = normalizedCode(raw)
+  const label = codeDisplayMap(kind)[normalized]
+  if (label) return label
+  return `${unknownPrefix(kind)}（${raw}）`
+}
+
+export function formatFormalPoolDiagnosticCodeWithRaw(
+  value: unknown,
+  kind: FormalPoolDiagnosticDisplayKind = 'classification',
+  fallback = '数据不足',
+): string {
+  const raw = safe(value, '').trim()
+  if (!raw) return fallback
+  const label = formatFormalPoolDiagnosticCode(raw, kind, fallback)
+  if (label.includes(`（${raw}）`)) return label
+  return `${label}（${raw}）`
+}
+
 function unique(actions: FormalPoolDiagnosticsHeroAction[]): FormalPoolDiagnosticsHeroAction[] {
   const seen = new Set<string>()
   return actions.filter((item) => {
@@ -242,8 +363,8 @@ export function deriveFormalPoolDiagnosticsHero(input: {
   const evidenceMissing = gatewayRuntimeMappingEvidenceMissing || healthcheckOrCaptureEvidenceMissing
 
   const baseBullets = [
-    `失败来源：${safe(diagnostics?.failure_origin, 'unknown')}`,
-    `失败分类：${safe(diagnostics?.failure_code || diagnostics?.status_code_bucket, '数据不足')}`,
+    `失败来源：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.failure_origin, 'origin', '数据不足')}`,
+    `失败分类：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.failure_code || diagnostics?.status_code_bucket, 'classification', '数据不足')}`,
   ]
 
   if (evidenceMissing) {
@@ -287,7 +408,11 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       tone: 'amber',
       title: '代理出口证据不一致',
       summary: '先修复代理链路；代理修复前禁止直接 healthcheck。',
-      rootCauseBullets: [...baseBullets, `proxy_mismatch：${diagnostics?.proxy_mismatch === true ? 'true' : 'false'}`, `fallback_detected：${diagnostics?.fallback_detected === true ? 'true' : 'false'}`],
+      rootCauseBullets: [
+        ...baseBullets,
+        `代理出口不一致：${diagnostics?.proxy_mismatch === true ? '是' : '否'}`,
+        `发现 fallback：${diagnostics?.fallback_detected === true ? '是' : '否'}`,
+      ],
       primaryAction: action('swapProxy'),
       secondaryActions: [action('runtimeRegisterThenHealthcheck')],
       forbiddenActions: forbiddenActions('directHealthcheckBeforeProxyRepair'),
@@ -334,7 +459,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       tone: 'amber',
       title: '5h 用量窗口冷却中',
       summary: '这是暂停/冷却状态，默认等待恢复；不要用健康检查制造更多真实请求。',
-      rootCauseBullets: [...baseBullets, `窗口：${safe(diagnostics?.formal_pool_rate_limit_window || '5h')}`],
+      rootCauseBullets: [...baseBullets, `窗口：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.formal_pool_rate_limit_window || '5h', 'status')}`],
       primaryAction: action('wait'),
       secondaryActions: [action('refreshDiagnostics')],
       forbiddenActions: forbiddenActions('healthcheck'),

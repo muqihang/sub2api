@@ -15,6 +15,7 @@ import {
   getDashboardRecommendationText,
   getDashboardStateClass,
   isWarmingState,
+  safeFormalPoolOperatorLabel,
   scrubFormalPoolDisplayText,
   summarizeBuckets,
 } from '../formalPoolStatusDashboard'
@@ -218,6 +219,29 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
 
     expect(outputs).not.toContain('sk-ant-')
     expect(outputs).not.toContain('raw_prompt')
+  })
+
+  it('keeps ordinary operator labels while failing closed on mixed secret content', () => {
+    expect(safeFormalPoolOperatorLabel('ops-user@example.com', '账号（未命名）')).toBe('ops-user@example.com')
+    expect(safeFormalPoolOperatorLabel('Claude Ops Main', '账号（未命名）')).toBe('Claude Ops Main')
+
+    const mixed = safeFormalPoolOperatorLabel('ops-user@example.com sk-ant-secret-token', '账号（未命名）')
+    expect(mixed).toBe('账号（未命名）')
+    expect(mixed).not.toContain('ops-user@example.com')
+  })
+
+  it('fails closed when operator labels mix email with proxy URLs, IPv6, or host-port proxy shapes', () => {
+    const fallback = '账号（未命名）'
+    const highRiskLabels = [
+      'ops-user@example.com socks5://proxy-host:1080',
+      'ops-user@example.com https://proxy-host/path',
+      'ops-user@example.com 2001:db8::1',
+      'ops-user@example.com proxy-host:1080',
+    ]
+
+    for (const label of highRiskLabels) {
+      expect(safeFormalPoolOperatorLabel(label, fallback)).toBe(fallback)
+    }
   })
 
   it('scrubs formal pool display text fail-closed while preserving safe operator copy', () => {

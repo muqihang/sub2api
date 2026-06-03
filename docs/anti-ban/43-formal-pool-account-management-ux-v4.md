@@ -10,7 +10,7 @@ V4 keeps the legacy account-management experience available and adds three runti
 2. **Diagnostics V2**: a guided repair panel with root-cause hero messaging, allowed-action matrices, grouped evidence, search, and explicit forbidden-action boundaries.
 3. **Onboarding V2**: a vertical stepper for adding Claude formal-pool accounts, with proxy validation before browser egress verification, explicit healthcheck consent, and safe recovery paths.
 
-The three panels share the same safety posture: show buckets, labels, and scrubbed references only; never surface credentials, full login material, proxy secrets, direct browser egress values, or raw upstream evidence payloads.
+The three panels share the same safety posture: show buckets, labels, and scrubbed references only. Admin operator account labels may display ordinary account email/name for operational identification, but any label mixed with token-, nonce-, raw-, proxy-secret-, raw-IP-, UUID-, password-, Bearer-, or long token-like content must fail closed. Evidence, diagnostics, errors, checks, and raw-code text still scrub email addresses and secrets. Never surface credentials, full login material, proxy secrets, direct browser egress values, or raw upstream evidence payloads.
 
 ## 2. Runtime feature flag and rollout control
 
@@ -62,7 +62,7 @@ Specific Dashboard V2 sync points:
 
 - Warming accounts are still counted as usable but must be visually distinct and copy must include `low weight`.
 - `needs_intervention` rows are pinned/highlighted and carry direct diagnostic CTAs.
-- Sensitive values are scrubbed before rendering. The dashboard may show safe status buckets, last-safe error buckets, coarse timestamps, and human-readable recommendations only.
+- Sensitive values are scrubbed before rendering. Dashboard account labels may show ordinary operator account email/name, but mixed secret-like labels fall back to an unnamed-account label and raw numeric `账号 #<id>` fallbacks are not displayed. Evidence/error/recommendation text remains strict-scrubbed.
 - Detailed runtime metrics stay in drill-down panels, not the main table.
 
 ## 5. Diagnostics V2 requirements
@@ -100,7 +100,7 @@ Evidence is grouped by lifecycle area: authorization, proxy/browser egress, runt
 
 ### 5.5 Sensitive scrub
 
-Diagnostics V2 must scrub credentials, browser-session material, direct egress values, provider payloads, proxy URLs, account identifiers, organization identifiers, email addresses, and token-shaped strings. The static draft uses frontend navigation text for account replacement guidance: operators are sent to a new onboarding flow with prefilled safe context; it is not a backend replacement API.
+Diagnostics V2 account chrome may show an ordinary admin operator account email/name. Diagnostic evidence, error text, checks, status/raw-code fields, and references must still scrub credentials, browser-session material, direct egress values, provider payloads, proxy URLs, account identifiers, organization identifiers, email addresses, and token-shaped strings. The static draft uses frontend navigation text for account replacement guidance: operators are sent to a new onboarding flow with prefilled safe context; it is not a backend replacement API.
 
 ## 6. Onboarding V2 requirements
 
@@ -159,11 +159,11 @@ Never output or persist in V2 UI, drafts, docs, tests, snapshots, logs, or risk 
 - full browser egress values or proxy egress values;
 - proxy URLs, proxy credentials, proxy usernames, or proxy passwords;
 - OAuth refresh/access tokens, Setup Token login material, authorization codes, or token-shaped placeholders;
-- real account identifiers, organization identifiers, session identifiers, or email addresses;
+- real account identifiers, organization identifiers, session identifiers, or email addresses, except ordinary admin operator account labels displayed in account chrome;
 - raw provider payloads, raw request/response bodies, or unsanitized headers;
 - nonce values, except as bucketed/HMAC references where needed for rate limiting or audit correlation.
 
-Allowed output is limited to safe status buckets, safe reason buckets, route templates, coarse time buckets, redacted references, and operator guidance.
+Allowed output is limited to safe status buckets, safe reason buckets, route templates, coarse time buckets, redacted references, ordinary operator account labels in account chrome, and operator guidance. Evidence, diagnostics, errors, checks, and raw-code text still scrub email addresses and secrets.
 
 ## 9. Acceptance and test command summary
 

@@ -139,12 +139,12 @@
               class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-900"
               data-testid="command-metric-usable-capacity"
             >
-              <div class="text-xs text-slate-500 dark:text-slate-400">可用容量</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">总 RPM 可供调用</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
-                {{ buckets.active }}
+                {{ summaryRpmCapacityText }}
               </div>
               <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                能用账号 · 含 <span class="tabular-nums">{{ buckets.warming }}</span> 个预热中
+                能用账号 <span class="tabular-nums">{{ buckets.active }}</span> 个 · 含 <span class="tabular-nums">{{ buckets.warming }}</span> 个预热中
               </div>
             </article>
             <article
@@ -448,6 +448,7 @@ import {
   getDashboardBucketSortKey,
   getDashboardRecommendationText,
   isWarmingState,
+  safeFormalPoolOperatorLabel,
   scrubFormalPoolDisplayText,
   summarizeBuckets,
   type FormalPoolFourBucket,
@@ -533,6 +534,18 @@ const legendEntries = computed(() =>
 )
 
 const totalText = computed(() => `${buckets.value.total} 个账号`)
+
+const summaryRpmCapacityText = computed(() => {
+  const summary = dashboard.value?.summary
+  const totalLimit = summary?.total_rpm_limit ?? 0
+  if (totalLimit <= 0) {
+    return '未配置 RPM 容量'
+  }
+  if (summary?.rpm_available) {
+    return `当前 ${summary.total_current_rpm} / 总 ${totalLimit} RPM`
+  }
+  return `当前数据不足 / 总 ${totalLimit} RPM`
+})
 
 const lastUpdatedText = computed(() => {
   const value = lastUpdatedAt.value || dashboard.value?.summary.generated_at
@@ -632,7 +645,7 @@ function formatSessionsText(runtime: FormalPoolStatusRuntime | null | undefined)
 }
 
 function displayAccountLabel(row: FormalPoolStatusDashboardAccount): string {
-  const label = scrubFormalPoolDisplayText(row.account_label, '账号（未命名）')
+  const label = safeFormalPoolOperatorLabel(row.account_label, '账号（未命名）')
   return /^账号\s*#\d+$/i.test(label) ? '账号（未命名）' : label
 }
 
