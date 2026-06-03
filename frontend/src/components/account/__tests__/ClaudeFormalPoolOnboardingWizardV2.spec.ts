@@ -19,6 +19,17 @@ const onboardingApi = vi.hoisted(() => ({
   abort: vi.fn(),
 }))
 
+const adminApiMock = vi.hoisted(() => ({
+  proxies: {
+    getAllWithCount: vi.fn(),
+    getAll: vi.fn(),
+  },
+  groups: {
+    getAll: vi.fn(),
+    getCapacitySummary: vi.fn(),
+  },
+}))
+
 const egressPollingMock = vi.hoisted(() => {
   const { ref, readonly } = require('vue') as typeof import('vue')
   return {
@@ -37,9 +48,29 @@ vi.mock('@/api/admin/claudeOnboarding', () => ({
   ...onboardingApi,
 }))
 
+vi.mock('@/api/admin', () => ({
+  adminAPI: adminApiMock,
+  default: adminApiMock,
+}))
+
 vi.mock('@/composables/useEgressCheckPolling', () => ({
   useEgressCheckPolling: () => egressPollingMock,
 }))
+
+const routerLinkStub = {
+  props: ['to'],
+  template: '<a :href="typeof to === \'string\' ? to : to.path"><slot /></a>',
+}
+
+function mountWizard() {
+  return mount(ClaudeFormalPoolOnboardingWizardV2, {
+    global: {
+      stubs: {
+        RouterLink: routerLinkStub,
+      },
+    },
+  })
+}
 
 function sessionFixture(overrides: Partial<FormalPoolSession> = {}): FormalPoolSession {
   return {
@@ -71,11 +102,66 @@ function acceptanceFixture(overrides: Partial<FormalPoolAcceptanceResult> = {}):
   }
 }
 
+function proxyFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 7,
+    name: 'Claude Tokyo SOCKS',
+    protocol: 'socks5',
+    host: '203.0.113.25',
+    port: 1080,
+    username: null,
+    status: 'active',
+    account_count: 2,
+    latency_ms: 118,
+    quality_grade: 'A',
+    quality_status: 'healthy',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+function groupFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 9,
+    name: 'Claude Code 正式池',
+    description: null,
+    platform: 'anthropic',
+    rate_multiplier: 1,
+    is_exclusive: true,
+    status: 'active',
+    subscription_type: 'standard',
+    daily_limit_usd: null,
+    weekly_limit_usd: null,
+    monthly_limit_usd: null,
+    augment_gateway_entitled: false,
+    allow_image_generation: false,
+    image_rate_independent: false,
+    image_rate_multiplier: 1,
+    image_price_1k: null,
+    image_price_2k: null,
+    image_price_4k: null,
+    claude_code_only: true,
+    fallback_group_id: null,
+    fallback_group_id_on_invalid_request: null,
+    require_oauth_only: false,
+    require_privacy_set: false,
+    model_routing: null,
+    model_routing_enabled: false,
+    mcp_xml_inject: false,
+    sort_order: 1,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
 async function startSession(wrapper: ReturnType<typeof mount>, overrides: Partial<FormalPoolSession> = {}) {
   onboardingApi.createSession.mockResolvedValueOnce(sessionFixture(overrides))
+  await flushPromises()
   await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
-  await wrapper.find('[data-testid="group-id-input"]').setValue(9)
-  await wrapper.find('[data-testid="proxy-id-input"]').setValue(7)
+  await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+  await wrapper.find('[data-testid="group-card-9"]').trigger('click')
   await wrapper.find('[data-testid="start-session"]').trigger('click')
   await flushPromises()
 }
@@ -87,10 +173,319 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     egressPollingMock.stop.mockReset()
     egressPollingMock.abort.mockReset()
     onboardingApi.getSession.mockResolvedValue(sessionFixture())
+    adminApiMock.proxies.getAllWithCount.mockReset()
+    adminApiMock.proxies.getAll.mockReset()
+    adminApiMock.groups.getAll.mockReset()
+    adminApiMock.groups.getCapacitySummary.mockReset()
+    adminApiMock.proxies.getAllWithCount.mockResolvedValue([proxyFixture()])
+    adminApiMock.proxies.getAll.mockResolvedValue([proxyFixture()])
+    adminApiMock.groups.getAll.mockResolvedValue([groupFixture()])
+    adminApiMock.groups.getCapacitySummary.mockResolvedValue([])
+  })
+
+  it('does not show numeric proxy_id or group_id inputs in existing mode', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="proxy-id-input"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="group-id-input"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="proxy-card-7"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="group-card-9"]').exists()).toBe(true)
+  })
+
+  it('selects an existing proxy card and submits its proxy_id', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    onboardingApi.createSession.mockResolvedValueOnce(sessionFixture())
+    await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
+    await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+    await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+    await wrapper.find('[data-testid="start-session"]').trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      proxy_id: 7,
+      group_id: 9,
+      account_name: 'claude-safe-name',
+    }))
+  })
+
+  it('selects an Anthropic group card and submits its group_id', async () => {
+    adminApiMock.groups.getAll.mockResolvedValueOnce([
+      groupFixture({ id: 9, name: 'Default Claude' }),
+      groupFixture({ id: 12, name: 'Claude Code 专用组' }),
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    onboardingApi.createSession.mockResolvedValueOnce(sessionFixture({ group_id: 12 }))
+    await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
+    await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+    await wrapper.find('[data-testid="group-card-12"]').trigger('click')
+    await wrapper.find('[data-testid="start-session"]').trigger('click')
+    await flushPromises()
+
+    expect(adminApiMock.groups.getAll).toHaveBeenCalledWith('anthropic')
+    expect(onboardingApi.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      proxy_id: 7,
+      group_id: 12,
+    }))
+  })
+
+  it('shows management guidance when proxy and group lists are empty', async () => {
+    adminApiMock.proxies.getAllWithCount.mockResolvedValueOnce([])
+    adminApiMock.groups.getAll.mockResolvedValueOnce([])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('暂无可选代理')
+    expect(wrapper.text()).toContain('去代理管理添加 IP')
+    expect(wrapper.text()).toContain('暂无 Anthropic/Claude 分组')
+    expect(wrapper.text()).toContain('去分组管理创建 Claude Code 专用分组')
+    expect(wrapper.html()).toContain('/admin/proxies')
+    expect(wrapper.html()).toContain('/admin/groups')
+  })
+
+  it('falls back to getAll and renders fallback proxies when getAllWithCount fails', async () => {
+    adminApiMock.proxies.getAllWithCount.mockRejectedValueOnce(new Error('count endpoint unavailable'))
+    adminApiMock.proxies.getAll.mockResolvedValueOnce([
+      proxyFixture({ id: 14, name: 'Fallback proxy', host: '198.51.100.99' }),
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    expect(adminApiMock.proxies.getAllWithCount).toHaveBeenCalledTimes(1)
+    expect(adminApiMock.proxies.getAll).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="proxy-list-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="proxy-card-14"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Fallback proxy')
+  })
+
+  it('shows proxy and group load errors with reload buttons when loading fails', async () => {
+    adminApiMock.proxies.getAllWithCount.mockRejectedValueOnce(new Error('count endpoint unavailable'))
+    adminApiMock.proxies.getAll.mockRejectedValueOnce(new Error('proxy load failed'))
+    adminApiMock.groups.getAll.mockRejectedValueOnce(new Error('group load failed'))
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const proxyError = wrapper.find('[data-testid="proxy-list-error"]')
+    const groupError = wrapper.find('[data-testid="group-list-error"]')
+
+    expect(proxyError.exists()).toBe(true)
+    expect(proxyError.text()).toContain('proxy load failed')
+    expect(wrapper.find('[data-testid="reload-proxies"]').exists()).toBe(true)
+    expect(groupError.exists()).toBe(true)
+    expect(groupError.text()).toContain('group load failed')
+    expect(wrapper.find('[data-testid="reload-groups"]').exists()).toBe(true)
+  })
+
+  it('reload buttons call list APIs again', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    adminApiMock.proxies.getAllWithCount.mockClear()
+    adminApiMock.proxies.getAll.mockClear()
+    adminApiMock.groups.getAll.mockClear()
+    adminApiMock.groups.getCapacitySummary.mockClear()
+
+    await wrapper.find('[data-testid="refresh-proxies"]').trigger('click')
+    await wrapper.find('[data-testid="refresh-groups"]').trigger('click')
+    await flushPromises()
+
+    expect(adminApiMock.proxies.getAllWithCount).toHaveBeenCalledTimes(1)
+    expect(adminApiMock.proxies.getAll).not.toHaveBeenCalled()
+    expect(adminApiMock.groups.getAll).toHaveBeenCalledTimes(1)
+    expect(adminApiMock.groups.getCapacitySummary).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows proxy host endpoints on proxy cards and hides sensitive proxy fields', async () => {
+    adminApiMock.proxies.getAllWithCount.mockResolvedValueOnce([
+      proxyFixture({
+        id: 21,
+        name: 'IPv4 proxy',
+        protocol: 'http',
+        host: '203.0.113.25',
+        port: 8080,
+        username: 'raw-user',
+        password: 'raw-pass',
+        ip_address: '198.51.100.7',
+        token: 'raw-token',
+        nonce: 'raw-nonce',
+      }),
+      proxyFixture({
+        id: 22,
+        name: 'Domain proxy',
+        protocol: 'socks5',
+        host: 'edge.secret.example.net',
+        port: 1080,
+      }),
+      proxyFixture({
+        id: 23,
+        name: 'IPv6 proxy',
+        protocol: 'https',
+        host: '2001:0db8:85a3::8a2e:0370:7334',
+        port: 443,
+      }),
+      proxyFixture({
+        id: 24,
+        name: 'Missing host proxy',
+        protocol: 'socks5h',
+        host: '',
+        port: 1081,
+      }),
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const text = wrapper.text()
+
+    expect(text).toContain('http://203.0.113.25:8080')
+    expect(text).toContain('socks5://edge.secret.example.net:1080')
+    expect(text).toContain('https://[2001:0db8:85a3::8a2e:0370:7334]:443')
+    expect(text).toContain('socks5h://host 未配置:1081')
+    expect(text).not.toContain('IPv4 已隐藏')
+    expect(text).not.toContain('IPv6 已隐藏')
+    expect(text).not.toContain('域名已隐藏')
+    expect(text).not.toContain('raw-user')
+    expect(text).not.toContain('raw-pass')
+    expect(text).not.toContain('198.51.100.7')
+    expect(text).not.toContain('raw-token')
+    expect(text).not.toContain('raw-nonce')
+  })
+
+  it('extracts proxy hostnames from malformed host fields without leaking userinfo', async () => {
+    adminApiMock.proxies.getAllWithCount.mockResolvedValueOnce([
+      proxyFixture({
+        id: 31,
+        protocol: 'http',
+        host: 'http://url-user:url-pass@proxy.example.net',
+        port: 8080,
+      }),
+      proxyFixture({
+        id: 32,
+        protocol: 'socks5',
+        host: 'socks5://socks-user:socks-pass@203.0.113.25:1080',
+        port: 1080,
+      }),
+      proxyFixture({
+        id: 33,
+        protocol: 'https',
+        host: 'plain-user:plain-pass@edge.example.net',
+        port: 443,
+      }),
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const text = wrapper.text()
+
+    expect(text).toContain('http://proxy.example.net:8080')
+    expect(text).toContain('socks5://203.0.113.25:1080')
+    expect(text).toContain('https://edge.example.net:443')
+    expect(text).not.toContain('url-user')
+    expect(text).not.toContain('url-pass')
+    expect(text).not.toContain('socks-user')
+    expect(text).not.toContain('socks-pass')
+    expect(text).not.toContain('plain-user')
+    expect(text).not.toContain('plain-pass')
+  })
+
+  it('strips path query and fragment from dirty proxy host fields without leaking tokens', async () => {
+    adminApiMock.proxies.getAllWithCount.mockResolvedValueOnce([
+      proxyFixture({
+        id: 35,
+        protocol: 'http',
+        host: 'proxy.example.net/path?token=abc#frag',
+        port: 8080,
+      }),
+      proxyFixture({
+        id: 36,
+        protocol: 'socks5',
+        host: 'proxy.example.net:1080/path?password=abc',
+        port: 18080,
+      }),
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const firstCardText = wrapper.find('[data-testid="proxy-card-35"]').text()
+    const secondCardText = wrapper.find('[data-testid="proxy-card-36"]').text()
+    const text = wrapper.text()
+
+    expect(firstCardText).toContain('http://proxy.example.net:8080')
+    expect(secondCardText).toContain('socks5://proxy.example.net:18080')
+    expect(text).not.toContain('/path')
+    expect(text).not.toContain('token=abc')
+    expect(text).not.toContain('password=abc')
+    expect(text).not.toContain('#frag')
+  })
+
+  it('does not double-wrap already bracketed IPv6 proxy hosts', async () => {
+    adminApiMock.proxies.getAllWithCount.mockResolvedValueOnce([
+      proxyFixture({
+        id: 34,
+        protocol: 'https',
+        host: '[2001:db8::1]',
+        port: 443,
+      }),
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const text = wrapper.find('[data-testid="proxy-card-34"]').text()
+
+    expect(text).toContain('https://[2001:db8::1]:443')
+    expect(text).not.toContain('https://[[2001:db8::1]]:443')
+  })
+
+  it('keeps create-proxy mode usable and submits a proxy object', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+    await wrapper.find('[data-testid="proxy-mode-select"]').setValue('create')
+    onboardingApi.createSession.mockResolvedValueOnce(sessionFixture())
+    await wrapper.find('[data-testid="account-name-input"]').setValue('claude-new-proxy')
+    await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+    await wrapper.find('input[placeholder="代理备注名称"]').setValue('New managed proxy')
+    await wrapper.find('input[placeholder="代理 host"]').setValue('proxy.example.net')
+    await wrapper.find('[data-testid="create-proxy-port-input"]').setValue(18080)
+    await wrapper.find('[data-testid="start-session"]').trigger('click')
+    await flushPromises()
+
+    const payload = onboardingApi.createSession.mock.calls[0][0]
+    expect(payload).not.toHaveProperty('proxy_id')
+    expect(onboardingApi.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      proxy_mode: 'create',
+      group_id: 9,
+      account_name: 'claude-new-proxy',
+      proxy: expect.objectContaining({
+        name: 'New managed proxy',
+        protocol: 'socks5',
+        host: 'proxy.example.net',
+        port: 18080,
+      }),
+    }))
+  })
+
+  it('does not render undefined capacity fragments when group capacity fields are incomplete', async () => {
+    adminApiMock.groups.getCapacitySummary.mockResolvedValueOnce([
+      { group_id: 9, concurrency_used: 2, concurrency_max: undefined, sessions_used: null, sessions_max: null },
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const groupCardText = wrapper.find('[data-testid="group-card-9"]').text()
+
+    expect(groupCardText).not.toContain('undefined/undefined')
+    expect(groupCardText).not.toContain('undefined')
+    expect(groupCardText).not.toContain('null/null')
+    expect(groupCardText).not.toContain('并发 2/undefined')
   })
 
   it('shows idle and no browser egress check URL immediately after StartSession', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
 
     await startSession(wrapper)
 
@@ -104,7 +499,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     const realUrl = `https://safe.example/api/v1/claude-onboarding/browser-egress-check/${rawNonce}`
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper)
 
     onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({
@@ -130,7 +525,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
 
   it('uses safe session ref in the badge instead of raw session id', async () => {
     const rawSessionId = '987654321'
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
 
     await startSession(wrapper, {
       id: rawSessionId,
@@ -145,7 +540,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('does not render a current-browser open button or attestation code input', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, {
       browser_egress_check_url: 'https://safe.example/check',
       browser_egress_check_status: 'waiting',
@@ -158,7 +553,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('labels expired nonce recovery as starting a new onboarding session and triggers createSession', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, {
       browser_egress_check_status: 'expired',
       browser_egress_last_error_code: 'nonce_expired',
@@ -180,7 +575,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('shows mismatch buckets or generic copy and never raw IP addresses', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, {
       browser_egress_check_status: 'mismatch',
       browser_egress_last_error_code: 'mismatch',
@@ -200,7 +595,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('uses a non-token-shaped Setup Token placeholder', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     // Auth step is locked until browser egress is verified.
     await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
     await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
@@ -213,7 +608,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('gates runtime healthcheck, warming, and production with clear real directed healthcheck copy', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, {
       status: 'runtime_registered',
       account_id: 42,
@@ -244,7 +639,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('scrubs sensitive backend and account-source display text before it reaches the DOM', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     const sensitiveFragments = [
       'sk-ant-sid-raw-secret-DO-NOT-LEAK',
       'plain prompt text without token shape',
@@ -296,7 +691,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('scrubs obvious IPv6 raw IP addresses before display', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
 
     await startSession(wrapper, {
       status: 'quarantined',
@@ -314,7 +709,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('starts with proxy as the active step and auth/gates/evidence all locked', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
 
     expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
     expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
@@ -334,7 +729,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('locked stepper buttons refuse click and do NOT change the active step', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
 
     // proxy is active by default; clicking a locked step must not move there.
     await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
@@ -351,7 +746,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('creating a session keeps auth/gates locked until browser egress and account gates are satisfied', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper)
 
     // After StartSession, proxy is still the active step. Auth stays locked
@@ -370,7 +765,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('verified browser egress unlocks auth while gates stay locked until an account exists', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
 
     expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('available')
@@ -382,7 +777,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('falls back from auth when browser egress is no longer verified', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
     await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
     expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('active')
@@ -404,7 +799,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('falls back from gates when the account gate is no longer satisfied', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, {
       account_id: 42,
       browser_egress_verified: true,
@@ -428,7 +823,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('once an account is created and healthcheck passes, every reachable step shows done/active visuals', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper, {
       status: 'healthcheck_passed',
       account_id: 42,
@@ -452,7 +847,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
   })
 
   it('stops the active browser egress poller when changing steps', async () => {
-    const wrapper = mount(ClaudeFormalPoolOnboardingWizardV2)
+    const wrapper = mountWizard()
     await startSession(wrapper)
 
     onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({

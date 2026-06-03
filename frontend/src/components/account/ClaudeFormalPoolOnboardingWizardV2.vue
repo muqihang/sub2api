@@ -93,14 +93,57 @@
               <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">先创建 idle session；StartSession 后不显示 browser egress check URL。</p>
               <div class="mt-4 grid gap-3">
                 <label class="text-sm font-medium">代理模式
-                  <select v-model="form.proxy_mode" class="input mt-1 w-full">
+                  <select data-testid="proxy-mode-select" v-model="form.proxy_mode" class="input mt-1 w-full">
                     <option value="existing">选择已有代理</option>
                     <option value="create">创建新代理</option>
                   </select>
                 </label>
-                <label v-if="form.proxy_mode === 'existing'" class="text-sm font-medium">已有代理 ID
-                  <input data-testid="proxy-id-input" v-model.number="form.proxy_id" type="number" min="1" class="input mt-1 w-full" />
-                </label>
+                <div v-if="form.proxy_mode === 'existing'" class="space-y-3" data-testid="proxy-picker">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p class="text-sm font-semibold">选择已有代理</p>
+                      <p class="text-xs text-slate-500 dark:text-slate-400">从代理池选择，系统内部写入 proxy_id。</p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <button data-testid="refresh-proxies" type="button" class="btn btn-secondary btn-sm" :disabled="proxyListLoading" @click="loadProxies">刷新代理</button>
+                      <RouterLink to="/admin/proxies" class="btn btn-secondary btn-sm">去代理管理添加 IP</RouterLink>
+                    </div>
+                  </div>
+                  <div v-if="proxyListLoading" data-testid="proxy-list-loading" class="rounded-2xl border border-slate-200 p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">正在加载代理池...</div>
+                  <div v-else-if="proxyListError" data-testid="proxy-list-error" class="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-100">
+                    <p>{{ safeText(proxyListError) }}</p>
+                    <button data-testid="reload-proxies" type="button" class="btn btn-secondary btn-sm mt-2" @click="loadProxies">重新加载代理</button>
+                  </div>
+                  <div v-else-if="proxyOptions.length === 0" data-testid="empty-proxy-list" class="rounded-2xl border border-dashed border-slate-300 p-3 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                    <p class="font-semibold">暂无可选代理</p>
+                    <p class="mt-1">请先去代理管理添加 IP，再回到这里刷新选择。</p>
+                    <RouterLink to="/admin/proxies" class="btn btn-secondary btn-sm mt-3">去代理管理添加 IP</RouterLink>
+                  </div>
+                  <div v-else class="grid gap-2 md:grid-cols-2">
+                    <button
+                      v-for="item in proxyOptions"
+                      :key="item.id"
+                      type="button"
+                      :data-testid="`proxy-card-${item.id}`"
+                      :class="pickerCardClass(form.proxy_id === item.id)"
+                      @click="selectProxy(item.id)"
+                    >
+                      <span class="flex items-start justify-between gap-2">
+                        <span class="min-w-0">
+                          <span class="block truncate text-sm font-semibold">{{ safeText(item.name, '未命名代理') }}</span>
+                          <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">{{ proxySafeEndpoint(item) }}</span>
+                        </span>
+                        <span :class="statusPillClass(item.status)">{{ safeText(item.status) }}</span>
+                      </span>
+                      <span class="mt-2 flex flex-wrap gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span>协议 {{ safeText(item.protocol) }}</span>
+                        <span>绑定 {{ item.account_count ?? 0 }}</span>
+                        <span v-if="item.latency_ms != null">延迟 {{ item.latency_ms }}ms</span>
+                        <span v-if="item.quality_grade || item.quality_status">质量 {{ safeText(item.quality_grade || item.quality_status) }}</span>
+                      </span>
+                    </button>
+                  </div>
+                </div>
                 <template v-else>
                   <label class="text-sm font-medium">代理名称
                     <input v-model="proxy.name" class="input mt-1 w-full" placeholder="代理备注名称" />
@@ -117,7 +160,7 @@
                     <input v-model="proxy.host" class="input mt-1 w-full" autocomplete="off" placeholder="代理 host" />
                   </label>
                   <label class="text-sm font-medium">Port
-                    <input v-model.number="proxy.port" type="number" class="input mt-1 w-full" />
+                    <input data-testid="create-proxy-port-input" v-model.number="proxy.port" type="number" class="input mt-1 w-full" />
                   </label>
                   <label class="text-sm font-medium">Username
                     <input v-model="proxy.username" class="input mt-1 w-full" autocomplete="off" placeholder="代理用户名" />
@@ -126,9 +169,51 @@
                     <input v-model="proxy.password" type="password" class="input mt-1 w-full" autocomplete="new-password" placeholder="代理密码，只提交不回显" />
                   </label>
                 </template>
-                <label class="text-sm font-medium">Claude Code 专用分组 ID
-                  <input data-testid="group-id-input" v-model.number="form.group_id" type="number" min="1" class="input mt-1 w-full" />
-                </label>
+                <div class="space-y-3" data-testid="group-picker">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p class="text-sm font-semibold">Claude Code 分组</p>
+                      <p class="text-xs text-slate-500 dark:text-slate-400">选择 Anthropic/Claude 分组，系统内部写入 group_id。</p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <button data-testid="refresh-groups" type="button" class="btn btn-secondary btn-sm" :disabled="groupListLoading" @click="loadGroups">刷新分组</button>
+                      <RouterLink to="/admin/groups" class="btn btn-secondary btn-sm">去分组管理创建 Claude Code 专用分组</RouterLink>
+                    </div>
+                  </div>
+                  <div v-if="groupListLoading" data-testid="group-list-loading" class="rounded-2xl border border-slate-200 p-3 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">正在加载 Claude 分组...</div>
+                  <div v-else-if="groupListError" data-testid="group-list-error" class="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-100">
+                    <p>{{ safeText(groupListError) }}</p>
+                    <button data-testid="reload-groups" type="button" class="btn btn-secondary btn-sm mt-2" @click="loadGroups">重新加载分组</button>
+                  </div>
+                  <div v-else-if="groupOptions.length === 0" data-testid="empty-group-list" class="rounded-2xl border border-dashed border-slate-300 p-3 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                    <p class="font-semibold">暂无 Anthropic/Claude 分组</p>
+                    <p class="mt-1">请先去分组管理创建 Claude Code 专用分组，再回到这里刷新选择。</p>
+                    <RouterLink to="/admin/groups" class="btn btn-secondary btn-sm mt-3">去分组管理创建 Claude Code 专用分组</RouterLink>
+                  </div>
+                  <div v-else class="grid gap-2 md:grid-cols-2">
+                    <button
+                      v-for="item in groupOptions"
+                      :key="item.id"
+                      type="button"
+                      :data-testid="`group-card-${item.id}`"
+                      :class="pickerCardClass(form.group_id === item.id)"
+                      @click="selectGroup(item.id)"
+                    >
+                      <span class="flex items-start justify-between gap-2">
+                        <span class="min-w-0">
+                          <span class="block truncate text-sm font-semibold">{{ safeText(item.name, '未命名分组') }}</span>
+                          <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">平台 {{ safeText(item.platform) }}</span>
+                        </span>
+                        <span :class="statusPillClass(item.status)">{{ safeText(item.status) }}</span>
+                      </span>
+                      <span class="mt-2 flex flex-wrap gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span v-if="item.claude_code_only">Claude Code only</span>
+                        <span v-if="groupCapacityLabel(item.id)">{{ groupCapacityLabel(item.id) }}</span>
+                        <span v-if="item.rpm_limit != null">RPM {{ item.rpm_limit }}</span>
+                      </span>
+                    </button>
+                  </div>
+                </div>
                 <label class="text-sm font-medium">账号名称
                   <input data-testid="account-name-input" v-model="form.account_name" class="input mt-1 w-full" placeholder="claude-oauth-01" />
                 </label>
@@ -243,7 +328,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import claudeOnboarding, {
   type FormalPoolAcceptanceResult,
@@ -252,8 +337,10 @@ import claudeOnboarding, {
   type FormalPoolProxyMode,
   type FormalPoolSession,
 } from '@/api/admin/claudeOnboarding'
+import { adminAPI } from '@/api/admin'
 import { useEgressCheckPolling } from '@/composables/useEgressCheckPolling'
 import { scrubFormalPoolDisplayText } from '@/utils/formalPoolStatusDashboard'
+import type { AdminGroup, Proxy } from '@/types'
 
 type StepKey = 'proxy' | 'auth' | 'gates' | 'evidence'
 
@@ -274,6 +361,14 @@ const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
 const oauthCode = ref('')
 const setupSessionKey = ref('')
 const copyStatus = ref('')
+const proxyOptions = ref<Proxy[]>([])
+const proxyListLoading = ref(false)
+const proxyListError = ref('')
+const groupOptions = ref<AdminGroup[]>([])
+const groupListLoading = ref(false)
+const groupListError = ref('')
+type GroupCapacitySummary = Awaited<ReturnType<typeof adminAPI.groups.getCapacitySummary>>[number]
+const groupCapacityById = ref<Record<number, GroupCapacitySummary>>({})
 
 const form = reactive<{
   proxy_mode: FormalPoolProxyMode
@@ -300,6 +395,11 @@ const proxy = reactive({
 })
 
 const egressPolling = useEgressCheckPolling()
+
+onMounted(() => {
+  void loadProxies()
+  void loadGroups()
+})
 
 const renderStep = computed(() => safeEnterableStep(activeStep.value))
 const currentStepTitle = computed(() => steps.find((step) => step.key === renderStep.value)?.title ?? 'Onboarding')
@@ -358,6 +458,143 @@ function setStep(step: StepKey) {
 // visible copy and an aria-disabled/title attribute.
 
 type StepStatus = 'done' | 'active' | 'available' | 'locked'
+
+async function loadProxies() {
+  proxyListLoading.value = true
+  proxyListError.value = ''
+  try {
+    proxyOptions.value = await fetchProxyOptions()
+    if (form.proxy_id && !proxyOptions.value.some((item) => item.id === form.proxy_id)) {
+      form.proxy_id = undefined
+    }
+  } catch (err: any) {
+    proxyListError.value = err?.response?.data?.message || err?.message || '代理列表加载失败'
+  } finally {
+    proxyListLoading.value = false
+  }
+}
+
+async function fetchProxyOptions(): Promise<Proxy[]> {
+  const withCountLoader = adminAPI.proxies.getAllWithCount
+  const fallbackLoader = adminAPI.proxies.getAll
+  if (withCountLoader) {
+    try {
+      return await withCountLoader()
+    } catch (err) {
+      if (!fallbackLoader) throw err
+    }
+  }
+  if (fallbackLoader) {
+    return await fallbackLoader()
+  }
+  return []
+}
+
+async function loadGroups() {
+  groupListLoading.value = true
+  groupListError.value = ''
+  try {
+    const [groups, capacity] = await Promise.all([
+      adminAPI.groups.getAll('anthropic'),
+      adminAPI.groups.getCapacitySummary?.().catch(() => [] as GroupCapacitySummary[]) ?? Promise.resolve([] as GroupCapacitySummary[]),
+    ])
+    groupOptions.value = groups
+    groupCapacityById.value = Object.fromEntries(capacity.map((item) => [item.group_id, item]))
+    if (form.group_id && !groupOptions.value.some((item) => item.id === form.group_id)) {
+      form.group_id = undefined
+    }
+  } catch (err: any) {
+    groupListError.value = err?.response?.data?.message || err?.message || 'Claude 分组加载失败'
+  } finally {
+    groupListLoading.value = false
+  }
+}
+
+function selectProxy(proxyId: number) {
+  form.proxy_id = proxyId
+}
+
+function selectGroup(groupId: number) {
+  form.group_id = groupId
+}
+
+function pickerCardClass(selected: boolean): string {
+  const base = 'rounded-2xl border p-3 text-left transition'
+  return selected
+    ? `${base} border-cyan-500 bg-cyan-50 shadow-sm ring-2 ring-cyan-300 dark:border-cyan-400 dark:bg-cyan-950/40`
+    : `${base} border-slate-200 bg-white hover:border-cyan-300 hover:bg-cyan-50/50 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-cyan-700`
+}
+
+function statusPillClass(status: unknown): string {
+  const safeStatus = String(status ?? '')
+  const base = 'shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold'
+  return safeStatus === 'active'
+    ? `${base} bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-200`
+    : `${base} bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300`
+}
+
+function proxySafeEndpoint(item: Proxy): string {
+  return `${safeText(item.protocol)}://${proxyDisplayHost(item.host)}:${Number(item.port) || '—'}`
+}
+
+function proxyDisplayHost(host: unknown): string {
+  const value = typeof host === 'string' ? host.trim() : ''
+  if (!value) return 'host 未配置'
+  const hostname = extractProxyHostname(value)
+  if (!hostname) return 'host 未配置'
+  const unbracketed = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname
+  return unbracketed.includes(':') ? `[${unbracketed}]` : unbracketed
+}
+
+function extractProxyHostname(value: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    try {
+      return new URL(value).hostname
+    } catch {
+      return stripProxyHostDecorations(value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''))
+    }
+  }
+  if (value.includes('@')) {
+    try {
+      return new URL(`proxy://${value}`).hostname
+    } catch {
+      return stripProxyHostDecorations(value)
+    }
+  }
+  return stripProxyHostDecorations(value)
+}
+
+function stripProxyHostDecorations(value: string): string {
+  const hostPort = value.slice(value.lastIndexOf('@') + 1).split(/[/?#]/, 1)[0] ?? ''
+  if (hostPort.startsWith('[')) {
+    const bracketEnd = hostPort.indexOf(']')
+    return bracketEnd >= 0 ? hostPort.slice(0, bracketEnd + 1) : hostPort
+  }
+  const colonCount = (hostPort.match(/:/g) ?? []).length
+  return colonCount === 1 ? hostPort.split(':', 1)[0] ?? '' : hostPort
+}
+
+function groupCapacityLabel(groupId: number): string {
+  const capacity = groupCapacityById.value[groupId]
+  if (!capacity) return ''
+  const segments = [
+    capacitySegment('并发', capacity.concurrency_used, capacity.concurrency_max),
+    capacitySegment('会话', capacity.sessions_used, capacity.sessions_max),
+    capacitySegment('RPM', capacity.rpm_used, capacity.rpm_max),
+  ].filter(Boolean)
+  return segments.join(' · ')
+}
+
+function capacitySegment(label: string, used: unknown, max: unknown): string {
+  if (!isFiniteNumber(used) || !isFiniteNumber(max)) return ''
+  return `${label} ${used}/${max}`
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
 
 function canEnterStep(stepKey: StepKey): boolean {
   const s = session.value
@@ -589,7 +826,10 @@ async function run<T>(fn: () => Promise<T>): Promise<T | null> {
 
 function sessionPayload() {
   const payload: any = { ...form }
-  if (form.proxy_mode === 'create') payload.proxy = { ...proxy }
+  if (form.proxy_mode === 'create') {
+    delete payload.proxy_id
+    payload.proxy = { ...proxy }
+  }
   return payload
 }
 
