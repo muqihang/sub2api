@@ -143,6 +143,9 @@ docs/*
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
+!docs/codex-gateway/
+docs/codex-gateway/*
+!docs/codex-gateway/deepseek-codex-native-parity-plan.md
 !docs/brand/
 !docs/brand/zhumeng-intent-brief.md
 .serena/
