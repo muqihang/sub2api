@@ -39,6 +39,18 @@ func TestIsClaudeCodeClient(t *testing.T) {
 			want:           true,
 		},
 		{
+			name:           "Claude Code spaced UA with JSON user_id",
+			userAgent:      "Claude Code/2.1.161",
+			metadataUserID: jsonUserID,
+			want:           true,
+		},
+		{
+			name:           "Claude Code hyphenated UA with JSON user_id",
+			userAgent:      "claude-code/2.1.161",
+			metadataUserID: jsonUserID,
+			want:           true,
+		},
+		{
 			name:           "Missing metadata user_id",
 			userAgent:      "claude-cli/1.0.0",
 			metadataUserID: "",

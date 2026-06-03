@@ -217,6 +217,55 @@ func TestSetClaudeCodeClientContext_ReuseParsedRequestAndContextCache(t *testing
 	})
 }
 
+func TestSetClaudeCodeClientContext_ClaudeCodePromptWithoutMetadataSetsFalse(t *testing.T) {
+	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+	c.Request.Header.Set("User-Agent", "Claude Code/2.1.161")
+	body := []byte(`{
+		"model":"claude-3-5-sonnet-20241022",
+		"system":[{"text":"You are Claude Code, Anthropic's official CLI for Claude."}]
+	}`)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContext_ClaudeCodePromptWithInvalidMetadataSetsFalse(t *testing.T) {
+	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+	c.Request.Header.Set("User-Agent", "Claude Code/2.1.161")
+	body := []byte(`{
+		"model":"claude-3-5-sonnet-20241022",
+		"system":[{"text":"You are Claude Code, Anthropic's official CLI for Claude."}],
+		"metadata":{"user_id":"invalid-format"}
+	}`)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContext_BroaderOfficialUAAndVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		ua          string
+		wantVersion string
+	}{
+		{"claude cli current", "claude-cli/2.1.161 (external, sdk-cli)", "2.1.161"},
+		{"claude code spaced", "Claude Code/2.1.161", "2.1.161"},
+		{"claude code hyphenated", "claude-code/2.1.161", "2.1.161"},
+		{"claudecode compact", "ClaudeCode/2.1.161", "2.1.161"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+			c.Request.Header.Set("User-Agent", tt.ua)
+
+			SetClaudeCodeClientContext(c, validClaudeCodeBodyJSON(), nil)
+			require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+			require.Equal(t, tt.wantVersion, service.GetClaudeCodeVersion(c.Request.Context()))
+		})
+	}
+}
+
 func TestWaitForSlotWithPingTimeout_AccountAndUserAcquire(t *testing.T) {
 	cache := &helperConcurrencyCacheStub{
 		accountSeq: []bool{false, true},
