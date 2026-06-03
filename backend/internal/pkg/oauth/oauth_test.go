@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestBuildAuthorizationURL_TracksClaudeCode2146EndpointAndClient(t *testing.T) {
+func TestBuildAuthorizationURL_TracksClaudeCodeEndpointAndClient(t *testing.T) {
 	state := "state-123"
 	challenge := "challenge-123"
 	authURL := BuildAuthorizationURL(state, challenge, ScopeOAuth)

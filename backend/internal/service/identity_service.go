@@ -26,6 +26,16 @@ var (
 
 // 默认指纹值（当客户端未提供时使用）
 var defaultFingerprint = Fingerprint{
+	UserAgent:               "claude-cli/2.1.150 (external, sdk-cli)",
+	StainlessLang:           "js",
+	StainlessPackageVersion: "0.94.0",
+	StainlessOS:             "Linux",
+	StainlessArch:           "arm64",
+	StainlessRuntime:        "node",
+	StainlessRuntimeVersion: "v24.3.0",
+}
+
+var legacyDefaultFingerprint2146 = Fingerprint{
 	UserAgent:               "claude-cli/2.1.146 (external, sdk-cli)",
 	StainlessLang:           "js",
 	StainlessPackageVersion: "0.94.0",
@@ -119,9 +129,36 @@ func fillFingerprintDefaults(fp *Fingerprint) bool {
 	return changed
 }
 
+func isLegacyDefaultMimicryFingerprint(fp *Fingerprint) bool {
+	if fp == nil {
+		return false
+	}
+	return strings.TrimSpace(fp.UserAgent) == legacyDefaultFingerprint2146.UserAgent &&
+		strings.TrimSpace(fp.StainlessLang) == legacyDefaultFingerprint2146.StainlessLang &&
+		strings.TrimSpace(fp.StainlessPackageVersion) == legacyDefaultFingerprint2146.StainlessPackageVersion &&
+		strings.TrimSpace(fp.StainlessOS) == legacyDefaultFingerprint2146.StainlessOS &&
+		strings.TrimSpace(fp.StainlessArch) == legacyDefaultFingerprint2146.StainlessArch &&
+		strings.TrimSpace(fp.StainlessRuntime) == legacyDefaultFingerprint2146.StainlessRuntime &&
+		strings.TrimSpace(fp.StainlessRuntimeVersion) == legacyDefaultFingerprint2146.StainlessRuntimeVersion
+}
+
+func upgradeLegacyDefaultMimicryFingerprint(fp *Fingerprint) bool {
+	if !isLegacyDefaultMimicryFingerprint(fp) {
+		return false
+	}
+	fp.UserAgent = defaultFingerprint.UserAgent
+	fp.StainlessLang = defaultFingerprint.StainlessLang
+	fp.StainlessPackageVersion = defaultFingerprint.StainlessPackageVersion
+	fp.StainlessOS = defaultFingerprint.StainlessOS
+	fp.StainlessArch = defaultFingerprint.StainlessArch
+	fp.StainlessRuntime = defaultFingerprint.StainlessRuntime
+	fp.StainlessRuntimeVersion = defaultFingerprint.StainlessRuntimeVersion
+	return true
+}
+
 // GetOrCreateMimicryFingerprint returns a safe fingerprint for non-Claude-Code OAuth mimicry.
 // It MUST NOT derive values from client request headers. Cached fingerprints win; on cache miss
-// it synthesizes a Claude Code 2.1.146 default fingerprint with a fresh client_id.
+// it synthesizes a Claude Code 2.1.150 default fingerprint with a fresh client_id.
 func (s *IdentityService) GetOrCreateMimicryFingerprint(ctx context.Context, accountID int64) (*Fingerprint, error) {
 	if s == nil || s.cache == nil {
 		return nil, fmt.Errorf("identity cache unavailable")
@@ -134,6 +171,9 @@ func (s *IdentityService) GetOrCreateMimicryFingerprint(ctx context.Context, acc
 	if cached != nil {
 		out := cloneFingerprint(cached)
 		needWrite := fillFingerprintDefaults(out)
+		if upgradeLegacyDefaultMimicryFingerprint(out) {
+			needWrite = true
+		}
 		if out.UpdatedAt == 0 || time.Since(time.Unix(out.UpdatedAt, 0)) > 24*time.Hour {
 			out.UpdatedAt = time.Now().Unix()
 			needWrite = true
