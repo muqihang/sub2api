@@ -65,6 +65,7 @@ func formalPoolSchedulerEvidenceExtra(extra map[string]any) map[string]any {
 		service.FormalPoolExtraHealthcheckProxyMismatch:    false,
 		service.FormalPoolExtraHealthcheckRiskTextDetected: false,
 		"cc_gateway_account_ref":                           "hmac-sha256:" + strings.Repeat("b", 64),
+		"cc_gateway_egress_bucket_enabled":                 "true",
 		"cc_gateway_egress_bucket":                         "formal-pool-bucket",
 		"access_token":                                     "must-not-enter-scheduler-metadata",
 		"unused_large_field":                               "drop-me",
