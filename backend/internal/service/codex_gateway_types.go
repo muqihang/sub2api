@@ -146,6 +146,7 @@ const (
 	CodexGatewayOutputItemTypeFunctionCall   = "function_call"
 	CodexGatewayOutputItemTypeCustomToolCall = "custom_tool_call"
 	CodexGatewayOutputItemTypeLocalShellCall = "local_shell_call"
+	CodexGatewayOutputItemTypeToolSearchCall = "tool_search_call"
 )
 
 type CodexGatewayStateStoreConfig struct {

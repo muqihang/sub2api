@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -502,6 +503,120 @@ func TestCodexGatewayDeepSeekRequest_KeepsWebSearchBridgeAndFiltersUnsupportedHo
 	require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, "web_search"))
 	require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, "tool_search"))
 	require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, "exec_command"))
+}
+
+func TestCodexGatewayDeepSeekRequest_NativeParityFixtureToolSearch(t *testing.T) {
+	failed := loadCodexGatewayDeepSeekNativeParityFixture(t, "failed_tool_search_function_call.json")
+	require.Equal(t, "observed_deepseek_failure", gjson.GetBytes(failed, "source_baseline").String())
+	require.Equal(t, "function_call", gjson.GetBytes(failed, "item.type").String())
+	require.Equal(t, "tool_search", gjson.GetBytes(failed, "item.name").String())
+	require.Equal(t, int64(7), gjson.GetBytes(failed, "observed_call_count").Int())
+	require.False(t, gjson.GetBytes(failed, "item.matching_tool_search_output_present").Bool())
+
+	native := loadCodexGatewayDeepSeekNativeParityFixture(t, "native_tool_search_call_output.json")
+	require.Equal(t, "successful_codex_native_deepseek_bridge", gjson.GetBytes(native, "source_baseline").String())
+	require.Equal(t, "tool_search_call", gjson.GetBytes(native, "tool_search_call.type").String())
+	require.Equal(t, "call_fixture", gjson.GetBytes(native, "tool_search_call.call_id").String())
+	require.Equal(t, "client", gjson.GetBytes(native, "tool_search_call.execution").String())
+	require.Equal(t, "tool_search_output", gjson.GetBytes(native, "tool_search_output.type").String())
+	require.Equal(t, "multi_agent_v1", gjson.GetBytes(native, "tool_search_output.tools.0.name").String())
+	require.Equal(t, "spawn_agent", gjson.GetBytes(native, "tool_search_output.tools.0.tools.0.name").String())
+	require.Equal(t, "string", gjson.GetBytes(native, "tool_search_output.tools.0.tools.0.input_schema.properties.model.type").String())
+}
+
+func TestCodexGatewayDeepSeekRequest_NativeParityFixtureComputerUseOutputSizes(t *testing.T) {
+	fixture := loadCodexGatewayDeepSeekNativeParityFixture(t, "computer_use_output_sizes.json")
+	require.Equal(t, "successful_codex_native_deepseek_bridge_child_session", gjson.GetBytes(fixture, "source_baseline").String())
+	samples := gjson.GetBytes(fixture, "samples").Array()
+	require.Len(t, samples, 2)
+	for _, sample := range samples {
+		require.GreaterOrEqual(t, sample.Get("raw_output_chars").Int(), int64(86000))
+		require.GreaterOrEqual(t, sample.Get("app_state_chars").Int(), int64(4000))
+		require.GreaterOrEqual(t, sample.Get("screenshot_chars").Int(), int64(81000))
+		require.True(t, sample.Get("app_state_close_marker_present").Bool())
+		require.True(t, sample.Get("deepseek_visible_normalized_output_retained_computer_screenshot").Bool())
+		require.True(t, sample.Get("deepseek_visible_normalized_output_retained_operable_lines").Bool())
+		require.True(t, sample.Get("deepseek_visible_normalized_output_retained_lower_screen_actionable_lines").Bool())
+	}
+}
+
+func TestCodexGatewayDeepSeekRequest_ConvertsToolSearchCallToDeepSeekToolCall(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{
+				"type":"tool_search_call",
+				"call_id":"call_tool_search",
+				"status":"completed",
+				"execution":"client",
+				"arguments":{"query":"spawn_agent","limit":10}
+			}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}
+		]`),
+	}
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_tool_search_call",
+		IsolationKey: "iso_tool_search_call",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 1)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "", assistant["content"])
+	calls := assistant["tool_calls"].([]any)
+	require.Len(t, calls, 1)
+	call := calls[0].(map[string]any)
+	require.Equal(t, "call_tool_search", call["id"])
+	require.Equal(t, "function", call["type"])
+	function := call["function"].(map[string]any)
+	require.Equal(t, "tool_search", function["name"])
+	require.JSONEq(t, `{"query":"spawn_agent","limit":10}`, function["arguments"].(string))
+}
+
+func TestCodexGatewayDeepSeekRequest_ConvertsToolSearchOutputToToolMessage(t *testing.T) {
+	fixture := loadCodexGatewayDeepSeekNativeParityFixture(t, "native_tool_search_call_output.json")
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{
+				"type":"tool_search_call",
+				"call_id":"call_fixture",
+				"status":"completed",
+				"execution":"client",
+				"arguments":{"query":"sub-agent dispatch multi-agent DeepSeek V4 Flash model tool","limit":10}
+			},
+			` + gjson.GetBytes(fixture, "tool_search_output").Raw + `
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}
+		]`),
+	}
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_tool_search_output",
+		IsolationKey: "iso_tool_search_output",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	toolMessage := messages[1].(map[string]any)
+	require.Equal(t, "tool", toolMessage["role"])
+	require.Equal(t, "call_fixture", toolMessage["tool_call_id"])
+	content := toolMessage["content"].(string)
+	require.NotEmpty(t, content)
+	require.JSONEq(t, gjson.GetBytes(fixture, "tool_search_output.tools").Raw, content)
+	require.Equal(t, `[{"name":"multi_agent_v1","tools":[{"description":"sanitized spawn-agent tool description","input_schema":{"properties":{"model":{"type":"string"},"task":{"type":"string"}},"required":["task"],"type":"object"},"name":"spawn_agent"}],"type":"namespace"}]`, content)
+	require.Equal(t, "multi_agent_v1", gjson.Get(content, "0.name").String())
+	require.Equal(t, "spawn_agent", gjson.Get(content, "0.tools.0.name").String())
+	require.Equal(t, "string", gjson.Get(content, "0.tools.0.input_schema.properties.model.type").String())
 }
 
 func TestCodexGatewayDeepSeekRequest_ParallelToolCallsFalseAddsSerialToolInstruction(t *testing.T) {
@@ -3085,6 +3200,14 @@ func deepSeekRequestToolFunctionByName(t *testing.T, tools []any, name string) m
 	}
 	require.Failf(t, "deepseek request tool not found", "name=%s tools=%v", name, tools)
 	return nil
+}
+
+func loadCodexGatewayDeepSeekNativeParityFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", "codex_gateway_deepseek_native_parity", name))
+	require.NoError(t, err)
+	require.True(t, gjson.ValidBytes(body), "fixture must be valid JSON: %s", name)
+	return body
 }
 
 func countDeepSeekSerialToolInstructions(messages any) int {

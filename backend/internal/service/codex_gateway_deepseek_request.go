@@ -697,7 +697,7 @@ func codexGatewayInputHasToolCallOutput(items []any) bool {
 			continue
 		}
 		switch strings.TrimSpace(firstCodexGatewayToolString(m["type"])) {
-		case "function_call_output", "local_shell_call_output", "custom_tool_call_output":
+		case "function_call_output", "local_shell_call_output", "custom_tool_call_output", "tool_search_output":
 			return true
 		}
 	}
@@ -732,12 +732,16 @@ func convertCodexGatewayInputItem(item any, toolMapping CodexGatewayToolMappingR
 		return convertCodexGatewayMessageItem(m, toolMapping, cfg)
 	case "function_call":
 		return convertCodexGatewayFunctionCallItem(m, toolMapping)
+	case "tool_search_call":
+		return convertCodexGatewayToolSearchCallItem(m, toolMapping)
 	case "local_shell_call":
 		return convertCodexGatewayFunctionCallItem(m, toolMapping)
 	case "custom_tool_call":
 		return convertCodexGatewayCustomToolCallItem(m, toolMapping)
 	case "function_call_output":
 		return convertCodexGatewayFunctionCallOutputItem(m)
+	case "tool_search_output":
+		return convertCodexGatewayToolSearchOutputItem(m)
 	case "local_shell_call_output":
 		return convertCodexGatewayFunctionCallOutputItem(m)
 	case "custom_tool_call_output":
@@ -882,6 +886,16 @@ func convertCodexGatewayFunctionCallItem(m map[string]any, toolMapping CodexGate
 	return msg, []string{callID}, nil
 }
 
+func convertCodexGatewayToolSearchCallItem(m map[string]any, toolMapping CodexGatewayToolMappingResult) (map[string]any, []string, error) {
+	wrapped := make(map[string]any, len(m)+2)
+	for key, value := range m {
+		wrapped[key] = value
+	}
+	wrapped["type"] = CodexGatewayOutputItemTypeFunctionCall
+	wrapped["name"] = codexGatewayToolSearchType
+	return convertCodexGatewayFunctionCallItem(wrapped, toolMapping)
+}
+
 func convertCodexGatewayCustomToolCallItem(m map[string]any, toolMapping CodexGatewayToolMappingResult) (map[string]any, []string, error) {
 	callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
 	if callID == "" {
@@ -923,6 +937,28 @@ func convertCodexGatewayFunctionCallOutputItem(m map[string]any) (map[string]any
 		return nil, nil, fmt.Errorf("function_call_output requires call_id")
 	}
 	output, err := normalizeCodexGatewayDeepSeekToolOutput(m["output"])
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string]any{
+		"role":         "tool",
+		"tool_call_id": callID,
+		"content":      output,
+	}, nil, nil
+}
+
+func convertCodexGatewayToolSearchOutputItem(m map[string]any) (map[string]any, []string, error) {
+	callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
+	if callID == "" {
+		return nil, nil, fmt.Errorf("tool_search_output requires call_id")
+	}
+	var output string
+	var err error
+	if _, hasOutput := m["output"]; hasOutput {
+		output, err = normalizeCodexGatewayDeepSeekToolOutput(m["output"])
+	} else {
+		output, err = normalizeCodexGatewayToolOutput(canonicalizeCodexGatewayToolSchema(m["tools"]))
+	}
 	if err != nil {
 		return nil, nil, err
 	}

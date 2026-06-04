@@ -76,3 +76,53 @@ func TestNormalizeCodexGatewayLegacyToolRefs_KeepsOrdinaryUnknownToolChoiceForVa
 	require.JSONEq(t, `"missing_tool"`, string(req.ToolChoice))
 	require.JSONEq(t, `"missing_tool"`, string(req.RawFields["tool_choice"]))
 }
+
+func TestCodexGatewayIsToolSearchEntry_IsExactAndDoesNotMatchNeighboringToolFamilies(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry CodexGatewayToolNameMapEntry
+		want  bool
+	}{
+		{
+			name:  "exact alias",
+			entry: CodexGatewayToolNameMapEntry{Alias: "tool_search", Name: "tool_search", Kind: CodexGatewayToolKindFunction},
+			want:  true,
+		},
+		{
+			name:  "exact visible name",
+			entry: CodexGatewayToolNameMapEntry{Name: "tool_search", Kind: CodexGatewayToolKindFunction},
+			want:  true,
+		},
+		{
+			name:  "ordinary project search substring",
+			entry: CodexGatewayToolNameMapEntry{Alias: "project_search", Name: "project_search", Kind: CodexGatewayToolKindFunction},
+			want:  false,
+		},
+		{
+			name:  "hosted web search",
+			entry: CodexGatewayToolNameMapEntry{Alias: "web_search", Name: "web_search", Kind: CodexGatewayToolKindHosted},
+			want:  false,
+		},
+		{
+			name:  "custom tool named tool_search",
+			entry: CodexGatewayToolNameMapEntry{Alias: "tool_search", Name: "tool_search", Kind: CodexGatewayToolKindCustom},
+			want:  false,
+		},
+		{
+			name:  "namespace tool_search",
+			entry: CodexGatewayToolNameMapEntry{Name: "tool_search", Namespace: "multi_agent_v1", NamespacePath: "multi_agent_v1.tool_search", Kind: CodexGatewayToolKindFunction},
+			want:  false,
+		},
+		{
+			name:  "local shell tool",
+			entry: CodexGatewayToolNameMapEntry{Alias: "shell__exec", Name: "exec", Namespace: "shell", NamespacePath: "shell.exec", Kind: CodexGatewayToolKindFunction},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, codexGatewayIsToolSearchEntry(tt.entry))
+		})
+	}
+}

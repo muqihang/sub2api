@@ -1,0 +1,19 @@
+{
+  "fixture_label": "observed_deepseek_failure_tool_search_function_call_absent_output",
+  "source_baseline": "observed_deepseek_failure",
+  "session_path_hash": "sha256:sanitized_failed_tool_search_session",
+  "observed_call_count": 7,
+  "timestamp_range": {
+    "first": "2026-06-03T11:32:45Z",
+    "last": "2026-06-03T11:35:12Z"
+  },
+  "item": {
+    "type": "function_call",
+    "name": "tool_search",
+    "arguments": {
+      "query": "sub-agent dispatch multi-agent DeepSeek V4 Flash model tool",
+      "limit": 10
+    },
+    "matching_tool_search_output_present": false
+  }
+}

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from zhumeng_agent.adapters.codex.capture_redact import classify_source, content_policy_for_class
 from zhumeng_agent.adapters.codex.capture_shape import (
@@ -9,6 +10,13 @@ from zhumeng_agent.adapters.codex.capture_shape import (
 )
 from zhumeng_agent.adapters.codex.capture_writer import BoundedCaptureQueue, JsonlTraceWriter, read_jsonl
 from zhumeng_agent.adapters.codex.capture_config import CorrelationHasher
+
+
+def _repo_root_from_test_file() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "backend/internal/service/testdata").is_dir():
+            return parent
+    raise AssertionError("could not locate repository root from test file")
 
 
 def test_source_classification_allows_raw_only_for_builtin_sources():
@@ -280,3 +288,63 @@ def test_model_picker_capture_sanitizes_patch_state_repo_branch_and_commit():
     assert event["model_picker_patch_state"]["branch_hash"].startswith("sha256:")
     assert event["model_picker_patch_state"]["commit_hash"].startswith("sha256:")
     assert event["model_picker_patch_state"]["revision_hash"].startswith("sha256:")
+
+
+def test_deepseek_native_parity_fixtures_preserve_sanitized_capture_shape():
+    fixture_dir = (
+        _repo_root_from_test_file()
+        / "backend/internal/service/testdata/codex_gateway_deepseek_native_parity"
+    )
+    native = json.loads((fixture_dir / "native_tool_search_call_output.json").read_text(encoding="utf-8"))
+    failed = json.loads((fixture_dir / "failed_tool_search_function_call.json").read_text(encoding="utf-8"))
+    computer_sizes = json.loads((fixture_dir / "computer_use_output_sizes.json").read_text(encoding="utf-8"))
+
+    assert native["source_baseline"] == "successful_codex_native_deepseek_bridge"
+    assert failed["source_baseline"] == "observed_deepseek_failure"
+    assert computer_sizes["source_baseline"] == "successful_codex_native_deepseek_bridge_child_session"
+
+    tool_search_call = native["tool_search_call"]
+    tool_search_output = native["tool_search_output"]
+    assert tool_search_call == {
+        "type": "tool_search_call",
+        "call_id": "call_fixture",
+        "status": "completed",
+        "execution": "client",
+        "arguments": {
+            "query": "sub-agent dispatch multi-agent DeepSeek V4 Flash model tool",
+            "limit": 10,
+        },
+    }
+    assert tool_search_output["type"] == "tool_search_output"
+    assert tool_search_output["call_id"] == tool_search_call["call_id"]
+    assert tool_search_output["status"] == "completed"
+    assert tool_search_output["execution"] == "client"
+
+    namespaces = {
+        namespace["name"]: namespace
+        for namespace in tool_search_output["tools"]
+        if namespace["type"] == "namespace"
+    }
+    multi_agent_tools = {
+        tool["name"]: tool
+        for tool in namespaces["multi_agent_v1"]["tools"]
+    }
+    spawn_agent = multi_agent_tools["spawn_agent"]
+    assert spawn_agent["description"] == "sanitized spawn-agent tool description"
+    assert spawn_agent["input_schema"]["properties"]["task"]["type"] == "string"
+    assert spawn_agent["input_schema"]["required"] == ["task"]
+
+    assert failed["item"]["type"] == "function_call"
+    assert failed["item"]["name"] == "tool_search"
+    assert failed["item"]["matching_tool_search_output_present"] is False
+
+    assert computer_sizes["fixture_label"] == "computer_use_output_size_visibility"
+    for sample in computer_sizes["samples"]:
+        assert sample["app_state_close_marker_present"] is True
+        assert sample["deepseek_visible_normalized_output_retained_computer_screenshot"] is True
+        assert sample["deepseek_visible_normalized_output_retained_operable_lines"] is True
+        assert sample["deepseek_visible_normalized_output_retained_lower_screen_actionable_lines"] is True
+        assert isinstance(sample["raw_output_chars"], int)
+        assert isinstance(sample["app_state_chars"], int)
+        assert isinstance(sample["screenshot_chars"], int)
+

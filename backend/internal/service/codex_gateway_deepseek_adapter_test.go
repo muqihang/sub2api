@@ -603,6 +603,76 @@ func TestCodexGatewayDeepSeekToolCallOutputItem_PreservesNamespaceForCodex(t *te
 	require.Equal(t, "click", stored.Name)
 }
 
+func TestCodexGatewayDeepSeekAdapter_ToolSearchFunctionCallMapsToToolSearchCall(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"find subagent tool"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}
+		]`),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.Contains(t, deepSeekAdapterToolNames(body), "tool_search")
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl_tool_search",
+			"object":"chat.completion",
+			"model":"deepseek-v4-pro",
+			"choices":[
+				{
+					"index":0,
+					"message":{
+						"role":"assistant",
+						"content":"",
+						"tool_calls":[
+							{
+								"id":"call_tool_search",
+								"type":"function",
+								"function":{"name":"tool_search","arguments":"{\"query\":\"spawn_agent\",\"limit\":10}"}
+							}
+						]
+					},
+					"finish_reason":"tool_calls"
+				}
+			],
+			"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}
+		}`))
+	}))
+	defer server.Close()
+
+	result, err := ExecuteCodexGatewayDeepSeekAdapter(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{SessionKey: "session_tool_search_adapter", IsolationKey: "iso_tool_search_adapter"},
+		CodexGatewayDeepSeekRequestConfig{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "completed", result.ProviderResult.Response.Status)
+	require.Len(t, result.ProviderResult.ToolCalls, 1)
+	require.Equal(t, "tool_search", result.ProviderResult.ToolCalls[0].Alias)
+
+	body := result.ServiceResponse.Body
+	require.Equal(t, "tool_search_call", gjson.GetBytes(body, "output.0.type").String())
+	require.Equal(t, "call_tool_search", gjson.GetBytes(body, "output.0.call_id").String())
+	require.Equal(t, "completed", gjson.GetBytes(body, "output.0.status").String())
+	require.Equal(t, "client", gjson.GetBytes(body, "output.0.execution").String())
+	require.Equal(t, "spawn_agent", gjson.GetBytes(body, "output.0.arguments.query").String())
+	require.Equal(t, int64(10), gjson.GetBytes(body, "output.0.arguments.limit").Int())
+	require.NotContains(t, string(body), `"type":"function_call"`)
+}
+
 func TestCodexGatewayDeepSeekToolCallOutputItem_UsesFunctionCallForShellExec(t *testing.T) {
 	item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(apicompat.ChatToolCall{
 		ID: "call_shell",

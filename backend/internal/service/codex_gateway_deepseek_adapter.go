@@ -278,20 +278,52 @@ func codexGatewayDeepSeekToolCallOutputItem(toolCall apicompat.ChatToolCall, too
 		"name":    stored.Name,
 		"status":  "completed",
 	}
-	switch codexGatewayClientVisibleToolItemType(entry) {
+	itemType := codexGatewayDeepSeekClientVisibleToolItemType(entry)
+	switch itemType {
 	case CodexGatewayOutputItemTypeCustomToolCall:
 		item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 		item["input"] = codexGatewayDeepSeekCustomToolInput(arguments, entry)
 	case CodexGatewayOutputItemTypeLocalShellCall:
 		codexGatewayApplyLocalShellCallItemFields(item, callID, "completed", arguments)
+	case CodexGatewayOutputItemTypeToolSearchCall:
+		item = codexGatewayDeepSeekToolSearchCallItem(callID, "completed", arguments)
 	default:
-		item["type"] = codexGatewayClientVisibleToolItemType(entry)
+		item["type"] = itemType
 		if namespace := strings.TrimSpace(entry.Namespace); namespace != "" {
 			item["namespace"] = namespace
 		}
 		item["arguments"] = arguments
 	}
 	return item, stored, true
+}
+
+func codexGatewayDeepSeekClientVisibleToolItemType(entry CodexGatewayToolNameMapEntry) string {
+	if codexGatewayIsToolSearchEntry(entry) {
+		return CodexGatewayOutputItemTypeToolSearchCall
+	}
+	return codexGatewayClientVisibleToolItemType(entry)
+}
+
+func codexGatewayDeepSeekToolSearchCallItem(callID, status, arguments string) map[string]any {
+	return map[string]any{
+		"type":      CodexGatewayOutputItemTypeToolSearchCall,
+		"call_id":   strings.TrimSpace(callID),
+		"status":    strings.TrimSpace(status),
+		"execution": "client",
+		"arguments": codexGatewayDeepSeekToolSearchArgumentsValue(arguments),
+	}
+}
+
+func codexGatewayDeepSeekToolSearchArgumentsValue(arguments string) any {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return map[string]any{}
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(arguments), &parsed); err != nil || parsed == nil {
+		return map[string]any{}
+	}
+	return parsed
 }
 
 func codexGatewayDeepSeekCustomToolInput(arguments string, entry CodexGatewayToolNameMapEntry) string {

@@ -734,9 +734,20 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 		call.Blocked = false
 		call.BlockReason = ""
 	}
-	itemType := codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
+	itemType := codexGatewayDeepSeekClientVisibleToolItemType(call.toolNameMapEntry())
 	if call.Added && !call.ItemEmitted && !codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
 		if codexGatewayDeepSeekIsMutatingTool(call.toolNameMapEntry()) {
+			if _, ok, _ := codexGatewayPrepareDeepSeekToolArguments(call.toolNameMapEntry(), call.Buffer.String()); !ok {
+				return nil
+			}
+		}
+		if itemType == CodexGatewayOutputItemTypeToolSearchCall {
+			if strings.TrimSpace(call.Buffer.String()) == "" {
+				return nil
+			}
+			if !codexGatewayDeepSeekStreamHasCompleteToolSearchArguments(call.Buffer.String()) {
+				return nil
+			}
 			if _, ok, _ := codexGatewayPrepareDeepSeekToolArguments(call.toolNameMapEntry(), call.Buffer.String()); !ok {
 				return nil
 			}
@@ -771,8 +782,11 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 			item["input"] = ""
 		case CodexGatewayOutputItemTypeLocalShellCall:
 			codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "in_progress", call.Buffer.String())
+		case CodexGatewayOutputItemTypeToolSearchCall:
+			arguments, _, _ := codexGatewayPrepareDeepSeekToolArguments(call.toolNameMapEntry(), call.Buffer.String())
+			item = codexGatewayDeepSeekToolSearchCallItem(call.CallID, "in_progress", arguments)
 		default:
-			item["type"] = codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
+			item["type"] = itemType
 			if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 				item["namespace"] = namespace
 			}
@@ -804,7 +818,7 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 		if codexGatewayDeepSeekShouldDelayFunctionArgumentDeltas(call) {
 			return nil
 		}
-		if itemType == CodexGatewayOutputItemTypeLocalShellCall {
+		if itemType == CodexGatewayOutputItemTypeLocalShellCall || itemType == CodexGatewayOutputItemTypeToolSearchCall {
 			return nil
 		}
 		if len(args) > call.EmittedLen {
@@ -814,6 +828,11 @@ func (s *codexGatewayDeepSeekStreamState) consumeToolCallDelta(delta apicompat.C
 		}
 	}
 	return nil
+}
+
+func codexGatewayDeepSeekStreamHasCompleteToolSearchArguments(raw string) bool {
+	normalized := normalizeCodexGatewayToolArguments(raw)
+	return json.Valid([]byte(normalized))
 }
 
 func (s *codexGatewayDeepSeekStreamState) finish(writer *CodexGatewayResponseEventWriter) (string, error) {
@@ -925,15 +944,17 @@ func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayRe
 				"name":    call.Name,
 				"status":  "completed",
 			}
-			itemType := codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
+			itemType := codexGatewayDeepSeekClientVisibleToolItemType(call.toolNameMapEntry())
 			switch itemType {
 			case CodexGatewayOutputItemTypeCustomToolCall:
 				doneItem["type"] = CodexGatewayOutputItemTypeCustomToolCall
 				doneItem["input"] = codexGatewayDeepSeekCustomToolInput(prepared.Arguments, call.toolNameMapEntry())
 			case CodexGatewayOutputItemTypeLocalShellCall:
 				codexGatewayApplyLocalShellCallItemFields(doneItem, call.CallID, "completed", prepared.Arguments)
+			case CodexGatewayOutputItemTypeToolSearchCall:
+				doneItem = codexGatewayDeepSeekToolSearchCallItem(call.CallID, "completed", prepared.Arguments)
 			default:
-				doneItem["type"] = codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
+				doneItem["type"] = itemType
 				if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 					doneItem["namespace"] = namespace
 				}
@@ -944,7 +965,7 @@ func (s *codexGatewayDeepSeekStreamState) writeDoneEvents(writer *CodexGatewayRe
 					if err := writer.WriteCustomToolCallInputDone(s.responseID, codexGatewayDeepSeekToolItemID(call.CallID), call.OutputIndex, firstCodexGatewayToolString(doneItem["input"])); err != nil {
 						return err
 					}
-				} else if itemType != CodexGatewayOutputItemTypeLocalShellCall {
+				} else if itemType != CodexGatewayOutputItemTypeLocalShellCall && itemType != CodexGatewayOutputItemTypeToolSearchCall {
 					if codexGatewayDeepSeekShouldDelayFunctionArgumentDeltas(call) {
 						args := prepared.Arguments
 						if len(args) > call.EmittedLen {
@@ -1078,14 +1099,17 @@ func (s *codexGatewayDeepSeekStreamState) outputItemsByIndex() map[int]json.RawM
 			"name":    call.Name,
 			"status":  "completed",
 		}
-		switch codexGatewayClientVisibleToolItemType(call.toolNameMapEntry()) {
+		itemType := codexGatewayDeepSeekClientVisibleToolItemType(call.toolNameMapEntry())
+		switch itemType {
 		case CodexGatewayOutputItemTypeCustomToolCall:
 			item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 			item["input"] = codexGatewayDeepSeekCustomToolInput(prepared.Arguments, call.toolNameMapEntry())
 		case CodexGatewayOutputItemTypeLocalShellCall:
 			codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "completed", prepared.Arguments)
+		case CodexGatewayOutputItemTypeToolSearchCall:
+			item = codexGatewayDeepSeekToolSearchCallItem(call.CallID, "completed", prepared.Arguments)
 		default:
-			item["type"] = codexGatewayClientVisibleToolItemType(call.toolNameMapEntry())
+			item["type"] = itemType
 			if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
 				item["namespace"] = namespace
 			}

@@ -247,6 +247,18 @@ func codexGatewayClientVisibleToolItemType(entry CodexGatewayToolNameMapEntry) s
 	return CodexGatewayOutputItemTypeFunctionCall
 }
 
+func codexGatewayIsToolSearchEntry(entry CodexGatewayToolNameMapEntry) bool {
+	if entry.Kind == CodexGatewayToolKindCustom {
+		return false
+	}
+	if strings.TrimSpace(entry.Alias) == codexGatewayToolSearchType {
+		return true
+	}
+	return strings.TrimSpace(entry.Name) == codexGatewayToolSearchType &&
+		strings.TrimSpace(entry.Namespace) == "" &&
+		strings.TrimSpace(entry.NamespacePath) == ""
+}
+
 func codexGatewayIsClientVisibleLocalShellTool(entry CodexGatewayToolNameMapEntry) bool {
 	return codexGatewayClientVisibleToolItemType(entry) == CodexGatewayOutputItemTypeLocalShellCall
 }
