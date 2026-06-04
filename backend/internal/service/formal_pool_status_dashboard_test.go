@@ -953,6 +953,72 @@ func TestFormalPoolStatusDashboard_RedactsSensitiveFailureFields(t *testing.T) {
 	}
 }
 
+func TestFormalPoolStatusDashboardService_IncludesLegacyRuntimeSetupTokenAndExcludesOrdinarySetupToken(t *testing.T) {
+	legacyRuntime := formalPoolDashboardLegacyRuntimeCandidate(300, AccountTypeSetupToken)
+	legacyRuntime.Name = "anthropic-setup-204.1.108.104"
+	ordinary := Account{
+		ID:          301,
+		Name:        "ordinary setup token",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra:       map[string]any{FormalPoolExtraOnboardingStage: nil},
+	}
+	recognized := formalPoolDashboardTestAccount(302, FormalPoolStageProduction)
+	legacyOAuthRuntime := formalPoolDashboardLegacyRuntimeCandidate(303, AccountTypeOAuth)
+	legacyOAuthRuntime.Name = "oauth legacy runtime"
+
+	require.False(t, IsFormalPoolAccount(&legacyRuntime), "dashboard fallback must not alter global formal-pool gates")
+	require.False(t, IsFormalPoolAccount(&legacyOAuthRuntime), "dashboard fallback must not alter global formal-pool gates")
+	require.False(t, IsFormalPoolAccount(&ordinary), "ordinary setup-token accounts without lifecycle stage remain non-formal globally")
+
+	lister := &formalPoolDashboardPagedLister{accounts: []Account{legacyRuntime, ordinary, recognized, legacyOAuthRuntime}}
+	svc := NewFormalPoolStatusDashboardService(FormalPoolStatusDashboardDeps{
+		Accounts: lister,
+		RPM:      formalPoolDashboardStaticRPMReader{counts: map[int64]int{300: 0, 303: 0}},
+	})
+
+	dashboard, err := svc.Build(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, dashboard.Accounts, 3)
+	require.Equal(t, []int64{300, 302, 303}, []int64{dashboard.Accounts[0].AccountID, dashboard.Accounts[1].AccountID, dashboard.Accounts[2].AccountID})
+	require.Equal(t, FormalPoolStageLegacyUnknown, dashboard.Accounts[0].Stage)
+	require.Equal(t, FormalPoolStageLegacyUnknown, dashboard.Accounts[2].Stage)
+}
+
+func TestFormalPoolStatusDashboardService_RejectsLegacyRuntimeFallbackWithPartialMarkers(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{name: "enabled and base rpm only", extra: map[string]any{"base_rpm": 60}},
+		{name: "enabled and account ref only", extra: map[string]any{ccGatewayExtraAccountRef: "hmac-sha256:" + strings.Repeat("c", 64)}},
+		{name: "enabled and egress bucket only", extra: map[string]any{ccGatewayExtraEgressBucket: "bucket-safe"}},
+		{name: "enabled base rpm and account ref missing bucket", extra: map[string]any{"base_rpm": 60, ccGatewayExtraAccountRef: "hmac-sha256:" + strings.Repeat("d", 64)}},
+		{name: "enabled base rpm and bucket missing ref", extra: map[string]any{"base_rpm": 60, ccGatewayExtraEgressBucket: "bucket-safe"}},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := formalPoolDashboardLegacyRuntimePartialCandidate(int64(320+i), tt.extra)
+			recognized := formalPoolDashboardTestAccount(400+int64(i), FormalPoolStageProduction)
+			lister := &formalPoolDashboardPagedLister{accounts: []Account{candidate, recognized}}
+			svc := NewFormalPoolStatusDashboardService(FormalPoolStatusDashboardDeps{
+				Accounts: lister,
+				RPM:      formalPoolDashboardStaticRPMReader{counts: map[int64]int{candidate.ID: 0}},
+			})
+
+			dashboard, err := svc.Build(context.Background())
+
+			require.NoError(t, err)
+			require.Len(t, dashboard.Accounts, 1)
+			require.Equal(t, recognized.ID, dashboard.Accounts[0].AccountID)
+		})
+	}
+}
+
 func TestFormalPoolStatusDashboardService_ReturnsAllFormalPoolAccountsAcrossPages(t *testing.T) {
 	accounts := make([]Account, 0, formalPoolStatusDashboardPageSize+25)
 	for i := 1; i <= formalPoolStatusDashboardPageSize+25; i++ {
@@ -1014,6 +1080,37 @@ func TestFormalPoolStatusDashboardService_RuntimeReadFailureMarksDataMissing(t *
 	require.NoError(t, err)
 	require.Equal(t, FormalPoolDashboardStateDataMissing, dashboard.Accounts[0].State)
 	require.False(t, dashboard.Accounts[0].RPM.Available)
+}
+
+func formalPoolDashboardLegacyRuntimeCandidate(id int64, accountType string) Account {
+	acc := formalPoolDashboardLegacyRuntimePartialCandidate(id, map[string]any{
+		"base_rpm":                 60,
+		ccGatewayExtraAccountRef:   "hmac-sha256:" + strings.Repeat("a", 64),
+		ccGatewayExtraEgressBucket: "bucket-safe",
+	})
+	acc.Type = accountType
+	return acc
+}
+
+func formalPoolDashboardLegacyRuntimePartialCandidate(id int64, extra map[string]any) Account {
+	merged := map[string]any{
+		FormalPoolExtraOnboardingStage: nil,
+		"cc_gateway_enabled":           "true",
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	return Account{
+		ID:          id,
+		Name:        fmt.Sprintf("legacy-runtime-%d", id),
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		CreatedAt:   time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC),
+		Extra:       merged,
+	}
 }
 
 func formalPoolDashboardTestAccount(id int64, stage string) Account {
@@ -1123,6 +1220,24 @@ func (l *formalPoolDashboardPagedLister) ListAccounts(_ context.Context, page, p
 		end = len(filtered)
 	}
 	return filtered[start:end], int64(len(filtered)), nil
+}
+
+type formalPoolDashboardStaticRPMReader struct {
+	counts map[int64]int
+}
+
+func (r formalPoolDashboardStaticRPMReader) IncrementRPM(context.Context, int64) (int, error) {
+	return 0, nil
+}
+func (r formalPoolDashboardStaticRPMReader) GetRPM(_ context.Context, accountID int64) (int, error) {
+	return r.counts[accountID], nil
+}
+func (r formalPoolDashboardStaticRPMReader) GetRPMBatch(_ context.Context, accountIDs []int64) (map[int64]int, error) {
+	out := make(map[int64]int, len(accountIDs))
+	for _, id := range accountIDs {
+		out[id] = r.counts[id]
+	}
+	return out, nil
 }
 
 type formalPoolDashboardRPMReader struct{ err error }

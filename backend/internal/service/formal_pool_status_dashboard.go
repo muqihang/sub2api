@@ -193,7 +193,7 @@ func (s *FormalPoolStatusDashboardService) listAllFormalPoolAccounts(ctx context
 				return nil, err
 			}
 			for _, account := range accounts {
-				if account.IsAnthropicOAuthOrSetupToken() && IsFormalPoolAccount(&account) {
+				if formalPoolDashboardAccountInScope(&account) {
 					out = append(out, account)
 				}
 			}
@@ -291,6 +291,29 @@ func (s *FormalPoolStatusDashboardService) readRuntimeSnapshot(ctx context.Conte
 	return snapshot
 }
 
+func formalPoolDashboardAccountInScope(account *Account) bool {
+	if account == nil || !account.IsAnthropicOAuthOrSetupToken() {
+		return false
+	}
+	if IsFormalPoolAccount(account) {
+		return true
+	}
+	return formalPoolDashboardHasRuntimePoolMarker(account)
+}
+
+func formalPoolDashboardHasRuntimePoolMarker(account *Account) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	ccGatewayEnabled, enabledOK := parseCCGatewayBool(account.GetExtraString("cc_gateway_enabled"))
+	if !enabledOK || !ccGatewayEnabled {
+		return false
+	}
+	return account.GetBaseRPM() > 0 &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef)) != "" &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraEgressBucket)) != ""
+}
+
 func BuildFormalPoolStatusDashboard(accounts []Account, runtime FormalPoolStatusRuntimeSnapshot) FormalPoolStatusDashboard {
 	if runtime.GeneratedAt.IsZero() {
 		runtime.GeneratedAt = time.Now().UTC()
@@ -305,7 +328,7 @@ func BuildFormalPoolStatusDashboard(accounts []Account, runtime FormalPoolStatus
 	var passive5hAvailableCount, passive7dAvailableCount int
 	for i := range accounts {
 		acc := &accounts[i]
-		if !acc.IsAnthropicOAuthOrSetupToken() || !IsFormalPoolAccount(acc) {
+		if !formalPoolDashboardAccountInScope(acc) {
 			continue
 		}
 		row := buildFormalPoolStatusDashboardAccount(acc, runtime)
