@@ -238,6 +238,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 	require.False(t, deepseek.SupportsParallelToolCalls)
 	require.Contains(t, deepseek.BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
 	require.Contains(t, deepseek.BaseInstructions, "clearly matches")
+	require.Contains(t, deepseek.BaseInstructions, "MUST read the matching SKILL.md")
 	require.Contains(t, deepseek.BaseInstructions, "Do not load unrelated skills")
 }
 
@@ -286,6 +287,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSONAddsRoutingBridgeFor
 	}
 	require.NotContains(t, bySlug["gpt-5.5"].BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
 	require.Contains(t, bySlug["claude-opus-4-7"].BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, bySlug["claude-opus-4-7"].BaseInstructions, "MUST read the matching SKILL.md")
 	require.Contains(t, bySlug["claude-opus-4-7"].BaseInstructions, "Do not load unrelated skills")
 }
 

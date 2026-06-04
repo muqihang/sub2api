@@ -21,7 +21,7 @@ CODEX_SUPPORTS_WEBSOCKETS = False
 CODEX_ROUTING_BRIDGE_INSTRUCTIONS = (
     "## Codex routing guidance\n\n"
     "- When Codex developer instructions include skills, plugins, MCP servers, or tool routing guidance, treat those sections as active routing guidance.\n"
-    "- Before substantive work, quickly decide whether the user's request clearly matches any listed trigger. If it clearly matches, read only the relevant SKILL.md or use the relevant plugin, MCP server, or tool first, then continue.\n"
+    "- Before substantive work, quickly decide whether the user's request clearly matches any listed trigger. If it clearly matches a Skill, MUST read the matching SKILL.md before continuing; otherwise use the relevant plugin, MCP server, or tool first, then continue.\n"
     "- Do not load unrelated skills, do not repeatedly reload the same skill in the same turn, and do not use tools only for show.\n"
 )
 CODEX_CORE_BASE_INSTRUCTIONS = (
