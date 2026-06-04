@@ -567,56 +567,27 @@ func formalPoolDashboardInactive(account *Account) bool {
 	return status == StatusDisabled || status == "inactive" || status == "disabled"
 }
 
+const formalPoolDashboardActionRateLimitWindow = 6 * time.Hour
+
 func formalPoolDashboardHasRateLimit(account *Account, now time.Time) bool {
+	if account == nil {
+		return false
+	}
 	if now.IsZero() {
 		now = time.Now()
 	}
-	if account.RateLimitResetAt != nil && now.Before(*account.RateLimitResetAt) {
-		return true
-	}
-	action := strings.ToLower(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitAction)))
-	if formalPoolDashboardRateLimitActionIsPassThrough(action) && formalPoolDashboardHasNonCooldownPassThroughRateLimit(account) {
-		return false
-	}
-	if action != "" && !formalPoolDashboardRateLimitActionAllowsPassThrough(action) {
+	if formalPoolDashboardTimeInFuture(account.RateLimitResetAt, now) {
 		return true
 	}
 	if formalPoolDashboardWindowRejected(account, now) {
 		return true
 	}
-	combined := strings.ToLower(strings.Join([]string{
-		account.GetExtraString(FormalPoolExtraRateLimitErrorClass),
-		account.GetExtraString(FormalPoolExtraRateLimitWindow),
-		account.GetExtraString(FormalPoolExtraRateLimitAction),
-		account.GetExtraString(FormalPoolExtraRateLimitResetBucket),
-		account.GetExtraString(FormalPoolExtraRateLimitLastAt),
-		account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket),
-		account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorCode),
-		account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorBucket),
-		account.GetExtraString(FormalPoolExtraLastFailureCode),
-		account.GetExtraString(FormalPoolExtraLastFailureSource),
-		account.GetExtraString(FormalPoolExtraLastCCGatewayErrorCode),
-		account.GetExtraString(FormalPoolExtraOnboardingLastErrorCode),
-		account.GetExtraString(FormalPoolExtraOnboardingLastErrorBucket),
-		account.ErrorMessage,
-	}, " "))
-	markers := []string{
-		"429",
-		"too_many_requests",
-		"too many requests",
-		"rate_limit",
-		"rate-limit",
-		"rate limited",
-		"rate_limited",
-		"quota_exceeded",
-		"quota exceeded",
+	action := strings.ToLower(strings.TrimSpace(account.GetExtraString(FormalPoolExtraRateLimitAction)))
+	if !formalPoolDashboardRateLimitActionIsCooldown(action) {
+		return false
 	}
-	for _, marker := range markers {
-		if strings.Contains(combined, marker) {
-			return true
-		}
-	}
-	return false
+	lastAt := parseFormalPoolDashboardExtraTime(account.Extra, FormalPoolExtraRateLimitLastAt)
+	return formalPoolDashboardTimeWithinWindow(lastAt, now, formalPoolDashboardActionRateLimitWindow)
 }
 
 func formalPoolDashboardRateLimitActionAllowsPassThrough(action string) bool {
@@ -641,10 +612,27 @@ func formalPoolDashboardWindowRejected(account *Account, now time.Time) bool {
 	if account == nil || !strings.EqualFold(strings.TrimSpace(account.SessionWindowStatus), "rejected") {
 		return false
 	}
-	if account.SessionWindowEnd == nil {
+	return formalPoolDashboardTimeInFuture(account.SessionWindowEnd, now)
+}
+
+func formalPoolDashboardRateLimitActionIsCooldown(action string) bool {
+	switch strings.TrimSpace(action) {
+	case "cooldown", "rate_limited", "fallback_rate_limited":
 		return true
+	default:
+		return false
 	}
-	return now.Before(*account.SessionWindowEnd)
+}
+
+func formalPoolDashboardTimeInFuture(value *time.Time, now time.Time) bool {
+	return value != nil && now.Before(*value)
+}
+
+func formalPoolDashboardTimeWithinWindow(value *time.Time, now time.Time, window time.Duration) bool {
+	if value == nil || window <= 0 || value.After(now) {
+		return false
+	}
+	return !value.Add(window).Before(now)
 }
 
 func formalPoolDashboardHasNonCooldownPassThroughRateLimit(account *Account) bool {

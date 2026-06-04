@@ -8,6 +8,7 @@ import {
   formatConcurrencyText,
   formatDashboardPercent,
   formatFiveHourWindow,
+  formatFormalPoolRecentFailureText,
   formatRpmText,
   getBucketLanePresentation,
   getDashboardBucket,
@@ -221,27 +222,49 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
     expect(outputs).not.toContain('raw_prompt')
   })
 
-  it('keeps ordinary operator labels while failing closed on mixed secret content', () => {
-    expect(safeFormalPoolOperatorLabel('ops-user@example.com', '账号（未命名）')).toBe('ops-user@example.com')
-    expect(safeFormalPoolOperatorLabel('Claude Ops Main', '账号（未命名）')).toBe('Claude Ops Main')
+  it('keeps ordinary operator labels including IP suffixes while failing closed on mixed secret content', () => {
+    const fallback = '账号（未命名）'
+    expect(safeFormalPoolOperatorLabel('ops-user@example.com', fallback)).toBe('ops-user@example.com')
+    expect(safeFormalPoolOperatorLabel('Claude Ops Main', fallback)).toBe('Claude Ops Main')
+    expect(safeFormalPoolOperatorLabel('anthropic-setup-204.1.108.104', fallback)).toBe('anthropic-setup-204.1.108.104')
+    expect(safeFormalPoolOperatorLabel('疑似限额-anthropic-setup-207.97.155.20', fallback)).toBe('疑似限额-anthropic-setup-207.97.155.20')
+    expect(safeFormalPoolOperatorLabel('ops-ipv6-2001:db8::1', fallback)).toBe('ops-ipv6-2001:db8::1')
 
-    const mixed = safeFormalPoolOperatorLabel('ops-user@example.com sk-ant-secret-token', '账号（未命名）')
-    expect(mixed).toBe('账号（未命名）')
+    const mixed = safeFormalPoolOperatorLabel('ops-user@example.com sk-ant-secret-token', fallback)
+    expect(mixed).toBe(fallback)
     expect(mixed).not.toContain('ops-user@example.com')
   })
 
-  it('fails closed when operator labels mix email with proxy URLs, IPv6, or host-port proxy shapes', () => {
+  it('fails closed when operator labels mix token, URL, user-pass, or host-port proxy shapes', () => {
     const fallback = '账号（未命名）'
     const highRiskLabels = [
+      'ops-user@example.com token abcdef0123456789abcdef0123456789',
       'ops-user@example.com socks5://proxy-host:1080',
       'ops-user@example.com https://proxy-host/path',
-      'ops-user@example.com 2001:db8::1',
+      'ops-user@example.com proxy-user:proxy-pass@proxy-host',
+      'ops-user@example.com proxy-user:proxy-pass@proxy-host:8080',
       'ops-user@example.com proxy-host:1080',
     ]
 
     for (const label of highRiskLabels) {
       expect(safeFormalPoolOperatorLabel(label, fallback)).toBe(fallback)
     }
+  })
+
+  it('formats recent failure codes as Chinese diagnostics with code priority and scrubbing', () => {
+    expect(formatFormalPoolRecentFailureText('auth', 'rate_limited')).toContain('授权/登录失败')
+    expect(formatFormalPoolRecentFailureText('formal_pool_healthcheck_failed', '')).toContain('健康检查未通过')
+    expect(formatFormalPoolRecentFailureText('rate_limited', '')).toContain('限流')
+    expect(formatFormalPoolRecentFailureText('status_429', '')).toContain('限流')
+    expect(formatFormalPoolRecentFailureText('', 'status_429')).toContain('限流')
+
+    const unknown = formatFormalPoolRecentFailureText('', 'custom sk-ant-secret-token')
+    expect(unknown).toBe('诊断：custom [redacted]')
+    expect(unknown).not.toContain('sk-ant-secret-token')
+
+    const bareCredential = formatFormalPoolRecentFailureText('', 'user:pass@proxy-host:8080')
+    expect(bareCredential).toBe('诊断：[redacted]')
+    expect(bareCredential).not.toContain('user:pass')
   })
 
   it('scrubs formal pool display text fail-closed while preserving safe operator copy', () => {

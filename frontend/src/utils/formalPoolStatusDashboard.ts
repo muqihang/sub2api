@@ -205,11 +205,23 @@ const OPERATOR_LABEL_HIGH_RISK_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(?:bearer|token|nonce)\b/i,
   /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|password|passwd|pwd|proxy[_-]?(?:password|secret)|proxy\s+(?:password|secret)|cch)\b/i,
   /\b(?:https?|socks5?):\/\/\S+/i,
-  /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/,
-  /(?:^|[\s(\[])\[?(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]{1,}\]?(?=$|[\s)\],:]|:\d)/i,
+  /(?:^|[\s(\[])[^\s/@:]+:[^\s/@]+@[^\s/@]+(?::\d{1,5})?(?=$|\s|[)\],])/i,
   /(?:^|\s)(?![A-Za-z0-9._%+-]+@)[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]:(?:[1-9]\d{1,4})(?=$|\s)/,
   /\b(?=[A-Za-z0-9_-]{32,}\b)(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]+\b/,
 ]
+
+const FORMAL_POOL_RECENT_FAILURE_TEXT: Record<string, string> = {
+  auth: '授权/登录失败',
+  authentication: '授权/登录失败',
+  unauthorized: '授权/登录失败',
+  status_401: '授权/登录失败',
+  formal_pool_healthcheck_failed: '健康检查未通过',
+  healthcheck_failed: '健康检查未通过',
+  rate_limited: '限流中',
+  status_429: '限流中',
+  proxy_mismatch: '代理不匹配',
+  bucket_mismatch: '状态分组不匹配',
+}
 /**
  * V2 dashboard displays backend-provided diagnostic labels. Treat them as
  * untrusted and redact obvious secrets fail-closed before they reach the DOM.
@@ -251,6 +263,19 @@ export function safeFormalPoolOperatorLabel(
   }
 
   return text
+}
+
+export function formatFormalPoolRecentFailureText(
+  code: string | null | undefined,
+  bucket: string | null | undefined,
+): string {
+  const raw = String(code || bucket || '').trim()
+  if (!raw) return ''
+
+  const mapped = FORMAL_POOL_RECENT_FAILURE_TEXT[raw.toLowerCase()]
+  if (mapped) return mapped
+
+  return `诊断：${safeFormalPoolOperatorLabel(scrubFormalPoolDisplayText(raw, '未知'), '[redacted]')}`
 }
 
 

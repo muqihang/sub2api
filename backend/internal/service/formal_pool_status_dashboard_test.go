@@ -406,7 +406,7 @@ func TestFormalPoolStatusDashboard_ManualRiskSourcesIncludeHealthcheckBoundaryBo
 	}
 }
 
-func TestFormalPoolStatusDashboard_UsageCredit429WithoutExplicitPassThroughStaysRateLimited(t *testing.T) {
+func TestFormalPoolStatusDashboard_UsageCredit429WithoutCooldownSignalIsNotRateLimited(t *testing.T) {
 	acc := formalPoolDashboardTestAccount(142, FormalPoolStageProduction)
 	acc.Extra[FormalPoolExtraRateLimitErrorClass] = "long_context_usage_credits"
 	acc.Extra[FormalPoolExtraHealthcheckStatusCodeBucket] = "status_429"
@@ -414,8 +414,8 @@ func TestFormalPoolStatusDashboard_UsageCredit429WithoutExplicitPassThroughStays
 
 	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(142))
 
-	require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
-	require.Equal(t, 1, dashboard.Summary.RateLimited)
+	require.Equal(t, FormalPoolDashboardStateNotSchedulable, dashboard.Accounts[0].State)
+	require.Equal(t, 0, dashboard.Summary.RateLimited)
 }
 
 func TestFormalPoolStatusDashboard_ManualRiskSourcesIncludeAuthAndForbiddenText(t *testing.T) {
@@ -463,7 +463,7 @@ func TestFormalPoolStatusDashboard_ManualRiskSourcesIncludeAuthAndForbiddenText(
 	}
 }
 
-func TestFormalPoolStatusDashboard_RateLimitSourcesIncludeTooManyRequestsText(t *testing.T) {
+func TestFormalPoolStatusDashboard_HistoricalRateLimitTextDoesNotDriveCurrentRateLimit(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*Account)
@@ -496,13 +496,13 @@ func TestFormalPoolStatusDashboard_RateLimitSourcesIncludeTooManyRequestsText(t 
 
 			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(id))
 
-			require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
-			require.Equal(t, 1, dashboard.Summary.RateLimited)
+			require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+			require.Equal(t, 0, dashboard.Summary.RateLimited)
 		})
 	}
 }
 
-func TestFormalPoolStatusDashboard_RateLimitSourcesIncludeErrorMessageAndOnboarding(t *testing.T) {
+func TestFormalPoolStatusDashboard_HistoricalErrorMessageAndOnboardingDoNotDriveCurrentRateLimit(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*Account)
@@ -541,10 +541,69 @@ func TestFormalPoolStatusDashboard_RateLimitSourcesIncludeErrorMessageAndOnboard
 
 			dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(id))
 
-			require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
-			require.Equal(t, 1, dashboard.Summary.RateLimited)
+			require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+			require.Equal(t, 0, dashboard.Summary.RateLimited)
 		})
 	}
+}
+
+func TestFormalPoolStatusDashboard_RateLimitCurrentSignals(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+
+	t.Run("future RateLimitResetAt is rate limited", func(t *testing.T) {
+		acc := formalPoolDashboardTestAccount(260, FormalPoolStageProduction)
+		reset := now.Add(time.Hour)
+		acc.RateLimitResetAt = &reset
+		dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntimeAt(260, now))
+
+		require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
+		require.Equal(t, 1, dashboard.Summary.RateLimited)
+	})
+
+	t.Run("expired reset with old action and last_at is not rate limited", func(t *testing.T) {
+		acc := formalPoolDashboardTestAccount(261, FormalPoolStageProduction)
+		reset := now.Add(-22 * time.Hour)
+		acc.RateLimitResetAt = &reset
+		acc.Extra[FormalPoolExtraRateLimitAction] = "rate_limited"
+		acc.Extra[FormalPoolExtraRateLimitLastAt] = now.Add(-23 * time.Hour).Format(time.RFC3339)
+		dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntimeAt(261, now))
+
+		require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+		require.Equal(t, 0, dashboard.Summary.RateLimited)
+	})
+
+	t.Run("recent fallback rate limited action is rate limited", func(t *testing.T) {
+		acc := formalPoolDashboardTestAccount(264, FormalPoolStageProduction)
+		acc.Extra[FormalPoolExtraRateLimitAction] = "fallback_rate_limited"
+		acc.Extra[FormalPoolExtraRateLimitLastAt] = now.Add(-30 * time.Minute).Format(time.RFC3339)
+		dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntimeAt(264, now))
+
+		require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
+		require.Equal(t, 1, dashboard.Summary.RateLimited)
+	})
+
+	t.Run("historical onboarding 429 without active cooldown is not rate limited", func(t *testing.T) {
+		acc := formalPoolDashboardTestAccount(262, FormalPoolStageProduction)
+		acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
+		acc.Extra[FormalPoolExtraOnboardingLastErrorCode] = "rate_limited"
+		dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntimeAt(262, now))
+
+		require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+		require.Equal(t, 0, dashboard.Summary.RateLimited)
+		require.Equal(t, "rate_limited", dashboard.Accounts[0].LastFailureCode)
+		require.Equal(t, "status_429", dashboard.Accounts[0].LastFailureBucket)
+	})
+
+	t.Run("current rejected session window before end is rate limited", func(t *testing.T) {
+		acc := formalPoolDashboardTestAccount(263, FormalPoolStageProduction)
+		windowEnd := now.Add(30 * time.Minute)
+		acc.SessionWindowStatus = "rejected"
+		acc.SessionWindowEnd = &windowEnd
+		dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntimeAt(263, now))
+
+		require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
+		require.Equal(t, 1, dashboard.Summary.RateLimited)
+	})
 }
 
 func TestFormalPoolStatusDashboard_PassThroughActionIsNotRateLimitedWithoutCooldownSignal(t *testing.T) {
@@ -561,15 +620,15 @@ func TestFormalPoolStatusDashboard_PassThroughActionIsNotRateLimitedWithoutCoold
 	}
 }
 
-func TestFormalPoolStatusDashboard_PassThroughActionWithExplicit429IsRateLimited(t *testing.T) {
+func TestFormalPoolStatusDashboard_PassThroughActionWithHistorical429IsNotRateLimited(t *testing.T) {
 	acc := formalPoolDashboardTestAccount(67, FormalPoolStageProduction)
 	acc.Extra[FormalPoolExtraRateLimitAction] = "pass_through"
 	acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 
 	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(67))
 
-	require.Equal(t, FormalPoolDashboardStateRateLimited, dashboard.Accounts[0].State)
-	require.Equal(t, 1, dashboard.Summary.RateLimited)
+	require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
+	require.Equal(t, 0, dashboard.Summary.RateLimited)
 }
 
 func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
@@ -587,21 +646,21 @@ func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
 			wantState: FormalPoolDashboardStateManualRisk,
 		},
 		{
-			name: "rate limit outranks quarantine",
+			name: "historical 429 does not outrank quarantine",
 			mutate: func(acc *Account) {
 				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
 				acc.Extra[FormalPoolExtraQuarantineReason] = "reason_proxy"
 				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 			},
-			wantState: FormalPoolDashboardStateRateLimited,
+			wantState: FormalPoolDashboardStateQuarantined,
 		},
 		{
-			name: "rate limit outranks error",
+			name: "historical 429 does not outrank error",
 			mutate: func(acc *Account) {
 				acc.Status = StatusError
 				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 			},
-			wantState: FormalPoolDashboardStateRateLimited,
+			wantState: FormalPoolDashboardStateError,
 		},
 		{
 			name: "inactive outranks stale rate limit",
@@ -612,20 +671,20 @@ func TestFormalPoolStatusDashboard_RateLimitPriority(t *testing.T) {
 			wantState: FormalPoolDashboardStateInactive,
 		},
 		{
-			name: "rate limit outranks not schedulable",
+			name: "historical 429 does not outrank not schedulable",
 			mutate: func(acc *Account) {
 				acc.TempUnschedulableUntil = formalPoolDashboardPtrTime(time.Now().Add(time.Hour))
 				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 			},
-			wantState: FormalPoolDashboardStateRateLimited,
+			wantState: FormalPoolDashboardStateNotSchedulable,
 		},
 		{
-			name: "rate limit outranks evidence missing",
+			name: "historical 429 does not drive rate limit for evidence missing account",
 			mutate: func(acc *Account) {
 				delete(acc.Extra, FormalPoolExtraHealthcheckRawRef)
 				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 			},
-			wantState: FormalPoolDashboardStateRateLimited,
+			wantState: FormalPoolDashboardStateNotSchedulable,
 		},
 	}
 
@@ -668,13 +727,13 @@ func TestFormalPoolStatusDashboard_StatePriorityFullOrder(t *testing.T) {
 			wantState: FormalPoolDashboardStateManualRisk,
 		},
 		{
-			name: "rate limit outranks quarantine and error",
+			name: "historical 429 does not outrank quarantine and error",
 			mutate: func(acc *Account) {
 				acc.Extra[FormalPoolExtraOnboardingLastErrorBucket] = "status_429"
 				acc.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageQuarantined
 				acc.Status = StatusError
 			},
-			wantState: FormalPoolDashboardStateRateLimited,
+			wantState: FormalPoolDashboardStateQuarantined,
 		},
 		{
 			name: "quarantine outranks error and not schedulable",
@@ -1144,8 +1203,12 @@ func formalPoolDashboardTestAccount(id int64, stage string) Account {
 }
 
 func formalPoolDashboardCompleteRuntime(id int64) FormalPoolStatusRuntimeSnapshot {
+	return formalPoolDashboardCompleteRuntimeAt(id, time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC))
+}
+
+func formalPoolDashboardCompleteRuntimeAt(id int64, generatedAt time.Time) FormalPoolStatusRuntimeSnapshot {
 	return FormalPoolStatusRuntimeSnapshot{
-		GeneratedAt:           time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		GeneratedAt:           generatedAt,
 		ConcurrencyAvailable:  true,
 		ConcurrencyByAccount:  map[int64]int{id: 0},
 		RPMAvailable:          true,

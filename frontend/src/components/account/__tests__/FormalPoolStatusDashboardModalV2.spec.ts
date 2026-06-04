@@ -466,19 +466,42 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(rows[0].attributes('data-bucket')).toBe('needs_intervention')
   })
 
-  it('shows ordinary operator email labels but hides mixed secret labels and raw numeric fallbacks', async () => {
+  it('shows ordinary operator labels with IP suffixes but hides mixed secret labels and raw numeric fallbacks', async () => {
     const rawAccountId = 87654321
     const wrapper = await mountWithFixture([
       accountFixture({ account_id: 81, account_label: 'ops-user@example.com' }),
       accountFixture({ account_id: 82, account_label: 'ops-user@example.com sk-ant-secret-token' }),
+      accountFixture({ account_id: 83, account_label: 'anthropic-setup-204.1.108.104' }),
+      accountFixture({ account_id: 84, account_label: '疑似限额-anthropic-setup-207.97.155.20' }),
       accountFixture({ account_id: rawAccountId, account_label: `账号 #${rawAccountId}` }),
     ])
 
     const text = wrapper.text()
     expect(text).toContain('ops-user@example.com')
+    expect(text).toContain('anthropic-setup-204.1.108.104')
+    expect(text).toContain('疑似限额-anthropic-setup-207.97.155.20')
     expect(text).not.toContain('sk-ant-secret-token')
     expect(text).not.toContain(`账号 #${rawAccountId}`)
     expect(text).toContain('账号（未命名）')
+  })
+
+  it('renders recent request copy and failure diagnostics in Chinese', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({ account_id: 91, last_success_hint: '14:32:01', last_failure_code: 'auth', last_failure_bucket: 'rate_limited' }),
+      accountFixture({ account_id: 92, last_success_hint: '', last_used_at: '2026-06-01T14:32:08Z', last_failure_code: 'formal_pool_healthcheck_failed' }),
+      accountFixture({ account_id: 93, last_success_hint: '', last_used_at: null, last_failure_code: '', last_failure_bucket: 'status_429' }),
+      accountFixture({ account_id: 94, last_success_hint: '', last_used_at: null, last_failure_code: 'unknown sk-ant-secret-token' }),
+    ])
+
+    const text = wrapper.text()
+    expect(text).toContain('最近成功：14:32:01')
+    expect(text).toContain('最近调度：')
+    expect(text).toContain('从未调度')
+    expect(text).toContain('授权/登录失败')
+    expect(text).toContain('健康检查未通过')
+    expect(text).toContain('限流')
+    expect(text).toContain('诊断：unknown [redacted]')
+    expect(text).not.toContain('sk-ant-secret-token')
   })
 
   it('scrubs raw sensitive backend display fields before rendering them in the DOM', async () => {

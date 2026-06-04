@@ -457,6 +457,7 @@ import {
   dashboardRatioToPercent,
   formatConcurrencyText,
   formatDashboardPercent,
+  formatFormalPoolRecentFailureText,
   formatRpmText,
   getBucketLanePresentation,
   getDashboardBucket,
@@ -752,15 +753,15 @@ function displayStateText(row: FormalPoolStatusDashboardAccount): string {
 }
 
 function displayFailureText(row: FormalPoolStatusDashboardAccount): string {
-  return scrubFormalPoolDisplayText(row.last_failure_code || row.last_failure_bucket, '')
+  return formatFormalPoolRecentFailureText(row.last_failure_code, row.last_failure_bucket)
 }
 
 function formatRecent(row: FormalPoolStatusDashboardAccount): string {
-  if (row.last_success_hint) return scrubFormalPoolDisplayText(row.last_success_hint, '最近请求未知')
+  if (row.last_success_hint) return `最近成功：${scrubFormalPoolDisplayText(row.last_success_hint, '未知')}`
   if (!row.last_used_at) return '从未调度'
   const date = new Date(row.last_used_at)
-  if (Number.isNaN(date.getTime())) return scrubFormalPoolDisplayText(row.last_used_at, '最近请求未知')
-  return date.toLocaleString('zh-CN', { hour12: false })
+  if (Number.isNaN(date.getTime())) return `最近调度：${scrubFormalPoolDisplayText(row.last_used_at, '未知')}`
+  return `最近调度：${date.toLocaleString('zh-CN', { hour12: false })}`
 }
 
 function recommendationText(row: FormalPoolStatusDashboardAccount): string {
