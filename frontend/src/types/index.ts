@@ -792,6 +792,15 @@ export interface FormalPoolStatusWindow {
   available: boolean
 }
 
+export interface FormalPoolPassiveUsage {
+  utilization: number | null
+  remaining_ratio: number | null
+  reset_at: string | null
+  sampled_at: string | null
+  available: boolean
+  status: string
+}
+
 export interface FormalPoolStatusRecommendation {
   label: string
   detail: string
@@ -811,6 +820,8 @@ export interface FormalPoolStatusDashboardAccount {
   effective_schedulable: boolean
   production_ready: boolean
   five_hour_window: FormalPoolStatusWindow
+  passive_usage_5h?: FormalPoolPassiveUsage
+  passive_usage_7d?: FormalPoolPassiveUsage
   rpm: FormalPoolStatusRuntime
   concurrency: FormalPoolStatusRuntime
   sessions: FormalPoolStatusRuntime
@@ -840,6 +851,10 @@ export interface FormalPoolStatusSummary {
   rpm_available: boolean
   five_hour_remaining_ratio: number | null
   five_hour_window_available: boolean
+  passive_usage_5h_remaining_ratio?: number | null
+  passive_usage_5h_available?: boolean
+  passive_usage_7d_remaining_ratio?: number | null
+  passive_usage_7d_available?: boolean
   generated_at: string
 }
 

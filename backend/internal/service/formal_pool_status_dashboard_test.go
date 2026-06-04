@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -780,6 +781,97 @@ func TestFormalPoolStatusDashboard_PassThroughNoReset429IsNotRateLimited(t *test
 
 	require.Equal(t, FormalPoolDashboardStateProduction, dashboard.Accounts[0].State)
 	require.Equal(t, 0, dashboard.Summary.RateLimited)
+}
+
+func TestFormalPoolStatusDashboard_IncludesPassiveUsageFromExtra(t *testing.T) {
+	reset5h := time.Date(2026, 6, 1, 16, 0, 0, 0, time.UTC)
+	reset7d := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	sampled := "2026-06-01T12:34:56Z"
+	acc := formalPoolDashboardTestAccount(240, FormalPoolStageProduction)
+	acc.SessionWindowEnd = &reset5h
+	acc.SessionWindowStatus = "allowed"
+	acc.Extra["session_window_utilization"] = "0.42"
+	acc.Extra["passive_usage_7d_utilization"] = json.Number("91%")
+	acc.Extra["passive_usage_7d_reset"] = reset7d.Unix()
+	acc.Extra["passive_usage_sampled_at"] = sampled
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(240))
+
+	require.Len(t, dashboard.Accounts, 1)
+	row := dashboard.Accounts[0]
+	require.True(t, row.PassiveUsage5h.Available)
+	require.InDelta(t, 0.42, *row.PassiveUsage5h.Utilization, 0.0001)
+	require.InDelta(t, 0.58, *row.PassiveUsage5h.RemainingRatio, 0.0001)
+	require.Equal(t, &reset5h, row.PassiveUsage5h.ResetAt)
+	require.NotNil(t, row.PassiveUsage5h.SampledAt)
+	require.Equal(t, sampled, row.PassiveUsage5h.SampledAt.Format(time.RFC3339))
+	require.Equal(t, "allowed", row.PassiveUsage5h.Status)
+
+	require.True(t, row.PassiveUsage7d.Available)
+	require.InDelta(t, 0.91, *row.PassiveUsage7d.Utilization, 0.0001)
+	require.InDelta(t, 0.09, *row.PassiveUsage7d.RemainingRatio, 0.0001)
+	require.Equal(t, &reset7d, row.PassiveUsage7d.ResetAt)
+	require.NotNil(t, row.PassiveUsage7d.SampledAt)
+	require.Equal(t, sampled, row.PassiveUsage7d.SampledAt.Format(time.RFC3339))
+	require.Equal(t, "sampled", row.PassiveUsage7d.Status)
+}
+
+func TestFormalPoolStatusDashboard_PassiveUsageClampsAndMarksMissingDataUnavailable(t *testing.T) {
+	accWithData := formalPoolDashboardTestAccount(241, FormalPoolStageProduction)
+	accWithData.Extra["session_window_utilization"] = json.Number("1.25")
+	accWithData.Extra["passive_usage_7d_utilization"] = -0.5
+	accWithoutData := formalPoolDashboardTestAccount(242, FormalPoolStageProduction)
+	accWithoutData.Extra["passive_usage_sampled_at"] = "not-a-time"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{accWithData, accWithoutData}, formalPoolDashboardCompleteRuntime(241))
+
+	require.Len(t, dashboard.Accounts, 2)
+	require.True(t, dashboard.Accounts[0].PassiveUsage5h.Available)
+	require.InDelta(t, 1, *dashboard.Accounts[0].PassiveUsage5h.Utilization, 0.0001)
+	require.InDelta(t, 0, *dashboard.Accounts[0].PassiveUsage5h.RemainingRatio, 0.0001)
+	require.False(t, dashboard.Accounts[0].PassiveUsage7d.Available)
+	require.Nil(t, dashboard.Accounts[0].PassiveUsage7d.Utilization)
+	require.Nil(t, dashboard.Accounts[0].PassiveUsage7d.RemainingRatio)
+	require.Equal(t, "not_sampled", dashboard.Accounts[0].PassiveUsage7d.Status)
+	require.False(t, dashboard.Accounts[1].PassiveUsage5h.Available)
+	require.Nil(t, dashboard.Accounts[1].PassiveUsage5h.Utilization)
+	require.Nil(t, dashboard.Accounts[1].PassiveUsage5h.RemainingRatio)
+	require.Equal(t, "not_sampled", dashboard.Accounts[1].PassiveUsage5h.Status)
+}
+
+func TestFormalPoolStatusDashboard_PassiveUsageRejectsNonFiniteRatios(t *testing.T) {
+	acc := formalPoolDashboardTestAccount(243, FormalPoolStageProduction)
+	acc.Extra["session_window_utilization"] = "NaN"
+	acc.Extra["passive_usage_7d_utilization"] = "Inf"
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc}, formalPoolDashboardCompleteRuntime(243))
+
+	require.Len(t, dashboard.Accounts, 1)
+	require.False(t, dashboard.Accounts[0].PassiveUsage5h.Available)
+	require.Nil(t, dashboard.Accounts[0].PassiveUsage5h.Utilization)
+	require.Nil(t, dashboard.Accounts[0].PassiveUsage5h.RemainingRatio)
+	require.False(t, dashboard.Accounts[0].PassiveUsage7d.Available)
+	require.Nil(t, dashboard.Accounts[0].PassiveUsage7d.Utilization)
+	require.Nil(t, dashboard.Accounts[0].PassiveUsage7d.RemainingRatio)
+}
+
+func TestFormalPoolStatusDashboard_PassiveUsageSummaryAggregatesRemainingRatios(t *testing.T) {
+	acc1 := formalPoolDashboardTestAccount(250, FormalPoolStageProduction)
+	acc1.Extra["session_window_utilization"] = 0.20
+	acc1.Extra["passive_usage_7d_utilization"] = "0.40"
+	acc2 := formalPoolDashboardTestAccount(251, FormalPoolStageProduction)
+	acc2.Extra["session_window_utilization"] = json.Number("80%")
+	acc2.Extra["passive_usage_7d_utilization"] = 0.90
+	acc3 := formalPoolDashboardTestAccount(252, FormalPoolStageProduction)
+
+	dashboard := BuildFormalPoolStatusDashboard([]Account{acc1, acc2, acc3}, formalPoolDashboardCompleteRuntime(250))
+
+	require.True(t, dashboard.Summary.PassiveUsage5hAvailable)
+	require.True(t, dashboard.Summary.PassiveUsage7dAvailable)
+	require.NotNil(t, dashboard.Summary.PassiveUsage5hRemainingRatio)
+	require.NotNil(t, dashboard.Summary.PassiveUsage7dRemainingRatio)
+	require.InDelta(t, 0.50, *dashboard.Summary.PassiveUsage5hRemainingRatio, 0.0001)
+	require.InDelta(t, 0.35, *dashboard.Summary.PassiveUsage7dRemainingRatio, 0.0001)
 }
 
 func TestFormalPoolStatusDashboard_NormalLegacyRequiresCompleteEvidenceAndRuntime(t *testing.T) {

@@ -189,6 +189,124 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(wrapper.find('[data-testid="dashboard-v2-command-metrics"]').text()).toContain('未配置 RPM 容量')
   })
 
+
+  it('shows 5h and 7d quota summaries in the main table and drawer', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        five_hour_window: {
+          used: 1,
+          limit: 5,
+          remaining: 4,
+          utilization: 0.2,
+          reset_at: '2026-06-01T18:30:00Z',
+          status: 'allowed',
+          available: true,
+        },
+        passive_usage_5h: {
+          utilization: 0.42,
+          remaining_ratio: 0.58,
+          reset_at: '2026-06-01T17:00:00Z',
+          sampled_at: '2026-06-01T12:34:56Z',
+          status: 'allowed',
+          available: true,
+        },
+        passive_usage_7d: {
+          utilization: 0.91,
+          remaining_ratio: 0.09,
+          reset_at: '2026-06-08T12:00:00Z',
+          sampled_at: '2026-06-01T12:34:56Z',
+          status: 'sampled',
+          available: true,
+        },
+      } as any),
+    ])
+
+    expect(wrapper.find('[data-testid="column-five-hour"]').text()).toContain('限额余量')
+    const row = wrapper.find('tr[data-account-row]')
+    expect(row.text()).toContain('5h 剩余 58.0%，已用 42.0%')
+    expect(row.text()).toContain('7d 剩余 9.0%，已用 91.0%')
+    expect(row.text()).not.toContain('20.0%')
+
+    await wrapper.find('[data-testid^="expand-"]').trigger('click')
+    const drawer = wrapper.find('[data-testid^="drawer-"]')
+    expect(drawer.text()).toContain('5h 限额')
+    expect(drawer.text()).toContain('剩余 58.0%')
+    expect(drawer.text()).toContain('已用 42.0%')
+    expect(drawer.text()).toContain('周/7d 限额')
+    expect(drawer.text()).toContain('剩余 9.0%')
+    expect(drawer.text()).toContain('已用 91.0%')
+  })
+
+  it('falls back to legacy five_hour_window when passive 5h is unavailable', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        five_hour_window: {
+          used: 1,
+          limit: 5,
+          remaining: 4,
+          utilization: 0.2,
+          reset_at: '2026-06-01T18:30:00Z',
+          status: 'allowed',
+          available: true,
+        },
+        passive_usage_5h: {
+          utilization: null,
+          remaining_ratio: null,
+          reset_at: null,
+          sampled_at: null,
+          status: 'not_sampled',
+          available: false,
+        },
+        passive_usage_7d: {
+          utilization: null,
+          remaining_ratio: null,
+          reset_at: null,
+          sampled_at: null,
+          status: 'not_sampled',
+          available: false,
+        },
+      } as any),
+    ])
+
+    const row = wrapper.find('tr[data-account-row]')
+    expect(row.text()).toContain('5h 剩余 80.0%，已用 20.0%')
+    expect(row.text()).toContain('7d 数据不足/未采样')
+
+    await wrapper.find('[data-testid^="expand-"]').trigger('click')
+    const drawer = wrapper.find('[data-testid^="drawer-"]')
+    expect(drawer.text()).toContain('5h 限额')
+    expect(drawer.text()).toContain('剩余 80.0%')
+    expect(drawer.text()).toContain('已用 20.0%')
+    expect(drawer.text()).toContain('周/7d 限额')
+    expect(drawer.text()).toContain('数据不足/未采样')
+  })
+
+
+  it('shows per-account RPM, concurrency, and sessions in the main table without expanding', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        rpm: { current: 7, limit: 60, utilization: 0.116, available: true },
+        concurrency: { current: 2, limit: 5, utilization: 0.4, available: true },
+        sessions: { current: 1, limit: 3, utilization: 0.333, available: true },
+      }),
+      accountFixture({
+        account_id: 2,
+        rpm: { current: 0, limit: 120, utilization: null, available: false },
+        concurrency: { current: 0, limit: 0, utilization: null, available: true },
+        sessions: { current: 0, limit: 4, utilization: null, available: false },
+      }),
+    ])
+
+    const rows = wrapper.findAll('tr[data-account-row]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain('RPM 7 / 60')
+    expect(rows[0].text()).toContain('并发 2 / 5')
+    expect(rows[0].text()).toContain('会话 1 / 3')
+    expect(rows[1].text()).toContain('RPM 数据不足 / 配置 120')
+    expect(rows[1].text()).toContain('并发 未配置')
+    expect(rows[1].text()).toContain('会话 数据不足 / 配置 4')
+  })
+
   it('renders four segmented lanes plus the "全部" lane', async () => {
     const wrapper = await mountWithFixture([accountFixture()])
     const lanes = wrapper.find('[data-testid="dashboard-v2-lanes"]')
@@ -200,10 +318,11 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(lanes.find('[data-testid="lane-inactive"]').exists()).toBe(true)
   })
 
-  it('uses exactly 5 primary table columns', async () => {
+  it('includes a primary table column for per-account runtime metrics', async () => {
     const wrapper = await mountWithFixture([accountFixture()])
     const columnHeaders = wrapper.findAll('[data-testid^="column-"]')
-    expect(columnHeaders).toHaveLength(5)
+    expect(columnHeaders).toHaveLength(6)
+    expect(wrapper.find('[data-testid="column-runtime"]').text()).toContain('调用指标')
   })
 
   it('pins needs-intervention rows above active/paused/inactive and gives them a rose rail element', async () => {

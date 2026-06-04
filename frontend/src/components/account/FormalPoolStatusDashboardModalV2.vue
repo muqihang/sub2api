@@ -321,20 +321,29 @@
                         {{ WARMING_PRESENTATION_LABEL }}
                       </div>
                     </td>
-                    <!-- 5h 余量 -->
+                    <!-- 调用指标 -->
                     <td class="px-4 py-3 align-top">
-                      <div class="text-xs text-slate-700 dark:text-slate-200">
-                        {{ row.five_hour_window.available ? formatDashboardPercent(row.five_hour_window.utilization) : '— 数据不足 —' }}
+                      <div class="space-y-0.5 text-xs leading-5 text-slate-700 dark:text-slate-200">
+                        <div>{{ formatRuntimeMetricText('RPM', row.rpm) }}</div>
+                        <div>{{ formatRuntimeMetricText('并发', row.concurrency) }}</div>
+                        <div>{{ formatRuntimeMetricText('会话', row.sessions) }}</div>
+                      </div>
+                    </td>
+                    <!-- 限额余量 -->
+                    <td class="px-4 py-3 align-top">
+                      <div class="space-y-0.5 text-xs leading-5 text-slate-700 dark:text-slate-200">
+                        {{ formatFiveHourRemainingText(row) }}
+                        <div>{{ formatSevenDayRemainingText(row) }}</div>
                       </div>
                       <div
-                        v-if="row.five_hour_window.available"
+                        v-if="fiveHourRemainingPercent(row) !== null"
                         class="mt-1 h-1.5 rounded-full bg-slate-100 dark:bg-dark-700"
                         aria-hidden="true"
                       >
                         <div
                           class="h-1.5 rounded-full"
                           :class="fiveHourBarClass(row)"
-                          :style="{ width: `${dashboardRatioToPercent(row.five_hour_window.utilization) ?? 0}%` }"
+                          :style="{ width: `${fiveHourRemainingPercent(row) ?? 0}%` }"
                         ></div>
                       </div>
                     </td>
@@ -377,7 +386,7 @@
                         :data-rail-warming="isWarmingState(row.state) ? 'true' : 'false'"
                         aria-hidden="true"
                       ></span>
-                      <div class="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                      <div class="grid grid-cols-1 gap-3 sm:grid-cols-5">
                         <article class="rounded-lg bg-slate-50 p-3 dark:bg-dark-800/70">
                           <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">RPM</div>
                           <div class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
@@ -397,9 +406,15 @@
                           </div>
                         </article>
                         <article class="rounded-lg bg-slate-50 p-3 dark:bg-dark-800/70">
-                          <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">5h 窗口</div>
+                          <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">5h 限额</div>
                           <div class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
-                            {{ formatFiveHourWindow(row.five_hour_window) }}
+                            {{ formatFiveHourQuota(row) }}
+                          </div>
+                        </article>
+                        <article class="rounded-lg bg-slate-50 p-3 dark:bg-dark-800/70">
+                          <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">周/7d 限额</div>
+                          <div class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
+                            {{ formatPassiveUsageQuota(row.passive_usage_7d) }}
                           </div>
                         </article>
                       </div>
@@ -431,6 +446,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import { adminAPI } from '@/api/admin'
 import type {
+  FormalPoolPassiveUsage,
   FormalPoolStatusDashboard,
   FormalPoolStatusDashboardAccount,
   FormalPoolStatusRuntime,
@@ -441,7 +457,6 @@ import {
   dashboardRatioToPercent,
   formatConcurrencyText,
   formatDashboardPercent,
-  formatFiveHourWindow,
   formatRpmText,
   getBucketLanePresentation,
   getDashboardBucket,
@@ -479,7 +494,7 @@ let activeAbortController: AbortController | null = null
 // ─── Derived state ───────────────────────────────────────────────────────────
 
 interface DashboardColumn {
-  key: 'account' | 'state' | 'five-hour' | 'recent' | 'actions'
+  key: 'account' | 'state' | 'runtime' | 'five-hour' | 'recent' | 'actions'
   label: string
   alignRight?: boolean
 }
@@ -487,7 +502,8 @@ interface DashboardColumn {
 const primaryColumns: ReadonlyArray<DashboardColumn> = [
   { key: 'account', label: '账号' },
   { key: 'state', label: '状态' },
-  { key: 'five-hour', label: '5h 余量' },
+  { key: 'runtime', label: '调用指标' },
+  { key: 'five-hour', label: '限额余量' },
   { key: 'recent', label: '最近请求' },
   { key: 'actions', label: '操作', alignRight: true },
 ]
@@ -632,9 +648,10 @@ function stateBadgeClass(row: FormalPoolStatusDashboardAccount): string {
 }
 
 function fiveHourBarClass(row: FormalPoolStatusDashboardAccount): string {
-  const pct = dashboardRatioToPercent(row.five_hour_window.utilization)
+  const pct = fiveHourRemainingPercent(row)
   if (pct === null) return 'bg-slate-300 dark:bg-dark-600'
-  if (pct >= 75) return 'bg-amber-500'
+  if (pct <= 10) return 'bg-rose-500'
+  if (pct <= 25) return 'bg-amber-500'
   return 'bg-emerald-500'
 }
 
@@ -642,6 +659,76 @@ function formatSessionsText(runtime: FormalPoolStatusRuntime | null | undefined)
   if (!runtime?.available) return '— 数据不足 —'
   if (runtime.limit <= 0) return '未配置会话'
   return `${runtime.current} / ${runtime.limit} (${formatDashboardPercent(runtime.utilization)})`
+}
+
+function formatRuntimeMetricText(
+  label: 'RPM' | '并发' | '会话',
+  runtime: FormalPoolStatusRuntime | null | undefined,
+): string {
+  if (!runtime) return `${label} 数据不足`
+  if (runtime.limit <= 0) return `${label} 未配置`
+  if (!runtime.available) return `${label} 数据不足 / 配置 ${runtime.limit}`
+  return `${label} ${runtime.current} / ${runtime.limit}`
+}
+
+function fiveHourPassiveUsage(row: FormalPoolStatusDashboardAccount): FormalPoolPassiveUsage | null {
+  return row.passive_usage_5h ?? null
+}
+
+function fiveHourRemainingPercent(row: FormalPoolStatusDashboardAccount): number | null {
+  const passive = fiveHourPassiveUsage(row)
+  if (passive?.available) {
+    return dashboardRatioToPercent(passive.remaining_ratio)
+  }
+  if (!hasLegacyFiveHourWindow(row)) return null
+  return dashboardRatioToPercent(1 - (row.five_hour_window.utilization ?? 0))
+}
+
+function hasLegacyFiveHourWindow(row: FormalPoolStatusDashboardAccount): boolean {
+  return Boolean(
+    row.five_hour_window?.available &&
+      row.five_hour_window.utilization !== null &&
+      row.five_hour_window.utilization !== undefined,
+  )
+}
+
+function formatLegacyFiveHourQuota(row: FormalPoolStatusDashboardAccount): string {
+  if (!hasLegacyFiveHourWindow(row)) return '数据不足/未采样'
+  const utilization = row.five_hour_window.utilization
+  return `剩余 ${formatDashboardPercent(1 - (utilization ?? 0))}，已用 ${formatDashboardPercent(utilization)}`
+}
+
+function formatFiveHourRemainingText(row: FormalPoolStatusDashboardAccount): string {
+  return `5h ${formatFiveHourQuota(row)}`
+}
+
+function formatSevenDayRemainingText(row: FormalPoolStatusDashboardAccount): string {
+  return `7d ${formatPassiveUsageSummary(row.passive_usage_7d)}`
+}
+
+function formatFiveHourQuota(row: FormalPoolStatusDashboardAccount): string {
+  const passive = fiveHourPassiveUsage(row)
+  if (passive?.available) {
+    return formatPassiveUsageSummary(passive)
+  }
+  return formatLegacyFiveHourQuota(row)
+}
+
+function formatPassiveUsageSummary(usage: FormalPoolPassiveUsage | null | undefined): string {
+  if (!usage?.available) return '数据不足/未采样'
+  return `剩余 ${formatDashboardPercent(usage.remaining_ratio)}，已用 ${formatDashboardPercent(usage.utilization)}`
+}
+
+function formatPassiveUsageQuota(usage: FormalPoolPassiveUsage | null | undefined): string {
+  if (!usage?.available) return '数据不足/未采样'
+  return `剩余 ${formatDashboardPercent(usage.remaining_ratio)}，已用 ${formatDashboardPercent(usage.utilization)}${formatQuotaResetText(usage.reset_at)}`
+}
+
+function formatQuotaResetText(value: string | null | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return `，重置 ${date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
 }
 
 function displayAccountLabel(row: FormalPoolStatusDashboardAccount): string {

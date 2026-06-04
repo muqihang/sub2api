@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,25 +39,29 @@ type FormalPoolStatusDashboard struct {
 }
 
 type FormalPoolStatusSummary struct {
-	Total                   int       `json:"total"`
-	Normal                  int       `json:"normal"`
-	Warming                 int       `json:"warming"`
-	Production              int       `json:"production"`
-	RateLimited             int       `json:"rate_limited"`
-	ManualRisk              int       `json:"manual_risk"`
-	Error                   int       `json:"error"`
-	Quarantined             int       `json:"quarantined"`
-	Inactive                int       `json:"inactive"`
-	NotSchedulable          int       `json:"not_schedulable"`
-	EvidenceMissing         int       `json:"evidence_missing"`
-	DataMissing             int       `json:"data_missing"`
-	Schedulable             int       `json:"schedulable"`
-	TotalCurrentRPM         int       `json:"total_current_rpm"`
-	TotalRPMLimit           int       `json:"total_rpm_limit"`
-	RPMAvailable            bool      `json:"rpm_available"`
-	FiveHourRemainingRatio  *float64  `json:"five_hour_remaining_ratio"`
-	FiveHourWindowAvailable bool      `json:"five_hour_window_available"`
-	GeneratedAt             time.Time `json:"generated_at"`
+	Total                        int       `json:"total"`
+	Normal                       int       `json:"normal"`
+	Warming                      int       `json:"warming"`
+	Production                   int       `json:"production"`
+	RateLimited                  int       `json:"rate_limited"`
+	ManualRisk                   int       `json:"manual_risk"`
+	Error                        int       `json:"error"`
+	Quarantined                  int       `json:"quarantined"`
+	Inactive                     int       `json:"inactive"`
+	NotSchedulable               int       `json:"not_schedulable"`
+	EvidenceMissing              int       `json:"evidence_missing"`
+	DataMissing                  int       `json:"data_missing"`
+	Schedulable                  int       `json:"schedulable"`
+	TotalCurrentRPM              int       `json:"total_current_rpm"`
+	TotalRPMLimit                int       `json:"total_rpm_limit"`
+	RPMAvailable                 bool      `json:"rpm_available"`
+	FiveHourRemainingRatio       *float64  `json:"five_hour_remaining_ratio"`
+	FiveHourWindowAvailable      bool      `json:"five_hour_window_available"`
+	PassiveUsage5hRemainingRatio *float64  `json:"passive_usage_5h_remaining_ratio"`
+	PassiveUsage5hAvailable      bool      `json:"passive_usage_5h_available"`
+	PassiveUsage7dRemainingRatio *float64  `json:"passive_usage_7d_remaining_ratio"`
+	PassiveUsage7dAvailable      bool      `json:"passive_usage_7d_available"`
+	GeneratedAt                  time.Time `json:"generated_at"`
 }
 
 type FormalPoolStatusDashboardAccount struct {
@@ -71,6 +77,8 @@ type FormalPoolStatusDashboardAccount struct {
 	EffectiveSchedulable bool                           `json:"effective_schedulable"`
 	ProductionReady      bool                           `json:"production_ready"`
 	FiveHourWindow       FormalPoolStatusWindow         `json:"five_hour_window"`
+	PassiveUsage5h       FormalPoolPassiveUsage         `json:"passive_usage_5h"`
+	PassiveUsage7d       FormalPoolPassiveUsage         `json:"passive_usage_7d"`
 	RPM                  FormalPoolStatusRuntime        `json:"rpm"`
 	Concurrency          FormalPoolStatusRuntime        `json:"concurrency"`
 	Sessions             FormalPoolStatusRuntime        `json:"sessions"`
@@ -96,6 +104,15 @@ type FormalPoolStatusWindow struct {
 	ResetAt     *time.Time `json:"reset_at"`
 	Status      string     `json:"status"`
 	Available   bool       `json:"available"`
+}
+
+type FormalPoolPassiveUsage struct {
+	Utilization    *float64   `json:"utilization"`
+	RemainingRatio *float64   `json:"remaining_ratio"`
+	ResetAt        *time.Time `json:"reset_at"`
+	SampledAt      *time.Time `json:"sampled_at"`
+	Available      bool       `json:"available"`
+	Status         string     `json:"status"`
 }
 
 type FormalPoolStatusRecommendation struct {
@@ -284,6 +301,8 @@ func BuildFormalPoolStatusDashboard(accounts []Account, runtime FormalPoolStatus
 		Accounts: make([]FormalPoolStatusDashboardAccount, 0, len(accounts)),
 	}
 	var windowRemaining, windowLimit float64
+	var passive5hRemainingTotal, passive7dRemainingTotal float64
+	var passive5hAvailableCount, passive7dAvailableCount int
 	for i := range accounts {
 		acc := &accounts[i]
 		if !acc.IsAnthropicOAuthOrSetupToken() || !IsFormalPoolAccount(acc) {
@@ -328,10 +347,28 @@ func BuildFormalPoolStatusDashboard(accounts []Account, runtime FormalPoolStatus
 			windowRemaining += row.FiveHourWindow.Remaining
 			windowLimit += row.FiveHourWindow.Limit
 		}
+		if row.PassiveUsage5h.Available && row.PassiveUsage5h.RemainingRatio != nil {
+			passive5hRemainingTotal += *row.PassiveUsage5h.RemainingRatio
+			passive5hAvailableCount++
+		}
+		if row.PassiveUsage7d.Available && row.PassiveUsage7d.RemainingRatio != nil {
+			passive7dRemainingTotal += *row.PassiveUsage7d.RemainingRatio
+			passive7dAvailableCount++
+		}
 	}
 	if windowLimit > 0 {
 		ratio := clampRatio(windowRemaining / windowLimit)
 		dashboard.Summary.FiveHourRemainingRatio = &ratio
+	}
+	if passive5hAvailableCount > 0 {
+		ratio := clampRatio(passive5hRemainingTotal / float64(passive5hAvailableCount))
+		dashboard.Summary.PassiveUsage5hRemainingRatio = &ratio
+		dashboard.Summary.PassiveUsage5hAvailable = true
+	}
+	if passive7dAvailableCount > 0 {
+		ratio := clampRatio(passive7dRemainingTotal / float64(passive7dAvailableCount))
+		dashboard.Summary.PassiveUsage7dRemainingRatio = &ratio
+		dashboard.Summary.PassiveUsage7dAvailable = true
 	}
 	return dashboard
 }
@@ -352,6 +389,8 @@ func buildFormalPoolStatusDashboardAccount(account *Account, runtime FormalPoolS
 		LastFailureBucket:    sanitizeFormalPoolDashboardFailureField(formalPoolDashboardFirstNonEmpty(account.GetExtraString(FormalPoolExtraOnboardingLastErrorBucket), account.GetExtraString(FormalPoolExtraHealthcheckStatusCodeBucket), account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorBucket), account.GetExtraString(FormalPoolExtraRateLimitErrorClass))),
 	}
 	row.FiveHourWindow = buildFormalPoolStatusWindow(account, runtime)
+	row.PassiveUsage5h = buildFormalPoolPassiveUsage5h(account)
+	row.PassiveUsage7d = buildFormalPoolPassiveUsage7d(account)
 	row.RPM = buildFormalPoolStatusRuntimeInt(account.GetBaseRPM(), runtime.RPMByAccount, runtime.RPMAvailable, account.ID)
 	row.Concurrency = buildFormalPoolStatusRuntimeInt(account.Concurrency, runtime.ConcurrencyByAccount, runtime.ConcurrencyAvailable, account.ID)
 	row.Sessions = buildFormalPoolStatusRuntimeInt(account.GetMaxSessions(), runtime.SessionsByAccount, runtime.SessionCountAvailable, account.ID)
@@ -411,6 +450,47 @@ func buildFormalPoolStatusWindow(account *Account, runtime FormalPoolStatusRunti
 		}
 	}
 	return w
+}
+
+func buildFormalPoolPassiveUsage5h(account *Account) FormalPoolPassiveUsage {
+	usage := FormalPoolPassiveUsage{Status: "not_sampled"}
+	if account == nil {
+		return usage
+	}
+	usage.ResetAt = account.SessionWindowEnd
+	usage.SampledAt = parseFormalPoolDashboardExtraTime(account.Extra, "passive_usage_sampled_at")
+	util, ok := parseFormalPoolDashboardExtraRatio(formalPoolDashboardExtraValue(account, "session_window_utilization"))
+	if !ok {
+		return usage
+	}
+	usage.Available = true
+	usage.Utilization = &util
+	remaining := clampRatio(1 - util)
+	usage.RemainingRatio = &remaining
+	usage.Status = strings.TrimSpace(account.SessionWindowStatus)
+	if usage.Status == "" {
+		usage.Status = "sampled"
+	}
+	return usage
+}
+
+func buildFormalPoolPassiveUsage7d(account *Account) FormalPoolPassiveUsage {
+	usage := FormalPoolPassiveUsage{Status: "not_sampled"}
+	if account == nil {
+		return usage
+	}
+	usage.ResetAt = parseFormalPoolDashboardExtraTime(account.Extra, "passive_usage_7d_reset")
+	usage.SampledAt = parseFormalPoolDashboardExtraTime(account.Extra, "passive_usage_sampled_at")
+	util, ok := parseFormalPoolDashboardExtraRatio(formalPoolDashboardExtraValue(account, "passive_usage_7d_utilization"))
+	if !ok {
+		return usage
+	}
+	usage.Available = true
+	usage.Utilization = &util
+	remaining := clampRatio(1 - util)
+	usage.RemainingRatio = &remaining
+	usage.Status = "sampled"
+	return usage
 }
 
 func classifyFormalPoolDashboardState(account *Account, row FormalPoolStatusDashboardAccount, runtime FormalPoolStatusRuntimeSnapshot) string {
@@ -790,6 +870,94 @@ func formalPoolDashboardLastSuccessHint(account *Account) *time.Time {
 		if ts := parseFormalPoolDashboardTime(account.GetExtraString(key)); ts != nil {
 			return ts
 		}
+	}
+	return nil
+}
+
+func formalPoolDashboardExtraValue(account *Account, key string) any {
+	if account == nil || account.Extra == nil {
+		return nil
+	}
+	return account.Extra[key]
+}
+
+func parseFormalPoolDashboardExtraRatio(value any) (float64, bool) {
+	raw, ok := parseFormalPoolDashboardExtraFloat(value)
+	if !ok || math.IsNaN(raw) || math.IsInf(raw, 0) || raw < 0 {
+		return 0, false
+	}
+	return clampRatio(raw), true
+}
+
+func parseFormalPoolDashboardExtraFloat(value any) (float64, bool) {
+	switch v := value.(type) {
+	case nil:
+		return 0, false
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case json.Number:
+		return parseFormalPoolDashboardNumericString(v.String())
+	case string:
+		return parseFormalPoolDashboardNumericString(v)
+	default:
+		return 0, false
+	}
+}
+
+func parseFormalPoolDashboardNumericString(value string) (float64, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, false
+	}
+	if strings.HasSuffix(trimmed, "%") {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(trimmed, "%")), 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed / 100, true
+	}
+	parsed, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseFormalPoolDashboardExtraTime(extra map[string]any, key string) *time.Time {
+	if extra == nil {
+		return nil
+	}
+	value, ok := extra[key]
+	if !ok || value == nil {
+		return nil
+	}
+	if t, ok := value.(time.Time); ok {
+		return &t
+	}
+	if s, ok := value.(string); ok {
+		if ts := parseFormalPoolDashboardTime(s); ts != nil {
+			return ts
+		}
+	}
+	if raw, ok := parseFormalPoolDashboardExtraFloat(value); ok && raw > 0 {
+		seconds := int64(raw)
+		if seconds > 1000000000000 {
+			seconds = seconds / 1000
+		}
+		t := time.Unix(seconds, 0).UTC()
+		return &t
 	}
 	return nil
 }
