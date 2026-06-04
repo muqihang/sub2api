@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -158,6 +159,167 @@ func (m *CodexGatewayCaptureManager) mergeRequestDiagnostics(trace *CodexGateway
 	snapshot := cloneCaptureMap(trace.requestDiag)
 	trace.mu.Unlock()
 	m.writeJSON(trace, "client_request.diagnostics.json", snapshot)
+}
+
+func codexGatewayDeepSeekToolOutputSummaryDiagnostics(body map[string]any) map[string]any {
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		return nil
+	}
+	toolNames := make(map[string]string)
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok || strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "assistant" {
+			continue
+		}
+		calls, _ := msg["tool_calls"].([]any)
+		for _, rawCall := range calls {
+			call, ok := rawCall.(map[string]any)
+			if !ok {
+				continue
+			}
+			callID := strings.TrimSpace(firstCodexGatewayToolString(call["id"], call["call_id"]))
+			function, _ := call["function"].(map[string]any)
+			name := strings.TrimSpace(firstCodexGatewayToolString(call["name"], function["name"]))
+			if callID != "" && name != "" {
+				toolNames[callID] = name
+			}
+		}
+	}
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok || strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "tool" {
+			continue
+		}
+		content := firstCodexGatewayToolString(msg["content"])
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+			continue
+		}
+		classes := make(map[string]struct{})
+		operableLineCount := 0
+		originalChars := 0
+		codexGatewayDeepSeekCollectToolOutputSummaryDiagnostics(parsed, classes, &operableLineCount, &originalChars)
+		if len(classes) == 0 {
+			continue
+		}
+		classList := make([]string, 0, len(classes))
+		for class := range classes {
+			classList = append(classList, class)
+		}
+		sort.Strings(classList)
+		callID := strings.TrimSpace(firstCodexGatewayToolString(msg["tool_call_id"]))
+		toolName := codexGatewayDeepSeekCaptureVisibleToolName(toolNames[callID])
+		if toolName == "" {
+			toolName = "unknown"
+		}
+		return map[string]any{
+			"tool_name":             toolName,
+			"raw_chars":             originalChars,
+			"normalized_chars":      len(content),
+			"classes":               classList,
+			"operable_line_count":   operableLineCount,
+			"fallback_preview_only": codexGatewayDeepSeekToolOutputFallbackPreviewOnly(parsed),
+		}
+	}
+	return nil
+}
+
+func codexGatewayDeepSeekCaptureVisibleToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	parts := strings.Split(name, "__")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if part := strings.TrimSpace(parts[i]); part != "" {
+			return part
+		}
+	}
+	return name
+}
+
+func codexGatewayDeepSeekCollectToolOutputSummaryDiagnostics(value any, classes map[string]struct{}, operableLineCount *int, originalChars *int) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if class := strings.TrimSpace(firstCodexGatewayToolString(typed["content_class"])); class != "" {
+			classes[class] = struct{}{}
+		}
+		if rawOriginal, ok := typed["original_chars"]; ok {
+			if original := codexGatewayDeepSeekIntValue(rawOriginal); original > 0 {
+				*originalChars += original
+			}
+		}
+		if rawLines, ok := typed["operable_lines"]; ok {
+			*operableLineCount += codexGatewayDeepSeekOperableLineCount(rawLines)
+		}
+		for _, raw := range typed {
+			codexGatewayDeepSeekCollectToolOutputSummaryDiagnostics(raw, classes, operableLineCount, originalChars)
+		}
+	case []any:
+		for _, raw := range typed {
+			codexGatewayDeepSeekCollectToolOutputSummaryDiagnostics(raw, classes, operableLineCount, originalChars)
+		}
+	}
+}
+
+func codexGatewayDeepSeekIntValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		if n, err := typed.Int64(); err == nil {
+			return int(n)
+		}
+	default:
+		if s := strings.TrimSpace(firstCodexGatewayToolString(typed)); s != "" {
+			var n int
+			if _, err := fmt.Sscanf(s, "%d", &n); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func codexGatewayDeepSeekOperableLineCount(value any) int {
+	switch typed := value.(type) {
+	case []string:
+		return len(typed)
+	case []any:
+		return len(typed)
+	default:
+		return 0
+	}
+}
+
+func codexGatewayDeepSeekToolOutputFallbackPreviewOnly(value any) bool {
+	m, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, hasPreview := m["preview"]; !hasPreview {
+		return false
+	}
+	if _, hasClass := m["content_class"]; hasClass {
+		return false
+	}
+	for key := range m {
+		switch key {
+		case "truncated", "original_chars", "sha256", "preview":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, userDiag codexGatewayDeepSeekUserIDDiagnostics, replayDiag codexGatewayDeepSeekReplayDiagnostics, redactor *CodexGatewayCaptureRedactor) map[string]any {

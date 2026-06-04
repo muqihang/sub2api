@@ -213,14 +213,17 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 	body = codexGatewayDeepSeekFinalizeChatCompletionsBody(body)
 	if ctx.CaptureTrace != nil && ctx.CaptureTrace.manager != nil {
+		requestDiagnostics := map[string]any{}
 		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, replayDiag, ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
-			ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, map[string]any{
-				"deepseek_cache": diagnostics,
-			})
+			requestDiagnostics["deepseek_cache"] = diagnostics
 			if cacheUsage := codexGatewayDeepSeekCacheUsageFields(diagnostics); len(cacheUsage) > 0 {
 				ctx.CaptureTrace.manager.mergeCacheUsage(ctx.CaptureTrace, cacheUsage)
 			}
 		}
+		if diagnostics := codexGatewayDeepSeekToolOutputSummaryDiagnostics(body); len(diagnostics) > 0 {
+			requestDiagnostics["deepseek_tool_output_summary"] = diagnostics
+		}
+		ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, requestDiagnostics)
 	}
 
 	return CodexGatewayPreparedDeepSeekRequest{
@@ -1159,12 +1162,207 @@ func normalizeCodexGatewayDeepSeekToolOutput(value any) (string, error) {
 		if !changed || len(out) <= codexGatewayDeepSeekToolOutputMaxChars {
 			return out, nil
 		}
+		if compacted, ok := codexGatewayDeepSeekCompactSemanticToolSummary(summarized); ok {
+			return codexGatewayDeepSeekMarshalSemanticToolOutputSummary(compacted)
+		}
 		return codexGatewayDeepSeekMarshalToolOutputSummary(map[string]any{
 			"truncated":      true,
 			"original_chars": len(out),
 			"sha256":         codexGatewayDeepSeekTextSHA256(out),
 			"preview":        codexGatewayDeepSeekTruncateString(out, codexGatewayDeepSeekToolOutputStringPreviewChars),
 		})
+	}
+}
+
+func codexGatewayDeepSeekCompactSemanticToolSummary(value any) (any, bool) {
+	if !codexGatewayDeepSeekContainsSemanticToolSummary(value) {
+		return nil, false
+	}
+	compacted := codexGatewayDeepSeekCompactSemanticToolSummaryValue(value, 0)
+	return compacted, true
+}
+
+func codexGatewayDeepSeekMarshalSemanticToolOutputSummary(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) <= codexGatewayDeepSeekToolOutputMaxChars {
+		return string(raw), nil
+	}
+	pruned := codexGatewayDeepSeekPruneSemanticToolSummary(value)
+	raw, err = json.Marshal(pruned)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) <= codexGatewayDeepSeekToolOutputMaxChars {
+		return string(raw), nil
+	}
+	return codexGatewayDeepSeekMarshalToolOutputSummary(pruned)
+}
+
+func codexGatewayDeepSeekPruneSemanticToolSummary(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		if class := strings.TrimSpace(firstCodexGatewayToolString(typed["content_class"])); class != "" {
+			return codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(typed, class, 160, 4, 120)
+		}
+		out := make(map[string]any)
+		keys := make([]string, 0, len(typed))
+		for key, raw := range typed {
+			if codexGatewayDeepSeekContainsSemanticToolSummary(raw) {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			out[key] = codexGatewayDeepSeekPruneSemanticToolSummary(typed[key])
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, raw := range typed {
+			if codexGatewayDeepSeekContainsSemanticToolSummary(raw) {
+				out = append(out, codexGatewayDeepSeekPruneSemanticToolSummary(raw))
+			}
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func codexGatewayDeepSeekContainsSemanticToolSummary(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if class := strings.TrimSpace(firstCodexGatewayToolString(typed["content_class"])); class != "" {
+			switch class {
+			case "computer_screenshot", "binary_or_image", "accessibility_tree", "visual_tree":
+				return true
+			}
+		}
+		for _, raw := range typed {
+			if codexGatewayDeepSeekContainsSemanticToolSummary(raw) {
+				return true
+			}
+		}
+	case []any:
+		for _, raw := range typed {
+			if codexGatewayDeepSeekContainsSemanticToolSummary(raw) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexGatewayDeepSeekCompactSemanticToolSummaryValue(value any, depth int) any {
+	if depth > 8 {
+		return map[string]any{"truncated": true, "reason": "max_depth"}
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		class := strings.TrimSpace(firstCodexGatewayToolString(typed["content_class"]))
+		if class != "" {
+			return codexGatewayDeepSeekCompactSemanticToolSummaryMap(typed, class)
+		}
+		out := make(map[string]any, len(typed))
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			out[key] = codexGatewayDeepSeekCompactSemanticToolSummaryValue(typed[key], depth+1)
+		}
+		return out
+	case []any:
+		limit := len(typed)
+		truncated := false
+		if limit > codexGatewayDeepSeekToolOutputMaxArrayItems {
+			limit = codexGatewayDeepSeekToolOutputMaxArrayItems
+			truncated = true
+		}
+		out := make([]any, 0, limit)
+		for i := 0; i < limit; i++ {
+			out = append(out, codexGatewayDeepSeekCompactSemanticToolSummaryValue(typed[i], depth+1))
+		}
+		if truncated {
+			return map[string]any{
+				"items":          out,
+				"truncated":      true,
+				"original_items": len(typed),
+			}
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func codexGatewayDeepSeekCompactSemanticToolSummaryMap(in map[string]any, class string) map[string]any {
+	return codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in, class, 320, 8, 180)
+}
+
+func codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in map[string]any, class string, textChars, maxLines, lineChars int) map[string]any {
+	out := make(map[string]any, len(in))
+	for _, key := range []string{"content_class", "field", "truncated", "original_chars", "sha256", "media_type", "extraction_mode"} {
+		if value, ok := in[key]; ok {
+			out[key] = value
+		}
+	}
+	if value, ok := in["vision_summary"]; ok {
+		out["vision_summary"] = codexGatewayDeepSeekTruncateString(firstCodexGatewayToolString(value), textChars)
+	}
+	if value, ok := in["preview"]; ok {
+		out["preview"] = codexGatewayDeepSeekTruncateString(firstCodexGatewayToolString(value), textChars)
+	}
+	if rawLines, ok := in["operable_lines"]; ok {
+		if lines := codexGatewayDeepSeekCompactOperableLines(rawLines, maxLines, lineChars); len(lines) > 0 {
+			out["operable_lines"] = lines
+		}
+	}
+	return out
+}
+
+func codexGatewayDeepSeekCompactOperableLines(value any, maxLines, lineChars int) []string {
+	if maxLines <= 0 {
+		maxLines = 8
+	}
+	if lineChars <= 0 {
+		lineChars = 180
+	}
+	switch typed := value.(type) {
+	case []string:
+		limit := len(typed)
+		if limit > maxLines {
+			limit = maxLines
+		}
+		out := make([]string, 0, limit)
+		for i := 0; i < limit; i++ {
+			line := strings.TrimSpace(typed[i])
+			if line == "" {
+				continue
+			}
+			out = append(out, codexGatewayDeepSeekTruncateString(line, lineChars))
+		}
+		return out
+	case []any:
+		limit := len(typed)
+		if limit > maxLines {
+			limit = maxLines
+		}
+		out := make([]string, 0, limit)
+		for i := 0; i < limit; i++ {
+			line := strings.TrimSpace(firstCodexGatewayToolString(typed[i]))
+			if line == "" {
+				continue
+			}
+			out = append(out, codexGatewayDeepSeekTruncateString(line, lineChars))
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
@@ -1243,6 +1441,11 @@ func codexGatewayDeepSeekSummarizeToolOutputValue(field string, value any, depth
 			"truncated": true,
 			"reason":    "max_depth",
 		}, true
+	}
+	if typed, ok := value.(map[string]any); ok {
+		if class := strings.TrimSpace(firstCodexGatewayToolString(typed["content_class"])); class != "" {
+			return codexGatewayDeepSeekCompactSemanticToolSummaryMap(typed, class), true
+		}
 	}
 	if summary, ok := codexGatewayDeepSeekSummarizeStructuredVisualState(field, value); ok {
 		return summary, true

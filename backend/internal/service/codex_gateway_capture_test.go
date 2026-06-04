@@ -186,6 +186,55 @@ func TestCodexGatewayCaptureShapeResponsesRequestOmitsRawPromptAndToolOutput(t *
 	require.NotContains(t, fmtAny(shape), "function_call_output")
 }
 
+func TestCodexGatewayCaptureDiagnosticsDeepSeekToolOutputSummaryIsShapeOnly(t *testing.T) {
+	body := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []any{map[string]any{
+					"id":   "call_state",
+					"type": "function",
+					"function": map[string]any{
+						"name":      "mcp__computer_use__get_app_state",
+						"arguments": `{"app":"Codex"}`,
+					},
+				}},
+			},
+			map[string]any{
+				"role":         "tool",
+				"tool_call_id": "call_state",
+				"content": `{
+					"screenshot":{
+						"content_class":"computer_screenshot",
+						"vision_summary":"private lower-screen reply text should not appear in diagnostics",
+						"truncated":true,
+						"original_chars":90022,
+						"sha256":"abc123"
+					},
+					"accessibility_tree":{
+						"content_class":"accessibility_tree",
+						"truncated":true,
+						"original_chars":6400,
+						"sha256":"def456",
+						"operable_lines":["text input \"Reply to assistant\" focused element_index=reply"]
+					}
+				}`,
+			},
+		},
+	}
+
+	diagnostics := codexGatewayDeepSeekToolOutputSummaryDiagnostics(body)
+	require.Equal(t, "get_app_state", diagnostics["tool_name"])
+	require.Equal(t, 96422, diagnostics["raw_chars"])
+	require.Greater(t, diagnostics["normalized_chars"], 0)
+	require.ElementsMatch(t, []string{"accessibility_tree", "computer_screenshot"}, diagnostics["classes"])
+	require.Equal(t, 1, diagnostics["operable_line_count"])
+	require.Equal(t, false, diagnostics["fallback_preview_only"])
+	require.NotContains(t, fmtAny(diagnostics), "Reply to assistant")
+	require.NotContains(t, fmtAny(diagnostics), "private lower-screen reply text")
+}
+
 func TestCodexGatewayCaptureShapeClassifiesInstructionSource(t *testing.T) {
 	redactor := NewCodexGatewayCaptureRedactor(config.GatewayCodexCaptureConfig{
 		HashKeyFile: t.TempDir() + "/capture.key",

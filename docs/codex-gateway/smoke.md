@@ -106,6 +106,59 @@ rg -n "hmac-sha256|cache_read_input_tokens|response.output" data/codex-gateway-c
 
 The first command should not find raw user prompt text or credentials in summary-mode captures. The second command should show hashed content metadata, cache usage fields, and stream event names.
 
+### DeepSeek native parity capture smoke
+
+Run these with capture enabled in `summary` mode and `raw_payloads: false`.
+
+#### Deferred tool search and subagent discovery
+
+1. Select `deepseek-v4-pro` in Codex Desktop.
+2. Ask the model to dispatch a subagent or discover the subagent tool.
+3. Inspect the session JSONL and gateway stream capture.
+
+Expected:
+
+- the Codex session records `tool_search_call` followed by `tool_search_output`;
+- `tool_search_output.tools` contains `multi_agent_v1.spawn_agent`;
+- there is no user-visible ordinary `function_call` named `tool_search` for the deferred tool search;
+- gateway request replay accepts the later `tool_search_output` as a `role:"tool"` Chat Completions message.
+
+#### Computer Use visibility
+
+1. Select `deepseek-v4-pro`.
+2. Run a Computer Use `get_app_state` turn against a local app window that includes visible lower-screen controls or a reply/input area.
+3. If hosted vision is configured, ensure the tool output includes a large screenshot or `image_base64`.
+4. Inspect `client_request.diagnostics.json` and the upstream request shape.
+
+Expected:
+
+- DeepSeek-visible tool content does not contain raw screenshot/base64;
+- the normalized tool content retains `computer_screenshot` when hosted vision succeeds;
+- the normalized tool content retains `accessibility_tree` or `visual_tree`;
+- `operable_lines` includes at least one lower-screen input/reply/action line;
+- summaries include `sha256` and `original_chars`;
+- `deepseek_tool_output_summary.fallback_preview_only` is `false`;
+- `deepseek_tool_output_summary.classes` includes `computer_screenshot` and/or `accessibility_tree`;
+- `deepseek_tool_output_summary.operable_line_count` is non-zero.
+
+#### Abort/resume cache evidence
+
+1. Keep capture in shape-only summary mode.
+2. Start a DeepSeek thread and execute one tool turn.
+3. Interrupt or abort the next turn.
+4. Resume the same thread.
+5. Record the Codex session id, gateway trace id, token usage, and `prompt_cache_*` fields from the session/capture.
+
+Expected:
+
+- a gateway capture exists for the resumed DeepSeek request;
+- `client_request.diagnostics.json` contains `deepseek_cache.previous_response_id_present:true`;
+- `deepseek_cache.previous_response_replay_mode` is `full_replay_messages` when gateway state is available;
+- `deepseek_cache.state_lookup_status` identifies `hit`, `miss`, or the exact invalid-state reason;
+- `messages_full_hash`, `message_prefix_hash`, `message_suffix_hash`, `tool_schema_hash`, and `request_shape_hash` are present;
+- `cache_usage.json` can be correlated to session token usage through hashed trace/session fields;
+- any post-warmup `0 cached` turn has a cache attribution reason such as `request_not_warmed`, `message_prefix_changed`, `tool_schema_changed`, `request_shape_changed`, or `upstream_best_effort_or_unknown`.
+
 ### Regression prompts
 
 Use these prompts when validating Codex Desktop end-to-end.

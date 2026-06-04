@@ -1298,6 +1298,63 @@ func TestCodexGatewayDeepSeekRequest_CaptureDiagnosticsExcludeVolatileFields(t *
 	require.NotEqual(t, deepseekA["user_id_hash"], deepseekB["user_id_hash"])
 }
 
+func TestCodexGatewayDeepSeekRequest_CaptureDiagnosticsRecordToolOutputSummary(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                true,
+		BaseDir:                baseDir,
+		HashKeyFile:            keyPath,
+		CorrelationHashKeyFile: keyPath,
+	})
+	defer manager.Close()
+
+	largeScreenshot := "data:image/png;base64," + strings.Repeat("E", 90000)
+	accessibilityTree := strings.Repeat("staticText filler\n", 180) + strings.Join([]string{
+		`text input "Reply to assistant" focused element_index=reply`,
+		`button "Lower screen action" enabled element_index=lower-action`,
+	}, "\n")
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"Codex\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":{"screenshot":%q,"accessibility_tree":%q,"status":"ok"}}
+		]`, largeScreenshot, accessibilityTree)),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			return "Codex screenshot shows lower-screen reply controls.", nil
+		},
+	}
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, nil, CodexGatewayDeepSeekRequestContext{}, "deepseek-v4-pro", cfg)
+	require.NoError(t, err)
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "tool_output_summary", Provider: "deepseek", Model: "deepseek-v4-pro"})
+	require.NotNil(t, trace)
+	_, err = BuildCodexGatewayDeepSeekRequest(model, rewritten, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_tool_output_summary",
+		IsolationKey: "isolation_tool_output_summary",
+		CaptureTrace: trace,
+	}, cfg)
+	require.NoError(t, err)
+
+	summary, ok := trace.requestDiag["deepseek_tool_output_summary"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "get_app_state", summary["tool_name"])
+	require.Greater(t, int(summary["raw_chars"].(int)), 90000)
+	require.Greater(t, int(summary["normalized_chars"].(int)), 0)
+	require.ElementsMatch(t, []string{"accessibility_tree", "computer_screenshot"}, summary["classes"])
+	require.GreaterOrEqual(t, summary["operable_line_count"], 1)
+	require.Equal(t, false, summary["fallback_preview_only"])
+	require.NotContains(t, fmtAny(summary), "Reply to assistant")
+	require.NotContains(t, fmtAny(summary), strings.Repeat("E", 128))
+}
+
 func TestCodexGatewayDeepSeekRequest_NormalizesDeveloperRoleForChatCompletions(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
@@ -2402,6 +2459,98 @@ node node node node node node node node node node
 	require.Contains(t, toolContent, `textbox \"Prompt\" value`)
 	require.Contains(t, toolContent, "timeout: sidecar timed out")
 	require.Less(t, len(toolContent), 4096)
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseSecondPassKeepsSemanticFields(t *testing.T) {
+	largeScreenshot := "data:image/png;base64," + strings.Repeat("D", 90000)
+	accessibilityTree := strings.Repeat("staticText filler node without actionable words\n", 130) + strings.Join([]string{
+		`text input "Reply to assistant" focused element_index=reply bounds={20,640,700,48}`,
+		`button "Send reply" enabled element_index=send bounds={730,640,80,48}`,
+		`button "Lower screen action" enabled element_index=lower-action bounds={20,690,180,44}`,
+	}, "\n")
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"Codex\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":{"screenshot":%q,"accessibility_tree":%q,"status":"ok"}}
+		]`, largeScreenshot, accessibilityTree)),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			require.Equal(t, largeScreenshot, imageURL)
+			return strings.Repeat("Codex screenshot shows the lower reply area and actionable controls. ", 80), nil
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, nil, CodexGatewayDeepSeekRequestContext{}, "deepseek-v4-pro", cfg)
+	require.NoError(t, err)
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, rewritten, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_second_pass",
+		IsolationKey: "user_second_pass",
+	}, cfg)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, largeScreenshot)
+	require.NotContains(t, toolContent, strings.Repeat("D", 128))
+	require.Contains(t, toolContent, "computer_screenshot")
+	require.Contains(t, toolContent, "accessibility_tree")
+	require.Contains(t, toolContent, "operable_lines")
+	require.Contains(t, toolContent, "Lower screen action")
+	require.Contains(t, toolContent, "sha256")
+	require.Contains(t, toolContent, "original_chars")
+	require.False(t, gjson.Get(toolContent, "preview").Exists(), "final fallback must not collapse Computer Use output to preview-only")
+	require.Equal(t, "computer_screenshot", gjson.Get(toolContent, "screenshot.content_class").String())
+	require.Equal(t, "accessibility_tree", gjson.Get(toolContent, "accessibility_tree.content_class").String())
+	require.GreaterOrEqual(t, len(gjson.Get(toolContent, "accessibility_tree.operable_lines").Array()), 1)
+	require.LessOrEqual(t, len(toolContent), codexGatewayDeepSeekToolOutputMaxChars+256)
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseSecondPassKeepsFieldsWhenCompactStillLarge(t *testing.T) {
+	toolOutput := map[string]any{
+		"screenshot": map[string]any{
+			"content_class":  "computer_screenshot",
+			"vision_summary": strings.Repeat("Lower-screen controls are visible. ", 200),
+			"truncated":      true,
+			"original_chars": 90022,
+			"sha256":         strings.Repeat("a", 64),
+		},
+		"accessibility_tree": map[string]any{
+			"content_class":  "accessibility_tree",
+			"field":          "accessibility_tree",
+			"truncated":      true,
+			"original_chars": 6400,
+			"sha256":         strings.Repeat("b", 64),
+			"operable_lines": []string{
+				strings.Repeat(`text input "Reply to assistant" focused element_index=reply `, 8),
+				strings.Repeat(`button "Lower screen action" enabled element_index=lower-action `, 8),
+			},
+		},
+		"large_irrelevant": strings.Repeat("irrelevant filler ", 500),
+	}
+	content, err := normalizeCodexGatewayDeepSeekToolOutput(toolOutput)
+	require.NoError(t, err)
+
+	require.Contains(t, content, "computer_screenshot")
+	require.Contains(t, content, "accessibility_tree")
+	require.Contains(t, content, "operable_lines")
+	require.Contains(t, content, "Lower screen action")
+	require.False(t, gjson.Get(content, "preview").Exists(), "semantic fallback must not collapse to preview-only even after compacting")
+	require.Equal(t, "computer_screenshot", gjson.Get(content, "screenshot.content_class").String())
+	require.Equal(t, "accessibility_tree", gjson.Get(content, "accessibility_tree.content_class").String())
+	require.LessOrEqual(t, len(content), codexGatewayDeepSeekToolOutputMaxChars)
 }
 
 func TestCodexGatewayDeepSeekRequestWithVisionProxy_SkipsNonComputerUseToolOutputImages(t *testing.T) {
