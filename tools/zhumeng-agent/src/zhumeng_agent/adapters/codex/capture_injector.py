@@ -18,8 +18,10 @@ from .capture_config import CodexDesktopCaptureConfig, CorrelationHasher, file_h
 from .capture_shape import (
     add_safe_metadata,
     capture_model_picker_state,
+    is_safe_metadata_text,
     normalize_ui_matrix,
     shape_app_server_frame,
+    shape_subagent_registration_event,
     shape_tool_lifecycle_event,
 )
 from .capture_writer import JsonlTraceWriter
@@ -250,6 +252,58 @@ HOOK_SCRIPT = """(() => {
     const ids = mergeIds(socket && socket.__zhumengCaptureCorrelationIds, correlationFromFrame(frame));
     return ids ? { correlation_ids: ids } : {};
   }
+  function safeRegistrationName(value) {
+    const text = String(value || "");
+    return ["thread/start", "thread/resume", "thread/read", "item/started", "item/completed"].includes(text) ? text : null;
+  }
+  function registrationMessageClass(value) {
+    const text = String(value || "").toLowerCase();
+    if (text.includes("unknown conversation")) return "unknown conversation";
+    if (text.includes("thread read empty")) return "thread read empty";
+    if (text.includes("maybe_resume_success")) return "maybe_resume_success";
+    return null;
+  }
+  function deriveRegistrationEventsFromFrame(value) {
+    const frameText = textFrame(value);
+    if (frameText == null || frameText.length > 262144) return [];
+    try {
+      const parsed = JSON.parse(frameText);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      const events = [];
+      for (const item of items.slice(0, 20)) {
+        if (!item || typeof item !== "object") continue;
+        const method = safeRegistrationName(item.method);
+        if (method) events.push({ type: "subagent.registration", event_name: method, ts: Date.now() });
+        const errorMessage = item.error && typeof item.error === "object" ? item.error.message : item.error;
+        const messageClass = registrationMessageClass(errorMessage);
+        if (messageClass) events.push({ type: "subagent.registration", event_name: "console", message: messageClass, ts: Date.now() });
+      }
+      return events;
+    } catch (_) {
+      return [];
+    }
+  }
+  function emitRegistrationEventsFromFrame(value) {
+    try {
+      for (const event of deriveRegistrationEventsFromFrame(value)) emit(event);
+    } catch (_) {}
+  }
+  function wrapConsoleForRegistration(name) {
+    try {
+      if (!globalThis.console || typeof globalThis.console[name] !== "function") return;
+      const original = globalThis.console[name];
+      globalThis.console[name] = function zhumengCaptureConsoleRegistration(...args) {
+        try {
+          const text = args.map((item) => {
+            try { return typeof item === "string" ? item : JSON.stringify(item); } catch (_) { return String(item); }
+          }).join(" ");
+          const messageClass = registrationMessageClass(text);
+          if (messageClass) emit({ type: "subagent.registration", event_name: "console", message: messageClass, ts: Date.now() });
+        } catch (_) {}
+        return Reflect.apply(original, this, args);
+      };
+    } catch (_) {}
+  }
   function originalFetchPost(event) {
     try {
       if (typeof originalFetch === "function" && ZHUMENG_CAPTURE_ENDPOINT.startsWith("http://127.0.0.1:")) {
@@ -352,6 +406,7 @@ HOOK_SCRIPT = """(() => {
           try {
           if (isLikelyAppServerFrame(body)) {
             emitFrame("desktop_to_app_server", body, extra);
+            emitRegistrationEventsFromFrame(body);
             captureFetchResponse(result, extra.correlation_ids);
           }
         } catch (_) {}
@@ -372,6 +427,9 @@ HOOK_SCRIPT = """(() => {
     try { Object.setPrototypeOf(CapturedWebSocket, OriginalWebSocket); } catch (_) {}
     globalThis.WebSocket = CapturedWebSocket;
   }
+  wrapConsoleForRegistration("warn");
+  wrapConsoleForRegistration("error");
+  wrapConsoleForRegistration("info");
   const originalSend = globalThis.WebSocket && globalThis.WebSocket.prototype && globalThis.WebSocket.prototype.send;
   if (typeof originalSend === "function") {
     globalThis.WebSocket.prototype.send = function zhumengCaptureWebSocketSend(...args) {
@@ -383,6 +441,7 @@ HOOK_SCRIPT = """(() => {
         schedule(() => {
           try {
             emitFrame("desktop_to_app_server", args[0], extra);
+            emitRegistrationEventsFromFrame(args[0]);
           } catch (_) {}
         });
       }
@@ -595,6 +654,9 @@ def route_capture_event(
     elif event_type == "model_picker":
         filename = "model_picker.jsonl"
         payload = sanitize_renderer_event(event)
+    elif event_type == "subagent.registration":
+        filename = "subagent_registration.jsonl"
+        payload = sanitize_renderer_subagent_registration_event(event, config)
     elif event_type == "app_server_frame":
         filename = "app_server_v2.jsonl"
         payload = sanitize_renderer_app_server_event(event, config)
@@ -609,8 +671,6 @@ def route_capture_event(
 
 def write_derived_frame_events(event: dict[str, object], trace_dir: Path, config: CodexDesktopCaptureConfig) -> None:
     frame = parse_renderer_frame(event)
-    if not isinstance(frame, dict):
-        return
     context = {
         "desktop_trace_id": str(event.get("desktop_trace_id") or "cd_runtime"),
         "correlation_ids": merge_correlation_ids(
@@ -620,12 +680,115 @@ def write_derived_frame_events(event: dict[str, object], trace_dir: Path, config
         "model": str(event.get("model")) if event.get("model") else None,
         "request_path": str(event.get("request_path")) if event.get("request_path") else None,
     }
-    model_event = model_picker_event_from_frame(frame)
-    if model_event:
-        JsonlTraceWriter(trace_dir / "model_picker.jsonl").safe_write(model_event)
-    tool_event = tool_event_from_frame(frame, config, context=context)
-    if tool_event:
-        JsonlTraceWriter(trace_dir / "tool_lifecycle.jsonl").safe_write(tool_event)
+    for item in frame_items(frame):
+        model_event = model_picker_event_from_frame(item)
+        if model_event:
+            JsonlTraceWriter(trace_dir / "model_picker.jsonl").safe_write(model_event)
+        tool_event = tool_event_from_frame(item, config, context=context)
+        if tool_event:
+            JsonlTraceWriter(trace_dir / "tool_lifecycle.jsonl").safe_write(tool_event)
+        for registration_event in subagent_registration_events_from_frame(item, config):
+            JsonlTraceWriter(trace_dir / "subagent_registration.jsonl").safe_write(registration_event)
+        deferred_event = deferred_tool_search_event_from_frame(item)
+        if deferred_event:
+            JsonlTraceWriter(trace_dir / "deferred_tool_search.jsonl").safe_write(deferred_event)
+
+
+def frame_items(frame: object | None) -> list[dict[str, object]]:
+    if isinstance(frame, dict):
+        return [frame]
+    if isinstance(frame, list):
+        return [item for item in frame if isinstance(item, dict)]
+    return []
+
+
+SUBAGENT_REGISTRATION_METHODS = {"thread/start", "thread/resume", "thread/read", "item/started", "item/completed"}
+
+
+def subagent_registration_events_from_frame(frame: dict[str, object], config: CodexDesktopCaptureConfig) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    hasher = CorrelationHasher.from_key_file(config.correlation_hash_key_file)
+    method = str(frame.get("method") or "")
+    if method in SUBAGENT_REGISTRATION_METHODS:
+        params = frame.get("params") if isinstance(frame.get("params"), dict) else {}
+        events.append(shape_subagent_registration_event(
+            event_name=method,
+            conversation_id=str(params.get("conversation_id")) if params.get("conversation_id") else None,
+            thread_id=str(params.get("thread_id")) if params.get("thread_id") else None,
+            hasher=hasher,
+        ))
+    error = frame.get("error")
+    message = error.get("message") if isinstance(error, dict) else error
+    if isinstance(message, str):
+        message_class = safe_subagent_registration_message(message)
+        if message_class:
+            events.append(shape_subagent_registration_event(event_name="console", message=message_class, hasher=hasher))
+    return events
+
+
+def safe_subagent_registration_message(message: str) -> str | None:
+    lowered = message.lower()
+    if "unknown conversation" in lowered:
+        return "unknown conversation"
+    if "thread read empty" in lowered:
+        return "thread read empty"
+    if "maybe_resume_success" in lowered:
+        return "maybe_resume_success"
+    return None
+
+
+def deferred_tool_search_event_from_frame(frame: dict[str, object]) -> dict[str, object] | None:
+    result = frame.get("result")
+    if not isinstance(result, dict):
+        return None
+    raw_tools = result.get("tools")
+    if not isinstance(raw_tools, list):
+        return None
+    tools = sanitize_deferred_tools(raw_tools)
+    if not tools:
+        return None
+    return {
+        "schema_version": 1,
+        "source": "codex_desktop",
+        "event_type": str(result.get("type") or "tool_search_output"),
+        "capture_ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "payload_policy": "shape_only",
+        "tools": tools,
+    }
+
+
+def sanitize_deferred_tools(tools: list[object]) -> list[dict[str, object]]:
+    sanitized: list[dict[str, object]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        item: dict[str, object] = {}
+        name = str(tool.get("name") or "")
+        if name:
+            item["name"] = name if name in {"spawn_agent", "multi_agent_v1"} or name.startswith("multi_agent") else "tool"
+        if isinstance(tool.get("tools"), list):
+            item["tools"] = sanitize_deferred_tools(tool["tools"])
+        schema = tool.get("input_schema") or tool.get("parameters")
+        if isinstance(schema, dict):
+            item["input_schema"] = sanitize_model_schema(schema)
+        if item:
+            sanitized.append(item)
+    return sanitized
+
+
+def sanitize_model_schema(schema: dict[str, object]) -> dict[str, object]:
+    output: dict[str, object] = {"type": str(schema.get("type") or "object")}
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return output
+    model_schema = properties.get("model")
+    if isinstance(model_schema, dict):
+        enum = model_schema.get("enum")
+        if isinstance(enum, list):
+            safe_enum = [str(item) for item in enum if isinstance(item, str) and is_safe_metadata_text(item)]
+            if safe_enum:
+                output["properties"] = {"model": {"enum": safe_enum}}
+    return output
 
 
 def parse_renderer_frame(event: dict[str, object]) -> object | None:
@@ -706,6 +869,18 @@ def sanitize_renderer_event(event: dict[str, object]) -> dict[str, object]:
             add_safe_metadata(allowed, key, event[key], hasher)
     return allowed
 
+
+def sanitize_renderer_subagent_registration_event(event: dict[str, object], config: CodexDesktopCaptureConfig) -> dict[str, object]:
+    hasher = CorrelationHasher.from_key_file(config.correlation_hash_key_file)
+    return shape_subagent_registration_event(
+        event_name=str(event.get("event_name") or event.get("name") or "unknown"),
+        conversation_id=str(event.get("conversation_id")) if event.get("conversation_id") else None,
+        thread_id=str(event.get("thread_id")) if event.get("thread_id") else None,
+        status=str(event.get("status")) if event.get("status") else None,
+        message=str(event.get("message")) if event.get("message") else None,
+        ts=str(event.get("ts")) if event.get("ts") else None,
+        hasher=hasher,
+    )
 
 def sanitize_renderer_app_server_event(event: dict[str, object], config: CodexDesktopCaptureConfig) -> dict[str, object]:
     frame = renderer_frame_bytes(event)

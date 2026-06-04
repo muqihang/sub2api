@@ -3,8 +3,11 @@ from pathlib import Path
 
 from zhumeng_agent.adapters.codex.capture_redact import classify_source, content_policy_for_class
 from zhumeng_agent.adapters.codex.capture_shape import (
+    build_spawn_agent_model_override_report,
+    build_subagent_registration_report,
     capture_model_picker_state,
     shape_app_server_frame,
+    shape_subagent_registration_event,
     shape_tool_lifecycle_event,
     tee_frames_without_mutation,
 )
@@ -102,6 +105,64 @@ def test_app_server_frame_shape_handles_malformed_and_binary_payloads():
     assert malformed["payload_policy"] == "hash_only"
     assert binary["payload_bytes"] == 3
     assert binary["payload_policy"] == "hash_only"
+
+
+def test_subagent_registration_event_shape_hashes_ids_and_classifies_console_messages():
+    event = shape_subagent_registration_event(
+        event_name="console",
+        conversation_id="conversation-secret",
+        thread_id="thread-secret",
+        status="unknown conversation: conversation-secret",
+        message="unknown conversation: conversation-secret raw prompt must not leak",
+        ts="2026-06-03T11:48:43.000Z",
+        hasher=CorrelationHasher.from_key_file(None),
+    )
+
+    dumped = json.dumps(event)
+    assert event["event_type"] == "subagent_registration"
+    assert event["event_name"] == "console"
+    assert event["conversation_id_hash"].startswith("sha256:")
+    assert event["thread_id_hash"].startswith("sha256:")
+    assert event["message_class"] == "unknown_conversation"
+    assert "conversation-secret" not in dumped
+    assert "thread-secret" not in dumped
+    assert "raw prompt" not in dumped
+
+
+def test_subagent_registration_report_flags_unknown_before_recovery():
+    hasher = CorrelationHasher.from_key_file(None)
+    events = [
+        shape_subagent_registration_event(event_name="item/started", conversation_id="c1", thread_id="t1", ts="2026-06-03T11:48:40.000Z", hasher=hasher),
+        shape_subagent_registration_event(event_name="console", conversation_id="c1", thread_id="t1", message="unknown conversation c1", ts="2026-06-03T11:48:41.000Z", hasher=hasher),
+        shape_subagent_registration_event(event_name="thread/start", conversation_id="c1", thread_id="t1", ts="2026-06-03T11:48:42.000Z", hasher=hasher),
+        shape_subagent_registration_event(event_name="console", conversation_id="c1", thread_id="t1", message="maybe_resume_success", ts="2026-06-03T11:48:43.000Z", hasher=hasher),
+    ]
+
+    report = build_subagent_registration_report(events)
+
+    assert report["subagent_registration_race_suspected"] is True
+    assert report["first_item_before_conversation_registered"] is True
+    assert report["unknown_conversation_count"] == 1
+    assert report["maybe_resume_success_after_unknown_conversation"] is True
+    assert report["thread_read_empty_count"] == 0
+
+
+def test_subagent_registration_report_tracks_registration_per_conversation_group():
+    hasher = CorrelationHasher.from_key_file(None)
+    events = [
+        shape_subagent_registration_event(event_name="thread/start", conversation_id="registered", thread_id="t1", ts="2026-06-03T11:48:40.000Z", hasher=hasher),
+        shape_subagent_registration_event(event_name="item/started", conversation_id="registered", thread_id="t1", ts="2026-06-03T11:48:41.000Z", hasher=hasher),
+        shape_subagent_registration_event(event_name="item/started", conversation_id="unregistered", thread_id="t2", ts="2026-06-03T11:48:42.000Z", hasher=hasher),
+    ]
+
+    report = build_subagent_registration_report(events)
+
+    assert report["first_item_before_conversation_registered"] is True
+    assert report["subagent_registration_race_suspected"] is True
+    assert report["subagent_registration_order"][0]["event_name"] == "thread/start"
+    assert report["subagent_registration_order"][0]["conversation_id_hash"].startswith("sha256:")
+    assert report["subagent_registration_order"][2]["event_name"] == "item/started"
+    assert report["subagent_registration_order"][2]["thread_id_hash"].startswith("sha256:")
 
 
 def test_tee_frames_preserves_bytes_and_order_when_writer_fails():
@@ -348,3 +409,49 @@ def test_deepseek_native_parity_fixtures_preserve_sanitized_capture_shape():
         assert isinstance(sample["app_state_chars"], int)
         assert isinstance(sample["screenshot_chars"], int)
 
+
+def test_spawn_agent_model_override_report_detects_deepseek_mismatch_without_raw_content():
+    report = build_spawn_agent_model_override_report(
+        events=[{
+            "capture_ts": "2026-06-03T11:43:33.599Z",
+            "tools": [{
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [{
+                    "name": "spawn_agent",
+                    "description": "sanitized spawn tool",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"model": {"type": "string", "enum": ["claude-sonnet-4-6"]}},
+                    },
+                }],
+            }],
+        }],
+        catalog_models=["deepseek-v4-pro", "deepseek-v4-flash", "claude-sonnet-4-6"],
+        catalog_hash="abc123",
+        catalog_mtime="2026-06-03T11:40:00Z",
+    )
+
+    assert report["spawn_agent_model_override_mismatch"] is True
+    assert report["catalog_has_deepseek"] is True
+    assert report["spawn_agent_has_deepseek"] is False
+    assert report["capture_ts"] == "2026-06-03T11:43:33.599Z"
+    assert "sanitized spawn tool" not in json.dumps(report)
+
+
+def test_spawn_agent_model_override_report_flags_missing_model_override_list():
+    report = build_spawn_agent_model_override_report(
+        events=[{
+            "capture_ts": "2026-06-03T11:43:33.599Z",
+            "tools": [{"name": "spawn_agent", "input_schema": {"type": "object", "properties": {"task": {"type": "string"}}}}],
+        }],
+        catalog_models=["deepseek-v4-pro", "claude-sonnet-4-6"],
+        catalog_hash="abc123",
+        catalog_mtime="2026-06-03T11:40:00Z",
+    )
+
+    assert report["spawn_agent_model_override_mismatch"] is True
+    assert report["catalog_has_deepseek"] is True
+    assert report["spawn_agent_has_deepseek"] is False
+    assert report["spawn_agent_present"] is True
+    assert report["spawn_agent_model_count"] == 0

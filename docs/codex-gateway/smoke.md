@@ -123,6 +123,96 @@ Expected:
 - there is no user-visible ordinary `function_call` named `tool_search` for the deferred tool search;
 - gateway request replay accepts the later `tool_search_output` as a `role:"tool"` Chat Completions message.
 
+Use this explicit prompt when checking the deferred tool path:
+
+```text
+Using deepseek-v4-pro, search for the deferred subagent tool and spawn one no-op explorer.
+```
+
+Expected capture evidence:
+
+- `tool_search_call`;
+- `tool_search_output`;
+- `multi_agent_v1.spawn_agent`;
+- no ordinary `function_call name=tool_search` visible in the session.
+
+If `tool_search_output.tools` does not list DeepSeek-capable `spawn_agent` model overrides while the local
+`model_catalog_json` contains DeepSeek models, run:
+
+```bash
+zhumeng-agent codex capture report --trace-dir <desktop-trace-dir>
+```
+
+Expected diagnostic:
+
+- `spawn_agent_model_override.spawn_agent_model_override_mismatch:true`;
+- `spawn_agent_model_override.catalog_has_deepseek:true`;
+- `spawn_agent_model_override.spawn_agent_has_deepseek:false`;
+- `catalog_hash`, `catalog_mtime`, and capture timestamp are present.
+
+#### Model catalog refresh boundary
+
+Current boundary assumption for DeepSeek/Claude catalog changes: Codex app-server may keep model catalog
+state in-process or behind an app-server cache. Treat catalog/config writes as requiring a Codex restart
+unless a same-session `model/list` capture proves the refreshed catalog and `spawn_agent` description are
+visible.
+
+After changing `model_catalog_json` or `config.toml`:
+
+1. Run `zhumeng-agent desktop diagnose --redacted --json`.
+2. Inspect `doctor.model_catalog_freshness`.
+3. Restart Codex Desktop when `restart_required:true` or `restart_required_reasons` is non-empty.
+4. Re-run the deferred tool prompt above and confirm the next `tool_search_output.tools` includes DeepSeek,
+   or record the exact `spawn_agent_model_override` mismatch from the capture report.
+
+Expected doctor fields:
+
+- `model_catalog_json`;
+- `catalog_hash`;
+- `catalog_mtime`;
+- `catalog_has_deepseek`;
+- `deepseek_models_present`;
+- `active_default_model`;
+- `restart_required`;
+- `restart_required_reasons`;
+- `app_server_refresh_boundary`.
+
+#### Skills runtime parity
+
+Doctor evidence should remain factual only. It may report configured marketplaces, enabled plugins, skills
+directories, plugin cache skill paths, and whether DeepSeek catalog base instructions contain local routing
+guidance. It must not claim a model can or cannot use a Skill from file presence alone.
+
+Explicit skill-file prompt:
+
+```text
+Using deepseek-v4-pro, read the superpowers:systematic-debugging SKILL.md and summarize only the four phase names.
+Do not use tool_search.
+```
+
+Expected:
+
+- the model reads the local `SKILL.md` via shell/file access;
+- no `tool_search` is needed for ordinary file-backed Skills;
+- the response does not say Skills are unavailable.
+
+Implicit Skill trigger prompt:
+
+```text
+Using deepseek-v4-pro, diagnose a reproducible failing test in this repository.
+Follow the applicable local skill instructions before proposing a fix.
+Do not implement code.
+```
+
+Expected:
+
+- the model identifies that `superpowers:systematic-debugging` applies from injected skill instructions;
+- the model opens the local `SKILL.md` before proposing diagnosis steps;
+- smoke notes record the exact `SKILL.md` path opened;
+- the model follows the skill's evidence-first phases;
+- no claim is made that Skills are unavailable;
+- no `tool_search` is needed for ordinary file-backed Skills.
+
 #### Computer Use visibility
 
 1. Select `deepseek-v4-pro`.
@@ -158,6 +248,49 @@ Expected:
 - `messages_full_hash`, `message_prefix_hash`, `message_suffix_hash`, `tool_schema_hash`, and `request_shape_hash` are present;
 - `cache_usage.json` can be correlated to session token usage through hashed trace/session fields;
 - any post-warmup `0 cached` turn has a cache attribution reason such as `request_not_warmed`, `message_prefix_changed`, `tool_schema_changed`, `request_shape_changed`, or `upstream_best_effort_or_unknown`.
+
+#### Subagent registration ordering
+
+Manual prompt:
+
+```text
+Using deepseek-v4-pro as controller, spawn one DeepSeek subagent that only says "ready" and then wait for it.
+```
+
+Expected:
+
+- no `unknown conversation` before registration;
+- if `unknown conversation` appears, it is followed by deterministic resume recovery and no lost tool/result events;
+- `subagent_registration.jsonl` contains only event names, timestamps, hashed conversation/thread ids, and safe status classes;
+- capture report includes ordered evidence:
+  - `subagent_registration_events`;
+  - `subagent_registration_race_suspected`;
+  - `first_item_before_conversation_registered`;
+  - `unknown_conversation_count`;
+  - `thread_read_empty_count`;
+  - `maybe_resume_success_after_unknown_conversation`.
+
+If the report confirms a race outside zhumeng-agent controlled code, do not patch minified Codex bundles as
+the primary fix. Record the app-server boundary and use the exact report condition to decide restart/retry
+fallback. If a race is confirmed in zhumeng-agent controlled code, fix ordering or add bounded
+retry/rehydration around the failing read/resume boundary and add a regression test from the captured event
+order.
+
+#### Capture report matrix
+
+Link desktop and gateway captures after a full DeepSeek run:
+
+```bash
+zhumeng-agent codex capture report --trace-dir <desktop-trace-dir> --gateway-trace-dir <gateway-capture-dir>
+```
+
+Expected report includes:
+
+- `tool_search_call` followed by `tool_search_output` in session/capture evidence;
+- spawn-agent model override freshness status;
+- Computer Use normalized-output class summary;
+- cache replay diagnostics for resumed DeepSeek requests;
+- subagent registration ordering summary.
 
 ### Regression prompts
 

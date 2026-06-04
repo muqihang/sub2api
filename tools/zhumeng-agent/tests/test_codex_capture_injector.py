@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 import zhumeng_agent.adapters.codex.capture_injector as capture_injector
+from zhumeng_agent.cli import main
 from zhumeng_agent.adapters.codex.capture_config import CodexDesktopCaptureConfig
 from zhumeng_agent.adapters.codex.capture_config import CorrelationHasher
 from zhumeng_agent.adapters.codex.capture_injector import (
@@ -15,6 +16,12 @@ from zhumeng_agent.adapters.codex.capture_injector import (
     route_capture_event,
     uninstall_capture_hook,
 )
+
+
+def parse_output(capsys):
+    output = capsys.readouterr().out.strip()
+    assert output, "expected CLI to print JSON"
+    return json.loads(output)
 
 
 def test_capture_install_writes_readonly_manifest_without_modifying_asar(tmp_path: Path):
@@ -523,6 +530,158 @@ def test_runtime_hook_public_event_uses_whitelisted_summary_when_node_is_availab
     completed = subprocess.run([node, str(script_path)], capture_output=True, text=True, check=False)
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_runtime_hook_derives_subagent_registration_from_frames_and_console_when_node_is_available(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        return
+    script_path = tmp_path / "subagent-registration-hook.js"
+    script_path.write_text(
+        "\n".join([
+            "globalThis.CustomEvent = class CustomEvent { constructor(name, init) { this.name = name; this.detail = init.detail; } };",
+            "const posted = [];",
+            "const originalInfos = [];",
+            "globalThis.dispatchEvent = () => true;",
+            "globalThis.fetch = function originalFetch(url, init) {",
+            "  if (url === 'http://127.0.0.1:18765/codex-desktop-capture-v2') posted.push(JSON.parse(init.body));",
+            "  return Promise.resolve({ ok: true });",
+            "};",
+            "globalThis.console = { info(...args) { originalInfos.push(args); }, warn(...args) { originalInfos.push(args); } };",
+            "globalThis.WebSocket = undefined;",
+            build_runtime_hook_script(18765),
+            "globalThis.fetch('/rpc', { body: JSON.stringify({ id: 1, method: 'item/started', params: { conversation_id: 'conversation-secret', thread_id: 'thread-secret', prompt: 'SECRET_PROMPT' } }) });",
+            "globalThis.console.warn('unknown conversation: conversation-secret SECRET_PROMPT');",
+            "globalThis.console.info('maybe_resume_success conversation-secret');",
+            "setTimeout(() => {",
+            "  const registrations = posted.filter((event) => event.type === 'subagent.registration');",
+            "  if (!registrations.some((event) => event.event_name === 'item/started')) process.exit(121);",
+            "  if (!registrations.some((event) => event.event_name === 'console' && event.message === 'unknown conversation')) process.exit(122);",
+            "  if (!registrations.some((event) => event.event_name === 'console' && event.message === 'maybe_resume_success')) process.exit(123);",
+            "  const dumped = JSON.stringify(registrations);",
+            "  if (dumped.includes('SECRET_PROMPT') || dumped.includes('conversation-secret') || dumped.includes('thread-secret')) process.exit(124);",
+            "}, 20);",
+        ]),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run([node, str(script_path)], capture_output=True, text=True, check=False)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_capture_event_router_writes_subagent_registration_and_report(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "traces"
+    config = CodexDesktopCaptureConfig.defaults()
+    route_capture_event({
+        "type": "subagent.registration",
+        "event_name": "item/started",
+        "conversation_id": "conversation-secret",
+        "thread_id": "thread-secret",
+        "ts": "2026-06-03T11:48:40.000Z",
+    }, trace_dir, config)
+    route_capture_event({
+        "type": "subagent.registration",
+        "event_name": "console",
+        "conversation_id": "conversation-secret",
+        "thread_id": "thread-secret",
+        "message": "unknown conversation: conversation-secret",
+        "ts": "2026-06-03T11:48:41.000Z",
+    }, trace_dir, config)
+    route_capture_event({
+        "type": "subagent.registration",
+        "event_name": "console",
+        "conversation_id": "conversation-secret",
+        "thread_id": "thread-secret",
+        "message": "maybe_resume_success",
+        "ts": "2026-06-03T11:48:42.000Z",
+    }, trace_dir, config)
+
+    rows = (trace_dir / "subagent_registration.jsonl").read_text(encoding="utf-8")
+    assert "conversation-secret" not in rows
+    assert "unknown conversation" not in rows
+    assert "message_class" in rows
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["subagent_registration_race_suspected"] is True
+    assert data["first_item_before_conversation_registered"] is True
+    assert data["unknown_conversation_count"] == 1
+    assert data["maybe_resume_success_after_unknown_conversation"] is True
+
+
+def test_capture_event_router_derives_subagent_registration_and_deferred_tool_search_from_frame(tmp_path: Path):
+    route_capture_event({
+        "type": "app_server_frame",
+        "direction": "desktop_to_app_server",
+        "seq": 9,
+        "frame_text": json.dumps({
+            "id": 9,
+            "method": "item/started",
+            "params": {
+                "conversation_id": "conversation-secret",
+                "thread_id": "thread-secret",
+                "prompt": "SECRET_PROMPT",
+            },
+        }),
+    }, tmp_path, CodexDesktopCaptureConfig.defaults())
+    route_capture_event({
+        "type": "app_server_frame",
+        "direction": "app_server_to_desktop",
+        "seq": 10,
+        "frame_text": json.dumps({
+            "id": 10,
+            "result": {
+                "type": "tool_search_output",
+                "tools": [{
+                    "name": "spawn_agent",
+                    "input_schema": {"properties": {"model": {"enum": ["claude-sonnet-4-6"]}}},
+                    "description": "SECRET_DESCRIPTION",
+                }],
+            },
+        }),
+    }, tmp_path, CodexDesktopCaptureConfig.defaults())
+
+    registration = (tmp_path / "subagent_registration.jsonl").read_text(encoding="utf-8")
+    deferred = (tmp_path / "deferred_tool_search.jsonl").read_text(encoding="utf-8")
+
+    assert "item/started" in registration
+    assert "conversation-secret" not in registration
+    assert "thread-secret" not in registration
+    assert "SECRET_PROMPT" not in registration
+    assert "spawn_agent" in deferred
+    assert "claude-sonnet-4-6" in deferred
+    assert "SECRET_DESCRIPTION" not in deferred
+
+
+def test_capture_event_router_filters_unsafe_deferred_tool_model_enums(tmp_path: Path):
+    route_capture_event({
+        "type": "app_server_frame",
+        "direction": "app_server_to_desktop",
+        "seq": 11,
+        "frame_text": json.dumps({
+            "id": 11,
+            "result": {
+                "type": "tool_search_output",
+                "tools": [{
+                    "name": "spawn_agent",
+                    "input_schema": {
+                        "properties": {
+                            "model": {"enum": ["claude-sonnet-4-6", "Bearer sk-secret", "prompt with spaces"]}
+                        }
+                    },
+                }],
+            },
+        }),
+    }, tmp_path, CodexDesktopCaptureConfig.defaults())
+
+    deferred = (tmp_path / "deferred_tool_search.jsonl").read_text(encoding="utf-8")
+
+    assert "claude-sonnet-4-6" in deferred
+    assert "Bearer sk-secret" not in deferred
+    assert "prompt with spaces" not in deferred
 
 
 def test_capture_event_router_writes_expected_jsonl(tmp_path: Path):

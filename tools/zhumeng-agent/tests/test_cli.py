@@ -15,6 +15,35 @@ ORIGINAL_ENSURE_CAPTURE_BRIDGE_RUNNING = cli.ensure_capture_bridge_running
 ORIGINAL_ENSURE_PROXY_RUNNING = cli.ensure_proxy_running
 
 
+@pytest.fixture(autouse=True)
+def restore_cli_globals_after_test():
+    originals = {
+        name: getattr(cli, name)
+        for name in (
+            "default_capture_config",
+            "generate_capture_report",
+            "ensure_capture_receiver_running",
+            "ensure_capture_bridge_running",
+            "ensure_proxy_running",
+            "default_state_store",
+            "default_config_manager",
+            "default_http_client",
+            "resolve_codex_home",
+            "codex_doctor_report",
+            "detect_codex_app_path",
+            "patch_codex_enhancements",
+            "select_cdp_port",
+            "launch_codex_process",
+            "capture_installation_enabled",
+            "inject_capture_hook_via_cdp",
+        )
+        if hasattr(cli, name)
+    }
+    yield
+    for name, value in originals.items():
+        setattr(cli, name, value)
+
+
 def parse_output(capsys):
     output = capsys.readouterr().out.strip()
     assert output, "expected CLI to print JSON"
@@ -184,9 +213,9 @@ def test_deeplink_invocation_uses_sys_argv_when_run_as_module(capsys, tmp_path: 
     assert data["client"] == "codex"
 
 
-def test_doctor_returns_json(capsys):
-    cli.resolve_codex_home = lambda: Path("/tmp/fake-codex-home")
-    cli.codex_doctor_report = lambda *args, **kwargs: {"client": "codex", "plugins": {}}
+def test_doctor_returns_json(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "resolve_codex_home", lambda: Path("/tmp/fake-codex-home"))
+    monkeypatch.setattr(cli, "codex_doctor_report", lambda *args, **kwargs: {"client": "codex", "plugins": {}})
     exit_code = main(["doctor", "--json"])
 
     assert exit_code == 0
@@ -901,8 +930,8 @@ def test_codex_capture_install_and_uninstall_do_not_patch_model_picker(capsys, t
     assert updates["desktop_capture_enabled"] is False
 
 
-def test_codex_capture_report_reads_trace_dir(capsys, tmp_path: Path):
-    cli.generate_capture_report = lambda trace_dir, config=None, gateway_trace_dir=None: {"status": "reported", "trace_dir_hash": "hmac-sha256:x", "app_server_methods": ["model/list"]}
+def test_codex_capture_report_reads_trace_dir(capsys, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(cli, "generate_capture_report", lambda trace_dir, config=None, gateway_trace_dir=None: {"status": "reported", "trace_dir_hash": "hmac-sha256:x", "app_server_methods": ["model/list"]})
 
     exit_code = main(["codex", "capture", "report", "--trace-dir", str(tmp_path / "traces")])
 
@@ -1637,3 +1666,51 @@ def test_logout_missing_managed_file_is_restore_conflict(capsys, tmp_path: Path)
     data = parse_output(capsys)
     assert data["status"] == "restore_conflict"
     assert store.deleted is False
+
+
+def test_codex_capture_report_flags_spawn_agent_model_override_mismatch(capsys, tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(cli, "default_capture_config", ORIGINAL_DEFAULT_CAPTURE_CONFIG)
+    monkeypatch.setattr(cli, "generate_capture_report", ORIGINAL_GENERATE_CAPTURE_REPORT)
+    codex_home = tmp_path / ".codex"
+    catalog = codex_home / "zhumeng-codex-models.json"
+    codex_home.mkdir(parents=True)
+    catalog.write_text(json.dumps({
+        "models": [
+            {"slug": "deepseek-v4-pro"},
+            {"slug": "deepseek-v4-flash"},
+            {"slug": "claude-sonnet-4-6"},
+        ]
+    }), encoding="utf-8")
+    (codex_home / "config.toml").write_text(f'model = "deepseek-v4-pro"\nmodel_catalog_json = "{catalog}"\n', encoding="utf-8")
+    monkeypatch.setattr(cli, "default_config_manager", lambda: cli.CodexConfigManager(codex_home))
+    trace_dir = tmp_path / "traces"
+    trace_dir.mkdir()
+    (trace_dir / "deferred_tool_search.jsonl").write_text(json.dumps({
+        "event_type": "tool_search_output",
+        "capture_ts": "2026-06-03T11:43:33.599Z",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "name": "spawn_agent",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "model": {"type": "string", "enum": ["claude-haiku-4-5", "claude-sonnet-4-6"]}
+                    },
+                },
+            }],
+        }],
+    }) + "\n", encoding="utf-8")
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    mismatch = data["spawn_agent_model_override"]
+    assert mismatch["spawn_agent_model_override_mismatch"] is True
+    assert mismatch["catalog_has_deepseek"] is True
+    assert mismatch["spawn_agent_has_deepseek"] is False
+    assert mismatch["catalog_hash"]
+    assert mismatch["catalog_mtime"]
+    assert mismatch["capture_ts"] == "2026-06-03T11:43:33.599Z"

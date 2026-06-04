@@ -20,6 +20,7 @@ from .adapters.codex.config_manager import CodexConfigManager, choose_local_prox
 from .adapters.codex.capture_baseline import generate_capture_baseline
 from .adapters.codex.capture_config import CodexDesktopCaptureConfig
 from .adapters.codex.capture_config import CorrelationHasher
+from .adapters.codex.capture_shape import build_spawn_agent_model_override_report, build_subagent_registration_report
 from .adapters.codex.capture_injector import install_capture_hook, uninstall_capture_hook
 from .adapters.codex.capture_injector import capture_installation_enabled, inject_capture_hook_via_cdp
 from .adapters.codex.capture_injector import attach_capture_bridge_via_cdp
@@ -658,7 +659,7 @@ def desktop_diagnose_data() -> dict[str, object]:
     codex_home = resolve_codex_home()
     return desktop_diagnostic_report(
         state=state,
-        doctor=codex_doctor_report(codex_home, codex_app_path=default_codex_app_path()),
+        doctor=codex_doctor_report(codex_home, codex_app_path=default_codex_app_path(), state=state),
         codex_home=codex_home,
     )
 
@@ -1489,6 +1490,8 @@ def generate_capture_report(
     gateway_events = load_gateway_trace_events(gateway_root)
     tool_events = load_jsonl(trace_dir / "tool_lifecycle.jsonl")
     model_events = load_jsonl(trace_dir / "model_picker.jsonl")
+    subagent_events = load_jsonl(trace_dir / "subagent_registration.jsonl")
+    deferred_tool_events = load_jsonl(trace_dir / "deferred_tool_search.jsonl")
     link_path = trace_dir / "trace_link.jsonl"
     link_events = load_jsonl(link_path)
     if not link_events and gateway_events:
@@ -1496,20 +1499,58 @@ def generate_capture_report(
         write_trace_links(link_path, link_events)
     methods = sorted({str(event.get("method")) for event in app_server_events if event.get("method")})
     policy_violations = detect_policy_violations([*app_server_events, *tool_events, *model_events])
+    subagent_report = build_subagent_registration_report(subagent_events) if subagent_events else {}
+    spawn_agent_report = build_spawn_agent_override_capture_report(deferred_tool_events) if deferred_tool_events else {}
     return {
         "status": "reported",
         "trace_dir_hash": hasher.hash_identifier(str(trace_dir)),
         "app_server_methods": methods,
         "model_picker_events": len(model_events),
         "tool_lifecycle_events": len(tool_events),
+        "subagent_registration_events": len(subagent_events),
         "gateway_trace_links": len(link_events),
         "content_policy_violations": len(policy_violations),
         "low_confidence_links": sum(1 for event in link_events if event.get("confidence") == "low"),
         "hook_mode": "renderer_readonly",
         "app_asar_modified": False,
         "correlation_hash_key_file": "set" if config.correlation_hash_key_file else "unset",
+        **subagent_report,
+        **({"spawn_agent_model_override": spawn_agent_report} if spawn_agent_report else {}),
     }
 
+
+
+
+def build_spawn_agent_override_capture_report(events: list[dict[str, object]]) -> dict[str, object]:
+    manager = default_config_manager()
+    parsed = manager._parsed_config() or {}
+    catalog_path = Path(str(parsed.get("model_catalog_json") or manager.catalog_path_for_profile(None))).expanduser()
+    if not catalog_path.is_absolute():
+        catalog_path = manager.codex_home / catalog_path
+    try:
+        payload = json.loads(catalog_path.read_text(encoding="utf-8")) if catalog_path.exists() else {"models": []}
+    except (OSError, json.JSONDecodeError):
+        payload = {"models": []}
+    models = payload.get("models") if isinstance(payload, dict) else []
+    catalog_models: list[str] = []
+    if isinstance(models, list):
+        for model in models:
+            if isinstance(model, dict):
+                slug = str(model.get("slug") or model.get("model") or model.get("id") or "").strip()
+                if slug:
+                    catalog_models.append(slug)
+    catalog_mtime = None
+    if catalog_path.exists():
+        try:
+            catalog_mtime = datetime.fromtimestamp(catalog_path.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z")
+        except OSError:
+            catalog_mtime = None
+    return build_spawn_agent_model_override_report(
+        events=events,
+        catalog_models=sorted(catalog_models),
+        catalog_hash=file_sha256(catalog_path),
+        catalog_mtime=catalog_mtime,
+    )
 
 def load_gateway_trace_events(gateway_root: Path) -> list[dict[str, object]]:
     direct = gateway_root / "gateway_trace.jsonl"

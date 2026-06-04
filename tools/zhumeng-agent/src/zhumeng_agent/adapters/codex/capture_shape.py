@@ -137,6 +137,184 @@ def shape_app_server_frame(
     }
 
 
+def build_spawn_agent_model_override_report(
+    *,
+    events: list[dict[str, object]],
+    catalog_models: list[str],
+    catalog_hash: str | None = None,
+    catalog_mtime: str | None = None,
+) -> dict[str, object]:
+    catalog_has_deepseek = any(str(model).startswith("deepseek-") for model in catalog_models)
+    spawn_models: set[str] = set()
+    spawn_agent_present = False
+    capture_ts: str | None = None
+    for event in events:
+        if capture_ts is None and event.get("capture_ts"):
+            capture_ts = str(event.get("capture_ts"))
+        spawn_agent_present = spawn_agent_present or contains_spawn_agent(event.get("tools")) or contains_spawn_agent(event.get("tool_search_output"))
+        spawn_models.update(extract_spawn_agent_model_overrides(event.get("tools")))
+        spawn_models.update(extract_spawn_agent_model_overrides(event.get("tool_search_output")))
+    spawn_agent_has_deepseek = any(model.startswith("deepseek-") for model in spawn_models)
+    return {
+        "spawn_agent_model_override_mismatch": bool(catalog_has_deepseek and spawn_agent_present and not spawn_agent_has_deepseek),
+        "catalog_has_deepseek": catalog_has_deepseek,
+        "spawn_agent_has_deepseek": spawn_agent_has_deepseek,
+        "spawn_agent_present": spawn_agent_present,
+        "spawn_agent_model_count": len(spawn_models),
+        "capture_ts": capture_ts,
+        "catalog_hash": catalog_hash,
+        "catalog_mtime": catalog_mtime,
+    }
+
+
+def contains_spawn_agent(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("name") == "spawn_agent":
+            return True
+        return any(contains_spawn_agent(child) for child in value.values())
+    if isinstance(value, list):
+        return any(contains_spawn_agent(child) for child in value)
+    return False
+
+
+def extract_spawn_agent_model_overrides(value: object) -> set[str]:
+    models: set[str] = set()
+    if isinstance(value, dict):
+        if value.get("name") == "spawn_agent":
+            models.update(extract_model_schema_values(value.get("input_schema")))
+            models.update(extract_model_schema_values(value.get("parameters")))
+        for child in value.values():
+            models.update(extract_spawn_agent_model_overrides(child))
+    elif isinstance(value, list):
+        for child in value:
+            models.update(extract_spawn_agent_model_overrides(child))
+    return models
+
+
+def extract_model_schema_values(schema: object) -> set[str]:
+    models: set[str] = set()
+    if not isinstance(schema, dict):
+        return models
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        model_schema = properties.get("model")
+        if isinstance(model_schema, dict):
+            for key in ("enum", "oneOf", "anyOf"):
+                raw = model_schema.get(key)
+                if isinstance(raw, list):
+                    for item in raw:
+                        if isinstance(item, str):
+                            models.add(item)
+                        elif isinstance(item, dict):
+                            const = item.get("const") or item.get("enum")
+                            if isinstance(const, str):
+                                models.add(const)
+                            elif isinstance(const, list):
+                                models.update(str(value) for value in const if isinstance(value, str))
+            description = model_schema.get("description")
+            if isinstance(description, str):
+                for match in re.findall(r"\b(?:deepseek|claude|gpt)[A-Za-z0-9_.:-]+\b", description):
+                    models.add(match.rstrip(",.;)"))
+    return {model for model in models if is_safe_metadata_text(model)}
+
+def shape_subagent_registration_event(
+    *,
+    event_name: str,
+    conversation_id: str | None = None,
+    thread_id: str | None = None,
+    status: str | None = None,
+    message: str | None = None,
+    ts: str | None = None,
+    hasher: CorrelationHasher | None = None,
+) -> dict[str, object]:
+    hasher = hasher or CorrelationHasher.from_key_file(None)
+    event: dict[str, object] = {
+        "schema_version": 1,
+        "source": "codex_desktop",
+        "event_type": "subagent_registration",
+        "event_name": safe_protocol_label(event_name, hasher),
+        "ts": ts or utc_now(),
+        "payload_policy": "shape_only",
+    }
+    if conversation_id:
+        event["conversation_id_hash"] = hasher.hash_identifier(str(conversation_id))
+    if thread_id:
+        event["thread_id_hash"] = hasher.hash_identifier(str(thread_id))
+    message_class = classify_subagent_registration_message(message or status or event_name)
+    if message_class:
+        event["message_class"] = message_class
+    if status and is_safe_metadata_text(str(status)) and not classify_subagent_registration_message(status):
+        event["status"] = str(status)
+    elif status:
+        event["status_class"] = classify_subagent_registration_message(status) or "redacted"
+    return event
+
+
+def classify_subagent_registration_message(value: str) -> str | None:
+    lowered = value.lower()
+    if "unknown conversation" in lowered:
+        return "unknown_conversation"
+    if "thread read empty" in lowered:
+        return "thread_read_empty"
+    if "maybe_resume_success" in lowered:
+        return "maybe_resume_success"
+    return None
+
+
+def build_subagent_registration_report(events: list[dict[str, object]]) -> dict[str, object]:
+    ordered = sorted(events, key=lambda event: str(event.get("ts") or ""))
+    order = [subagent_registration_order_entry(event) for event in ordered]
+    first_item_before_registered = False
+    unknown_count = 0
+    thread_read_empty_count = 0
+    unknown_seen_by_group: set[str] = set()
+    maybe_resume_after_unknown = False
+    registered_groups: set[str] = set()
+    for event in ordered:
+        name = str(event.get("event_name") or "")
+        message_class = str(event.get("message_class") or "")
+        group = subagent_registration_group_key(event)
+        if name in {"thread/start", "thread/resume"}:
+            registered_groups.add(group)
+        if name in {"item/started", "item/completed", "thread/read"} and group not in registered_groups:
+            first_item_before_registered = True
+        if message_class == "unknown_conversation":
+            unknown_count += 1
+            unknown_seen_by_group.add(group)
+        if message_class == "thread_read_empty":
+            thread_read_empty_count += 1
+        if message_class == "maybe_resume_success" and (group in unknown_seen_by_group or "__global__" in unknown_seen_by_group):
+            maybe_resume_after_unknown = True
+    suspected = first_item_before_registered or unknown_count > 0 or thread_read_empty_count > 0
+    return {
+        "subagent_registration_race_suspected": suspected,
+        "first_item_before_conversation_registered": first_item_before_registered,
+        "unknown_conversation_count": unknown_count,
+        "thread_read_empty_count": thread_read_empty_count,
+        "maybe_resume_success_after_unknown_conversation": maybe_resume_after_unknown,
+        "subagent_registration_event_count": len(ordered),
+        "subagent_registration_order": order,
+    }
+
+
+def subagent_registration_order_entry(event: dict[str, object]) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "event_name": str(event.get("event_name") or "unknown"),
+        "ts": str(event.get("ts") or ""),
+    }
+    for key in ("conversation_id_hash", "thread_id_hash", "message_class", "status", "status_class"):
+        if event.get(key):
+            entry[key] = event[key]
+    return entry
+
+
+def subagent_registration_group_key(event: dict[str, object]) -> str:
+    conversation = event.get("conversation_id_hash")
+    thread = event.get("thread_id_hash")
+    if conversation or thread:
+        return f"{conversation or ''}|{thread or ''}"
+    return "__global__"
+
 def tee_frames_without_mutation(frames: Iterable[bytes], writer: Callable[[dict[str, object]], None]) -> list[bytes]:
     output: list[bytes] = []
     for index, frame in enumerate(frames, start=1):
