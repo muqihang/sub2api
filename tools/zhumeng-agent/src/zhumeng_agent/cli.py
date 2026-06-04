@@ -1501,6 +1501,9 @@ def generate_capture_report(
     policy_violations = detect_policy_violations([*app_server_events, *tool_events, *model_events])
     subagent_report = build_subagent_registration_report(subagent_events) if subagent_events else {}
     spawn_agent_report = build_spawn_agent_override_capture_report(deferred_tool_events) if deferred_tool_events else {}
+    deferred_report = build_deferred_tool_search_report(deferred_tool_events) if deferred_tool_events else {}
+    deepseek_cache_report = build_deepseek_cache_replay_report(gateway_events)
+    computer_use_report = build_computer_use_normalized_output_report(gateway_events)
     return {
         "status": "reported",
         "trace_dir_hash": hasher.hash_identifier(str(trace_dir)),
@@ -1516,9 +1519,121 @@ def generate_capture_report(
         "correlation_hash_key_file": "set" if config.correlation_hash_key_file else "unset",
         **subagent_report,
         **({"spawn_agent_model_override": spawn_agent_report} if spawn_agent_report else {}),
+        **({"deferred_tool_search": deferred_report} if deferred_report else {}),
+        **({"deepseek_cache_replay_diagnostics": deepseek_cache_report} if deepseek_cache_report else {}),
+        **({"computer_use_normalized_output": computer_use_report} if computer_use_report else {}),
     }
 
 
+
+def build_deferred_tool_search_report(events: list[dict[str, object]]) -> dict[str, object]:
+    ordered = sorted(events, key=lambda event: str(event.get("capture_ts") or event.get("ts") or ""))
+    call_count = sum(1 for event in ordered if event.get("event_type") == "tool_search_call")
+    output_count = sum(1 for event in ordered if event.get("event_type") == "tool_search_output")
+    seen_call = False
+    followed_by_output = False
+    for event in ordered:
+        event_type = str(event.get("event_type") or "")
+        if event_type == "tool_search_call":
+            seen_call = True
+        elif event_type == "tool_search_output" and seen_call:
+            followed_by_output = True
+            break
+    return {
+        "events": len(ordered),
+        "tool_search_call_count": call_count,
+        "tool_search_output_count": output_count,
+        "tool_search_call_followed_by_output": followed_by_output,
+        "spawn_agent_present": any(capture_shape_contains_spawn_agent(event.get("tools")) for event in ordered),
+    }
+
+
+def capture_shape_contains_spawn_agent(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("name") == "spawn_agent":
+            return True
+        return any(capture_shape_contains_spawn_agent(child) for child in value.values())
+    if isinstance(value, list):
+        return any(capture_shape_contains_spawn_agent(child) for child in value)
+    return False
+
+
+def gateway_request_diagnostics(event: dict[str, object]) -> dict[str, object]:
+    diagnostics = event.get("request_diagnostics")
+    return diagnostics if isinstance(diagnostics, dict) else {}
+
+
+def build_deepseek_cache_replay_report(events: list[dict[str, object]]) -> dict[str, object]:
+    caches = [
+        diag["deepseek_cache"]
+        for diag in (gateway_request_diagnostics(event) for event in events)
+        if isinstance(diag.get("deepseek_cache"), dict)
+    ]
+    if not caches:
+        return {}
+
+    def present(key: str) -> bool:
+        return any(bool(cache.get(key)) for cache in caches)
+
+    return {
+        "events": len(caches),
+        "previous_response_id_present": any(bool(cache.get("previous_response_id_present")) for cache in caches),
+        "previous_response_replay_modes": sorted({str(cache.get("previous_response_replay_mode")) for cache in caches if cache.get("previous_response_replay_mode")}),
+        "state_lookup_statuses": sorted({str(cache.get("state_lookup_status")) for cache in caches if cache.get("state_lookup_status")}),
+        "messages_full_hash_present": present("messages_full_hash"),
+        "message_prefix_hash_present": present("message_prefix_hash"),
+        "message_suffix_hash_present": present("message_suffix_hash"),
+        "tool_schema_hash_present": present("tool_schema_hash"),
+        "request_shape_hash_present": present("request_shape_hash"),
+    }
+
+
+def build_computer_use_normalized_output_report(events: list[dict[str, object]]) -> dict[str, object]:
+    summaries = [
+        diag["deepseek_tool_output_summary"]
+        for diag in (gateway_request_diagnostics(event) for event in events)
+        if isinstance(diag.get("deepseek_tool_output_summary"), dict)
+    ]
+    computer_summaries = [summary for summary in summaries if deepseek_tool_summary_is_computer_use(summary)]
+    if not computer_summaries:
+        return {}
+    classes = sorted({item for summary in computer_summaries for item in deepseek_tool_summary_classes(summary)})
+    return {
+        "events": len(computer_summaries),
+        "classes": classes,
+        "fallback_preview_only": all(bool(summary.get("fallback_preview_only")) for summary in computer_summaries),
+        "operable_line_count_max": max((safe_int(summary.get("operable_line_count")) for summary in computer_summaries), default=0),
+        "original_chars_max": max((safe_int(summary.get("original_chars")) for summary in computer_summaries), default=0),
+        "sha256_present": any(bool(summary.get("sha256")) for summary in computer_summaries),
+    }
+
+
+def deepseek_tool_summary_classes(summary: dict[str, object]) -> list[str]:
+    classes = summary.get("classes")
+    if isinstance(classes, list):
+        return sorted({str(item) for item in classes if is_safe_capture_report_label(str(item))})
+    if isinstance(classes, dict):
+        return sorted({str(key) for key, value in classes.items() if value and is_safe_capture_report_label(str(key))})
+    return []
+
+
+def deepseek_tool_summary_is_computer_use(summary: dict[str, object]) -> bool:
+    classes = set(deepseek_tool_summary_classes(summary))
+    return bool(classes.intersection({"computer_screenshot", "accessibility_tree", "visual_tree", "computer_use"})) or safe_int(summary.get("operable_line_count")) > 0
+
+
+def safe_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0
+
+
+def is_safe_capture_report_label(value: str) -> bool:
+    return bool(re.match(r"^[A-Za-z0-9_.:-]{1,80}$", value))
 
 
 def build_spawn_agent_override_capture_report(events: list[dict[str, object]]) -> dict[str, object]:
@@ -1557,12 +1672,100 @@ def load_gateway_trace_events(gateway_root: Path) -> list[dict[str, object]]:
     if direct.exists():
         return load_jsonl(direct)
     if gateway_root.is_file():
-        return load_jsonl(gateway_root)
+        if gateway_root.name.endswith(".jsonl"):
+            return load_jsonl(gateway_root)
+        event = load_gateway_capture_json_event(gateway_root)
+        return [event] if event else []
     events: list[dict[str, object]] = []
     if gateway_root.exists():
         for path in sorted(gateway_root.rglob("gateway_trace.jsonl")):
             events.extend(load_jsonl(path))
+        for path in sorted(gateway_root.rglob("trace_report.json")):
+            event = load_gateway_capture_trace_dir_event(path.parent)
+            if event:
+                events.append(event)
+        for path in sorted(gateway_root.rglob("summary.json")):
+            if (path.parent / "trace_report.json").exists():
+                continue
+            event = load_gateway_capture_trace_dir_event(path.parent)
+            if event:
+                events.append(event)
+        for path in sorted(gateway_root.rglob("session_report.jsonl")):
+            events.extend(load_gateway_session_report_events(path))
     return events
+
+
+def load_gateway_capture_trace_dir_event(trace_dir: Path) -> dict[str, object] | None:
+    report = load_gateway_capture_json_event(trace_dir / "trace_report.json") or {}
+    summary = load_gateway_capture_json_event(trace_dir / "summary.json") or {}
+    diagnostics = load_gateway_capture_json_event(trace_dir / "client_request.diagnostics.json") or {}
+    event: dict[str, object] = {}
+    for source in (summary, report):
+        if not isinstance(source, dict):
+            continue
+        for src_key, dst_key in (
+            ("trace_id", "gateway_trace_id"),
+            ("finished_at", "ts"),
+            ("ts", "ts"),
+            ("model", "model"),
+            ("path", "request_path"),
+            ("request_path", "request_path"),
+            ("correlation_hashes", "correlation_hashes"),
+        ):
+            if source.get(src_key) and not event.get(dst_key):
+                event[dst_key] = source[src_key]
+    if not event.get("gateway_trace_id"):
+        event["gateway_trace_id"] = trace_dir.name
+    merged_diagnostics = merge_request_diagnostics(
+        summary.get("request_diagnostics") if isinstance(summary, dict) else None,
+        report.get("request_diagnostics") if isinstance(report, dict) else None,
+        diagnostics,
+    )
+    if merged_diagnostics:
+        event["request_diagnostics"] = merged_diagnostics
+    return event if event else None
+
+
+def load_gateway_capture_json_event(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def load_gateway_session_report_events(path: Path) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for row in load_jsonl(path):
+        event: dict[str, object] = {
+            "gateway_trace_id": row.get("trace_id") or path.stem,
+            "ts": row.get("ts"),
+            "model": row.get("model"),
+            "request_path": row.get("request_path") or row.get("path") or "/codex/v1/responses",
+        }
+        diagnostics = merge_request_diagnostics({"deepseek_cache": row.get("deepseek_cache")} if isinstance(row.get("deepseek_cache"), dict) else None)
+        if diagnostics:
+            event["request_diagnostics"] = diagnostics
+        events.append({key: value for key, value in event.items() if value})
+    return events
+
+
+def merge_request_diagnostics(*sources: object) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("deepseek_cache", "deepseek_tool_output_summary"):
+            value = source.get(key)
+            if isinstance(value, dict):
+                current = merged.get(key)
+                if isinstance(current, dict):
+                    current.update(value)
+                else:
+                    merged[key] = dict(value)
+    return merged
 
 
 def detect_policy_violations(events: list[dict[str, object]]) -> list[dict[str, object]]:

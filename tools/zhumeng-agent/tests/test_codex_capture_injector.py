@@ -634,7 +634,21 @@ def test_capture_event_router_derives_subagent_registration_and_deferred_tool_se
         "frame_text": json.dumps({
             "id": 10,
             "result": {
+                "type": "tool_search_call",
+                "call_id": "call-secret",
+                "arguments": {"query": "SECRET_QUERY"},
+            },
+        }),
+    }, tmp_path, CodexDesktopCaptureConfig.defaults())
+    route_capture_event({
+        "type": "app_server_frame",
+        "direction": "app_server_to_desktop",
+        "seq": 11,
+        "frame_text": json.dumps({
+            "id": 11,
+            "result": {
                 "type": "tool_search_output",
+                "call_id": "call-secret",
                 "tools": [{
                     "name": "spawn_agent",
                     "input_schema": {"properties": {"model": {"enum": ["claude-sonnet-4-6"]}}},
@@ -651,8 +665,12 @@ def test_capture_event_router_derives_subagent_registration_and_deferred_tool_se
     assert "conversation-secret" not in registration
     assert "thread-secret" not in registration
     assert "SECRET_PROMPT" not in registration
+    assert "tool_search_call" in deferred
+    assert "tool_search_output" in deferred
     assert "spawn_agent" in deferred
     assert "claude-sonnet-4-6" in deferred
+    assert "call-secret" not in deferred
+    assert "SECRET_QUERY" not in deferred
     assert "SECRET_DESCRIPTION" not in deferred
 
 

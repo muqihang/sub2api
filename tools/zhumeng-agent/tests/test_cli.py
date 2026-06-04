@@ -1106,6 +1106,169 @@ def test_codex_capture_report_discovers_gateway_trace_files_recursively(capsys, 
     data = parse_output(capsys)
     assert data["gateway_trace_links"] == 1
 
+def test_codex_capture_report_summarizes_deferred_tool_search_sequence(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "desktop"
+    trace_dir.mkdir()
+    (trace_dir / "deferred_tool_search.jsonl").write_text(
+        json.dumps({
+            "event_type": "tool_search_call",
+            "call_id": "call_fixture",
+            "capture_ts": "2026-06-03T11:43:33.493Z",
+        }) + "\n" +
+        json.dumps({
+            "event_type": "tool_search_output",
+            "call_id": "call_fixture",
+            "capture_ts": "2026-06-03T11:43:33.599Z",
+            "tools": [{
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [{"name": "spawn_agent", "input_schema": {"type": "object"}}],
+            }],
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["deferred_tool_search"] == {
+        "events": 2,
+        "tool_search_call_count": 1,
+        "tool_search_output_count": 1,
+        "tool_search_call_followed_by_output": True,
+        "spawn_agent_present": True,
+    }
+    assert "call_fixture" not in json.dumps(data)
+
+
+def test_codex_capture_report_reads_real_gateway_capture_artifacts(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "desktop"
+    gateway_trace = tmp_path / "gateway" / "2026-06-03" / "trace_real"
+    trace_dir.mkdir()
+    gateway_trace.mkdir(parents=True)
+    shared = {"x_client_request_id_hash": "hmac-sha256:abc"}
+    (trace_dir / "app_server_v2.jsonl").write_text(json.dumps({
+        "desktop_trace_id": "cd_1",
+        "ts": "2026-06-03T11:48:43.000Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+    (gateway_trace / "summary.json").write_text(json.dumps({
+        "trace_id": "trace_real",
+        "finished_at": "2026-06-03T11:48:43.010Z",
+        "model": "deepseek-v4-pro",
+        "path": "/codex/v1/responses",
+        "request_diagnostics": {
+            "deepseek_cache": {
+                "previous_response_id_present": True,
+                "previous_response_replay_mode": "full_replay_messages",
+                "state_lookup_status": "hit",
+                "messages_full_hash": "sha256:messages",
+                "message_prefix_hash": "sha256:prefix",
+                "message_suffix_hash": "sha256:suffix",
+                "tool_schema_hash": "sha256:tools",
+                "request_shape_hash": "sha256:shape",
+            },
+        },
+    }), encoding="utf-8")
+    (gateway_trace / "client_request.diagnostics.json").write_text(json.dumps({
+        "deepseek_tool_output_summary": {
+            "classes": {"computer_screenshot": True, "accessibility_tree": True},
+            "fallback_preview_only": False,
+            "operable_line_count": 4,
+            "original_chars": 109000,
+            "sha256": "sha256:tool-output",
+        },
+    }), encoding="utf-8")
+
+    exit_code = main([
+        "codex", "capture", "report",
+        "--trace-dir", str(trace_dir),
+        "--gateway-trace-dir", str(tmp_path / "gateway"),
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["gateway_trace_links"] == 1
+    assert data["deepseek_cache_replay_diagnostics"]["previous_response_replay_modes"] == ["full_replay_messages"]
+    assert data["deepseek_cache_replay_diagnostics"]["state_lookup_statuses"] == ["hit"]
+    assert data["computer_use_normalized_output"]["classes"] == ["accessibility_tree", "computer_screenshot"]
+    assert data["computer_use_normalized_output"]["operable_line_count_max"] == 4
+    assert "tool-output" not in json.dumps(data)
+
+
+def test_codex_capture_report_summarizes_deepseek_gateway_diagnostics(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "desktop"
+    gateway_dir = tmp_path / "gateway" / "2026-06-03" / "trace_1"
+    trace_dir.mkdir()
+    gateway_dir.mkdir(parents=True)
+    shared = {"x_client_request_id_hash": "hmac-sha256:abc"}
+    (trace_dir / "app_server_v2.jsonl").write_text(json.dumps({
+        "desktop_trace_id": "cd_1",
+        "ts": "2026-06-03T11:48:43.000Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+    }) + "\n", encoding="utf-8")
+    (gateway_dir / "gateway_trace.jsonl").write_text(json.dumps({
+        "gateway_trace_id": "trace_1",
+        "ts": "2026-06-03T11:48:43.010Z",
+        "model": "deepseek-v4-pro",
+        "request_path": "/codex/v1/responses",
+        "correlation_hashes": shared,
+        "request_diagnostics": {
+            "deepseek_cache": {
+                "previous_response_id_present": True,
+                "previous_response_replay_mode": "full_replay_messages",
+                "state_lookup_status": "hit",
+                "messages_full_hash": "sha256:messages",
+                "message_prefix_hash": "sha256:prefix",
+                "message_suffix_hash": "sha256:suffix",
+                "tool_schema_hash": "sha256:tools",
+                "request_shape_hash": "sha256:shape",
+            },
+            "deepseek_tool_output_summary": {
+                "classes": ["computer_screenshot", "accessibility_tree"],
+                "fallback_preview_only": False,
+                "operable_line_count": 3,
+                "original_chars": 108000,
+                "sha256": "sha256:tool-output",
+            },
+        },
+    }) + "\n", encoding="utf-8")
+
+    exit_code = main([
+        "codex", "capture", "report",
+        "--trace-dir", str(trace_dir),
+        "--gateway-trace-dir", str(tmp_path / "gateway"),
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["gateway_trace_links"] == 1
+    assert data["deepseek_cache_replay_diagnostics"] == {
+        "events": 1,
+        "previous_response_id_present": True,
+        "previous_response_replay_modes": ["full_replay_messages"],
+        "state_lookup_statuses": ["hit"],
+        "messages_full_hash_present": True,
+        "message_prefix_hash_present": True,
+        "message_suffix_hash_present": True,
+        "tool_schema_hash_present": True,
+        "request_shape_hash_present": True,
+    }
+    assert data["computer_use_normalized_output"] == {
+        "events": 1,
+        "classes": ["accessibility_tree", "computer_screenshot"],
+        "fallback_preview_only": False,
+        "operable_line_count_max": 3,
+        "original_chars_max": 108000,
+        "sha256_present": True,
+    }
+    assert "tool-output" not in json.dumps(data)
+
 
 def test_codex_capture_status_accepts_correlation_key_file(capsys, tmp_path: Path):
     cli.default_capture_config = ORIGINAL_DEFAULT_CAPTURE_CONFIG

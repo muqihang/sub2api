@@ -741,6 +741,15 @@ def deferred_tool_search_event_from_frame(frame: dict[str, object]) -> dict[str,
     result = frame.get("result")
     if not isinstance(result, dict):
         return None
+    result_type = str(result.get("type") or "")
+    if result_type == "tool_search_call":
+        return {
+            "schema_version": 1,
+            "source": "codex_desktop",
+            "event_type": "tool_search_call",
+            "capture_ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "payload_policy": "shape_only",
+        }
     raw_tools = result.get("tools")
     if not isinstance(raw_tools, list):
         return None
