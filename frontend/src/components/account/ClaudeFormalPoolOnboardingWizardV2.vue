@@ -5,7 +5,7 @@
         <aside class="border-b border-white/10 bg-gradient-to-b from-slate-900 via-indigo-950 to-slate-950 p-5 lg:border-b-0 lg:border-r">
           <p class="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-300">Onboarding V2</p>
           <h1 class="mt-3 text-2xl font-bold">Claude 正式号池上号门禁</h1>
-          <p class="mt-3 text-sm leading-6 text-slate-300">不限制 Claude Code 能力；只展示代理、同出口、runtime、真实 directed healthcheck 与预热门禁。</p>
+          <p class="mt-3 text-sm leading-6 text-slate-300">不限制 Claude Code 能力；OAuth 展示同出口、runtime、真实 directed healthcheck 与预热门禁；Setup Token 只做代理健康和后续运行门禁。</p>
 
           <nav class="mt-8 space-y-3" aria-label="Onboarding steps">
             <button
@@ -90,8 +90,16 @@
           <section v-if="renderStep === 'proxy'" class="grid gap-4 xl:grid-cols-2">
             <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <h3 class="text-lg font-bold">Proxy setup</h3>
-              <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">先创建 idle session；StartSession 后不显示 browser egress check URL。</p>
+              <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">先创建 idle session；OAuth 需要同出口浏览器校验，Setup Token 只要求代理健康通过。</p>
               <div class="mt-4 grid gap-3">
+                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950" data-testid="auth-mode-chooser">
+                  <p class="text-sm font-semibold">授权方式</p>
+                  <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">先选方式，向导会自动调整第 1 步门禁。</p>
+                  <div class="mt-3 flex flex-wrap gap-4 text-sm">
+                    <label class="inline-flex items-center gap-2"><input v-model="authMode" type="radio" value="oauth" /> OAuth URL（需要同出口浏览器校验）</label>
+                    <label class="inline-flex items-center gap-2"><input data-testid="auth-mode-setup-token" v-model="authMode" type="radio" value="setup-token-cookie" /> Setup Token（无需同出口浏览器校验）</label>
+                  </div>
+                </div>
                 <label class="text-sm font-medium">代理模式
                   <select data-testid="proxy-mode-select" v-model="form.proxy_mode" class="input mt-1 w-full">
                     <option value="existing">选择已有代理</option>
@@ -119,29 +127,43 @@
                     <p class="mt-1">请先去代理管理添加 IP，再回到这里刷新选择。</p>
                     <RouterLink to="/admin/proxies" class="btn btn-secondary btn-sm mt-3">去代理管理添加 IP</RouterLink>
                   </div>
-                  <div v-else class="grid gap-2 md:grid-cols-2">
-                    <button
-                      v-for="item in proxyOptions"
-                      :key="item.id"
-                      type="button"
-                      :data-testid="`proxy-card-${item.id}`"
-                      :class="pickerCardClass(form.proxy_id === item.id)"
-                      @click="selectProxy(item.id)"
-                    >
-                      <span class="flex items-start justify-between gap-2">
-                        <span class="min-w-0">
-                          <span class="block truncate text-sm font-semibold">{{ safeText(item.name, '未命名代理') }}</span>
-                          <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">{{ proxySafeEndpoint(item) }}</span>
+                  <div v-else class="space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-950 dark:text-slate-400">
+                      <span data-testid="proxy-list-summary">共 {{ sortedProxyOptions.length }} 个代理，优先显示未绑定/低绑定量代理。</span>
+                      <button
+                        v-if="sortedProxyOptions.length > PROXY_COLLAPSED_LIMIT"
+                        data-testid="proxy-list-toggle"
+                        type="button"
+                        class="btn btn-secondary btn-sm"
+                        @click="proxyListExpanded = !proxyListExpanded"
+                      >
+                        {{ proxyListExpanded ? '收起代理列表' : `展开全部 ${sortedProxyOptions.length} 个` }}
+                      </button>
+                    </div>
+                    <div class="grid max-h-[28rem] gap-2 overflow-y-auto pr-1 md:grid-cols-2" data-testid="proxy-card-grid">
+                      <button
+                        v-for="item in visibleProxyOptions"
+                        :key="item.id"
+                        type="button"
+                        :data-testid="`proxy-card-${item.id}`"
+                        :class="pickerCardClass(form.proxy_id === item.id)"
+                        @click="selectProxy(item.id)"
+                      >
+                        <span class="flex items-start justify-between gap-2">
+                          <span class="min-w-0">
+                            <span class="block truncate text-sm font-semibold">{{ safeText(item.name, '未命名代理') }}</span>
+                            <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">{{ proxySafeEndpoint(item) }}</span>
+                          </span>
+                          <span :class="statusPillClass(item.status)">{{ safeText(item.status) }}</span>
                         </span>
-                        <span :class="statusPillClass(item.status)">{{ safeText(item.status) }}</span>
-                      </span>
-                      <span class="mt-2 flex flex-wrap gap-2 text-xs text-slate-500 dark:text-slate-400">
-                        <span>协议 {{ safeText(item.protocol) }}</span>
-                        <span>绑定 {{ item.account_count ?? 0 }}</span>
-                        <span v-if="item.latency_ms != null">延迟 {{ item.latency_ms }}ms</span>
-                        <span v-if="item.quality_grade || item.quality_status">质量 {{ safeText(item.quality_grade || item.quality_status) }}</span>
-                      </span>
-                    </button>
+                        <span class="mt-2 flex flex-wrap gap-2 text-xs text-slate-500 dark:text-slate-400">
+                          <span>协议 {{ safeText(item.protocol) }}</span>
+                          <span>绑定 {{ item.account_count ?? 0 }}</span>
+                          <span v-if="item.latency_ms != null">延迟 {{ item.latency_ms }}ms</span>
+                          <span v-if="item.quality_grade || item.quality_status">质量 {{ safeText(item.quality_grade || item.quality_status) }}</span>
+                        </span>
+                      </button>
+                    </div>
                   </div>
                 </div>
                 <template v-else>
@@ -231,28 +253,29 @@
             </div>
 
             <div class="rounded-3xl border border-cyan-200 bg-cyan-50 p-5 shadow-sm dark:border-cyan-900 dark:bg-cyan-950/30">
-              <h3 class="text-lg font-bold">Browser egress check</h3>
+              <h3 class="text-lg font-bold">{{ requiresBrowserEgress ? 'Browser egress check' : 'Setup Token 代理健康检查' }}</h3>
               <div class="mt-4 space-y-3 text-sm">
                 <div class="rounded-2xl bg-white p-3 dark:bg-slate-900">
                   <span class="text-slate-500">状态：</span>
                   <strong data-testid="browser-egress-status">{{ browserStatus }}</strong>
                 </div>
-                <button data-testid="test-proxy" class="btn btn-secondary" :disabled="busy || !session" @click="testProxyStep">测试代理并生成同出口校验 URL</button>
-                <div v-if="session?.browser_egress_check_url" class="rounded-2xl border border-cyan-300 bg-white p-3 dark:border-cyan-800 dark:bg-slate-900">
+                <button data-testid="test-proxy" class="btn btn-secondary" :disabled="busy || !session" @click="testProxyStep">{{ requiresBrowserEgress ? '测试代理并生成同出口校验 URL' : '测试代理健康并继续 Setup Token' }}</button>
+                <div v-if="requiresBrowserEgress && session?.browser_egress_check_url" class="rounded-2xl border border-cyan-300 bg-white p-3 dark:border-cyan-800 dark:bg-slate-900">
                   <p class="font-semibold">只在即将登录 Claude 的同出口浏览器中复制打开：</p>
                   <p data-testid="browser-egress-check-url" class="mt-2 text-xs text-cyan-700 dark:text-cyan-300">已生成一次性校验链接</p>
                   <p class="mt-1 font-mono text-xs text-cyan-700 dark:text-cyan-300">browser-egress-check/:nonce</p>
                   <button data-testid="copy-browser-egress-check-url" class="btn btn-secondary mt-3" type="button" @click="copyBrowserEgressCheckUrl">复制校验链接</button>
                   <p v-if="copyStatus" class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ copyStatus }}</p>
                 </div>
-                <div v-else class="rounded-2xl border border-dashed border-slate-300 p-3 text-slate-500 dark:border-slate-700 dark:text-slate-400">TestProxy 成功前不展示 check URL。</div>
+                <div v-else-if="requiresBrowserEgress" class="rounded-2xl border border-dashed border-slate-300 p-3 text-slate-500 dark:border-slate-700 dark:text-slate-400">TestProxy 成功前不展示 check URL。</div>
+                <div v-else class="rounded-2xl border border-emerald-200 bg-white p-3 text-emerald-800 dark:border-emerald-900 dark:bg-slate-900 dark:text-emerald-100" data-testid="setup-token-egress-skip">Setup Token 不需要打开同出口浏览器校验链接；代理健康通过后即可进入授权创建。</div>
 
-                <div v-if="browserStatus === 'expired'" class="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                <div v-if="requiresBrowserEgress && browserStatus === 'expired'" class="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
                   <p>校验 nonce 已过期。为了避免复用旧链接，必须重新开一个上号会话。</p>
                   <button data-testid="expired-start-new-session" class="btn btn-primary mt-3" :disabled="busy" @click="startSession">重新开一个上号会话</button>
                 </div>
 
-                <div v-if="browserStatus === 'mismatch'" data-testid="browser-egress-mismatch" class="rounded-2xl border border-rose-300 bg-rose-50 p-3 text-rose-900 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-100">
+                <div v-if="requiresBrowserEgress && browserStatus === 'mismatch'" data-testid="browser-egress-mismatch" class="rounded-2xl border border-rose-300 bg-rose-50 p-3 text-rose-900 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-100">
                   <p class="font-semibold">浏览器出口与代理出口不一致，不能继续授权。</p>
                   <p class="mt-1">Browser bucket: {{ safeText(session?.browser_egress_browser_ip_bucket, '未返回 browser bucket') }}</p>
                   <p>Proxy bucket: {{ safeText(session?.browser_egress_proxy_ip_bucket, '未返回 proxy bucket') }}</p>
@@ -264,7 +287,7 @@
 
           <section v-else-if="renderStep === 'auth'" class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <h3 class="text-lg font-bold">授权与创建不可调度账号</h3>
-            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">同出口 verified 后才能继续。页面不提供人工校验输入框。</p>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">OAuth 需要同出口 verified；Setup Token 已跳过同出口浏览器校验，只要求代理健康通过。</p>
             <div class="mt-4 flex flex-wrap gap-4 text-sm">
               <label class="inline-flex items-center gap-2"><input v-model="authMode" type="radio" value="oauth" /> OAuth URL</label>
               <label class="inline-flex items-center gap-2"><input v-model="authMode" type="radio" value="setup-token-cookie" /> Setup Token 登录态</label>
@@ -277,7 +300,7 @@
             </div>
             <div v-else class="mt-4 space-y-3">
               <input data-testid="setup-token-input" v-model="setupSessionKey" type="password" class="input w-full" autocomplete="new-password" placeholder="粘贴 Setup Token" />
-              <button class="btn btn-primary" :disabled="busy || !session?.browser_egress_verified || !setupSessionKey" @click="setupTokenCreate">导入 Setup Token 并创建账号</button>
+              <button data-testid="setup-token-create" class="btn btn-primary" :disabled="busy || !setupTokenCanCreate || !setupSessionKey" @click="setupTokenCreate">导入 Setup Token 并创建账号</button>
             </div>
           </section>
 
@@ -345,7 +368,7 @@ import type { AdminGroup, Proxy } from '@/types'
 type StepKey = 'proxy' | 'auth' | 'gates' | 'evidence'
 
 const steps: Array<{ key: StepKey; index: number; title: string; caption: string }> = [
-  { key: 'proxy', index: 1, title: '代理与同出口', caption: 'Proxy setup + Browser egress check' },
+  { key: 'proxy', index: 1, title: '代理与出口', caption: 'Proxy setup + OAuth egress check' },
   { key: 'auth', index: 2, title: '授权创建', caption: 'OAuth / Setup Token' },
   { key: 'gates', index: 3, title: '运行门禁', caption: 'runtime + healthcheck + warming' },
   { key: 'evidence', index: 4, title: '脱敏证据', caption: 'safe summary only' },
@@ -362,6 +385,8 @@ const oauthCode = ref('')
 const setupSessionKey = ref('')
 const copyStatus = ref('')
 const proxyOptions = ref<Proxy[]>([])
+const proxyListExpanded = ref(false)
+const PROXY_COLLAPSED_LIMIT = 8
 const proxyListLoading = ref(false)
 const proxyListError = ref('')
 const groupOptions = ref<AdminGroup[]>([])
@@ -404,6 +429,11 @@ onMounted(() => {
 const renderStep = computed(() => safeEnterableStep(activeStep.value))
 const currentStepTitle = computed(() => steps.find((step) => step.key === renderStep.value)?.title ?? 'Onboarding')
 const canStart = computed(() => !!form.group_id && !!form.account_name && (form.proxy_mode === 'existing' ? !!form.proxy_id : !!proxy.host && !!proxy.port))
+const requiresBrowserEgress = computed(() => authMode.value === 'oauth')
+const setupTokenProxyReady = computed(() => isSetupTokenProxyReady(session.value))
+const setupTokenCanCreate = computed(() => !!session.value && setupTokenProxyReady.value)
+const sortedProxyOptions = computed(() => [...proxyOptions.value].sort(compareProxyOptions))
+const visibleProxyOptions = computed(() => proxyListExpanded.value ? sortedProxyOptions.value : sortedProxyOptions.value.slice(0, PROXY_COLLAPSED_LIMIT))
 const browserStatus = computed(() => session.value?.browser_egress_check_status ?? egressPolling.status.value ?? 'idle')
 const displaySessionRef = computed(() => safeSessionRef(session.value))
 const canStartWarming = computed(() => session.value?.healthcheck_passed || acceptance.value?.status === 'healthcheck_passed')
@@ -464,6 +494,7 @@ async function loadProxies() {
   proxyListError.value = ''
   try {
     proxyOptions.value = await fetchProxyOptions()
+    proxyListExpanded.value = false
     if (form.proxy_id && !proxyOptions.value.some((item) => item.id === form.proxy_id)) {
       form.proxy_id = undefined
     }
@@ -488,6 +519,40 @@ async function fetchProxyOptions(): Promise<Proxy[]> {
     return await fallbackLoader()
   }
   return []
+}
+
+function compareProxyOptions(a: Proxy, b: Proxy): number {
+  return compareNumber(proxyStatusRank(a), proxyStatusRank(b)) ||
+    compareNumber(proxyAccountCount(a), proxyAccountCount(b)) ||
+    compareNumber(proxyQualityRank(a), proxyQualityRank(b)) ||
+    compareNumber(proxyLatencyRank(a), proxyLatencyRank(b)) ||
+    safeText(a.name, '').localeCompare(safeText(b.name, ''), 'zh-Hans-CN') ||
+    compareNumber(a.id, b.id)
+}
+
+function proxyStatusRank(proxy: Proxy): number {
+  return proxy.status === 'active' ? 0 : 1
+}
+
+function proxyAccountCount(proxy: Proxy): number {
+  return Number.isFinite(proxy.account_count) ? Number(proxy.account_count) : Number.MAX_SAFE_INTEGER
+}
+
+function proxyQualityRank(proxy: Proxy): number {
+  const status = String(proxy.quality_status || '').toLowerCase()
+  if (status === 'healthy') return 0
+  if (status === 'warn') return 1
+  if (status === 'challenge') return 2
+  if (status === 'failed') return 3
+  return 4
+}
+
+function proxyLatencyRank(proxy: Proxy): number {
+  return Number.isFinite(proxy.latency_ms) ? Number(proxy.latency_ms) : Number.MAX_SAFE_INTEGER
+}
+
+function compareNumber(a: number, b: number): number {
+  return a === b ? 0 : a < b ? -1 : 1
 }
 
 async function loadGroups() {
@@ -602,12 +667,20 @@ function canEnterStep(stepKey: StepKey): boolean {
     case 'proxy':
       return true
     case 'auth':
-      return s !== null && s.browser_egress_verified === true
+      return s !== null && (requiresBrowserEgress.value ? s.browser_egress_verified === true : isSetupTokenProxyReady(s))
     case 'gates':
       return s !== null && typeof s.account_id === 'number'
     case 'evidence':
       return s !== null
   }
+}
+
+function isSetupTokenProxyReady(value: FormalPoolSession | null): boolean {
+  if (!value) return false
+  if (value.browser_egress_verified === true) return true
+  const status = String(value.status || '')
+  const browserCheck = String(value.browser_egress_check_status || '')
+  return status === 'proxy_verified' || browserCheck === 'waiting' || browserCheck === 'verified' || browserCheck === 'mismatch'
 }
 
 function safeEnterableStep(stepKey: StepKey): StepKey {
@@ -620,8 +693,7 @@ function isStepDone(stepKey: StepKey): boolean {
   if (!s) return false
   switch (stepKey) {
     case 'proxy':
-      // Once a session has been created the proxy step is considered settled.
-      return true
+      return requiresBrowserEgress.value ? s.browser_egress_verified === true : isSetupTokenProxyReady(s)
     case 'auth':
       return typeof s.account_id === 'number'
     case 'gates': {
@@ -647,7 +719,7 @@ function getStepLockReason(stepKey: StepKey): string {
   if (canEnterStep(stepKey)) return ''
   switch (stepKey) {
     case 'auth':
-      return '需先在第 1 步完成代理与同出口校验'
+      return requiresBrowserEgress.value ? '需先在第 1 步完成代理与同出口校验' : '需先在第 1 步完成代理健康检查'
     case 'gates':
       return '需先在第 2 步完成授权并创建账号'
     case 'evidence':
@@ -849,7 +921,11 @@ async function testProxyStep() {
   const res = await run(() => claudeOnboarding.testProxy(session.value!.id))
   if (res) {
     session.value = res
-    if (res.browser_egress_check_url) egressPolling.start(res.id)
+    if (requiresBrowserEgress.value) {
+      if (res.browser_egress_check_url) egressPolling.start(res.id)
+    } else {
+      activeStep.value = 'auth'
+    }
   }
 }
 

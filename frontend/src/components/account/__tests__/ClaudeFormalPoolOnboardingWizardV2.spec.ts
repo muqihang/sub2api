@@ -262,6 +262,36 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.text()).toContain('Fallback proxy')
   })
 
+  it('sorts proxy cards by low binding count and collapses long proxy lists', async () => {
+    adminApiMock.proxies.getAllWithCount.mockResolvedValueOnce([
+      proxyFixture({ id: 41, name: 'busy proxy', account_count: 8, latency_ms: 20 }),
+      proxyFixture({ id: 42, name: 'zero proxy b', account_count: 0, latency_ms: 90 }),
+      proxyFixture({ id: 43, name: 'two proxy', account_count: 2, latency_ms: 10 }),
+      proxyFixture({ id: 44, name: 'zero proxy a', account_count: 0, latency_ms: 30 }),
+      proxyFixture({ id: 45, name: 'one proxy', account_count: 1, latency_ms: 50 }),
+      proxyFixture({ id: 46, name: 'three proxy', account_count: 3, latency_ms: 50 }),
+      proxyFixture({ id: 47, name: 'four proxy', account_count: 4, latency_ms: 50 }),
+      proxyFixture({ id: 48, name: 'five proxy', account_count: 5, latency_ms: 50 }),
+      proxyFixture({ id: 49, name: 'six proxy', account_count: 6, latency_ms: 50 }),
+    ])
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const visibleCards = wrapper.findAll('button[data-testid^="proxy-card-"]')
+    expect(visibleCards).toHaveLength(8)
+    expect(visibleCards[0].attributes('data-testid')).toBe('proxy-card-44')
+    expect(visibleCards[1].attributes('data-testid')).toBe('proxy-card-42')
+    expect(wrapper.find('[data-testid="proxy-card-41"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="proxy-list-toggle"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="proxy-list-summary"]').text()).toContain('优先显示未绑定/低绑定量代理')
+
+    await wrapper.find('[data-testid="proxy-list-toggle"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('button[data-testid^="proxy-card-"]')).toHaveLength(9)
+    expect(wrapper.find('[data-testid="proxy-card-41"]').exists()).toBe(true)
+  })
+
   it('shows proxy and group load errors with reload buttons when loading fails', async () => {
     adminApiMock.proxies.getAllWithCount.mockRejectedValueOnce(new Error('count endpoint unavailable'))
     adminApiMock.proxies.getAll.mockRejectedValueOnce(new Error('proxy load failed'))
@@ -605,6 +635,47 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(input.exists()).toBe(true)
     expect(input.attributes('placeholder')).toBe('粘贴 Setup Token')
     expect(input.attributes('placeholder')).not.toMatch(/sk-ant-sid/i)
+  })
+
+  it('lets Setup Token flow skip browser egress verification after proxy health passes', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="auth-mode-setup-token"]').setValue()
+    await startSession(wrapper)
+
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="stepper-lock-reason-auth"]').text()).toContain('代理健康检查')
+    expect(wrapper.find('[data-testid="setup-token-egress-skip"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="test-proxy"]').text()).toContain('测试代理健康')
+
+    onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({
+      status: 'proxy_verified',
+      browser_egress_check_status: 'waiting',
+      browser_egress_verified: false,
+      browser_egress_check_url: 'https://safe.example/api/v1/claude-onboarding/browser-egress-check/nonce-bucket',
+    }))
+    await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+    await flushPromises()
+
+    expect(egressPollingMock.start).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.find('[data-testid="browser-egress-check-url"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="setup-token-input"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="setup-token-input"]').setValue('safe-test-token')
+    const createButton = wrapper.find('[data-testid="setup-token-create"]')
+    expect(createButton.attributes('disabled')).toBeUndefined()
+
+    onboardingApi.setupTokenCookieAuthAndCreate.mockResolvedValueOnce(sessionFixture({
+      status: 'imported',
+      account_id: 88,
+      browser_egress_verified: false,
+    }))
+    await createButton.trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.setupTokenCookieAuthAndCreate).toHaveBeenCalledWith('session-1', 'safe-test-token')
   })
 
   it('gates runtime healthcheck, warming, and production with clear real directed healthcheck copy', async () => {

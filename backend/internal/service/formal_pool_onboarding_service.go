@@ -775,8 +775,8 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 	if sessionKey == "" {
 		return nil, infraerrors.BadRequest("SETUP_TOKEN_SESSION_KEY_REQUIRED", "setup-token session key is required")
 	}
-	if !rec.BrowserVerified {
-		return nil, infraerrors.BadRequest("BROWSER_EGRESS_UNVERIFIED", "browser egress verification is required before setup-token cookie auth")
+	if !rec.BrowserVerified && rec.Status != FormalPoolOnboardingStatusProxyVerified {
+		return nil, infraerrors.BadRequest("PROXY_TEST_REQUIRED", "proxy health test is required before setup-token cookie auth")
 	}
 	if s.oauth == nil || s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_CREATE_UNAVAILABLE", "formal pool setup-token/create dependencies are unavailable")

@@ -329,6 +329,14 @@ func TestFormalPoolAcceptanceFailsUntilCCGatewayRuntimeRegistered(t *testing.T) 
 	}
 }
 
+func TestFormalPoolSetupTokenCookieRequiresProxyTestButNotBrowserEgress(t *testing.T) {
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{}, Accounts: &formalAccountFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "setup-acct", PoolProfile: "normal"})
+	if _, err := svc.SetupTokenCookieAuthAndCreate(context.Background(), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-test"}); err == nil {
+		t.Fatalf("setup-token create must require proxy health test")
+	}
+}
+
 func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedulable(t *testing.T) {
 	acct := &formalAccountFake{}
 	runtime := &formalRuntimeFake{}
@@ -336,7 +344,6 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "http://proxy.local:443"}, OAuth: oauth, Accounts: acct, CCGatewayRuntime: runtime})
 	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "setup-acct", PoolProfile: "normal"})
 	_, _ = svc.TestProxy(context.Background(), sess.ID)
-	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
 	got, err := svc.SetupTokenCookieAuthAndCreate(context.Background(), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-test"})
 	if err != nil {
 		t.Fatalf("setup-token create: %v", err)
@@ -369,7 +376,6 @@ func TestFormalPoolSetupTokenCookieRejectsFullClaudeCodeScope(t *testing.T) {
 	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: &formalAccountFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
 	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
 	_, _ = svc.TestProxy(context.Background(), sess.ID)
-	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
 	if _, err := svc.SetupTokenCookieAuthAndCreate(context.Background(), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-test"}); err == nil {
 		t.Fatalf("setup-token path must reject full Claude Code OAuth scope")
 	}
