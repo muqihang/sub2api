@@ -619,6 +619,123 @@ func TestCodexGatewayDeepSeekRequest_ConvertsToolSearchOutputToToolMessage(t *te
 	require.Equal(t, "string", gjson.Get(content, "0.tools.0.input_schema.properties.model.type").String())
 }
 
+func TestCodexGatewayDeepSeekRequest_MapsDeferredNamespaceToolsFromToolSearchOutputVariants(t *testing.T) {
+	deferredTools := []any{
+		map[string]any{
+			"type": "namespace",
+			"name": "multi_agent_v1",
+			"tools": []any{
+				map[string]any{
+					"type":       "function",
+					"name":       "spawn_agent",
+					"parameters": map[string]any{"type": "object", "properties": map[string]any{"message": map[string]any{"type": "string"}}},
+				},
+			},
+		},
+	}
+	deferredToolsJSON := string(mustMarshalRawMessage(t, deferredTools))
+	variantInputs := map[string]json.RawMessage{
+		"top_level_tools": json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"spawn"}]},
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"spawn_agent","limit":10}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","tools":` + deferredToolsJSON + `}
+		]`),
+		"output_json_array_string": json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"spawn"}]},
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"spawn_agent","limit":10}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","output":` + string(mustMarshalRawMessage(t, deferredToolsJSON)) + `}
+		]`),
+		"output_json_object_string": json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"spawn"}]},
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"spawn_agent","limit":10}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","output":` + string(mustMarshalRawMessage(t, `{"tools":`+deferredToolsJSON+`}`)) + `}
+		]`),
+		"output_object": json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"spawn"}]},
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"spawn_agent","limit":10}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","output":{"tools":` + deferredToolsJSON + `}}
+		]`),
+		"output_array": json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"spawn"}]},
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"spawn_agent","limit":10}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","output":` + deferredToolsJSON + `}
+		]`),
+	}
+	for name, input := range variantInputs {
+		t.Run(name, func(t *testing.T) {
+			req := CodexGatewayResponsesCreateRequest{
+				Model: "deepseek-v4-pro",
+				Input: input,
+				Tools: json.RawMessage(`[
+					{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}
+				]`),
+			}
+			model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+
+			prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+				SessionKey:   "session_deferred_variant_" + name,
+				IsolationKey: "iso_deferred_variant_" + name,
+			}, CodexGatewayDeepSeekRequestConfig{})
+			require.NoError(t, err)
+
+			require.NotNil(t, deepSeekRequestToolFunctionByName(t, prepared.Body["tools"].([]any), "multi_agent_v1__spawn_agent"))
+			entry := prepared.ToolNameMap["multi_agent_v1__spawn_agent"]
+			require.Equal(t, CodexGatewayToolKindNamespace, entry.Kind)
+			require.Equal(t, "multi_agent_v1", entry.Namespace)
+			require.Equal(t, "spawn_agent", entry.Name)
+		})
+	}
+}
+
+func TestCodexGatewayDeepSeekRequest_RejectsDeferredToolMappingCollisions(t *testing.T) {
+	t.Run("alias collision", func(t *testing.T) {
+		base := CodexGatewayToolMappingResult{
+			Tools: []map[string]any{{"type": "function", "function": map[string]any{"name": "multi_agent_v1__spawn_agent"}}},
+			NameMap: map[string]CodexGatewayToolNameMapEntry{
+				"multi_agent_v1__spawn_agent": {Alias: "multi_agent_v1__spawn_agent", Kind: CodexGatewayToolKindFunction, Name: "multi_agent_v1__spawn_agent"},
+			},
+			originalToAlias: map[string]string{
+				toolMappingOriginalKey(CodexGatewayToolKindFunction, "", "multi_agent_v1__spawn_agent"): "multi_agent_v1__spawn_agent",
+			},
+		}
+		extra := CodexGatewayToolMappingResult{
+			Tools: []map[string]any{{"type": "function", "function": map[string]any{"name": "multi_agent_v1__spawn_agent"}}},
+			NameMap: map[string]CodexGatewayToolNameMapEntry{
+				"multi_agent_v1__spawn_agent": {Alias: "multi_agent_v1__spawn_agent", Kind: CodexGatewayToolKindNamespace, Namespace: "multi_agent_v1", NamespacePath: "multi_agent_v1", Name: "spawn_agent"},
+			},
+			originalToAlias: map[string]string{
+				toolMappingOriginalKey(CodexGatewayToolKindNamespace, "multi_agent_v1", "spawn_agent"): "multi_agent_v1__spawn_agent",
+			},
+		}
+
+		_, err := mergeCodexGatewayToolMappings(base, extra)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), `deferred tool alias collision for "multi_agent_v1__spawn_agent"`)
+	})
+
+	t.Run("original path collision", func(t *testing.T) {
+		key := toolMappingOriginalKey(CodexGatewayToolKindNamespace, "multi_agent_v1", "spawn_agent")
+		base := CodexGatewayToolMappingResult{
+			Tools: []map[string]any{{"type": "function", "function": map[string]any{"name": "multi_agent_v1__spawn_agent"}}},
+			NameMap: map[string]CodexGatewayToolNameMapEntry{
+				"multi_agent_v1__spawn_agent": {Alias: "multi_agent_v1__spawn_agent", Kind: CodexGatewayToolKindNamespace, Namespace: "multi_agent_v1", NamespacePath: "multi_agent_v1", Name: "spawn_agent"},
+			},
+			originalToAlias: map[string]string{key: "multi_agent_v1__spawn_agent"},
+		}
+		extra := CodexGatewayToolMappingResult{
+			Tools: []map[string]any{{"type": "function", "function": map[string]any{"name": "multi_agent_v1__spawn_agent_v2"}}},
+			NameMap: map[string]CodexGatewayToolNameMapEntry{
+				"multi_agent_v1__spawn_agent_v2": {Alias: "multi_agent_v1__spawn_agent_v2", Kind: CodexGatewayToolKindNamespace, Namespace: "multi_agent_v1", NamespacePath: "multi_agent_v1", Name: "spawn_agent"},
+			},
+			originalToAlias: map[string]string{key: "multi_agent_v1__spawn_agent_v2"},
+		}
+
+		_, err := mergeCodexGatewayToolMappings(base, extra)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), `deferred tool original path collision for "namespace|multi_agent_v1|spawn_agent"`)
+	})
+}
+
 func TestCodexGatewayDeepSeekRequest_ParallelToolCallsFalseAddsSerialToolInstruction(t *testing.T) {
 	parallel := false
 	req := CodexGatewayResponsesCreateRequest{
@@ -664,6 +781,66 @@ func TestCodexGatewayDeepSeekRequest_ParallelToolCallsFalseAddsSerialToolInstruc
 	parallelMessages := parallelPrepared.Body["messages"].([]any)
 	require.Len(t, parallelMessages, 1)
 	require.NotContains(t, parallelMessages[0].(map[string]any)["content"], "Serial tool calling is required for this request")
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseAddsNativeOperationStrategy(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Doubao with Computer Use."}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"list_apps","parameters":{"type":"object","properties":{}}},
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}},
+				{"type":"function","name":"set_value","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"value":{"type":"string"}},"required":["app","element_index","value"]}},
+				{"type":"function","name":"press_key","parameters":{"type":"object","properties":{"app":{"type":"string"},"key":{"type":"string"}},"required":["app","key"]}},
+				{"type":"function","name":"click","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"}},"required":["app"]}},
+				{"type":"function","name":"type_text","parameters":{"type":"object","properties":{"app":{"type":"string"},"text":{"type":"string"}},"required":["app","text"]}},
+				{"type":"function","name":"scroll","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"direction":{"type":"string"}},"required":["app","element_index","direction"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_computer_use_strategy",
+		IsolationKey: "user_computer_use_strategy",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	require.Equal(t, "system", messages[0].(map[string]any)["role"])
+	instruction, ok := messages[0].(map[string]any)["content"].(string)
+	require.True(t, ok)
+	require.Contains(t, instruction, "Computer Use strategy")
+	require.Contains(t, instruction, "bundle identifier")
+	require.Contains(t, instruction, "localized display names")
+	require.Contains(t, instruction, "set_value")
+	require.Contains(t, instruction, "press_key Return")
+	require.Contains(t, instruction, "get_app_state")
+	require.Contains(t, instruction, "visible_text")
+	require.Contains(t, instruction, "Avoid scrolling")
+	require.Equal(t, "user", messages[1].(map[string]any)["role"])
+
+	tools := prepared.Body["tools"].([]any)
+	getState := deepSeekRequestToolFunctionBySuffix(t, tools, "__get_app_state")
+	require.Contains(t, getState["description"], "bundle identifier")
+	require.Contains(t, getState["description"], "visible_text")
+	getStateApp := getState["parameters"].(map[string]any)["properties"].(map[string]any)["app"].(map[string]any)
+	require.Contains(t, getStateApp["description"], "bundle identifier")
+	setValue := deepSeekRequestToolFunctionBySuffix(t, tools, "__set_value")
+	require.Contains(t, setValue["description"], "Electron/chat")
+	require.Contains(t, setValue["description"], "press_key Return")
+	setValueIndex := setValue["parameters"].(map[string]any)["properties"].(map[string]any)["element_index"].(map[string]any)
+	require.Contains(t, setValueIndex["description"], "get_app_state")
+	scroll := deepSeekRequestToolFunctionBySuffix(t, tools, "__scroll")
+	require.Contains(t, scroll["description"], "Avoid scrolling")
 }
 
 func TestCodexGatewayDeepSeekRequest_ParallelToolCallsFalseDoesNotDuplicateSerialInstructionOnReplay(t *testing.T) {
@@ -2518,6 +2695,382 @@ func TestCodexGatewayDeepSeekRequest_ComputerUseSecondPassKeepsSemanticFields(t 
 	require.LessOrEqual(t, len(toolContent), codexGatewayDeepSeekToolOutputMaxChars+256)
 }
 
+func TestCodexGatewayDeepSeekRequest_ComputerUsePrioritizesLateInputAndVisibleText(t *testing.T) {
+	appState := "Computer Use state (CUA App Version: 799)\n<app_state>\n" +
+		"App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 6240)\n" +
+		"Window: \"豆包\", App: 豆包.\n" +
+		func() string {
+			var b strings.Builder
+			for i := 0; i < 24; i++ {
+				fmt.Fprintf(&b, "\t%d link Description: 历史会话%d, Value: chrome://doubao-chat/chat/sidebar%d\n", 26+i, i, i)
+			}
+			return b.String()
+		}() +
+		"\t120 文本 豆包回答：郑州早餐可以吃胡辣汤、油馍头和豆腐脑。\n" +
+		strings.Repeat("\t121 文本 普通说明内容 filler filler filler filler\n", 20) +
+		"\t188 文本输入区 (settable, string) 发消息...\n" +
+		"\t189 按钮 发送\n" +
+		"The focused UI element is 188 文本输入区 (settable, string) 发消息...\n" +
+		"</app_state>"
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_state",
+				"name":      "mcp__computer_use__get_app_state",
+				"arguments": `{"app":"com.bot.pc.doubao"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_state",
+				"output": []any{
+					map[string]any{"type": "input_text", "text": "Wall time: 0.3377 seconds\nOutput:"},
+					map[string]any{"type": "input_text", "text": appState},
+					map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64," + strings.Repeat("A", 90000), "detail": "high"},
+				},
+			},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_late_computer_use",
+		IsolationKey: "user_late_computer_use",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	textSummary := gjson.Get(toolContent, "1.text")
+	require.Equal(t, "accessibility_tree", textSummary.Get("content_class").String())
+	require.Contains(t, textSummary.Get("operable_lines").Raw, "188 文本输入区")
+	require.Contains(t, textSummary.Get("operable_lines").Raw, "189 按钮 发送")
+	require.Contains(t, textSummary.Get("visible_text").Raw, "胡辣汤")
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+	require.LessOrEqual(t, len(toolContent), codexGatewayDeepSeekToolOutputMaxChars+256)
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUsePrioritizesLateEnglishTextArea(t *testing.T) {
+	appState := "Computer Use state (CUA App Version: 799)\n<app_state>\n" +
+		"App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 6240)\n" +
+		"Window: \"Doubao\", App: Doubao.\n" +
+		func() string {
+			var b strings.Builder
+			for i := 0; i < 18; i++ {
+				fmt.Fprintf(&b, "\t%d link Description: Previous chat %d, Value: chrome://doubao-chat/chat/sidebar%d\n", 30+i, i, i)
+			}
+			return b.String()
+		}() +
+		"\t501 AXTextArea (settable, string) Placeholder: Message...\n" +
+		"\t502 AXButton Send\n" +
+		"</app_state>"
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_state",
+				"name":      "mcp__computer_use__get_app_state",
+				"arguments": `{"app":"com.bot.pc.doubao"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_state",
+				"output": []any{
+					map[string]any{"type": "input_text", "text": appState},
+					map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64," + strings.Repeat("A", 90000), "detail": "high"},
+				},
+			},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_english_text_area",
+		IsolationKey: "user_english_text_area",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	operableLines := gjson.Get(toolContent, "0.text.operable_lines").Raw
+	if operableLines == "" {
+		operableLines = gjson.Get(toolContent, "1.text.operable_lines").Raw
+	}
+	require.Contains(t, operableLines, "501 AXTextArea")
+	require.Contains(t, operableLines, "502 AXButton Send")
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUsePrioritizesStructuredLateInput(t *testing.T) {
+	children := make([]any, 0, 18)
+	for i := 0; i < 14; i++ {
+		children = append(children, map[string]any{
+			"role":          "link",
+			"name":          fmt.Sprintf("Previous chat %d", i),
+			"element_index": fmt.Sprintf("%d", 30+i),
+		})
+	}
+	children = append(children,
+		map[string]any{
+			"role":          "AXTextArea",
+			"placeholder":   "Message",
+			"settable":      true,
+			"focused":       true,
+			"element_index": "501",
+		},
+		map[string]any{
+			"role":          "button",
+			"name":          "Send",
+			"enabled":       true,
+			"element_index": "502",
+		},
+	)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_state",
+				"name":      "mcp__computer_use__get_app_state",
+				"arguments": `{"app":"com.bot.pc.doubao"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_state",
+				"output": map[string]any{
+					"screenshot": "data:image/png;base64," + strings.Repeat("A", 90000),
+					"accessibility_tree": map[string]any{
+						"role":     "window",
+						"name":     "Doubao",
+						"children": children,
+					},
+				},
+			},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_structured_text_area",
+		IsolationKey: "user_structured_text_area",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.Contains(t, gjson.Get(toolContent, "accessibility_tree.operable_lines").Raw, "element_index=501")
+	require.Contains(t, gjson.Get(toolContent, "accessibility_tree.operable_lines").Raw, "Send")
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseVisibleTextKeepsShortUrlAndOperableWords(t *testing.T) {
+	appState := "Computer Use state (CUA App Version: 799)\n<app_state>\n" +
+		"App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 6240)\n" +
+		"Window: \"Doubao\", App: Doubao.\n" +
+		strings.Repeat("\t26 link Description: Previous chat, Value: chrome://doubao-chat/chat/sidebar\n", 12) +
+		"\t120 text OK\n" +
+		"\t121 text See https://example.com; click the button only if needed.\n" +
+		"\t501 AXTextArea (settable, string) Placeholder: Message...\n" +
+		"</app_state>"
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_state",
+				"name":      "mcp__computer_use__get_app_state",
+				"arguments": `{"app":"com.bot.pc.doubao"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_state",
+				"output": []any{
+					map[string]any{"type": "input_text", "text": appState},
+					map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64," + strings.Repeat("A", 90000), "detail": "high"},
+				},
+			},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_visible_text",
+		IsolationKey: "user_visible_text",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	visibleText := gjson.Get(toolContent, "0.text.visible_text").Raw
+	if visibleText == "" {
+		visibleText = gjson.Get(toolContent, "1.text.visible_text").Raw
+	}
+	require.Contains(t, visibleText, "OK")
+	require.Contains(t, visibleText, "https://example.com")
+	require.Contains(t, visibleText, "click the button")
+	require.NotContains(t, visibleText, "chrome://doubao-chat")
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseCombinedStringKeepsAXOverBase64(t *testing.T) {
+	combined := "Computer Use state (CUA App Version: 799)\n<app_state>\n" +
+		"App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 6240)\n" +
+		"\t501 AXTextArea (settable, string) Placeholder: Message...\n" +
+		"\t502 AXButton Send\n" +
+		"</app_state>\n" +
+		"image_url=data:image/png;base64," + strings.Repeat("A", 90000)
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_state",
+				"name":      "mcp__computer_use__get_app_state",
+				"arguments": `{"app":"com.bot.pc.doubao"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_state",
+				"output":  combined,
+			},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_combined_string",
+		IsolationKey: "user_combined_string",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.Equal(t, "accessibility_tree", gjson.Get(toolContent, "content_class").String())
+	require.Contains(t, gjson.Get(toolContent, "operable_lines").Raw, "501 AXTextArea")
+	require.Contains(t, gjson.Get(toolContent, "operable_lines").Raw, "502 AXButton Send")
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseMixedContentOutputKeepsAXText(t *testing.T) {
+	appState := "Computer Use state (CUA App Version: 799)\n<app_state>\n" +
+		"App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 6240)\n" +
+		"Window: \"豆包\", App: 豆包.\n" +
+		strings.Repeat("\t100 文本 历史对话 filler filler filler filler filler filler filler\n", 80) +
+		"\t371 文本输入区 (settable, string) 发消息...\n" +
+		"\t372 按钮 发送\n" +
+		"The focused UI element is 371 文本输入区 (settable, string) 发消息...\n" +
+		"</app_state>"
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_state",
+				"name":      "mcp__computer_use__get_app_state",
+				"arguments": `{"app":"/Applications/Doubao.app/"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_state",
+				"output": []any{
+					map[string]any{"type": "input_text", "text": "Wall time: 0.3377 seconds\nOutput:"},
+					map[string]any{"type": "input_text", "text": appState},
+					map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64," + strings.Repeat("A", 90000), "detail": "high"},
+				},
+			},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_mixed_computer_use",
+		IsolationKey: "user_mixed_computer_use",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+	require.Contains(t, toolContent, "accessibility_tree")
+	require.Contains(t, toolContent, "文本输入区")
+	require.Contains(t, toolContent, "发消息")
+	require.Contains(t, toolContent, "371")
+
+	textSummary := gjson.Get(toolContent, "1.text")
+	require.Equal(t, "accessibility_tree", textSummary.Get("content_class").String())
+	require.Equal(t, "text", textSummary.Get("field").String())
+	require.True(t, textSummary.Get("truncated").Bool())
+	require.Contains(t, textSummary.Get("operable_lines").Raw, "文本输入区")
+	require.Contains(t, textSummary.Get("operable_lines").Raw, "371")
+	require.Equal(t, "binary_or_image", gjson.Get(toolContent, "2.image_url.content_class").String())
+	require.Equal(t, "image_url", gjson.Get(toolContent, "2.image_url.field").String())
+	require.True(t, gjson.Get(toolContent, "2.image_url.truncated").Bool())
+	require.Equal(t, "data:image/jpeg;base64", gjson.Get(toolContent, "2.image_url.media_type").String())
+	require.LessOrEqual(t, len(toolContent), codexGatewayDeepSeekToolOutputMaxChars+256)
+}
+
 func TestCodexGatewayDeepSeekRequest_ComputerUseSecondPassKeepsFieldsWhenCompactStillLarge(t *testing.T) {
 	toolOutput := map[string]any{
 		"screenshot": map[string]any{
@@ -3348,6 +3901,25 @@ func deepSeekRequestToolFunctionByName(t *testing.T, tools []any, name string) m
 		}
 	}
 	require.Failf(t, "deepseek request tool not found", "name=%s tools=%v", name, tools)
+	return nil
+}
+
+func deepSeekRequestToolFunctionBySuffix(t *testing.T, tools []any, suffix string) map[string]any {
+	t.Helper()
+	for _, toolAny := range tools {
+		tool, ok := toolAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		function, ok := tool["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.HasSuffix(fmt.Sprint(function["name"]), suffix) {
+			return function
+		}
+	}
+	require.Failf(t, "deepseek request tool not found by suffix", "suffix=%s tools=%v", suffix, tools)
 	return nil
 }
 

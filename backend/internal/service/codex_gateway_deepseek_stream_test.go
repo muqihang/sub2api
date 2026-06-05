@@ -323,6 +323,61 @@ func TestCodexGatewayDeepSeekStream_ToolSearchFunctionCallEmitsToolSearchCall(t 
 	require.Equal(t, "spawn_agent", gjson.GetBytes(toolOutput, "arguments.query").String())
 }
 
+func TestCodexGatewayDeepSeekStream_MapsDeferredNamespaceToolCallFromToolSearchOutput(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"spawn one explorer"}]},
+			{"type":"tool_search_call","call_id":"call_tool_search","status":"completed","execution":"client","arguments":{"query":"spawn_agent","limit":10}},
+			{"type":"tool_search_output","call_id":"call_tool_search","status":"completed","execution":"client","tools":[
+				{"type":"namespace","name":"multi_agent_v1","tools":[
+					{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string"},"model":{"type":"string"}}}}
+				]}
+			]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}
+		]`),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_deferred_spawn_stream","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_spawn","type":"function","function":{"name":"multi_agent_v1__spawn_agent","arguments":"{\"message\":\"say ready\",\"model\":\"deepseek-v4-flash\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{SessionKey: "session_deferred_spawn_stream", IsolationKey: "iso_deferred_spawn_stream"},
+		CodexGatewayDeepSeekRequestConfig{},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "completed", result.ProviderResult.Response.Status)
+
+	stream := buf.String()
+	require.NotContains(t, stream, `"name":"multi_agent_v1__spawn_agent"`)
+	events := parseCodexGatewayOrderedEvents(t, stream)
+	added := firstCodexGatewayOutputItemAddedPayloadByType(t, events, "function_call")
+	require.Equal(t, "spawn_agent", gjson.GetBytes(added, "item.name").String())
+	require.Equal(t, "multi_agent_v1", gjson.GetBytes(added, "item.namespace").String())
+	done := firstCodexGatewayOutputItemDonePayloadByType(t, events, "function_call")
+	require.Equal(t, "spawn_agent", gjson.GetBytes(done, "item.name").String())
+	require.Equal(t, "multi_agent_v1", gjson.GetBytes(done, "item.namespace").String())
+}
+
 func TestCodexGatewayDeepSeekStream_ToolSearchFunctionCallEmitsAfterSplitArguments(t *testing.T) {
 	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
 	req := CodexGatewayResponsesCreateRequest{

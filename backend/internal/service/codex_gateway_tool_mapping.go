@@ -836,7 +836,7 @@ func codexGatewayDeepSeekStrictEligibleProperty(schema map[string]any) bool {
 
 func codexGatewayDeepSeekToolDescription(raw any, entry CodexGatewayToolNameMapEntry) string {
 	desc := strings.TrimSpace(firstCodexGatewayToolString(raw))
-	extras := make([]string, 0, 2)
+	extras := make([]string, 0, 4)
 	if codexGatewayDeepSeekIsShellLikeTool(entry) {
 		extras = append(extras,
 			"Put the full shell command in `cmd`.",
@@ -849,6 +849,7 @@ func codexGatewayDeepSeekToolDescription(raw any, entry CodexGatewayToolNameMapE
 	if codexGatewayDeepSeekIsApplyPatchTool(entry) {
 		extras = append(extras, "Put the exact raw patch text in the custom input field. Do not wrap it in extra prose or another object.")
 	}
+	extras = append(extras, codexGatewayDeepSeekComputerUseToolDescriptionExtras(entry)...)
 	extras = uniqueCodexGatewayStrings(extras)
 	if len(extras) == 0 {
 		return desc
@@ -857,6 +858,34 @@ func codexGatewayDeepSeekToolDescription(raw any, entry CodexGatewayToolNameMapE
 		return strings.Join(extras, "\n")
 	}
 	return desc + "\n\n" + strings.Join(extras, "\n")
+}
+
+func codexGatewayDeepSeekComputerUseToolDescriptionExtras(entry CodexGatewayToolNameMapEntry) []string {
+	if !codexGatewayDeepSeekIsComputerUseToolIdentity(
+		entry.Name,
+		entry.Alias,
+		firstCodexGatewayToolString(entry.Namespace, entry.NamespacePath),
+	) {
+		return nil
+	}
+	switch strings.TrimSpace(entry.Name) {
+	case "list_apps":
+		return []string{"Use list_apps to discover the app bundle identifier; pass the bundle identifier to later Computer Use calls instead of localized display names."}
+	case "get_app_state":
+		return []string{"Prefer bundle identifier app values from list_apps over localized display names. Read visible_text and operable_lines before relying on screenshots, and refresh with get_app_state once if an element_index becomes stale."}
+	case "set_value":
+		return []string{"For Electron/chat apps, prefer set_value on the current settable text input from get_app_state, then call press_key Return and get_app_state to confirm/send/read the result."}
+	case "press_key":
+		return []string{"After set_value in chat-style apps, press_key Return is the preferred send action before a follow-up get_app_state."}
+	case "type_text":
+		return []string{"For Electron/chat inputs, prefer set_value when a settable element_index is available; use type_text only when set_value is not suitable."}
+	case "click":
+		return []string{"Avoid blind clicking. Prefer set_value for text inputs; if an element_index is stale, refresh with get_app_state and retry the new element_index once."}
+	case "scroll":
+		return []string{"Avoid scrolling unless visible_text or operable_lines show the needed reply/control is off-screen; read visible_text after get_app_state first."}
+	default:
+		return []string{"For Computer Use, prefer bundle identifier app values and operate from current get_app_state visible_text/operable_lines rather than guessing from screenshots."}
+	}
 }
 
 func codexGatewayDeepSeekEnhanceToolParameters(schema map[string]any, entry CodexGatewayToolNameMapEntry) {
@@ -872,6 +901,36 @@ func codexGatewayDeepSeekEnhanceToolParameters(schema map[string]any, entry Code
 	if codexGatewayDeepSeekIsApplyPatchTool(entry) {
 		if prop, ok := properties["input"].(map[string]any); ok {
 			prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Put the exact raw patch text in this custom input field.")
+		}
+	}
+	if codexGatewayDeepSeekIsComputerUseToolIdentity(entry.Name, entry.Alias, firstCodexGatewayToolString(entry.Namespace, entry.NamespacePath)) {
+		codexGatewayDeepSeekEnhanceComputerUseToolParameters(properties, entry)
+	}
+}
+
+func codexGatewayDeepSeekEnhanceComputerUseToolParameters(properties map[string]any, entry CodexGatewayToolNameMapEntry) {
+	if prop, ok := properties["app"].(map[string]any); ok {
+		prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Prefer a bundle identifier from list_apps; localized display names may be invalid app values.")
+	}
+	if prop, ok := properties["element_index"].(map[string]any); ok {
+		prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Use the current element_index from the latest get_app_state; if stale, call get_app_state again and retry once.")
+	}
+	switch strings.TrimSpace(entry.Name) {
+	case "press_key":
+		if prop, ok := properties["key"].(map[string]any); ok {
+			prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Use Return after set_value to send chat-style messages when the input is focused.")
+		}
+	case "set_value":
+		if prop, ok := properties["value"].(map[string]any); ok {
+			prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Put the full intended input text here before press_key Return.")
+		}
+	case "type_text":
+		if prop, ok := properties["text"].(map[string]any); ok {
+			prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Use only when set_value is not suitable for the current settable input.")
+		}
+	case "scroll":
+		if prop, ok := properties["direction"].(map[string]any); ok {
+			prop["description"] = codexGatewayAppendToolDescription(prop["description"], "Scroll only after visible_text/operable_lines indicate the needed content is off-screen.")
 		}
 	}
 }

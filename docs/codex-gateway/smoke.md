@@ -136,6 +136,31 @@ Expected capture evidence:
 - `multi_agent_v1.spawn_agent`;
 - no ordinary `function_call name=tool_search` visible in the session.
 
+Live smoke evidence from 2026-06-05:
+
+- parent session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T05-12-40-019e97b3-24bf-7f93-b3fc-9247bbf66daf.jsonl`;
+- child session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T05-12-53-019e97b3-565e-7ea2-accc-f828ed0e2c70.jsonl`;
+- parent `turn_context.model` was `deepseek-v4-pro`;
+- parent emitted `tool_search_call` for `spawn subagent multi agent`;
+- `tool_search_output.tools` contained namespace `multi_agent_v1` and `spawn_agent`;
+- parent emitted native namespace calls `multi_agent_v1.spawn_agent`, `multi_agent_v1.wait_agent`,
+  and `multi_agent_v1.close_agent`;
+- `spawn_agent` arguments omitted `model`, so the child inherited the parent model;
+- child `turn_context.model` was `deepseek-v4-pro`;
+- `wait_agent` returned `{"completed":"Explorer ready"}` and `close_agent` returned the same previous
+  completed status.
+
+Known app-server boundary from the same run: the deferred `spawn_agent` description still listed only
+Claude model overrides and did not list DeepSeek overrides, but actual inherited-model spawn validation
+accepted DeepSeek and the child ran on `deepseek-v4-pro`. Treat the missing override-list entry as a
+picker/description freshness issue, not a native spawn-routing blocker. The exact app-server refresh
+boundary for that override description remains unproven as of this live run; do not claim it is fixed by
+catalog writes alone. A future follow-up must prove whether the boundary is a full Desktop restart, an
+app-server process refresh, a model-list cache refresh, or another native Codex path by capturing the same
+`spawn_agent` description before and after the refresh action.
+
 If `tool_search_output.tools` does not list DeepSeek-capable `spawn_agent` model overrides while the local
 `model_catalog_json` contains DeepSeek models, run:
 

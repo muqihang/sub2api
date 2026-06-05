@@ -30,6 +30,8 @@ var codexGatewayDeepSeekChatCompletionsAllowlist = map[string]struct{}{
 
 const codexGatewayDeepSeekSerialToolInstruction = "Serial tool calling is required for this request: before receiving tool output, emit at most one tool call. After the tool output is provided, you may decide whether another tool call is needed."
 
+const codexGatewayDeepSeekComputerUseInstruction = "Computer Use strategy: when operating local apps, prefer bundle identifier values from list_apps (for example com.vendor.App) over localized display names; localized display names may be invalid app arguments. For Electron/chat apps, after get_app_state exposes a settable text input, prefer set_value on that element, then press_key Return, then get_app_state to read visible_text or operable_lines. If an element ID is stale, refresh with get_app_state once and retry with the new element_index. Avoid scrolling or blind clicking unless visible_text/operable_lines show that the needed reply or control is off-screen."
+
 const (
 	codexGatewayDeepSeekToolOutputMaxChars           = 3500
 	codexGatewayDeepSeekToolOutputStringPreviewChars = 1200
@@ -81,6 +83,10 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 
 	toolMapping, err := BuildCodexGatewayToolMapping(req.Tools, toolCfg)
+	if err != nil {
+		return CodexGatewayPreparedDeepSeekRequest{}, err
+	}
+	toolMapping, err = codexGatewayDeepSeekMergeDeferredToolSearchOutputTools(toolMapping, req.Input, toolCfg)
 	if err != nil {
 		return CodexGatewayPreparedDeepSeekRequest{}, err
 	}
@@ -166,6 +172,12 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 	if len(messages) > 0 {
 		codexGatewayBackfillDeepSeekAssistantReasoning(messages)
+		if codexGatewayDeepSeekToolMappingHasComputerUse(toolMapping) && codexGatewayDeepSeekMessagesHaveUserTurn(messages) && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekComputerUseInstruction) {
+			leadingMessages = append(leadingMessages, map[string]any{
+				"role":    "system",
+				"content": codexGatewayDeepSeekComputerUseInstruction,
+			})
+		}
 		if req.ParallelToolCalls != nil && !*req.ParallelToolCalls && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekSerialToolInstruction) {
 			leadingMessages = append(leadingMessages, map[string]any{
 				"role":    "system",
@@ -333,6 +345,144 @@ func codexGatewayDeepSeekSystemPrefixHasContent(messages []any, content string) 
 		}
 	}
 	return false
+}
+
+func codexGatewayDeepSeekMessagesHaveUserTurn(messages []any) bool {
+	for _, msg := range messages {
+		m, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(firstCodexGatewayToolString(m["role"])) == "user" {
+			return true
+		}
+	}
+	return false
+}
+
+func codexGatewayDeepSeekToolMappingHasComputerUse(mapping CodexGatewayToolMappingResult) bool {
+	for _, entry := range mapping.NameMap {
+		if codexGatewayDeepSeekIsComputerUseToolIdentity(
+			entry.Name,
+			entry.Alias,
+			firstCodexGatewayToolString(entry.Namespace, entry.NamespacePath),
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexGatewayDeepSeekMergeDeferredToolSearchOutputTools(mapping CodexGatewayToolMappingResult, input json.RawMessage, cfg CodexGatewayToolMappingConfig) (CodexGatewayToolMappingResult, error) {
+	if len(input) == 0 {
+		return mapping, nil
+	}
+	items, err := decodeCodexGatewayInputItems(input)
+	if err != nil {
+		return CodexGatewayToolMappingResult{}, err
+	}
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok || strings.TrimSpace(firstCodexGatewayToolString(m["type"])) != "tool_search_output" {
+			continue
+		}
+		toolsValue, ok := codexGatewayDeepSeekDeferredToolsValue(m)
+		if !ok {
+			continue
+		}
+		rawTools, err := json.Marshal(toolsValue)
+		if err != nil {
+			return CodexGatewayToolMappingResult{}, fmt.Errorf("encode tool_search_output tools: %w", err)
+		}
+		deferred, err := BuildCodexGatewayToolMapping(rawTools, cfg)
+		if err != nil {
+			return CodexGatewayToolMappingResult{}, fmt.Errorf("map tool_search_output tools: %w", err)
+		}
+		mapping, err = mergeCodexGatewayToolMappings(mapping, deferred)
+		if err != nil {
+			return CodexGatewayToolMappingResult{}, err
+		}
+	}
+	return mapping, nil
+}
+
+func codexGatewayDeepSeekDeferredToolsValue(item map[string]any) (any, bool) {
+	if item == nil {
+		return nil, false
+	}
+	if tools, ok := item["tools"]; ok && codexGatewayDeepSeekDeferredToolsValueIsNonEmptyArray(tools) {
+		return tools, true
+	}
+	output := firstCodexGatewayToolValue(item["output"])
+	switch typed := output.(type) {
+	case string:
+		var parsed any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(typed)), &parsed); err != nil {
+			return nil, false
+		}
+		if codexGatewayDeepSeekDeferredToolsValueIsNonEmptyArray(parsed) {
+			return parsed, true
+		}
+		if obj, ok := parsed.(map[string]any); ok && codexGatewayDeepSeekDeferredToolsValueIsNonEmptyArray(obj["tools"]) {
+			return obj["tools"], true
+		}
+	case map[string]any:
+		if codexGatewayDeepSeekDeferredToolsValueIsNonEmptyArray(typed["tools"]) {
+			return typed["tools"], true
+		}
+	case []any:
+		if len(typed) > 0 {
+			return typed, true
+		}
+	}
+	return nil, false
+}
+
+func codexGatewayDeepSeekDeferredToolsValueIsNonEmptyArray(value any) bool {
+	arr, ok := value.([]any)
+	return ok && len(arr) > 0
+}
+
+func mergeCodexGatewayToolMappings(base, extra CodexGatewayToolMappingResult) (CodexGatewayToolMappingResult, error) {
+	if base.NameMap == nil {
+		base.NameMap = make(map[string]CodexGatewayToolNameMapEntry, len(extra.NameMap))
+	}
+	if base.originalToAlias == nil {
+		base.originalToAlias = make(map[string]string, len(extra.originalToAlias))
+	}
+	existingAliases := make(map[string]struct{}, len(base.NameMap))
+	for alias := range base.NameMap {
+		existingAliases[alias] = struct{}{}
+	}
+	for alias, entry := range extra.NameMap {
+		if existing, ok := base.NameMap[alias]; ok {
+			if !codexGatewayToolNameMapEntriesEqual(existing, entry) {
+				return CodexGatewayToolMappingResult{}, fmt.Errorf("deferred tool alias collision for %q", alias)
+			}
+			continue
+		}
+		base.NameMap[alias] = entry
+	}
+	for _, tool := range extra.Tools {
+		function, _ := tool["function"].(map[string]any)
+		alias := strings.TrimSpace(firstCodexGatewayToolString(function["name"]))
+		if alias == "" {
+			continue
+		}
+		if _, existed := existingAliases[alias]; existed {
+			continue
+		}
+		base.Tools = append(base.Tools, tool)
+		existingAliases[alias] = struct{}{}
+	}
+	for key, alias := range extra.originalToAlias {
+		if existing, ok := base.originalToAlias[key]; ok && existing != alias {
+			return CodexGatewayToolMappingResult{}, fmt.Errorf("deferred tool original path collision for %q", key)
+		}
+		base.originalToAlias[key] = alias
+	}
+	base.IgnoredHostedToolTypes = uniqueCodexGatewayStrings(append(base.IgnoredHostedToolTypes, extra.IgnoredHostedToolTypes...))
+	return base, nil
 }
 
 func codexGatewayDeepSeekAllowlistedChatCompletionsBody(body map[string]any) map[string]any {
@@ -1145,11 +1295,11 @@ func normalizeCodexGatewayDeepSeekToolOutput(value any) (string, error) {
 		if parsed, ok := codexGatewayDeepSeekParseStructuredToolOutputString(typed); ok {
 			return normalizeCodexGatewayDeepSeekToolOutput(parsed)
 		}
-		if codexGatewayDeepSeekIsBinaryLikeToolField("", typed) {
-			return codexGatewayDeepSeekMarshalToolOutputSummary(codexGatewayDeepSeekSummarizeBinaryToolField("", typed))
-		}
 		if codexGatewayDeepSeekLooksLikeStandaloneVisualTree(typed) {
 			return codexGatewayDeepSeekMarshalToolOutputSummary(codexGatewayDeepSeekSummarizeAccessibilityTree("tool_output", typed))
+		}
+		if codexGatewayDeepSeekIsBinaryLikeToolField("", typed) {
+			return codexGatewayDeepSeekMarshalToolOutputSummary(codexGatewayDeepSeekSummarizeBinaryToolField("", typed))
 		}
 		return typed, nil
 	default:
@@ -1322,6 +1472,17 @@ func codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in map[string]a
 			out["operable_lines"] = lines
 		}
 	}
+	if rawLines, ok := in["visible_text"]; ok {
+		visibleLines := maxLines
+		if visibleLines > 4 {
+			visibleLines = 4
+		} else if visibleLines > 2 {
+			visibleLines = 2
+		}
+		if lines := codexGatewayDeepSeekCompactOperableLines(rawLines, visibleLines, lineChars); len(lines) > 0 {
+			out["visible_text"] = lines
+		}
+	}
 	return out
 }
 
@@ -1454,6 +1615,9 @@ func codexGatewayDeepSeekSummarizeToolOutputValue(field string, value any, depth
 	case nil, bool, float64, float32, int, int64, int32, uint, uint64, uint32:
 		return typed, false
 	case string:
+		if codexGatewayDeepSeekLooksLikeStandaloneVisualTree(typed) {
+			return codexGatewayDeepSeekSummarizeAccessibilityTree(firstCodexGatewayToolString(field, "tool_output"), typed), true
+		}
 		if codexGatewayDeepSeekIsBinaryLikeToolField(field, typed) {
 			return codexGatewayDeepSeekSummarizeBinaryToolField(field, typed), true
 		}
@@ -1579,40 +1743,55 @@ func codexGatewayDeepSeekSummarizeStructuredVisualState(field string, value any)
 }
 
 func codexGatewayDeepSeekStructuredOperableLines(value any) []string {
-	out := make([]string, 0, 8)
-	seen := make(map[string]struct{}, 8)
-	codexGatewayDeepSeekCollectStructuredOperableLines(value, &out, seen)
+	candidates := make([]codexGatewayDeepSeekAccessibilityLineCandidate, 0, 16)
+	seen := make(map[string]struct{}, 16)
+	index := 0
+	codexGatewayDeepSeekCollectStructuredOperableLines(value, &candidates, seen, &index)
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority > candidates[j].priority
+		}
+		return candidates[i].index < candidates[j].index
+	})
+	limit := len(candidates)
+	if limit > 8 {
+		limit = 8
+	}
+	selected := append([]codexGatewayDeepSeekAccessibilityLineCandidate(nil), candidates[:limit]...)
+	sort.SliceStable(selected, func(i, j int) bool {
+		return selected[i].index < selected[j].index
+	})
+	out := make([]string, 0, len(selected))
+	for _, candidate := range selected {
+		out = append(out, candidate.line)
+	}
 	return out
 }
 
-func codexGatewayDeepSeekCollectStructuredOperableLines(value any, out *[]string, seen map[string]struct{}) {
-	if len(*out) >= 8 {
-		return
-	}
+func codexGatewayDeepSeekCollectStructuredOperableLines(value any, out *[]codexGatewayDeepSeekAccessibilityLineCandidate, seen map[string]struct{}, index *int) {
 	switch typed := value.(type) {
 	case []any:
 		for _, item := range typed {
-			codexGatewayDeepSeekCollectStructuredOperableLines(item, out, seen)
-			if len(*out) >= 8 {
-				return
-			}
+			codexGatewayDeepSeekCollectStructuredOperableLines(item, out, seen, index)
 		}
 	case map[string]any:
 		if line := codexGatewayDeepSeekStructuredNodeLine(typed); line != "" {
 			if _, ok := seen[line]; !ok {
 				seen[line] = struct{}{}
-				*out = append(*out, line)
-				if len(*out) >= 8 {
-					return
-				}
+				*out = append(*out, codexGatewayDeepSeekAccessibilityLineCandidate{
+					index:    *index,
+					line:     line,
+					priority: codexGatewayDeepSeekAccessibilityOperableLinePriority(line),
+				})
 			}
 		}
+		*index++
 		for _, key := range []string{"children", "nodes", "items", "elements", "tree"} {
 			if child, ok := typed[key]; ok {
-				codexGatewayDeepSeekCollectStructuredOperableLines(child, out, seen)
-				if len(*out) >= 8 {
-					return
-				}
+				codexGatewayDeepSeekCollectStructuredOperableLines(child, out, seen, index)
 			}
 		}
 	}
@@ -1634,7 +1813,7 @@ func codexGatewayDeepSeekStructuredNodeLine(node map[string]any) string {
 		node["placeholder"],
 	)
 	stateParts := make([]string, 0, 4)
-	for _, key := range []string{"enabled", "disabled", "focused", "selected", "checked", "pressed", "visible"} {
+	for _, key := range []string{"enabled", "disabled", "focused", "selected", "checked", "pressed", "visible", "settable"} {
 		if state, ok := codexGatewayDeepSeekStructuredBoolState(node, key); ok {
 			stateParts = append(stateParts, fmt.Sprintf("%s=%t", key, state))
 		}
@@ -1793,10 +1972,13 @@ func codexGatewayDeepSeekLooksLikeStandaloneVisualTree(value string) bool {
 		}
 		lowered := strings.ToLower(line)
 		if strings.Contains(lowered, "ax") ||
+			strings.Contains(lowered, "<app_state>") ||
+			strings.Contains(lowered, "computer use state") ||
 			strings.Contains(lowered, "role=") ||
 			strings.Contains(lowered, "children") ||
 			strings.Contains(lowered, "bounds") ||
-			strings.Contains(lowered, "element_index") {
+			strings.Contains(lowered, "element_index") ||
+			strings.Contains(line, "文本输入区") {
 			treeHints++
 		}
 		if operable >= 2 && treeHints >= 1 {
@@ -1816,6 +1998,14 @@ func codexGatewayDeepSeekSummarizeVisualTree(field, value string) map[string]any
 	}
 	if lines := codexGatewayDeepSeekAccessibilityTreeLines(value); len(lines) > 0 {
 		out["operable_lines"] = lines
+	}
+	if visibleText := codexGatewayDeepSeekAccessibilityVisibleTextLines(value); len(visibleText) > 0 {
+		out["visible_text"] = visibleText
+	}
+	if _, ok := out["operable_lines"]; ok {
+		return out
+	}
+	if _, ok := out["visible_text"]; ok {
 		return out
 	}
 	if preview := codexGatewayDeepSeekAccessibilityPreview(value); preview != "" {
@@ -1850,12 +2040,26 @@ func codexGatewayDeepSeekSummarizeAccessibilityTree(field, value string) map[str
 	}
 	if lines := codexGatewayDeepSeekAccessibilityTreeLines(value); len(lines) > 0 {
 		out["operable_lines"] = lines
+	}
+	if visibleText := codexGatewayDeepSeekAccessibilityVisibleTextLines(value); len(visibleText) > 0 {
+		out["visible_text"] = visibleText
+	}
+	if _, ok := out["operable_lines"]; ok {
+		return out
+	}
+	if _, ok := out["visible_text"]; ok {
 		return out
 	}
 	if preview := codexGatewayDeepSeekAccessibilityPreview(value); preview != "" {
 		out["preview"] = preview
 	}
 	return out
+}
+
+type codexGatewayDeepSeekAccessibilityLineCandidate struct {
+	index    int
+	line     string
+	priority int
 }
 
 func codexGatewayDeepSeekAccessibilityTreeLines(value string) []string {
@@ -1865,9 +2069,9 @@ func codexGatewayDeepSeekAccessibilityTreeLines(value string) []string {
 	if len(rawLines) <= 1 {
 		rawLines = strings.Split(value, "},")
 	}
-	out := make([]string, 0, 8)
-	seen := make(map[string]struct{}, 8)
-	for _, raw := range rawLines {
+	candidates := make([]codexGatewayDeepSeekAccessibilityLineCandidate, 0, 16)
+	seen := make(map[string]struct{}, 16)
+	for index, raw := range rawLines {
 		line := strings.TrimSpace(raw)
 		if line == "" || !codexGatewayDeepSeekLooksOperableAccessibilityLine(line) {
 			continue
@@ -1877,21 +2081,94 @@ func codexGatewayDeepSeekAccessibilityTreeLines(value string) []string {
 			continue
 		}
 		seen[line] = struct{}{}
-		out = append(out, line)
-		if len(out) >= 8 {
+		candidates = append(candidates, codexGatewayDeepSeekAccessibilityLineCandidate{
+			index:    index,
+			line:     line,
+			priority: codexGatewayDeepSeekAccessibilityOperableLinePriority(line),
+		})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority > candidates[j].priority
+		}
+		return candidates[i].index < candidates[j].index
+	})
+	limit := len(candidates)
+	if limit > 8 {
+		limit = 8
+	}
+	selected := append([]codexGatewayDeepSeekAccessibilityLineCandidate(nil), candidates[:limit]...)
+	sort.SliceStable(selected, func(i, j int) bool {
+		return selected[i].index < selected[j].index
+	})
+	out := make([]string, 0, len(selected))
+	for _, candidate := range selected {
+		out = append(out, candidate.line)
+	}
+	return out
+}
+
+func codexGatewayDeepSeekAccessibilityOperableLinePriority(line string) int {
+	lowered := strings.ToLower(line)
+	score := 0
+	if strings.Contains(lowered, "focused ui element") {
+		score += 140
+	}
+	if strings.Contains(lowered, "focused") || strings.Contains(line, "聚焦") {
+		score += 90
+	}
+	inputHints := []string{
+		"textbox", "text field", "textfield", "text input", "textarea", "input",
+		"placeholder", "发消息", "文本输入区", "输入框", "输入区",
+	}
+	for _, hint := range inputHints {
+		if strings.Contains(lowered, strings.ToLower(hint)) {
+			score += 110
 			break
 		}
 	}
-	return out
+	if strings.Contains(lowered, "settable") {
+		score += 35
+	}
+	if strings.Contains(lowered, "button") || strings.Contains(line, "按钮") {
+		score += 45
+	}
+	sendHints := []string{"send", "submit", "发送", "提交"}
+	for _, hint := range sendHints {
+		if strings.Contains(lowered, strings.ToLower(hint)) {
+			score += 100
+			break
+		}
+	}
+	if strings.Contains(lowered, "timeout") || strings.Contains(line, "超时") ||
+		strings.Contains(lowered, "error") || strings.Contains(line, "错误") || strings.Contains(line, "报错") {
+		score += 70
+	}
+	if strings.Contains(lowered, "disabled") || strings.Contains(line, "禁用") ||
+		strings.Contains(lowered, "enabled") || strings.Contains(line, "启用") {
+		score += 20
+	}
+	if strings.Contains(lowered, "link") || strings.Contains(line, "链接") {
+		score += 10
+	}
+	if strings.Contains(lowered, "menu") || strings.Contains(line, "菜单") ||
+		strings.Contains(lowered, "tab") || strings.Contains(line, "标签") {
+		score += 20
+	}
+	return score
 }
 
 func codexGatewayDeepSeekLooksOperableAccessibilityLine(line string) bool {
 	lowered := strings.ToLower(line)
 	keywords := []string{
-		"button", "checkbox", "radio", "textbox", "text field", "textfield", "input",
+		"button", "checkbox", "radio", "textbox", "text field", "textfield", "textarea", "text area", "input",
 		"menu", "menuitem", "tab", "link", "combobox", "slider", "switch", "option",
-		"selected", "focused", "enabled", "disabled", "error", "warning", "timeout",
-		"按钮", "输入", "菜单", "标签", "链接", "复选", "选中", "聚焦", "禁用", "启用", "错误", "报错", "警告", "超时",
+		"selected", "focused", "enabled", "disabled", "settable", "editable", "placeholder",
+		"send", "submit", "error", "warning", "timeout",
+		"按钮", "输入", "菜单", "标签", "链接", "复选", "选中", "聚焦", "禁用", "启用", "可编辑", "发送", "提交", "错误", "报错", "警告", "超时",
 	}
 	for _, keyword := range keywords {
 		if strings.Contains(lowered, strings.ToLower(keyword)) {
@@ -1899,6 +2176,101 @@ func codexGatewayDeepSeekLooksOperableAccessibilityLine(line string) bool {
 		}
 	}
 	return false
+}
+
+func codexGatewayDeepSeekAccessibilityVisibleTextLines(value string) []string {
+	rawLines := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	if len(rawLines) <= 1 {
+		rawLines = strings.Split(value, "},")
+	}
+	candidates := make([]codexGatewayDeepSeekAccessibilityLineCandidate, 0, 12)
+	seen := make(map[string]struct{}, 12)
+	for index, raw := range rawLines {
+		line := strings.TrimSpace(raw)
+		if !codexGatewayDeepSeekLooksVisibleAccessibilityTextLine(line) {
+			continue
+		}
+		line = codexGatewayDeepSeekTruncateString(line, 180)
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		candidates = append(candidates, codexGatewayDeepSeekAccessibilityLineCandidate{
+			index:    index,
+			line:     line,
+			priority: codexGatewayDeepSeekAccessibilityVisibleTextPriority(line),
+		})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority > candidates[j].priority
+		}
+		return candidates[i].index > candidates[j].index
+	})
+	limit := len(candidates)
+	if limit > 6 {
+		limit = 6
+	}
+	selected := append([]codexGatewayDeepSeekAccessibilityLineCandidate(nil), candidates[:limit]...)
+	sort.SliceStable(selected, func(i, j int) bool {
+		return selected[i].index < selected[j].index
+	})
+	out := make([]string, 0, len(selected))
+	for _, candidate := range selected {
+		out = append(out, candidate.line)
+	}
+	return out
+}
+
+func codexGatewayDeepSeekLooksVisibleAccessibilityTextLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	lowered := strings.ToLower(line)
+	if strings.Contains(lowered, "chrome://") ||
+		strings.Contains(lowered, "<app_state") ||
+		strings.Contains(lowered, "<app_specific") ||
+		strings.Contains(lowered, "computer use state") ||
+		strings.HasPrefix(lowered, "app=") ||
+		strings.HasPrefix(lowered, "window:") ||
+		strings.Contains(lowered, "secondary actions") {
+		return false
+	}
+	if strings.Contains(lowered, "link description") {
+		return false
+	}
+	return strings.Contains(lowered, "statictext") ||
+		strings.Contains(lowered, "static text") ||
+		strings.Contains(lowered, " text ") ||
+		strings.HasPrefix(lowered, "text ") ||
+		strings.Contains(line, "文本")
+}
+
+func codexGatewayDeepSeekAccessibilityVisibleTextPriority(line string) int {
+	score := len([]rune(line))
+	if score > 180 {
+		score = 180
+	}
+	if strings.Contains(line, "回答") || strings.Contains(line, "回复") ||
+		strings.Contains(line, "结果") || strings.Contains(line, "总结") {
+		score += 30
+	}
+	if strings.Contains(line, "用户") || strings.Contains(line, "助手") ||
+		strings.Contains(line, "豆包") {
+		score += 10
+	}
+	lowered := strings.ToLower(line)
+	for _, nav := range []string{"新对话", "更多", "云盘", "ai 浏览器", "历史", "登录"} {
+		if strings.Contains(lowered, strings.ToLower(nav)) {
+			score -= 50
+		}
+	}
+	return score
 }
 
 func codexGatewayDeepSeekAccessibilityPreview(value string) string {
