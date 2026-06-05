@@ -310,6 +310,10 @@ function forbiddenActions(...keys: FormalPoolDiagnosticsActionKey[]): FormalPool
   return unique(allKeys.map(action))
 }
 
+function forbiddenActionsAllowPromote(...keys: FormalPoolDiagnosticsActionKey[]): FormalPoolDiagnosticsHeroAction[] {
+  return unique(keys.map(action))
+}
+
 function isBlank(value: unknown): boolean {
   return String(value ?? '').trim().length === 0
 }
@@ -341,6 +345,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     diagnostics?.formal_pool_rate_limit_action,
     diagnostics?.quarantine_reason,
     diagnostics?.onboarding_last_error_code,
+    diagnostics?.onboarding_last_error_bucket,
     diagnostics?.last_cc_gateway_error_code,
   )
 
@@ -361,6 +366,12 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     hasCheckStatus(diagnostics, 'healthcheck_evidence_persisted') ||
     hasAny(signals, 'raw_capture_missing', 'cc_gateway_not_seen')
   const evidenceMissing = gatewayRuntimeMappingEvidenceMissing || healthcheckOrCaptureEvidenceMissing
+  const highRiskPromotionBlock =
+    diagnostics?.proxy_mismatch === true ||
+    diagnostics?.fallback_detected === true ||
+    diagnostics?.risk_text_detected === true ||
+    diagnostics?.failure_origin === 'proxy' ||
+    hasAny(signals, 'proxy_mismatch', 'fallback', 'status_429', 'rate_limit', '5h', 'long_context_usage_credits', 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold')
 
   const baseBullets = [
     `失败来源：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.failure_origin, 'origin', '数据不足')}`,
@@ -384,6 +395,31 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       primaryAction: primary,
       secondaryActions: [],
       forbiddenActions: forbiddenActions(),
+    }
+  }
+
+  if (
+    diagnostics?.onboarding_stage === 'warming' &&
+    recommends(rec, 'promote_production') &&
+    runtimeRegistrationEvidenceComplete &&
+    diagnostics?.healthcheck_evidence_persisted === true &&
+    diagnostics?.raw_capture_present === true &&
+    diagnostics?.cc_gateway_seen === true &&
+    !highRiskPromotionBlock
+  ) {
+    return {
+      scenario: 'monitor',
+      lane: 'active',
+      tone: 'emerald',
+      title: '预热完成，可进入生产',
+      summary: 'runtime / gateway / healthcheck 证据完整，可以手动切换到生产期。',
+      rootCauseBullets: [
+        ...baseBullets,
+        '当前账号处于 warming，后端诊断推荐 promote_production。',
+      ],
+      primaryAction: action('promoteProduction'),
+      secondaryActions: [action('refreshDiagnostics')],
+      forbiddenActions: forbiddenActionsAllowPromote('replaceSetupToken', 'swapProxy', 'runtimeRegister', 'healthcheck', 'quarantine'),
     }
   }
 

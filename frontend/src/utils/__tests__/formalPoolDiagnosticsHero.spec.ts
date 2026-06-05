@@ -285,6 +285,88 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     expect(bullets).not.toContain('失败分类：custom_bucket_mystery')
   })
 
+  it('allows manual promoteProduction only for clean warming accounts with complete evidence', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ status: 'active', schedulable: true, effective_schedulable: true, onboarding_stage: 'warming' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'warming',
+        schedulable: true,
+        effective_schedulable: true,
+        failure_origin: 'unknown',
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T01:02:03Z',
+        runtime_evidence_complete: true,
+        raw_capture_present: true,
+        healthcheck_evidence_persisted: true,
+        recommended_actions: [{ key: 'promote_production', label: 'Promote production', severity: 'info' }],
+      }),
+    })
+
+    expect(hero.title).toContain('预热完成')
+    expect(hero.primaryAction?.key).toBe('promoteProduction')
+    expect(hero.primaryAction?.behavior).toBe('api')
+    expect(keys(hero.forbiddenActions)).not.toContain('promoteProduction')
+  })
+
+  it.each([
+    ['proxy mismatch', { failure_origin: 'proxy', proxy_mismatch: true }],
+    ['fallback detected', { failure_origin: 'proxy', fallback_detected: true }],
+    ['manual risk', { failure_origin: 'upstream', status_code_bucket: 'status_403', risk_text_detected: true }],
+    ['rate limit', { failure_origin: 'upstream', failure_code: 'long_context_usage_credits', status_code_bucket: 'status_429', formal_pool_rate_limit_window: '5h' }],
+  ] as const)('blocks promoteProduction for warming accounts when %s is present', (_name, overrides) => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ status: 'active', schedulable: true, effective_schedulable: true, onboarding_stage: 'warming' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'warming',
+        schedulable: true,
+        effective_schedulable: true,
+        failure_origin: 'unknown',
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T01:02:03Z',
+        runtime_evidence_complete: true,
+        raw_capture_present: true,
+        healthcheck_evidence_persisted: true,
+        ...overrides,
+        recommended_actions: [{ key: 'promote_production', label: 'Promote production', severity: 'info' }],
+      }),
+    })
+
+    expect(hero.primaryAction?.key).not.toBe('promoteProduction')
+    expect(keys(hero.secondaryActions)).not.toContain('promoteProduction')
+  })
+
+
+
+
+  it.each([
+    ['status_429'],
+    ['status_403'],
+    ['account_on_hold'],
+  ] as const)('blocks promoteProduction when only onboarding_last_error_bucket carries %s', (bucket) => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ status: 'active', schedulable: true, effective_schedulable: true, onboarding_stage: 'warming' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'warming',
+        schedulable: true,
+        effective_schedulable: true,
+        failure_origin: 'unknown',
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T01:02:03Z',
+        runtime_evidence_complete: true,
+        raw_capture_present: true,
+        healthcheck_evidence_persisted: true,
+        onboarding_last_error_bucket: bucket,
+        recommended_actions: [{ key: 'promote_production', label: 'Promote production', severity: 'info' }],
+      }),
+    })
+
+    expect(hero.primaryAction?.key).not.toBe('promoteProduction')
+    expect(keys(hero.secondaryActions)).not.toContain('promoteProduction')
+  })
+
   it('monitor uses no primary repair, allows refresh diagnostics, and forbids all repair buttons', () => {
     const hero = deriveFormalPoolDiagnosticsHero({
       account: account({ status: 'active', schedulable: true, effective_schedulable: true, onboarding_stage: 'production' }),

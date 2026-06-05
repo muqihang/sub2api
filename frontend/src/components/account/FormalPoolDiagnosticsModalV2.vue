@@ -217,6 +217,7 @@ import {
   FormalPoolOperationError,
   getDiagnostics,
   healthcheck,
+  promoteProduction,
   quarantine,
   replaceSetupToken,
   runtimeRegister,
@@ -514,6 +515,7 @@ async function handleAction(key: FormalPoolDiagnosticsActionKey): Promise<void> 
     pendingHealthcheckConfirm.value = true
     return
   }
+  if (key === 'promoteProduction') return runWithBusy(key, () => promoteProduction(account.id))
   if (key === 'swapProxy') {
     const id = parsedProxyId()
     if (!id) return

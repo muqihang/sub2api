@@ -26,6 +26,7 @@ const {
   healthcheck,
   swapProxy,
   quarantine,
+  promoteProduction,
   routerPush,
 } = vi.hoisted(() => ({
   getDiagnostics: vi.fn(),
@@ -34,6 +35,7 @@ const {
   healthcheck: vi.fn(),
   swapProxy: vi.fn(),
   quarantine: vi.fn(),
+  promoteProduction: vi.fn(),
   routerPush: vi.fn(),
 }))
 
@@ -47,6 +49,7 @@ vi.mock('@/api/admin/formalPoolOperations', async () => {
     healthcheck,
     swapProxy,
     quarantine,
+    promoteProduction,
   }
 })
 
@@ -142,7 +145,7 @@ function healthcheckScenarioDiagnostics(): FormalPoolOperationsDiagnostics {
 
 describe('FormalPoolDiagnosticsModalV2', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     routerPush.mockResolvedValue(undefined)
   })
 
@@ -278,6 +281,99 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(proxyMismatch.find('[data-testid="action-swapProxy"]').exists()).toBe(true)
     expect(proxyMismatch.find('[data-testid="action-healthcheck"]').exists()).toBe(false)
     expect(proxyMismatch.text()).toContain('更换代理后再执行 runtime-register / healthcheck')
+  })
+
+
+  it('renders and executes manual promote to production for warming accounts with complete evidence', async () => {
+    const promotedAccount = account({
+      status: 'active',
+      schedulable: true,
+      effective_schedulable: true,
+      onboarding_stage: 'production',
+    })
+    promoteProduction.mockResolvedValue({
+      account: promotedAccount,
+      diagnostics: diagnostics({
+        onboarding_stage: 'production',
+        schedulable: true,
+        effective_schedulable: true,
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T00:00:00Z',
+        runtime_evidence_complete: true,
+        healthcheck_evidence_persisted: true,
+        raw_capture_present: true,
+        recommended_actions: [{ key: 'monitor', label: 'Monitor', severity: 'info' }],
+      }),
+    })
+
+    const wrapper = await mountModal({
+      account: account({ status: 'active', schedulable: true, effective_schedulable: true, onboarding_stage: 'warming' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'warming',
+        schedulable: true,
+        effective_schedulable: true,
+        failure_origin: 'unknown',
+        failure_code: undefined,
+        status_code_bucket: undefined,
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T00:00:00Z',
+        runtime_evidence_complete: true,
+        healthcheck_evidence_persisted: true,
+        raw_capture_present: true,
+        checks: [
+          { name: 'cc_gateway_runtime_registered', status: 'pass', message: 'ok' },
+          { name: 'healthcheck_evidence_persisted', status: 'pass', message: 'ok' },
+        ],
+        recommended_actions: [{ key: 'promote_production', label: 'Promote production', severity: 'info' }],
+      }),
+    })
+
+    const action = wrapper.get('[data-testid="action-promoteProduction"]')
+    expect(action.text()).toContain('进入生产')
+
+    await action.trigger('click')
+    await flushPromises()
+
+    expect(promoteProduction).toHaveBeenCalledTimes(1)
+    expect(promoteProduction).toHaveBeenCalledWith(42)
+    expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ onboarding_stage: 'production' })
+  })
+
+
+  it.each([
+    ['proxy mismatch', { failure_origin: 'proxy', proxy_mismatch: true }],
+    ['fallback detected', { failure_origin: 'proxy', fallback_detected: true }],
+    ['manual risk', { failure_origin: 'upstream', status_code_bucket: 'status_403', risk_text_detected: true }],
+    ['rate limit', { failure_origin: 'upstream', failure_code: 'long_context_usage_credits', status_code_bucket: 'status_429', formal_pool_rate_limit_window: '5h' }],
+  ] as const)('does not render promoteProduction for warming accounts when %s is present', async (_name, overrides) => {
+    const wrapper = await mountModal({
+      account: account({ status: 'active', schedulable: true, effective_schedulable: true, onboarding_stage: 'warming' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'warming',
+        schedulable: true,
+        effective_schedulable: true,
+        failure_origin: 'unknown',
+        failure_code: undefined,
+        status_code_bucket: undefined,
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T00:00:00Z',
+        runtime_evidence_complete: true,
+        healthcheck_evidence_persisted: true,
+        raw_capture_present: true,
+        checks: [
+          { name: 'cc_gateway_runtime_registered', status: 'pass', message: 'ok' },
+          { name: 'healthcheck_evidence_persisted', status: 'pass', message: 'ok' },
+        ],
+        ...overrides,
+        recommended_actions: [{ key: 'promote_production', label: 'Promote production', severity: 'info' }],
+      }),
+    })
+
+    expect(wrapper.find('[data-testid="action-promoteProduction"]').exists()).toBe(false)
+    expect(wrapper.html()).not.toContain('预热完成，可进入生产')
   })
 
   it('does not render promoteProduction in the DOM when evidence is missing', async () => {
