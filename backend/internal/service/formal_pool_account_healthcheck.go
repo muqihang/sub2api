@@ -199,13 +199,6 @@ func formalPoolHealthcheckBody() ([]byte, error) {
 		"tools":    []map[string]any{},
 		"output_config": map[string]any{
 			"effort": "low",
-			"format": map[string]any{
-				"type": "json_schema",
-				"schema": map[string]any{
-					"type":                 "object",
-					"additionalProperties": true,
-				},
-			},
 		},
 	})
 }

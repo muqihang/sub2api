@@ -131,9 +131,7 @@ func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMilli
 	outputConfig, ok := body["output_config"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "low", outputConfig["effort"])
-	format, ok := outputConfig["format"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, "json_schema", format["type"])
+	require.NotContains(t, outputConfig, "format")
 	require.NotContains(t, strings.ToLower(upstream.lastHeaders.Get("anthropic-beta")), "context-1m")
 }
 
