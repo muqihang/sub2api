@@ -37,7 +37,7 @@ func (c codexGatewayAnthropicVariantReadyChecker) IsReady(ctx context.Context, m
 	}
 	variant := strings.TrimSpace(model.ProviderVariant)
 	switch variant {
-	case "", "kiro_claude", "kiro_claude_thinking":
+	case "", "anthropic_direct", "kiro_claude", "kiro_claude_thinking":
 		return true
 	case "antigravity_claude", "antigravity_claude_thinking":
 		if c.probe == nil {

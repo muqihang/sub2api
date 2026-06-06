@@ -620,6 +620,8 @@ func codexGatewayDisplayNameWithSource(baseName, sourceName string) string {
 func codexGatewayAnthropicDisplayName(baseName, providerVariant string) string {
 	baseName = strings.TrimSpace(baseName)
 	switch strings.TrimSpace(providerVariant) {
+	case "anthropic_direct":
+		return baseName
 	case "kiro_claude":
 		return codexGatewayDisplayNameWithSource(baseName, "Kiro")
 	case "kiro_claude_thinking":
@@ -746,26 +748,27 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		openAIModel("gpt-5.3-codex", "GPT-5.3 Codex", 70),
 		deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro", 60),
 		deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash", 50),
-		anthropicModel("claude-opus-4-7", "Claude Opus 4.7", "kiro_claude", "claude-opus-4-7", "high", []string{"high"}, 49),
-		anthropicModel("claude-opus-4-7-thinking", "Claude Opus 4.7", "kiro_claude_thinking", "claude-opus-4-7-thinking", "high", []string{"low", "high", "xhigh"}, 48),
-		anthropicModel("claude-opus-4-7-ag", "Claude Opus 4.7", "antigravity_claude", "claude-opus-4-7", "high", []string{"high"}, 47),
-		anthropicModel("claude-opus-4-7-thinking-ag", "Claude Opus 4.7", "antigravity_claude_thinking", "claude-opus-4-7-thinking", "high", []string{"low", "high", "xhigh"}, 46),
-		anthropicModel("claude-opus-4-7-max", "Claude Opus 4.7", "claude_code_max", "claude-opus-4-7-thinking", "xhigh", []string{"xhigh"}, 45),
-		anthropicModel("claude-opus-4-6", "Claude Opus 4.6", "kiro_claude", "claude-opus-4-6", "high", []string{"high"}, 44),
-		anthropicModel("claude-opus-4-6-thinking", "Claude Opus 4.6", "kiro_claude_thinking", "claude-opus-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 43),
-		anthropicModel("claude-opus-4-6-ag", "Claude Opus 4.6", "antigravity_claude", "claude-opus-4-6", "high", []string{"high"}, 42),
-		anthropicModel("claude-opus-4-6-thinking-ag", "Claude Opus 4.6", "antigravity_claude_thinking", "claude-opus-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 41),
-		anthropicModel("claude-opus-4-6-max", "Claude Opus 4.6", "claude_code_max", "claude-opus-4-6-thinking", "xhigh", []string{"xhigh"}, 40),
-		anthropicModel("claude-sonnet-4-6", "Claude Sonnet 4.6", "kiro_claude", "claude-sonnet-4-6", "high", []string{"high"}, 39),
-		anthropicModel("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6", "kiro_claude_thinking", "claude-sonnet-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 38),
-		anthropicModel("claude-sonnet-4-6-ag", "Claude Sonnet 4.6", "antigravity_claude", "claude-sonnet-4-6", "high", []string{"high"}, 37),
-		anthropicModel("claude-sonnet-4-6-thinking-ag", "Claude Sonnet 4.6", "antigravity_claude_thinking", "claude-sonnet-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 36),
-		anthropicModel("claude-sonnet-4-6-max", "Claude Sonnet 4.6", "claude_code_max", "claude-sonnet-4-6-thinking", "xhigh", []string{"xhigh"}, 35),
-		anthropicModel("claude-haiku-4-5-20251001", "Claude Haiku 4.5", "kiro_claude", "claude-haiku-4-5-20251001", "high", []string{"high"}, 34),
-		anthropicModel("claude-haiku-4-5-20251001-thinking", "Claude Haiku 4.5", "kiro_claude_thinking", "claude-haiku-4-5-20251001-thinking", "high", []string{"low", "high", "xhigh"}, 33),
-		anthropicModel("claude-haiku-4-5-20251001-ag", "Claude Haiku 4.5", "antigravity_claude", "claude-haiku-4-5-20251001", "high", []string{"high"}, 32),
-		anthropicModel("claude-haiku-4-5-20251001-thinking-ag", "Claude Haiku 4.5", "antigravity_claude_thinking", "claude-haiku-4-5-20251001-thinking", "high", []string{"low", "high", "xhigh"}, 31),
-		anthropicModel("claude-haiku-4-5-20251001-max", "Claude Haiku 4.5", "claude_code_max", "claude-haiku-4-5-20251001-thinking", "xhigh", []string{"xhigh"}, 30),
+		anthropicModel("claude-opus-4-8", "Claude Opus 4.8", "anthropic_direct", "claude-opus-4-8", "high", []string{"low", "high", "xhigh"}, 49),
+		anthropicModel("claude-opus-4-7", "Claude Opus 4.7", "anthropic_direct", "claude-opus-4-7", "high", []string{"low", "high", "xhigh"}, 48),
+		anthropicModel("claude-opus-4-7-thinking", "Claude Opus 4.7", "kiro_claude_thinking", "claude-opus-4-7-thinking", "high", []string{"low", "high", "xhigh"}, 47),
+		anthropicModel("claude-opus-4-7-ag", "Claude Opus 4.7", "antigravity_claude", "claude-opus-4-7", "high", []string{"high"}, 46),
+		anthropicModel("claude-opus-4-7-thinking-ag", "Claude Opus 4.7", "antigravity_claude_thinking", "claude-opus-4-7-thinking", "high", []string{"low", "high", "xhigh"}, 45),
+		anthropicModel("claude-opus-4-7-max", "Claude Opus 4.7", "claude_code_max", "claude-opus-4-7-thinking", "xhigh", []string{"xhigh"}, 44),
+		anthropicModel("claude-opus-4-6", "Claude Opus 4.6", "kiro_claude", "claude-opus-4-6", "high", []string{"high"}, 43),
+		anthropicModel("claude-opus-4-6-thinking", "Claude Opus 4.6", "kiro_claude_thinking", "claude-opus-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 42),
+		anthropicModel("claude-opus-4-6-ag", "Claude Opus 4.6", "antigravity_claude", "claude-opus-4-6", "high", []string{"high"}, 41),
+		anthropicModel("claude-opus-4-6-thinking-ag", "Claude Opus 4.6", "antigravity_claude_thinking", "claude-opus-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 40),
+		anthropicModel("claude-opus-4-6-max", "Claude Opus 4.6", "claude_code_max", "claude-opus-4-6-thinking", "xhigh", []string{"xhigh"}, 39),
+		anthropicModel("claude-sonnet-4-6", "Claude Sonnet 4.6", "anthropic_direct", "claude-sonnet-4-6", "high", []string{"low", "high", "xhigh"}, 38),
+		anthropicModel("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6", "kiro_claude_thinking", "claude-sonnet-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 37),
+		anthropicModel("claude-sonnet-4-6-ag", "Claude Sonnet 4.6", "antigravity_claude", "claude-sonnet-4-6", "high", []string{"high"}, 36),
+		anthropicModel("claude-sonnet-4-6-thinking-ag", "Claude Sonnet 4.6", "antigravity_claude_thinking", "claude-sonnet-4-6-thinking", "high", []string{"low", "high", "xhigh"}, 35),
+		anthropicModel("claude-sonnet-4-6-max", "Claude Sonnet 4.6", "claude_code_max", "claude-sonnet-4-6-thinking", "xhigh", []string{"xhigh"}, 34),
+		anthropicModel("claude-haiku-4-5-20251001", "Claude Haiku 4.5", "anthropic_direct", "claude-haiku-4-5-20251001", "high", []string{"low", "high", "xhigh"}, 33),
+		anthropicModel("claude-haiku-4-5-20251001-thinking", "Claude Haiku 4.5", "kiro_claude_thinking", "claude-haiku-4-5-20251001-thinking", "high", []string{"low", "high", "xhigh"}, 32),
+		anthropicModel("claude-haiku-4-5-20251001-ag", "Claude Haiku 4.5", "antigravity_claude", "claude-haiku-4-5-20251001", "high", []string{"high"}, 31),
+		anthropicModel("claude-haiku-4-5-20251001-thinking-ag", "Claude Haiku 4.5", "antigravity_claude_thinking", "claude-haiku-4-5-20251001-thinking", "high", []string{"low", "high", "xhigh"}, 30),
+		anthropicModel("claude-haiku-4-5-20251001-max", "Claude Haiku 4.5", "claude_code_max", "claude-haiku-4-5-20251001-thinking", "xhigh", []string{"xhigh"}, 29),
 	}
 }
 

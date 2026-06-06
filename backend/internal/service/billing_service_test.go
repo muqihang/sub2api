@@ -232,6 +232,7 @@ func TestGetFallbackPricing_FamilyMatching(t *testing.T) {
 		expectNilPricing bool
 	}{
 		{name: "empty model", model: "   ", expectNilPricing: true},
+		{name: "claude opus 4.8", model: "claude-opus-4-8", expectedInput: 5e-6},
 		{name: "claude opus 4.6", model: "claude-opus-4.6-20260201", expectedInput: 5e-6},
 		{name: "claude opus 4.5 alt separator", model: "claude-opus-4-5-20260101", expectedInput: 5e-6},
 		{name: "claude generic model fallback sonnet", model: "claude-foo-bar", expectedInput: 3e-6},

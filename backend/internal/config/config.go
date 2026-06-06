@@ -1919,18 +1919,10 @@ func setDefaults() {
 		"gpt-5.3-codex",
 		"deepseek-v4-pro",
 		"deepseek-v4-flash",
+		"claude-opus-4-8",
 		"claude-opus-4-7",
-		"claude-opus-4-7-thinking",
-		"claude-opus-4-7-max",
-		"claude-opus-4-6",
-		"claude-opus-4-6-thinking",
-		"claude-opus-4-6-max",
 		"claude-sonnet-4-6",
-		"claude-sonnet-4-6-thinking",
-		"claude-sonnet-4-6-max",
 		"claude-haiku-4-5-20251001",
-		"claude-haiku-4-5-20251001-thinking",
-		"claude-haiku-4-5-20251001-max",
 	})
 	viper.SetDefault("gateway.codex.provider_groups.openai", int64(0))
 	viper.SetDefault("gateway.codex.provider_groups.deepseek", int64(0))

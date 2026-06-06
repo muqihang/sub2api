@@ -598,7 +598,8 @@ func codexGatewayAnthropicThinkingConfig(raw json.RawMessage, model CodexGateway
 			}
 		}
 	}
-	if !strings.Contains(strings.ToLower(model.Slug), "thinking") {
+	supportsThinking := codexGatewayAnthropicModelSupportsAdaptiveThinking(model)
+	if !supportsThinking {
 		return map[string]any{"type": "disabled"}, nil
 	}
 	switch effort {
@@ -609,11 +610,28 @@ func codexGatewayAnthropicThinkingConfig(raw json.RawMessage, model CodexGateway
 	case "xhigh", "max":
 		return map[string]any{"type": "adaptive"}, map[string]any{"effort": "max"}
 	default:
-		if strings.Contains(strings.ToLower(model.Slug), "thinking") {
+		if supportsThinking {
 			return map[string]any{"type": "adaptive"}, map[string]any{"effort": "max"}
 		}
 		return map[string]any{"type": "disabled"}, nil
 	}
+}
+
+func codexGatewayAnthropicModelSupportsAdaptiveThinking(model CodexGatewayModel) bool {
+	if strings.Contains(strings.ToLower(model.Slug), "thinking") {
+		return true
+	}
+	switch strings.TrimSpace(model.ProviderVariant) {
+	case "anthropic_direct", "kiro_claude_thinking", "antigravity_claude_thinking", "claude_code_max":
+		return true
+	}
+	for _, level := range model.SupportedReasoningLevels {
+		switch strings.TrimSpace(strings.ToLower(level)) {
+		case "low", "medium", "xhigh", "max":
+			return true
+		}
+	}
+	return false
 }
 
 func codexGatewayAnthropicReasoningEffort(raw json.RawMessage, model CodexGatewayModel) string {

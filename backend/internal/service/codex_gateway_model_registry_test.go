@@ -21,26 +21,10 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 		"gpt-5.3-codex",
 		"deepseek-v4-pro",
 		"deepseek-v4-flash",
+		"claude-opus-4-8",
 		"claude-opus-4-7",
-		"claude-opus-4-7-thinking",
-		"claude-opus-4-7-ag",
-		"claude-opus-4-7-thinking-ag",
-		"claude-opus-4-7-max",
-		"claude-opus-4-6",
-		"claude-opus-4-6-thinking",
-		"claude-opus-4-6-ag",
-		"claude-opus-4-6-thinking-ag",
-		"claude-opus-4-6-max",
 		"claude-sonnet-4-6",
-		"claude-sonnet-4-6-thinking",
-		"claude-sonnet-4-6-ag",
-		"claude-sonnet-4-6-thinking-ag",
-		"claude-sonnet-4-6-max",
 		"claude-haiku-4-5-20251001",
-		"claude-haiku-4-5-20251001-thinking",
-		"claude-haiku-4-5-20251001-ag",
-		"claude-haiku-4-5-20251001-thinking-ag",
-		"claude-haiku-4-5-20251001-max",
 	}, codexGatewayModelSlugs(models))
 
 	gpt55, ok := reg.Resolve("gpt-5.5")
@@ -84,31 +68,27 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 	require.Equal(t, "xhigh", flash.DefaultReasoningLevel)
 	require.False(t, flash.SupportsParallelToolCalls)
 
-	claude, ok := reg.Resolve("claude-opus-4-6")
+	claude, ok := reg.Resolve("claude-opus-4-8")
 	require.True(t, ok)
 	require.Equal(t, "anthropic", claude.Provider)
-	require.Equal(t, "kiro_claude", claude.ProviderVariant)
+	require.Equal(t, "anthropic_direct", claude.ProviderVariant)
+	require.Equal(t, "Claude Opus 4.8", claude.DisplayName)
 	require.Equal(t, "hidden", claude.Visibility)
 	require.False(t, claude.SupportedInAPI)
 	require.Equal(t, 1_000_000, claude.ContextWindow)
 	require.Equal(t, 850_000, claude.AutoCompactTokenLimit)
 	require.Equal(t, 64_000, claude.MaxOutputTokens)
 	require.Equal(t, "high", claude.DefaultReasoningLevel)
-	require.Equal(t, []string{"high"}, claude.SupportedReasoningLevels)
-	require.Equal(t, "claude-opus-4-6", claude.UpstreamBaseModel)
-	require.Equal(t, "claude-opus-4-6", claude.UpstreamThinkingModel)
+	require.Equal(t, []string{"low", "high", "xhigh"}, claude.SupportedReasoningLevels)
+	require.Equal(t, "claude-opus-4-8", claude.UpstreamBaseModel)
+	require.Equal(t, "claude-opus-4-8", claude.UpstreamThinkingModel)
 
-	claudeThinking, ok := reg.Resolve("claude-opus-4-6-thinking")
-	require.True(t, ok)
-	require.Equal(t, "Claude Opus 4.6 Thinking Kiro", claudeThinking.DisplayName)
-	require.Equal(t, "kiro_claude_thinking", claudeThinking.ProviderVariant)
-	require.Equal(t, "high", claudeThinking.DefaultReasoningLevel)
-	require.Equal(t, []string{"low", "high", "xhigh"}, claudeThinking.SupportedReasoningLevels)
-
-	claudeMax, ok := reg.Resolve("claude-opus-4-6-max")
-	require.True(t, ok)
-	require.Equal(t, "Claude Opus 4.6 Max", claudeMax.DisplayName)
-	require.Equal(t, "claude_code_max", claudeMax.ProviderVariant)
+	_, ok = reg.Resolve("claude-opus-4-6")
+	require.False(t, ok)
+	_, ok = reg.Resolve("claude-opus-4-7-thinking")
+	require.False(t, ok)
+	_, ok = reg.Resolve("claude-opus-4-7-max")
+	require.False(t, ok)
 }
 
 func TestCodexGatewayModelRegistry_ConfigFilterAppliesToCatalog(t *testing.T) {
@@ -135,6 +115,47 @@ func TestCodexGatewayModelRegistry_VisibleCatalogExcludesHiddenDeepSeekModels(t 
 		"gpt-5.4-mini",
 		"gpt-5.3-codex",
 	}, codexGatewayModelSlugs(reg.Models()))
+}
+
+func TestCodexGatewayModelRegistry_DefaultCatalogOnlyExposesUnsuffixedClaudeModels(t *testing.T) {
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			ProviderGroups: config.GatewayCodexProviderGroupsConfig{
+				OpenAI:    1001,
+				DeepSeek:  2002,
+				Anthropic: 3003,
+			},
+		},
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: map[string]bool{
+			"deepseek-v4-pro":   true,
+			"deepseek-v4-flash": true,
+		}}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: map[string]bool{
+			"deepseek-v4-pro":   true,
+			"deepseek-v4-flash": true,
+		}}),
+	)
+
+	var claudeSlugs []string
+	for _, model := range reg.Models() {
+		if model.Provider != "anthropic" {
+			continue
+		}
+		claudeSlugs = append(claudeSlugs, model.Slug)
+		require.NotContains(t, model.DisplayName, "Kiro")
+		require.NotContains(t, model.DisplayName, "Thinking")
+		require.NotContains(t, model.DisplayName, "AG")
+		require.NotContains(t, model.DisplayName, "Max")
+	}
+
+	require.Equal(t, []string{
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+	}, claudeSlugs)
+	_, ok := reg.Resolve("claude-opus-4-7-thinking")
+	require.False(t, ok)
 }
 
 func TestCodexGatewayModelRegistry_ExportCatalogJSON(t *testing.T) {
@@ -406,6 +427,54 @@ func TestCodexGatewayModelRegistry_DeepSeekVisibleWhenAllGatesPass(t *testing.T)
 	require.Contains(t, codexGatewayModelSlugs(reg.Models()), "deepseek-v4-pro")
 }
 
+func TestCodexGatewayModelRegistry_AnthropicDirectModelsExposeNativeNamesAndThinking(t *testing.T) {
+	directModels := []string{
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+	}
+	mutations := make(map[string]CodexGatewayModelMutation, len(directModels))
+	for _, slug := range directModels {
+		mutations[slug] = CodexGatewayModelMutation{Enabled: true}
+	}
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{EnabledModels: directModels},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderAnthropic: {Provider: CodexGatewayProviderAnthropic, GroupID: 3003, Healthy: true},
+				},
+				Models: mutations,
+			},
+		}),
+	)
+
+	require.Equal(t, directModels, codexGatewayModelSlugs(reg.Models()))
+	for _, slug := range directModels {
+		model, ok := reg.Resolve(slug)
+		require.True(t, ok, slug)
+		require.Equal(t, "anthropic", model.Provider)
+		require.Equal(t, "anthropic_direct", model.ProviderVariant)
+		require.NotContains(t, model.DisplayName, "Kiro")
+		require.NotContains(t, model.DisplayName, "Thinking")
+		require.NotContains(t, model.DisplayName, "AG")
+		require.NotContains(t, model.DisplayName, "Max")
+		require.Equal(t, slug, model.UpstreamModel)
+		require.Equal(t, slug, model.UpstreamBaseModel)
+		require.Equal(t, slug, model.UpstreamThinkingModel)
+		require.Equal(t, "high", model.DefaultReasoningLevel)
+		require.Equal(t, []string{"low", "high", "xhigh"}, model.SupportedReasoningLevels)
+		require.Equal(t, []string{"text", "image"}, model.InputModalities)
+		require.True(t, model.SupportsSearchTool)
+		require.Equal(t, "openai", model.WebSearchToolType)
+	}
+	require.Equal(t, "Claude Opus 4.8", mustCodexGatewayModel(t, reg, "claude-opus-4-8").DisplayName)
+	require.Equal(t, "Claude Opus 4.7", mustCodexGatewayModel(t, reg, "claude-opus-4-7").DisplayName)
+	require.Equal(t, "Claude Sonnet 4.6", mustCodexGatewayModel(t, reg, "claude-sonnet-4-6").DisplayName)
+	require.Equal(t, "Claude Haiku 4.5", mustCodexGatewayModel(t, reg, "claude-haiku-4-5-20251001").DisplayName)
+}
+
 func TestCodexGatewayModelRegistry_AnthropicVisibleWhenProviderGroupIsHealthy(t *testing.T) {
 	reg := NewCodexGatewayModelRegistry(
 		config.GatewayCodexConfig{
@@ -610,6 +679,13 @@ func codexGatewayModelSlugs(models []CodexGatewayModel) []string {
 		slugs = append(slugs, model.Slug)
 	}
 	return slugs
+}
+
+func mustCodexGatewayModel(t *testing.T, reg *CodexGatewayModelRegistry, slug string) CodexGatewayModel {
+	t.Helper()
+	model, ok := reg.Resolve(slug)
+	require.True(t, ok, slug)
+	return model
 }
 
 type codexGatewayRegistryStateSourceStub struct {

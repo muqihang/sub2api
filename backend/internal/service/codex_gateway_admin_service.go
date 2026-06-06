@@ -391,12 +391,18 @@ func buildFallbackCodexGatewayModelMutations(cfg config.GatewayCodexConfig) map[
 }
 
 func defaultCodexGatewayEnabledModelSlugs() []string {
-	base := defaultCodexGatewayModels()
-	rows := make([]string, 0, len(base))
-	for _, model := range base {
-		rows = append(rows, model.Slug)
+	return []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
 	}
-	return rows
 }
 
 func defaultCodexGatewayModelBySlug(slug string) (CodexGatewayModel, bool) {

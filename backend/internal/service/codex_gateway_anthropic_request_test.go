@@ -218,6 +218,39 @@ func TestBuildCodexGatewayAnthropicRequest_ThinkingVariantSupportsLowHighAndXHig
 	}
 }
 
+func TestBuildCodexGatewayAnthropicRequest_DirectClaudeUsesBaseModelWithAdaptiveThinking(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"input":[{"type":"message","role":"user","content":"hello"}],
+		"reasoning":{"effort":"xhigh"}
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{
+			Slug:                     "claude-opus-4-8",
+			Provider:                 "anthropic",
+			ProviderVariant:          "anthropic_direct",
+			UpstreamModel:            "claude-opus-4-8",
+			UpstreamBaseModel:        "claude-opus-4-8",
+			UpstreamThinkingModel:    "claude-opus-4-8",
+			DefaultReasoningLevel:    "high",
+			SupportedReasoningLevels: []string{"low", "high", "xhigh"},
+		},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "claude-opus-4-8", gjson.GetBytes(raw, "model").String())
+	require.Equal(t, "adaptive", gjson.GetBytes(raw, "thinking.type").String())
+	require.Equal(t, "max", gjson.GetBytes(raw, "output_config.effort").String())
+}
+
 func TestBuildCodexGatewayAnthropicRequest_ForwardsHostedWebSearchAsServerHandledFunctionTool(t *testing.T) {
 	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
 		"model":"claude-opus-4-7-thinking",
