@@ -333,6 +333,26 @@ gateway-managed state replay through a native `previous_response_id`: the checke
 `previous_response_id`, run the stricter repro above and require `previous_response_id_present:true` plus
 `full_replay_messages`.
 
+Native Stop/Continue control boundary from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T20-00-34-019e9ae0-0ad8-7e52-b28f-be83b74ecb7c.jsonl`;
+- the warmup turn completed on `deepseek-v4-flash`;
+- the long read-only task emitted tool calls and tool results through line 49, then the user clicked the
+  Codex Desktop Stop control;
+- Codex recorded `turn_aborted` at line 52 with `reason:"interrupted"`;
+- the UI did not show a native Continue/Resume button, and the user did not type `继续`, so no native
+  resumed request was produced;
+- matching DeepSeek gateway traces all recorded `previous_response_id_present:false`,
+  `previous_response_replay_mode:"none"`, and `state_lookup_status:"not_requested"`;
+- the final stopped trace `trace_1780714863392059971` ended as `response.incomplete`, had no visible output,
+  had zero provider usage because the upstream stream did not provide final usage, and had empty
+  `missing_results`, `orphan_results`, and `duplicate_results`.
+
+Treat this as a Desktop UI boundary, not a DeepSeek gateway replay failure: this run did not provide a
+native `previous_response_id` input for the gateway to replay. A stricter native-resume proof remains
+conditional on finding a Codex Desktop path that actually emits `previous_response_id`.
+
 #### Subagent registration ordering
 
 Manual prompt:
