@@ -439,3 +439,133 @@ As controller, return only whether either subagent found a blocking issue and th
 - Anthropic forced `tool_choice` should disable thinking only for that request.
 - Anthropic-compatible upstream `520`, `522`, or `524` HTML errors should be returned as clean `upstream_timeout` errors, not raw HTML.
 - Anthropic stream errors before visible output should be eligible for account failover; errors after visible output must not be transparently replayed.
+
+#### Deferred tools family matrix smoke
+
+Purpose: prove DeepSeek handles Codex deferred tools as a generic `tool_search_call` / `tool_search_output` protocol family, not as a one-off `multi_agent_v1.spawn_agent` special case. This smoke must classify each tool family as one of:
+
+- `deferred`: discovered through `tool_search_output.tools` and callable on the next turn;
+- `direct`: already exposed as a normal tool, so `tool_search` is not required;
+- `skill_only`: loaded from local `SKILL.md` or injected skill routing instructions, not via `tool_search`;
+- `unavailable`: not exposed in this Desktop/plugin environment.
+
+Do not treat `direct`, `skill_only`, or `unavailable` as failures unless Codex returns the tool in `tool_search_output.tools` and DeepSeek cannot call it on the next turn.
+
+##### Prompt A: discover-only matrix
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请做一次 deferred tools matrix 发现测试。
+请分别搜索这些关键词：spawn_agent、computer use、browser、chrome、document、spreadsheet、presentation。
+只报告 tool_search 返回的 namespace 和 tool name；不要执行会修改文件、打开外部网站、操作真实 App、发送消息或派遣子代理的动作。
+如果某一类工具不是通过 tool_search 暴露，而是直接可见或 Skill-only，请明确分类为 direct 或 skill_only。
+```
+
+Expected session/capture evidence:
+
+- one or more native `tool_search_call` items;
+- matching `tool_search_output` items after the calls;
+- no visible ordinary `function_call` item named `tool_search`;
+- `tool_search_output.tools` includes any deferred namespaces actually available in this Desktop environment;
+- the final answer classifies each requested family without inventing unsupported call names.
+
+After the run, generate a capture report:
+
+```bash
+zhumeng-agent codex capture report --trace-dir <desktop-trace-dir> --gateway-trace-dir <gateway-capture-dir>
+```
+
+Expected `deferred_tool_search` fields when deferred tools are present:
+
+```json
+{
+  "tool_search_call_count": 1,
+  "tool_search_output_count": 1,
+  "tool_search_call_followed_by_output": true,
+  "discovered_namespaces": ["..."],
+  "discovered_tools": ["namespace.tool"],
+  "tool_family_matrix": {
+    "namespace": {"tool_count": 1, "tools": ["tool"]}
+  }
+}
+```
+
+The exact namespaces depend on enabled Codex plugins. The important invariant is that safe namespace/tool names are preserved in the shape-only report while descriptions, prompts, call IDs, and sensitive values are not serialized.
+
+##### Prompt B: deferred SubAgent execution
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请搜索 deferred subagent 工具，然后派遣一个 no-op 子代理。
+子代理只需要回复一句：DeepSeek deferred subagent matrix smoke passed。
+优先选择 DeepSeek 模型；如果 spawn_agent 的模型 override 列表没有 DeepSeek，请不要失败，请报告模型列表，并在没有显式 model 参数时继承当前 DeepSeek 模型。
+```
+
+Expected:
+
+- `tool_search_call` discovers `multi_agent_v1.spawn_agent`;
+- parent emits native namespace calls such as `multi_agent_v1.spawn_agent`, `multi_agent_v1.wait_agent`, and `multi_agent_v1.close_agent`;
+- child session uses DeepSeek if inherited or explicitly selected;
+- if model overrides omit DeepSeek, `spawn_agent_model_override` report records the freshness mismatch instead of masking it.
+
+##### Prompt C: Computer Use classification
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请判断 Computer Use 工具在当前 Codex Desktop 里是 direct 还是 deferred。
+如果它是 direct，请只调用 list_apps；如果必须通过 tool_search，请先搜索再只调用 list_apps。
+不要打开、点击或操作任何 App。最后报告你实际使用的是 direct、deferred，还是 unavailable。
+```
+
+Expected:
+
+- if direct: a normal `list_apps` tool call succeeds or times out with a factual tool availability error;
+- if deferred: `tool_search_output.tools` lists the Computer Use namespace/tool and the next turn calls it through the mapped alias;
+- no blind clicking, scrolling, text input, or app mutation occurs.
+
+##### Prompt D: Browser/Chrome classification
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请判断 Browser 和 Chrome 工具在当前 Codex Desktop 里是 direct、deferred、还是 unavailable。
+不要打开外部网站；如果需要做最小验证，只能使用 about:blank 或 localhost。
+最后报告每类工具的来源和是否真实调用。
+```
+
+Expected:
+
+- direct/deferred/unavailable classification is explicit;
+- no remote URL or authenticated page is opened;
+- if deferred, the report shows Browser/Chrome namespace/tool entries in `tool_family_matrix`.
+
+##### Prompt E: Skill negative control
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请加载 Computer Use Skill 的说明，摘要说明其中关于 Electron/画布类 App 的操作策略。
+不要使用 tool_search 搜索 Skill，不要操作任何 App。
+```
+
+Expected:
+
+- the model reads or follows local Skill instructions;
+- no `tool_search` is needed for ordinary file-backed Skills;
+- the model does not claim Skills are unavailable just because they are not in `tool_search_output.tools`.
+
+##### Cache interpretation for the matrix
+
+For any family classified as `deferred`, run a two-turn warmup:
+
+1. discover the tool with `tool_search`;
+2. repeat a same-shape safe action using the discovered tool.
+
+Expected cache behavior:
+
+- the discovery turn may have lower cache because `tool_search_output.tools` changes the next-turn prompt shape;
+- after warmup, repeated same-shape turns should keep stable tool schema ordering and should not produce unexplained `0 cached` runs;
+- if `0 cached` appears, the capture report must show whether the request had `previous_response_id_present`, stable replay diagnostics, and cache attribution fields.
