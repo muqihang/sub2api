@@ -11,6 +11,7 @@ export type AppConnectionStatus = "connected" | "pending" | "planned" | "error";
 export interface AppDefinition {
   id: AppId;
   initial: string;
+  iconSrc?: string;
   iconVariant: AppIconVariant;
   supported: boolean;
   hasEnhancements: boolean;

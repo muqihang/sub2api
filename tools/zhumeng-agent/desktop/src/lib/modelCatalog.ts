@@ -88,6 +88,21 @@ export function modelPriceRows(model: CatalogModel, language: Language = "zh"): 
   return rows.length ? rows : [[labels.price, labels.notConfigured]];
 }
 
+export function modelPriceSummary(model: CatalogModel, language: Language = "zh"): { primary: string; secondary: string; hasDetails: boolean } {
+  const rows = modelPriceRows(model, language);
+  const labels = translations[language].price;
+  if (rows.length === 1 && rows[0]?.[0] === labels.price) {
+    return { primary: rows[0][1], secondary: "", hasDetails: false };
+  }
+  const [primaryLabel, primaryValue] = rows[0] || [labels.price, labels.notConfigured];
+  const [secondaryLabel, secondaryValue] = rows[1] || ["", ""];
+  return {
+    primary: compactPriceText(primaryLabel, primaryValue),
+    secondary: secondaryLabel ? compactPriceText(secondaryLabel, secondaryValue) : "",
+    hasDetails: rows.length > 2
+  };
+}
+
 function addPriceRow(rows: [string, string][], label: string, value: string | number | null | undefined, pricing: ModelPricing | null | undefined, perMillionTokens: string) {
   if (value === undefined || value === null || String(value).trim() === "") {
     return;
@@ -96,4 +111,8 @@ function addPriceRow(rows: [string, string][], label: string, value: string | nu
   const unit = pricing?.unit === "per_1m_tokens" || !pricing?.unit ? perMillionTokens : String(pricing.unit);
   const prefix = currency === "USD" ? "$" : `${currency} `;
   rows.push([label, `${prefix}${value} / ${unit}`]);
+}
+
+function compactPriceText(label: string, value: string) {
+  return `${label} ${value.split(" / ")[0] || value}`;
 }

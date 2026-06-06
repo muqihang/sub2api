@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
+import type { CatalogModel } from "./lib/types";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => vi.fn())
@@ -16,7 +17,7 @@ const sidecarHoisted = vi.hoisted(() => ({
     adapters: { codex: { status: "not_configured", enhancements: {}, restart_required: false } },
     model_catalog: { model_count: 0, models: [] }
   })),
-  modelsStatus: vi.fn(async () => ({ models: [] })),
+  modelsStatus: vi.fn(async (): Promise<Record<string, unknown> & { models: CatalogModel[] }> => ({ models: [] })),
   repair: vi.fn(),
   openCodex: vi.fn(async () => undefined),
   setup: vi.fn(),
@@ -87,7 +88,7 @@ describe("App visual shell", () => {
   it("renders inside the native window without a faux macOS shell", async () => {
     render(<App />);
 
-    expect(await screen.findByText("逐梦注入工具")).toBeInTheDocument();
+    expect(await screen.findByText("逐梦 Agent 增强器")).toBeInTheDocument();
     expect(screen.queryByTestId("mac-window-frame")).not.toBeInTheDocument();
     expect(screen.queryByTestId("mac-window-titlebar")).not.toBeInTheDocument();
     expect(screen.queryAllByTestId("mac-window-control")).toHaveLength(0);
@@ -198,13 +199,14 @@ describe("App visual shell", () => {
     expect(screen.queryByTestId("setup-wizard")).not.toBeInTheDocument();
   });
 
-  it("wizard app picker keeps the Claude mini icon styling", async () => {
+  it("wizard app picker uses bundled app logo images", async () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /接入向导/ }));
+    const codexTab = await screen.findByRole("tab", { name: /Codex App/ });
     const claudeTab = await screen.findByRole("tab", { name: /Claude Desktop/ });
-    const miniIcon = claudeTab.querySelector(".app-glyph.variant-claude.compact");
-    expect(miniIcon).not.toBeNull();
+    expect(codexTab.querySelector('img[alt=""][src*="codex"]')).not.toBeNull();
+    expect(claudeTab.querySelector('img[alt=""][src*="claude"]')).not.toBeNull();
   });
 
   it("model catalog lives at the top level and the Codex App page no longer renders the table", async () => {
@@ -367,5 +369,52 @@ describe("App visual shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Model Catalog/ }));
     fireEvent.click(screen.getByRole("button", { name: "All capabilities" }));
     expect(await screen.findByRole("listbox", { name: "All capabilities" })).toBeInTheDocument();
+  });
+
+  it("updates the overview model catalog health check after refreshing models", async () => {
+    sidecarModelsStatusMock.mockResolvedValue({
+      source: "gateway",
+      models: [
+        { slug: "gpt-5.5", capabilities: { responses: true, streaming: true, tool_calls: true, context_continuation: true } },
+        { slug: "deepseek-chat", capabilities: { responses: true, streaming: true, tool_calls: true, context_continuation: true } }
+      ]
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(sidecarModelsStatusMock).toHaveBeenCalled());
+    await waitFor(() => {
+      const healthCard = screen.getByText("健康检查").closest(".card");
+      expect(healthCard).not.toBeNull();
+      expect(healthCard).toHaveTextContent("模型目录");
+      expect(healthCard).toHaveTextContent("2 个模型");
+    });
+  });
+
+  it("renders compact pricing in table cells instead of inline popovers", async () => {
+    sidecarModelsStatusMock.mockResolvedValue({
+      models: [
+        {
+          slug: "gpt-5.5",
+          display_name: "GPT-5.5",
+          provider_id: "openai",
+          capabilities: { responses: true, streaming: true, tool_calls: true, context_continuation: true },
+          pricing: {
+            input_price: "2.50",
+            output_price: "15.00",
+            cached_input_price: "0.25",
+            currency: "USD",
+            unit: "per_1m_tokens"
+          }
+        }
+      ]
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /模型目录/ }));
+    expect(await screen.findByText("输入 $2.50")).toBeInTheDocument();
+    expect(screen.getByText("输出 $15.00")).toBeInTheDocument();
+    expect(document.querySelector(".price-popover")).toBeNull();
   });
 });

@@ -1143,44 +1143,76 @@ a {
 
 .price-cell {
   position: relative;
-  display: inline-flex;
-  cursor: default;
-  color: var(--brand);
-  font-weight: 600;
+  display: inline-block;
+  min-width: 116px;
+  color: var(--text);
 }
 
-.price-popover {
+.price-cell summary {
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  max-width: 150px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  cursor: default;
+  list-style: none;
+}
+
+.price-cell summary::-webkit-details-marker {
+  display: none;
+}
+
+.price-cell summary span {
+  display: block;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.price-cell summary span + span {
+  color: var(--soft);
+  font-weight: 540;
+}
+
+.price-cell[open] summary,
+.price-cell summary:hover {
+  border-color: rgba(70, 88, 216, 0.28);
+  background: rgba(70, 88, 216, 0.08);
+}
+
+.price-details {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 8px);
-  display: none;
-  min-width: 220px;
-  padding: 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  background: var(--panel);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
-  z-index: 5;
-}
-
-.price-cell:hover .price-popover {
+  top: calc(100% + 8px);
   display: grid;
   gap: 7px;
+  min-width: 238px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+  z-index: 8;
 }
 
-.price-popover span {
+.price-details span {
   display: flex;
   justify-content: space-between;
   gap: 16px;
 }
 
-.price-popover b {
+.price-details b {
   color: var(--soft);
   font-weight: 540;
   font-size: 11px;
 }
 
-.price-popover em {
+.price-details em {
   color: var(--text);
   font-style: normal;
   white-space: nowrap;
@@ -1455,6 +1487,7 @@ a {
   font-weight: 700;
   font-size: 13px;
   flex: 0 0 auto;
+  overflow: hidden;
 }
 
 .app-glyph.large {
@@ -1470,6 +1503,13 @@ a {
   border-radius: 5px;
   font-size: 10px;
   font-weight: 700;
+}
+
+.app-glyph img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .app-glyph.variant-claude {

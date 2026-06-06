@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "逐梦注入工具",
+  "productName": "逐梦 Agent 增强器",
   "version": "0.1.0",
   "identifier": "com.zhumeng.agent.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "逐梦注入工具",
+        "title": "逐梦 Agent 增强器",
         "width": 1180,
         "height": 760,
         "minWidth": 1120,

@@ -1,8 +1,8 @@
 const zh = {
   app: {
-    name: "逐梦注入工具",
+    name: "逐梦 Agent 增强器",
     mark: "逐",
-    subtitle: "让 AI 桌面应用用上逐梦托管模型"
+    subtitle: "为 AI 桌面应用启用逐梦托管模型"
   },
   nav: {
     overview: "概览",
@@ -113,7 +113,7 @@ const zh = {
     pendingGoWizardFmt: "去接入向导",
     pendingLearnFmt: "前往逐梦官网了解 {name} 接入",
     comingSoonTitleFmt: "{name} 注入正在开发中",
-    comingSoonBodyFmt: "我们正在打磨 {name} 的授权与配置注入流程。功能上线后会推送到已开通逐梦订阅的设备，你也可以在逐梦官网订阅更新提醒。",
+    comingSoonBodyFmt: "我们正在打磨 {name} 的授权与配置接入流程。功能上线后会推送到已开通逐梦订阅的设备，你也可以在逐梦官网订阅更新提醒。",
     comingSoonLearn: "前往逐梦官网了解",
     customSummaryBody: "自定义注入将在后续版本开放。届时可以指向你自己部署的 IDE / Agent。"
   },
@@ -124,7 +124,7 @@ const zh = {
     plannedTag: "即将支持",
     receivedAuth: "收到网页授权",
     detectCodex: "检测 Codex App",
-    injectAuth: "授权与配置注入",
+    injectAuth: "写入授权与配置",
     startProxy: "启动本机代理",
     enableCodexEnhancements: "启用 Codex 增强项",
     healthCheck: "健康检查",
@@ -257,7 +257,7 @@ export const translations: Record<Language, Translation> = {
   zh,
   en: {
     app: {
-      name: "Zhumeng Injector",
+      name: "Zhumeng Agent Enhancer",
       mark: "Z",
       subtitle: "Bring Zhumeng-managed models to AI desktop apps"
     },
@@ -381,7 +381,7 @@ export const translations: Record<Language, Translation> = {
       plannedTag: "Coming soon",
       receivedAuth: "Received web authorization",
       detectCodex: "Detect Codex App",
-      injectAuth: "Inject authorization and config",
+      injectAuth: "Save authorization and config",
       startProxy: "Start local proxy",
       enableCodexEnhancements: "Enable Codex enhancements",
       healthCheck: "Health check",

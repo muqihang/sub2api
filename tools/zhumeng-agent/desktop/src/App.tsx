@@ -34,6 +34,8 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+import claudeIconUrl from "./assets/app-icons/claude.png";
+import codexIconUrl from "./assets/app-icons/codex.png";
 import { parseZhumengDeepLink } from "./lib/deeplink";
 import { isLanguage, translations, type Language, type Translation } from "./lib/i18n";
 import {
@@ -52,7 +54,7 @@ import {
   type AppDefinition,
   type AppId
 } from "./lib/appsRegistry";
-import { filterCatalogModels, modelIsCompatible, modelPriceRows, providerOptions, summarizeCatalog } from "./lib/modelCatalog";
+import { filterCatalogModels, modelIsCompatible, modelPriceRows, modelPriceSummary, providerOptions, summarizeCatalog } from "./lib/modelCatalog";
 import { sidecar, sidecarErrorMessage } from "./lib/sidecar";
 import type { CatalogModel, DeepLinkRoute, DesktopStatus, ModelFilter } from "./lib/types";
 
@@ -191,6 +193,7 @@ function App() {
         const catalog = await sidecar.modelsStatus();
         const catalogModels = Array.isArray(catalog.models) ? (catalog.models as CatalogModel[]) : [];
         setModels(catalogModels);
+        setStatus((current) => mergeModelCatalogStatus(current, catalog, catalogModels));
       } catch (error) {
         console.warn("failed to refresh Codex model catalog", error);
       }
@@ -1251,13 +1254,19 @@ function ModelRow({ t, language, model }: { t: Translation; language: Language; 
 
 function ModelPriceTooltip({ t, language, model }: { t: Translation; language: Language; model: CatalogModel }) {
   const rows = modelPriceRows(model, language);
+  const summary = modelPriceSummary(model, language);
   return (
-    <span className="price-cell">
-      {t.modelCatalog.pricingTrigger}
-      <span className="price-popover">
-        {rows.map(([label, value]) => <span key={label}><b>{label}</b><em>{value}</em></span>)}
-      </span>
-    </span>
+    <details className="price-cell">
+      <summary>
+        <span>{summary.primary}</span>
+        {summary.secondary ? <span>{summary.secondary}</span> : null}
+      </summary>
+      {summary.hasDetails ? (
+        <span className="price-details" role="tooltip">
+          {rows.map(([label, value]) => <span key={label}><b>{label}</b><em>{value}</em></span>)}
+        </span>
+      ) : null}
+    </details>
   );
 }
 
@@ -1309,7 +1318,12 @@ function formatFraction(template: string, connected: number, total: number): str
 
 function AppIcon({ app, large, compact }: { app: AppDefinition; large?: boolean; compact?: boolean }) {
   const className = `app-glyph variant-${app.iconVariant}${large ? " large" : ""}${compact ? " compact" : ""}`;
-  return <span className={className}>{app.initial}</span>;
+  const iconSrc = app.id === "codex" ? codexIconUrl : app.id === "claude" ? claudeIconUrl : app.iconSrc;
+  return (
+    <span className={className}>
+      {iconSrc ? <img src={iconSrc} alt="" aria-hidden="true" /> : app.initial}
+    </span>
+  );
 }
 
 function AppStatusBadge({ t, status }: { t: Translation; status: AppConnectionStatus }) {
@@ -1364,6 +1378,38 @@ function isEnabledEnhancement(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const status = (value as { status?: string }).status;
   return status === "patched" || status === "enabled" || status === "configured" || status === "ok";
+}
+
+function mergeModelCatalogStatus(current: DesktopStatus, catalog: Record<string, unknown>, models: CatalogModel[]): DesktopStatus {
+  const summary = summarizeCatalog(models);
+  return {
+    ...current,
+    model_catalog: {
+      ...current.model_catalog,
+      model_count: numberField(catalog.model_count) ?? summary.modelCount,
+      main_list_count: numberField(catalog.main_list_count) ?? summary.mainListCount,
+      restricted_count: numberField(catalog.restricted_count) ?? summary.restrictedCount,
+      incompatible_count: numberField(catalog.incompatible_count) ?? summary.incompatibleCount,
+      missing_pricing_count: numberField(catalog.missing_pricing_count) ?? summary.missingPricingCount,
+      last_synced_at: stringField(catalog.last_synced_at) ?? current.model_catalog?.last_synced_at,
+      catalog_path: stringField(catalog.catalog_path) ?? current.model_catalog?.catalog_path,
+      source: stringField(catalog.source) ?? current.model_catalog?.source,
+      models
+    }
+  };
+}
+
+function numberField(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 function readInitialLanguage(): Language {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { filterCatalogModels, modelPriceRows, summarizeCatalog } from "./modelCatalog";
+import { filterCatalogModels, modelPriceRows, modelPriceSummary, summarizeCatalog } from "./modelCatalog";
 import type { CatalogModel } from "./types";
 
 const models: CatalogModel[] = [
@@ -78,5 +78,18 @@ describe("modelCatalog", () => {
       ["Cache write", "$3.00 / 1M tokens"]
     ]);
     expect(modelPriceRows(models[1], "en")).toEqual([["Price", "Not configured"]]);
+  });
+
+  it("returns a compact pricing summary for table cells", () => {
+    expect(modelPriceSummary(models[0])).toEqual({
+      primary: "输入 $2.50",
+      secondary: "输出 $15.00",
+      hasDetails: true
+    });
+    expect(modelPriceSummary(models[1])).toEqual({
+      primary: "未配置",
+      secondary: "",
+      hasDetails: false
+    });
   });
 });

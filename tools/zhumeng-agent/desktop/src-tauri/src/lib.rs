@@ -196,7 +196,7 @@ fn focus_main_window(app: &tauri::AppHandle) {
 }
 
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItemBuilder::with_id("open", "打开逐梦注入工具").build(app)?;
+    let open = MenuItemBuilder::with_id("open", "打开逐梦 Agent 增强器").build(app)?;
     let repair = MenuItemBuilder::with_id("repair-codex", "修复 Codex 接入").build(app)?;
     let open_codex = MenuItemBuilder::with_id("open-codex", "打开 Codex App").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
@@ -205,7 +205,7 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
         .build()?;
 
     TrayIconBuilder::with_id("zhumeng-agent")
-        .tooltip("逐梦注入工具")
+        .tooltip("逐梦 Agent 增强器")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => focus_main_window(app),
