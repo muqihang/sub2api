@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -683,6 +684,176 @@ func TestCodexGatewayDeepSeekRequest_MapsDeferredNamespaceToolsFromToolSearchOut
 			require.Equal(t, CodexGatewayToolKindNamespace, entry.Kind)
 			require.Equal(t, "multi_agent_v1", entry.Namespace)
 			require.Equal(t, "spawn_agent", entry.Name)
+		})
+	}
+}
+
+func TestCodexGatewayDeepSeekRequest_MapsDeferredToolFamilyMatrixFromToolSearchOutput(t *testing.T) {
+	deferredTools := []any{
+		map[string]any{
+			"type": "namespace",
+			"name": "browser",
+			"tools": []any{
+				map[string]any{
+					"type":        "function",
+					"name":        "navigate",
+					"description": "open a local browser target",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"url": map[string]any{"type": "string"}},
+						"required":   []any{"url"},
+					},
+				},
+			},
+		},
+		map[string]any{
+			"type": "namespace",
+			"name": "computer_use",
+			"tools": []any{
+				map[string]any{
+					"type":        "function",
+					"name":        "list_apps",
+					"description": "list controllable local apps",
+					"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+				},
+			},
+		},
+		map[string]any{
+			"type": "namespace",
+			"name": "documents",
+			"tools": []any{
+				map[string]any{
+					"type":   "custom",
+					"name":   "redline",
+					"custom": map[string]any{"format": map[string]any{"type": "text"}},
+				},
+			},
+		},
+		map[string]any{
+			"type": "namespace",
+			"name": "multi_agent_v1",
+			"tools": []any{
+				map[string]any{
+					"type": "function",
+					"name": "spawn_agent",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"task": map[string]any{"type": "string"}, "model": map[string]any{"type": "string"}},
+						"required":   []any{"task"},
+					},
+				},
+			},
+		},
+	}
+	deferredToolsJSON := string(mustMarshalRawMessage(t, deferredTools))
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"classify deferred tools"}]},
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"browser computer use documents subagent","limit":20}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","tools":` + deferredToolsJSON + `}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}
+		]`),
+	}
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_deferred_family_matrix",
+		IsolationKey: "iso_deferred_family_matrix",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	tools := prepared.Body["tools"].([]any)
+	for _, alias := range []string{"browser__navigate", "computer_use__list_apps", "documents__custom__redline", "multi_agent_v1__spawn_agent", "tool_search"} {
+		require.NotNil(t, deepSeekRequestToolFunctionByName(t, tools, alias), "missing DeepSeek tool alias %s", alias)
+	}
+
+	cases := map[string]struct {
+		kind          string
+		namespacePath string
+		visibleName   string
+	}{
+		"browser__navigate":           {kind: CodexGatewayToolKindNamespace, namespacePath: "browser", visibleName: "navigate"},
+		"computer_use__list_apps":     {kind: CodexGatewayToolKindNamespace, namespacePath: "computer_use", visibleName: "list_apps"},
+		"documents__custom__redline":  {kind: CodexGatewayToolKindCustom, namespacePath: "documents", visibleName: "redline"},
+		"multi_agent_v1__spawn_agent": {kind: CodexGatewayToolKindNamespace, namespacePath: "multi_agent_v1", visibleName: "spawn_agent"},
+	}
+	for alias, want := range cases {
+		entry := prepared.ToolNameMap[alias]
+		require.Equal(t, alias, entry.Alias)
+		require.Equal(t, want.kind, entry.Kind)
+		require.Equal(t, want.namespacePath, entry.NamespacePath)
+		require.Equal(t, want.visibleName, codexGatewayClientVisibleToolName(entry))
+	}
+
+	messages := prepared.Body["messages"].([]any)
+	var toolMessage map[string]any
+	for _, message := range messages {
+		m, ok := message.(map[string]any)
+		if !ok || m["role"] != "tool" || m["tool_call_id"] != "call_search" {
+			continue
+		}
+		toolMessage = m
+		break
+	}
+	require.NotNil(t, toolMessage)
+	require.JSONEq(t, deferredToolsJSON, toolMessage["content"].(string))
+}
+
+func TestCodexGatewayDeepSeekAdapter_MapsDeferredToolFamilyMatrixCalls(t *testing.T) {
+	families := map[string]struct {
+		entry     CodexGatewayToolNameMapEntry
+		arguments string
+		wantType  string
+		wantName  string
+		wantNS    string
+		wantInput string
+	}{
+		"browser__navigate": {
+			entry:     CodexGatewayToolNameMapEntry{Alias: "browser__navigate", Kind: CodexGatewayToolKindNamespace, Namespace: "browser", NamespacePath: "browser", Name: "navigate"},
+			arguments: `{"url":"http://localhost:3000"}`,
+			wantType:  CodexGatewayOutputItemTypeFunctionCall,
+			wantName:  "navigate",
+			wantNS:    "browser",
+		},
+		"computer_use__list_apps": {
+			entry:     CodexGatewayToolNameMapEntry{Alias: "computer_use__list_apps", Kind: CodexGatewayToolKindNamespace, Namespace: "computer_use", NamespacePath: "computer_use", Name: "list_apps"},
+			arguments: `{}`,
+			wantType:  CodexGatewayOutputItemTypeFunctionCall,
+			wantName:  "list_apps",
+			wantNS:    "computer_use",
+		},
+		"documents__custom__redline": {
+			entry:     CodexGatewayToolNameMapEntry{Alias: "documents__custom__redline", Kind: CodexGatewayToolKindCustom, Namespace: "documents", NamespacePath: "documents", Name: "redline"},
+			arguments: `{"input":"mark this change"}`,
+			wantType:  CodexGatewayOutputItemTypeCustomToolCall,
+			wantName:  "redline",
+			wantInput: "mark this change",
+		},
+	}
+
+	for alias, tt := range families {
+		t.Run(alias, func(t *testing.T) {
+			item, stored, ok := codexGatewayDeepSeekToolCallOutputItem(apicompat.ChatToolCall{
+				ID: "call_" + strings.ReplaceAll(alias, "__", "_"),
+				Function: apicompat.ChatFunctionCall{
+					Name:      alias,
+					Arguments: tt.arguments,
+				},
+			}, map[string]CodexGatewayToolNameMapEntry{alias: tt.entry}, nil)
+			require.True(t, ok)
+			require.Equal(t, tt.wantType, item["type"])
+			require.Equal(t, tt.wantName, item["name"])
+			require.Equal(t, alias, stored.Alias)
+			require.Equal(t, tt.wantName, stored.Name)
+			if tt.wantNS != "" {
+				require.Equal(t, tt.wantNS, item["namespace"])
+			}
+			if tt.wantInput != "" {
+				require.Equal(t, tt.wantInput, item["input"])
+			}
 		})
 	}
 }
