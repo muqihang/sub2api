@@ -1138,9 +1138,55 @@ def test_codex_capture_report_summarizes_deferred_tool_search_sequence(capsys, t
         "tool_search_output_count": 1,
         "tool_search_call_followed_by_output": True,
         "spawn_agent_present": True,
+        "discovered_namespaces": ["multi_agent_v1"],
+        "discovered_tools": ["multi_agent_v1.spawn_agent"],
+        "tool_family_matrix": {
+            "multi_agent_v1": {"tool_count": 1, "tools": ["spawn_agent"]},
+        },
     }
     assert "call_fixture" not in json.dumps(data)
 
+
+def test_codex_capture_report_summarizes_deferred_tool_family_matrix(capsys, tmp_path: Path):
+    trace_dir = tmp_path / "desktop"
+    trace_dir.mkdir()
+    (trace_dir / "deferred_tool_search.jsonl").write_text(
+        json.dumps({
+            "event_type": "tool_search_call",
+            "capture_ts": "2026-06-03T11:43:33.493Z",
+        }) + "\n" +
+        json.dumps({
+            "event_type": "tool_search_output",
+            "capture_ts": "2026-06-03T11:43:33.599Z",
+            "tools": [
+                {"type": "namespace", "name": "multi_agent_v1", "tools": [{"name": "spawn_agent", "input_schema": {"type": "object"}}]},
+                {"type": "namespace", "name": "browser", "tools": [{"name": "navigate", "input_schema": {"type": "object"}}]},
+                {"type": "namespace", "name": "computer_use", "tools": [{"name": "list_apps", "input_schema": {"type": "object"}}]},
+                {"type": "namespace", "name": "documents", "tools": [{"name": "redline", "input_schema": {"type": "object"}}]},
+            ],
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["codex", "capture", "report", "--trace-dir", str(trace_dir)])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    deferred = data["deferred_tool_search"]
+    assert deferred["discovered_namespaces"] == ["browser", "computer_use", "documents", "multi_agent_v1"]
+    assert deferred["discovered_tools"] == [
+        "browser.navigate",
+        "computer_use.list_apps",
+        "documents.redline",
+        "multi_agent_v1.spawn_agent",
+    ]
+    assert deferred["tool_family_matrix"] == {
+        "browser": {"tool_count": 1, "tools": ["navigate"]},
+        "computer_use": {"tool_count": 1, "tools": ["list_apps"]},
+        "documents": {"tool_count": 1, "tools": ["redline"]},
+        "multi_agent_v1": {"tool_count": 1, "tools": ["spawn_agent"]},
+    }
+    assert deferred["spawn_agent_present"] is True
 
 def test_codex_capture_report_reads_real_gateway_capture_artifacts(capsys, tmp_path: Path):
     trace_dir = tmp_path / "desktop"

@@ -1539,13 +1539,59 @@ def build_deferred_tool_search_report(events: list[dict[str, object]]) -> dict[s
         elif event_type == "tool_search_output" and seen_call:
             followed_by_output = True
             break
+    namespaces, tool_paths, matrix = summarize_deferred_tool_families(event.get("tools") for event in ordered)
     return {
         "events": len(ordered),
         "tool_search_call_count": call_count,
         "tool_search_output_count": output_count,
         "tool_search_call_followed_by_output": followed_by_output,
         "spawn_agent_present": any(capture_shape_contains_spawn_agent(event.get("tools")) for event in ordered),
+        "discovered_namespaces": namespaces,
+        "discovered_tools": tool_paths,
+        "tool_family_matrix": matrix,
     }
+
+
+def summarize_deferred_tool_families(values: object) -> tuple[list[str], list[str], dict[str, dict[str, object]]]:
+    namespace_tools: dict[str, set[str]] = {}
+    discovered_tools: set[str] = set()
+    for value in values if isinstance(values, list) else list(values):
+        collect_deferred_tool_family(value, [], namespace_tools, discovered_tools)
+    namespaces = sorted(namespace_tools)
+    matrix = {
+        namespace: {
+            "tool_count": len(namespace_tools[namespace]),
+            "tools": sorted(namespace_tools[namespace]),
+        }
+        for namespace in namespaces
+    }
+    return namespaces, sorted(discovered_tools), matrix
+
+
+def collect_deferred_tool_family(
+    value: object,
+    namespace_path: list[str],
+    namespace_tools: dict[str, set[str]],
+    discovered_tools: set[str],
+) -> None:
+    if isinstance(value, list):
+        for child in value:
+            collect_deferred_tool_family(child, namespace_path, namespace_tools, discovered_tools)
+        return
+    if not isinstance(value, dict):
+        return
+    name = str(value.get("name") or "").strip()
+    children = value.get("tools")
+    if isinstance(children, list) and name:
+        next_path = [*namespace_path, name]
+        namespace = ".".join(next_path)
+        namespace_tools.setdefault(namespace, set())
+        collect_deferred_tool_family(children, next_path, namespace_tools, discovered_tools)
+        return
+    if name and namespace_path:
+        namespace = ".".join(namespace_path)
+        namespace_tools.setdefault(namespace, set()).add(name)
+        discovered_tools.add(namespace + "." + name)
 
 
 def capture_shape_contains_spawn_agent(value: object) -> bool:

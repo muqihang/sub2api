@@ -774,7 +774,7 @@ def sanitize_deferred_tools(tools: list[object]) -> list[dict[str, object]]:
         item: dict[str, object] = {}
         name = str(tool.get("name") or "")
         if name:
-            item["name"] = name if name in {"spawn_agent", "multi_agent_v1"} or name.startswith("multi_agent") else "tool"
+            item["name"] = name if is_safe_metadata_text(name) else "tool"
         if isinstance(tool.get("tools"), list):
             item["tools"] = sanitize_deferred_tools(tool["tools"])
         schema = tool.get("input_schema") or tool.get("parameters")

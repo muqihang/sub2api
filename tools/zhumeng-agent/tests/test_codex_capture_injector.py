@@ -674,6 +674,37 @@ def test_capture_event_router_derives_subagent_registration_and_deferred_tool_se
     assert "SECRET_DESCRIPTION" not in deferred
 
 
+def test_capture_event_router_preserves_safe_deferred_tool_family_names(tmp_path: Path):
+    route_capture_event({
+        "type": "app_server_frame",
+        "direction": "app_server_to_desktop",
+        "seq": 11,
+        "frame_text": json.dumps({
+            "id": 11,
+            "result": {
+                "type": "tool_search_output",
+                "tools": [
+                    {"name": "browser", "tools": [{"name": "navigate", "description": "SECRET_URL"}]},
+                    {"name": "computer_use", "tools": [{"name": "list_apps"}]},
+                    {"name": "documents", "tools": [{"name": "redline"}]},
+                    {"name": "unsafe secret name with spaces", "tools": [{"name": "Bearer sk-secret"}]},
+                ],
+            },
+        }),
+    }, tmp_path, CodexDesktopCaptureConfig.defaults())
+
+    deferred = (tmp_path / "deferred_tool_search.jsonl").read_text(encoding="utf-8")
+
+    assert "browser" in deferred
+    assert "navigate" in deferred
+    assert "computer_use" in deferred
+    assert "list_apps" in deferred
+    assert "documents" in deferred
+    assert "redline" in deferred
+    assert "SECRET_URL" not in deferred
+    assert "unsafe secret name with spaces" not in deferred
+    assert "Bearer sk-secret" not in deferred
+
 def test_capture_event_router_filters_unsafe_deferred_tool_model_enums(tmp_path: Path):
     route_capture_event({
         "type": "app_server_frame",
