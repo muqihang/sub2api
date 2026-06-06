@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -240,6 +241,72 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 	require.Contains(t, deepseek.BaseInstructions, "clearly matches")
 	require.Contains(t, deepseek.BaseInstructions, "MUST read the matching SKILL.md")
 	require.Contains(t, deepseek.BaseInstructions, "Do not load unrelated skills")
+}
+
+func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSONPromotesDeepSeekForSpawnAgentModelOverrides(t *testing.T) {
+	type codexCLICatalogModelForTest struct {
+		Slug     string `json:"slug"`
+		Priority int    `json:"priority"`
+	}
+
+	readyModels := []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"claude-opus-4-6",
+		"claude-opus-4-6-thinking",
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-6-thinking",
+		"claude-haiku-4-5-20251001",
+		"claude-haiku-4-5-20251001-thinking",
+	}
+	mutations := make(map[string]CodexGatewayModelMutation, len(readyModels))
+	pricingReady := make(map[string]bool, len(readyModels))
+	protocolReady := make(map[string]bool, len(readyModels))
+	for _, slug := range readyModels {
+		mutations[slug] = CodexGatewayModelMutation{Enabled: true}
+		pricingReady[slug] = true
+		protocolReady[slug] = true
+	}
+
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{EnabledModels: readyModels},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderOpenAI:    {Provider: CodexGatewayProviderOpenAI, GroupID: 1001, Healthy: true},
+					CodexGatewayProviderDeepSeek:  {Provider: CodexGatewayProviderDeepSeek, GroupID: 2002, Healthy: true},
+					CodexGatewayProviderAnthropic: {Provider: CodexGatewayProviderAnthropic, GroupID: 3003, Healthy: true},
+				},
+				Models: mutations,
+			},
+		}),
+		WithCodexGatewayPricingReadyChecker(codexGatewayPricingReadyCheckerStub{ready: pricingReady}),
+		WithCodexGatewayProtocolReadyChecker(codexGatewayProtocolReadyCheckerStub{ready: protocolReady}),
+	)
+
+	raw, err := reg.ExportCodexCLICatalogJSON()
+	require.NoError(t, err)
+
+	var envelope struct {
+		Models []codexCLICatalogModelForTest `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &envelope))
+	require.GreaterOrEqual(t, len(envelope.Models), 6)
+
+	// Codex core sorts ModelPreset by ascending priority before `spawn_agent` keeps only
+	// the first 5 picker-visible model overrides. DeepSeek must survive that native cap.
+	sorted := append([]codexCLICatalogModelForTest(nil), envelope.Models...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Priority < sorted[j].Priority })
+	firstFive := []string{}
+	for _, model := range sorted[:5] {
+		firstFive = append(firstFive, model.Slug)
+	}
+	require.Contains(t, firstFive, "deepseek-v4-pro")
+	require.Contains(t, firstFive, "deepseek-v4-flash")
 }
 
 func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSONAddsRoutingBridgeForAnthropic(t *testing.T) {

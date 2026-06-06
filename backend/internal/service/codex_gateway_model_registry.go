@@ -476,7 +476,7 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 		ShellType:                     codexGatewayCLIShellType(model.ShellType),
 		Visibility:                    codexGatewayCLIVisibility(model.Visibility),
 		SupportedInAPI:                model.SupportedInAPI,
-		Priority:                      model.Priority,
+		Priority:                      codexGatewayCLIPriority(model),
 		BaseInstructions:              baseInstructions,
 		ModelMessages:                 codexGatewayCLIModelMessages(baseInstructions),
 		ContextWindow:                 contextWindow,
@@ -509,6 +509,20 @@ func codexGatewayModelToCodexCLIModel(model CodexGatewayModel) CodexGatewayCodex
 		cli.WebSearchToolType = codexGatewayCLIWebSearchToolType(model)
 	}
 	return cli
+}
+
+func codexGatewayCLIPriority(model CodexGatewayModel) int {
+	switch strings.TrimSpace(model.Slug) {
+	case "deepseek-v4-pro":
+		return 0
+	case "deepseek-v4-flash":
+		return 1
+	}
+	// Codex core sorts the CLI model catalog by ascending priority. The gateway's
+	// admin/catalog priority uses larger values for earlier display order, so
+	// invert the generic value while pinning DeepSeek above the spawn_agent
+	// description's five-model cap.
+	return 1000 - model.Priority
 }
 
 func codexGatewayCLIModelMessages(instructions string) CodexGatewayCodexCLIModelMessages {
