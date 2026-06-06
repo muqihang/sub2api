@@ -389,10 +389,14 @@ class CodexConfigManager:
         auto_compact_token_limit = 150000
         models = catalog_payload.get("models", [])
         if isinstance(models, list):
+            fallback_model: dict[str, object] | None = None
             for model in models:
                 if not isinstance(model, dict):
                     continue
                 slug = str(model.get("slug") or model.get("id") or model.get("model") or "")
+                model_context_window = safe_int(model.get("context_window") or model.get("max_context_window"), 0)
+                if fallback_model is None and model_context_window > 0:
+                    fallback_model = model
                 if slug != default_model:
                     continue
                 context_window = safe_int(model.get("context_window") or model.get("max_context_window"), context_window)
@@ -401,6 +405,13 @@ class CodexConfigManager:
                     int(context_window * 0.85),
                 )
                 break
+            else:
+                if fallback_model is not None:
+                    context_window = safe_int(fallback_model.get("context_window") or fallback_model.get("max_context_window"), context_window)
+                    auto_compact_token_limit = safe_int(
+                        fallback_model.get("auto_compact_token_limit"),
+                        int(context_window * 0.85),
+                    )
         if context_window <= 0:
             context_window = 200000
         if auto_compact_token_limit <= 0 or auto_compact_token_limit >= context_window:

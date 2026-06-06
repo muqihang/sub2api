@@ -170,6 +170,8 @@ def test_repair_preserves_current_managed_model_selection(tmp_path: Path):
                 'model_provider = "zhumeng-codex"',
                 'model = "deepseek-v4-flash"',
                 'model_reasoning_effort = "xhigh"',
+                "model_context_window = 272000",
+                "model_auto_compact_token_limit = 244800",
                 "",
             ]
         ),
@@ -183,6 +185,8 @@ def test_repair_preserves_current_managed_model_selection(tmp_path: Path):
     parsed = __import__("tomllib").loads(config_text)
     assert parsed["model"] == "deepseek-v4-flash"
     assert parsed["model_reasoning_effort"] == "xhigh"
+    assert parsed["model_context_window"] == 1000000
+    assert parsed["model_auto_compact_token_limit"] == 850000
 
 
 def test_discover_git_project_path_returns_repository_root(tmp_path: Path):
