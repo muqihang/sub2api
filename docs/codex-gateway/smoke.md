@@ -238,6 +238,17 @@ Expected:
 - no claim is made that Skills are unavailable;
 - no `tool_search` is needed for ordinary file-backed Skills.
 
+Live smoke evidence from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T18-56-41-019e9aa5-8db3-79c3-b35b-d54b21e97481.jsonl`;
+- `turn_context.model` was `deepseek-v4-flash`;
+- the prompt asked DeepSeek to diagnose a reproducible test failure and follow the applicable local Skill
+  before proposing a fix;
+- DeepSeek opened `/Users/muqihang/.codex/superpowers/skills/systematic-debugging/SKILL.md`;
+- it identified `superpowers:systematic-debugging` and summarized the four evidence-first phases;
+- no `tool_search` was used for the ordinary file-backed Skill load.
+
 #### Computer Use visibility
 
 1. Select `deepseek-v4-pro`.
@@ -256,6 +267,18 @@ Expected:
 - `deepseek_tool_output_summary.classes` includes `computer_screenshot` and/or `accessibility_tree`;
 - `deepseek_tool_output_summary.operable_line_count` is non-zero.
 
+Live smoke evidence from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T18-56-41-019e9aa5-8db3-79c3-b35b-d54b21e97481.jsonl`;
+- `list_apps` and `get_app_state` completed against local macOS apps, including `com.apple.freeform`;
+- the Computer Use MCP server was not in the previous 120s-timeout failure mode;
+- gateway capture summary showed `deepseek_tool_output_summary.fallback_preview_only:false`;
+- normalized output classes included `accessibility_tree` and binary/image metadata, with non-zero
+  `operable_line_count`;
+- Freeform canvas manipulation still required more model-side strategy than GPT-like use, but the gateway
+  and tool-output preservation path did not drop the app-state content.
+
 #### Abort/resume cache evidence
 
 1. Keep capture in shape-only summary mode.
@@ -273,6 +296,42 @@ Expected:
 - `messages_full_hash`, `message_prefix_hash`, `message_suffix_hash`, `tool_schema_hash`, and `request_shape_hash` are present;
 - `cache_usage.json` can be correlated to session token usage through hashed trace/session fields;
 - any post-warmup `0 cached` turn has a cache attribution reason such as `request_not_warmed`, `message_prefix_changed`, `tool_schema_changed`, `request_shape_changed`, or `upstream_best_effort_or_unknown`.
+
+Live interruption/continue evidence from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T19-30-00-019e9ac4-0e3d-7bc3-9044-863990c2a2cf.jsonl`;
+- `turn_context.model` was `deepseek-v4-flash`;
+- a long read-only tool task started at line 59 and emitted tool calls at lines 65, 69, and 70;
+- Codex recorded `turn_aborted` at line 75 with `reason:"interrupted"` and `duration_ms:12122`;
+- the same thread resumed from the user's `继续` message at line 79, read additional package files, and
+  completed at line 119 with a final architecture summary;
+- before the interrupt, session token counts were:
+  - line 67: `input_tokens:20375`, `cached_input_tokens:19200`, cache ratio about 94.23%;
+  - line 73: `input_tokens:20664`, `cached_input_tokens:20352`, cache ratio about 98.49%;
+- after the user-driven continue, session token counts were:
+  - line 90: `input_tokens:23578`, `cached_input_tokens:19328`, cache ratio about 81.97%;
+  - line 106: `input_tokens:25945`, `cached_input_tokens:23424`, cache ratio about 90.28%;
+  - line 110: `input_tokens:29095`, `cached_input_tokens:25856`, cache ratio about 88.87%;
+  - line 114: `input_tokens:29295`, `cached_input_tokens:29056`, cache ratio about 99.18%;
+  - line 118: `input_tokens:30009`, `cached_input_tokens:29184`, cache ratio about 97.25%;
+- matching gateway traces included:
+  - `trace_1780713241539984345` and `trace_1780713246557384458` before the interrupt;
+  - `trace_1780713258913134964`, `trace_1780713263374228841`,
+    `trace_1780713266791420676`, `trace_1780713269448016594`, and
+    `trace_1780713273212555930` after the user-driven continue;
+- all checked post-continue `tool_closure.json` files had empty `missing_results`, `orphan_results`, and
+  `duplicate_results`;
+- every checked post-continue cache miss below 99% had capture attribution including
+  `context_compaction_changed_prefix`, `request_not_warmed`, and `request_shape_changed`.
+
+Boundary note: this live run proves an interrupted DeepSeek turn followed by a user `继续` continuation did
+not lose tool results and recovered high cache hit rates with capture-backed attribution. It does not prove
+gateway-managed state replay through a native `previous_response_id`: the checked DeepSeek traces recorded
+`previous_response_id_present:false`, `previous_response_replay_mode:"none"`, and
+`state_lookup_status:"not_requested"`. If a future Codex Desktop "native Continue/Resume" control emits
+`previous_response_id`, run the stricter repro above and require `previous_response_id_present:true` plus
+`full_replay_messages`.
 
 #### Subagent registration ordering
 
