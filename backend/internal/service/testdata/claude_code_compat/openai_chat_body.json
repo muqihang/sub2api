@@ -1,0 +1,6 @@
+{
+  "model": "gpt-5",
+  "messages": [{"role": "user", "content": "fixture-content-marker"}],
+  "max_completion_tokens": 100,
+  "tools": [{"type": "function", "function": {"name": "lookup"}}]
+}

@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "code": "unsupported_protocol",
+  "message": "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
+}
