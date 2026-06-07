@@ -188,6 +188,85 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     expectForbidden(hero, ['promoteProduction'])
   })
 
+  it('does not let generic evidence-missing override setup-token repair recommendations', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'token_exchange',
+        failure_code: 'setup_token_exchange_failed',
+        runtime_evidence_complete: false,
+        cc_gateway_runtime_registered: false,
+        recommended_actions: [
+          { key: 'replace_setup_token', label: 'Replace setup token', severity: 'danger' },
+          { key: 'runtime_register', label: 'Runtime register', severity: 'warning' },
+        ],
+      }),
+    })
+
+    expect(hero.scenario).toBe('setup_token_expired')
+    expect(hero.primaryAction?.key).toBe('replaceSetupToken')
+  })
+
+  it('does not let generic evidence-missing override OAuth repair_token recommendations', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ type: 'oauth' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'status_401',
+        status_code_bucket: 'status_401',
+        runtime_evidence_complete: false,
+        cc_gateway_runtime_registered: false,
+        recommended_actions: [
+          { key: 'repair_token', label: 'Repair token', severity: 'warning' },
+          { key: 'runtime_register', label: 'Runtime register', severity: 'warning' },
+        ],
+      }),
+    })
+
+    expect(hero.scenario).toBe('oauth_invalid_grant')
+    expect(hero.primaryAction?.key).toBe('guideOAuthReauth')
+  })
+
+  it('does not let generic evidence-missing override rate-limit, proxy, or manual-risk recommendations', () => {
+    const base = {
+      runtime_evidence_complete: false,
+      cc_gateway_runtime_registered: false,
+    }
+
+    expect(deriveFormalPoolDiagnosticsHero({
+      account: account(),
+      diagnostics: diagnostics({
+        ...base,
+        recommended_actions: [
+          { key: 'wait_rate_limit', label: 'Wait', severity: 'warning' },
+          { key: 'runtime_register', label: 'Runtime register', severity: 'warning' },
+        ],
+      }),
+    }).primaryAction?.key).toBe('wait')
+
+    expect(deriveFormalPoolDiagnosticsHero({
+      account: account(),
+      diagnostics: diagnostics({
+        ...base,
+        recommended_actions: [
+          { key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' },
+          { key: 'runtime_register', label: 'Runtime register', severity: 'warning' },
+        ],
+      }),
+    }).primaryAction?.key).toBe('swapProxy')
+
+    expect(deriveFormalPoolDiagnosticsHero({
+      account: account(),
+      diagnostics: diagnostics({
+        ...base,
+        recommended_actions: [
+          { key: 'manual_review', label: 'Manual review', severity: 'danger' },
+          { key: 'runtime_register', label: 'Runtime register', severity: 'warning' },
+        ],
+      }),
+    }).primaryAction?.key).toBe('manualReview')
+  })
+
   it('evidence missing allows healthcheck only after runtime registration evidence is complete', () => {
     const hero = deriveFormalPoolDiagnosticsHero({
       account: account({ onboarding_stage: 'healthcheck_passed' }),
@@ -307,6 +386,28 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     expect(hero.primaryAction?.key).toBe('promoteProduction')
     expect(hero.primaryAction?.behavior).toBe('api')
     expect(keys(hero.forbiddenActions)).not.toContain('promoteProduction')
+  })
+
+  it('uses promoteProduction to restore production scheduling when evidence is complete but scheduling is off', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ status: 'active', schedulable: false, effective_schedulable: false, onboarding_stage: 'production' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'production',
+        schedulable: false,
+        effective_schedulable: false,
+        failure_origin: 'unknown',
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T01:02:03Z',
+        runtime_evidence_complete: true,
+        raw_capture_present: true,
+        healthcheck_evidence_persisted: true,
+        recommended_actions: [{ key: 'promote_production', label: 'Restore production scheduling', severity: 'info' }],
+      }),
+    })
+
+    expect(hero.title).toContain('恢复调度')
+    expect(hero.primaryAction?.key).toBe('promoteProduction')
   })
 
   it.each([

@@ -16,12 +16,14 @@ export type FormalPoolDiagnosticsActionKey =
   | 'oneClickOAuthReauth'
   | 'replaceSetupToken'
   | 'genericTokenReplace'
+  | 'replaceAccountAndProxy'
   | 'wait'
   | 'manualReview'
   | 'swapProxy'
   | 'runtimeRegister'
   | 'runtimeRegisterThenHealthcheck'
   | 'healthcheck'
+  | 'startWarming'
   | 'directHealthcheckBeforeProxyRepair'
   | 'refreshDiagnostics'
   | 'quarantine'
@@ -76,6 +78,12 @@ const actionDefinitions: Record<FormalPoolDiagnosticsActionKey, FormalPoolDiagno
     description: '禁止泛化 token 替换；只能按账号类型走安全路径。',
     behavior: 'none',
   },
+  replaceAccountAndProxy: {
+    key: 'replaceAccountAndProxy',
+    label: '重新上号并更换代理',
+    description: '当前没有一键替换账号 API；跳转上号引导，用新账号和新出口代理完成闭环。',
+    behavior: 'navigate',
+  },
   wait: {
     key: 'wait',
     label: '等待 5h 用量窗口恢复',
@@ -110,6 +118,12 @@ const actionDefinitions: Record<FormalPoolDiagnosticsActionKey, FormalPoolDiagno
     key: 'healthcheck',
     label: '定向健康检查',
     description: '调用现有 healthcheck API；会发起一次真实上游请求，需确认。',
+    behavior: 'api',
+  },
+  startWarming: {
+    key: 'startWarming',
+    label: '进入预热期',
+    description: '健康检查证据完整后调用现有 start-warming API，恢复低权重调度并刷新调度器。',
     behavior: 'api',
   },
   directHealthcheckBeforeProxyRepair: {
@@ -366,6 +380,22 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     hasCheckStatus(diagnostics, 'healthcheck_evidence_persisted') ||
     hasAny(signals, 'raw_capture_missing', 'cc_gateway_not_seen')
   const evidenceMissing = gatewayRuntimeMappingEvidenceMissing || healthcheckOrCaptureEvidenceMissing
+  const hasTokenRepairSignal =
+    (account?.type === 'oauth' && (recommends(rec, 'reauthorize_oauth', 'repair_token') || hasAny(signals, 'invalid_grant', 'refresh_token_invalid', 'reauthorize'))) ||
+    (account?.type === 'setup-token' && (recommends(rec, 'replace_setup_token', 'repair_token') || hasAny(signals, 'setup_token_expired', 'session_expired', 'invalid_grant')))
+  const hasManualRiskSignal = recommends(rec, 'manual_review') || diagnostics?.risk_text_detected === true || hasAny(signals, 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold')
+  const hasExplicitProxyFailure = diagnostics?.proxy_mismatch === true || diagnostics?.fallback_detected === true || diagnostics?.failure_origin === 'proxy' || hasAny(signals, 'proxy_mismatch', 'fallback')
+  const hasRateLimitSignal = !hasExplicitProxyFailure && (recommends(rec, 'wait_rate_limit') || hasAny(signals, 'status_429', 'rate_limit', '5h', 'long_context_usage_credits'))
+  const hasProxyRepairSignal = hasExplicitProxyFailure || recommends(rec, 'swap_proxy')
+  const hasHigherPriorityRepair =
+    hasTokenRepairSignal ||
+    hasRateLimitSignal ||
+    hasManualRiskSignal ||
+    hasProxyRepairSignal ||
+    diagnostics?.proxy_mismatch === true ||
+    diagnostics?.fallback_detected === true ||
+    diagnostics?.risk_text_detected === true ||
+    hasAny(signals, 'invalid_grant', 'refresh_token_invalid', 'reauthorize', 'setup_token_expired', 'session_expired', 'status_429', 'rate_limit', '5h', 'long_context_usage_credits', 'proxy_mismatch', 'fallback', 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold')
   const highRiskPromotionBlock =
     diagnostics?.proxy_mismatch === true ||
     diagnostics?.fallback_detected === true ||
@@ -378,7 +408,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     `失败分类：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.failure_code || diagnostics?.status_code_bucket, 'classification', '数据不足')}`,
   ]
 
-  if (evidenceMissing) {
+  if (evidenceMissing && !hasHigherPriorityRepair) {
     const primary = runtimeRegistrationEvidenceComplete ? action('healthcheck') : action('runtimeRegister')
     return {
       scenario: 'evidence_missing',
@@ -395,6 +425,31 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       primaryAction: primary,
       secondaryActions: [],
       forbiddenActions: forbiddenActions(),
+    }
+  }
+
+  if (
+    diagnostics?.onboarding_stage === 'healthcheck_passed' &&
+    recommends(rec, 'start_warming') &&
+    runtimeRegistrationEvidenceComplete &&
+    diagnostics?.healthcheck_evidence_persisted === true &&
+    diagnostics?.raw_capture_present === true &&
+    diagnostics?.cc_gateway_seen === true &&
+    !highRiskPromotionBlock
+  ) {
+    return {
+      scenario: 'monitor',
+      lane: 'paused',
+      tone: 'sky',
+      title: '健康检查已通过，可进入预热',
+      summary: 'runtime / gateway / healthcheck 证据完整，可以点击进入预热期；进入后账号会以低权重参与调度。',
+      rootCauseBullets: [
+        ...baseBullets,
+        '当前账号处于 healthcheck_passed，后端诊断推荐 start_warming。',
+      ],
+      primaryAction: action('startWarming'),
+      secondaryActions: [action('refreshDiagnostics')],
+      forbiddenActions: forbiddenActionsAllowPromote('replaceSetupToken', 'swapProxy', 'runtimeRegister', 'healthcheck', 'quarantine', 'promoteProduction'),
     }
   }
 
@@ -423,6 +478,31 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     }
   }
 
+  if (
+    diagnostics?.onboarding_stage === 'production' &&
+    recommends(rec, 'promote_production') &&
+    runtimeRegistrationEvidenceComplete &&
+    diagnostics?.healthcheck_evidence_persisted === true &&
+    diagnostics?.raw_capture_present === true &&
+    diagnostics?.cc_gateway_seen === true &&
+    !highRiskPromotionBlock
+  ) {
+    return {
+      scenario: 'monitor',
+      lane: 'paused',
+      tone: 'sky',
+      title: '生产账号已通过证据检查，可恢复调度',
+      summary: '账号处于 production 且证据完整，但本地调度开关或状态未开启；点击后恢复生产调度。',
+      rootCauseBullets: [
+        ...baseBullets,
+        '当前账号处于 production，后端诊断推荐 promote_production 用于恢复调度。',
+      ],
+      primaryAction: action('promoteProduction'),
+      secondaryActions: [action('refreshDiagnostics')],
+      forbiddenActions: forbiddenActionsAllowPromote('replaceSetupToken', 'swapProxy', 'runtimeRegister', 'healthcheck', 'quarantine'),
+    }
+  }
+
   if (recommends(rec, 'monitor')) {
     return {
       scenario: 'monitor',
@@ -437,7 +517,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     }
   }
 
-  if (diagnostics?.proxy_mismatch || diagnostics?.fallback_detected || diagnostics?.failure_origin === 'proxy' || hasAny(signals, 'proxy_mismatch', 'fallback')) {
+  if (hasProxyRepairSignal && (hasExplicitProxyFailure || (!hasTokenRepairSignal && !hasRateLimitSignal && !hasManualRiskSignal))) {
     return {
       scenario: 'proxy_mismatch',
       lane: 'needs_intervention',
@@ -455,9 +535,10 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     }
   }
 
-  if (account?.type === 'oauth' && hasAny(signals, 'invalid_grant', 'refresh_token_invalid', 'reauthorize')) {
+  if (account?.type === 'oauth' && hasTokenRepairSignal) {
     const secondaries: FormalPoolDiagnosticsHeroAction[] = []
     if (recommends(rec, 'swap_proxy')) secondaries.push(action('swapProxy'))
+    if (recommends(rec, 'replace_account_and_proxy')) secondaries.push(action('replaceAccountAndProxy'))
     if (recommends(rec, 'runtime_register')) secondaries.push(action('runtimeRegister'))
     return {
       scenario: 'oauth_invalid_grant',
@@ -472,9 +553,10 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     }
   }
 
-  if (account?.type === 'setup-token' && (recommends(rec, 'replace_setup_token', 'repair_token') || hasAny(signals, 'setup_token_expired', 'session_expired', 'invalid_grant'))) {
+  if (account?.type === 'setup-token' && hasTokenRepairSignal) {
     const secondaries: FormalPoolDiagnosticsHeroAction[] = []
     if (recommends(rec, 'swap_proxy')) secondaries.push(action('swapProxy'))
+    if (recommends(rec, 'replace_account_and_proxy')) secondaries.push(action('replaceAccountAndProxy'))
     return {
       scenario: 'setup_token_expired',
       lane: 'needs_intervention',
@@ -488,7 +570,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     }
   }
 
-  if (hasAny(signals, 'status_429', 'rate_limit', '5h', 'long_context_usage_credits')) {
+  if (hasRateLimitSignal) {
     return {
       scenario: 'rate_limited_5h',
       lane: 'paused',
@@ -503,7 +585,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
   }
 
 
-  if (hasAny(signals, 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold') || diagnostics?.risk_text_detected) {
+  if (hasManualRiskSignal) {
     const secondaries = recommends(rec, 'quarantine') ? [action('quarantine')] : []
     return {
       scenario: 'manual_risk',
