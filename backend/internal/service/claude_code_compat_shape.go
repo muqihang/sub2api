@@ -62,26 +62,54 @@ func NormalizeAnthropicCompatMessagesBody(body []byte) ([]byte, AnthropicCompatS
 		audit.ServerFilledShape = true
 	}
 
+	stripWithAudit := false
 	if tools, ok := root["tools"]; ok {
-		if containsAnthropicToolSearchMarkers(tools) {
-			audit.ToolReferencePresent = containsKeyDeep(tools, "tool_reference")
-			audit.DeferLoadingPresent = containsKeyDeep(tools, "defer_loading")
+		toolsOut, stripped := stripNativeOnlyCompatToolMarkers(tools)
+		if stripped.ToolReferencePresent {
+			audit.ToolReferencePresent = true
+			markFilled("tool_reference")
 		}
-		if isNonEmptyArray(tools) {
+		if stripped.DeferLoadingPresent {
+			audit.DeferLoadingPresent = true
+			markFilled("defer_loading")
+		}
+		if stripped.EagerInputStreamingPresent {
+			audit.EagerInputStreamingPresent = true
+			markFilled("eager_input_streaming")
+		}
+		if stripped.Changed {
+			root["tools"] = toolsOut
+			markFilled("tools.native_only")
+			stripWithAudit = true
+		}
+		if isNonEmptyArray(root["tools"]) {
 			audit.ToolSearchMode = "truthful_pass_through"
 		}
 	} else {
 		root["tools"] = []any{}
 		markFilled("tools")
 	}
-	if containsKeyDeep(root, "tool_reference") {
-		audit.ToolReferencePresent = true
+	cleanedRoot, strippedRoot := stripNativeOnlyCompatKeysDeep(root)
+	if strippedRoot.Changed {
+		if cleaned, ok := cleanedRoot.(map[string]any); ok {
+			root = cleaned
+		}
+		if strippedRoot.ToolReferencePresent {
+			audit.ToolReferencePresent = true
+			markFilled("tool_reference")
+		}
+		if strippedRoot.DeferLoadingPresent {
+			audit.DeferLoadingPresent = true
+			markFilled("defer_loading")
+		}
+		if strippedRoot.EagerInputStreamingPresent {
+			audit.EagerInputStreamingPresent = true
+			markFilled("eager_input_streaming")
+		}
+		stripWithAudit = true
 	}
-	if containsKeyDeep(root, "defer_loading") {
-		audit.DeferLoadingPresent = true
-	}
-	if containsKeyDeep(root, "eager_input_streaming") {
-		audit.EagerInputStreamingPresent = true
+	if stripWithAudit {
+		audit.ToolSearchMode = "strip_with_audit"
 	}
 
 	if _, ok := root["metadata"].(map[string]any); !ok {
@@ -177,6 +205,116 @@ func isNonEmptyArray(value any) bool {
 
 func containsAnthropicToolSearchMarkers(value any) bool {
 	return containsKeyDeep(value, "tool_reference") || containsKeyDeep(value, "defer_loading")
+}
+
+type nativeOnlyCompatToolStripResult struct {
+	Changed                    bool
+	ToolReferencePresent       bool
+	DeferLoadingPresent        bool
+	EagerInputStreamingPresent bool
+}
+
+func stripNativeOnlyCompatToolMarkers(value any) (any, nativeOnlyCompatToolStripResult) {
+	items, ok := value.([]any)
+	if !ok {
+		return value, nativeOnlyCompatToolStripResult{}
+	}
+	out := make([]any, 0, len(items))
+	result := nativeOnlyCompatToolStripResult{}
+	for _, item := range items {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if isNativeOnlyCompatTool(tool) {
+			result.Changed = true
+			result.ToolReferencePresent = result.ToolReferencePresent || containsKeyDeep(tool, "tool_reference")
+			result.DeferLoadingPresent = result.DeferLoadingPresent || containsKeyDeep(tool, "defer_loading")
+			result.EagerInputStreamingPresent = result.EagerInputStreamingPresent || containsKeyDeep(tool, "eager_input_streaming")
+			continue
+		}
+		cleaned, stripped := stripNativeOnlyCompatKeysDeep(tool)
+		if stripped.Changed {
+			result.Changed = true
+			result.ToolReferencePresent = result.ToolReferencePresent || stripped.ToolReferencePresent
+			result.DeferLoadingPresent = result.DeferLoadingPresent || stripped.DeferLoadingPresent
+			result.EagerInputStreamingPresent = result.EagerInputStreamingPresent || stripped.EagerInputStreamingPresent
+			out = append(out, cleaned)
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, result
+}
+
+func isNativeOnlyCompatTool(tool map[string]any) bool {
+	toolType, _ := tool["type"].(string)
+	return strings.HasPrefix(strings.TrimSpace(toolType), "tool_search_tool_")
+}
+
+func stripNativeOnlyCompatKeysDeep(value any) (any, nativeOnlyCompatToolStripResult) {
+	return stripNativeOnlyCompatKeysDeepWithPath(value, "")
+}
+
+func stripNativeOnlyCompatKeysDeepWithPath(value any, parentKey string) (any, nativeOnlyCompatToolStripResult) {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		result := nativeOnlyCompatToolStripResult{}
+		for key, item := range v {
+			if parentKey == "properties" {
+				cleaned, stripped := stripNativeOnlyCompatKeysDeepWithPath(item, key)
+				if stripped.Changed {
+					result.Changed = true
+					result.ToolReferencePresent = result.ToolReferencePresent || stripped.ToolReferencePresent
+					result.DeferLoadingPresent = result.DeferLoadingPresent || stripped.DeferLoadingPresent
+					result.EagerInputStreamingPresent = result.EagerInputStreamingPresent || stripped.EagerInputStreamingPresent
+				}
+				out[key] = cleaned
+				continue
+			}
+			switch key {
+			case "tool_reference":
+				result.Changed = true
+				result.ToolReferencePresent = true
+				continue
+			case "defer_loading":
+				result.Changed = true
+				result.DeferLoadingPresent = true
+				continue
+			case "eager_input_streaming":
+				result.Changed = true
+				result.EagerInputStreamingPresent = true
+				continue
+			}
+			cleaned, stripped := stripNativeOnlyCompatKeysDeepWithPath(item, key)
+			if stripped.Changed {
+				result.Changed = true
+				result.ToolReferencePresent = result.ToolReferencePresent || stripped.ToolReferencePresent
+				result.DeferLoadingPresent = result.DeferLoadingPresent || stripped.DeferLoadingPresent
+				result.EagerInputStreamingPresent = result.EagerInputStreamingPresent || stripped.EagerInputStreamingPresent
+			}
+			out[key] = cleaned
+		}
+		return out, result
+	case []any:
+		out := make([]any, 0, len(v))
+		result := nativeOnlyCompatToolStripResult{}
+		for _, item := range v {
+			cleaned, stripped := stripNativeOnlyCompatKeysDeepWithPath(item, parentKey)
+			if stripped.Changed {
+				result.Changed = true
+				result.ToolReferencePresent = result.ToolReferencePresent || stripped.ToolReferencePresent
+				result.DeferLoadingPresent = result.DeferLoadingPresent || stripped.DeferLoadingPresent
+				result.EagerInputStreamingPresent = result.EagerInputStreamingPresent || stripped.EagerInputStreamingPresent
+			}
+			out = append(out, cleaned)
+		}
+		return out, result
+	default:
+		return value, nativeOnlyCompatToolStripResult{}
+	}
 }
 
 func containsKeyDeep(value any, key string) bool {

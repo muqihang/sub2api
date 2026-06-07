@@ -58,3 +58,54 @@ func TestNormalizeAnthropicCompatMessagesBodyAddsNoFakeTools(t *testing.T) {
 	require.Len(t, gjson.GetBytes(normalized, "tools").Array(), 0)
 	require.Contains(t, strings.Join(shape.ServerFilledFields, ","), "tools")
 }
+
+func TestNormalizeAnthropicCompatMessagesBodyStripsNativeOnlyToolReferencesWithAudit(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello","tool_reference":{"id":"nested-ref"}}]}],"tools":[{"name":"regular","description":"regular anthropic tool","input_schema":{"type":"object"}},{"name":"native-search","type":"tool_search_tool_regex_20251119","tool_reference":{"id":"native-ref"},"custom":{"defer_loading":true},"input_schema":{"type":"object"}}],"tool_reference":{"id":"top-level-native"},"defer_loading":true,"eager_input_streaming":true}`)
+
+	normalized, shape, err := NormalizeAnthropicCompatMessagesBody(body)
+	require.NoError(t, err)
+	require.Equal(t, "strip_with_audit", shape.ToolSearchMode)
+	require.True(t, shape.ToolReferencePresent)
+	require.True(t, shape.DeferLoadingPresent)
+	require.True(t, shape.EagerInputStreamingPresent)
+	require.False(t, shape.CapabilityBacked)
+	require.Contains(t, shape.ServerFilledFields, "tool_reference")
+	require.Contains(t, shape.ServerFilledFields, "defer_loading")
+	require.Contains(t, shape.ServerFilledFields, "tools.native_only")
+
+	require.False(t, gjson.GetBytes(normalized, "tool_reference").Exists())
+	require.False(t, gjson.GetBytes(normalized, "defer_loading").Exists())
+	require.False(t, gjson.GetBytes(normalized, "eager_input_streaming").Exists())
+	require.Len(t, gjson.GetBytes(normalized, "tools").Array(), 1)
+	require.Equal(t, "regular", gjson.GetBytes(normalized, "tools.0.name").String())
+	require.False(t, strings.Contains(string(normalized), "tool_search_tool_regex_20251119"))
+	require.False(t, strings.Contains(string(normalized), "native-ref"))
+	require.False(t, strings.Contains(string(normalized), "nested-ref"))
+}
+
+func TestNormalizeAnthropicCompatMessagesBodyPassesThroughPlainAnthropicToolsOnly(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","description":"plain tool","input_schema":{"type":"object","properties":{"q":{"type":"string"}}}}]}`)
+
+	normalized, shape, err := NormalizeAnthropicCompatMessagesBody(body)
+	require.NoError(t, err)
+	require.Equal(t, "truthful_pass_through", shape.ToolSearchMode)
+	require.False(t, shape.ToolReferencePresent)
+	require.False(t, shape.DeferLoadingPresent)
+	require.False(t, shape.CapabilityBacked)
+	require.Len(t, gjson.GetBytes(normalized, "tools").Array(), 1)
+	require.Equal(t, "lookup", gjson.GetBytes(normalized, "tools.0.name").String())
+}
+
+func TestNormalizeAnthropicCompatMessagesBodyPreservesToolSchemaParameterNames(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"tools":[{"name":"lookup","description":"plain tool","input_schema":{"type":"object","properties":{"tool_reference":{"type":"string"},"defer_loading":{"type":"boolean"},"eager_input_streaming":{"type":"boolean"}}}}]}`)
+
+	normalized, shape, err := NormalizeAnthropicCompatMessagesBody(body)
+	require.NoError(t, err)
+	require.Equal(t, "truthful_pass_through", shape.ToolSearchMode)
+	require.False(t, shape.ToolReferencePresent)
+	require.False(t, shape.DeferLoadingPresent)
+	require.False(t, shape.EagerInputStreamingPresent)
+	require.True(t, gjson.GetBytes(normalized, "tools.0.input_schema.properties.tool_reference").Exists())
+	require.True(t, gjson.GetBytes(normalized, "tools.0.input_schema.properties.defer_loading").Exists())
+	require.True(t, gjson.GetBytes(normalized, "tools.0.input_schema.properties.eager_input_streaming").Exists())
+}
