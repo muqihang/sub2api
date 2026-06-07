@@ -178,6 +178,7 @@ type formalPoolOperationAccountPayload struct {
 	Schedulable          bool   `json:"schedulable"`
 	EffectiveSchedulable bool   `json:"effective_schedulable"`
 	OnboardingStage      string `json:"onboarding_stage,omitempty"`
+	ProxyID              *int64 `json:"proxy_id,omitempty"`
 }
 
 func formalPoolOperationSafeAccount(account *service.Account) *formalPoolOperationAccountPayload {
@@ -190,6 +191,7 @@ func formalPoolOperationSafeAccount(account *service.Account) *formalPoolOperati
 		Schedulable:          account.Schedulable,
 		EffectiveSchedulable: account.IsSchedulable(),
 		OnboardingStage:      formalPoolOperationFailureSafeStage(service.FormalPoolAccountStage(account)),
+		ProxyID:              account.ProxyID,
 	}
 }
 

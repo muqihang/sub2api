@@ -503,6 +503,26 @@ func (s *FormalPoolOperationsService) PromoteProduction(ctx context.Context, acc
 		return nil, err
 	}
 	if beforeStage == FormalPoolStageProduction {
+		if formalPoolCanRestoreProductionScheduling(account, formalPoolDiagnosticsFromAccount(account)) {
+			extra := map[string]any{
+				FormalPoolExtraLastFailureOrigin:         "",
+				FormalPoolExtraLastFailureCode:           "",
+				FormalPoolExtraLastFailureSource:         "",
+				FormalPoolExtraLastCCGatewayErrorCode:    "",
+				FormalPoolExtraOnboardingLastErrorCode:   "",
+				FormalPoolExtraOnboardingLastErrorBucket: "",
+				FormalPoolExtraQuarantineReason:          "",
+				FormalPoolExtraQuarantineAt:              "",
+			}
+			updated, updateErr := s.accounts.ActivateFormalPoolAccount(ctx, account.ID, extra)
+			if updateErr != nil {
+				s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: false, FailureCode: formalPoolAuditFailureCode(updateErr)})
+				return nil, updateErr
+			}
+			result, resultErr := s.accountResult(ctx, account.ID, updated)
+			s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: resultErr == nil, FailureCode: formalPoolAuditFailureCode(resultErr)})
+			return result, resultErr
+		}
 		result, resultErr := s.accountResult(ctx, account.ID, account)
 		s.writeOperationAudit(ctx, FormalPoolOperationAuditEvent{AccountID: account.ID, BeforeStage: beforeStage, AfterStage: beforeStage, Action: "promote_production", ReasonBucket: reasonBucket, Success: resultErr == nil, FailureCode: formalPoolAuditFailureCode(resultErr), Noop: resultErr == nil})
 		return result, resultErr
@@ -996,6 +1016,10 @@ func formalPoolRecommendedActions(origin FormalPoolFailureOrigin, account *Accou
 		add("monitor", "Monitor only", "info")
 		return actions
 	}
+	if formalPoolCanRestoreProductionScheduling(account, d) {
+		add("promote_production", "Restore production scheduling", "info")
+		return actions
+	}
 	if formalPoolTerminalInvalidGrant(account, d) {
 		if account.Type == AccountTypeSetupToken {
 			add("replace_setup_token", "Replace setup-token login state", "danger")
@@ -1125,6 +1149,28 @@ func formalPoolDiagnosticsHasManualAuthOrRisk(d *FormalPoolOperationsDiagnostics
 		}
 	}
 	return formalPoolDashboardContainsToken(combined, "risk")
+}
+
+func formalPoolCanRestoreProductionScheduling(account *Account, d *FormalPoolOperationsDiagnostics) bool {
+	if account == nil || d == nil {
+		return false
+	}
+	if FormalPoolAccountStage(account) != FormalPoolStageProduction || account.Status != StatusActive || account.Schedulable {
+		return false
+	}
+	if !d.RuntimeEvidenceComplete || !d.HealthcheckEvidencePersisted || !d.CCGatewaySeen || !d.RawCapturePresent {
+		return false
+	}
+	if d.FallbackDetected || d.ProxyMismatch || d.RiskTextDetected {
+		return false
+	}
+	if strings.TrimSpace(d.QuarantineReason) != "" ||
+		strings.TrimSpace(d.LastCCGatewayErrorCode) != "" ||
+		strings.TrimSpace(d.OnboardingLastErrorCode) != "" ||
+		strings.TrimSpace(d.OnboardingLastErrorBucket) != "" {
+		return false
+	}
+	return !formalPoolDiagnosticsHasRateLimit(d) && !formalPoolDiagnosticsHasManualAuthOrRisk(d)
 }
 
 func formalPoolTerminalInvalidGrant(account *Account, d *FormalPoolOperationsDiagnostics) bool {

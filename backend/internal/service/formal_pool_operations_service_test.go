@@ -1072,6 +1072,105 @@ func TestFormalPoolOperationsPromoteProduction_AlreadyProductionNoopDoesNotMutat
 	require.True(t, audit.events[0].Noop)
 }
 
+func TestFormalPoolOperationsPromoteProduction_RestoresProductionSchedulingWhenEvidenceComplete(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	store.account.Status = StatusActive
+	store.account.Schedulable = false
+	store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	store.account.Extra[FormalPoolExtraQuarantineReason] = ""
+	store.account.Extra[FormalPoolExtraQuarantineAt] = ""
+	store.account.Extra[FormalPoolExtraLastFailureOrigin] = "local_gate"
+	store.account.Extra[FormalPoolExtraLastFailureCode] = "manual_pause"
+	audit := &formalPoolOperationsAuditFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store, Audit: audit})
+
+	diagnostics, err := svc.Diagnostics(context.Background(), store.account.ID)
+	require.NoError(t, err)
+	require.Equal(t, FormalPoolStageProduction, diagnostics.OnboardingStage)
+	require.False(t, diagnostics.EffectiveSchedulable)
+	require.Contains(t, actionKeys(diagnostics.RecommendedActions), "promote_production")
+
+	got, err := svc.PromoteProduction(context.Background(), store.account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, FormalPoolStageProduction, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, StatusActive, store.account.Status)
+	require.True(t, store.account.Schedulable)
+	require.True(t, store.account.IsSchedulable())
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraLastFailureOrigin))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraLastFailureCode))
+	require.Len(t, audit.events, 1)
+	require.Equal(t, "promote_production", audit.events[0].Action)
+	require.Equal(t, FormalPoolStageProduction, audit.events[0].BeforeStage)
+	require.Equal(t, FormalPoolStageProduction, audit.events[0].AfterStage)
+	require.True(t, audit.events[0].Success)
+	require.False(t, audit.events[0].Noop)
+}
+
+func TestFormalPoolOperationsPromoteProduction_DoesNotRestoreUnsafeProductionAccounts(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*Account)
+	}{
+		{
+			name: "status error",
+			mutate: func(account *Account) {
+				account.Status = StatusError
+			},
+		},
+		{
+			name: "rate limited",
+			mutate: func(account *Account) {
+				account.Extra[FormalPoolExtraRateLimitErrorClass] = "long_context_usage_credits"
+				account.Extra[FormalPoolExtraRateLimitWindow] = "5h"
+			},
+		},
+		{
+			name: "manual risk",
+			mutate: func(account *Account) {
+				account.Extra[FormalPoolExtraHealthcheckRiskTextDetected] = true
+			},
+		},
+		{
+			name: "quarantined reason",
+			mutate: func(account *Account) {
+				account.Extra[FormalPoolExtraQuarantineReason] = "account_on_hold"
+			},
+		},
+		{
+			name: "proxy mismatch",
+			mutate: func(account *Account) {
+				account.Extra[FormalPoolExtraHealthcheckProxyMismatch] = true
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+			store.account.Status = StatusActive
+			store.account.Schedulable = false
+			store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+			tc.mutate(store.account)
+			svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{Accounts: store})
+
+			diagnostics, err := svc.Diagnostics(context.Background(), store.account.ID)
+			require.NoError(t, err)
+			require.NotContains(t, actionKeys(diagnostics.RecommendedActions), "promote_production")
+
+			_, err = svc.PromoteProduction(context.Background(), store.account.ID)
+			require.NoError(t, err)
+			require.False(t, store.account.Schedulable, "unsafe production account must remain manually unschedulable")
+		})
+	}
+}
+
 func TestFormalPoolOperationsMutatingOperations_WriteAuditEvents(t *testing.T) {
 	t.Parallel()
 
@@ -1553,6 +1652,9 @@ func completeHealthcheckEvidenceExtra() map[string]any {
 		FormalPoolExtraHealthcheckRiskTextDetected: false,
 		FormalPoolExtraRuntimeRegistered:           "true",
 		FormalPoolExtraRuntimeRegisteredAt:         "2026-05-29T00:00:00Z",
+		"cc_gateway_account_ref":                  "hmac-sha256:" + strings.Repeat("3", 64),
+		"cc_gateway_egress_bucket_enabled":        "true",
+		"cc_gateway_egress_bucket":                "claude-complete-evidence",
 	}
 }
 
