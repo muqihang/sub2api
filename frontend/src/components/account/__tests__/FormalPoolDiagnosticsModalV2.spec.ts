@@ -24,6 +24,7 @@ const {
   replaceSetupToken,
   runtimeRegister,
   healthcheck,
+  startWarming,
   swapProxy,
   quarantine,
   promoteProduction,
@@ -33,6 +34,7 @@ const {
   replaceSetupToken: vi.fn(),
   runtimeRegister: vi.fn(),
   healthcheck: vi.fn(),
+  startWarming: vi.fn(),
   swapProxy: vi.fn(),
   quarantine: vi.fn(),
   promoteProduction: vi.fn(),
@@ -47,6 +49,7 @@ vi.mock('@/api/admin/formalPoolOperations', async () => {
     replaceSetupToken,
     runtimeRegister,
     healthcheck,
+    startWarming,
     swapProxy,
     quarantine,
     promoteProduction,
@@ -170,6 +173,47 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(wrapper.text()).not.toContain('一键重新授权')
   })
 
+  it('renders replace-account-and-proxy guidance as a navigation action', async () => {
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'token_exchange',
+        failure_code: 'setup_token_exchange_failed',
+        recommended_actions: [
+          { key: 'replace_setup_token', label: 'Replace setup token', severity: 'warning' },
+          { key: 'replace_account_and_proxy', label: 'Replace account and proxy', severity: 'danger' },
+        ],
+      }),
+    })
+
+    const action = wrapper.get('[data-testid="action-replaceAccountAndProxy"]')
+    expect(action.text()).toContain('重新上号并更换代理')
+
+    await action.trigger('click')
+    await flushPromises()
+
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/admin/claude-onboarding',
+      query: { source: 'diagnostics-v2' },
+    })
+  })
+
+  it('keeps swap proxy guarded even if the action handler is invoked with stale empty input', async () => {
+    const wrapper = await mountModal({
+      account: account({ proxy_id: 7 }),
+      diagnostics: diagnostics({
+        failure_origin: 'proxy',
+        proxy_mismatch: true,
+        recommended_actions: [{ key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="action-swapProxy"]').trigger('click')
+    await flushPromises()
+
+    expect(swapProxy).not.toHaveBeenCalled()
+  })
+
   it('keeps evidence collapsed by default, then supports grouped evidence search', async () => {
     const wrapper = await mountModal({
       diagnostics: diagnostics({
@@ -283,6 +327,44 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(proxyMismatch.text()).toContain('更换代理后再执行 runtime-register / healthcheck')
   })
 
+  it('requires a different replacement proxy id before executing swap proxy', async () => {
+    swapProxy.mockResolvedValue({
+      account: account({ status: 'active', schedulable: false, effective_schedulable: false, onboarding_stage: 'runtime_registered' }),
+      diagnostics: diagnostics({ onboarding_stage: 'runtime_registered' }),
+    })
+    const wrapper = await mountModal({
+      account: account({ proxy_id: 7 }),
+      diagnostics: diagnostics({
+        failure_origin: 'proxy',
+        proxy_mismatch: true,
+        fallback_detected: true,
+        recommended_actions: [{ key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' }],
+      }),
+    })
+
+    const action = wrapper.get('[data-testid="action-swapProxy"]')
+    expect(wrapper.get('[data-testid="swap-proxy-id-input"]').exists()).toBe(true)
+    expect(action.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('请填写新的出口代理 ID')
+
+    await wrapper.get('[data-testid="swap-proxy-id-input"]').setValue('7')
+    expect(action.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('新代理 ID 不能与当前代理相同')
+
+    await wrapper.get('[data-testid="swap-proxy-id-input"]').setValue('12')
+    expect(action.attributes('disabled')).toBeUndefined()
+    await action.trigger('click')
+    await flushPromises()
+
+    expect(swapProxy).toHaveBeenCalledTimes(1)
+    expect(swapProxy).toHaveBeenCalledWith(42, {
+      proxy_id: 12,
+      run_proxy_test: true,
+      run_runtime_register: true,
+      run_healthcheck: true,
+    })
+  })
+
 
   it('renders and executes manual promote to production for warming accounts with complete evidence', async () => {
     const promotedAccount = account({
@@ -339,6 +421,79 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(promoteProduction).toHaveBeenCalledTimes(1)
     expect(promoteProduction).toHaveBeenCalledWith(42)
     expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ onboarding_stage: 'production' })
+  })
+
+  it('renders and executes start warming for healthcheck-passed accounts with complete evidence', async () => {
+    const warmingAccount = account({
+      status: 'active',
+      schedulable: true,
+      effective_schedulable: true,
+      onboarding_stage: 'warming',
+    })
+    startWarming.mockResolvedValue({
+      // Formal Pool operation responses intentionally return a safe minimal
+      // account payload. The modal must merge it with the existing account
+      // instead of replacing the full UI context and losing the operator label.
+      account: {
+        id: warmingAccount.id,
+        status: warmingAccount.status,
+        schedulable: warmingAccount.schedulable,
+        effective_schedulable: warmingAccount.effective_schedulable,
+        onboarding_stage: warmingAccount.onboarding_stage,
+      },
+      diagnostics: diagnostics({
+        onboarding_stage: 'warming',
+        schedulable: true,
+        effective_schedulable: true,
+        failure_origin: 'unknown',
+        healthcheck_status: 'passed',
+        status_code_bucket: 'status_2xx',
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T00:00:00Z',
+        runtime_evidence_complete: true,
+        healthcheck_evidence_persisted: true,
+        raw_capture_present: true,
+        recommended_actions: [{ key: 'promote_production', label: 'Promote production', severity: 'info' }],
+      }),
+    })
+
+    const wrapper = await mountModal({
+      account: account({ status: 'active', schedulable: false, effective_schedulable: false, onboarding_stage: 'healthcheck_passed' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'healthcheck_passed',
+        schedulable: false,
+        effective_schedulable: false,
+        failure_origin: 'local_gate',
+        failure_code: undefined,
+        healthcheck_status: 'passed',
+        status_code_bucket: 'status_2xx',
+        cc_gateway_seen: true,
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T00:00:00Z',
+        runtime_evidence_complete: true,
+        healthcheck_evidence_persisted: true,
+        raw_capture_present: true,
+        checks: [
+          { name: 'cc_gateway_runtime_registered', status: 'pass', message: 'ok' },
+          { name: 'healthcheck_evidence_persisted', status: 'pass', message: 'ok' },
+        ],
+        recommended_actions: [{ key: 'start_warming', label: 'Start warming', severity: 'info' }],
+      }),
+    })
+
+    expect(wrapper.get('[data-testid="diagnostics-v2-root-cause"]').text()).toContain('健康检查已通过')
+    const action = wrapper.get('[data-testid="action-startWarming"]')
+    expect(action.text()).toContain('进入预热期')
+
+    await action.trigger('click')
+    await flushPromises()
+
+    expect(startWarming).toHaveBeenCalledTimes(1)
+    expect(startWarming).toHaveBeenCalledWith(42)
+    expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ onboarding_stage: 'warming', effective_schedulable: true })
+    expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ name: 'formal-account', platform: 'anthropic', type: 'oauth' })
+    expect(wrapper.get('#diagnostics-v2-title').text()).toContain('formal-account')
   })
 
 

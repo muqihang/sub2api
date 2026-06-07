@@ -643,9 +643,10 @@ const setError = (error: unknown) => {
 }
 
 const applyOperationResult = async (result: FormalPoolOperationResult) => {
-  latestAccount.value = result.account
-  emit('updated', result.account)
-  diagnostics.value = result.diagnostics ?? await getDiagnostics(result.account.id)
+  const mergedAccount = activeAccount.value ? { ...activeAccount.value, ...result.account } : result.account as Account
+  latestAccount.value = mergedAccount
+  emit('updated', mergedAccount)
+  diagnostics.value = result.diagnostics ?? await getDiagnostics(mergedAccount.id)
   sessionKey.value = ''
 }
 

@@ -111,6 +111,26 @@
               </label>
             </div>
 
+            <div v-if="showSwapProxyForm" class="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-500/40 dark:bg-sky-500/10">
+              <label class="block text-sm font-medium text-sky-950 dark:text-sky-100">
+                新出口代理 ID
+                <input
+                  v-model="proxyId"
+                  data-testid="swap-proxy-id-input"
+                  type="number"
+                  min="1"
+                  class="input mt-2 w-full"
+                  placeholder="输入要替换成的新代理 ID"
+                />
+              </label>
+              <p class="mt-2 text-xs text-sky-800 dark:text-sky-100">
+                当前代理 ID：{{ activeAccount?.proxy_id ?? '—' }}。必须填写不同的新代理；提交后会按顺序代理测试、运行时注册、定向健康检查。
+              </p>
+              <p v-if="proxyIdError" class="mt-2 text-xs text-rose-600 dark:text-rose-300">
+                {{ proxyIdError }}
+              </p>
+            </div>
+
             <div class="mt-4 flex flex-wrap gap-2">
               <button
                 v-for="item in renderedActions"
@@ -221,6 +241,7 @@ import {
   quarantine,
   replaceSetupToken,
   runtimeRegister,
+  startWarming,
   swapProxy,
   type FormalPoolOperationResult,
 } from '@/api/admin/formalPoolOperations'
@@ -325,12 +346,13 @@ const lanes = [
 ]
 
 const showSetupTokenForm = computed(() => hero.value.primaryAction?.key === 'replaceSetupToken' || hero.value.secondaryActions.some((item) => item.key === 'replaceSetupToken'))
+const showSwapProxyForm = computed(() => hero.value.primaryAction?.key === 'swapProxy' || hero.value.secondaryActions.some((item) => item.key === 'swapProxy'))
 
 const renderedActions = computed<FormalPoolDiagnosticsHeroAction[]>(() => {
   const out: FormalPoolDiagnosticsHeroAction[] = []
   if (hero.value.primaryAction && hero.value.primaryAction.behavior !== 'none') out.push(hero.value.primaryAction)
   for (const item of hero.value.secondaryActions) {
-    if (item.behavior === 'api') out.push(item)
+    if (item.behavior !== 'none') out.push(item)
   }
   const seen = new Set<string>()
   return out.filter((item) => {
@@ -345,8 +367,17 @@ const forbiddenKeys = computed(() => new Set(hero.value.forbiddenActions.map((it
 function isActionDisabled(key: FormalPoolDiagnosticsActionKey): boolean {
   if (forbiddenKeys.value.has(key)) return true
   if (key === 'replaceSetupToken') return !sessionKey.value.trim()
+  if (key === 'swapProxy') return Boolean(proxyIdError.value)
   return false
 }
+
+const proxyIdError = computed(() => {
+  if (!showSwapProxyForm.value) return ''
+  const id = Number(proxyId.value)
+  if (!Number.isInteger(id) || id <= 0) return '请填写新的出口代理 ID。'
+  if (activeAccount.value?.proxy_id && id === activeAccount.value.proxy_id) return '新代理 ID 不能与当前代理相同。'
+  return ''
+})
 
 function boolText(value: unknown): string {
   if (value === true) return '是'
@@ -455,9 +486,10 @@ async function refreshDiagnostics(options: { keepError?: boolean } = {}): Promis
 }
 
 async function applyOperationResult(result: FormalPoolOperationResult): Promise<void> {
-  latestAccount.value = result.account
-  emit('updated', result.account)
-  diagnostics.value = result.diagnostics ?? await getDiagnostics(result.account.id)
+  const mergedAccount = activeAccount.value ? { ...activeAccount.value, ...result.account } : result.account as Account
+  latestAccount.value = mergedAccount
+  emit('updated', mergedAccount)
+  diagnostics.value = result.diagnostics ?? await getDiagnostics(mergedAccount.id)
   sessionKey.value = ''
 }
 
@@ -486,14 +518,14 @@ async function runWithBusy(name: string, operation: () => Promise<FormalPoolOper
 }
 
 function parsedProxyId(): number {
-  const id = Number(proxyId.value || activeAccount.value?.proxy_id || 0)
+  const id = Number(proxyId.value)
   return Number.isInteger(id) && id > 0 ? id : 0
 }
 
 async function handleAction(key: FormalPoolDiagnosticsActionKey): Promise<void> {
   const account = activeAccount.value
   if (!account || forbiddenKeys.value.has(key)) return
-  if (key === 'guideOAuthReauth') {
+  if (key === 'guideOAuthReauth' || key === 'replaceAccountAndProxy') {
     await router.push({ path: '/admin/claude-onboarding', query: { source: 'diagnostics-v2' } }).catch(() => undefined)
     return
   }
@@ -515,8 +547,10 @@ async function handleAction(key: FormalPoolDiagnosticsActionKey): Promise<void> 
     pendingHealthcheckConfirm.value = true
     return
   }
+  if (key === 'startWarming') return runWithBusy(key, () => startWarming(account.id))
   if (key === 'promoteProduction') return runWithBusy(key, () => promoteProduction(account.id))
   if (key === 'swapProxy') {
+    if (proxyIdError.value) return
     const id = parsedProxyId()
     if (!id) return
     return runWithBusy(key, () => swapProxy(account.id, { proxy_id: id, run_proxy_test: true, run_runtime_register: true, run_healthcheck: true }))
@@ -551,7 +585,7 @@ watch(
       diagnostics.value = null
       errorMessage.value = ''
       sessionKey.value = ''
-      proxyId.value = props.account.proxy_id ? String(props.account.proxy_id) : ''
+      proxyId.value = ''
       evidenceOpen.value = false
       evidenceQuery.value = ''
       pendingHealthcheckConfirm.value = false

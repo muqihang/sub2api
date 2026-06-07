@@ -2,7 +2,7 @@ import { apiClient } from '../client'
 import type { Account, FormalPoolOperationsDiagnostics } from '@/types'
 
 export interface FormalPoolOperationResult {
-  account: Account
+  account: FormalPoolOperationFailureAccount
   diagnostics?: FormalPoolOperationsDiagnostics
 }
 
