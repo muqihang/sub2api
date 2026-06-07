@@ -27,6 +27,10 @@ func BuildCodexGatewayAnthropicRequest(model CodexGatewayModel, req CodexGateway
 	if err != nil {
 		return CodexGatewayPreparedAnthropicRequest{}, err
 	}
+	toolMapping, err = codexGatewayAnthropicMergeDeferredToolSearchOutputTools(toolMapping, req.Input, cfg.ToolMappingConfig)
+	if err != nil {
+		return CodexGatewayPreparedAnthropicRequest{}, err
+	}
 	body := map[string]any{
 		"model":      upstreamModel,
 		"max_tokens": codexGatewayAnthropicMaxTokens(req.MaxOutputTokens, model),
@@ -197,7 +201,7 @@ func buildCodexGatewayAnthropicMessages(req CodexGatewayResponsesCreateRequest, 
 			seedCalls[strings.TrimSpace(call.ID)] = call
 		}
 		if len(state.ToolCalls) > 0 && !codexGatewayInputHasToolCallOutput(items) {
-			return nil, fmt.Errorf("%w: previous_response_id requires function_call_output items", ErrCodexGatewayStateInvalid)
+			return nil, fmt.Errorf("%w: previous_response_id requires tool output items", ErrCodexGatewayStateInvalid)
 		}
 	}
 
@@ -216,7 +220,7 @@ func buildCodexGatewayAnthropicMessages(req CodexGatewayResponsesCreateRequest, 
 				return nil, fmt.Errorf("input item must be an object")
 			}
 			switch strings.TrimSpace(firstCodexGatewayToolString(m["type"])) {
-			case "function_call_output", "custom_tool_call_output":
+			case "function_call_output", "local_shell_call_output", "custom_tool_call_output", "tool_search_output":
 			default:
 				return nil, fmt.Errorf("%w: replayed tool outputs must precede subsequent turns", ErrCodexGatewayStateInvalid)
 			}
@@ -321,6 +325,12 @@ func convertCodexGatewayInputItemToAnthropicMessages(item any, toolMapping Codex
 			return nil, err
 		}
 		return []map[string]any{msg}, nil
+	case "tool_search_call":
+		msg, err := convertCodexGatewayToolSearchCallItemToAnthropic(m, toolMapping)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]any{msg}, nil
 	case "local_shell_call":
 		msg, err := convertCodexGatewayFunctionCallItemToAnthropic(m, toolMapping, CodexGatewayToolKindFunction)
 		if err != nil {
@@ -339,6 +349,12 @@ func convertCodexGatewayInputItemToAnthropicMessages(item any, toolMapping Codex
 			return nil, err
 		}
 		return []map[string]any{msg}, nil
+	case "tool_search_output":
+		msg, err := convertCodexGatewayToolSearchOutputItemToAnthropic(m)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]any{msg}, nil
 	default:
 		msg, err := convertCodexGatewayMessageItemToAnthropic(m, cfg)
 		if err != nil {
@@ -346,6 +362,10 @@ func convertCodexGatewayInputItemToAnthropicMessages(item any, toolMapping Codex
 		}
 		return []map[string]any{msg}, nil
 	}
+}
+
+func codexGatewayAnthropicMergeDeferredToolSearchOutputTools(mapping CodexGatewayToolMappingResult, input json.RawMessage, cfg CodexGatewayToolMappingConfig) (CodexGatewayToolMappingResult, error) {
+	return codexGatewayDeepSeekMergeDeferredToolSearchOutputTools(mapping, input, cfg)
 }
 
 func convertCodexGatewayMessageItemToAnthropic(m map[string]any, cfg CodexGatewayAnthropicRequestConfig) (map[string]any, error) {
@@ -488,12 +508,55 @@ func convertCodexGatewayFunctionCallItemToAnthropic(m map[string]any, toolMappin
 	}, nil
 }
 
+func convertCodexGatewayToolSearchCallItemToAnthropic(m map[string]any, toolMapping CodexGatewayToolMappingResult) (map[string]any, error) {
+	callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
+	if callID == "" {
+		return nil, fmt.Errorf("tool_search_call requires call_id")
+	}
+	args := normalizeCodexGatewayToolArguments(firstCodexGatewayToolValue(m["arguments"], m["input"]))
+	input := codexGatewayAnthropicToolInputRawMessage(args)
+	return map[string]any{
+		"role": "assistant",
+		"content": []any{map[string]any{
+			"type":  "tool_use",
+			"id":    callID,
+			"name":  codexGatewayToolSearchType,
+			"input": input,
+		}},
+	}, nil
+}
+
 func convertCodexGatewayFunctionCallOutputItemToAnthropic(m map[string]any) (map[string]any, error) {
 	callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
 	if callID == "" {
 		return nil, fmt.Errorf("function_call_output requires call_id")
 	}
 	output, err := normalizeCodexGatewayToolOutput(m["output"])
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"role": "user",
+		"content": []any{map[string]any{
+			"type":        "tool_result",
+			"tool_use_id": callID,
+			"content":     output,
+		}},
+	}, nil
+}
+
+func convertCodexGatewayToolSearchOutputItemToAnthropic(m map[string]any) (map[string]any, error) {
+	callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
+	if callID == "" {
+		return nil, fmt.Errorf("tool_search_output requires call_id")
+	}
+	var output string
+	var err error
+	if _, hasOutput := m["output"]; hasOutput {
+		output, err = normalizeCodexGatewayToolOutput(m["output"])
+	} else {
+		output, err = normalizeCodexGatewayToolOutput(canonicalizeCodexGatewayToolSchema(m["tools"]))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -655,11 +718,27 @@ func codexGatewayAnthropicReasoningEffort(raw json.RawMessage, model CodexGatewa
 }
 
 func codexGatewayAnthropicResolveUpstreamModel(raw json.RawMessage, model CodexGatewayModel) string {
-	fallback := strings.TrimSpace(model.UpstreamModel)
-	if fallback == "" {
-		fallback = strings.TrimSpace(model.Slug)
+	effort := codexGatewayAnthropicReasoningEffort(raw, model)
+	base := strings.TrimSpace(model.UpstreamBaseModel)
+	if base == "" {
+		base = strings.TrimSpace(model.UpstreamModel)
 	}
-	return fallback
+	if base == "" {
+		base = strings.TrimSpace(model.Slug)
+	}
+	thinking := strings.TrimSpace(model.UpstreamThinkingModel)
+	if thinking == "" {
+		thinking = base
+	}
+	switch effort {
+	case "xhigh", "max":
+		if !codexGatewayAnthropicModelSupportsAdaptiveThinking(model) {
+			return base
+		}
+		return thinking
+	default:
+		return base
+	}
 }
 
 func codexGatewayAnthropicStateModelKey(model CodexGatewayModel, upstreamModel string) string {

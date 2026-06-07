@@ -371,20 +371,25 @@ func codexGatewayAnthropicToolUseOutputItem(raw string, toolNameMap map[string]C
 		Name:      codexGatewayClientVisibleToolName(entry),
 		Arguments: args,
 	}
+	if codexGatewayIsToolSearchEntry(entry) {
+		stored.Name = codexGatewayToolSearchType
+	}
 	item := map[string]any{
 		"id":      codexGatewayAnthropicToolItemID(callID),
 		"call_id": callID,
 		"name":    stored.Name,
 		"status":  "completed",
 	}
-	switch codexGatewayClientVisibleToolItemType(entry) {
+	switch codexGatewayAnthropicClientVisibleToolItemType(entry) {
 	case CodexGatewayOutputItemTypeCustomToolCall:
 		item["type"] = CodexGatewayOutputItemTypeCustomToolCall
 		item["input"] = codexGatewayDeepSeekCustomToolInput(args, entry)
 	case CodexGatewayOutputItemTypeLocalShellCall:
 		codexGatewayApplyLocalShellCallItemFields(item, callID, "completed", args)
+	case CodexGatewayOutputItemTypeToolSearchCall:
+		item = codexGatewayAnthropicToolSearchCallItem(callID, "completed", args)
 	default:
-		item["type"] = codexGatewayClientVisibleToolItemType(entry)
+		item["type"] = codexGatewayAnthropicClientVisibleToolItemType(entry)
 		if namespace := strings.TrimSpace(entry.Namespace); namespace != "" {
 			item["namespace"] = namespace
 		}

@@ -218,25 +218,164 @@ func TestBuildCodexGatewayAnthropicRequest_ThinkingVariantSupportsLowHighAndXHig
 	}
 }
 
-func TestBuildCodexGatewayAnthropicRequest_DirectClaudeUsesBaseModelWithAdaptiveThinking(t *testing.T) {
+func TestBuildCodexGatewayAnthropicRequest_DirectClaudeMapsHighAndXHighToSeparateUpstreams(t *testing.T) {
+	tests := []struct {
+		name       string
+		effort     string
+		wantModel  string
+		wantEffort string
+	}{
+		{name: "high uses base upstream", effort: "high", wantModel: "claude-opus-4-8", wantEffort: "high"},
+		{name: "xhigh uses thinking upstream", effort: "xhigh", wantModel: "claude-opus-4-8-thinking", wantEffort: "max"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+				"model":"claude-opus-4-8",
+				"input":[{"type":"message","role":"user","content":"hello"}],
+				"reasoning":{"effort":"` + tt.effort + `"}
+			}`))
+			require.NoError(t, err)
+
+			prepared, err := BuildCodexGatewayAnthropicRequest(
+				CodexGatewayModel{
+					Slug:                     "claude-opus-4-8",
+					Provider:                 "anthropic",
+					ProviderVariant:          "anthropic_direct",
+					UpstreamModel:            "claude-opus-4-8",
+					UpstreamBaseModel:        "claude-opus-4-8",
+					UpstreamThinkingModel:    "claude-opus-4-8-thinking",
+					DefaultReasoningLevel:    "high",
+					SupportedReasoningLevels: []string{"low", "high", "xhigh"},
+				},
+				req,
+				nil,
+				CodexGatewayAnthropicRequestContext{},
+				CodexGatewayAnthropicRequestConfig{},
+			)
+			require.NoError(t, err)
+
+			raw, err := json.Marshal(prepared.Body)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantModel, gjson.GetBytes(raw, "model").String())
+			require.Equal(t, "adaptive", gjson.GetBytes(raw, "thinking.type").String())
+			require.Equal(t, tt.wantEffort, gjson.GetBytes(raw, "output_config.effort").String())
+		})
+	}
+}
+
+func TestBuildCodexGatewayAnthropicRequest_MapsDeferredToolFamilyMatrixFromToolSearchOutput(t *testing.T) {
+	deferredTools := []any{
+		map[string]any{
+			"type": "namespace",
+			"name": "browser",
+			"tools": []any{map[string]any{
+				"type":        "function",
+				"name":        "navigate",
+				"description": "open a local browser target",
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"url": map[string]any{"type": "string"}},
+					"required":   []any{"url"},
+				},
+			}},
+		},
+		map[string]any{
+			"type": "namespace",
+			"name": "computer_use",
+			"tools": []any{map[string]any{
+				"type":        "function",
+				"name":        "list_apps",
+				"description": "list controllable local apps",
+				"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+			}},
+		},
+		map[string]any{
+			"type": "namespace",
+			"name": "documents",
+			"tools": []any{map[string]any{
+				"type":   "custom",
+				"name":   "redline",
+				"custom": map[string]any{"format": map[string]any{"type": "text"}},
+			}},
+		},
+		map[string]any{
+			"type": "namespace",
+			"name": "multi_agent_v1",
+			"tools": []any{map[string]any{
+				"type": "function",
+				"name": "spawn_agent",
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"task": map[string]any{"type": "string"}, "model": map[string]any{"type": "string"}},
+					"required":   []any{"task"},
+				},
+			}},
+		},
+	}
+	deferredToolsJSON := string(mustMarshalRawMessage(t, deferredTools))
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "claude-opus-4-7",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"classify deferred tools"}]},
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"browser computer use documents subagent","limit":20}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","tools":` + deferredToolsJSON + `},
+			{"type":"function_call","call_id":"call_browser","name":"navigate","namespace":"browser","arguments":"{\"url\":\"http://localhost:3000\"}"},
+			{"type":"custom_tool_call","call_id":"call_doc","name":"redline","namespace":"documents","input":"mark this change"}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}
+		]`),
+	}
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", UpstreamModel: "claude-opus-4-7"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	tools := prepared.Body["tools"].([]any)
+	for _, alias := range []string{"browser__navigate", "computer_use__list_apps", "documents__custom__redline", "multi_agent_v1__spawn_agent", "tool_search"} {
+		require.NotNil(t, anthropicRequestToolByName(t, tools, alias), "missing Anthropic tool alias %s", alias)
+	}
+
+	browserEntry := prepared.ToolNameMap["browser__navigate"]
+	require.Equal(t, CodexGatewayToolKindNamespace, browserEntry.Kind)
+	require.Equal(t, "browser", browserEntry.NamespacePath)
+	require.Equal(t, "navigate", codexGatewayClientVisibleToolName(browserEntry))
+	docEntry := prepared.ToolNameMap["documents__custom__redline"]
+	require.Equal(t, CodexGatewayToolKindCustom, docEntry.Kind)
+	require.Equal(t, "documents", docEntry.NamespacePath)
+	require.Equal(t, "redline", codexGatewayClientVisibleToolName(docEntry))
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "browser__navigate", gjson.GetBytes(raw, "messages.3.content.0.name").String())
+	require.Equal(t, "documents__custom__redline", gjson.GetBytes(raw, "messages.3.content.1.name").String())
+}
+
+func TestBuildCodexGatewayAnthropicRequest_ConvertsNativeToolSearchReplay(t *testing.T) {
 	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
-		"model":"claude-opus-4-8",
-		"input":[{"type":"message","role":"user","content":"hello"}],
-		"reasoning":{"effort":"xhigh"}
+		"model":"claude-opus-4-7",
+		"input":[
+			{"type":"tool_search_call","call_id":"call_search","status":"completed","execution":"client","arguments":{"query":"spawn_agent","limit":10}},
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","tools":[
+				{"type":"namespace","name":"multi_agent_v1","tools":[
+					{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}}
+				]}
+			]},
+			{"type":"function_call","call_id":"call_spawn","name":"spawn_agent","arguments":"{\"message\":\"status\"}"}
+		],
+		"tools":[{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}]
 	}`))
 	require.NoError(t, err)
 
 	prepared, err := BuildCodexGatewayAnthropicRequest(
-		CodexGatewayModel{
-			Slug:                     "claude-opus-4-8",
-			Provider:                 "anthropic",
-			ProviderVariant:          "anthropic_direct",
-			UpstreamModel:            "claude-opus-4-8",
-			UpstreamBaseModel:        "claude-opus-4-8",
-			UpstreamThinkingModel:    "claude-opus-4-8",
-			DefaultReasoningLevel:    "high",
-			SupportedReasoningLevels: []string{"low", "high", "xhigh"},
-		},
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", UpstreamModel: "claude-opus-4-7"},
 		req,
 		nil,
 		CodexGatewayAnthropicRequestContext{},
@@ -246,9 +385,16 @@ func TestBuildCodexGatewayAnthropicRequest_DirectClaudeUsesBaseModelWithAdaptive
 
 	raw, err := json.Marshal(prepared.Body)
 	require.NoError(t, err)
-	require.Equal(t, "claude-opus-4-8", gjson.GetBytes(raw, "model").String())
-	require.Equal(t, "adaptive", gjson.GetBytes(raw, "thinking.type").String())
-	require.Equal(t, "max", gjson.GetBytes(raw, "output_config.effort").String())
+	require.Equal(t, "assistant", gjson.GetBytes(raw, "messages.0.role").String())
+	require.Equal(t, "tool_search", gjson.GetBytes(raw, "messages.0.content.0.name").String())
+	require.Equal(t, "call_search", gjson.GetBytes(raw, "messages.0.content.0.id").String())
+	require.JSONEq(t, `{"query":"spawn_agent","limit":10}`, gjson.GetBytes(raw, "messages.0.content.0.input").Raw)
+	require.Equal(t, "user", gjson.GetBytes(raw, "messages.1.role").String())
+	require.Equal(t, "tool_result", gjson.GetBytes(raw, "messages.1.content.0.type").String())
+	require.Equal(t, "call_search", gjson.GetBytes(raw, "messages.1.content.0.tool_use_id").String())
+	require.Contains(t, gjson.GetBytes(raw, "messages.1.content.0.content").String(), "multi_agent_v1")
+	require.Equal(t, "assistant", gjson.GetBytes(raw, "messages.2.role").String())
+	require.Equal(t, "multi_agent_v1__spawn_agent", gjson.GetBytes(raw, "messages.2.content.0.name").String())
 }
 
 func TestBuildCodexGatewayAnthropicRequest_ForwardsHostedWebSearchAsServerHandledFunctionTool(t *testing.T) {
@@ -602,6 +748,108 @@ func TestBuildCodexGatewayAnthropicRequest_ReplaysPreviousToolUseBeforeToolResul
 	require.Equal(t, "toolu_1", gjson.GetBytes(raw, "messages.1.content.0.tool_use_id").String())
 }
 
+func TestBuildCodexGatewayAnthropicRequest_ReplaysPreviousToolSearchBeforeToolSearchOutput(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{})
+	deferredTools := []any{map[string]any{
+		"type": "namespace",
+		"name": "multi_agent_v1",
+		"tools": []any{map[string]any{
+			"type":       "function",
+			"name":       "spawn_agent",
+			"parameters": map[string]any{"type": "object", "properties": map[string]any{"message": map[string]any{"type": "string"}}},
+		}},
+	}}
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_prev_search",
+			SessionKey:    "session-a",
+			IsolationKey:  "isolation-a",
+			Provider:      "anthropic",
+			UpstreamModel: "claude-opus-4-7",
+		},
+		ToolCalls: []CodexGatewayStoredToolCall{{
+			ID:        "call_search",
+			Type:      CodexGatewayToolKindFunction,
+			Alias:     "tool_search",
+			Name:      "tool_search",
+			Arguments: `{"query":"spawn_agent","limit":10}`,
+		}},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"tool_search": {Alias: "tool_search", Kind: CodexGatewayToolKindFunction, Name: "tool_search"},
+		},
+	}))
+	deferredToolsJSON := string(mustMarshalRawMessage(t, deferredTools))
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7",
+		"previous_response_id":"resp_prev_search",
+		"input":[
+			{"type":"tool_search_output","call_id":"call_search","status":"completed","execution":"client","tools":` + deferredToolsJSON + `}
+		],
+		"tools":[{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-7"},
+		req,
+		store,
+		CodexGatewayAnthropicRequestContext{SessionKey: "session-a", IsolationKey: "isolation-a"},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "tool_search", gjson.GetBytes(raw, "messages.0.content.0.name").String())
+	require.Equal(t, "tool_result", gjson.GetBytes(raw, "messages.1.content.0.type").String())
+	require.Contains(t, gjson.GetBytes(raw, "messages.1.content.0.content").String(), "multi_agent_v1")
+	require.Contains(t, prepared.ToolNameMap, "multi_agent_v1__spawn_agent")
+}
+
+func TestBuildCodexGatewayAnthropicRequest_ReplaysPreviousLocalShellBeforeLocalShellOutput(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_prev_shell",
+			SessionKey:    "session-a",
+			IsolationKey:  "isolation-a",
+			Provider:      "anthropic",
+			UpstreamModel: "claude-opus-4-7",
+		},
+		ToolCalls: []CodexGatewayStoredToolCall{{
+			ID:        "call_shell",
+			Type:      CodexGatewayToolKindFunction,
+			Alias:     "shell__exec",
+			Name:      "exec",
+			Arguments: `{"cmd":"pwd"}`,
+		}},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"shell__exec": {Alias: "shell__exec", Kind: CodexGatewayToolKindFunction, Namespace: "shell", NamespacePath: "shell", Name: "exec"},
+		},
+	}))
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7",
+		"previous_response_id":"resp_prev_shell",
+		"input":[{"type":"local_shell_call_output","call_id":"call_shell","output":"/tmp/repo"}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-7"},
+		req,
+		store,
+		CodexGatewayAnthropicRequestContext{SessionKey: "session-a", IsolationKey: "isolation-a"},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "shell__exec", gjson.GetBytes(raw, "messages.0.content.0.name").String())
+	require.Equal(t, "tool_result", gjson.GetBytes(raw, "messages.1.content.0.type").String())
+	require.Equal(t, "call_shell", gjson.GetBytes(raw, "messages.1.content.0.tool_use_id").String())
+}
+
 func TestBuildCodexGatewayAnthropicRequest_DropsStaleToolChoiceWhenReplayRequestHasNoTools(t *testing.T) {
 	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{})
 	require.NoError(t, store.Put(CodexGatewayResponseState{
@@ -694,4 +942,19 @@ func anthropicToolByName(raw []byte, name string) gjson.Result {
 		}
 	}
 	return gjson.Result{}
+}
+
+func anthropicRequestToolByName(t *testing.T, tools []any, name string) map[string]any {
+	t.Helper()
+	for _, toolAny := range tools {
+		tool, ok := toolAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if tool["name"] == name {
+			return tool
+		}
+	}
+	require.Failf(t, "anthropic request tool not found", "name=%s tools=%v", name, tools)
+	return nil
 }

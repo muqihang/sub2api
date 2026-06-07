@@ -172,6 +172,189 @@ func TestExecuteCodexGatewayAnthropicStream_MapsTextToolUseAndUsage(t *testing.T
 	require.Equal(t, float64(32), usage["total_tokens"])
 }
 
+func TestExecuteCodexGatewayAnthropicStream_EmitsNativeToolSearchCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_tool_search","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":10}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tooluse_search","name":"tool_search","input":{}}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"spawn_agent\",\"limit\":10}"}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7",
+		"input":[{"type":"message","role":"user","content":"find subagent"}],
+		"tools":[{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	var dst bytes.Buffer
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", UpstreamModel: "claude-opus-4-7"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Len(t, result.ProviderResult.ToolCalls, 1)
+	require.Equal(t, "tool_search", result.ProviderResult.ToolCalls[0].Alias)
+
+	stream := dst.String()
+	require.NotContains(t, stream, "event: response.function_call_arguments.delta")
+	require.NotContains(t, stream, "event: response.function_call_arguments.done")
+	require.NotContains(t, stream, `"type":"function_call"`)
+
+	events := parseCodexGatewayOrderedEvents(t, stream)
+	added := firstCodexGatewayOutputItemAddedPayloadByType(t, events, CodexGatewayOutputItemTypeToolSearchCall)
+	require.Equal(t, "tooluse_search", gjson.GetBytes(added, "item.call_id").String())
+	require.Equal(t, "client", gjson.GetBytes(added, "item.execution").String())
+	require.Equal(t, "spawn_agent", gjson.GetBytes(added, "item.arguments.query").String())
+	require.Equal(t, int64(10), gjson.GetBytes(added, "item.arguments.limit").Int())
+	done := firstCodexGatewayOutputItemDonePayloadByType(t, events, CodexGatewayOutputItemTypeToolSearchCall)
+	require.Equal(t, "completed", gjson.GetBytes(done, "item.status").String())
+	require.Equal(t, "client", gjson.GetBytes(done, "item.execution").String())
+}
+
+func TestExecuteCodexGatewayAnthropicStream_EmitsToolSearchCallWithEmptyInput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_tool_search_empty","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":10}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tooluse_search_empty","name":"tool_search","input":{}}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7",
+		"input":[{"type":"message","role":"user","content":"find tools"}],
+		"tools":[{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	var dst bytes.Buffer
+	_, err = ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", UpstreamModel: "claude-opus-4-7"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.NoError(t, err)
+
+	events := parseCodexGatewayOrderedEvents(t, dst.String())
+	added := firstCodexGatewayOutputItemAddedPayloadByType(t, events, CodexGatewayOutputItemTypeToolSearchCall)
+	require.Equal(t, "tooluse_search_empty", gjson.GetBytes(added, "item.call_id").String())
+	require.True(t, gjson.GetBytes(added, "item.arguments").IsObject())
+	require.Equal(t, "{}", gjson.GetBytes(added, "item.arguments").Raw)
+	done := firstCodexGatewayOutputItemDonePayloadByType(t, events, CodexGatewayOutputItemTypeToolSearchCall)
+	require.Equal(t, "completed", gjson.GetBytes(done, "item.status").String())
+	require.Equal(t, "{}", gjson.GetBytes(done, "item.arguments").Raw)
+}
+
+func TestExecuteCodexGatewayAnthropicStream_ToolSearchEmitsAfterSplitArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_tool_search_split","type":"message","role":"assistant","model":"claude-opus-4-7","content":[],"usage":{"input_tokens":10}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tooluse_search_split","name":"tool_search","input":{}}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"spa"}}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"wn_agent\",\"limit\":10}"}}`,
+			``,
+			`event: content_block_stop`,
+			`data: {"type":"content_block_stop","index":0}`,
+			``,
+			`event: message_delta`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-7",
+		"input":[{"type":"message","role":"user","content":"find subagent"}],
+		"tools":[{"type":"tool_search","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	var dst bytes.Buffer
+	_, err = ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-7", Provider: "anthropic", UpstreamModel: "claude-opus-4-7"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.NoError(t, err)
+
+	stream := dst.String()
+	require.NotContains(t, stream, `"arguments":{}`)
+	events := parseCodexGatewayOrderedEvents(t, stream)
+	added := firstCodexGatewayOutputItemAddedPayloadByType(t, events, CodexGatewayOutputItemTypeToolSearchCall)
+	require.Equal(t, "spawn_agent", gjson.GetBytes(added, "item.arguments.query").String())
+	require.Equal(t, int64(10), gjson.GetBytes(added, "item.arguments.limit").Int())
+}
+
 func TestExecuteCodexGatewayAnthropicStream_ExposesCustomPatchAsApplyPatch(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -853,6 +1036,25 @@ func TestExecuteCodexGatewayAnthropicStream_RetriesZeroEventToolReplayWithThinki
 	require.Contains(t, bodies[0], `"thinking":{"type":"adaptive"`)
 	require.Contains(t, bodies[1], `"thinking":{"type":"disabled"`)
 	require.Contains(t, dst.String(), "event: response.completed")
+}
+
+func TestCodexGatewayAnthropicInputHasToolReplayRecognizesNativeToolOutputs(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "function output", raw: `[{"type":"function_call_output","call_id":"call_1","output":"ok"}]`, want: true},
+		{name: "local shell output", raw: `[{"type":"local_shell_call_output","call_id":"call_1","output":"ok"}]`, want: true},
+		{name: "custom output", raw: `[{"type":"custom_tool_call_output","call_id":"call_1","output":"ok"}]`, want: true},
+		{name: "tool search output", raw: `[{"type":"tool_search_output","call_id":"call_1","tools":[]}]`, want: true},
+		{name: "message only", raw: `[{"type":"message","role":"user","content":"ok"}]`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, codexGatewayAnthropicInputHasToolReplay(json.RawMessage(tt.raw)))
+		})
+	}
 }
 
 func TestExecuteCodexGatewayAnthropicStream_Cloudflare524TriggersFailoverBeforeOutput(t *testing.T) {

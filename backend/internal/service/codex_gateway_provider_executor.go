@@ -102,6 +102,7 @@ func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGa
 
 func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
 	startedAt := time.Now()
+	req = codexGatewayProviderApplyEffectiveUpstreamModel(req)
 	groupID, adapter, err := e.providerGroupAndAdapter(ctx, req.Model)
 	if err != nil {
 		return nil, err
@@ -140,6 +141,7 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 
 func (e *CodexGatewayProviderExecutor) Stream(ctx context.Context, req CodexGatewayProviderRequest) error {
 	startedAt := time.Now()
+	req = codexGatewayProviderApplyEffectiveUpstreamModel(req)
 	groupID, adapter, err := e.providerGroupAndAdapter(ctx, req.Model)
 	if err != nil {
 		return err
@@ -280,6 +282,13 @@ func (e *CodexGatewayProviderExecutor) providerRuntime(ctx context.Context, prov
 		return loaded
 	}
 	return runtime
+}
+
+func codexGatewayProviderApplyEffectiveUpstreamModel(req CodexGatewayProviderRequest) CodexGatewayProviderRequest {
+	if normalizeCodexGatewayProvider(CodexGatewayProvider(req.Model.Provider)) == CodexGatewayProviderAnthropic {
+		req.Model.UpstreamModel = codexGatewayAnthropicResolveUpstreamModel(req.Parsed.Reasoning, req.Model)
+	}
+	return req
 }
 
 func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupID int64, req CodexGatewayProviderRequest, excluded map[int64]struct{}) (*Account, error) {

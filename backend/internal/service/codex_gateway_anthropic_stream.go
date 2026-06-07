@@ -279,6 +279,7 @@ type codexGatewayAnthropicStreamToolCall struct {
 	Namespace   string
 	Kind        string
 	Buffer      strings.Builder
+	InputSeen   bool
 	ItemEmitted bool
 	EmittedLen  int
 }
@@ -388,7 +389,10 @@ func codexGatewayAnthropicCanRetryZeroEventToolReplay(req CodexGatewayResponsesC
 }
 
 func codexGatewayAnthropicInputHasToolReplay(input json.RawMessage) bool {
-	return bytes.Contains(input, []byte(`"function_call_output"`)) || bytes.Contains(input, []byte(`"custom_tool_call_output"`))
+	return bytes.Contains(input, []byte(`"function_call_output"`)) ||
+		bytes.Contains(input, []byte(`"local_shell_call_output"`)) ||
+		bytes.Contains(input, []byte(`"custom_tool_call_output"`)) ||
+		bytes.Contains(input, []byte(`"tool_search_output"`))
 }
 
 func (s *codexGatewayAnthropicStreamState) ensureCreated(writer *CodexGatewayResponseEventWriter) error {
@@ -448,22 +452,38 @@ func (s *codexGatewayAnthropicStreamState) startToolUse(index int, block gjson.R
 		call.Name = codexGatewayClientVisibleToolName(entry)
 		call.Namespace = entry.Namespace
 		call.Kind = entry.Kind
+		if codexGatewayIsToolSearchEntry(entry) {
+			call.Name = codexGatewayToolSearchType
+		}
 	} else {
 		call.Name = call.Alias
 		call.Kind = CodexGatewayToolKindFunction
 	}
-	if input := strings.TrimSpace(block.Get("input").Raw); input != "" && input != "{}" {
-		call.Buffer.WriteString(input)
+	if inputRaw := block.Get("input").Raw; strings.TrimSpace(inputRaw) != "" {
+		call.InputSeen = true
+		if strings.TrimSpace(inputRaw) != "{}" {
+			call.Buffer.WriteString(inputRaw)
+		}
 	}
 	if codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
 		return nil
 	}
-	if codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+	entryForType := CodexGatewayToolNameMapEntry{
 		Alias:     call.Alias,
 		Kind:      call.Kind,
 		Namespace: call.Namespace,
 		Name:      call.Name,
-	}) == CodexGatewayOutputItemTypeLocalShellCall && strings.TrimSpace(codexGatewayExtractShellExecCmd(call.Buffer.String())) == "" {
+	}
+	itemType := codexGatewayAnthropicClientVisibleToolItemType(entryForType)
+	if itemType == CodexGatewayOutputItemTypeToolSearchCall {
+		if strings.TrimSpace(call.Buffer.String()) == "" {
+			return nil
+		}
+		if !codexGatewayAnthropicToolSearchArgumentsReady(call, entryForType) {
+			return nil
+		}
+	}
+	if itemType == CodexGatewayOutputItemTypeLocalShellCall && strings.TrimSpace(codexGatewayExtractShellExecCmd(call.Buffer.String())) == "" {
 		return nil
 	}
 	return s.emitToolUseItem(call, writer)
@@ -473,12 +493,18 @@ func (s *codexGatewayAnthropicStreamState) emitToolUseItem(call *codexGatewayAnt
 	if s == nil || call == nil || call.CallID == "" || call.Name == "" || call.ItemEmitted {
 		return nil
 	}
-	itemType := codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+	entryForType := CodexGatewayToolNameMapEntry{
 		Alias:     call.Alias,
 		Kind:      call.Kind,
 		Namespace: call.Namespace,
 		Name:      call.Name,
-	})
+	}
+	itemType := codexGatewayAnthropicClientVisibleToolItemType(entryForType)
+	if itemType == CodexGatewayOutputItemTypeToolSearchCall {
+		if !codexGatewayAnthropicToolSearchArgumentsReady(call, entryForType) {
+			return nil
+		}
+	}
 	if itemType == CodexGatewayOutputItemTypeLocalShellCall && strings.TrimSpace(codexGatewayExtractShellExecCmd(call.Buffer.String())) == "" {
 		return nil
 	}
@@ -496,8 +522,11 @@ func (s *codexGatewayAnthropicStreamState) emitToolUseItem(call *codexGatewayAnt
 		item["input"] = ""
 	case CodexGatewayOutputItemTypeLocalShellCall:
 		codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "in_progress", call.Buffer.String())
+	case CodexGatewayOutputItemTypeToolSearchCall:
+		arguments, _, _ := codexGatewayPrepareDeepSeekToolArguments(entryForType, call.Buffer.String())
+		item = codexGatewayAnthropicToolSearchCallItem(call.CallID, "in_progress", arguments)
 	default:
-		item["type"] = codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		item["type"] = codexGatewayAnthropicClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
 			Alias:     call.Alias,
 			Kind:      call.Kind,
 			Namespace: call.Namespace,
@@ -576,6 +605,7 @@ func (s *codexGatewayAnthropicStreamState) consumeToolInputJSONDelta(index int, 
 		s.toolOrder = append(s.toolOrder, index)
 	}
 	call.Buffer.WriteString(delta)
+	call.InputSeen = true
 	if !call.ItemEmitted {
 		if !codexGatewayIsServerHandledHostedTool(call.Kind, call.Name) {
 			if err := s.emitToolUseItem(call, writer); err != nil {
@@ -599,13 +629,17 @@ func (s *codexGatewayAnthropicStreamState) consumeToolInputJSONDelta(index int, 
 		}
 		return nil
 	}
-	itemType := codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+	entryForType := CodexGatewayToolNameMapEntry{
 		Alias:     call.Alias,
 		Kind:      call.Kind,
 		Namespace: call.Namespace,
 		Name:      call.Name,
-	})
-	if codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) || itemType == CodexGatewayOutputItemTypeLocalShellCall {
+	}
+	itemType := codexGatewayAnthropicClientVisibleToolItemType(entryForType)
+	if itemType == CodexGatewayOutputItemTypeToolSearchCall && !call.ItemEmitted && strings.TrimSpace(call.Buffer.String()) == "" {
+		return nil
+	}
+	if codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) || itemType == CodexGatewayOutputItemTypeLocalShellCall || itemType == CodexGatewayOutputItemTypeToolSearchCall {
 		return nil
 	}
 	if len(args) > call.EmittedLen {
@@ -618,10 +652,26 @@ func (s *codexGatewayAnthropicStreamState) consumeToolInputJSONDelta(index int, 
 
 func (s *codexGatewayAnthropicStreamState) stopContentBlock(index int, writer *CodexGatewayResponseEventWriter) error {
 	call := s.toolCalls[index]
+	if call != nil && !call.ItemEmitted {
+		itemType := codexGatewayAnthropicClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+			Alias:     call.Alias,
+			Kind:      call.Kind,
+			Namespace: call.Namespace,
+			Name:      call.Name,
+		})
+		if itemType == CodexGatewayOutputItemTypeToolSearchCall && codexGatewayAnthropicToolSearchArgumentsReady(call, CodexGatewayToolNameMapEntry{
+			Alias:     call.Alias,
+			Kind:      call.Kind,
+			Namespace: call.Namespace,
+			Name:      call.Name,
+		}) {
+			return s.emitToolUseItem(call, writer)
+		}
+	}
 	if call == nil || !call.ItemEmitted || !codexGatewayAnthropicShouldDelayFunctionArgumentDeltas(call) {
 		return nil
 	}
-	if codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+	if codexGatewayAnthropicClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
 		Alias:     call.Alias,
 		Kind:      call.Kind,
 		Namespace: call.Namespace,
@@ -718,7 +768,7 @@ func (s *codexGatewayAnthropicStreamState) writeDoneEvents(writer *CodexGatewayR
 		}
 		doneItem := s.toolCallDoneItem(call)
 		rawItem, _ := json.Marshal(doneItem)
-		itemType := codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		itemType := codexGatewayAnthropicClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
 			Alias:     call.Alias,
 			Kind:      call.Kind,
 			Namespace: call.Namespace,
@@ -728,7 +778,7 @@ func (s *codexGatewayAnthropicStreamState) writeDoneEvents(writer *CodexGatewayR
 			if err := writer.WriteCustomToolCallInputDone(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, firstCodexGatewayToolString(doneItem["input"])); err != nil {
 				return err
 			}
-		} else if itemType != CodexGatewayOutputItemTypeLocalShellCall {
+		} else if itemType != CodexGatewayOutputItemTypeLocalShellCall && itemType != CodexGatewayOutputItemTypeToolSearchCall {
 			if err := writer.WriteFunctionCallArgumentsDone(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, rawItem); err != nil {
 				return err
 			}
@@ -859,7 +909,7 @@ func (s *codexGatewayAnthropicStreamState) toolCallDoneItem(call *codexGatewayAn
 		"name":    call.Name,
 		"status":  "completed",
 	}
-	switch codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+	switch codexGatewayAnthropicClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
 		Alias:     call.Alias,
 		Kind:      call.Kind,
 		Namespace: call.Namespace,
@@ -870,8 +920,16 @@ func (s *codexGatewayAnthropicStreamState) toolCallDoneItem(call *codexGatewayAn
 		item["input"] = codexGatewayDeepSeekCustomToolInput(call.Buffer.String(), CodexGatewayToolNameMapEntry{Alias: call.Alias, Kind: call.Kind, Name: call.Name})
 	case CodexGatewayOutputItemTypeLocalShellCall:
 		codexGatewayApplyLocalShellCallItemFields(item, call.CallID, "completed", call.Buffer.String())
+	case CodexGatewayOutputItemTypeToolSearchCall:
+		arguments, _, _ := codexGatewayPrepareDeepSeekToolArguments(CodexGatewayToolNameMapEntry{
+			Alias:     call.Alias,
+			Kind:      call.Kind,
+			Namespace: call.Namespace,
+			Name:      call.Name,
+		}, call.Buffer.String())
+		item = codexGatewayAnthropicToolSearchCallItem(call.CallID, "completed", arguments)
 	default:
-		item["type"] = codexGatewayClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+		item["type"] = codexGatewayAnthropicClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
 			Alias:     call.Alias,
 			Kind:      call.Kind,
 			Namespace: call.Namespace,
@@ -883,6 +941,37 @@ func (s *codexGatewayAnthropicStreamState) toolCallDoneItem(call *codexGatewayAn
 		item["arguments"] = codexGatewayAnthropicFunctionToolArguments(call)
 	}
 	return item
+}
+
+func codexGatewayAnthropicClientVisibleToolItemType(entry CodexGatewayToolNameMapEntry) string {
+	if codexGatewayIsToolSearchEntry(entry) {
+		return CodexGatewayOutputItemTypeToolSearchCall
+	}
+	return codexGatewayClientVisibleToolItemType(entry)
+}
+
+func codexGatewayAnthropicToolSearchArgumentsReady(call *codexGatewayAnthropicStreamToolCall, entry CodexGatewayToolNameMapEntry) bool {
+	if call == nil {
+		return false
+	}
+	if strings.TrimSpace(call.Buffer.String()) == "" {
+		return call.InputSeen
+	}
+	if !codexGatewayDeepSeekStreamHasCompleteToolSearchArguments(call.Buffer.String()) {
+		return false
+	}
+	_, ok, _ := codexGatewayPrepareDeepSeekToolArguments(entry, call.Buffer.String())
+	return ok
+}
+
+func codexGatewayAnthropicToolSearchCallItem(callID, status, arguments string) map[string]any {
+	return map[string]any{
+		"type":      CodexGatewayOutputItemTypeToolSearchCall,
+		"call_id":   strings.TrimSpace(callID),
+		"status":    strings.TrimSpace(status),
+		"execution": "client",
+		"arguments": codexGatewayDeepSeekToolSearchArgumentsValue(arguments),
+	}
 }
 
 func (s *codexGatewayAnthropicStreamState) providerResult(upstreamRequestID string) CodexGatewayProviderResult {

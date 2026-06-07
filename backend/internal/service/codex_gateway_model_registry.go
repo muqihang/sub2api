@@ -712,6 +712,13 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		if upstreamModel == "" {
 			upstreamModel = strings.TrimSpace(slug)
 		}
+		upstreamThinkingModel := upstreamModel
+		if strings.TrimSpace(providerVariant) == "anthropic_direct" {
+			switch strings.TrimSpace(slug) {
+			case "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6":
+				upstreamThinkingModel = upstreamModel + "-thinking"
+			}
+		}
 		return CodexGatewayModel{
 			Slug:                          slug,
 			DisplayName:                   codexGatewayAnthropicDisplayName(baseDisplayName, providerVariant),
@@ -719,7 +726,7 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 			ProviderVariant:               providerVariant,
 			UpstreamModel:                 upstreamModel,
 			UpstreamBaseModel:             upstreamModel,
-			UpstreamThinkingModel:         upstreamModel,
+			UpstreamThinkingModel:         upstreamThinkingModel,
 			Visibility:                    "visible",
 			SupportedInAPI:                true,
 			Priority:                      priority,

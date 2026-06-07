@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -218,7 +219,7 @@ func TestCodexGatewayProviderExecutor_ExecuteOpenAIHostedWebSearch_FailsOverAcro
 		Status:      StatusActive,
 		Schedulable: true,
 		Credentials: map[string]any{
-			"api_key": "sk-real-upstream",
+			"api_key":  "sk-real-upstream",
 			"base_url": "https://api.fallback.example",
 		},
 	}
@@ -541,6 +542,95 @@ func TestCodexGatewayProviderExecutor_UsesAnthropicProviderGroup(t *testing.T) {
 		Request:      CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
 		Model:        CodexGatewayModel{Slug: "claude-sonnet-4-6", Provider: "anthropic", UpstreamModel: "claude-sonnet-4-6"},
 		Parsed:       CodexGatewayResponsesCreateRequest{Model: "claude-sonnet-4-6"},
+		SessionKey:   "sess_hash",
+		IsolationKey: "iso_hash",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestCodexGatewayProviderExecutor_AppliesAnthropicEffectiveModelBeforeProviderRuntime(t *testing.T) {
+	account := &Account{ID: 10, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.stateSource = &codexGatewayRegistryStateSourceStub{
+		state: &CodexGatewayRegistryState{
+			ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+				CodexGatewayProviderAnthropic: {Provider: CodexGatewayProviderAnthropic, GroupID: 404, Healthy: true},
+			},
+		},
+	}
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, _ string, requestedModel string, _ map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(404), *groupID)
+			require.Equal(t, "claude-opus-4-8-thinking", requestedModel)
+			return account, nil
+		},
+	}
+	executor.anthropic = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			require.Equal(t, int64(10), account.ID)
+			require.Equal(t, "claude-opus-4-8-thinking", req.Model.UpstreamModel)
+			return CodexGatewayDeepSeekAdapterResult{
+				ServiceResponse: CodexGatewayServiceResponse{StatusCode: http.StatusOK},
+				ProviderResult:  CodexGatewayProviderResult{UpstreamRequestID: "req_claude", UpstreamModel: req.Model.UpstreamModel},
+			}, nil
+		},
+	}
+	executor.usageRecorder = &codexGatewayUsageRecorderStub{}
+
+	resp, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model: CodexGatewayModel{
+			Slug:                  "claude-opus-4-8",
+			Provider:              "anthropic",
+			ProviderVariant:       "anthropic_direct",
+			UpstreamModel:         "claude-opus-4-8",
+			UpstreamBaseModel:     "claude-opus-4-8",
+			UpstreamThinkingModel: "claude-opus-4-8-thinking",
+		},
+		Parsed:       CodexGatewayResponsesCreateRequest{Model: "claude-opus-4-8", Reasoning: json.RawMessage(`{"effort":"xhigh"}`)},
+		SessionKey:   "sess_hash",
+		IsolationKey: "iso_hash",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestCodexGatewayProviderExecutor_SelectsAnthropicThinkingUpstreamForXHigh(t *testing.T) {
+	account := &Account{ID: 10, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, _ string, requestedModel string, _ map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(303), *groupID)
+			require.Equal(t, "claude-opus-4-8-thinking", requestedModel)
+			return account, nil
+		},
+	}
+	executor.anthropic = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			require.Equal(t, int64(10), account.ID)
+			require.Equal(t, "claude-opus-4-8-thinking", req.Model.UpstreamModel)
+			return CodexGatewayDeepSeekAdapterResult{
+				ServiceResponse: CodexGatewayServiceResponse{StatusCode: http.StatusOK},
+				ProviderResult:  CodexGatewayProviderResult{UpstreamRequestID: "req_claude", UpstreamModel: "claude-opus-4-8-thinking"},
+			}, nil
+		},
+	}
+	executor.usageRecorder = &codexGatewayUsageRecorderStub{}
+
+	resp, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model: CodexGatewayModel{
+			Slug:                  "claude-opus-4-8",
+			Provider:              "anthropic",
+			ProviderVariant:       "anthropic_direct",
+			UpstreamModel:         "claude-opus-4-8",
+			UpstreamBaseModel:     "claude-opus-4-8",
+			UpstreamThinkingModel: "claude-opus-4-8-thinking",
+		},
+		Parsed:       CodexGatewayResponsesCreateRequest{Model: "claude-opus-4-8", Reasoning: json.RawMessage(`{"effort":"xhigh"}`)},
 		SessionKey:   "sess_hash",
 		IsolationKey: "iso_hash",
 	})

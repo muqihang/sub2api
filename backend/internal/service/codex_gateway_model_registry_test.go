@@ -81,7 +81,7 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 	require.Equal(t, "high", claude.DefaultReasoningLevel)
 	require.Equal(t, []string{"low", "high", "xhigh"}, claude.SupportedReasoningLevels)
 	require.Equal(t, "claude-opus-4-8", claude.UpstreamBaseModel)
-	require.Equal(t, "claude-opus-4-8", claude.UpstreamThinkingModel)
+	require.Equal(t, "claude-opus-4-8-thinking", claude.UpstreamThinkingModel)
 
 	_, ok = reg.Resolve("claude-opus-4-6")
 	require.False(t, ok)
@@ -462,7 +462,12 @@ func TestCodexGatewayModelRegistry_AnthropicDirectModelsExposeNativeNamesAndThin
 		require.NotContains(t, model.DisplayName, "Max")
 		require.Equal(t, slug, model.UpstreamModel)
 		require.Equal(t, slug, model.UpstreamBaseModel)
-		require.Equal(t, slug, model.UpstreamThinkingModel)
+		wantThinkingModel := slug
+		switch slug {
+		case "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6":
+			wantThinkingModel = slug + "-thinking"
+		}
+		require.Equal(t, wantThinkingModel, model.UpstreamThinkingModel)
 		require.Equal(t, "high", model.DefaultReasoningLevel)
 		require.Equal(t, []string{"low", "high", "xhigh"}, model.SupportedReasoningLevels)
 		require.Equal(t, []string{"text", "image"}, model.InputModalities)

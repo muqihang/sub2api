@@ -37,8 +37,10 @@ func (c codexGatewayAnthropicVariantReadyChecker) IsReady(ctx context.Context, m
 	}
 	variant := strings.TrimSpace(model.ProviderVariant)
 	switch variant {
-	case "", "anthropic_direct", "kiro_claude", "kiro_claude_thinking":
+	case "", "kiro_claude", "kiro_claude_thinking":
 		return true
+	case "anthropic_direct":
+		return c.allAnthropicDirectUpstreamsReady(ctx, model, providerRuntime)
 	case "antigravity_claude", "antigravity_claude_thinking":
 		if c.probe == nil {
 			return false
@@ -55,6 +57,38 @@ func (c codexGatewayAnthropicVariantReadyChecker) IsReady(ctx context.Context, m
 	default:
 		return false
 	}
+}
+
+func (c codexGatewayAnthropicVariantReadyChecker) allAnthropicDirectUpstreamsReady(ctx context.Context, model CodexGatewayModel, providerRuntime CodexGatewayProviderRuntime) bool {
+	if c.probe == nil {
+		return false
+	}
+	for _, requestedModel := range codexGatewayAnthropicVariantUpstreamModels(model) {
+		account, err := c.probe.SelectAccountForModelWithExclusions(ctx, codexGatewayInt64Ptr(providerRuntime.GroupID), "", requestedModel, nil)
+		if err != nil || account == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func codexGatewayAnthropicVariantUpstreamModels(model CodexGatewayModel) []string {
+	base := strings.TrimSpace(model.UpstreamBaseModel)
+	if base == "" {
+		base = strings.TrimSpace(model.UpstreamModel)
+	}
+	if base == "" {
+		base = strings.TrimSpace(model.Slug)
+	}
+	models := []string{}
+	if base != "" {
+		models = append(models, base)
+	}
+	thinking := strings.TrimSpace(model.UpstreamThinkingModel)
+	if thinking != "" && thinking != base && codexGatewayAnthropicModelSupportsAdaptiveThinking(model) {
+		models = append(models, thinking)
+	}
+	return models
 }
 
 func codexGatewayInt64Ptr(v int64) *int64 {
