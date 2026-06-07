@@ -181,7 +181,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages {
-		if _, err := service.ValidateAnthropicOnlyCompatIngress(c.Request.Method, c.Request.URL.RequestURI(), body); err != nil {
+		decision, err := service.ValidateAnthropicOnlyCompatIngress(c.Request.Method, c.Request.URL.RequestURI(), body)
+		if err != nil {
 			if protocolErr, ok := err.(*service.AnthropicCompatProtocolError); ok {
 				h.errorResponse(c, protocolErr.Status, protocolErr.Code, protocolErr.Message)
 				return
@@ -189,6 +190,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
 			return
 		}
+		auditSummary := service.NewAnthropicCompatAuditSummary(decision)
+		c.Set("anthropic_compat_audit_summary", auditSummary)
+		c.Request = c.Request.WithContext(service.WithAnthropicCompatAuditSummary(c.Request.Context(), auditSummary))
 	}
 
 	setOpsRequestContext(c, "", false, body)

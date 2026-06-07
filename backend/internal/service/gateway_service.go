@@ -5470,7 +5470,11 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	}
 
 	if c != nil && c.Request != nil {
-		for key, values := range c.Request.Header {
+		clientHeaders := c.Request.Header
+		if useCCGateway {
+			clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
+		}
+		for key, values := range clientHeaders {
 			lowerKey := strings.ToLower(strings.TrimSpace(key))
 			if !shouldForwardClientHeaderToAnthropic(lowerKey) {
 				continue
@@ -6232,6 +6236,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
 	}
+	if useCCGateway {
+		clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
+	}
 
 	// OAuth账号：应用统一指纹和metadata重写（受设置开关控制）
 	var fingerprint *Fingerprint
@@ -6358,6 +6365,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+		if auditSummary, ok := AnthropicCompatAuditSummaryFromContext(ctx); ok {
+			setHeaderRaw(req.Header, AnthropicCompatInboundRouteHeader, auditSummary.InboundRoute)
+			setHeaderRaw(req.Header, AnthropicCompatCCGatewayRouteHeader, auditSummary.CCGatewayRoute)
+		}
 		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
 			body = mappedBody
 			if shouldStripCCGatewayDownstreamBillingMaterial(account) {
@@ -9797,7 +9808,11 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	}
 
 	if c != nil && c.Request != nil {
-		for key, values := range c.Request.Header {
+		clientHeaders := c.Request.Header
+		if useCCGateway {
+			clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
+		}
+		for key, values := range clientHeaders {
 			lowerKey := strings.ToLower(strings.TrimSpace(key))
 			if !shouldForwardClientHeaderToAnthropic(lowerKey) {
 				continue
@@ -9865,6 +9880,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	clientHeaders := http.Header{}
 	if c != nil && c.Request != nil {
 		clientHeaders = c.Request.Header
+	}
+	if useCCGateway {
+		clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
 	}
 
 	// OAuth 账号：应用统一指纹和重写 userID（受设置开关控制）

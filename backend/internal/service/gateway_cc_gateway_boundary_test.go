@@ -107,9 +107,17 @@ func TestCCGatewayBoundary_ForwardSkipsMimicryAndProxy(t *testing.T) {
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
 	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":"Be terse","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
+	decision := AnthropicCompatIngressDecision{InboundRoute: AnthropicCompatInboundMessages, CCGatewayRoute: AnthropicCompatCCGatewayMessages, ClientType: AnthropicCompatClientType}
+	ctx = WithAnthropicCompatAuditSummary(ctx, NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.NoError(t, err)
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, "/v1/messages", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatInboundRouteHeader))
+	require.Equal(t, "/v1/messages?beta=true", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatCCGatewayRouteHeader))
+	require.NotEqual(t, "client-beta", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"), "external anthropic-beta must not be trusted on CC Gateway path")
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-app"), "external x-app must not be forwarded to CC Gateway path")
 	require.False(t, bytes.Equal(body, upstream.lastBody), "formal-pool CC Gateway path must rewrite metadata.user_id session before forwarding")
 	parsedUID := ParseMetadataUserID(gjson.GetBytes(upstream.lastBody, "metadata.user_id").String())
 	require.NotNil(t, parsedUID)

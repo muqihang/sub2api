@@ -283,7 +283,11 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	req, err := svc.buildCountTokensRequest(context.Background(), ccGatewayTestContext("/v1/messages/count_tokens"), account, []byte(`{"model":"claude-3-7-sonnet-20250219"}`), "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
+	c := ccGatewayTestContext("/v1/messages/count_tokens")
+	c.Request.Header.Set("x-app", "fake-cli")
+	c.Request.Header.Set("x-claude-code-session-id", "client-session")
+	c.Request.Header.Set("x-sub2api-persona-trusted", "client-trust")
+	req, err := svc.buildCountTokensRequest(context.Background(), c, account, []byte(`{"model":"claude-3-7-sonnet-20250219"}`), "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages/count_tokens?beta=true", req.URL.String())
@@ -292,7 +296,10 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 	require.Equal(t, "43", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Contains(t, getHeaderRaw(req.Header, "anthropic-beta"), "token-counting")
+	require.NotEqual(t, "client-beta", getHeaderRaw(req.Header, "anthropic-beta"))
 	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-app"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-sub2api-persona-trusted"))
 	require.Equal(t, "", getHeaderRaw(req.Header, "x-stainless-os"))
 }
 
@@ -306,8 +313,13 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughBuildsTransparentRequ
 	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens"
 	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 
+	c := ccGatewayTestContext("/v1/messages")
+	c.Request.Header.Set("x-app", "fake-cli")
+	c.Request.Header.Set("x-claude-code-session-id", "client-session")
+	c.Request.Header.Set("x-stainless-runtime", "fake-runtime")
+	c.Request.Header.Set("x-sub2api-persona-trusted", "client-trust")
 	req, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
-		buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), ccGatewayTestContext("/v1/messages"), account, []byte(`{"model":"x"}`), "selected-api-key")
+		buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"x"}`), "selected-api-key")
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", req.URL.String())
@@ -319,6 +331,11 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughBuildsTransparentRequ
 	require.Equal(t, "apikey", getHeaderRaw(req.Header, "x-cc-token-type"))
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Equal(t, "bucket-a", getHeaderRaw(req.Header, "x-cc-egress-bucket"))
+	require.Empty(t, getHeaderRaw(req.Header, "anthropic-beta"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-app"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-claude-code-session-id"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-stainless-runtime"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-sub2api-persona-trusted"))
 }
 
 func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughRejectsLegacyEgressFallback(t *testing.T) {
@@ -346,8 +363,12 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensBuildsTran
 	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
 
+	c := ccGatewayTestContext("/v1/messages/count_tokens")
+	c.Request.Header.Set("x-app", "fake-cli")
+	c.Request.Header.Set("x-claude-code-session-id", "client-session")
+	c.Request.Header.Set("x-sub2api-persona-trusted", "client-trust")
 	req, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
-		buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), ccGatewayTestContext("/v1/messages/count_tokens"), account, []byte(`{"model":"x"}`), "selected-api-key")
+		buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"x"}`), "selected-api-key")
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages/count_tokens?beta=true", req.URL.String())
@@ -356,6 +377,10 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensBuildsTran
 	require.Equal(t, "apikey", getHeaderRaw(req.Header, "x-cc-token-type"))
 	require.Equal(t, "201", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Empty(t, getHeaderRaw(req.Header, "anthropic-beta"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-app"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-claude-code-session-id"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-sub2api-persona-trusted"))
 }
 
 func TestGatewayService_SelectCCGatewayAnthropicRouteFailsClosedOnMissingGateState(t *testing.T) {

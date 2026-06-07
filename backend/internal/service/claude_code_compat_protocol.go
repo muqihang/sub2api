@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,10 +11,12 @@ import (
 )
 
 const (
-	AnthropicCompatClientType         = "claude_code_compat"
-	AnthropicCompatInboundMessages    = "/v1/messages"
-	AnthropicCompatCCGatewayMessages  = "/v1/messages?beta=true"
-	anthropicCompatUnsupportedMessage = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
+	AnthropicCompatClientType           = "claude_code_compat"
+	AnthropicCompatInboundMessages      = "/v1/messages"
+	AnthropicCompatCCGatewayMessages    = "/v1/messages?beta=true"
+	AnthropicCompatInboundRouteHeader   = "x-sub2api-compat-inbound-route"
+	AnthropicCompatCCGatewayRouteHeader = "x-sub2api-compat-cc-gateway-route"
+	anthropicCompatUnsupportedMessage   = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
 )
 
 var anthropicCompatOpenAIOnlyTopLevelFields = []string{
@@ -34,6 +37,33 @@ var anthropicCompatOpenAIOnlyTopLevelFields = []string{
 	"seed",
 	"store",
 	"top_logprobs",
+}
+
+type AnthropicCompatAuditSummary struct {
+	InboundRoute   string `json:"inbound_route"`
+	CCGatewayRoute string `json:"cc_gateway_route"`
+	ClientType     string `json:"client_type"`
+	PersonaSource  string `json:"persona_source"`
+}
+
+type anthropicCompatAuditSummaryContextKey struct{}
+
+func NewAnthropicCompatAuditSummary(decision AnthropicCompatIngressDecision) AnthropicCompatAuditSummary {
+	return AnthropicCompatAuditSummary{
+		InboundRoute:   decision.InboundRoute,
+		CCGatewayRoute: decision.CCGatewayRoute,
+		ClientType:     decision.ClientType,
+		PersonaSource:  "server_selected",
+	}
+}
+
+func WithAnthropicCompatAuditSummary(ctx context.Context, summary AnthropicCompatAuditSummary) context.Context {
+	return context.WithValue(ctx, anthropicCompatAuditSummaryContextKey{}, summary)
+}
+
+func AnthropicCompatAuditSummaryFromContext(ctx context.Context) (AnthropicCompatAuditSummary, bool) {
+	summary, ok := ctx.Value(anthropicCompatAuditSummaryContextKey{}).(AnthropicCompatAuditSummary)
+	return summary, ok
 }
 
 type AnthropicCompatIngressDecision struct {
@@ -82,6 +112,38 @@ func anthropicCompatError(status int, code string) *AnthropicCompatProtocolError
 
 func AnthropicCompatUnsupportedProtocolMessage() string {
 	return anthropicCompatUnsupportedMessage
+}
+
+func SanitizeAnthropicCompatInboundHeaders(headers http.Header) http.Header {
+	out := http.Header{}
+	for key, values := range headers {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if shouldStripAnthropicCompatInboundHeader(lower) {
+			continue
+		}
+		for _, value := range values {
+			out.Add(key, value)
+		}
+	}
+	return out
+}
+
+func shouldStripAnthropicCompatInboundHeader(lower string) bool {
+	if lower == "" {
+		return true
+	}
+	if lower == "authorization" || lower == "x-api-key" || lower == "cookie" || lower == "set-cookie" || lower == "proxy-authorization" || lower == "proxy-connection" {
+		return true
+	}
+	if lower == "anthropic-beta" || lower == "x-app" || lower == "user-agent" || lower == "anthropic-dangerous-direct-browser-access" || lower == "x-anthropic-billing-header" {
+		return true
+	}
+	return strings.HasPrefix(lower, "x-claude-code-") ||
+		strings.HasPrefix(lower, "x-stainless-") ||
+		strings.HasPrefix(lower, "x-sub2api-") ||
+		strings.HasPrefix(lower, "x-cc-") ||
+		strings.Contains(lower, "cch") ||
+		strings.Contains(lower, "billing")
 }
 
 func splitCompatRoute(rawRoute string) (string, string) {
