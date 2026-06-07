@@ -6366,8 +6366,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if auditSummary, ok := AnthropicCompatAuditSummaryFromContext(ctx); ok {
-			setHeaderRaw(req.Header, AnthropicCompatInboundRouteHeader, auditSummary.InboundRoute)
-			setHeaderRaw(req.Header, AnthropicCompatCCGatewayRouteHeader, auditSummary.CCGatewayRoute)
+			applyAnthropicCompatAuditHeaders(req.Header, auditSummary)
 		}
 		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
 			body = mappedBody

@@ -11,12 +11,22 @@ import (
 )
 
 const (
-	AnthropicCompatClientType           = "claude_code_compat"
-	AnthropicCompatInboundMessages      = "/v1/messages"
-	AnthropicCompatCCGatewayMessages    = "/v1/messages?beta=true"
-	AnthropicCompatInboundRouteHeader   = "x-sub2api-compat-inbound-route"
-	AnthropicCompatCCGatewayRouteHeader = "x-sub2api-compat-cc-gateway-route"
-	anthropicCompatUnsupportedMessage   = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
+	AnthropicCompatClientType                 = "claude_code_compat"
+	AnthropicCompatInboundMessages            = "/v1/messages"
+	AnthropicCompatCCGatewayMessages          = "/v1/messages?beta=true"
+	AnthropicCompatInboundRouteHeader         = "x-sub2api-compat-inbound-route"
+	AnthropicCompatCCGatewayRouteHeader       = "x-sub2api-compat-cc-gateway-route"
+	AnthropicCompatClientTypeHeader           = "x-sub2api-compat-client-type"
+	AnthropicCompatServerFilledShapeHeader    = "x-sub2api-compat-server-filled-shape"
+	AnthropicCompatServerFilledFieldsHeader   = "x-sub2api-compat-server-filled-fields"
+	AnthropicCompatPersonaSourceHeader        = "x-sub2api-compat-persona-source"
+	AnthropicCompatFidelityLevelHeader        = "x-sub2api-compat-fidelity-level"
+	AnthropicCompatToolSearchModeHeader       = "x-sub2api-compat-tool-search-mode"
+	AnthropicCompatCapabilityBackedHeader     = "x-sub2api-compat-capability-backed"
+	AnthropicCompatToolReferencePresentHeader = "x-sub2api-compat-tool-reference-present"
+	AnthropicCompatDeferLoadingPresentHeader  = "x-sub2api-compat-defer-loading-present"
+	AnthropicCompatEagerInputStreamingHeader  = "x-sub2api-compat-eager-input-streaming-present"
+	anthropicCompatUnsupportedMessage         = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
 )
 
 var anthropicCompatOpenAIOnlyTopLevelFields = []string{
@@ -40,20 +50,62 @@ var anthropicCompatOpenAIOnlyTopLevelFields = []string{
 }
 
 type AnthropicCompatAuditSummary struct {
-	InboundRoute   string `json:"inbound_route"`
-	CCGatewayRoute string `json:"cc_gateway_route"`
-	ClientType     string `json:"client_type"`
-	PersonaSource  string `json:"persona_source"`
+	InboundRoute               string   `json:"inbound_route"`
+	CCGatewayRoute             string   `json:"cc_gateway_route"`
+	ClientType                 string   `json:"client_type"`
+	PersonaSource              string   `json:"persona_source"`
+	ServerFilledShape          bool     `json:"server_filled_shape"`
+	ServerFilledFields         []string `json:"server_filled_fields"`
+	CompatFidelityLevel        string   `json:"compat_fidelity_level"`
+	ToolSearchMode             string   `json:"tool_search_mode"`
+	ToolReferencePresent       bool     `json:"tool_reference_present"`
+	DeferLoadingPresent        bool     `json:"defer_loading_present"`
+	EagerInputStreamingPresent bool     `json:"eager_input_streaming_present"`
+	CapabilityBacked           bool     `json:"capability_backed"`
 }
 
 type anthropicCompatAuditSummaryContextKey struct{}
 
 func NewAnthropicCompatAuditSummary(decision AnthropicCompatIngressDecision) AnthropicCompatAuditSummary {
+	return NewAnthropicCompatAuditSummaryWithShape(decision, AnthropicCompatShapeAudit{
+		ClientType:          decision.ClientType,
+		PersonaSource:       "server_selected",
+		CompatFidelityLevel: AnthropicCompatFidelityL2,
+		ToolSearchMode:      "not_present",
+		CapabilityBacked:    false,
+	})
+}
+
+func NewAnthropicCompatAuditSummaryWithShape(decision AnthropicCompatIngressDecision, shape AnthropicCompatShapeAudit) AnthropicCompatAuditSummary {
+	clientType := shape.ClientType
+	if clientType == "" {
+		clientType = decision.ClientType
+	}
+	personaSource := shape.PersonaSource
+	if personaSource == "" {
+		personaSource = "server_selected"
+	}
+	compatFidelityLevel := shape.CompatFidelityLevel
+	if compatFidelityLevel == "" {
+		compatFidelityLevel = AnthropicCompatFidelityL2
+	}
+	toolSearchMode := shape.ToolSearchMode
+	if toolSearchMode == "" {
+		toolSearchMode = "not_present"
+	}
 	return AnthropicCompatAuditSummary{
-		InboundRoute:   decision.InboundRoute,
-		CCGatewayRoute: decision.CCGatewayRoute,
-		ClientType:     decision.ClientType,
-		PersonaSource:  "server_selected",
+		InboundRoute:               decision.InboundRoute,
+		CCGatewayRoute:             decision.CCGatewayRoute,
+		ClientType:                 clientType,
+		PersonaSource:              personaSource,
+		ServerFilledShape:          shape.ServerFilledShape,
+		ServerFilledFields:         append([]string(nil), shape.ServerFilledFields...),
+		CompatFidelityLevel:        compatFidelityLevel,
+		ToolSearchMode:             toolSearchMode,
+		ToolReferencePresent:       shape.ToolReferencePresent,
+		DeferLoadingPresent:        shape.DeferLoadingPresent,
+		EagerInputStreamingPresent: shape.EagerInputStreamingPresent,
+		CapabilityBacked:           shape.CapabilityBacked,
 	}
 }
 

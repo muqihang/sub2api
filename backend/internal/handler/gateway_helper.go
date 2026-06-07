@@ -398,3 +398,15 @@ func nextBackoff(current time.Duration) time.Duration {
 	}
 	return jittered
 }
+
+func forceAnthropicCompatNonNative(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if _, ok := service.AnthropicCompatAuditSummaryFromContext(c.Request.Context()); !ok {
+		return
+	}
+	ctx := service.SetClaudeCodeClient(c.Request.Context(), false)
+	ctx = service.SetClaudeCodeVersion(ctx, "")
+	c.Request = c.Request.WithContext(ctx)
+}

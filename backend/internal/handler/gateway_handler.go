@@ -190,7 +190,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
 			return
 		}
-		auditSummary := service.NewAnthropicCompatAuditSummary(decision)
+		var shapeAudit service.AnthropicCompatShapeAudit
+		body, shapeAudit, err = service.NormalizeAnthropicCompatMessagesBody(body)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
+			return
+		}
+		auditSummary := service.NewAnthropicCompatAuditSummaryWithShape(decision, shapeAudit)
 		c.Set("anthropic_compat_audit_summary", auditSummary)
 		c.Request = c.Request.WithContext(service.WithAnthropicCompatAuditSummary(c.Request.Context(), auditSummary))
 	}
@@ -224,6 +230,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// 检查是否为 Claude Code 客户端，设置到 context 中（复用已解析请求，避免二次反序列化）。
 	SetClaudeCodeClientContext(c, body, parsedReq)
+	forceAnthropicCompatNonNative(c)
 	isClaudeCodeClient := service.IsClaudeCodeClient(c.Request.Context())
 
 	// 版本检查：仅对 Claude Code 客户端，拒绝低于最低版本的请求

@@ -108,7 +108,7 @@ func TestCCGatewayBoundary_ForwardSkipsMimicryAndProxy(t *testing.T) {
 	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":"Be terse","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	decision := AnthropicCompatIngressDecision{InboundRoute: AnthropicCompatInboundMessages, CCGatewayRoute: AnthropicCompatCCGatewayMessages, ClientType: AnthropicCompatClientType}
-	ctx = WithAnthropicCompatAuditSummary(ctx, NewAnthropicCompatAuditSummary(decision))
+	ctx = WithAnthropicCompatAuditSummary(ctx, NewAnthropicCompatAuditSummaryWithShape(decision, AnthropicCompatShapeAudit{ClientType: AnthropicCompatClientType, ServerFilledShape: true, ServerFilledFields: []string{"system"}, PersonaSource: "server_selected", CompatFidelityLevel: AnthropicCompatFidelityL2, ToolSearchMode: "truthful_pass_through", CapabilityBacked: false}))
 	c.Request = c.Request.WithContext(ctx)
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
@@ -116,6 +116,12 @@ func TestCCGatewayBoundary_ForwardSkipsMimicryAndProxy(t *testing.T) {
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
 	require.Equal(t, "/v1/messages", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatInboundRouteHeader))
 	require.Equal(t, "/v1/messages?beta=true", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatCCGatewayRouteHeader))
+	require.Equal(t, "claude_code_compat", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatClientTypeHeader))
+	require.Equal(t, "server_selected", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatPersonaSourceHeader))
+	require.Equal(t, "L2", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatFidelityLevelHeader))
+	require.Equal(t, "true", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatServerFilledShapeHeader))
+	require.Equal(t, "truthful_pass_through", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatToolSearchModeHeader))
+	require.Equal(t, "false", getHeaderRaw(upstream.lastReq.Header, AnthropicCompatCapabilityBackedHeader))
 	require.NotEqual(t, "client-beta", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"), "external anthropic-beta must not be trusted on CC Gateway path")
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-app"), "external x-app must not be forwarded to CC Gateway path")
 	require.False(t, bytes.Equal(body, upstream.lastBody), "formal-pool CC Gateway path must rewrite metadata.user_id session before forwarding")

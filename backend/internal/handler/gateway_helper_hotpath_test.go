@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -367,4 +368,25 @@ type helperConcurrencyCacheStubWithError struct {
 
 func (s *helperConcurrencyCacheStubWithError) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
 	return false, s.err
+}
+
+func TestForceAnthropicCompatNonNativeOverridesSpoofedClaudeCodeUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-sonnet-4-6","metadata":{"user_id":"{\"device_id\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "claude-cli/2.1.150 (external, sdk-cli)")
+
+	SetClaudeCodeClientContext(c, body, nil)
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+	require.Equal(t, "2.1.150", service.GetClaudeCodeVersion(c.Request.Context()))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+	require.Empty(t, service.GetClaudeCodeVersion(c.Request.Context()))
 }
