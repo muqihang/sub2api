@@ -2833,6 +2833,172 @@ func TestCodexGatewayDeepSeekStateReplayMessages_DoesNotAccumulateFullHistoryFor
 	require.Contains(t, string(replay[1]), `"mcp__computer_use__click"`)
 }
 
+func TestCodexGatewayAgnesRequest_ComputerUseAddsAgnesContinuationStrategy(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Computer Use to ask Doubao, then write Notes."}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"list_apps","parameters":{"type":"object","properties":{}}},
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}},
+				{"type":"function","name":"set_value","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"value":{"type":"string"}},"required":["app","element_index","value"]}},
+				{"type":"function","name":"press_key","parameters":{"type":"object","properties":{"app":{"type":"string"},"key":{"type":"string"}},"required":["app","key"]}},
+				{"type":"function","name":"scroll","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"direction":{"type":"string"}},"required":["app","element_index","direction"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu_strategy",
+		IsolationKey: "iso_agnes_cu_strategy",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.GreaterOrEqual(t, len(messages), 2)
+	instruction := messages[0].(map[string]any)["content"].(string)
+	require.Contains(t, instruction, "AGNES Computer Use continuation")
+	require.Contains(t, instruction, "Do not stop after saying")
+	require.Contains(t, instruction, "Every new turn or Continue")
+	require.Contains(t, instruction, "get_app_state")
+	require.Contains(t, instruction, "Electron")
+	require.Contains(t, instruction, "set_value")
+	require.Contains(t, instruction, "Return")
+	require.Equal(t, "user", messages[len(messages)-1].(map[string]any)["role"])
+	require.Equal(t, map[string]any{"enable_thinking": false}, prepared.Body["chat_template_kwargs"])
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseVisibleTextKeepsEnoughDoubaoAnswer(t *testing.T) {
+	appState := "Computer Use state (CUA App Version: 799)\n<app_state>\n" +
+		"App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 750)\n" +
+		"Window: \"豆包\", App: 豆包.\n" +
+		strings.Repeat("\t30 link Description: 历史对话, Value: chrome://doubao-chat/chat/sidebar\n", 30) +
+		strings.Join([]string{
+			"\t93 标题 一、特色小吃（市井烟火，必尝经典）, Value: 3",
+			"\t107 text 合记烩面（人民路店） ：国营老牌，汤鲜面厚，本地人从小吃到大，人均 22-30 元 携程 。",
+			"\t124 text 推荐店 ： 方中山胡辣汤（多分店） ：郑州顶流，麻香够味，外地人选微辣，人均 10 元左右 携程 。",
+			"\t134 text 推荐店 ： 京都老蔡记（德化街店） ：“老三记” 之首，人均 35 元，非遗味道。",
+			"\t144 text 推荐店 ： 葛记焖饼（伏牛路总店） ：百年老店，人均 30 元，配绿豆沙解腻。",
+			"\t161 标题 二、经典豫菜餐厅（正统豫味，宴请首选）, Value: 3",
+			"\t178 text 特色 ：1912 年始创，中华老字号，宫廷豫菜代表，清汤酸辣乌鱼蛋汤为豫菜五大名羹之一。",
+			"\t216 text 亮点 ：平价豫菜天花板，烙馍、小米粥免费无限续，69 元整只烤鸭性价比炸裂。",
+			"\t228 text 亮点 ：郑州本土火锅，火遍全国，毛肚脆嫩、菌汤锅底封神，绣球菌、乌鸡卷必点。",
+			"\t240 text 亮点 ：郑州美食名片，改良版叫花鸡，卤制枣红，筋道清香。",
+			"\t249 text 亮点 ：十余年老牌，灌汤包皮薄馅足，汤汁鲜甜，咬开爆汁，配小米粥，人均 30 元。",
+			"\t258 text 早餐 ：方中山胡辣汤 + 油馍头 → 老蔡记蒸饺 + 鸡丝馄饨",
+			"\t501 文本输入区 (settable, string) 发消息...",
+			"\t502 按钮 发送",
+		}, "\n") + "\n</app_state>"
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{"type": "function_call", "call_id": "call_state", "name": "mcp__computer_use__get_app_state", "arguments": `{"app":"com.bot.pc.doubao"}`},
+			map[string]any{"type": "function_call_output", "call_id": "call_state", "output": []any{
+				map[string]any{"type": "input_text", "text": appState},
+				map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64," + strings.Repeat("A", 90000), "detail": "high"},
+			}},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_doubao_visible_text",
+		IsolationKey: "iso_doubao_visible_text",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	if toolContent == "" {
+		toolContent = gjson.GetBytes(raw, "messages.2.content").String()
+	}
+	visibleText := gjson.Get(toolContent, "0.text.visible_text").Raw
+	if visibleText == "" {
+		visibleText = gjson.Get(toolContent, "1.text.visible_text").Raw
+	}
+	require.Contains(t, visibleText, "合记烩面")
+	require.Contains(t, visibleText, "方中山胡辣汤")
+	require.Contains(t, visibleText, "京都老蔡记")
+	require.Contains(t, visibleText, "葛记焖饼")
+	require.Contains(t, visibleText, "灌汤包")
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+	require.LessOrEqual(t, len(toolContent), codexGatewayDeepSeekToolOutputMaxChars+256)
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseHighFidelityVisibleTextBudget(t *testing.T) {
+	facts := []string{
+		"合记烩面：国营老牌，汤鲜面厚，人均 22-30 元。",
+		"萧记三鲜烩面：鸡汤骨汤羊肉汤，加海参鱿鱼。",
+		"方中山胡辣汤：麻香够味，外地人建议微辣。",
+		"京都老蔡记：老三记之首，蒸饺和馄饨适合早餐。",
+		"葛记焖饼：百年老店，焖饼配绿豆沙解腻。",
+		"阿五黄河大鲤鱼：红烧黄河大鲤鱼必点。",
+		"二合馆：1912 年始创，清汤酸辣乌鱼蛋汤是豫菜名羹。",
+		"谷雨春：黄河鲤鱼现做，配烩面更圆满。",
+		"郑记粗粮人家：烙馍和小米粥免费无限续。",
+		"巴奴毛肚火锅：毛肚脆嫩，菌汤锅底适合朋友小聚。",
+		"马豫兴桶子鸡：皮脆肉嫩，适合打包伴手礼。",
+		"梅园开封灌汤包：皮薄馅足，咬开爆汁。",
+	}
+	var app strings.Builder
+	app.WriteString("Computer Use state (CUA App Version: 799)\n<app_state>\n")
+	app.WriteString("App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 750)\n")
+	app.WriteString(strings.Repeat("\t30 link Description: 历史对话, Value: chrome://doubao-chat/chat/sidebar\n", 60))
+	for i, fact := range facts {
+		fmt.Fprintf(&app, "\t%d text %s\n", 100+i, fact)
+	}
+	app.WriteString("\t501 文本输入区 (settable, string) 发消息...\n\t502 按钮 发送\n</app_state>")
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{"type": "function_call", "call_id": "call_state", "name": "mcp__computer_use__get_app_state", "arguments": `{"app":"com.bot.pc.doubao"}`},
+			map[string]any{"type": "function_call_output", "call_id": "call_state", "output": []any{
+				map[string]any{"type": "input_text", "text": "Wall time: 0.8 seconds\nOutput:"},
+				map[string]any{"type": "input_text", "text": app.String()},
+				map[string]any{"type": "input_image", "image_url": "data:image/png;base64," + strings.Repeat("A", 180000), "detail": "high"},
+			}},
+		}),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+			]}
+		]`),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_high_fidelity_visible_text",
+		IsolationKey: "iso_high_fidelity_visible_text",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	visibleText := gjson.Get(toolContent, "1.text.visible_text").Raw
+	if visibleText == "" {
+		visibleText = gjson.Get(toolContent, "0.text.visible_text").Raw
+	}
+	for _, want := range facts {
+		require.Contains(t, visibleText, strings.Split(want, "：")[0], "visible_text should preserve broad answer coverage")
+	}
+	require.Contains(t, gjson.Get(toolContent, "1.text.operable_lines").Raw+gjson.Get(toolContent, "0.text.operable_lines").Raw, "文本输入区")
+	require.NotContains(t, toolContent, strings.Repeat("A", 128))
+	require.LessOrEqual(t, len(toolContent), codexGatewayDeepSeekToolOutputMaxChars+512)
+}
+
 func TestCodexGatewayDeepSeekRequest_SummarizesLargeComputerUseToolOutput(t *testing.T) {
 	largeScreenshot := "data:image/png;base64," + strings.Repeat("A", 20000)
 	req := CodexGatewayResponsesCreateRequest{
