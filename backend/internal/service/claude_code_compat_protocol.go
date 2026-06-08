@@ -246,7 +246,7 @@ func validateAnthropicCompatMessagesBody(body []byte) error {
 			return false
 		}
 		switch role.String() {
-		case "user", "assistant":
+		case "system", "user", "assistant":
 			return true
 		default:
 			badMessageRole = true

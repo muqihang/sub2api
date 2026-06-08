@@ -122,6 +122,11 @@ func NormalizeAnthropicCompatMessagesBody(body []byte) ([]byte, AnthropicCompatS
 		markFilled("metadata.user_id")
 	}
 
+	if messages, systemBlocks, changed := extractSystemRoleMessages(root["messages"]); changed {
+		root["messages"] = messages
+		root["system"] = mergeCompatSystemSources(root["system"], systemBlocks)
+	}
+
 	if _, ok := root["system"]; !ok || root["system"] == nil {
 		root["system"] = compatSystemBlocks(nil)
 		markFilled("system")
@@ -135,6 +140,45 @@ func NormalizeAnthropicCompatMessagesBody(body []byte) ([]byte, AnthropicCompatS
 		return body, AnthropicCompatShapeAudit{}, err
 	}
 	return out, audit, nil
+}
+
+func extractSystemRoleMessages(messages any) (any, []map[string]any, bool) {
+	items, ok := messages.([]any)
+	if !ok {
+		return messages, nil, false
+	}
+	out := make([]any, 0, len(items))
+	systemBlocks := []map[string]any{}
+	changed := false
+	for _, item := range items {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "system" {
+			out = append(out, item)
+			continue
+		}
+		changed = true
+		systemBlocks = append(systemBlocks, normalizeSystemToTextBlocks(msg["content"])...)
+	}
+	return out, systemBlocks, changed
+}
+
+func mergeCompatSystemSources(existing any, extracted []map[string]any) any {
+	if len(extracted) == 0 {
+		return existing
+	}
+	out := make([]any, 0, len(extracted)+1)
+	for _, block := range normalizeSystemToTextBlocks(existing) {
+		out = append(out, block)
+	}
+	for _, block := range extracted {
+		out = append(out, block)
+	}
+	return out
 }
 
 func compatMetadataUserID() string {
