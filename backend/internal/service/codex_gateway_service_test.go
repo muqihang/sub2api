@@ -81,6 +81,48 @@ func TestCodexGatewayService_ResponsesRecordsCaptureTrace(t *testing.T) {
 	require.Contains(t, string(headers), "[REDACTED]")
 }
 
+func TestCodexGatewayService_ResponsesScopesProviderSessionKeyByEntity(t *testing.T) {
+	registry := NewCodexGatewayModelRegistry(config.GatewayCodexConfig{
+		EnabledModels: []string{"agnes-2.0-flash"},
+	}, WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+		state: &CodexGatewayRegistryState{
+			ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+				CodexGatewayProviderAgnes: {Provider: CodexGatewayProviderAgnes, GroupID: 44, Healthy: true},
+			},
+			Models: map[string]CodexGatewayModelMutation{"agnes-2.0-flash": {Enabled: true}},
+		},
+	}))
+
+	var captured CodexGatewayProviderRequest
+	executor := &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_agnes","model":"agnes-2.0-flash","output":[]}`),
+			}, nil
+		},
+	}
+	svc := NewCodexGatewayService(registry, executor)
+	ctx := WithResolvedEntity(context.Background(), &ResolvedEntity{Entity: Entity{EntityKey: "workspace-alpha"}})
+
+	resp, err := svc.Responses(ctx, CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Headers: http.Header{
+			"Authorization": []string{"Bearer sk-secret"},
+			"session_id":    []string{"codex-session-1"},
+		},
+		Body: []byte(`{"model":"agnes-2.0-flash","input":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	want, _ := deriveOpenAISessionHashes(EntityScopedSeed("workspace-alpha", deriveOpenAIContentSessionSeed([]byte(`{"model":"agnes-2.0-flash","input":"hello"}`))))
+	require.Equal(t, want, captured.SessionKey)
+	require.NotEqual(t, "codex-session-1", captured.SessionKey)
+}
+
 func TestCodexGatewayService_ModelsRecordsCaptureTrace(t *testing.T) {
 	baseDir := t.TempDir()
 	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
@@ -341,6 +383,41 @@ func TestCodexGatewayService_ResponsesInjectsRoutingBridgeForAnthropic(t *testin
 	})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	instructions, ok := parseCodexGatewayJSONString(captured.Parsed.Instructions)
+	require.True(t, ok)
+	require.Contains(t, instructions, "You are Codex, based on GPT-5.")
+	require.Contains(t, instructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, instructions, "Do not load unrelated skills")
+}
+
+func TestCodexGatewayService_ResponsesInjectsRoutingBridgeForAgnes(t *testing.T) {
+	var captured CodexGatewayProviderRequest
+	registry := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{EnabledModels: []string{"agnes-2.0-flash"}},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderAgnes: {Provider: CodexGatewayProviderAgnes, GroupID: 4004, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{"agnes-2.0-flash": {Enabled: true}},
+			},
+		}),
+	)
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, req CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			captured = req
+			return &CodexGatewayServiceResponse{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"id":"resp_agnes"}`)}, nil
+		},
+	})
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   []byte(`{"model":"agnes-2.0-flash","input":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "agnes", captured.Model.Provider)
 
 	instructions, ok := parseCodexGatewayJSONString(captured.Parsed.Instructions)
 	require.True(t, ok)

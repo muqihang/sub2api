@@ -12,10 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
 
-const (
-	codexGatewayDeepSeekDefaultRejectMessage = "DeepSeek request was rejected."
-	codexGatewayDeepSeekStreamClosedReason   = "upstream_stream_closed"
-)
+const codexGatewayDeepSeekStreamClosedReason = "upstream_stream_closed"
 
 const (
 	codexGatewayDeepSeekToolReplayMaxSystemMessages = 2
@@ -58,7 +55,7 @@ func ExecuteCodexGatewayDeepSeekAdapter(
 		},
 	}
 	if resp.StatusCode >= 400 {
-		result.ServiceResponse.Body = codexGatewayDeepSeekMapErrorBody(resp.StatusCode, body)
+		result.ServiceResponse.Body = codexGatewayChatCompatMapErrorBody(resp.StatusCode, body, reqCtx.Provider)
 		return result, nil
 	}
 
@@ -93,7 +90,7 @@ func doCodexGatewayDeepSeekChatCompletionsRequest(ctx context.Context, client *h
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	}
 	req.Header.Set("Accept", "application/json")
-	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "deepseek", req.Header, rawBody)
+	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, firstNonBlankString(strings.TrimSpace(reqCtx.Provider), "deepseek"), req.Header, rawBody)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -141,7 +138,7 @@ func codexGatewayDeepSeekMapChatCompletionResponse(
 	result := CodexGatewayProviderResult{
 		ResponseID:        responseID,
 		UpstreamRequestID: strings.TrimSpace(upstreamRequestID),
-		UpstreamModel:     strings.TrimSpace(parsed.Model),
+		UpstreamModel:     firstNonBlankString(strings.TrimSpace(parsed.Model), strings.TrimSpace(model.UpstreamModel), strings.TrimSpace(model.Slug)),
 		Response:          response,
 		Usage:             usage,
 	}
@@ -459,7 +456,7 @@ func codexGatewayDeepSeekPersistState(
 			ResponseID:    strings.TrimSpace(responseID),
 			SessionKey:    strings.TrimSpace(reqCtx.SessionKey),
 			IsolationKey:  strings.TrimSpace(reqCtx.IsolationKey),
-			Provider:      "deepseek",
+			Provider:      firstNonBlankString(strings.TrimSpace(reqCtx.Provider), "deepseek"),
 			UpstreamModel: strings.TrimSpace(upstreamModel),
 		},
 		AssistantContent:            assistantContent,
@@ -567,13 +564,18 @@ func codexGatewayDeepSeekClipReplayContextMessage(msg map[string]any) (json.RawM
 }
 
 func codexGatewayDeepSeekMapErrorBody(statusCode int, raw []byte) []byte {
+	return codexGatewayChatCompatMapErrorBody(statusCode, raw, string(CodexGatewayProviderDeepSeek))
+}
+
+func codexGatewayChatCompatMapErrorBody(statusCode int, raw []byte, provider string) []byte {
+	providerName := codexGatewayChatCompatProviderDisplayName(provider)
 	errorType := CodexGatewayErrorTypeAPI
 	errorCode := "upstream_error"
-	message := "DeepSeek request failed."
+	message := providerName + " request failed."
 	if statusCode >= 400 && statusCode < 500 {
 		errorType = CodexGatewayErrorTypeInvalidRequest
 		errorCode = CodexGatewayErrorCodeInvalidRequest
-		message = codexGatewayDeepSeekDefaultRejectMessage
+		message = providerName + " request was rejected."
 	}
 	var payload struct {
 		Error struct {

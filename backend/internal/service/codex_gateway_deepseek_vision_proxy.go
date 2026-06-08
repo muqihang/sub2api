@@ -19,7 +19,7 @@ func codexGatewayDeepSeekRequestWithHostedVision(ctx context.Context, req CodexG
 		return req, nil
 	}
 
-	computerUseOutputs := codexGatewayDeepSeekComputerUseOutputCallIDs(items, req, stateStore, reqCtx, upstreamModel)
+	computerUseOutputs := codexGatewayDeepSeekComputerUseOutputCallIDs(items, req, stateStore, reqCtx, upstreamModel, cfg)
 	rewritten, changed := false, false
 	for _, itemAny := range items {
 		item, ok := itemAny.(map[string]any)
@@ -46,7 +46,7 @@ func codexGatewayDeepSeekRequestWithHostedVision(ctx context.Context, req CodexG
 	return req, nil
 }
 
-func codexGatewayDeepSeekComputerUseOutputCallIDs(items []any, req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, reqCtx CodexGatewayDeepSeekRequestContext, upstreamModel string) map[string]struct{} {
+func codexGatewayDeepSeekComputerUseOutputCallIDs(items []any, req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, reqCtx CodexGatewayDeepSeekRequestContext, upstreamModel string, cfg CodexGatewayDeepSeekRequestConfig) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, itemAny := range items {
 		item, ok := itemAny.(map[string]any)
@@ -73,7 +73,7 @@ func codexGatewayDeepSeekComputerUseOutputCallIDs(items []any, req CodexGatewayR
 		ResponseID:    strings.TrimSpace(*req.PreviousResponseID),
 		SessionKey:    reqCtx.SessionKey,
 		IsolationKey:  reqCtx.IsolationKey,
-		Provider:      "deepseek",
+		Provider:      codexGatewayChatCompatProviderName(cfg),
 		UpstreamModel: upstreamModel,
 	})
 	if err != nil {

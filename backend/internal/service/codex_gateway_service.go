@@ -40,7 +40,7 @@ func codexGatewayInstructionsContain(existing string, injected string) bool {
 
 func codexGatewayShouldInjectBaseInstructions(model CodexGatewayModel) bool {
 	switch normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) {
-	case CodexGatewayProviderDeepSeek, CodexGatewayProviderAnthropic:
+	case CodexGatewayProviderDeepSeek, CodexGatewayProviderAnthropic, CodexGatewayProviderAgnes:
 		return true
 	default:
 		return false

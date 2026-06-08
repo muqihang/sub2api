@@ -60,6 +60,41 @@ func TestCodexGatewayDeepSeekAdapter_PersistsOrdinaryAssistantState(t *testing.T
 	require.Equal(t, "brief plan", replayAssistant["reasoning_content"])
 }
 
+func TestCodexGatewayDeepSeekAdapter_UsesConfiguredUpstreamModelWhenProviderOmitModel(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]`),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl_agnes_no_model",
+			"object":"chat.completion",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}
+		}`))
+	}))
+	defer server.Close()
+
+	result, err := ExecuteCodexGatewayDeepSeekAdapter(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{Provider: "agnes"},
+		CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "agnes-2.0-flash", result.ProviderResult.UpstreamModel)
+}
+
 func TestCodexGatewayDeepSeekAdapterNonStream(t *testing.T) {
 	t.Run("maps text completion and usage", func(t *testing.T) {
 		model := CodexGatewayModel{
