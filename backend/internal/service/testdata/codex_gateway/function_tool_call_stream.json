@@ -44,7 +44,7 @@
       "input_tokens": 8,
       "output_tokens": 4,
       "total_tokens": 12,
-      "cached_tokens": 2
+      "cached_tokens": 0
     },
     "output_types": [
       "reasoning",

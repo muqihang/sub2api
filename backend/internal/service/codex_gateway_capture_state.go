@@ -84,6 +84,9 @@ func (m *CodexGatewayCaptureManager) RecordProviderResult(trace *CodexGatewayTra
 		if value, ok := result.Usage.ProviderUsageExtra["prompt_cache_miss_tokens"]; ok {
 			cacheUsage["prompt_cache_miss_tokens"] = value
 		}
+		if value, ok := result.Usage.ProviderUsageExtra["reasoning_tokens"]; ok {
+			cacheUsage["reasoning_tokens"] = value
+		}
 	}
 	m.mergeCacheUsage(trace, cacheUsage)
 }

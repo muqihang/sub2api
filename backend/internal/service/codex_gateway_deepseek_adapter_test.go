@@ -828,3 +828,29 @@ func deepSeekAdapterToolNames(raw []byte) []string {
 	}
 	return names
 }
+
+func TestCodexGatewayDeepSeekUsageJSON_UsesOfficialCacheAndReasoningFieldsOnly(t *testing.T) {
+	usage := &apicompat.ChatUsage{
+		PromptTokens:          20,
+		CompletionTokens:      8,
+		TotalTokens:           28,
+		PromptTokensDetails:   &apicompat.ChatTokenDetails{CachedTokens: 99},
+		PromptCacheHitTokens:  7,
+		PromptCacheMissTokens: 13,
+		CompletionTokensDetails: &apicompat.ChatTokenDetails{
+			ReasoningTokens: 5,
+		},
+	}
+
+	raw, normalized := codexGatewayDeepSeekUsageJSON(usage)
+
+	require.Equal(t, 20, normalized.InputTokens)
+	require.Equal(t, 8, normalized.OutputTokens)
+	require.Equal(t, 28, normalized.TotalTokens)
+	require.Equal(t, 7, normalized.CacheReadInputTokens)
+	require.Equal(t, float64(7), normalized.ProviderUsageExtra["prompt_cache_hit_tokens"])
+	require.Equal(t, float64(13), normalized.ProviderUsageExtra["prompt_cache_miss_tokens"])
+	require.Equal(t, float64(5), normalized.ProviderUsageExtra["reasoning_tokens"])
+	require.Equal(t, int64(7), gjson.GetBytes(raw, "input_tokens_details.cached_tokens").Int())
+	require.Equal(t, int64(5), gjson.GetBytes(raw, "output_tokens_details.reasoning_tokens").Int())
+}

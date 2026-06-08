@@ -13,7 +13,7 @@ import (
 )
 
 func TestCodexGatewaySemanticTraceExtractsFoundationFromGoldenStream(t *testing.T) {
-	stream := renderCodexGatewayGoldenStreamFixture(t, "function_tool_call_stream")
+	stream := renderCodexGatewayGoldenStreamFixture(t, "namespace_tool_call_stream")
 
 	trace, err := BuildCodexGatewaySemanticTraceFromSSE(stream)
 	require.NoError(t, err)
@@ -40,7 +40,7 @@ func TestCodexGatewaySemanticTraceExtractsFoundationFromGoldenStream(t *testing.
 		require.True(t, event.HasItemID)
 		require.True(t, event.HasCallID)
 		require.Equal(t, "in_progress", event.ItemStatus)
-		require.Equal(t, "get_weather", event.ItemName)
+		require.Equal(t, "open-page", event.ItemName)
 	}
 	require.True(t, sawToolAdded)
 }

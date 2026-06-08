@@ -1076,6 +1076,7 @@ func TestCodexGatewayCaptureV2DeepSeekCacheUsagePrefersProviderExtra(t *testing.
 			ProviderUsageExtra: map[string]any{
 				"prompt_cache_hit_tokens":  float64(300),
 				"prompt_cache_miss_tokens": float64(900),
+				"reasoning_tokens":         float64(42),
 			},
 		},
 	})
@@ -1086,12 +1087,14 @@ func TestCodexGatewayCaptureV2DeepSeekCacheUsagePrefersProviderExtra(t *testing.
 	cacheUsage := readCaptureJSONFile(t, filepath.Join(traceDir, "cache_usage.json"))
 	require.Equal(t, float64(300), cacheUsage["prompt_cache_hit_tokens"])
 	require.Equal(t, float64(900), cacheUsage["prompt_cache_miss_tokens"])
+	require.Equal(t, float64(42), cacheUsage["reasoning_tokens"])
 	require.Equal(t, 0.25, cacheUsage["cache_hit_ratio"])
 
 	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
 	efficiency := report["cache_efficiency"].(map[string]any)
 	require.Equal(t, float64(300), efficiency["prompt_cache_hit_tokens"])
 	require.Equal(t, float64(900), efficiency["prompt_cache_miss_tokens"])
+	require.Equal(t, float64(42), efficiency["reasoning_tokens"])
 	require.Equal(t, float64(900), efficiency["cache_miss_input_tokens"])
 	require.Equal(t, 0.25, efficiency["cache_hit_rate"])
 	require.Equal(t, 0.25, efficiency["cache_hit_ratio"])
@@ -1101,6 +1104,7 @@ func TestCodexGatewayCaptureV2DeepSeekCacheUsagePrefersProviderExtra(t *testing.
 	require.NoError(t, err)
 	require.Contains(t, string(sessionReport), `"prompt_cache_hit_tokens":300`)
 	require.Contains(t, string(sessionReport), `"prompt_cache_miss_tokens":900`)
+	require.Contains(t, string(sessionReport), `"reasoning_tokens":42`)
 	require.Contains(t, string(sessionReport), `"cache_hit_ratio":0.25`)
 }
 

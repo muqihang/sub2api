@@ -222,21 +222,24 @@ func codexGatewayDeepSeekUsageJSON(usage *apicompat.ChatUsage) (json.RawMessage,
 		"output_tokens": usage.CompletionTokens,
 		"total_tokens":  usage.TotalTokens,
 	}
-	if usage.PromptTokensDetails != nil {
-		out.CacheReadInputTokens = usage.PromptTokensDetails.CachedTokens
-	}
-	if out.CacheReadInputTokens == 0 && usage.PromptCacheHitTokens > 0 {
+	if usage.PromptCacheHitTokens > 0 {
 		out.CacheReadInputTokens = usage.PromptCacheHitTokens
-	}
-	if out.CacheReadInputTokens > 0 {
 		usageBody["input_tokens_details"] = map[string]any{
 			"cached_tokens": out.CacheReadInputTokens,
 		}
 	}
-	if usage.PromptCacheHitTokens > 0 || usage.PromptCacheMissTokens > 0 {
-		out.ProviderUsageExtra = map[string]any{
-			"prompt_cache_hit_tokens":  float64(usage.PromptCacheHitTokens),
-			"prompt_cache_miss_tokens": float64(usage.PromptCacheMissTokens),
+	if usage.PromptCacheHitTokens > 0 || usage.PromptCacheMissTokens > 0 || (usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0) {
+		out.ProviderUsageExtra = map[string]any{}
+		if usage.PromptCacheHitTokens > 0 || usage.PromptCacheMissTokens > 0 {
+			out.ProviderUsageExtra["prompt_cache_hit_tokens"] = float64(usage.PromptCacheHitTokens)
+			out.ProviderUsageExtra["prompt_cache_miss_tokens"] = float64(usage.PromptCacheMissTokens)
+		}
+		if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens > 0 {
+			reasoningTokens := usage.CompletionTokensDetails.ReasoningTokens
+			out.ProviderUsageExtra["reasoning_tokens"] = float64(reasoningTokens)
+			usageBody["output_tokens_details"] = map[string]any{
+				"reasoning_tokens": reasoningTokens,
+			}
 		}
 	}
 	raw, _ := json.Marshal(usageBody)

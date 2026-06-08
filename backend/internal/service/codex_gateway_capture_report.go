@@ -81,6 +81,9 @@ func (m *CodexGatewayCaptureManager) writeSessionReport(trace *CodexGatewayTrace
 		if value, ok := cacheEfficiency["cache_miss_input_tokens"]; ok {
 			record["cache_miss_input_tokens"] = value
 		}
+		if value, ok := cacheEfficiency["reasoning_tokens"]; ok {
+			record["reasoning_tokens"] = value
+		}
 		record["cache_diagnostics"] = cacheEfficiency["diagnostics"]
 		if status, ok := cacheEfficiency["provider_prompt_cache_status"]; ok {
 			record["provider_prompt_cache_status"] = status
@@ -178,6 +181,9 @@ func codexGatewayCaptureCacheEfficiency(cacheUsage map[string]any, provider any)
 	}
 	if cacheReadTokens, readOK := codexGatewayCaptureIntValue(cacheUsage["cache_read_input_tokens"]); readOK {
 		out["cache_read_input_tokens"] = cacheReadTokens
+	}
+	if reasoningTokens, reasoningOK := codexGatewayCaptureIntValue(cacheUsage["reasoning_tokens"]); reasoningOK {
+		out["reasoning_tokens"] = reasoningTokens
 	}
 	return out
 }
