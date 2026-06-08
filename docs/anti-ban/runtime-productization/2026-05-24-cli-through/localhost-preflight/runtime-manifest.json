@@ -1,0 +1,151 @@
+{
+  "cc_gateway": {
+    "account_identities": {
+      "scoped_hmac_ref_placeholder": {
+        "account_ref": "scoped_hmac_ref_placeholder",
+        "account_ref_policy": "server_scoped_hmac_with_key_id_scope_version_required",
+        "account_uuid_ref": "scoped_hmac_ref_placeholder",
+        "device_id": "<from-account-identity>",
+        "persona_variant": "claude-code-2.1.150-macos-local",
+        "policy_version": "2.1.150",
+        "session_policy": "preserve_downstream_session_id"
+      }
+    },
+    "auth": {
+      "gateway_token": "${CC_GATEWAY_TOKEN}",
+      "tokens": []
+    },
+    "egress_buckets": {
+      "home-ip-canary-2026-05-22": {
+        "allowed_account_ids": [
+          "scoped_hmac_ref_placeholder"
+        ],
+        "enabled": true,
+        "proxy_url": "http://127.0.0.1:19083"
+      }
+    },
+    "env": {
+      "arch": "arm64",
+      "deployment_environment": "localhost-preflight",
+      "is_ci": false,
+      "is_claude_ai_auth": true,
+      "is_running_with_bun": false,
+      "node_version": "v22.22.2",
+      "package_managers": "npm",
+      "platform": "darwin",
+      "platform_raw": "darwin",
+      "runtimes": "node",
+      "terminal": "iTerm2.app",
+      "version": "2.1.150",
+      "version_base": "2.1.150"
+    },
+    "identity": {
+      "device_id": "<from-account-identity>",
+      "email": "redacted-email"
+    },
+    "logging": {
+      "audit": true,
+      "level": "info"
+    },
+    "mode": "sub2api",
+    "prompt_env": {
+      "platform": "darwin",
+      "shell": "zsh",
+      "working_dir": "/Users/redacted/projects"
+    },
+    "providers": {
+      "anthropic": true
+    },
+    "server": {
+      "port": 18443,
+      "tls": {
+        "cert": "",
+        "key": ""
+      }
+    },
+    "shared_pool": {
+      "billing_cch_mode": "sign",
+      "canary_cost_envelope": {
+        "allow_context_1m": true,
+        "allow_context_management": true,
+        "allow_output_config": true,
+        "allow_thinking": true,
+        "allowed_models": [
+          "claude-sonnet-4-6",
+          "claude-opus-4-7",
+          "claude-opus-4-7-thinking",
+          "claude-opus-4-6",
+          "claude-opus-4-6-thinking"
+        ],
+        "enabled": true,
+        "max_body_bytes": 131072,
+        "max_context_window_tokens": 1000000,
+        "max_thinking_budget_tokens": 32000,
+        "max_tokens": 32000,
+        "max_tools_count": 40
+      },
+      "canary_envelope_role": "localhost_canary_guardrail_not_production_capability_ceiling",
+      "candidate_model_allowlist": [
+        "claude-sonnet-4-8",
+        "claude-opus-4-8"
+      ],
+      "candidate_model_audit_budgets": {
+        "claude-opus-4-8": 25,
+        "claude-sonnet-4-8": 25
+      },
+      "candidate_model_kill_switches": {
+        "claude-opus-4-8": false,
+        "claude-sonnet-4-8": false
+      },
+      "candidate_model_replay_proofs": {
+        "claude-opus-4-8": "fixture-opus-48",
+        "claude-sonnet-4-8": "fixture-sonnet-48"
+      },
+      "max_body_bytes": 2097152,
+      "message_beta_profile": "claude_code_2_1_150_subscription_1m",
+      "persona_resolver": {
+        "exact_version": "2.1.150",
+        "future_candidate_models": {
+          "allowlist_ref": "candidate_model_allowlist",
+          "capability_downgrade_allowed": false,
+          "decision": "gray_path"
+        },
+        "registry_profile": "claude_code_2_1_150_subscription_1m",
+        "source_of_truth": "cc_gateway_dynamic_persona_resolver",
+        "trusted_minor_drift": {
+          "capability_downgrade_allowed": false,
+          "decision": "observed_minor_drift",
+          "example_version": "2.1.151"
+        },
+        "unknown_major": {
+          "action": "fail_closed",
+          "decision": "quarantine_version"
+        },
+        "version_family": "2.1"
+      },
+      "real_canary_user_approved": false,
+      "signing_enabled": true,
+      "signing_evidence_gates_approved": true,
+      "upstream_mode": "preflight"
+    },
+    "upstream": {
+      "url": "http://127.0.0.1:19082"
+    }
+  },
+  "mode": "localhost-preflight",
+  "raw_dir": "/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation/docs/anti-ban/runtime-productization/2026-05-24-cli-through/localhost-preflight/raw",
+  "required_env": {
+    "ALLOW_REAL_ANTHROPIC_CANARY": "0",
+    "CC_EGRESS_PROXY_URL": "<optional-localhost-only>",
+    "CC_GATEWAY_TOKEN": "<required>"
+  },
+  "requires_real_anthropic": false,
+  "run_dir": "/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation/docs/anti-ban/runtime-productization/2026-05-24-cli-through/localhost-preflight",
+  "schema_version": 1,
+  "session_budget": {
+    "max_messages_per_session": 2,
+    "max_rich_messages_per_session": 1,
+    "max_total_body_bytes_per_session": 262144,
+    "mode": "canary_limited"
+  }
+}

@@ -16,13 +16,15 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 		body      string
 		userAgent string
 		wantSub   string // substring expected in result
-		unchanged bool   // expect body to remain the same
+		wantEntry string
+		unchanged bool // expect body to remain the same
 	}{
 		{
-			name:      "replaces cc_version preserving message-derived suffix",
+			name:      "replaces cc_version preserving message-derived suffix and upgrades entrypoint",
 			body:      `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],"messages":[]}`,
 			userAgent: "claude-cli/2.1.22 (external, cli)",
 			wantSub:   "cc_version=2.1.22.df2",
+			wantEntry: "cc_entrypoint=sdk-cli",
 		},
 		{
 			name:      "no billing header in system",
@@ -37,20 +39,26 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 			unchanged: true,
 		},
 		{
-			name:      "user-agent without version",
+			name:      "user-agent without version still upgrades legacy entrypoint",
 			body:      `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`,
 			userAgent: "Mozilla/5.0",
-			unchanged: true,
+			wantEntry: "cc_entrypoint=sdk-cli",
 		},
 		{
-			name:      "empty user-agent",
+			name:      "empty user-agent still upgrades legacy entrypoint",
 			body:      `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`,
 			userAgent: "",
-			unchanged: true,
+			wantEntry: "cc_entrypoint=sdk-cli",
 		},
 		{
-			name:      "version already matches",
+			name:      "version already matches but legacy entrypoint upgraded",
 			body:      `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.22; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`,
+			userAgent: "claude-cli/2.1.22",
+			wantEntry: "cc_entrypoint=sdk-cli",
+		},
+		{
+			name:      "already sdk-cli and version match remains unchanged",
+			body:      `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.22; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[]}`,
 			userAgent: "claude-cli/2.1.22",
 			unchanged: true,
 		},
@@ -63,8 +71,14 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 				assert.Equal(t, tt.body, string(result), "body should remain unchanged")
 			} else {
 				assert.Contains(t, string(result), tt.wantSub)
+				if tt.wantEntry != "" {
+					assert.Contains(t, string(result), tt.wantEntry)
+					assert.NotContains(t, string(result), "cc_entrypoint=cli")
+				}
 				// Ensure old semver is gone
-				assert.NotContains(t, string(result), "cc_version=2.1.81")
+				if tt.wantSub != "" {
+					assert.NotContains(t, string(result), "cc_version=2.1.81")
+				}
 			}
 		})
 	}
@@ -72,7 +86,7 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 
 func TestSignBillingHeaderCCH(t *testing.T) {
 	t.Run("replaces placeholder with hash", func(t *testing.T) {
-		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63.a43; cc_entrypoint=cli; cch=00000;"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63.a43; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		result := signBillingHeaderCCH(body)
 
 		// Should not have the placeholder anymore
@@ -85,7 +99,7 @@ func TestSignBillingHeaderCCH(t *testing.T) {
 	})
 
 	t.Run("no placeholder - body unchanged", func(t *testing.T) {
-		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=cli; cch=abcde;"}],"messages":[]}`)
+		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=sdk-cli; cch=abcde;"}],"messages":[]}`)
 		result := signBillingHeaderCCH(body)
 		assert.Equal(t, string(body), string(result))
 	})
@@ -97,7 +111,7 @@ func TestSignBillingHeaderCCH(t *testing.T) {
 	})
 
 	t.Run("cch=00000 in user content is not touched", func(t *testing.T) {
-		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=cli; cch=00000;"}],"messages":[{"role":"user","content":[{"type":"text","text":"keep literal cch=00000 in this message"}]}]}`)
+		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[{"role":"user","content":[{"type":"text","text":"keep literal cch=00000 in this message"}]}]}`)
 		result := signBillingHeaderCCH(body)
 
 		// Billing header should be signed
@@ -110,16 +124,16 @@ func TestSignBillingHeaderCCH(t *testing.T) {
 	})
 
 	t.Run("signing is deterministic", func(t *testing.T) {
-		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=cli; cch=00000;"}],"messages":[{"role":"user","content":"hi"}]}`)
+		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[{"role":"user","content":"hi"}]}`)
 		r1 := signBillingHeaderCCH(body)
-		body2 := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=cli; cch=00000;"}],"messages":[{"role":"user","content":"hi"}]}`)
+		body2 := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[{"role":"user","content":"hi"}]}`)
 		r2 := signBillingHeaderCCH(body2)
 		assert.Equal(t, string(r1), string(r2))
 	})
 
 	t.Run("matches reference algorithm", func(t *testing.T) {
 		// Verify: signBillingHeaderCCH(body) produces cch = xxHash64(body_with_placeholder, seed) & 0xFFFFF
-		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63.a43; cc_entrypoint=cli; cch=00000;"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.63.a43; cc_entrypoint=sdk-cli; cch=00000;"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		expectedCCH := fmt.Sprintf("%05x", xxHash64Seeded(body, cchSeed)&0xFFFFF)
 
 		result := signBillingHeaderCCH(body)

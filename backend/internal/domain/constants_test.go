@@ -44,3 +44,15 @@ func TestDefaultAntigravityModelMapping_Claude45AliasesFallbackTo46(t *testing.T
 		}
 	}
 }
+
+func TestDefaultAntigravityModelMapping_Opus48PassesThroughDirectly(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultAntigravityModelMapping["claude-opus-4-8"]
+	if !ok {
+		t.Fatalf("expected mapping for claude-opus-4-8 to exist")
+	}
+	if got != "claude-opus-4-8" {
+		t.Fatalf("claude-opus-4-8 must pass through directly, got %q", got)
+	}
+}

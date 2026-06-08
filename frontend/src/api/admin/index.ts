@@ -31,6 +31,8 @@ import channelMonitorTemplateAPI from './channelMonitorTemplate'
 import adminPaymentAPI from './payment'
 import affiliatesAPI from './affiliates'
 import augmentGatewayAPI from './augmentGateway'
+import claudeOnboardingAPI from './claudeOnboarding'
+import formalPoolOperationsAPI from './formalPoolOperations'
 
 /**
  * Unified admin API object for convenient access
@@ -63,7 +65,9 @@ export const adminAPI = {
   channelMonitorTemplate: channelMonitorTemplateAPI,
   payment: adminPaymentAPI,
   affiliates: affiliatesAPI,
-  augmentGateway: augmentGatewayAPI
+  augmentGateway: augmentGatewayAPI,
+  claudeOnboarding: claudeOnboardingAPI,
+  formalPoolOperations: formalPoolOperationsAPI
 }
 
 export {
@@ -94,7 +98,9 @@ export {
   channelMonitorTemplateAPI,
   adminPaymentAPI,
   affiliatesAPI,
-  augmentGatewayAPI
+  augmentGatewayAPI,
+  claudeOnboardingAPI,
+  formalPoolOperationsAPI
 }
 
 export default adminAPI

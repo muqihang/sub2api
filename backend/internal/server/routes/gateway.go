@@ -25,6 +25,10 @@ func RegisterGatewayRoutes(
 	cfg *config.Config,
 ) {
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
+	controlPlaneBodyLimit := bodyLimit
+	if cfg == nil || cfg.Gateway.MaxBodySize <= 0 {
+		controlPlaneBodyLimit = middleware.RequestBodyLimit(1 << 20)
+	}
 	clientRequestID := middleware.ClientRequestID()
 	opsErrorLogger := handler.OpsErrorLoggerMiddleware(opsService)
 	endpointNorm := handler.InboundEndpointMiddleware()
@@ -146,14 +150,14 @@ func RegisterGatewayRoutes(
 				h.OpenAIGateway.Responses(c)
 				return
 			}
-			h.Gateway.Responses(c)
+			writeAnthropicCompatUnsupportedProtocol(c)
 		})
 		gateway.POST("/responses/*subpath", func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
-			h.Gateway.Responses(c)
+			writeAnthropicCompatUnsupportedProtocol(c)
 		})
 		gateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 		// OpenAI Chat Completions API: auto-route based on group platform
@@ -162,7 +166,7 @@ func RegisterGatewayRoutes(
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
-			h.Gateway.ChatCompletions(c)
+			writeAnthropicCompatUnsupportedProtocol(c)
 		})
 		gateway.POST("/images/generations", func(c *gin.Context) {
 			if getGroupPlatform(c) != service.PlatformOpenAI {
@@ -216,6 +220,7 @@ func RegisterGatewayRoutes(
 	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
+	r.POST("/backend-api/anthropic/control-plane/intent", controlPlaneBodyLimit, clientRequestID, h.Gateway.ControlPlaneIntent)
 	codexDirect := r.Group("/backend-api/codex")
 	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireCodexScopedAPIKeyAccess(), requireGroupAnthropic)
 	{
@@ -314,6 +319,17 @@ func RegisterGatewayRoutes(
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.
+
+func writeAnthropicCompatUnsupportedProtocol(c *gin.Context) {
+	c.JSON(http.StatusBadRequest, gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    "unsupported_protocol",
+			"message": service.AnthropicCompatUnsupportedProtocolMessage(),
+		},
+	})
+}
+
 func getGroupPlatform(c *gin.Context) string {
 	apiKey, ok := middleware.GetAPIKeyFromContext(c)
 	if !ok || apiKey.Group == nil {

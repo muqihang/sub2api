@@ -391,6 +391,18 @@ func (s *stubAdminService) SetAccountSchedulable(ctx context.Context, id int64, 
 	return &account, nil
 }
 
+func (s *stubAdminService) QuarantineFormalPoolAccount(ctx context.Context, id int64, reason string) (*service.Account, error) {
+	for i := range s.accounts {
+		if s.accounts[i].ID == id {
+			account := s.accounts[i]
+			account.Status = service.StatusError
+			account.Schedulable = false
+			return &account, nil
+		}
+	}
+	return &service.Account{ID: id, Name: "account", Status: service.StatusError, Schedulable: false}, nil
+}
+
 func (s *stubAdminService) BulkUpdateAccounts(ctx context.Context, input *service.BulkUpdateAccountsInput) (*service.BulkUpdateAccountsResult, error) {
 	if s.bulkUpdateAccountErr != nil {
 		return nil, s.bulkUpdateAccountErr

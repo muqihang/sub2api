@@ -34,6 +34,8 @@ const codexGatewayDeepSeekSerialToolInstruction = "Serial tool calling is requir
 
 const codexGatewayDeepSeekComputerUseInstruction = "Computer Use strategy: when operating local apps, prefer bundle identifier values from list_apps (for example com.vendor.App) over localized display names; localized display names may be invalid app arguments. For Electron/chat apps, after get_app_state exposes a settable text input, prefer set_value on that element, then press_key Return, then get_app_state to read visible_text or operable_lines. If an element ID is stale, refresh with get_app_state once and retry with the new element_index. Avoid scrolling or blind clicking unless visible_text/operable_lines show that the needed reply or control is off-screen."
 
+const codexGatewayAgnesComputerUseInstruction = codexGatewayDeepSeekComputerUseInstruction + " AGNES Computer Use continuation: Do not stop after saying what you will do next; if the task is incomplete, immediately call the next Computer Use tool in the same turn. Every new turn or Continue after a pause must call get_app_state for the target app before press_key, click, set_value, type_text, or scroll. For Electron apps, prefer bundle IDs, set_value on a settable text input, press_key Return, then one get_app_state to read visible_text. If visible_text already contains enough answer text, use it to finish instead of repeated scrolling."
+
 const (
 	codexGatewayDeepSeekToolOutputMaxChars           = 3500
 	codexGatewayDeepSeekToolOutputStringPreviewChars = 1200
@@ -215,10 +217,14 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 	if len(messages) > 0 {
 		codexGatewayBackfillDeepSeekAssistantReasoning(messages)
-		if codexGatewayDeepSeekToolMappingHasComputerUse(toolMapping) && codexGatewayDeepSeekMessagesHaveUserTurn(messages) && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekComputerUseInstruction) {
+		if codexGatewayDeepSeekToolMappingHasComputerUse(toolMapping) && codexGatewayDeepSeekMessagesHaveUserTurn(messages) && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekComputerUseInstruction) && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayAgnesComputerUseInstruction) {
+			computerUseInstruction := codexGatewayDeepSeekComputerUseInstruction
+			if strings.EqualFold(provider, string(CodexGatewayProviderAgnes)) {
+				computerUseInstruction = codexGatewayAgnesComputerUseInstruction
+			}
 			leadingMessages = append(leadingMessages, map[string]any{
 				"role":    "system",
-				"content": codexGatewayDeepSeekComputerUseInstruction,
+				"content": computerUseInstruction,
 			})
 		}
 		if req.ParallelToolCalls != nil && !*req.ParallelToolCalls && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekSerialToolInstruction) {
@@ -1518,7 +1524,7 @@ func codexGatewayDeepSeekPruneSemanticToolSummary(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		if class := strings.TrimSpace(firstCodexGatewayToolString(typed["content_class"])); class != "" {
-			return codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(typed, class, 160, 4, 120)
+			return codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(typed, class, 220, 8, 180)
 		}
 		out := make(map[string]any)
 		keys := make([]string, 0, len(typed))
@@ -1614,7 +1620,7 @@ func codexGatewayDeepSeekCompactSemanticToolSummaryValue(value any, depth int) a
 }
 
 func codexGatewayDeepSeekCompactSemanticToolSummaryMap(in map[string]any, class string) map[string]any {
-	return codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in, class, 320, 8, 180)
+	return codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in, class, 420, 14, 220)
 }
 
 func codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in map[string]any, class string, textChars, maxLines, lineChars int) map[string]any {
@@ -1637,10 +1643,8 @@ func codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in map[string]a
 	}
 	if rawLines, ok := in["visible_text"]; ok {
 		visibleLines := maxLines
-		if visibleLines > 4 {
-			visibleLines = 4
-		} else if visibleLines > 2 {
-			visibleLines = 2
+		if visibleLines < 8 {
+			visibleLines = 8
 		}
 		if lines := codexGatewayDeepSeekCompactOperableLines(rawLines, visibleLines, lineChars); len(lines) > 0 {
 			out["visible_text"] = lines
@@ -2376,8 +2380,8 @@ func codexGatewayDeepSeekAccessibilityVisibleTextLines(value string) []string {
 		return candidates[i].index > candidates[j].index
 	})
 	limit := len(candidates)
-	if limit > 6 {
-		limit = 6
+	if limit > 18 {
+		limit = 18
 	}
 	selected := append([]codexGatewayDeepSeekAccessibilityLineCandidate(nil), candidates[:limit]...)
 	sort.SliceStable(selected, func(i, j int) bool {

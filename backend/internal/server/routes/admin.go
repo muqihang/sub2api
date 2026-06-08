@@ -98,6 +98,12 @@ func RegisterAdminRoutes(
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
 
+		// Claude formal pool status dashboard
+		registerFormalPoolStatusDashboardRoutes(admin, h)
+
+		// Claude formal pool onboarding
+		registerFormalPoolOnboardingAdminRoutes(admin, h)
+
 		// Augment Gateway 管理
 		registerAugmentGatewayAdminRoutes(admin, h)
 
@@ -279,6 +285,16 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
+func registerFormalPoolStatusDashboardRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Account == nil {
+		return
+	}
+	formalPool := admin.Group("/formal-pool")
+	{
+		formalPool.GET("/status-dashboard", h.Admin.Account.FormalPoolStatusDashboard)
+	}
+}
+
 func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	accounts := admin.Group("/accounts")
 	{
@@ -304,7 +320,18 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/:id/reset-quota", h.Admin.Account.ResetQuota)
 		accounts.GET("/:id/temp-unschedulable", h.Admin.Account.GetTempUnschedulable)
 		accounts.DELETE("/:id/temp-unschedulable", h.Admin.Account.ClearTempUnschedulable)
+		accounts.POST("/:id/quarantine", h.Admin.Account.QuarantineFormalPool)
 		accounts.POST("/:id/schedulable", h.Admin.Account.SetSchedulable)
+		accounts.POST("/:id/cc-gateway/canary-preflight", h.Admin.Account.CCGatewayCanaryPreflight)
+		if h.Admin.FormalPoolOperations != nil {
+			accounts.GET("/:id/formal-pool/diagnostics", h.Admin.FormalPoolOperations.Diagnostics)
+			accounts.POST("/:id/setup-token/replace", h.Admin.FormalPoolOperations.ReplaceSetupToken)
+			accounts.POST("/:id/formal-pool/runtime-register", h.Admin.FormalPoolOperations.RuntimeRegister)
+			accounts.POST("/:id/formal-pool/healthcheck", h.Admin.FormalPoolOperations.Healthcheck)
+			accounts.POST("/:id/formal-pool/start-warming", h.Admin.FormalPoolOperations.StartWarming)
+			accounts.POST("/:id/formal-pool/promote-production", h.Admin.FormalPoolOperations.PromoteProduction)
+			accounts.POST("/:id/formal-pool/proxy/swap", h.Admin.FormalPoolOperations.SwapProxy)
+		}
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		accounts.GET("/data", h.Admin.Account.ExportData)
@@ -648,5 +675,46 @@ func registerAffiliateRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			users.PUT("/:user_id", h.Admin.Affiliate.UpdateUserSettings)
 			users.DELETE("/:user_id", h.Admin.Affiliate.ClearUserSettings)
 		}
+	}
+}
+
+func registerFormalPoolOnboardingAdminRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	onboarding := admin.Group("/claude-onboarding")
+	{
+		sessions := onboarding.Group("/sessions")
+		{
+			sessions.POST("", h.Admin.FormalPoolOnboarding.CreateSession)
+			sessions.GET("/:id", h.Admin.FormalPoolOnboarding.GetSession)
+			sessions.POST("/:id/test-proxy", h.Admin.FormalPoolOnboarding.TestProxy)
+			sessions.POST("/:id/browser-egress-attestation", h.Admin.FormalPoolOnboarding.BrowserEgressAttestation)
+			sessions.POST("/:id/generate-auth-url", h.Admin.FormalPoolOnboarding.GenerateAuthURL)
+			sessions.POST("/:id/exchange-code-and-create", h.Admin.FormalPoolOnboarding.ExchangeCodeAndCreate)
+			sessions.POST("/:id/setup-token-cookie-auth-and-create", h.Admin.FormalPoolOnboarding.SetupTokenCookieAuthAndCreate)
+			sessions.POST("/:id/acceptance", h.Admin.FormalPoolOnboarding.Acceptance)
+			sessions.POST("/:id/activate", h.Admin.FormalPoolOnboarding.Activate)
+			sessions.POST("/:id/refresh-only", h.Admin.FormalPoolOnboarding.RefreshOnly)
+			sessions.POST("/:id/runtime-register", h.Admin.FormalPoolOnboarding.RuntimeRegister)
+			sessions.POST("/:id/healthcheck", h.Admin.FormalPoolOnboarding.Healthcheck)
+			sessions.POST("/:id/start-warming", h.Admin.FormalPoolOnboarding.StartWarming)
+			sessions.POST("/:id/promote-production", h.Admin.FormalPoolOnboarding.PromoteProduction)
+			sessions.POST("/:id/abort", h.Admin.FormalPoolOnboarding.Abort)
+		}
+		accounts := onboarding.Group("/accounts")
+		{
+			accounts.POST("/:id/healthcheck", h.Admin.FormalPoolOnboarding.AccountHealthcheck)
+		}
+	}
+}
+
+func RegisterFormalPoolOnboardingPublicRoutes(v1 *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	public := v1.Group("/claude-onboarding")
+	{
+		public.GET("/browser-egress-check/:nonce", h.Admin.FormalPoolOnboarding.BrowserEgressCheck)
 	}
 }

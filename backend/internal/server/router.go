@@ -112,6 +112,7 @@ func registerRoutes(
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, redisClient, settingService)
 	routes.RegisterUserRoutes(v1, h, jwtAuth, settingService)
 	routes.RegisterCodexAgentRoutes(v1, h, jwtAuth, settingService)
+	routes.RegisterFormalPoolOnboardingPublicRoutes(v1, h)
 	routes.RegisterAdminRoutes(v1, h, adminAuth)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
 	codexGatewayAPIKeyAuth := middleware2.NewCodexGatewayAPIKeyAuthMiddleware(apiKeyService, subscriptionService, cfg)

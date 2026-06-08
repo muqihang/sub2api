@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -576,6 +577,70 @@ func TestBuildCodexGatewayAnthropicRequest_SummarizesLargeComputerUseToolOutput(
 	require.Contains(t, content, "binary_or_image")
 	require.NotContains(t, content, "Second Sidebar Group")
 	require.NotContains(t, content, strings.Repeat("A", 1024))
+}
+
+func TestBuildCodexGatewayAnthropicRequest_ComputerUseHighFidelityVisibleTextBudget(t *testing.T) {
+	facts := []string{
+		"合记烩面：国营老牌，汤鲜面厚，人均 22-30 元。",
+		"萧记三鲜烩面：鸡汤骨汤羊肉汤，加海参鱿鱼。",
+		"方中山胡辣汤：麻香够味，外地人建议微辣。",
+		"京都老蔡记：老三记之首，蒸饺和馄饨适合早餐。",
+		"葛记焖饼：百年老店，焖饼配绿豆沙解腻。",
+		"阿五黄河大鲤鱼：红烧黄河大鲤鱼必点。",
+		"二合馆：1912 年始创，清汤酸辣乌鱼蛋汤是豫菜名羹。",
+		"谷雨春：黄河鲤鱼现做，配烩面更圆满。",
+		"郑记粗粮人家：烙馍和小米粥免费无限续。",
+		"巴奴毛肚火锅：毛肚脆嫩，菌汤锅底适合朋友小聚。",
+		"马豫兴桶子鸡：皮脆肉嫩，适合打包伴手礼。",
+		"梅园开封灌汤包：皮薄馅足，咬开爆汁。",
+	}
+	var app strings.Builder
+	app.WriteString("Computer Use state (CUA App Version: 799)\n<app_state>\n")
+	app.WriteString("App=/Applications/Doubao.app/ (bundleID com.bot.pc.doubao, pid 750)\n")
+	app.WriteString(strings.Repeat("\t30 link Description: 历史对话, Value: chrome://doubao-chat/chat/sidebar\n", 60))
+	for i, fact := range facts {
+		fmt.Fprintf(&app, "\t%d text %s\n", 100+i, fact)
+	}
+	app.WriteString("\t501 文本输入区 (settable, string) 发消息...\n\t502 按钮 发送\n</app_state>")
+	rawOutput, err := json.Marshal([]any{
+		map[string]any{"type": "input_text", "text": "Wall time: 0.8 seconds\nOutput:"},
+		map[string]any{"type": "input_text", "text": app.String()},
+		map[string]any{"type": "image_url", "image_url": "data:image/png;base64," + strings.Repeat("A", 180000)},
+	})
+	require.NoError(t, err)
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"input":[
+			{"type":"message","role":"user","content":"use Doubao"},
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"com.bot.pc.doubao\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":` + string(rawOutput) + `}
+		],
+		"tools":[{"type":"function","name":"mcp__computer_use__get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	content := gjson.GetBytes(raw, "messages.2.content.0.content").String()
+	visibleText := gjson.Get(content, "1.text.visible_text").Raw
+	if visibleText == "" {
+		visibleText = gjson.Get(content, "0.text.visible_text").Raw
+	}
+	for _, want := range facts {
+		require.Contains(t, visibleText, strings.Split(want, "：")[0], "Claude visible_text should preserve broad answer coverage")
+	}
+	require.Contains(t, gjson.Get(content, "1.text.operable_lines").Raw+gjson.Get(content, "0.text.operable_lines").Raw, "文本输入区")
+	require.NotContains(t, content, strings.Repeat("A", 128))
+	require.LessOrEqual(t, len(content), codexGatewayDeepSeekToolOutputMaxChars+512)
 }
 
 func TestCodexGatewayAnthropicStateReplayMessages_DoesNotAccumulateComputerUseToolResults(t *testing.T) {

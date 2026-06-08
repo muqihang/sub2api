@@ -42,6 +42,11 @@ func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
 	if c == nil || len(body) == 0 {
 		return
 	}
+	if c.Request != nil {
+		if audit, ok := AnthropicCompatAuditSummaryFromContext(c.Request.Context()); ok {
+			body = BuildAnthropicCompatOpsRequestBodySummary(body, audit, "", false)
+		}
+	}
 	// 热路径避免 string(body) 额外分配，按需在落库前再转换。
 	c.Set(OpsUpstreamRequestBodyKey, body)
 }

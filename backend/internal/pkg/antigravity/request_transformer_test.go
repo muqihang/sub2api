@@ -323,6 +323,13 @@ func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 			wantPresent: true,
 		},
 		{
+			name:        "adaptive on opus4.8 maps to high budget (24576)",
+			model:       "claude-opus-4-8",
+			thinking:    &ThinkingConfig{Type: "adaptive", BudgetTokens: 20000},
+			wantBudget:  ClaudeAdaptiveHighThinkingBudgetTokens,
+			wantPresent: true,
+		},
+		{
 			name:        "adaptive on non-opus model keeps default dynamic (-1)",
 			model:       "claude-sonnet-4-5-thinking",
 			thinking:    &ThinkingConfig{Type: "adaptive"},
@@ -455,4 +462,12 @@ func TestTransformClaudeToGeminiWithOptions_PreservesWebSearchAlongsideFunctions
 	require.Len(t, req.Request.Tools[0].FunctionDeclarations, 1)
 	require.Equal(t, "get_weather", req.Request.Tools[0].FunctionDeclarations[0].Name)
 	require.NotNil(t, req.Request.Tools[1].GoogleSearch)
+}
+
+func TestGetModelDisplayName_Opus48(t *testing.T) {
+	t.Parallel()
+
+	if got := GetModelDisplayName("claude-opus-4-8"); got != "Claude Opus 4.8" {
+		t.Fatalf("GetModelDisplayName(claude-opus-4-8) = %q", got)
+	}
 }

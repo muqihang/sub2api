@@ -220,6 +220,14 @@ export interface PublicSettings {
   channel_monitor_default_interval_seconds: number
   available_channels_enabled: boolean
   affiliate_enabled: boolean
+  /**
+   * Opt-in toggle that switches accounts management surfaces to the new V2 UX
+   * (dashboard + onboarding wizard). Backend default is `false`; admins flip it
+   * from the settings page. Frontend code should consume this through
+   * `FeatureFlags.newAccountManagement` so the opt-in fallback (hidden when the
+   * settings payload omits the field) stays consistent.
+   */
+  use_new_account_management_ux: boolean
 }
 
 export interface AuthResponse {
@@ -688,6 +696,173 @@ export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bed
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
+export type FormalPoolStage =
+  | 'imported'
+  | 'refreshed'
+  | 'runtime_registered'
+  | 'healthcheck_passed'
+  | 'warming'
+  | 'production'
+  | 'quarantined'
+  | 'legacy_unknown'
+
+export type FormalPoolFailureOrigin =
+  | 'local_gate'
+  | 'cc_gateway_control_plane'
+  | 'upstream'
+  | 'proxy'
+  | 'token_exchange'
+  | 'unknown'
+
+export interface FormalPoolRecommendedAction {
+  key: string
+  label: string
+  severity?: 'info' | 'warning' | 'danger' | string
+}
+
+export interface FormalPoolOperationsDiagnostics {
+  account_id: number
+  account_ref?: string
+  is_formal_pool: boolean
+  onboarding_stage?: FormalPoolStage | string
+  schedulable: boolean
+  effective_schedulable: boolean
+  failure_origin: FormalPoolFailureOrigin
+  failure_code?: string
+  failure_source?: string
+  healthcheck_status?: string
+  status_code_bucket?: string
+  last_cc_gateway_error_code?: string
+  onboarding_last_error_code?: string
+  onboarding_last_error_bucket?: string
+  cc_gateway_runtime_registered?: boolean
+  cc_gateway_runtime_registered_at?: string
+  runtime_evidence_complete?: boolean
+  cc_gateway_seen?: boolean
+  raw_capture_present?: boolean
+  raw_capture_ref?: string
+  fallback_detected?: boolean
+  proxy_mismatch?: boolean
+  risk_text_detected?: boolean
+  healthcheck_safe_error_code?: string
+  healthcheck_safe_error_bucket?: string
+  formal_pool_rate_limit_error_class?: string
+  formal_pool_rate_limit_window?: string
+  formal_pool_rate_limit_action?: string
+  formal_pool_rate_limit_reset_bucket?: string
+  formal_pool_rate_limit_last_at?: string
+  healthcheck_evidence_persisted?: boolean
+  quarantine_reason?: string
+  risk_event_ref?: string
+  checks: Array<{ name: string; status: 'pass' | 'warn' | 'fail'; message?: string }>
+  recommended_actions?: FormalPoolRecommendedAction[]
+}
+
+
+export type FormalPoolDashboardState =
+  | 'normal'
+  | 'warming'
+  | 'production'
+  | 'rate_limited'
+  | 'manual_risk'
+  | 'error'
+  | 'quarantined'
+  | 'inactive'
+  | 'not_schedulable'
+  | 'evidence_missing'
+  | 'data_missing'
+  | string
+
+export type FormalPoolDashboardSeverity = 'success' | 'info' | 'warning' | 'danger' | 'muted' | string
+
+export interface FormalPoolStatusRuntime {
+  current: number
+  limit: number
+  utilization: number | null
+  available: boolean
+}
+
+export interface FormalPoolStatusWindow {
+  used: number
+  limit: number
+  remaining: number
+  utilization: number | null
+  reset_at: string | null
+  status: string
+  available: boolean
+}
+
+export interface FormalPoolPassiveUsage {
+  utilization: number | null
+  remaining_ratio: number | null
+  reset_at: string | null
+  sampled_at: string | null
+  available: boolean
+  status: string
+}
+
+export interface FormalPoolStatusRecommendation {
+  label: string
+  detail: string
+  action_kind: string
+}
+
+export interface FormalPoolStatusDashboardAccount {
+  account_id: number
+  account_label: string
+  platform: AccountPlatform | string
+  type: AccountType | string
+  stage: FormalPoolStage | string
+  state: FormalPoolDashboardState
+  state_label: string
+  state_severity: FormalPoolDashboardSeverity
+  schedulable: boolean
+  effective_schedulable: boolean
+  production_ready: boolean
+  five_hour_window: FormalPoolStatusWindow
+  passive_usage_5h?: FormalPoolPassiveUsage
+  passive_usage_7d?: FormalPoolPassiveUsage
+  rpm: FormalPoolStatusRuntime
+  concurrency: FormalPoolStatusRuntime
+  sessions: FormalPoolStatusRuntime
+  last_used_at: string | null
+  last_success_hint: string | null
+  last_failure_code: string
+  last_failure_bucket: string
+  recommendation: FormalPoolStatusRecommendation
+}
+
+export interface FormalPoolStatusSummary {
+  total: number
+  normal: number
+  warming: number
+  production: number
+  rate_limited: number
+  manual_risk: number
+  error: number
+  quarantined: number
+  inactive: number
+  not_schedulable: number
+  evidence_missing: number
+  data_missing: number
+  schedulable: number
+  total_current_rpm: number
+  total_rpm_limit: number
+  rpm_available: boolean
+  five_hour_remaining_ratio: number | null
+  five_hour_window_available: boolean
+  passive_usage_5h_remaining_ratio?: number | null
+  passive_usage_5h_available?: boolean
+  passive_usage_7d_remaining_ratio?: number | null
+  passive_usage_7d_available?: boolean
+  generated_at: string
+}
+
+export interface FormalPoolStatusDashboard {
+  summary: FormalPoolStatusSummary
+  accounts: FormalPoolStatusDashboardAccount[]
+}
+
 // Claude Model type (returned by /v1/models and account models API)
 export interface ClaudeModel {
   id: string
@@ -837,6 +1012,33 @@ export interface Account {
 
   // Rate limit & scheduling fields
   schedulable: boolean
+  effective_schedulable?: boolean
+  is_formal_pool?: boolean
+  onboarding_stage?: FormalPoolStage | string
+  pool_profile_requested?: 'normal' | 'aggressive' | string | null
+  pool_profile_effective?: 'normal' | 'aggressive' | string | null
+  pool_weight_mode?: 'low' | 'normal' | string | null
+  healthcheck_status?: string | null
+  healthcheck_last_status_code_bucket?: string | null
+  healthcheck_last_raw_ref?: string | null
+  formal_pool_last_failure_origin?: FormalPoolFailureOrigin | string | null
+  formal_pool_last_failure_code?: string | null
+  formal_pool_last_failure_source?: string | null
+  formal_pool_last_cc_gateway_error_code?: string | null
+  formal_pool_last_healthcheck_at?: string | null
+  formal_pool_last_healthcheck_result?: string | null
+  healthcheck_cc_gateway_seen?: boolean | string | null
+  healthcheck_fallback_detected?: boolean | string | null
+  healthcheck_proxy_mismatch?: boolean | string | null
+  healthcheck_risk_text_detected?: boolean | string | null
+  formal_pool_credential_generation?: number | null
+  formal_pool_repaired_at?: string | null
+  formal_pool_repaired_by?: string | null
+  cc_gateway_runtime_registered?: boolean | string | null
+  quarantine_reason?: string | null
+  risk_event_ref?: string | null
+  warming_until?: string | null
+  production_ready?: boolean
   rate_limited_at: string | null
   rate_limit_reset_at: string | null
   overload_until: string | null

@@ -1,12 +1,19 @@
 package middleware
 
 import (
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+)
+
+const (
+	browserEgressCheckPathPrefix   = "/api/v1/claude-onboarding/browser-egress-check/"
+	browserEgressCheckPathTemplate = "/api/v1/claude-onboarding/browser-egress-check/:nonce"
+	browserEgressRedactedValue     = "redacted"
 )
 
 // Logger 请求日志中间件
@@ -32,6 +39,12 @@ func Logger() gin.HandlerFunc {
 		method := c.Request.Method
 		statusCode := c.Writer.Status()
 		clientIP := c.ClientIP()
+		logPath := path
+		isBrowserEgressCheck := strings.HasPrefix(path, browserEgressCheckPathPrefix)
+		if isBrowserEgressCheck {
+			logPath = browserEgressCheckPathTemplate
+			clientIP = browserEgressRedactedValue
+		}
 		protocol := c.Request.Proto
 		accountID, hasAccountID := c.Request.Context().Value(ctxkey.AccountID).(int64)
 		platform, _ := c.Request.Context().Value(ctxkey.Platform).(string)
@@ -44,7 +57,7 @@ func Logger() gin.HandlerFunc {
 			zap.String("client_ip", clientIP),
 			zap.String("protocol", protocol),
 			zap.String("method", method),
-			zap.String("path", path),
+			zap.String("path", logPath),
 		}
 		if hasAccountID && accountID > 0 {
 			fields = append(fields, zap.Int64("account_id", accountID))
@@ -60,7 +73,11 @@ func Logger() gin.HandlerFunc {
 		l.Info("http request completed", zap.Time("completed_at", endTime))
 
 		if len(c.Errors) > 0 {
-			l.Warn("http request contains gin errors", zap.String("errors", c.Errors.String()))
+			errorsValue := c.Errors.String()
+			if isBrowserEgressCheck {
+				errorsValue = browserEgressRedactedValue
+			}
+			l.Warn("http request contains gin errors", zap.String("errors", errorsValue))
 		}
 	}
 }

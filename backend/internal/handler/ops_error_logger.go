@@ -340,12 +340,24 @@ func setOpsRequestContext(c *gin.Context, model string, stream bool, requestBody
 	c.Set(opsModelKey, model)
 	c.Set(opsStreamKey, stream)
 	if len(requestBody) > 0 {
+		if c.Request != nil {
+			if audit, ok := service.AnthropicCompatAuditSummaryFromContext(c.Request.Context()); ok {
+				requestBody = service.BuildAnthropicCompatOpsRequestBodySummary(requestBody, audit, model, stream)
+			}
+		}
 		c.Set(opsRequestBodyKey, requestBody)
 	}
 	if c.Request != nil && model != "" {
 		ctx := context.WithValue(c.Request.Context(), ctxkey.Model, model)
 		c.Request = c.Request.WithContext(ctx)
 	}
+}
+
+func clearOpsRequestBodyContext(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(opsRequestBodyKey, []byte(nil))
 }
 
 // setOpsEndpointContext stores upstream model and request type for ops error logging.

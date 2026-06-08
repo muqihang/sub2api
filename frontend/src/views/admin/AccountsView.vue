@@ -63,6 +63,23 @@
                 </div>
               </div>
 
+
+              <button
+                @click="showFormalPoolStatusDashboard = true"
+                class="btn btn-secondary"
+                title="号池实时看板"
+              >
+                号池实时看板
+              </button>
+
+              <button
+                @click="router.push('/admin/claude-onboarding')"
+                class="btn btn-primary"
+                title="Claude 正式号池上号向导"
+              >
+                Claude 正式号池上号向导
+              </button>
+
               <!-- Error Passthrough Rules -->
               <button
                 @click="showErrorPassthrough = true"
@@ -166,6 +183,7 @@
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
           :estimate-row-height="72"
           :overscan="5"
+          density="compact"
         >
           <template #header-select>
             <input
@@ -222,9 +240,38 @@
             </div>
           </template>
           <template #cell-schedulable="{ row }">
-            <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
-              <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
-            </button>
+            <div class="flex items-center gap-2">
+              <button @click="handleToggleSchedulable(row)" :disabled="togglingSchedulable === row.id" class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:focus:ring-offset-dark-800" :class="[row.schedulable ? 'bg-primary-500 hover:bg-primary-600' : 'bg-gray-200 hover:bg-gray-300 dark:bg-dark-600 dark:hover:bg-dark-500']" :title="row.schedulable ? t('admin.accounts.schedulableEnabled') : t('admin.accounts.schedulableDisabled')">
+                <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="[row.schedulable ? 'translate-x-4' : 'translate-x-0']" />
+              </button>
+              <button
+                v-if="row.is_formal_pool && row.schedulable && row.effective_schedulable === false"
+                type="button"
+                class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 transition hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
+                :title="t('admin.accounts.formalPool.effectiveBlocked')"
+                @click.stop="openFormalPoolDiagnostics(row)"
+              >门禁</button>
+            </div>
+          </template>
+          <template #cell-onboarding_stage="{ row }">
+            <div v-if="row.onboarding_stage" class="flex max-w-[180px] flex-col gap-1">
+              <button
+                v-if="row.is_formal_pool"
+                type="button"
+                :class="['inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[10px] font-medium transition hover:opacity-80', getFormalPoolStageClass(row)]"
+                :title="getFormalPoolStageTitle(row)"
+                @click.stop="openFormalPoolDiagnostics(row)"
+              >
+                {{ getFormalPoolStageLabel(row) }}
+              </button>
+              <span v-else :class="['inline-flex w-fit items-center rounded px-1.5 py-0.5 text-[10px] font-medium', getFormalPoolStageClass(row)]">
+                {{ getFormalPoolStageLabel(row) }}
+              </span>
+              <span v-if="row.healthcheck_status || row.pool_weight_mode || row.quarantine_reason" class="truncate text-[10px] text-gray-500 dark:text-gray-400" :title="getFormalPoolStageTitle(row)">
+                {{ getFormalPoolStageSummary(row) }}
+              </span>
+            </div>
+            <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
           </template>
           <template #cell-today_stats="{ row }">
             <AccountTodayStatsCell
@@ -310,7 +357,32 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @formal-pool-diagnostics="openFormalPoolDiagnostics" />
+    <FormalPoolDiagnosticsModal
+      v-if="!appStore.useNewAccountManagementUx"
+      :show="showFormalPoolDiagnostics"
+      :account="formalPoolDiagnosticsAccount"
+      @close="closeFormalPoolDiagnostics"
+      @updated="handleFormalPoolDiagnosticsUpdated"
+    />
+    <FormalPoolDiagnosticsModalV2
+      v-else
+      :show="showFormalPoolDiagnostics"
+      :account="formalPoolDiagnosticsAccount"
+      @close="closeFormalPoolDiagnostics"
+      @updated="handleFormalPoolDiagnosticsUpdated"
+    />
+    <FormalPoolStatusDashboardModal
+      v-if="!appStore.useNewAccountManagementUx"
+      :show="showFormalPoolStatusDashboard"
+      @close="showFormalPoolStatusDashboard = false"
+    />
+    <FormalPoolStatusDashboardModalV2
+      v-else
+      :show="showFormalPoolStatusDashboard"
+      @close="showFormalPoolStatusDashboard = false"
+      @diagnose="openFormalPoolDiagnosticsFromDashboard"
+    />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -341,6 +413,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
@@ -368,6 +441,10 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
+import FormalPoolDiagnosticsModal from '@/components/account/FormalPoolDiagnosticsModal.vue'
+import FormalPoolDiagnosticsModalV2 from '@/components/account/FormalPoolDiagnosticsModalV2.vue'
+import FormalPoolStatusDashboardModal from '@/components/account/FormalPoolStatusDashboardModal.vue'
+import FormalPoolStatusDashboardModalV2 from '@/components/account/FormalPoolStatusDashboardModalV2.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
@@ -378,6 +455,7 @@ import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, Admi
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const router = useRouter()
 const authStore = useAuthStore()
 
 const proxies = ref<AccountProxy[]>([])
@@ -438,12 +516,15 @@ const showTest = ref(false)
 const showStats = ref(false)
 const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
+const showFormalPoolDiagnostics = ref(false)
+const showFormalPoolStatusDashboard = ref(false)
 const edAcc = ref<Account | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
 const reAuthAcc = ref<Account | null>(null)
 const testingAcc = ref<Account | null>(null)
 const statsAcc = ref<Account | null>(null)
+const formalPoolDiagnosticsAccount = ref<Account | null>(null)
 const showSchedulePanel = ref(false)
 const scheduleAcc = ref<Account | null>(null)
 const scheduleModelOptions = ref<SelectOption[]>([])
@@ -814,7 +895,9 @@ const isAnyModalOpen = computed(() => {
     showTest.value ||
     showStats.value ||
     showSchedulePanel.value ||
-    showErrorPassthrough.value
+    showErrorPassthrough.value ||
+    showFormalPoolDiagnostics.value ||
+    showFormalPoolStatusDashboard.value
   )
 })
 
@@ -848,6 +931,7 @@ const syncAccountRefs = (nextAccount: Account) => {
   if (tempUnschedAcc.value?.id === nextAccount.id) tempUnschedAcc.value = nextAccount
   if (deletingAcc.value?.id === nextAccount.id) deletingAcc.value = nextAccount
   if (menu.acc?.id === nextAccount.id) menu.acc = nextAccount
+  if (formalPoolDiagnosticsAccount.value?.id === nextAccount.id) formalPoolDiagnosticsAccount.value = nextAccount
 }
 
 const mergeAccountsIncrementally = (nextRows: Account[]) => {
@@ -1030,6 +1114,62 @@ function getAntigravityTierClass(row: any): string {
   }
 }
 
+
+
+function scrubFormalPoolDisplayText(input: unknown): string {
+  return String(input ?? '')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[redacted]')
+    .replace(/sk-ant-sid[^\s"'`,;)]*/gi, '[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/(?:access|refresh|id)[-_ ]?token\s*[:=]\s*[^\s"'`,;)]*/gi, '[redacted]')
+    .replace(/raw[-_ ]?(?:body|prompt|telemetry|cch|token)\s*[:=]?\s*[^\s"'`,;)]*/gi, '[redacted]')
+    .trim()
+}
+
+function formatFormalPoolSummaryValue(kind: 'healthcheckStatus' | 'poolWeightMode' | 'blockedReasons', value: unknown): string {
+  const text = scrubFormalPoolDisplayText(value)
+  if (!text) return ''
+  const translated = t(`admin.accounts.formalPoolDiagnostics.${kind}.${text}`, '')
+  return translated || text
+}
+
+function getFormalPoolStageLabel(row: Account): string {
+  const stage = row.onboarding_stage || 'legacy_unknown'
+  return t(`admin.accounts.formalPool.stage.${stage}`, stage)
+}
+
+function getFormalPoolStageClass(row: Account): string {
+  switch (row.onboarding_stage) {
+    case 'production': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+    case 'warming': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+    case 'quarantined': return 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+    case 'healthcheck_passed': return 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300'
+    case 'runtime_registered': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
+    case 'refreshed': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
+    case 'imported': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+    default: return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  }
+}
+
+function getFormalPoolStageSummary(row: Account): string {
+  const parts = [
+    formatFormalPoolSummaryValue('healthcheckStatus', row.healthcheck_status),
+    formatFormalPoolSummaryValue('poolWeightMode', row.pool_weight_mode),
+    formatFormalPoolSummaryValue('blockedReasons', row.quarantine_reason)
+  ].filter(Boolean)
+  return parts.join(' / ')
+}
+
+function getFormalPoolStageTitle(row: Account): string {
+  return [
+    row.pool_profile_requested ? `${t('admin.accounts.formalPool.requested')}: ${row.pool_profile_requested}` : '',
+    row.pool_profile_effective ? `${t('admin.accounts.formalPool.effective')}: ${row.pool_profile_effective}` : '',
+    row.healthcheck_last_status_code_bucket ? `${t('admin.accounts.formalPool.healthcheck')}: ${scrubFormalPoolDisplayText(row.healthcheck_last_status_code_bucket)}` : '',
+    row.risk_event_ref ? `${t('admin.accounts.formalPool.riskEvent')}: ${scrubFormalPoolDisplayText(row.risk_event_ref)}` : ''
+  ].filter(Boolean).join(' | ')
+}
+
 // All available columns
 const allColumns = computed(() => {
   const c = [
@@ -1039,6 +1179,7 @@ const allColumns = computed(() => {
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
+    { key: 'onboarding_stage', label: t('admin.accounts.columns.onboardingStage'), sortable: false },
     { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false }
   ]
   if (!authStore.isSimpleMode) {
@@ -1409,6 +1550,34 @@ const patchAccountInList = (updatedAccount: Account) => {
 }
 const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
+  enterAutoRefreshSilentWindow()
+}
+const openFormalPoolDiagnostics = (account: Account) => {
+  if (!account.is_formal_pool) return
+  formalPoolDiagnosticsAccount.value = account
+  showFormalPoolDiagnostics.value = true
+}
+const openFormalPoolDiagnosticsFromDashboard = async (accountId: number) => {
+  let account = accounts.value.find(item => item.id === accountId) ?? null
+  if (!account) {
+    try {
+      account = await adminAPI.accounts.getById(accountId)
+    } catch (error) {
+      console.error('Failed to load account before opening formal pool diagnostics:', error)
+      return
+    }
+  }
+  if (!account) return
+  showFormalPoolStatusDashboard.value = false
+  openFormalPoolDiagnostics(account)
+}
+const closeFormalPoolDiagnostics = () => {
+  showFormalPoolDiagnostics.value = false
+  formalPoolDiagnosticsAccount.value = null
+}
+const handleFormalPoolDiagnosticsUpdated = (updatedAccount: Account) => {
+  patchAccountInList(updatedAccount)
+  formalPoolDiagnosticsAccount.value = updatedAccount
   enterAutoRefreshSilentWindow()
 }
 const formatExportTimestamp = () => {

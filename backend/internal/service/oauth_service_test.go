@@ -474,20 +474,14 @@ func TestOAuthService_RefreshAccountToken_EmptyRefreshToken(t *testing.T) {
 	}
 }
 
-func TestOAuthService_RefreshAccountToken_Success(t *testing.T) {
+func TestOAuthService_RefreshAccountToken_NoProxyIDFailsClosedWithoutRefresh_Unit(t *testing.T) {
 	t.Parallel()
 
+	refreshCalled := false
 	client := &mockClaudeOAuthClient{
 		refreshTokenFunc: func(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error) {
-			if refreshToken != "account-refresh-token" {
-				t.Errorf("refreshToken 不匹配: got=%q", refreshToken)
-			}
-			return &oauth.TokenResponse{
-				AccessToken:  "refreshed-access",
-				TokenType:    "Bearer",
-				ExpiresIn:    3600,
-				RefreshToken: "new-refresh",
-			}, nil
+			refreshCalled = true
+			return nil, fmt.Errorf("must not refresh without account proxy")
 		},
 	}
 
@@ -504,12 +498,12 @@ func TestOAuthService_RefreshAccountToken_Success(t *testing.T) {
 		},
 	}
 
-	tokenInfo, err := svc.RefreshAccountToken(context.Background(), account)
-	if err != nil {
-		t.Fatalf("RefreshAccountToken 返回错误: %v", err)
+	_, err := svc.RefreshAccountToken(context.Background(), account)
+	if err == nil {
+		t.Fatal("RefreshAccountToken 应在 account.ProxyID 为空时 fail closed")
 	}
-	if tokenInfo.AccessToken != "refreshed-access" {
-		t.Fatalf("AccessToken 不匹配: got=%q", tokenInfo.AccessToken)
+	if refreshCalled {
+		t.Fatal("RefreshToken 不应在 account.ProxyID 为空时被调用")
 	}
 }
 

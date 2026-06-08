@@ -162,15 +162,15 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		innerRequest.SessionID = claudeReq.Metadata.UserID
 	}
 
-		// 6. 包装为 v1internal 请求
-		v1Req := V1InternalRequest{
-			Project:     projectID,
-			RequestID:   "agent-" + uuid.New().String(),
-			UserAgent:   EffectiveV1InternalUserAgent(),
-			RequestType: requestType,
-			Model:       targetModel,
-			Request:     innerRequest,
-		}
+	// 6. 包装为 v1internal 请求
+	v1Req := V1InternalRequest{
+		Project:     projectID,
+		RequestID:   "agent-" + uuid.New().String(),
+		UserAgent:   EffectiveV1InternalUserAgent(),
+		RequestType: requestType,
+		Model:       targetModel,
+		Request:     innerRequest,
+	}
 
 	return json.Marshal(v1Req)
 }
@@ -205,6 +205,7 @@ type modelInfo struct {
 // 注意：模型映射逻辑在网关层完成；这里仅用于按模型前缀判断是否注入身份提示词。
 var modelInfoMap = map[string]modelInfo{
 	"claude-opus-4-5":   {DisplayName: "Claude Opus 4.5", CanonicalID: "claude-opus-4-5-20250929"},
+	"claude-opus-4-8":   {DisplayName: "Claude Opus 4.8", CanonicalID: "claude-opus-4-8"},
 	"claude-opus-4-6":   {DisplayName: "Claude Opus 4.6", CanonicalID: "claude-opus-4-6"},
 	"claude-sonnet-4-6": {DisplayName: "Claude Sonnet 4.6", CanonicalID: "claude-sonnet-4-6"},
 	"claude-sonnet-4-5": {DisplayName: "Claude Sonnet 4.5", CanonicalID: "claude-sonnet-4-5-20250929"},
@@ -587,7 +588,8 @@ func maxOutputTokensLimit(model string) int {
 func isAntigravityOpusHighTierModel(model string) bool {
 	lower := strings.ToLower(model)
 	return strings.HasPrefix(lower, "claude-opus-4-6") ||
-		strings.HasPrefix(lower, "claude-opus-4-7")
+		strings.HasPrefix(lower, "claude-opus-4-7") ||
+		strings.HasPrefix(lower, "claude-opus-4-8")
 }
 
 func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {

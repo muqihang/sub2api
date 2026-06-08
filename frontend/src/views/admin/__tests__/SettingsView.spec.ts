@@ -409,6 +409,7 @@ const baseSettingsResponse = {
   balance_low_notify_recharge_url: "",
   account_quota_notify_enabled: false,
   account_quota_notify_emails: [],
+  use_new_account_management_ux: false,
 };
 
 function mountView() {
@@ -979,6 +980,57 @@ describe("admin SettingsView wechat connect controls", () => {
       expect.objectContaining({
         oidc_connect_use_pkce: false,
         oidc_connect_validate_id_token: false,
+      }),
+    );
+  });
+
+  it("loads use_new_account_management_ux=true from getSettings and renders the toggle as checked", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      use_new_account_management_ux: true,
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+
+    const toggle = wrapper.get(
+      '[data-testid="use-new-account-management-ux-toggle"]',
+    ).element as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+  });
+
+  it("includes use_new_account_management_ux=false in updateSettings payload by default", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        use_new_account_management_ux: false,
+      }),
+    );
+  });
+
+  it("submits use_new_account_management_ux=true after the admin enables the toggle", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+
+    const toggle = wrapper.get(
+      '[data-testid="use-new-account-management-ux-toggle"]',
+    );
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        use_new_account_management_ux: true,
       }),
     );
   });

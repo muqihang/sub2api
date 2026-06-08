@@ -46,6 +46,12 @@ func TestValidate_ClaudeCLIUserAgent(t *testing.T) {
 		{"空 User-Agent", "", false},
 		{"部分匹配", "not-claude-cli/1.0.0", false},
 		{"缺少版本号", "claude-cli/", false},
+		{"当前 CLI 版本", "claude-cli/2.1.161", true},
+		{"官方 claude-code UA", "claude-code/2.1.161", true},
+		{"官方 Claude Code UA", "Claude Code/2.1.161", true},
+		{"官方 ClaudeCode UA", "ClaudeCode/2.1.161", true},
+		{"bare claude-cli", "claude-cli", true},
+		{"new-api 非官方", "new-api/1.0.0", false},
 		{"版本格式不对", "claude-cli/1.0", false},
 	}
 
@@ -90,7 +96,7 @@ func TestValidate_MessagesPath_FullValid(t *testing.T) {
 	require.True(t, result, "完整有效请求应通过")
 }
 
-func TestValidate_MessagesPath_MissingHeaders(t *testing.T) {
+func TestValidate_MessagesPath_MissingHeadersStillAcceptedWithStrongEvidence(t *testing.T) {
 	v := newTestValidator()
 	body := validClaudeCodeBody()
 
@@ -113,12 +119,12 @@ func TestValidate_MessagesPath_MissingHeaders(t *testing.T) {
 			req.Header.Del(tt.missingHeader)
 
 			result := v.Validate(req, body)
-			require.False(t, result, "缺少 %s 应返回 false", tt.missingHeader)
+			require.True(t, result, "缺少 %s 但有官方 UA + metadata + system prompt 应返回 true", tt.missingHeader)
 		})
 	}
 }
 
-func TestValidate_MessagesPath_InvalidMetadataUserID(t *testing.T) {
+func TestValidate_MessagesPath_InvalidMetadataUserIDWithoutClaudeCodePrompt(t *testing.T) {
 	v := newTestValidator()
 
 	tests := []struct {
@@ -145,7 +151,7 @@ func TestValidate_MessagesPath_InvalidMetadataUserID(t *testing.T) {
 				"system": []any{
 					map[string]any{
 						"type": "text",
-						"text": "You are Claude Code, Anthropic's official CLI for Claude.",
+						"text": "Generate JSON data for testing database migrations.",
 					},
 				},
 			}
@@ -159,7 +165,7 @@ func TestValidate_MessagesPath_InvalidMetadataUserID(t *testing.T) {
 	}
 }
 
-func TestValidate_MessagesPath_InvalidSystemPrompt(t *testing.T) {
+func TestValidate_MessagesPath_ValidMetadataAllowsMissingClaudeCodeSystemPrompt(t *testing.T) {
 	v := newTestValidator()
 
 	req := httptest.NewRequest("POST", "/v1/messages", nil)
@@ -182,7 +188,42 @@ func TestValidate_MessagesPath_InvalidSystemPrompt(t *testing.T) {
 	}
 
 	result := v.Validate(req, body)
-	require.False(t, result, "无关系统提示词应返回 false")
+	require.True(t, result, "官方 UA + 可解析 metadata.user_id 应通过，即使 system prompt 被剥离或不是 Claude Code prompt")
+}
+
+func TestValidate_MessagesPath_ClaudeCodeSystemPromptRequiresValidMetadata(t *testing.T) {
+	v := newTestValidator()
+
+	tests := []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{"缺少 metadata", nil},
+		{"invalid metadata", map[string]any{"user_id": "invalid-format"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/messages", nil)
+			req.Header.Set("User-Agent", "Claude Code/2.1.161")
+
+			body := map[string]any{
+				"model": "claude-sonnet-4",
+				"system": []any{
+					map[string]any{
+						"type": "text",
+						"text": "You are Claude Code, Anthropic's official CLI for Claude.",
+					},
+				},
+			}
+			if tt.metadata != nil {
+				body["metadata"] = tt.metadata
+			}
+
+			result := v.Validate(req, body)
+			require.False(t, result, "Claude Code system prompt must not bypass missing or invalid metadata.user_id")
+		})
+	}
 }
 
 func TestValidate_MaxTokensOneHaikuBypass(t *testing.T) {

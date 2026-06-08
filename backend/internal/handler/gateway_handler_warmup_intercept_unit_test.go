@@ -363,3 +363,54 @@ func TestGatewayHandlerMessages_InterceptWarmup_AntigravityAccount_ForcePlatform
 	require.Equal(t, "msg_mock_warmup", resp["id"])
 	require.Equal(t, "claude-sonnet-4-5", resp["model"])
 }
+
+func TestGatewayHandlerMessages_BlocksSuspiciousClaudeCodeProbeBeforeScheduling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(2101)
+	group := &service.Group{ID: groupID, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive}
+	h, cleanup := newTestGatewayHandler(t, group, nil)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	body := []byte(`{
+		"model":"claude-opus-4-8",
+		"system":[
+			{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.126.test; cc_entrypoint=sdk-cli; cch=00000;"},
+			{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}
+		],
+		"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
+		"max_tokens":1,
+		"stream":true,
+		"metadata":{"user_id":"{\"device_id\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"account_uuid\":\"\",\"session_id\":\"00000000-0000-4000-8000-000000000000\"}"}
+	}`)
+	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "claude-cli/2.1.161 (external, sdk-cli)")
+	req = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, group))
+	c.Request = req
+
+	apiKey := &service.APIKey{
+		ID:      3101,
+		UserID:  4101,
+		GroupID: &groupID,
+		Status:  service.StatusActive,
+		User:    &service.User{ID: 4101, Concurrency: 10, Balance: 100},
+		Group:   group,
+	}
+	c.Set(string(middleware.ContextKeyAPIKey), apiKey)
+	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.UserID, Concurrency: 10})
+
+	h.Messages(c)
+
+	require.Equal(t, 403, rec.Code)
+	require.Contains(t, rec.Body.String(), "Suspicious Claude Code probe request blocked")
+	entry := &service.OpsInsertErrorLogInput{}
+	attachOpsRequestBodyToEntry(c, entry)
+	require.Nil(t, entry.RequestBodyJSON, "blocked probe payload must not be persisted to ops error logs")
+	require.Nil(t, entry.RequestBodyBytes, "blocked probe payload size must not be persisted to ops error logs")
+	_, selected := c.Get(opsAccountIDKey)
+	require.False(t, selected, "blocked probe must not reach account scheduling")
+}

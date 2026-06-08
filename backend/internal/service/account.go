@@ -4,6 +4,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"reflect"
@@ -107,6 +108,14 @@ func (a *Account) EffectiveLoadFactor() int {
 func (a *Account) IsSchedulable() bool {
 	if !a.IsActive() || !a.Schedulable {
 		return false
+	}
+	if IsFormalPoolAccount(a) {
+		if !IsFormalPoolSchedulableStage(FormalPoolAccountStage(a)) {
+			return false
+		}
+		if !FormalPoolSchedulableEvidenceComplete(a) {
+			return false
+		}
 	}
 	now := time.Now()
 	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
@@ -751,6 +760,30 @@ func (a *Account) GetExtraString(key string) string {
 		return ""
 	}
 	if v, ok := a.Extra[key]; ok {
+		switch val := v.(type) {
+		case string:
+			return val
+		case bool:
+			if val {
+				return "true"
+			}
+			return "false"
+		case json.Number:
+			return val.String()
+		case float64:
+			return strconv.FormatFloat(val, 'f', -1, 64)
+		case int:
+			return strconv.Itoa(val)
+		case int64:
+			return strconv.FormatInt(val, 10)
+		case nil:
+			return ""
+		default:
+			s, ok := v.(fmt.Stringer)
+			if ok {
+				return s.String()
+			}
+		}
 		if s, ok := v.(string); ok {
 			return s
 		}

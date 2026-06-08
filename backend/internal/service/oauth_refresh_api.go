@@ -20,6 +20,10 @@ type OAuthRefreshExecutor interface {
 }
 
 const defaultRefreshLockTTL = 60 * time.Second
+const (
+	forceRefreshLockPeerMaxWait      = 2 * time.Second
+	forceRefreshLockPeerPollInterval = 50 * time.Millisecond
+)
 
 // OAuthRefreshResult 统一刷新结果
 type OAuthRefreshResult struct {
@@ -163,6 +167,124 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		NewCredentials: newCredentials,
 		Account:        freshAccount,
 	}, nil
+}
+
+// ForceRefresh refreshes an OAuth account under the same local/distributed locks as
+// RefreshIfNeeded, but skips the expiry-window double check. It is intended for
+// request-path recovery after an upstream 401 proves the current access token is stale.
+func (api *OAuthRefreshAPI) ForceRefresh(
+	ctx context.Context,
+	account *Account,
+	executor OAuthRefreshExecutor,
+	staleAccessToken string,
+) (*OAuthRefreshResult, error) {
+	if api == nil || account == nil || executor == nil || api.accountRepo == nil {
+		return nil, fmt.Errorf("oauth refresh unavailable")
+	}
+	cacheKey := executor.CacheKey(account)
+	originalAccessToken := strings.TrimSpace(staleAccessToken)
+	if originalAccessToken == "" {
+		originalAccessToken = account.GetCredential("access_token")
+	}
+	originalRefreshToken := account.GetCredential("refresh_token")
+
+	localMu := api.getLocalLock(cacheKey)
+	localMu.Lock()
+	defer localMu.Unlock()
+
+	if api.tokenCache != nil {
+		acquired, lockErr := api.tokenCache.AcquireRefreshLock(ctx, cacheKey, api.lockTTL)
+		if lockErr != nil {
+			slog.Warn("oauth_force_refresh_lock_failed_degraded", "account_id", account.ID, "cache_key", cacheKey, "error", lockErr)
+		} else if !acquired {
+			if freshAccount, ok := api.forceRefreshReuseFreshAccount(ctx, account, originalAccessToken, originalRefreshToken); ok {
+				return &OAuthRefreshResult{Account: freshAccount}, nil
+			}
+			if freshAccount, ok := api.waitForForceRefreshPeer(ctx, account, originalAccessToken, originalRefreshToken); ok {
+				return &OAuthRefreshResult{Account: freshAccount}, nil
+			}
+			return &OAuthRefreshResult{LockHeld: true}, nil
+		} else {
+			defer func() { _ = api.tokenCache.ReleaseRefreshLock(ctx, cacheKey) }()
+		}
+	}
+
+	freshAccount, err := api.accountRepo.GetByID(ctx, account.ID)
+	if err != nil {
+		slog.Warn("oauth_force_refresh_db_reread_failed", "account_id", account.ID, "error", err)
+		freshAccount = account
+	} else if freshAccount == nil {
+		freshAccount = account
+	}
+	freshAccessToken := strings.TrimSpace(freshAccount.GetCredential("access_token"))
+	if freshAccessToken != "" {
+		if originalAccessToken != "" && freshAccessToken != originalAccessToken {
+			return &OAuthRefreshResult{Account: freshAccount}, nil
+		}
+		if freshAccount != account && freshAccount.GetCredential("refresh_token") != originalRefreshToken {
+			return &OAuthRefreshResult{Account: freshAccount}, nil
+		}
+	}
+
+	newCredentials, refreshErr := executor.Refresh(ctx, freshAccount)
+	if refreshErr != nil {
+		if isInvalidGrantError(refreshErr) {
+			if recoveredAccount, recovered := api.tryRecoverFromRefreshRace(ctx, freshAccount); recovered {
+				slog.Info("oauth_force_refresh_race_recovered", "account_id", freshAccount.ID, "platform", freshAccount.Platform)
+				return &OAuthRefreshResult{Account: recoveredAccount}, nil
+			}
+		}
+		return nil, refreshErr
+	}
+
+	if newCredentials != nil {
+		newCredentials["_token_version"] = time.Now().UnixMilli()
+		if updateErr := persistAccountCredentials(ctx, api.accountRepo, freshAccount, newCredentials); updateErr != nil {
+			return nil, fmt.Errorf("oauth force refresh succeeded but DB update failed: %w", updateErr)
+		}
+	}
+
+	return &OAuthRefreshResult{Refreshed: true, NewCredentials: newCredentials, Account: freshAccount}, nil
+}
+
+func (api *OAuthRefreshAPI) forceRefreshReuseFreshAccount(ctx context.Context, account *Account, originalAccessToken, originalRefreshToken string) (*Account, bool) {
+	if api == nil || api.accountRepo == nil || account == nil {
+		return nil, false
+	}
+	freshAccount, err := api.accountRepo.GetByID(ctx, account.ID)
+	if err != nil || freshAccount == nil {
+		return nil, false
+	}
+	freshAccessToken := strings.TrimSpace(freshAccount.GetCredential("access_token"))
+	if freshAccessToken == "" {
+		return nil, false
+	}
+	if originalAccessToken != "" && freshAccessToken != originalAccessToken {
+		return freshAccount, true
+	}
+	if freshAccount.GetCredential("refresh_token") != originalRefreshToken {
+		return freshAccount, true
+	}
+	return nil, false
+}
+
+func (api *OAuthRefreshAPI) waitForForceRefreshPeer(ctx context.Context, account *Account, originalAccessToken, originalRefreshToken string) (*Account, bool) {
+	deadline := time.NewTimer(forceRefreshLockPeerMaxWait)
+	defer deadline.Stop()
+	ticker := time.NewTicker(forceRefreshLockPeerPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-deadline.C:
+			return nil, false
+		case <-ticker.C:
+			if freshAccount, ok := api.forceRefreshReuseFreshAccount(ctx, account, originalAccessToken, originalRefreshToken); ok {
+				return freshAccount, true
+			}
+		}
+	}
 }
 
 // isInvalidGrantError 检查错误是否为 invalid_grant

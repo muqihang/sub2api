@@ -1,0 +1,13 @@
+{
+  "status": "DEFER",
+  "route_policy": "block_linux_deployment_parity_claims",
+  "excluded_from_first_wave_canary": true,
+  "host_observation": {
+    "platform_system": "Darwin",
+    "platform_release": "23.5.0",
+    "machine": "arm64",
+    "python_version": "3.14.3"
+  },
+  "reason": "This workstation is macOS and no Linux/deployment-like host running official Claude Code 2.1.146 against localhost capture was provisioned in this checkpoint.",
+  "required_followup": "Run official Claude Code 2.1.146 on a Linux/deployment-like host against localhost capture and compare UA, X-Stainless-OS/Arch/runtime, Accept-Encoding, beta order, body keys, and TLS/ALPN summaries before any Linux production claim."
+}

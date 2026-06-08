@@ -87,6 +87,43 @@ func TestAttachOpsRequestBodyToEntry_InvalidJSONKeepsSize(t *testing.T) {
 	require.Equal(t, int64(1), OpsErrorLogSanitizedTotal())
 }
 
+func TestSetOpsRequestContext_AnthropicCompatStoresSafeSummaryOnly(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	decision := service.AnthropicCompatIngressDecision{
+		InboundRoute:   service.AnthropicCompatInboundMessages,
+		CCGatewayRoute: service.AnthropicCompatCCGatewayMessages,
+		ClientType:     service.AnthropicCompatClientType,
+	}
+	c.Request = c.Request.WithContext(service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision)))
+
+	raw := []byte(`{"model":"claude-sonnet-4-6","max_tokens":32000,"stream":true,"system":"DO-NOT-PERSIST-SYSTEM","metadata":{"user_id":"{\"account_uuid\":\"DO-NOT-PERSIST-ACCOUNT-REF\",\"email\":\"DO-NOT-PERSIST-EMAIL-REF\"}"},"messages":[{"role":"user","content":"DO-NOT-PERSIST-PROMPT"}],"tools":[{"name":"search","input_schema":{"type":"object"}}],"thinking":{"type":"enabled","budget_tokens":1024},"proxy_credential":"DO-NOT-PERSIST-PROXY"}`)
+	setOpsRequestContext(c, "claude-sonnet-4-6", true, raw)
+
+	entry := &service.OpsInsertErrorLogInput{}
+	attachOpsRequestBodyToEntry(c, entry)
+
+	require.NotNil(t, entry.RequestBodyJSON)
+	stored := *entry.RequestBodyJSON
+	require.Contains(t, stored, `"client_type":"claude_code_compat"`)
+	require.Contains(t, stored, `"messages_count":1`)
+	require.Contains(t, stored, `"tools_count":1`)
+	require.Contains(t, stored, `"max_tokens":32000`)
+	require.NotContains(t, stored, "DO-NOT-PERSIST-PROMPT")
+	require.NotContains(t, stored, "DO-NOT-PERSIST-SYSTEM")
+	require.NotContains(t, stored, "DO-NOT-PERSIST-EMAIL-REF")
+	require.NotContains(t, stored, "DO-NOT-PERSIST-ACCOUNT-REF")
+	require.NotContains(t, stored, "DO-NOT-PERSIST-PROXY")
+	require.NotContains(t, stored, `"messages":[`)
+	require.NotContains(t, stored, `"content"`)
+	require.NotContains(t, stored, `"metadata"`)
+	require.NotContains(t, stored, `"system"`)
+}
+
 func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
 	resetOpsErrorLoggerStateForTest(t)
 

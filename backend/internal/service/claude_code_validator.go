@@ -15,11 +15,12 @@ import (
 type ClaudeCodeValidator struct{}
 
 var (
-	// User-Agent 匹配: claude-cli/x.x.x (仅支持官方 CLI，大小写不敏感)
-	claudeCodeUAPattern = regexp.MustCompile(`(?i)^claude-cli/\d+\.\d+\.\d+`)
+	// User-Agent 匹配官方 Claude Code 客户端家族，大小写不敏感。
+	// 支持 claude-cli、claude-code、Claude Code、ClaudeCode，版本号可选。
+	claudeCodeUAPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code)(?:/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]*)?)?(?:\s|\(|;|$)`)
 
-	// 带捕获组的版本提取正则
-	claudeCodeUAVersionPattern = regexp.MustCompile(`(?i)^claude-cli/(\d+\.\d+\.\d+)`)
+	// 带捕获组的版本提取正则。和 UA 判定保持同一官方客户端家族。
+	claudeCodeUAVersionPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code)/(\d+\.\d+\.\d+)`)
 
 	// System prompt 相似度阈值（默认 0.5，和 claude-relay-service 一致）
 	systemPromptThreshold = 0.5
@@ -52,18 +53,12 @@ func NewClaudeCodeValidator() *ClaudeCodeValidator {
 	return &ClaudeCodeValidator{}
 }
 
-// Validate 验证请求是否来自 Claude Code CLI
-// 采用与 claude-relay-service 完全一致的验证策略：
+// Validate 验证请求是否来自 Claude Code 客户端。
 //
-//	Step 1: User-Agent 检查 (必需) - 必须是 claude-cli/x.x.x
+//	Step 1: User-Agent 检查 (必需) - 必须命中官方 Claude Code 客户端家族
 //	Step 2: 对于非 messages 路径，只要 UA 匹配就通过
 //	Step 3: 检查 max_tokens=1 + haiku 探测请求绕过（UA 已验证）
-//	Step 4: 对于 messages 路径，进行严格验证：
-//	        - System prompt 相似度检查
-//	        - X-App header 检查
-//	        - anthropic-beta header 检查
-//	        - anthropic-version header 检查
-//	        - metadata.user_id 格式验证
+//	Step 4: 对于 messages 路径，要求官方 UA 之外还有可解析 metadata.user_id
 func (v *ClaudeCodeValidator) Validate(r *http.Request, body map[string]any) bool {
 	// Step 1: User-Agent 检查
 	ua := r.Header.Get("User-Agent")
@@ -83,53 +78,26 @@ func (v *ClaudeCodeValidator) Validate(r *http.Request, body map[string]any) boo
 		return true // 绕过 system prompt 检查，UA 已在 Step 1 验证
 	}
 
-	// Step 4: messages 路径，进行严格验证
+	// Step 4: messages 路径：header 可能被中转层剥离，但 system prompt 易被复制，
+	// 因此正常请求必须携带可解析 metadata.user_id。
+	return v.hasValidMetadataUserID(body)
+}
 
-	// 4.1 检查 system prompt 相似度
-	if !v.hasClaudeCodeSystemPrompt(body) {
-		return false
-	}
-
-	// 4.2 检查必需的 headers（值不为空即可）
-	xApp := r.Header.Get("X-App")
-	if xApp == "" {
-		return false
-	}
-
-	anthropicBeta := r.Header.Get("anthropic-beta")
-	if anthropicBeta == "" {
-		return false
-	}
-
-	anthropicVersion := r.Header.Get("anthropic-version")
-	if anthropicVersion == "" {
-		return false
-	}
-
-	// 4.3 验证 metadata.user_id
+// hasValidMetadataUserID 检查 metadata.user_id 是否符合 Claude Code 格式。
+func (v *ClaudeCodeValidator) hasValidMetadataUserID(body map[string]any) bool {
 	if body == nil {
 		return false
 	}
-
 	metadata, ok := body["metadata"].(map[string]any)
 	if !ok {
 		return false
 	}
-
 	userID, ok := metadata["user_id"].(string)
-	if !ok || userID == "" {
-		return false
-	}
-
-	if ParseMetadataUserID(userID) == nil {
-		return false
-	}
-
-	return true
+	return ok && ParseMetadataUserID(userID) != nil
 }
 
-// hasClaudeCodeSystemPrompt 检查请求是否包含 Claude Code 系统提示词
-// 使用字符串相似度匹配（Dice coefficient）
+// hasClaudeCodeSystemPrompt 检查请求是否包含 Claude Code 系统提示词。
+// 使用字符串相似度匹配（Dice coefficient）。
 func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) bool {
 	if body == nil {
 		return false

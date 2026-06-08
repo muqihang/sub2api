@@ -138,6 +138,9 @@ type SystemSettings struct {
 	// Available Channels feature (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 
+	// New Account Management UX V2 feature (default: disabled)
+	UseNewAccountManagementUX bool `json:"use_new_account_management_ux"`
+
 	// Claude Code version check
 	MinClaudeCodeVersion string
 	MaxClaudeCodeVersion string
@@ -230,6 +233,9 @@ type PublicSettings struct {
 
 	// Available Channels feature (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
+
+	// New Account Management UX V2 feature (default: disabled)
+	UseNewAccountManagementUX bool `json:"use_new_account_management_ux"`
 
 	// Affiliate (邀请返利) feature toggle
 	AffiliateEnabled bool `json:"affiliate_enabled"`

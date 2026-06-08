@@ -314,6 +314,43 @@ describe('useAppStore', () => {
       })
     })
 
+    // --- use_new_account_management_ux ---
+
+    it('useNewAccountManagementUx 在未加载 public settings 时默认为 false', () => {
+      const store = useAppStore()
+
+      expect(store.cachedPublicSettings).toBeNull()
+      expect(store.useNewAccountManagementUx).toBe(false)
+    })
+
+    it('useNewAccountManagementUx 在 SSR 注入 true 时反映为 true', () => {
+      const windowAny = window as any
+      windowAny.__APP_CONFIG__ = {
+        site_name: 'TestSite',
+        use_new_account_management_ux: true,
+      }
+
+      const store = useAppStore()
+      store.initFromInjectedConfig()
+
+      expect(store.cachedPublicSettings?.use_new_account_management_ux).toBe(true)
+      expect(store.useNewAccountManagementUx).toBe(true)
+    })
+
+    it('useNewAccountManagementUx 在 public settings 显式为 false 时保持 false', () => {
+      const windowAny = window as any
+      windowAny.__APP_CONFIG__ = {
+        site_name: 'TestSite',
+        use_new_account_management_ux: false,
+      }
+
+      const store = useAppStore()
+      store.initFromInjectedConfig()
+
+      expect(store.cachedPublicSettings?.use_new_account_management_ux).toBe(false)
+      expect(store.useNewAccountManagementUx).toBe(false)
+    })
+
     it('fetchPublicSettings(force) 会同步更新运行时注入配置', async () => {
       vi.mocked(getPublicSettings).mockResolvedValue({
         registration_enabled: false,

@@ -31,7 +31,7 @@ func SetClaudeCodeClientContext(c *gin.Context, body []byte, parsedReq *service.
 	}
 
 	ua := c.GetHeader("User-Agent")
-	// Fast path：非 Claude CLI UA 直接判定 false，避免热路径二次 JSON 反序列化。
+	// Fast path：非官方 Claude Code UA 直接判定 false，避免热路径二次 JSON 反序列化。
 	if !claudeCodeValidator.ValidateUserAgent(ua) {
 		ctx := service.SetClaudeCodeClient(c.Request.Context(), false)
 		c.Request = c.Request.WithContext(ctx)
@@ -43,7 +43,7 @@ func SetClaudeCodeClientContext(c *gin.Context, body []byte, parsedReq *service.
 		// 与 Validate 行为一致：非 messages 路径 UA 命中即可视为 Claude Code 客户端。
 		isClaudeCode = true
 	} else {
-		// 仅在确认为 Claude CLI 且 messages 路径时再做 body 解析。
+		// 仅在确认为官方 Claude Code UA 且 messages 路径时再做 body 解析。
 		bodyMap := claudeCodeBodyMapFromParsedRequest(parsedReq)
 		if bodyMap == nil {
 			bodyMap = claudeCodeBodyMapFromContextCache(c)
@@ -397,4 +397,16 @@ func nextBackoff(current time.Duration) time.Duration {
 		return maxBackoff
 	}
 	return jittered
+}
+
+func forceAnthropicCompatNonNative(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if _, ok := service.AnthropicCompatAuditSummaryFromContext(c.Request.Context()); !ok {
+		return
+	}
+	ctx := service.SetClaudeCodeClient(c.Request.Context(), false)
+	ctx = service.SetClaudeCodeVersion(ctx, "")
+	c.Request = c.Request.WithContext(ctx)
 }

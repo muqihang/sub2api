@@ -43,6 +43,8 @@ func ProvideAdminHandlers(
 	affiliateHandler *admin.AffiliateHandler,
 	augmentGatewayHandler *admin.AugmentGatewayHandler,
 	codexGatewayHandler *admin.CodexGatewayHandler,
+	formalPoolOnboardingHandler *admin.FormalPoolOnboardingHandler,
+	formalPoolOperationsHandler *admin.FormalPoolOperationsHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -78,6 +80,8 @@ func ProvideAdminHandlers(
 		Affiliate:              affiliateHandler,
 		AugmentGateway:         augmentGatewayHandler,
 		CodexGateway:           codexGatewayHandler,
+		FormalPoolOnboarding:   formalPoolOnboardingHandler,
+		FormalPoolOperations:   formalPoolOperationsHandler,
 	}
 }
 
@@ -98,6 +102,14 @@ func ProvideCodexGatewayAdminHandler(
 	adminSvc *service.CodexGatewayAdminService,
 ) *admin.CodexGatewayHandler {
 	return admin.NewCodexGatewayHandler(adminSvc)
+}
+
+func ProvideFormalPoolOnboardingHandler(
+	svc *service.FormalPoolOnboardingService,
+	limiter service.FormalPoolEgressRateLimiter,
+	riskWriter service.FormalPoolRiskEventWriter,
+) *admin.FormalPoolOnboardingHandler {
+	return admin.NewFormalPoolOnboardingHandlerWithPublicDeps(svc, limiter, riskWriter)
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
@@ -172,6 +184,7 @@ func ProvideHandlers(
 	announcementHandler *AnnouncementHandler,
 	channelMonitorUserHandler *ChannelMonitorUserHandler,
 	codexAgentHandler *CodexAgentHandler,
+	codexEntryCenterHandler *CodexEntryCenterHandler,
 	adminHandlers *AdminHandlers,
 	gatewayHandler *GatewayHandler,
 	codexGatewayHandler *CodexGatewayHandler,
@@ -193,6 +206,7 @@ func ProvideHandlers(
 		Subscription:     subscriptionHandler,
 		Announcement:     announcementHandler,
 		CodexAgent:       codexAgentHandler,
+		CodexEntryCenter: codexEntryCenterHandler,
 		ChannelMonitor:   channelMonitorUserHandler,
 		Admin:            adminHandlers,
 		Gateway:          gatewayHandler,
@@ -218,6 +232,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementHandler,
 	NewChannelMonitorUserHandler,
 	NewCodexAgentHandler,
+	NewCodexEntryCenterHandler,
 	NewGatewayHandler,
 	ProvideCodexGatewayHandler,
 	ProvideOpenAIGatewayHandler,
@@ -261,6 +276,8 @@ var ProviderSet = wire.NewSet(
 	admin.NewAffiliateHandler,
 	ProvideAugmentGatewayHandler,
 	ProvideCodexGatewayAdminHandler,
+	ProvideFormalPoolOnboardingHandler,
+	admin.NewFormalPoolOperationsHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

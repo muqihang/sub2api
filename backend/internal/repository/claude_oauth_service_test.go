@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -26,6 +28,7 @@ type requestCapture struct {
 	cookies     []*http.Cookie
 	body        []byte
 	bodyJSON    map[string]any
+	bodyForm    url.Values
 	contentType string
 }
 
@@ -162,6 +165,7 @@ func (s *ClaudeOAuthServiceSuite) TestGetAuthorizationCode() {
 				captured.cookies = r.Cookies()
 				captured.body, _ = io.ReadAll(r.Body)
 				_ = json.Unmarshal(captured.body, &captured.bodyJSON)
+				captured.bodyForm, _ = url.ParseQuery(string(captured.body))
 				tt.handler(w, r)
 			}), nil)
 
@@ -217,14 +221,14 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 			},
 			validate: func(captured requestCapture) {
 				require.Equal(s.T(), http.MethodPost, captured.method, "expected POST")
-				require.True(s.T(), strings.HasPrefix(captured.contentType, "application/json"), "unexpected content-type")
-				require.Equal(s.T(), "AUTH", captured.bodyJSON["code"])
-				require.Equal(s.T(), "STATE2", captured.bodyJSON["state"])
-				require.Equal(s.T(), oauth.ClientID, captured.bodyJSON["client_id"])
-				require.Equal(s.T(), oauth.RedirectURI, captured.bodyJSON["redirect_uri"])
-				require.Equal(s.T(), "ver", captured.bodyJSON["code_verifier"])
+				require.True(s.T(), strings.HasPrefix(captured.contentType, "application/x-www-form-urlencoded"), "unexpected content-type")
+				require.Equal(s.T(), "AUTH", captured.bodyForm.Get("code"))
+				require.Equal(s.T(), "STATE2", captured.bodyForm.Get("state"))
+				require.Equal(s.T(), oauth.ClientID, captured.bodyForm.Get("client_id"))
+				require.Equal(s.T(), oauth.RedirectURI, captured.bodyForm.Get("redirect_uri"))
+				require.Equal(s.T(), "ver", captured.bodyForm.Get("code_verifier"))
 				// Regular OAuth should not include expires_in
-				require.Nil(s.T(), captured.bodyJSON["expires_in"], "regular OAuth should not include expires_in")
+				require.Empty(s.T(), captured.bodyForm.Get("expires_in"), "regular OAuth should not include expires_in")
 			},
 		},
 		{
@@ -244,7 +248,7 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 			},
 			validate: func(captured requestCapture) {
 				// Setup token should include expires_in with 1 year value
-				require.Equal(s.T(), float64(31536000), captured.bodyJSON["expires_in"],
+				require.Equal(s.T(), "31536000", captured.bodyForm.Get("expires_in"),
 					"setup token should include expires_in: 31536000")
 			},
 		},
@@ -269,6 +273,7 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 				captured.contentType = r.Header.Get("Content-Type")
 				captured.body, _ = io.ReadAll(r.Body)
 				_ = json.Unmarshal(captured.body, &captured.bodyJSON)
+				captured.bodyForm, _ = url.ParseQuery(string(captured.body))
 				tt.handler(w, r)
 			}), nil)
 
@@ -304,7 +309,7 @@ func (s *ClaudeOAuthServiceSuite) TestRefreshToken() {
 		validate func(captured requestCapture)
 	}{
 		{
-			name: "sends_json_format",
+			name: "sends_form_format",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(oauth.TokenResponse{
@@ -321,13 +326,11 @@ func (s *ClaudeOAuthServiceSuite) TestRefreshToken() {
 			},
 			validate: func(captured requestCapture) {
 				require.Equal(s.T(), http.MethodPost, captured.method, "expected POST")
-				// 验证使用 JSON 格式（不是 form 格式）
-				require.True(s.T(), strings.HasPrefix(captured.contentType, "application/json"),
-					"expected JSON content-type, got: %s", captured.contentType)
-				// 验证 JSON body 内容
-				require.Equal(s.T(), "refresh_token", captured.bodyJSON["grant_type"])
-				require.Equal(s.T(), "rt", captured.bodyJSON["refresh_token"])
-				require.Equal(s.T(), oauth.ClientID, captured.bodyJSON["client_id"])
+				require.True(s.T(), strings.HasPrefix(captured.contentType, "application/x-www-form-urlencoded"),
+					"expected form content-type, got: %s", captured.contentType)
+				require.Equal(s.T(), "refresh_token", captured.bodyForm.Get("grant_type"))
+				require.Equal(s.T(), "rt", captured.bodyForm.Get("refresh_token"))
+				require.Equal(s.T(), oauth.ClientID, captured.bodyForm.Get("client_id"))
 			},
 		},
 		{
@@ -365,6 +368,7 @@ func (s *ClaudeOAuthServiceSuite) TestRefreshToken() {
 				captured.contentType = r.Header.Get("Content-Type")
 				captured.body, _ = io.ReadAll(r.Body)
 				_ = json.Unmarshal(captured.body, &captured.bodyJSON)
+				captured.bodyForm, _ = url.ParseQuery(string(captured.body))
 				tt.handler(w, r)
 			}), nil)
 
@@ -391,6 +395,204 @@ func (s *ClaudeOAuthServiceSuite) TestRefreshToken() {
 	}
 }
 
+func (s *ClaudeOAuthServiceSuite) TestTokenExchangeProxyFailureDoesNotDirectConnect() {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(oauth.TokenResponse{AccessToken: "at", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+	require.True(s.T(), ok, "type assertion failed")
+	client.tokenURL = server.URL
+
+	_, err := client.ExchangeCodeForToken(context.Background(), "AUTH", "ver", "", "http://127.0.0.1:1", false)
+	require.Error(s.T(), err)
+	require.Zero(s.T(), hits, "token exchange must not bypass unavailable proxy and direct-connect")
+}
+
+func (s *ClaudeOAuthServiceSuite) TestRefreshTokenProxyFailureDoesNotDirectConnect() {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(oauth.TokenResponse{AccessToken: "at", ExpiresIn: 3600})
+	}))
+	defer server.Close()
+
+	client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+	require.True(s.T(), ok, "type assertion failed")
+	client.tokenURL = server.URL
+
+	_, err := client.RefreshToken(context.Background(), "rt", "http://127.0.0.1:1")
+	require.Error(s.T(), err)
+	require.Zero(s.T(), hits, "refresh must not bypass unavailable proxy and direct-connect")
+}
+
+func (s *ClaudeOAuthServiceSuite) TestOAuthErrorBodiesAreRedacted() {
+	secretBody := `{"error":"invalid_grant","code":"auth-secret","state":"state-secret","access_token":"access-secret","refresh_token":"refresh-secret","redirect_uri":"https://platform.claude.com/oauth/code/callback?code=query-code-secret&state=query-state-secret"}`
+
+	s.Run("get_organization_uuid_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.baseURL = "http://in-process"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.GetOrganizationUUID(context.Background(), "sess", "")
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+
+	s.Run("get_authorization_code_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.baseURL = "http://in-process"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.GetAuthorizationCode(context.Background(), "sess", "org-1", oauth.ScopeInference, "cc", "st", "")
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+
+	s.Run("exchange_code_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.tokenURL = "http://in-process/token"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.ExchangeCodeForToken(context.Background(), "AUTH", "verifier-secret", "", "", false)
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+
+	s.Run("refresh_token_redacts_error_body", func() {
+		rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(secretBody))
+		}), nil)
+
+		client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+		require.True(s.T(), ok, "type assertion failed")
+		client.tokenURL = "http://in-process/token"
+		client.clientFactory = func(string) (*req.Client, error) { return newTestReqClient(rt), nil }
+
+		_, err := client.RefreshToken(context.Background(), "refresh-secret", "")
+		require.Error(s.T(), err)
+		assertNoOAuthSecretLeak(s.T(), err.Error())
+	})
+}
+
+func assertNoOAuthSecretLeak(t *testing.T, text string) {
+	t.Helper()
+	for _, secret := range []string{
+		"auth-secret",
+		"state-secret",
+		"access-secret",
+		"refresh-secret",
+		"query-code-secret",
+		"query-state-secret",
+		"verifier-secret",
+	} {
+		require.NotContains(t, text, secret)
+	}
+	require.Contains(t, text, "***")
+}
+
+func TestClaudeOAuthRequestErrorRedactsAuthorizeURL(t *testing.T) {
+	orgUUID := "11111111-2222-4333-8444-555555555555"
+	raw := `Post "https://claude.ai/v1/oauth/` + orgUUID + `/authorize": dial tcp: connect: connection refused`
+
+	redacted := redactClaudeOAuthLogText(raw)
+
+	require.NotContains(t, redacted, orgUUID)
+	require.NotContains(t, redacted, "/"+orgUUID+"/")
+	require.Contains(t, redacted, "/v1/oauth/<redacted>/authorize")
+}
+
+func TestClaudeOAuthGetAuthorizationCodeRequestErrorRedactsAuthorizeURL(t *testing.T) {
+	orgUUID := "22222222-3333-4444-8555-666666666666"
+	client, ok := NewClaudeOAuthClient().(*claudeOAuthService)
+	require.True(t, ok, "type assertion failed")
+	client.baseURL = "https://claude.ai"
+	client.clientFactory = func(string) (*req.Client, error) {
+		return newTestReqClient(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return nil, &url.Error{Op: "Post", URL: r.URL.String(), Err: io.ErrUnexpectedEOF}
+		})), nil
+	}
+
+	_, err := client.GetAuthorizationCode(context.Background(), "sess", orgUUID, oauth.ScopeInference, "cc", "st", "")
+
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), orgUUID)
+	require.NotContains(t, err.Error(), "/"+orgUUID+"/")
+	require.Contains(t, err.Error(), "/v1/oauth/<redacted>/authorize")
+}
+
 func TestClaudeOAuthServiceSuite(t *testing.T) {
 	suite.Run(t, new(ClaudeOAuthServiceSuite))
+}
+
+func TestClaudeOAuthLogRedactionRedactsOrganizationIdentityFields(t *testing.T) {
+	payload := map[string]any{
+		"organization_uuid": "11111111-2222-4333-8444-555555555555",
+		"org_uuid":          "66666666-7777-4888-9999-aaaaaaaaaaaa",
+		"account_uuid":      "bbbbbbbb-cccc-4ddd-eeee-ffffffffffff",
+		"email":             "person@example.com",
+		"name":              "Sensitive Org Name",
+		"nested": map[string]any{
+			"organization_uuid": "99999999-8888-4777-8666-555555555555",
+			"email":             "nested@example.com",
+		},
+	}
+
+	redacted := string(mustJSONBytes(t, redactClaudeOAuthLogMap(payload)))
+	for _, secret := range []string{
+		"11111111-2222-4333-8444-555555555555",
+		"66666666-7777-4888-9999-aaaaaaaaaaaa",
+		"bbbbbbbb-cccc-4ddd-eeee-ffffffffffff",
+		"99999999-8888-4777-8666-555555555555",
+		"person@example.com",
+		"nested@example.com",
+		"Sensitive Org Name",
+	} {
+		require.NotContains(t, redacted, secret)
+	}
+	require.Contains(t, redacted, "***")
+}
+
+func mustJSONBytes(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
+func TestClaudeOAuthAuthorizeURLLogStringRedactsOrganizationUUID(t *testing.T) {
+	orgUUID := "11111111-2222-4333-8444-555555555555"
+	logged := safeClaudeOAuthAuthorizeURLForLog("https://claude.ai", orgUUID)
+	require.NotContains(t, logged, orgUUID)
+	require.NotContains(t, logged, "/"+orgUUID+"/")
+	require.Contains(t, logged, "<redacted>")
+	require.Contains(t, logged, "/v1/oauth/")
 }

@@ -15,6 +15,7 @@ var defaultSensitiveKeys = map[string]struct{}{
 	"authorization_code": {},
 	"code":               {},
 	"code_verifier":      {},
+	"state":              {},
 	"access_token":       {},
 	"refresh_token":      {},
 	"id_token":           {},
@@ -26,6 +27,7 @@ var defaultSensitiveKeyList = []string{
 	"authorization_code",
 	"code",
 	"code_verifier",
+	"state",
 	"access_token",
 	"refresh_token",
 	"id_token",
@@ -52,7 +54,8 @@ func RedactMap(input map[string]any, extraKeys ...string) map[string]any {
 		return map[string]any{}
 	}
 	keys := buildKeySet(extraKeys)
-	redacted, ok := redactValueWithDepth(input, keys, 0).(map[string]any)
+	patterns := getTextRedactPatterns(extraKeys)
+	redacted, ok := redactValueWithDepth(input, keys, patterns, 0).(map[string]any)
 	if !ok {
 		return map[string]any{}
 	}
@@ -68,7 +71,8 @@ func RedactJSON(raw []byte, extraKeys ...string) string {
 		return "<non-json payload redacted>"
 	}
 	keys := buildKeySet(extraKeys)
-	redacted := redactValueWithDepth(value, keys, 0)
+	patterns := getTextRedactPatterns(extraKeys)
+	redacted := redactValueWithDepth(value, keys, patterns, 0)
 	encoded, err := json.Marshal(redacted)
 	if err != nil {
 		return "<redacted>"
@@ -113,7 +117,7 @@ func compileTextRedactPatterns(extraKeys []string) *textRedactPatterns {
 		// Query-like: access_token=...
 		reQueryLike: regexp.MustCompile(`(?i)\b((?:` + keyAlt + `))=([^&\s]+)`),
 		// Plain: access_token: ... / access_token = ...
-		rePlain: regexp.MustCompile(`(?i)\b((?:` + keyAlt + `))\b(\s*[:=]\s*)([^,\s]+)`),
+		rePlain: regexp.MustCompile(`(?i)\b((?:` + keyAlt + `))\b(\s*[:=]\s*)([^,&\s]+)`),
 	}
 }
 
@@ -195,7 +199,7 @@ func buildKeySet(extraKeys []string) map[string]struct{} {
 	return keys
 }
 
-func redactValueWithDepth(value any, keys map[string]struct{}, depth int) any {
+func redactValueWithDepth(value any, keys map[string]struct{}, patterns *textRedactPatterns, depth int) any {
 	if depth > maxRedactDepth {
 		return "<depth limit exceeded>"
 	}
@@ -208,14 +212,21 @@ func redactValueWithDepth(value any, keys map[string]struct{}, depth int) any {
 				out[k] = "***"
 				continue
 			}
-			out[k] = redactValueWithDepth(val, keys, depth+1)
+			out[k] = redactValueWithDepth(val, keys, patterns, depth+1)
 		}
 		return out
 	case []any:
 		out := make([]any, len(v))
 		for i, item := range v {
-			out[i] = redactValueWithDepth(item, keys, depth+1)
+			out[i] = redactValueWithDepth(item, keys, patterns, depth+1)
 		}
+		return out
+	case string:
+		out := reGOCSPX.ReplaceAllString(v, "GOCSPX-***")
+		out = reAIza.ReplaceAllString(out, "AIza***")
+		out = patterns.reJSONLike.ReplaceAllString(out, `$1***$3`)
+		out = patterns.reQueryLike.ReplaceAllString(out, `$1=***`)
+		out = patterns.rePlain.ReplaceAllString(out, `$1$2***`)
 		return out
 	default:
 		return value

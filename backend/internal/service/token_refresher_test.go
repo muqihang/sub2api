@@ -110,18 +110,30 @@ func TestClaudeTokenRefresher_NeedsRefresh_WithinWindow(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		accountType string
 		credentials map[string]any
 	}{
 		{
-			name: "string type - within refresh window",
+			name:        "oauth string type - within refresh window",
+			accountType: AccountTypeOAuth,
 			credentials: map[string]any{
 				"expires_at": strconv.FormatInt(expiresAt, 10),
 			},
 		},
 		{
-			name: "float64 type - within refresh window",
+			name:        "oauth float64 type - within refresh window",
+			accountType: AccountTypeOAuth,
 			credentials: map[string]any{
 				"expires_at": float64(expiresAt),
+			},
+		},
+		{
+			name:        "setup-token string type - within refresh window",
+			accountType: AccountTypeSetupToken,
+			credentials: map[string]any{
+				"expires_at":      strconv.FormatInt(expiresAt, 10),
+				"refresh_token":   "refresh-token",
+				"anthropic_scope": "user:inference",
 			},
 		},
 	}
@@ -130,7 +142,7 @@ func TestClaudeTokenRefresher_NeedsRefresh_WithinWindow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			account := &Account{
 				Platform:    PlatformAnthropic,
-				Type:        AccountTypeOAuth,
+				Type:        tt.accountType,
 				Credentials: tt.credentials,
 			}
 
@@ -195,6 +207,12 @@ func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "anthropic setup-token with refresh token - can refresh",
+			platform: PlatformAnthropic,
+			accType:  AccountTypeSetupToken,
+			want:     true,
+		},
+		{
 			name:     "anthropic api-key - cannot refresh",
 			platform: PlatformAnthropic,
 			accType:  AccountTypeAPIKey,
@@ -219,6 +237,9 @@ func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 			account := &Account{
 				Platform: tt.platform,
 				Type:     tt.accType,
+				Credentials: map[string]any{
+					"refresh_token": "refresh-token",
+				},
 			}
 
 			got := refresher.CanRefresh(account)

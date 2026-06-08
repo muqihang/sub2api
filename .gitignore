@@ -149,6 +149,12 @@ docs/codex-gateway/*
 !docs/codex-gateway/deepseek-codex-native-parity-plan.md
 !docs/codex-gateway/protocol-capture-design.md
 !docs/codex-gateway/protocol-capture-implementation-plan.md
+!docs/anti-ban/
+docs/anti-ban/*
+!docs/anti-ban/40-formal-pool-new-account-hard-gates.md
+!docs/anti-ban/42-formal-pool-operator-panel-runbook.md
+!docs/anti-ban/43-formal-pool-account-management-ux-v4.md
+!docs/anti-ban/46-zhumeng-agent-claude-code-native-takeover-plan.md
 !docs/brand/
 !docs/brand/zhumeng-intent-brief.md
 .serena/

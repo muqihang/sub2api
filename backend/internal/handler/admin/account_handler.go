@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -221,6 +222,31 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 	}
 
 	return item
+}
+
+// FormalPoolStatusDashboard returns the sanitized full Formal Pool status dashboard.
+// GET /api/v1/admin/formal-pool/status-dashboard
+func (h *AccountHandler) FormalPoolStatusDashboard(c *gin.Context) {
+	deps := service.FormalPoolStatusDashboardDeps{Accounts: h.adminService}
+	if h.concurrencyService != nil {
+		deps.Concurrency = h.concurrencyService
+	}
+	if h.rpmCache != nil {
+		deps.RPM = h.rpmCache
+	}
+	if h.sessionLimitCache != nil {
+		deps.Sessions = h.sessionLimitCache
+	}
+	if h.accountUsageService != nil {
+		deps.WindowStats = h.accountUsageService
+	}
+	dashboardSvc := service.NewFormalPoolStatusDashboardService(deps)
+	dashboard, err := dashboardSvc.Build(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dashboard)
 }
 
 // List handles listing all accounts with pagination
@@ -959,7 +985,7 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		// Use Anthropic/Claude OAuth service to refresh token
 		tokenInfo, err := h.oauthService.RefreshAccountToken(ctx, account)
 		if err != nil {
-			return nil, "", err
+			return nil, "", safeClaudeRefreshFailure(account, err)
 		}
 
 		// Copy existing credentials to preserve non-token settings (e.g., intercept_warmup_requests)
@@ -1001,6 +1027,20 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	h.adminService.EnsureAntigravityPrivacy(ctx, updatedAccount)
 
 	return updatedAccount, "", nil
+}
+
+func safeClaudeRefreshFailure(account *service.Account, err error) error {
+	if err == nil {
+		return nil
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "invalid_grant") || strings.Contains(text, "refresh token not found or invalid") {
+		if account != nil && account.Type == service.AccountTypeSetupToken {
+			return infraerrors.BadRequest("REFRESH_TOKEN_INVALID", "Refresh Token 已失效，请更换新的 Setup Token 后重新运行时注册和健康检查")
+		}
+		return infraerrors.BadRequest("REFRESH_TOKEN_INVALID", "Refresh Token 已失效，请重新授权账号")
+	}
+	return err
 }
 
 // Refresh handles refreshing account credentials
@@ -1881,9 +1921,40 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	response.Success(c, payload)
 }
 
+// QuarantineFormalPool handles manual formal-pool account isolation.
+// POST /api/v1/admin/accounts/:id/quarantine
+func (h *AccountHandler) QuarantineFormalPool(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	account, err := h.adminService.QuarantineFormalPoolAccount(c.Request.Context(), accountID, req.Reason)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
 // SetSchedulableRequest represents the request body for setting schedulable status
 type SetSchedulableRequest struct {
 	Schedulable bool `json:"schedulable"`
+}
+
+type CCGatewayCanaryPreflightRequest struct {
+	AccountHash    string `json:"account_hash"`
+	EgressBucket   string `json:"egress_bucket" binding:"required"`
+	BillingCCHMode string `json:"billing_cch_mode" binding:"required"`
+	Method         string `json:"method" binding:"required"`
+	Route          string `json:"route" binding:"required"`
 }
 
 // SetSchedulable handles toggling account schedulable status
@@ -1908,6 +1979,60 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	}
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
+func (h *AccountHandler) CCGatewayCanaryPreflight(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	var req CCGatewayCanaryPreflightRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	canaryReq := service.CCGatewayAnthropicCanaryRequest{
+		AccountID:      accountID,
+		AccountHash:    strings.TrimSpace(req.AccountHash),
+		EgressBucket:   strings.TrimSpace(req.EgressBucket),
+		BillingCCHMode: strings.TrimSpace(req.BillingCCHMode),
+		Method:         strings.TrimSpace(req.Method),
+		Route:          strings.TrimSpace(req.Route),
+	}
+	if err := service.ValidateCCGatewayAnthropicCanaryAccount(account, canaryReq); err != nil {
+		response.Error(c, http.StatusForbidden, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"ok":                         true,
+		"account_hash_matched":       strings.TrimSpace(req.AccountHash) != "",
+		"egress_bucket":              canaryReq.EgressBucket,
+		"billing_cch_mode":           canaryReq.BillingCCHMode,
+		"route":                      canaryReq.Route,
+		"method":                     canaryReq.Method,
+		"user_inference_scope_pass":  true,
+		"canary_only":                true,
+		"broad_routing_allowed":      false,
+		"no_real_upstream_request":   true,
+		"messages_request_performed": false,
+		"count_tokens_allowed":       false,
+		"event_logging_allowed":      false,
+		"openai_compatible_allowed":  false,
+		"antigravity_allowed":        false,
+		"automatic_retry_allowed":    false,
+		"sign_to_strip_fallback":     false,
+		"direct_fallback_allowed":    false,
+	})
 }
 
 // GetAvailableModels handles getting available models for an account
