@@ -145,7 +145,10 @@ docs/*
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
 !docs/codex-gateway/
 docs/codex-gateway/*
+!docs/codex-gateway/codex-desktop-full-capture-v3.md
 !docs/codex-gateway/deepseek-codex-native-parity-plan.md
+!docs/codex-gateway/protocol-capture-design.md
+!docs/codex-gateway/protocol-capture-implementation-plan.md
 !docs/brand/
 !docs/brand/zhumeng-intent-brief.md
 .serena/
@@ -161,3 +164,6 @@ data/
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
 .worktrees/
+
+# Caddy TLS material (do not commit)
+deploy/caddy_certs/
