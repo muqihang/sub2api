@@ -231,6 +231,7 @@ type CodexGatewayDeepSeekRequestContext struct {
 	WorkspaceKey         string
 	ManagedSessionBucket string
 	UserID               string
+	Provider             string
 	CaptureTrace         *CodexGatewayTrace
 }
 
@@ -238,6 +239,9 @@ type CodexGatewayDeepSeekRequestConfig struct {
 	ToolMappingConfig     CodexGatewayToolMappingConfig
 	ImageInputMode        string
 	AllowReasoningDisable bool
+	Provider              string
+	ReasoningMode         string
+	SupportsNativeImages  bool
 	HostedWebSearch       func(ctx context.Context, query string) (string, error)
 	HostedImageVision     func(ctx context.Context, imageURL string) (string, error)
 	HostedToolContext     *codexGatewayHostedToolContext

@@ -93,6 +93,379 @@ func TestCodexGatewayDeepSeekRequest_BuildsMessagesToolsAndUserID(t *testing.T) 
 	require.True(t, regexp.MustCompile(`^[A-Za-z0-9_-]{1,512}$`).MatchString(userID))
 }
 
+func TestCodexGatewayAgnesRequest_PreservesNativeImagesAndOfficialThinking(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{
+				"type":"message",
+				"role":"user",
+				"content":[
+					{"type":"input_text","text":"describe this image"},
+					{"type":"input_image","image_url":"data:image/png;base64,AAAA","detail":"high"}
+				]
+			}
+		]`),
+		Reasoning: json.RawMessage(`{"effort":"xhigh"}`),
+		RawFields: map[string]json.RawMessage{
+			"temperature": json.RawMessage(`0.2`),
+		},
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes",
+		IsolationKey: "iso_agnes",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{
+		Provider:             "agnes",
+		ReasoningMode:        "openai",
+		SupportsNativeImages: true,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "agnes-2.0-flash", prepared.Body["model"])
+	require.Equal(t, "high", prepared.Body["reasoning_effort"])
+	require.Equal(t, map[string]any{"enable_thinking": true}, prepared.Body["chat_template_kwargs"])
+	require.NotContains(t, prepared.Body, "thinking")
+	require.NotContains(t, prepared.Body, "temperature")
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 1)
+	content := messages[0].(map[string]any)["content"].([]any)
+	require.Equal(t, map[string]any{"type": "text", "text": "describe this image"}, content[0])
+	require.Equal(t, "image_url", content[1].(map[string]any)["type"])
+	require.Equal(t, "data:image/png;base64,AAAA", content[1].(map[string]any)["image_url"].(map[string]any)["url"])
+}
+
+func TestCodexGatewayAgnesRequest_DisablesOfficialThinkingForComputerUseTools(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":"Use Computer Use to edit a text file."}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"namespace","name":"mcp__computer_use__","tools":[
+				{"type":"function","name":"list_apps","parameters":{"type":"object","properties":{}}},
+				{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}},
+				{"type":"function","name":"set_value","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"value":{"type":"string"}},"required":["app","element_index","value"]}}
+			]}
+		]`),
+		Reasoning: json.RawMessage(`{"effort":"xhigh"}`),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu",
+		IsolationKey: "iso_agnes_cu",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{
+		Provider:             "agnes",
+		ReasoningMode:        "openai",
+		SupportsNativeImages: true,
+	})
+	require.NoError(t, err)
+
+	require.NotContains(t, prepared.Body, "reasoning_effort")
+	require.Equal(t, map[string]any{"enable_thinking": false}, prepared.Body["chat_template_kwargs"])
+}
+
+func TestCodexGatewayAgnesRequest_KeepsAssistantReplayContentStringWithNativeImagesEnabled(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"previous answer"}]},
+			{"type":"message","role":"user","content":[
+				{"type":"input_text","text":"now inspect this"},
+				{"type":"input_image","image_url":{"url":"https://example.test/image.png","detail":"low"}}
+			]}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{}, CodexGatewayDeepSeekRequestConfig{
+		Provider:             "agnes",
+		ReasoningMode:        "openai",
+		SupportsNativeImages: true,
+	})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	require.Equal(t, "previous answer", messages[0].(map[string]any)["content"])
+	userContent := messages[1].(map[string]any)["content"].([]any)
+	require.Equal(t, "https://example.test/image.png", userContent[1].(map[string]any)["image_url"].(map[string]any)["url"])
+	require.Equal(t, "low", userContent[1].(map[string]any)["image_url"].(map[string]any)["detail"])
+}
+
+func TestCodexGatewayAgnesRequest_DisablesOfficialThinkingForNoneReasoning(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-1.5-flash", Provider: "agnes", UpstreamModel: "agnes-1.5-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:     "agnes-1.5-flash",
+		Input:     json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}]`),
+		Reasoning: json.RawMessage(`{"effort":"none"}`),
+	}, nil, CodexGatewayDeepSeekRequestContext{}, CodexGatewayDeepSeekRequestConfig{
+		Provider:      "agnes",
+		ReasoningMode: "openai",
+	})
+	require.NoError(t, err)
+
+	require.NotContains(t, prepared.Body, "reasoning_effort", "AGNES upstream rejects reasoning_effort=none")
+	require.Equal(t, map[string]any{"enable_thinking": false}, prepared.Body["chat_template_kwargs"])
+	require.NotContains(t, prepared.Body, "thinking")
+}
+
+func TestCodexGatewayAgnesRequest_DefaultEnablesOfficialThinkingWithoutReasoningEffort(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`"reply AGNES_OK"`),
+	}, nil, CodexGatewayDeepSeekRequestContext{}, CodexGatewayDeepSeekRequestConfig{
+		Provider:      "agnes",
+		ReasoningMode: "openai",
+	})
+	require.NoError(t, err)
+
+	require.NotContains(t, prepared.Body, "reasoning_effort")
+	require.Equal(t, map[string]any{"enable_thinking": true}, prepared.Body["chat_template_kwargs"])
+	require.NotContains(t, prepared.Body, "thinking")
+}
+
+func TestCodexGatewayAgnesRequest_ConvertsStringInputToUserMessage(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`"hello from string input"`),
+	}, nil, CodexGatewayDeepSeekRequestContext{}, CodexGatewayDeepSeekRequestConfig{
+		Provider:      "agnes",
+		ReasoningMode: "openai",
+	})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 1)
+	require.Equal(t, "user", messages[0].(map[string]any)["role"])
+	require.Equal(t, "hello from string input", messages[0].(map[string]any)["content"])
+}
+
+func TestCodexGatewayAgnesRequest_PreservesNativeImagesForAgnes15Flash(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-1.5-flash", Provider: "agnes", UpstreamModel: "agnes-1.5-flash", InputModalities: []string{"text", "image"}}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "agnes-1.5-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[
+				{"type":"input_text","text":"describe"},
+				{"type":"input_image","image_url":"data:image/png;base64,AAAA"}
+			]}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{}, CodexGatewayDeepSeekRequestConfig{
+		Provider:             "agnes",
+		ReasoningMode:        "openai",
+		SupportsNativeImages: true,
+	})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	content := messages[0].(map[string]any)["content"].([]any)
+	require.Equal(t, "image_url", content[1].(map[string]any)["type"])
+	require.Equal(t, "data:image/png;base64,AAAA", content[1].(map[string]any)["image_url"].(map[string]any)["url"])
+}
+
+func TestCodexGatewayAgnesRequest_StripsDeepSeekReasoningContentFromReplayMessages(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	replayMessages := []json.RawMessage{
+		json.RawMessage(`{"role":"assistant","content":"prev","reasoning_content":"stored plan","tool_calls":[{"id":"call_prev","type":"function","function":{"name":"shell","arguments":"{\"cmd\":\"pwd\"}"}}]}`),
+	}
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_agnes_tool",
+			SessionKey:    "session_agnes_tool",
+			IsolationKey:  "iso_agnes_tool",
+			Provider:      "agnes",
+			UpstreamModel: "agnes-2.0-flash",
+		},
+		AssistantContent:            "prev",
+		AssistantContentPresent:     true,
+		ReasoningContent:            "stored plan",
+		ReasoningContentPresent:     true,
+		ReasoningContentSynthesized: false,
+		ToolCalls: []CodexGatewayStoredToolCall{{
+			ID:        "call_prev",
+			Type:      CodexGatewayToolKindFunction,
+			Alias:     "shell",
+			Name:      "shell",
+			Arguments: `{"cmd":"pwd"}`,
+		}},
+		ToolNameMap:    map[string]CodexGatewayToolNameMapEntry{"shell": {Alias: "shell", Kind: CodexGatewayToolKindFunction, Name: "shell"}},
+		ReplayMessages: replayMessages,
+	}))
+
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash", InputModalities: []string{"text", "image"}}
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "agnes-2.0-flash",
+		PreviousResponseID: stringPtr("resp_agnes_tool"),
+		Tools:              json.RawMessage(`[{"type":"function","name":"shell","description":"run shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]`),
+		Input:              json.RawMessage(`[{"type":"function_call_output","call_id":"call_prev","output":"ok"}]`),
+	}, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_tool",
+		IsolationKey: "iso_agnes_tool",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), `"thinking"`)
+	require.NotContains(t, string(raw), `reasoning_content`)
+}
+
+func TestCodexGatewayAgnesRequest_StripsDeepSeekReasoningContentFromToolCallMessages(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash", InputModalities: []string{"text", "image"}}
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"shell","description":"run shell","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}},
+			{"type":"custom","name":"apply_patch","description":"apply patch","input_format":{"type":"text"}}
+		]`),
+		Input: json.RawMessage(`[
+			{"type":"reasoning","summary_text":"new hidden plan"},
+			{"type":"function_call","call_id":"call_new","name":"shell","arguments":{"cmd":"ls"}},
+			{"type":"custom_tool_call","call_id":"call_custom","name":"apply_patch","input":"patch body"}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{Provider: "agnes"}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), `"thinking"`)
+	require.NotContains(t, string(raw), `reasoning_content`)
+}
+
+func TestCodexGatewayAgnesRequest_TextOnlyImageErrorNamesAgnes(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-custom-text", Provider: "agnes", UpstreamModel: "agnes-custom-text", InputModalities: []string{"text"}}
+
+	_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "agnes-custom-text",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[
+				{"type":"input_text","text":"describe"},
+				{"type":"input_image","image_url":"data:image/png;base64,AAAA"}
+			]}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{}, CodexGatewayDeepSeekRequestConfig{
+		Provider:             "agnes",
+		ReasoningMode:        "openai",
+		SupportsNativeImages: true,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "codex agnes request does not support image input")
+	require.NotContains(t, err.Error(), "deepseek")
+}
+
+func TestCodexGatewayAgnesRequest_TextOnlyModelRejectsImagesEvenIfCapabilityFlagsAreWrong(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-custom-text", Provider: "agnes", UpstreamModel: "agnes-custom-text", InputModalities: []string{"text"}, SupportsImageDetailOriginal: true}
+
+	_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "agnes-custom-text",
+		Input: json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{}, CodexGatewayDeepSeekRequestConfig{
+		Provider:             "agnes",
+		ReasoningMode:        "openai",
+		SupportsNativeImages: true,
+	})
+	require.Error(t, err)
+}
+
+func TestCodexGatewayAgnesRequest_RestoresPreviousResponseStateUnderAgnesProvider(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_agnes_replay",
+			SessionKey:    "session_agnes_replay",
+			IsolationKey:  "iso_agnes_replay",
+			Provider:      "agnes",
+			UpstreamModel: "agnes-2.0-flash",
+		},
+		AssistantContent:        "previous agnes answer",
+		AssistantContentPresent: true,
+		ReasoningContent:        "previous agnes reasoning",
+		ReasoningContentPresent: true,
+	}))
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_deepseek_same_id",
+			SessionKey:    "session_agnes_replay",
+			IsolationKey:  "iso_agnes_replay",
+			Provider:      "deepseek",
+			UpstreamModel: "agnes-2.0-flash",
+		},
+		AssistantContent:        "wrong provider answer",
+		AssistantContentPresent: true,
+	}))
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "agnes-2.0-flash",
+		PreviousResponseID: stringPtr("resp_agnes_replay"),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_replay",
+		IsolationKey: "iso_agnes_replay",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{
+		Provider:      "agnes",
+		ReasoningMode: "openai",
+	})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 2)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "previous agnes answer", assistant["content"])
+	require.NotContains(t, assistant, "reasoning_content")
+	require.Equal(t, "user", messages[1].(map[string]any)["role"])
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "reasoning_content")
+}
+
+func TestCodexGatewayAgnesRequest_RejectsDeepSeekStateForSamePreviousResponseID(t *testing.T) {
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{TTL: time.Minute, MaxItems: 4, Now: time.Now})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_cross_provider",
+			SessionKey:    "session_cross_provider",
+			IsolationKey:  "iso_cross_provider",
+			Provider:      "deepseek",
+			UpstreamModel: "agnes-2.0-flash",
+		},
+		AssistantContent:        "deepseek answer",
+		AssistantContentPresent: true,
+	}))
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:              "agnes-2.0-flash",
+		PreviousResponseID: stringPtr("resp_cross_provider"),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+	}, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_cross_provider",
+		IsolationKey: "iso_cross_provider",
+	}, CodexGatewayDeepSeekRequestConfig{
+		Provider:      "agnes",
+		ReasoningMode: "openai",
+	})
+	require.ErrorIs(t, err, ErrCodexGatewayStateConflict)
+}
+
 func TestCodexGatewayDeepSeekRequest_FlattensDeepSchemasAndAddsDeepSeekToolHints(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
@@ -3354,6 +3727,73 @@ func TestCodexGatewayDeepSeekRequestWithVisionProxy_RewritesPreviousComputerUseO
 	require.Contains(t, string(rewritten.Input), "Codex window after click")
 }
 
+func TestCodexGatewayAgnesRequestWithVisionProxy_UsesAgnesPreviousComputerUseState(t *testing.T) {
+	largeScreenshot := "data:image/png;base64," + strings.Repeat("E", 20000)
+	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
+		TTL:      time.Minute,
+		MaxItems: 4,
+		Now:      time.Now,
+	})
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_agnes_state",
+			SessionKey:    "session_agnes_state",
+			IsolationKey:  "iso_agnes_state",
+			Provider:      "agnes",
+			UpstreamModel: "agnes-2.0-flash",
+		},
+		AssistantContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{
+			{ID: "call_agnes_state", Type: CodexGatewayToolKindNamespace, Alias: "mcp__computer_use__get_app_state", Name: "get_app_state", Arguments: `{"app":"Codex"}`},
+		},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"mcp__computer_use__get_app_state": {Alias: "mcp__computer_use__get_app_state", Kind: CodexGatewayToolKindNamespace, NamespacePath: "mcp__computer_use__", Name: "get_app_state"},
+		},
+	}))
+	require.NoError(t, store.Put(CodexGatewayResponseState{
+		Key: CodexGatewayStateLookupKey{
+			ResponseID:    "resp_deepseek_state",
+			SessionKey:    "session_agnes_state",
+			IsolationKey:  "iso_agnes_state",
+			Provider:      "deepseek",
+			UpstreamModel: "agnes-2.0-flash",
+		},
+		AssistantContentPresent: true,
+		ReasoningContent:        "wrong provider reasoning",
+		ReasoningContentPresent: true,
+		ToolCalls: []CodexGatewayStoredToolCall{
+			{ID: "call_wrong_provider", Type: CodexGatewayToolKindFunction, Alias: "shell", Name: "shell", Arguments: `{}`},
+		},
+	}))
+	req := CodexGatewayResponsesCreateRequest{
+		Model:              "agnes-2.0-flash",
+		PreviousResponseID: stringPtr("resp_agnes_state"),
+		Input: json.RawMessage(fmt.Sprintf(`[
+			{"type":"function_call_output","call_id":"call_agnes_state","output":{"screenshot":%q,"status":"ok"}}
+		]`, largeScreenshot)),
+	}
+	visionCalls := 0
+	cfg := CodexGatewayDeepSeekRequestConfig{
+		Provider:      "agnes",
+		ReasoningMode: "openai",
+		HostedImageVision: func(ctx context.Context, imageURL string) (string, error) {
+			visionCalls++
+			require.Equal(t, largeScreenshot, imageURL)
+			return "Codex window for AGNES", nil
+		},
+	}
+
+	rewritten, err := codexGatewayDeepSeekRequestWithHostedVision(context.Background(), req, store, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_state",
+		IsolationKey: "iso_agnes_state",
+		Provider:     "agnes",
+	}, "agnes-2.0-flash", cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, visionCalls)
+	require.NotContains(t, string(rewritten.Input), largeScreenshot)
+	require.Contains(t, string(rewritten.Input), "Codex window for AGNES")
+}
+
 func TestCodexGatewayDeepSeekRequest_ReplaysLegacyCustomToolCallWithoutCurrentTools(t *testing.T) {
 	model := CodexGatewayModel{
 		Slug:          "deepseek-v4-pro",
@@ -3700,6 +4140,30 @@ func TestCodexGatewayDeepSeekRequest_StripsResponsesOnlyFieldsFromPreparedBody(t
 	body := mustMarshalJSON(t, prepared.Body)
 	require.NotContains(t, body, `"required":null`)
 	require.Equal(t, map[string]any{}, gjson.Get(body, `tools.0.function.parameters.properties.required`).Value())
+}
+
+func TestCodexGatewayAgnesRequest_ForwardsScopedPromptCacheKey(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"reply ok"}]}
+		]`),
+		PromptCacheKey: "raw-client-cache-key",
+	}
+	model := CodexGatewayModel{
+		Slug:          "agnes-2.0-flash",
+		Provider:      "agnes",
+		UpstreamModel: "agnes-2.0-flash",
+	}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey: "entity_scoped_session_hash",
+		Provider:   "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	require.Equal(t, "codex_agnes_entity_scoped_session_hash", prepared.Body["prompt_cache_key"])
+	require.NotEqual(t, req.PromptCacheKey, prepared.Body["prompt_cache_key"])
 }
 
 func TestCodexGatewayDeepSeekStreamRequest_StripsResponsesOnlyFieldsFromUpstreamBody(t *testing.T) {

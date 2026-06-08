@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -110,6 +111,68 @@ func TestCodexGatewayUsage_RecordUsageBestEffortPopulatesGatewayMetadata(t *test
 	require.Equal(t, []error{nil}, recorder.ctxErrs)
 }
 
+func TestCodexGatewayUsage_RecordUsageBestEffortFallsBackChannelMappedModel(t *testing.T) {
+	recorder := &codexGatewayUsageRecorderStub{}
+	apiKey := validCodexGatewayAPIKeyForTest()
+
+	codexGatewayRecordUsageBestEffort(context.Background(), recorder, CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			APIKey: apiKey,
+			Body:   []byte(`{"model":"agnes-2.0-flash","input":"hello"}`),
+		},
+		Model: CodexGatewayModel{
+			Slug:          "agnes-2.0-flash",
+			Provider:      "agnes",
+			UpstreamModel: "agnes-2.0-flash",
+		},
+		Parsed: CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash"},
+	}, &Account{ID: 129, Platform: PlatformOpenAI, Type: AccountTypeUpstream}, CodexGatewayProviderResult{
+		ResponseID: "chatcmpl_without_model",
+		Usage:      CodexGatewayProviderUsage{InputTokens: 223, OutputTokens: 4, TotalTokens: 227},
+	}, true, time.Now().Add(-time.Second))
+
+	require.Len(t, recorder.inputs, 1)
+	require.NotNil(t, recorder.inputs[0].Result)
+	require.Equal(t, "agnes-2.0-flash", recorder.inputs[0].Result.UpstreamModel)
+	require.Equal(t, "agnes-2.0-flash", recorder.inputs[0].ChannelMappedModel)
+}
+
+func TestCodexGatewayUsage_AgnesReasoningEffortRecordsUpstreamMappedEffort(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		raw  string
+		want *string
+	}{
+		{name: "xhigh", raw: `{"effort":"xhigh"}`, want: stringPtr("high")},
+		{name: "max", raw: `{"effort":"max"}`, want: stringPtr("high")},
+		{name: "none", raw: `{"effort":"none"}`, want: stringPtr("none")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := codexGatewayForwardResult(
+				CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"},
+				CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash", Reasoning: json.RawMessage(tt.raw)},
+				CodexGatewayProviderResult{ResponseID: "resp", UpstreamModel: "agnes-2.0-flash"},
+				false,
+				time.Millisecond,
+			)
+			require.NotNil(t, result.ReasoningEffort)
+			require.Equal(t, *tt.want, *result.ReasoningEffort)
+		})
+	}
+}
+
+func TestCodexGatewayUsage_AgnesDefaultReasoningEffortRecordsNone(t *testing.T) {
+	result := codexGatewayForwardResult(
+		CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"},
+		CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash"},
+		CodexGatewayProviderResult{ResponseID: "resp", UpstreamModel: "agnes-2.0-flash"},
+		false,
+		time.Millisecond,
+	)
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "none", *result.ReasoningEffort)
+}
+
 func TestCodexGatewayUsage_RecordUsageBestEffortDetachesCanceledRequestContext(t *testing.T) {
 	recorder := &codexGatewayUsageRecorderStub{}
 	apiKey := validCodexGatewayAPIKeyForTest()
@@ -141,5 +204,6 @@ func TestCodexGatewayUsage_RecordUsageBestEffortDetachesCanceledRequestContext(t
 
 func TestCodexGatewayUsage_DeepSeekUsesChatCompletionsBillingEndpoint(t *testing.T) {
 	require.Equal(t, "/v1/chat/completions", codexGatewayUsageUpstreamEndpoint("deepseek"))
+	require.Equal(t, "/v1/chat/completions", codexGatewayUsageUpstreamEndpoint("agnes"))
 	require.Equal(t, "/v1/responses", codexGatewayUsageUpstreamEndpoint("openai"))
 }

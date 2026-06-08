@@ -464,6 +464,86 @@ func TestCodexGatewayDeepSeekStream_ToolSearchDoesNotEmitFromRepairablePartialAr
 	require.Equal(t, int64(10), gjson.GetBytes(added, "item.arguments.limit").Int())
 }
 
+func TestCodexGatewayAgnesStreamCaptureUsesProviderDoneLabel(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash", InputModalities: []string{"text", "image"}}
+	req := CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash", Input: json.RawMessage(`"hello"`)}
+	captureBaseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  captureBaseDir,
+		HashKeyFile:              filepath.Join(captureBaseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer capture.Close()
+	trace := capture.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "agnes_stream", Provider: "agnes", Model: "agnes-2.0-flash"})
+	require.NotNil(t, trace)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_agnes_stream","object":"chat.completion.chunk","model":"agnes-2.0-flash","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	_, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"sk-agnes",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{SessionKey: "session_agnes_stream", IsolationKey: "iso_agnes_stream", Provider: "agnes", CaptureTrace: trace},
+		CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai", SupportsNativeImages: true},
+		&buf,
+	)
+	require.NoError(t, err)
+	capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, capture.Close())
+	upstreamEvents, err := os.ReadFile(filepath.Join(captureBaseDir, time.Now().Format("2006-01-02"), "agnes_stream", "upstream_stream.events.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(upstreamEvents), "agnes.done")
+	require.NotContains(t, string(upstreamEvents), "deepseek.done")
+}
+
+func TestCodexGatewayAgnesStreamUsesConfiguredUpstreamModelWhenProviderOmitModel(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash", InputModalities: []string{"text", "image"}}
+	req := CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash", Input: json.RawMessage(`"hello"`)}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_agnes_stream_no_model","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"sk-agnes",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{Provider: "agnes"},
+		CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai", SupportsNativeImages: true},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "agnes-2.0-flash", result.ProviderResult.UpstreamModel)
+	require.Contains(t, buf.String(), `"model":"agnes-2.0-flash"`)
+}
+
 func TestCodexGatewayDeepSeekStream(t *testing.T) {
 	t.Run("emits completed terminal event and swallows done", func(t *testing.T) {
 		model := CodexGatewayModel{

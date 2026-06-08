@@ -47,15 +47,26 @@ func codexGatewayForwardResult(
 		Usage:           codexGatewayProviderUsageToOpenAIUsage(providerResult.Usage),
 		Model:           requestedModel,
 		UpstreamModel:   upstreamModel,
-		ReasoningEffort: codexGatewayReasoningEffort(parsed),
+		ReasoningEffort: codexGatewayReasoningEffort(model, parsed),
 		Stream:          stream,
 		OpenAIWSMode:    false,
 		Duration:        duration,
 	}
 }
 
-func codexGatewayReasoningEffort(req CodexGatewayResponsesCreateRequest) *string {
+func codexGatewayReasoningEffort(model CodexGatewayModel, req CodexGatewayResponsesCreateRequest) *string {
 	raw := strings.TrimSpace(gjsonStringBytes(req.Reasoning, "effort"))
+	if normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) == CodexGatewayProviderAgnes {
+		if raw == "" {
+			defaultEffort := "none"
+			return &defaultEffort
+		}
+		normalized := codexGatewayAgnesReasoningEffort(raw)
+		if normalized == "" {
+			return nil
+		}
+		return &normalized
+	}
 	if raw == "" {
 		return nil
 	}
@@ -64,6 +75,24 @@ func codexGatewayReasoningEffort(req CodexGatewayResponsesCreateRequest) *string
 		return nil
 	}
 	return &normalized
+}
+
+func codexGatewayAgnesReasoningEffort(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return ""
+	}
+	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
+	switch value {
+	case "none", "minimal":
+		return "none"
+	case "low", "medium", "high":
+		return value
+	case "xhigh", "extrahigh", "max":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 func codexGatewayUsageFields(provider string, upstreamAttemptID string) AugmentUsageFields {
@@ -103,6 +132,10 @@ func codexGatewayRecordUsageBestEffort(ctx context.Context, recorder codexGatewa
 	}
 
 	result := codexGatewayForwardResult(req.Model, req.Parsed, providerResult, stream, time.Since(startedAt))
+	channelMappedModel := strings.TrimSpace(providerResult.UpstreamModel)
+	if channelMappedModel == "" {
+		channelMappedModel = strings.TrimSpace(result.UpstreamModel)
+	}
 	fields := codexGatewayUsageFields(req.Model.Provider, providerResult.UpstreamRequestID)
 	usageCtx, cancel := context.WithTimeout(ContextWithEntityMetadataFrom(context.Background(), ctx), 10*time.Second)
 	defer cancel()
@@ -116,7 +149,7 @@ func codexGatewayRecordUsageBestEffort(ctx context.Context, recorder codexGatewa
 		RequestPayloadHash: HashUsageRequestPayload(req.Request.Body),
 		ChannelUsageFields: ChannelUsageFields{
 			OriginalModel:      strings.TrimSpace(req.Parsed.Model),
-			ChannelMappedModel: strings.TrimSpace(providerResult.UpstreamModel),
+			ChannelMappedModel: channelMappedModel,
 			BillingModelSource: BillingModelSourceUpstream,
 		},
 		AugmentUsageFields: fields,
@@ -127,7 +160,7 @@ func codexGatewayRecordUsageBestEffort(ctx context.Context, recorder codexGatewa
 
 func codexGatewayUsageUpstreamEndpoint(provider string) string {
 	switch strings.TrimSpace(provider) {
-	case "deepseek":
+	case "deepseek", "agnes":
 		return "/v1/chat/completions"
 	default:
 		return "/v1/responses"

@@ -25,6 +25,8 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 		"claude-opus-4-7",
 		"claude-sonnet-4-6",
 		"claude-haiku-4-5-20251001",
+		"agnes-2.0-flash",
+		"agnes-1.5-flash",
 	}, codexGatewayModelSlugs(models))
 
 	gpt55, ok := reg.Resolve("gpt-5.5")
@@ -89,6 +91,22 @@ func TestCodexGatewayModelRegistry_DefaultCatalogIncludesVisibleAndHiddenModels(
 	require.False(t, ok)
 	_, ok = reg.Resolve("claude-opus-4-7-max")
 	require.False(t, ok)
+
+	agnes, ok := reg.Resolve("agnes-2.0-flash")
+	require.True(t, ok)
+	require.Equal(t, "agnes", agnes.Provider)
+	require.Equal(t, "Agnes 2.0 Flash", agnes.DisplayName)
+	require.Equal(t, "agnes-2.0-flash", agnes.UpstreamModel)
+	require.Equal(t, "hidden", agnes.Visibility)
+	require.False(t, agnes.SupportedInAPI)
+	require.Equal(t, "medium", agnes.DefaultReasoningLevel)
+	require.Equal(t, []string{"none", "low", "medium", "high"}, agnes.SupportedReasoningLevels)
+	require.True(t, agnes.SupportsParallelToolCalls)
+	require.Equal(t, []string{"text", "image"}, agnes.InputModalities)
+	require.True(t, agnes.SupportsImageDetailOriginal)
+	require.True(t, agnes.SupportsSearchTool)
+	require.Equal(t, "openai", agnes.WebSearchToolType)
+	require.Equal(t, "none", agnes.ImageGenerationToolType)
 }
 
 func TestCodexGatewayModelRegistry_ConfigFilterAppliesToCatalog(t *testing.T) {
@@ -106,7 +124,7 @@ func TestCodexGatewayModelRegistry_ConfigFilterAppliesToCatalog(t *testing.T) {
 	}, codexGatewayModelSlugs(models))
 }
 
-func TestCodexGatewayModelRegistry_VisibleCatalogExcludesHiddenDeepSeekModels(t *testing.T) {
+func TestCodexGatewayModelRegistry_VisibleCatalogExcludesHiddenDeepSeekAndAgnesModels(t *testing.T) {
 	reg := NewDefaultCodexGatewayModelRegistry()
 
 	require.Equal(t, []string{
@@ -379,6 +397,41 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSONAddsRoutingBridgeFor
 	require.Contains(t, bySlug["claude-opus-4-7"].BaseInstructions, "Do not load unrelated skills")
 }
 
+func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSONAddsRoutingBridgeForAgnes(t *testing.T) {
+	type codexCLICatalogModelForTest struct {
+		Slug             string `json:"slug"`
+		BaseInstructions string `json:"base_instructions"`
+	}
+
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"agnes-2.0-flash"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderAgnes: {Provider: CodexGatewayProviderAgnes, GroupID: 4004, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"agnes-2.0-flash": {Enabled: true},
+				},
+			},
+		}),
+	)
+
+	raw, err := reg.ExportCodexCLICatalogJSON()
+	require.NoError(t, err)
+
+	var envelope struct {
+		Models []codexCLICatalogModelForTest `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &envelope))
+	require.Len(t, envelope.Models, 1)
+	require.Equal(t, "agnes-2.0-flash", envelope.Models[0].Slug)
+	require.Contains(t, envelope.Models[0].BaseInstructions, "skills, plugins, MCP servers, or tool routing guidance")
+	require.Contains(t, envelope.Models[0].BaseInstructions, "MUST read the matching SKILL.md")
+}
+
 func TestCodexGatewayModelRegistry_HidesOpenAIModelsWhenProviderGroupIsUnavailable(t *testing.T) {
 	reg := NewCodexGatewayModelRegistry(config.GatewayCodexConfig{
 		EnabledModels: []string{"gpt-5.5"},
@@ -425,6 +478,54 @@ func TestCodexGatewayModelRegistry_DeepSeekVisibleWhenAllGatesPass(t *testing.T)
 	require.True(t, model.SupportsSearchTool)
 	require.Equal(t, "openai", model.WebSearchToolType)
 	require.Contains(t, codexGatewayModelSlugs(reg.Models()), "deepseek-v4-pro")
+}
+
+func TestCodexGatewayModelRegistry_AgnesVisibleWhenProviderGroupIsHealthy(t *testing.T) {
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"agnes-2.0-flash", "agnes-1.5-flash"},
+		},
+		WithCodexGatewayRegistryStateSource(&codexGatewayRegistryStateSourceStub{
+			state: &CodexGatewayRegistryState{
+				ProviderGroups: map[CodexGatewayProvider]CodexGatewayProviderRuntime{
+					CodexGatewayProviderAgnes: {Provider: CodexGatewayProviderAgnes, GroupID: 4004, Healthy: true},
+				},
+				Models: map[string]CodexGatewayModelMutation{
+					"agnes-2.0-flash": {Enabled: true},
+					"agnes-1.5-flash": {Enabled: true},
+				},
+			},
+		}),
+	)
+
+	require.Equal(t, []string{"agnes-2.0-flash", "agnes-1.5-flash"}, codexGatewayModelSlugs(reg.Models()))
+
+	flash20, ok := reg.Resolve("agnes-2.0-flash")
+	require.True(t, ok)
+	require.True(t, flash20.SupportedInAPI)
+	require.Equal(t, "visible", flash20.Visibility)
+	require.Equal(t, "agnes", flash20.Provider)
+	require.Equal(t, "Agnes 2.0 Flash", flash20.DisplayName)
+	require.Equal(t, "agnes-2.0-flash", flash20.UpstreamModel)
+	require.Equal(t, []string{"none", "low", "medium", "high"}, flash20.SupportedReasoningLevels)
+	require.Equal(t, []string{"text", "image"}, flash20.InputModalities)
+	require.True(t, flash20.SupportsImageDetailOriginal)
+	require.NotEmpty(t, flash20.ExperimentalSupportedTools)
+	require.True(t, flash20.SupportsParallelToolCalls)
+
+	flash15, ok := reg.Resolve("agnes-1.5-flash")
+	require.True(t, ok)
+	require.True(t, flash15.SupportedInAPI)
+	require.Equal(t, []string{"text", "image"}, flash15.InputModalities)
+	require.True(t, flash15.SupportsImageDetailOriginal)
+	require.NotContains(t, codexGatewayModelSlugs(reg.Models()), "agnes-image-2.1-flash")
+	require.NotContains(t, codexGatewayModelSlugs(reg.Models()), "agnes-video-v2.0")
+
+	payload := reg.ModelsResponse(nil)
+	require.Len(t, payload.Models, 2)
+	require.True(t, payload.Models[0].Capabilities.ImageInput)
+	require.True(t, payload.Models[0].Capabilities.ToolCalls)
+	require.True(t, payload.Models[1].Capabilities.ImageInput)
 }
 
 func TestCodexGatewayModelRegistry_AnthropicDirectModelsExposeNativeNamesAndThinking(t *testing.T) {

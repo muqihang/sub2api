@@ -164,7 +164,7 @@ const codexGatewayProviderRoutingBridgeInstructions = `## Codex routing guidance
 
 func codexGatewayProviderNeedsRoutingBridge(model CodexGatewayModel) bool {
 	switch normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) {
-	case CodexGatewayProviderDeepSeek, CodexGatewayProviderAnthropic:
+	case CodexGatewayProviderDeepSeek, CodexGatewayProviderAnthropic, CodexGatewayProviderAgnes:
 		return true
 	default:
 		return false
@@ -707,6 +707,33 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		}
 	}
 
+	agnesModel := func(slug, displayName string, priority int, inputModalities []string) CodexGatewayModel {
+		return CodexGatewayModel{
+			Slug:                          slug,
+			DisplayName:                   displayName,
+			Provider:                      "agnes",
+			UpstreamModel:                 slug,
+			Visibility:                    "visible",
+			SupportedInAPI:                true,
+			Priority:                      priority,
+			DefaultReasoningLevel:         "medium",
+			SupportedReasoningLevels:      []string{"none", "low", "medium", "high"},
+			SupportVerbosity:              false,
+			SupportsParallelToolCalls:     true,
+			ContextWindow:                 1_000_000,
+			AutoCompactTokenLimit:         850_000,
+			EffectiveContextWindowPercent: 95,
+			MaxOutputTokens:               64_000,
+			InputModalities:               append([]string(nil), inputModalities...),
+			SupportsImageDetailOriginal:   codexGatewayStringSliceContains(inputModalities, "image"),
+			SupportsSearchTool:            true,
+			ExperimentalSupportedTools:    []string{"function", "namespace", "custom"},
+			ShellType:                     "local",
+			WebSearchToolType:             "openai",
+			ImageGenerationToolType:       "none",
+		}
+	}
+
 	anthropicModel := func(slug, baseDisplayName, providerVariant, upstreamModel, defaultReasoning string, supportedReasoning []string, priority int) CodexGatewayModel {
 		upstreamModel = strings.TrimSpace(upstreamModel)
 		if upstreamModel == "" {
@@ -776,6 +803,8 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		anthropicModel("claude-haiku-4-5-20251001-ag", "Claude Haiku 4.5", "antigravity_claude", "claude-haiku-4-5-20251001", "high", []string{"high"}, 31),
 		anthropicModel("claude-haiku-4-5-20251001-thinking-ag", "Claude Haiku 4.5", "antigravity_claude_thinking", "claude-haiku-4-5-20251001-thinking", "high", []string{"low", "high", "xhigh"}, 30),
 		anthropicModel("claude-haiku-4-5-20251001-max", "Claude Haiku 4.5", "claude_code_max", "claude-haiku-4-5-20251001-thinking", "xhigh", []string{"xhigh"}, 29),
+		agnesModel("agnes-2.0-flash", "Agnes 2.0 Flash", 28, []string{"text", "image"}),
+		agnesModel("agnes-1.5-flash", "Agnes 1.5 Flash", 27, []string{"text", "image"}),
 	}
 }
 

@@ -181,8 +181,9 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	dst io.Writer,
 	turn int,
 ) (CodexGatewayDeepSeekAdapterResult, error) {
+	providerName := codexGatewayChatCompatProviderDisplayName(firstNonBlankString(cfg.Provider, reqCtx.Provider))
 	if dst == nil {
-		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek stream requires destination writer")
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex %s stream requires destination writer", strings.ToLower(providerName))
 	}
 	if cfg.HostedToolContext == nil {
 		cfg.HostedToolContext = &codexGatewayHostedToolContext{WebSearchResults: make(map[string]string)}
@@ -190,7 +191,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		cfg.HostedToolContext.WebSearchResults = make(map[string]string)
 	}
 	if turn > codexGatewayDeepSeekHostedToolMaxTurns {
-		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex deepseek hosted tool loop exceeded %d turns", codexGatewayDeepSeekHostedToolMaxTurns)
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex %s hosted tool loop exceeded %d turns", strings.ToLower(providerName), codexGatewayDeepSeekHostedToolMaxTurns)
 	}
 	upstreamModel := strings.TrimSpace(model.UpstreamModel)
 	if upstreamModel == "" {
@@ -214,18 +215,18 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	}
 	rawBody, err := json.Marshal(body)
 	if err != nil {
-		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("marshal codex deepseek stream request: %w", err)
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("marshal codex %s stream request: %w", strings.ToLower(providerName), err)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, buildOpenAIChatCompletionsURL(baseURL), bytes.NewReader(rawBody))
 	if err != nil {
-		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("build codex deepseek stream request: %w", err)
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("build codex %s stream request: %w", strings.ToLower(providerName), err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	if strings.TrimSpace(apiKey) != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	}
-	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, "deepseek", httpReq.Header, rawBody)
+	codexGatewayCaptureUpstreamRequest(reqCtx.CaptureTrace, firstNonBlankString(strings.TrimSpace(cfg.Provider), "deepseek"), httpReq.Header, rawBody)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -233,7 +234,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 			http.StatusBadGateway,
 			nil,
 			"upstream_disconnected",
-			"DeepSeek upstream stream disconnected: "+sanitizeStreamError(err),
+			codexGatewayChatCompatProviderDisplayName(cfg.Provider)+" upstream stream disconnected: "+sanitizeStreamError(err),
 			true,
 		)
 	}
@@ -253,7 +254,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 			return CodexGatewayDeepSeekAdapterResult{}, readErr
 		}
 		codexGatewayCaptureUpstreamResponse(reqCtx.CaptureTrace, resp.Header, resp.StatusCode, bodyBytes)
-		result.ServiceResponse.Body = codexGatewayDeepSeekMapErrorBody(resp.StatusCode, bodyBytes)
+		result.ServiceResponse.Body = codexGatewayChatCompatMapErrorBody(resp.StatusCode, bodyBytes, cfg.Provider)
 		if codexGatewayDeepSeekShouldFailoverUpstreamResponse(resp.StatusCode) {
 			return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{
 				StatusCode:      resp.StatusCode,
@@ -283,7 +284,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		return result, nil
 	}
 
-	state := newCodexGatewayDeepSeekStreamState(model, prepared.ToolNameMap)
+	state := newCodexGatewayDeepSeekStreamState(model, prepared.ToolNameMap, cfg.Provider)
 	state.applyHostedToolContext(cfg.HostedToolContext)
 	deferredWriter := newCodexGatewayDeferredStreamWriter(dst)
 	writer := NewCodexGatewayResponseEventWriterWithSequence(deferredWriter, cfg.StreamSequenceNumber)
@@ -299,7 +300,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		dataLines = dataLines[:0]
 		if payload == "" || payload == "[DONE]" {
 			if payload == "[DONE]" {
-				codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, "deepseek.done", []byte(`{"done":true}`))
+				codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, codexGatewayChatCompatProviderEventPrefix(firstNonBlankString(cfg.Provider, reqCtx.Provider))+".done", []byte(`{"done":true}`))
 			}
 			return nil
 		}
@@ -337,7 +338,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 				http.StatusBadGateway,
 				nil,
 				"upstream_disconnected",
-				"DeepSeek upstream stream disconnected: "+sanitizeStreamError(err),
+				codexGatewayChatCompatProviderDisplayName(cfg.Provider)+" upstream stream disconnected: "+sanitizeStreamError(err),
 				true,
 			)
 		}
@@ -395,7 +396,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 			http.StatusBadGateway,
 			nil,
 			"upstream_missing_terminal",
-			"DeepSeek stream ended before completion (missing terminal event).",
+			codexGatewayChatCompatProviderDisplayName(cfg.Provider)+" stream ended before completion (missing terminal event).",
 			false,
 		)
 	} else {
@@ -464,6 +465,7 @@ type codexGatewayDeepSeekStreamState struct {
 	prefixOutputItems map[int]json.RawMessage
 	blockedReason     string
 	hostedToolError   error
+	provider          string
 }
 
 type codexGatewayDeepSeekStreamToolCall struct {
@@ -507,11 +509,13 @@ func (c *codexGatewayDeepSeekStreamToolCall) toolNameMapEntry() CodexGatewayTool
 	}
 }
 
-func newCodexGatewayDeepSeekStreamState(model CodexGatewayModel, toolNameMap map[string]CodexGatewayToolNameMapEntry) *codexGatewayDeepSeekStreamState {
+func newCodexGatewayDeepSeekStreamState(model CodexGatewayModel, toolNameMap map[string]CodexGatewayToolNameMapEntry, provider ...string) *codexGatewayDeepSeekStreamState {
 	return &codexGatewayDeepSeekStreamState{
-		model:       model,
-		toolNameMap: cloneCodexGatewayToolNameMap(toolNameMap),
-		toolCalls:   make(map[int]*codexGatewayDeepSeekStreamToolCall),
+		model:         model,
+		toolNameMap:   cloneCodexGatewayToolNameMap(toolNameMap),
+		toolCalls:     make(map[int]*codexGatewayDeepSeekStreamToolCall),
+		upstreamModel: firstNonBlankString(strings.TrimSpace(model.UpstreamModel), strings.TrimSpace(model.Slug)),
+		provider:      firstNonBlankString(provider...),
 	}
 }
 
@@ -529,7 +533,7 @@ func (s *codexGatewayDeepSeekStreamState) applyHostedToolContext(ctx *codexGatew
 func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer *CodexGatewayResponseEventWriter) error {
 	var chunk apicompat.ChatCompletionsChunk
 	if err := json.Unmarshal(payload, &chunk); err != nil {
-		return fmt.Errorf("decode codex deepseek stream chunk: %w", err)
+		return fmt.Errorf("decode codex %s stream chunk: %w", strings.ToLower(s.providerDisplayName()), err)
 	}
 	if s.responseID == "" {
 		s.responseID = strings.TrimSpace(chunk.ID)
@@ -859,6 +863,21 @@ func (s *codexGatewayDeepSeekStreamState) finish(writer *CodexGatewayResponseEve
 	}
 }
 
+func (s *codexGatewayDeepSeekStreamState) providerDisplayName() string {
+	if s == nil {
+		return codexGatewayChatCompatProviderDisplayName("")
+	}
+	return codexGatewayChatCompatProviderDisplayName(s.provider)
+}
+
+func codexGatewayChatCompatProviderEventPrefix(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if codexGatewayChatCompatProviderSupported(provider) {
+		return provider
+	}
+	return string(CodexGatewayProviderDeepSeek)
+}
+
 func (s *codexGatewayDeepSeekStreamState) finishEarly(writer *CodexGatewayResponseEventWriter) (string, error) {
 	status := "failed"
 	incompleteReason := ""
@@ -873,7 +892,7 @@ func (s *codexGatewayDeepSeekStreamState) finishEarly(writer *CodexGatewayRespon
 	if status == "failed" {
 		response.Error = &CodexGatewayResponseError{
 			Code:    "upstream_error",
-			Message: "DeepSeek stream ended before completion.",
+			Message: s.providerDisplayName() + " stream ended before completion.",
 			RawFields: map[string]json.RawMessage{
 				"type": json.RawMessage(`"api_error"`),
 			},
@@ -894,7 +913,7 @@ func (s *codexGatewayDeepSeekStreamState) finishHostedToolError(writer *CodexGat
 	response := s.finalResponse("failed", "")
 	response.Error = &CodexGatewayResponseError{
 		Code:    "hosted_tool_error",
-		Message: "DeepSeek hosted web_search failed: " + sanitizeStreamError(err),
+		Message: s.providerDisplayName() + " hosted web_search failed: " + sanitizeStreamError(err),
 		RawFields: map[string]json.RawMessage{
 			"type": json.RawMessage(`"api_error"`),
 		},
@@ -1181,7 +1200,7 @@ func (s *codexGatewayDeepSeekStreamState) providerResult(upstreamRequestID strin
 		incompleteReason = ""
 		responseError = &CodexGatewayResponseError{
 			Code:    "hosted_tool_error",
-			Message: "DeepSeek hosted web_search failed: " + sanitizeStreamError(s.hostedToolError),
+			Message: s.providerDisplayName() + " hosted web_search failed: " + sanitizeStreamError(s.hostedToolError),
 			RawFields: map[string]json.RawMessage{
 				"type": json.RawMessage(`"api_error"`),
 			},
@@ -1198,7 +1217,7 @@ func (s *codexGatewayDeepSeekStreamState) providerResult(upstreamRequestID strin
 	if !s.terminalSeen && !s.hasPartialState() {
 		response.Error = &CodexGatewayResponseError{
 			Code:    "upstream_error",
-			Message: "DeepSeek stream ended before completion.",
+			Message: s.providerDisplayName() + " stream ended before completion.",
 		}
 	}
 	return CodexGatewayProviderResult{
@@ -1346,7 +1365,7 @@ func codexGatewayDeepSeekShouldFailoverUpstreamResponse(status int) bool {
 func codexGatewayDeepSeekStreamFailoverError(statusCode int, headers http.Header, code, message string, retryableOnSameAccount bool) error {
 	body, err := MarshalCodexGatewayErrorJSON(CodexGatewayErrorTypeAPI, strings.TrimSpace(code), strings.TrimSpace(message))
 	if err != nil {
-		body = []byte(`{"error":{"type":"api_error","code":"upstream_error","message":"DeepSeek stream failed."}}`)
+		body = []byte(`{"error":{"type":"api_error","code":"upstream_error","message":"Chat-compatible stream failed."}}`)
 	}
 	return &UpstreamFailoverError{
 		StatusCode:             statusCode,

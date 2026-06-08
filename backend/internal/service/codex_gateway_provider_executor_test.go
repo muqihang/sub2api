@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +76,131 @@ func newCodexGatewayProviderExecutorForTest() *CodexGatewayProviderExecutor {
 	cfg.Gateway.Codex.ProviderGroups.OpenAI = 101
 	cfg.Gateway.Codex.ProviderGroups.DeepSeek = 202
 	cfg.Gateway.Codex.ProviderGroups.Anthropic = 303
+	cfg.Gateway.Codex.ProviderGroups.Agnes = 404
 	return &CodexGatewayProviderExecutor{cfg: cfg}
+}
+
+func TestCodexGatewayProviderExecutor_CompleteRoutesAgnesThroughAgnesAdapterAndProviderGroup(t *testing.T) {
+	account := &Account{ID: 44, Platform: PlatformOpenAI, Type: AccountTypeUpstream, Status: StatusActive, Schedulable: true}
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+			require.NotNil(t, groupID)
+			require.Equal(t, int64(404), *groupID)
+			require.Equal(t, "agnes_session:codex_gateway:agnes:agnes-2.0-flash:shared", sessionHash)
+			require.Equal(t, "agnes-2.0-flash", requestedModel)
+			require.Empty(t, excludedIDs)
+			return account, nil
+		},
+	}
+	executor.agnes = &codexGatewayProviderAdapterStub{
+		completeFn: func(_ context.Context, selected *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+			require.Equal(t, account.ID, selected.ID)
+			require.Equal(t, "agnes", req.Model.Provider)
+			return CodexGatewayDeepSeekAdapterResult{
+				ServiceResponse: CodexGatewayServiceResponse{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"id":"resp_agnes"}`)},
+				ProviderResult:  CodexGatewayProviderResult{ResponseID: "resp_agnes", UpstreamModel: "agnes-2.0-flash"},
+			}, nil
+		},
+	}
+
+	resp, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request:    CodexGatewayResponsesRequest{APIKey: validCodexGatewayAPIKeyForTest()},
+		Model:      CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"},
+		Parsed:     CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash"},
+		SessionKey: "agnes_session",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestCodexGatewayAgnesProviderAdapter_CompleteOmitsThinkingAndPreservesImagesByModel(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		bodies = append(bodies, body)
+		require.NotContains(t, body, "thinking")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req_agnes")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_agnes","object":"chat.completion","model":"agnes-2.0-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`)
+	}))
+	defer server.Close()
+
+	adapter := &codexGatewayAgnesProviderAdapter{}
+	account := &Account{
+		ID:       44,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"base_url": server.URL,
+			"api_key":  "sk-agnes",
+		},
+	}
+
+	_, err := adapter.Complete(context.Background(), account, CodexGatewayProviderRequest{
+		Model: CodexGatewayModel{
+			Slug:                        "agnes-2.0-flash",
+			Provider:                    "agnes",
+			UpstreamModel:               "agnes-2.0-flash",
+			InputModalities:             []string{"text", "image"},
+			SupportsImageDetailOriginal: true,
+		},
+		Parsed: CodexGatewayResponsesCreateRequest{
+			Model:     "agnes-2.0-flash",
+			Input:     json.RawMessage(`"describe the image"`),
+			Reasoning: json.RawMessage(`{"effort":"xhigh"}`),
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, bodies, 1)
+	require.Equal(t, "high", bodies[0]["reasoning_effort"])
+	messages := bodies[0]["messages"].([]any)
+	require.Equal(t, "describe the image", messages[0].(map[string]any)["content"])
+}
+
+func TestCodexGatewayAgnesProviderAdapter_CompleteRejectsImagesForTextOnlyModel(t *testing.T) {
+	adapter := &codexGatewayAgnesProviderAdapter{}
+	account := &Account{
+		ID:       44,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"base_url": "https://agnes.invalid",
+			"api_key":  "sk-agnes",
+		},
+	}
+
+	_, err := adapter.Complete(context.Background(), account, CodexGatewayProviderRequest{
+		Model: CodexGatewayModel{Slug: "agnes-1.5-flash", Provider: "agnes", UpstreamModel: "agnes-1.5-flash", InputModalities: []string{"text"}},
+		Parsed: CodexGatewayResponsesCreateRequest{
+			Model: "agnes-1.5-flash",
+			Input: json.RawMessage(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"describe"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`),
+		},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not support image input")
+}
+
+func TestCodexGatewayAgnesProviderAdapter_CompleteRejectsEmptyBaseURL(t *testing.T) {
+	adapter := &codexGatewayAgnesProviderAdapter{}
+	account := &Account{
+		ID:       44,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeUpstream,
+		Credentials: map[string]any{
+			"api_key": "sk-agnes",
+		},
+	}
+
+	_, err := adapter.Complete(context.Background(), account, CodexGatewayProviderRequest{
+		Model:  CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"},
+		Parsed: CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash", Input: json.RawMessage(`"hello"`)},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "AGNES provider account requires base_url")
+	require.NotContains(t, err.Error(), "api.openai.com")
 }
 
 func TestCodexGatewayProviderExecutor_CompleteFailsOverBeforeVisibleOutput(t *testing.T) {
@@ -505,11 +630,16 @@ func TestCodexGatewayProviderSelectionSessionKeyScopesOnlyDeepSeek(t *testing.T)
 	anthropicReq := base
 	anthropicReq.Model.Provider = "anthropic"
 	anthropicReq.Model.UpstreamModel = "claude-sonnet-4-6"
+	agnesReq := base
+	agnesReq.Model.Provider = "agnes"
+	agnesReq.Model.Slug = "agnes-2.0-flash"
+	agnesReq.Model.UpstreamModel = "agnes-2.0-flash"
 
 	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-pro:isolation_hash", pro)
 	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-flash:isolation_hash", flash)
 	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-pro:other_isolation", otherIsolation)
 	require.Equal(t, "session_hash:codex_gateway:deepseek:deepseek-v4-pro:isolation_hash", slugFallback)
+	require.Equal(t, "session_hash:codex_gateway:agnes:agnes-2.0-flash:isolation_hash", codexGatewayProviderSelectionSessionKey(agnesReq))
 	require.NotEqual(t, pro, flash)
 	require.NotEqual(t, pro, otherIsolation)
 	require.Equal(t, "session_hash", codexGatewayProviderSelectionSessionKey(openAIReq))

@@ -74,6 +74,7 @@ type CodexGatewayProviderExecutor struct {
 	usageRecorder            codexGatewayUsageRecorder
 	openaiAdapter            codexGatewayProviderAdapter
 	deepseek                 codexGatewayProviderAdapter
+	agnes                    codexGatewayProviderAdapter
 	anthropic                codexGatewayProviderAdapter
 }
 
@@ -89,6 +90,11 @@ func NewCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGa
 	}
 	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: openaiGateway}
 	executor.deepseek = &codexGatewayDeepSeekProviderAdapter{
+		stateStore:        stateStore,
+		hostedWebSearch:   executor.executeOpenAIHostedWebSearch,
+		hostedImageVision: executor.executeOpenAIHostedImageVision,
+	}
+	executor.agnes = &codexGatewayAgnesProviderAdapter{
 		stateStore:        stateStore,
 		hostedWebSearch:   executor.executeOpenAIHostedWebSearch,
 		hostedImageVision: executor.executeOpenAIHostedImageVision,
@@ -251,6 +257,11 @@ func (e *CodexGatewayProviderExecutor) providerGroupAndAdapter(ctx context.Conte
 			return 0, nil, &CodexGatewayProviderUnavailableError{ModelID: model.Slug, Provider: model.Provider, Kind: CodexGatewayProviderUnavailableNoProviderGroup}
 		}
 		return runtime.GroupID, e.anthropic, nil
+	case "agnes":
+		if runtime.GroupID <= 0 || !runtime.Healthy {
+			return 0, nil, &CodexGatewayProviderUnavailableError{ModelID: model.Slug, Provider: model.Provider, Kind: CodexGatewayProviderUnavailableNoProviderGroup}
+		}
+		return runtime.GroupID, e.agnes, nil
 	default:
 		return 0, nil, fmt.Errorf("unsupported codex gateway provider %q", model.Provider)
 	}
@@ -268,6 +279,8 @@ func (e *CodexGatewayProviderExecutor) providerRuntime(ctx context.Context, prov
 			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.DeepSeek
 		case CodexGatewayProviderAnthropic:
 			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.Anthropic
+		case CodexGatewayProviderAgnes:
+			runtime.GroupID = e.cfg.Gateway.Codex.ProviderGroups.Agnes
 		}
 		runtime.Healthy = runtime.GroupID > 0
 	}
@@ -317,6 +330,7 @@ func (e *CodexGatewayProviderExecutor) selectAccount(ctx context.Context, groupI
 }
 
 const (
+	codexGatewayAgnesDefaultBaseURL          = "https://apihub.agnes-ai.com/v1"
 	codexGatewayHostedWebSearchOpenAIModel   = "gpt-5.4-mini"
 	codexGatewayHostedImageVisionOpenAIModel = "gpt-5.4-mini"
 )
@@ -701,7 +715,8 @@ func codexGatewayProviderSelectionSessionKey(req CodexGatewayProviderRequest) st
 	if sessionKey == "" {
 		return ""
 	}
-	if normalizeCodexGatewayProvider(CodexGatewayProvider(req.Model.Provider)) != CodexGatewayProviderDeepSeek {
+	provider := normalizeCodexGatewayProvider(CodexGatewayProvider(req.Model.Provider))
+	if provider != CodexGatewayProviderDeepSeek && provider != CodexGatewayProviderAgnes {
 		return sessionKey
 	}
 	upstreamModel := strings.ToLower(strings.TrimSpace(req.Model.UpstreamModel))
@@ -715,7 +730,7 @@ func codexGatewayProviderSelectionSessionKey(req CodexGatewayProviderRequest) st
 	if isolationKey == "" {
 		isolationKey = "shared"
 	}
-	return sessionKey + ":codex_gateway:deepseek:" + upstreamModel + ":" + isolationKey
+	return sessionKey + ":codex_gateway:" + string(provider) + ":" + upstreamModel + ":" + isolationKey
 }
 
 type codexGatewayDeepSeekProviderAdapter struct {
@@ -724,9 +739,39 @@ type codexGatewayDeepSeekProviderAdapter struct {
 	hostedImageVision func(ctx context.Context, req CodexGatewayProviderRequest, imageURL string) (string, error)
 }
 
+type codexGatewayAgnesProviderAdapter struct {
+	stateStore        *CodexGatewayStateStore
+	hostedWebSearch   func(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error)
+	hostedImageVision func(ctx context.Context, req CodexGatewayProviderRequest, imageURL string) (string, error)
+}
+
 type codexGatewayAnthropicProviderAdapter struct {
 	stateStore      *CodexGatewayStateStore
 	hostedWebSearch func(ctx context.Context, req CodexGatewayProviderRequest, query string) (string, error)
+}
+
+func codexGatewayAgnesRequestConfig(model CodexGatewayModel) CodexGatewayDeepSeekRequestConfig {
+	return CodexGatewayDeepSeekRequestConfig{
+		Provider:             string(CodexGatewayProviderAgnes),
+		ReasoningMode:        "openai",
+		SupportsNativeImages: codexGatewayAgnesSupportsNativeImages(model),
+		ImageInputMode:       CodexGatewayDeepSeekImageInputModeReject,
+	}
+}
+
+func codexGatewayAgnesSupportsNativeImages(model CodexGatewayModel) bool {
+	return codexGatewayStringSliceContains(model.InputModalities, "image") || model.SupportsImageDetailOriginal
+}
+
+func codexGatewayAgnesAccountBaseURL(account *Account) (string, error) {
+	if account == nil {
+		return "", fmt.Errorf("AGNES provider account is required")
+	}
+	baseURL := strings.TrimSpace(account.GetCredential("base_url"))
+	if baseURL == "" {
+		return "", fmt.Errorf("AGNES provider account requires base_url %s", codexGatewayAgnesDefaultBaseURL)
+	}
+	return baseURL, nil
 }
 
 func (a *codexGatewayDeepSeekProviderAdapter) Complete(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
@@ -797,6 +842,90 @@ func (a *codexGatewayDeepSeekProviderAdapter) Stream(ctx context.Context, accoun
 			IsolationKey:         req.IsolationKey,
 			WorkspaceKey:         req.WorkspaceKey,
 			ManagedSessionBucket: req.ManagedSessionBucket,
+			CaptureTrace:         req.CaptureTrace,
+		},
+		cfg,
+		req.Request.StreamWriter,
+	)
+	if err != nil {
+		return CodexGatewayProviderResult{}, err
+	}
+	copyCodexGatewayHTTPHeaders(req.Request.ResponseHeader, result.ServiceResponse.Headers)
+	return result.ProviderResult, nil
+}
+
+func (a *codexGatewayAgnesProviderAdapter) Complete(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
+	if account == nil {
+		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex gateway agnes adapter requires selected account")
+	}
+	baseURL, err := codexGatewayAgnesAccountBaseURL(account)
+	if err != nil {
+		return CodexGatewayDeepSeekAdapterResult{}, err
+	}
+	cfg := codexGatewayAgnesRequestConfig(req.Model)
+	if a.hostedWebSearch != nil {
+		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
+			return a.hostedWebSearch(ctx, req, query)
+		}
+	}
+	if a.hostedImageVision != nil {
+		cfg.HostedImageVision = func(ctx context.Context, imageURL string) (string, error) {
+			return a.hostedImageVision(ctx, req, imageURL)
+		}
+	}
+	return ExecuteCodexGatewayDeepSeekAdapter(
+		ctx,
+		http.DefaultClient,
+		baseURL,
+		account.GetOpenAIApiKey(),
+		req.Model,
+		req.Parsed,
+		a.stateStore,
+		CodexGatewayDeepSeekRequestContext{
+			SessionKey:           req.SessionKey,
+			IsolationKey:         req.IsolationKey,
+			WorkspaceKey:         req.WorkspaceKey,
+			ManagedSessionBucket: req.ManagedSessionBucket,
+			Provider:             string(CodexGatewayProviderAgnes),
+			CaptureTrace:         req.CaptureTrace,
+		},
+		cfg,
+	)
+}
+
+func (a *codexGatewayAgnesProviderAdapter) Stream(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayProviderResult, error) {
+	if account == nil {
+		return CodexGatewayProviderResult{}, fmt.Errorf("codex gateway agnes adapter requires selected account")
+	}
+	baseURL, err := codexGatewayAgnesAccountBaseURL(account)
+	if err != nil {
+		return CodexGatewayProviderResult{}, err
+	}
+	cfg := codexGatewayAgnesRequestConfig(req.Model)
+	if a.hostedWebSearch != nil {
+		cfg.HostedWebSearch = func(ctx context.Context, query string) (string, error) {
+			return a.hostedWebSearch(ctx, req, query)
+		}
+	}
+	if a.hostedImageVision != nil {
+		cfg.HostedImageVision = func(ctx context.Context, imageURL string) (string, error) {
+			return a.hostedImageVision(ctx, req, imageURL)
+		}
+	}
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		ctx,
+		http.DefaultClient,
+		baseURL,
+		account.GetOpenAIApiKey(),
+		req.Model,
+		req.Parsed,
+		a.stateStore,
+		CodexGatewayDeepSeekRequestContext{
+			SessionKey:           req.SessionKey,
+			IsolationKey:         req.IsolationKey,
+			WorkspaceKey:         req.WorkspaceKey,
+			ManagedSessionBucket: req.ManagedSessionBucket,
+			Provider:             string(CodexGatewayProviderAgnes),
 			CaptureTrace:         req.CaptureTrace,
 		},
 		cfg,

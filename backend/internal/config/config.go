@@ -751,6 +751,7 @@ type GatewayCodexProviderGroupsConfig struct {
 	OpenAI    int64 `mapstructure:"openai"`
 	DeepSeek  int64 `mapstructure:"deepseek"`
 	Anthropic int64 `mapstructure:"anthropic"`
+	Agnes     int64 `mapstructure:"agnes"`
 }
 
 type GatewayCodexCaptureConfig struct {
@@ -1923,10 +1924,13 @@ func setDefaults() {
 		"claude-opus-4-7",
 		"claude-sonnet-4-6",
 		"claude-haiku-4-5-20251001",
+		"agnes-2.0-flash",
+		"agnes-1.5-flash",
 	})
 	viper.SetDefault("gateway.codex.provider_groups.openai", int64(0))
 	viper.SetDefault("gateway.codex.provider_groups.deepseek", int64(0))
 	viper.SetDefault("gateway.codex.provider_groups.anthropic", int64(0))
+	viper.SetDefault("gateway.codex.provider_groups.agnes", int64(0))
 	viper.SetDefault("gateway.codex.capture.enabled", false)
 	viper.SetDefault("gateway.codex.capture.level", "summary")
 	viper.SetDefault("gateway.codex.capture.raw_payloads", false)
@@ -3085,6 +3089,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Codex.ProviderGroups.Anthropic < 0 {
 		return fmt.Errorf("gateway.codex.provider_groups.anthropic must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.Agnes < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.agnes must be non-negative")
 	}
 	if c.Gateway.Codex.StateStoreTTLSeconds <= 0 {
 		return fmt.Errorf("gateway.codex.state_store_ttl_seconds must be positive")

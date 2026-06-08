@@ -12,20 +12,22 @@ import (
 )
 
 var codexGatewayDeepSeekChatCompletionsAllowlist = map[string]struct{}{
-	"model":             {},
-	"messages":          {},
-	"tools":             {},
-	"tool_choice":       {},
-	"reasoning_effort":  {},
-	"thinking":          {},
-	"max_tokens":        {},
-	"stream":            {},
-	"stream_options":    {},
-	"temperature":       {},
-	"top_p":             {},
-	"presence_penalty":  {},
-	"frequency_penalty": {},
-	"user_id":           {},
+	"model":                {},
+	"messages":             {},
+	"tools":                {},
+	"tool_choice":          {},
+	"reasoning_effort":     {},
+	"thinking":             {},
+	"max_tokens":           {},
+	"stream":               {},
+	"stream_options":       {},
+	"temperature":          {},
+	"top_p":                {},
+	"presence_penalty":     {},
+	"frequency_penalty":    {},
+	"user_id":              {},
+	"prompt_cache_key":     {},
+	"chat_template_kwargs": {},
 }
 
 const codexGatewayDeepSeekSerialToolInstruction = "Serial tool calling is required for this request: before receiving tool output, emit at most one tool call. After the tool output is provided, you may decide whether another tool call is needed."
@@ -46,8 +48,29 @@ type codexGatewayDeepSeekReplayDiagnostics struct {
 }
 
 func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayDeepSeekRequestContext, cfg CodexGatewayDeepSeekRequestConfig) (CodexGatewayPreparedDeepSeekRequest, error) {
-	if strings.TrimSpace(model.Provider) != "" && !strings.EqualFold(strings.TrimSpace(model.Provider), "deepseek") {
-		return CodexGatewayPreparedDeepSeekRequest{}, fmt.Errorf("codex deepseek request requires a deepseek model")
+	provider := codexGatewayChatCompatProvider(model, cfg)
+	if strings.TrimSpace(model.Provider) != "" && provider == "" {
+		return CodexGatewayPreparedDeepSeekRequest{}, fmt.Errorf("codex chat-compatible request requires a supported provider")
+	}
+	if strings.TrimSpace(cfg.Provider) != "" && !codexGatewayChatCompatProviderSupported(cfg.Provider) {
+		return CodexGatewayPreparedDeepSeekRequest{}, fmt.Errorf("codex chat-compatible request requires a supported provider")
+	}
+	if modelProvider := strings.ToLower(strings.TrimSpace(model.Provider)); modelProvider != "" && strings.TrimSpace(cfg.Provider) != "" && modelProvider != strings.ToLower(strings.TrimSpace(cfg.Provider)) {
+		return CodexGatewayPreparedDeepSeekRequest{}, fmt.Errorf("codex chat-compatible request provider mismatch: model %q config %q", model.Provider, cfg.Provider)
+	}
+	if provider != "" {
+		if strings.TrimSpace(cfg.Provider) == "" {
+			cfg.Provider = provider
+		}
+		if strings.TrimSpace(ctx.Provider) == "" {
+			ctx.Provider = provider
+		}
+	}
+	if strings.EqualFold(provider, string(CodexGatewayProviderAgnes)) && codexGatewayModelDeclaresNoNativeImages(model) {
+		cfg.SupportsNativeImages = false
+		if strings.TrimSpace(cfg.ImageInputMode) == "" {
+			cfg.ImageInputMode = CodexGatewayDeepSeekImageInputModeReject
+		}
 	}
 	if err := normalizeCodexGatewayLegacyToolRefs(&req); err != nil {
 		return CodexGatewayPreparedDeepSeekRequest{}, err
@@ -57,7 +80,7 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 		upstreamModel = strings.TrimSpace(model.Slug)
 	}
 	if upstreamModel == "" {
-		return CodexGatewayPreparedDeepSeekRequest{}, fmt.Errorf("codex deepseek request requires an upstream model")
+		return CodexGatewayPreparedDeepSeekRequest{}, fmt.Errorf("codex %s request requires an upstream model", strings.ToLower(codexGatewayChatCompatProviderDisplayName(provider)))
 	}
 
 	body := map[string]any{
@@ -105,7 +128,7 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 			ResponseID:    strings.TrimSpace(*req.PreviousResponseID),
 			SessionKey:    ctx.SessionKey,
 			IsolationKey:  ctx.IsolationKey,
-			Provider:      "deepseek",
+			Provider:      codexGatewayChatCompatProviderName(cfg),
 			UpstreamModel: upstreamModel,
 		}); err == nil && len(state.ToolCalls) > 0 {
 			if restored := codexGatewayToolSchemasToAny(state.ToolSchemas); len(restored) > 0 {
@@ -120,16 +143,27 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	if len(toolMapping.IgnoredHostedToolTypes) > 0 {
 		leadingMessages = append(leadingMessages, map[string]any{
 			"role":    "system",
-			"content": codexGatewayDeepSeekHostedToolNotice(toolMapping.IgnoredHostedToolTypes),
+			"content": codexGatewayDeepSeekHostedToolNotice(toolMapping.IgnoredHostedToolTypes, provider),
 		})
 	}
 
-	reasoningEffort, thinkingEnabled := codexGatewayDeepSeekReasoningConfig(req.Reasoning, model, cfg.AllowReasoningDisable)
-	body["reasoning_effort"] = reasoningEffort
-	if thinkingEnabled {
-		body["thinking"] = map[string]any{"type": "enabled"}
-	} else {
-		body["thinking"] = map[string]any{"type": "disabled"}
+	reasoningEffort, thinkingEnabled := codexGatewayDeepSeekReasoningConfig(req.Reasoning, cfg)
+	if codexGatewayAgnesToolRequestDisablesOfficialThinking(provider, body) {
+		reasoningEffort = ""
+		thinkingEnabled = false
+	}
+	if reasoningEffort != "" {
+		body["reasoning_effort"] = reasoningEffort
+	}
+	if codexGatewayChatCompatUsesAgnesOfficialThinking(provider, cfg) {
+		body["chat_template_kwargs"] = map[string]any{"enable_thinking": thinkingEnabled}
+	}
+	if codexGatewayChatCompatIncludesThinkingParam(cfg) {
+		if thinkingEnabled {
+			body["thinking"] = map[string]any{"type": "enabled"}
+		} else {
+			body["thinking"] = map[string]any{"type": "disabled"}
+		}
 	}
 
 	if req.MaxOutputTokens != nil {
@@ -151,6 +185,11 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	} else if userID != "" {
 		body["user_id"] = userID
 	}
+	if strings.EqualFold(provider, string(CodexGatewayProviderAgnes)) {
+		if cacheKey := codexGatewayAgnesPromptCacheKey(req, ctx); cacheKey != "" {
+			body["prompt_cache_key"] = cacheKey
+		}
+	}
 
 	rawToolsByAlias := make(map[string]CodexGatewayToolNameMapEntry, len(toolMapping.NameMap))
 	for alias, entry := range toolMapping.NameMap {
@@ -164,8 +203,12 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 			for key, value := range codexGatewayDeepSeekUserScopeDiagnostics(userID, userIDDiag, ctx.CaptureTrace.manager.redact) {
 				diagnostics[key] = value
 			}
+			diagnosticPrefix := provider
+			if diagnosticPrefix == "" {
+				diagnosticPrefix = "deepseek"
+			}
 			ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, map[string]any{
-				"deepseek_cache": diagnostics,
+				diagnosticPrefix + "_cache": diagnostics,
 			})
 		}
 		return CodexGatewayPreparedDeepSeekRequest{}, err
@@ -187,6 +230,9 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 		leadingMessages = codexGatewayDeepSeekDeduplicateLeadingSystemMessages(leadingMessages, messages)
 		if len(leadingMessages) > 0 {
 			messages = append(leadingMessages, messages...)
+		}
+		if codexGatewayChatCompatUsesOpenAIReasoning(cfg) {
+			messages = codexGatewayStripDeepSeekReasoningContentFromMessages(messages)
 		}
 		body["messages"] = messages
 	}
@@ -226,14 +272,18 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	body = codexGatewayDeepSeekFinalizeChatCompletionsBody(body)
 	if ctx.CaptureTrace != nil && ctx.CaptureTrace.manager != nil {
 		requestDiagnostics := map[string]any{}
+		diagnosticPrefix := provider
+		if diagnosticPrefix == "" {
+			diagnosticPrefix = "deepseek"
+		}
 		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, replayDiag, ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
-			requestDiagnostics["deepseek_cache"] = diagnostics
+			requestDiagnostics[diagnosticPrefix+"_cache"] = diagnostics
 			if cacheUsage := codexGatewayDeepSeekCacheUsageFields(diagnostics); len(cacheUsage) > 0 {
 				ctx.CaptureTrace.manager.mergeCacheUsage(ctx.CaptureTrace, cacheUsage)
 			}
 		}
 		if diagnostics := codexGatewayDeepSeekToolOutputSummaryDiagnostics(body); len(diagnostics) > 0 {
-			requestDiagnostics["deepseek_tool_output_summary"] = diagnostics
+			requestDiagnostics[diagnosticPrefix+"_tool_output_summary"] = diagnostics
 		}
 		ctx.CaptureTrace.manager.mergeRequestDiagnostics(ctx.CaptureTrace, requestDiagnostics)
 	}
@@ -443,6 +493,16 @@ func codexGatewayDeepSeekDeferredToolsValueIsNonEmptyArray(value any) bool {
 	return ok && len(arr) > 0
 }
 
+func codexGatewayAgnesPromptCacheKey(req CodexGatewayResponsesCreateRequest, ctx CodexGatewayDeepSeekRequestContext) string {
+	if sessionKey := strings.TrimSpace(ctx.SessionKey); sessionKey != "" {
+		return "codex_agnes_" + sessionKey
+	}
+	if key := strings.TrimSpace(req.PromptCacheKey); key != "" {
+		return "codex_agnes_" + key
+	}
+	return ""
+}
+
 func mergeCodexGatewayToolMappings(base, extra CodexGatewayToolMappingResult) (CodexGatewayToolMappingResult, error) {
 	if base.NameMap == nil {
 		base.NameMap = make(map[string]CodexGatewayToolNameMapEntry, len(extra.NameMap))
@@ -556,12 +616,13 @@ func codexGatewayDeepSeekRestrictHostedToolMapping(mapping CodexGatewayToolMappi
 	return filtered
 }
 
-func codexGatewayDeepSeekHostedToolNotice(toolTypes []string) string {
+func codexGatewayDeepSeekHostedToolNotice(toolTypes []string, provider string) string {
 	types := uniqueCodexGatewayStrings(toolTypes)
 	if len(types) == 0 {
 		return ""
 	}
-	return "OpenAI hosted tools are not available through the DeepSeek Chat Completions upstream and were not forwarded: " + strings.Join(types, ", ") + ". Use the available local, function, custom, namespace, MCP, browser, or computer-use tools when they are present in this request."
+	providerName := codexGatewayChatCompatProviderDisplayName(provider)
+	return "OpenAI hosted tools are not available through the " + providerName + " Chat Completions upstream and were not forwarded: " + strings.Join(types, ", ") + ". Use the available local, function, custom, namespace, MCP, browser, or computer-use tools when they are present in this request."
 }
 
 func uniqueCodexGatewayStrings(values []string) []string {
@@ -617,7 +678,7 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 			ResponseID:    strings.TrimSpace(*req.PreviousResponseID),
 			SessionKey:    ctx.SessionKey,
 			IsolationKey:  ctx.IsolationKey,
-			Provider:      "deepseek",
+			Provider:      codexGatewayChatCompatProviderName(cfg),
 			UpstreamModel: upstreamModel,
 		})
 		if err != nil {
@@ -861,11 +922,26 @@ func decodeCodexGatewayInputItems(raw json.RawMessage) ([]any, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	var items []any
-	if err := json.Unmarshal(raw, &items); err != nil {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
 		return nil, fmt.Errorf("decode input: %w", err)
 	}
-	return items, nil
+	switch typed := value.(type) {
+	case nil:
+		return nil, nil
+	case []any:
+		return typed, nil
+	case string:
+		return []any{map[string]any{
+			"type":    "message",
+			"role":    "user",
+			"content": typed,
+		}}, nil
+	case map[string]any:
+		return []any{typed}, nil
+	default:
+		return nil, fmt.Errorf("decode input: expected array, object, string, or null")
+	}
 }
 
 func convertCodexGatewayInputItem(item any, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayDeepSeekRequestConfig) (map[string]any, []string, error) {
@@ -956,7 +1032,9 @@ func convertCodexGatewayMessageItem(m map[string]any, toolMapping CodexGatewayTo
 		"role": role,
 	}
 	if role == "assistant" {
-		if content, ok, err := convertCodexGatewayContentValue(m["content"], cfg); err != nil {
+		assistantCfg := cfg
+		assistantCfg.SupportsNativeImages = false
+		if content, ok, err := convertCodexGatewayContentValue(m["content"], assistantCfg); err != nil {
 			return nil, nil, err
 		} else if ok {
 			msg["content"] = content
@@ -1122,13 +1200,44 @@ func convertCodexGatewayToolSearchOutputItem(m map[string]any) (map[string]any, 
 	}, nil, nil
 }
 
-func convertCodexGatewayContentValue(value any, cfg CodexGatewayDeepSeekRequestConfig) (string, bool, error) {
+func convertCodexGatewayContentValue(value any, cfg CodexGatewayDeepSeekRequestConfig) (any, bool, error) {
 	switch typed := value.(type) {
 	case nil:
 		return "", true, nil
 	case string:
 		return typed, true, nil
 	case []any:
+		if cfg.SupportsNativeImages {
+			parts := make([]any, 0, len(typed))
+			for _, partAny := range typed {
+				part, ok := partAny.(map[string]any)
+				if !ok {
+					continue
+				}
+				switch strings.TrimSpace(firstCodexGatewayToolString(part["type"])) {
+				case "input_text", "text", "output_text":
+					parts = append(parts, map[string]any{"type": "text", "text": stringifyCodexGatewayContentText(part["text"])})
+				case "input_image":
+					imageURL := strings.TrimSpace(firstCodexGatewayToolString(part["image_url"]))
+					if imageURL == "" {
+						if nested, ok := part["image_url"].(map[string]any); ok {
+							imageURL = strings.TrimSpace(firstCodexGatewayToolString(nested["url"]))
+						}
+					}
+					if imageURL != "" {
+						image := map[string]any{"url": imageURL}
+						if detail := codexGatewayNativeImageDetail(part); detail != "" {
+							image["detail"] = detail
+						}
+						parts = append(parts, map[string]any{"type": "image_url", "image_url": image})
+					}
+				}
+			}
+			if len(parts) == 0 {
+				return "", true, nil
+			}
+			return parts, true, nil
+		}
 		var parts []string
 		for _, partAny := range typed {
 			part, ok := partAny.(map[string]any)
@@ -1140,7 +1249,7 @@ func convertCodexGatewayContentValue(value any, cfg CodexGatewayDeepSeekRequestC
 				parts = append(parts, stringifyCodexGatewayContentText(part["text"]))
 			case "input_image":
 				if strings.EqualFold(strings.TrimSpace(cfg.ImageInputMode), CodexGatewayDeepSeekImageInputModeReject) {
-					return "", false, fmt.Errorf("codex deepseek request does not support image input")
+					return "", false, fmt.Errorf("codex %s request does not support image input", strings.ToLower(codexGatewayChatCompatProviderDisplayName(cfg.Provider)))
 				}
 				parts = append(parts, codexGatewayDeepSeekImagePlaceholder())
 			}
@@ -1166,6 +1275,19 @@ func stringifyCodexGatewayContentText(value any) string {
 		}
 		return fmt.Sprint(typed)
 	}
+}
+
+func codexGatewayNativeImageDetail(part map[string]any) string {
+	if part == nil {
+		return ""
+	}
+	if detail := strings.TrimSpace(firstCodexGatewayToolString(part["detail"])); detail != "" {
+		return detail
+	}
+	if nested, ok := part["image_url"].(map[string]any); ok {
+		return strings.TrimSpace(firstCodexGatewayToolString(nested["detail"]))
+	}
+	return ""
 }
 
 func normalizeCodexGatewayFunctionCalls(value any, toolMapping CodexGatewayToolMappingResult) ([]any, error) {
@@ -1218,6 +1340,47 @@ func toolCallIDsFromChatToolCalls(toolCalls []any) []string {
 		}
 	}
 	return ids
+}
+
+func codexGatewayStripDeepSeekReasoningContentFromMessages(messages []any) []any {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]any, 0, len(messages))
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			out = append(out, rawMessage)
+			continue
+		}
+		delete(message, "reasoning_content")
+		if codexGatewayChatCompatShouldDropEmptyAssistantMessage(message) {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+func codexGatewayChatCompatShouldDropEmptyAssistantMessage(message map[string]any) bool {
+	if strings.TrimSpace(firstCodexGatewayToolString(message["role"])) != "assistant" {
+		return false
+	}
+	if calls, ok := message["tool_calls"].([]any); ok && len(calls) > 0 {
+		return false
+	}
+	content, hasContent := message["content"]
+	if !hasContent || content == nil {
+		return true
+	}
+	switch typed := content.(type) {
+	case string:
+		return strings.TrimSpace(typed) == ""
+	case []any:
+		return len(typed) == 0
+	default:
+		return false
+	}
 }
 
 func codexGatewayBackfillDeepSeekAssistantReasoning(messages []any) {
@@ -2572,7 +2735,27 @@ func codexGatewayDeepSeekStoredToolCallAlias(call CodexGatewayStoredToolCall, to
 	return name
 }
 
-func codexGatewayDeepSeekReasoningConfig(raw json.RawMessage, model CodexGatewayModel, allowDisable bool) (string, bool) {
+func codexGatewayDeepSeekReasoningConfig(raw json.RawMessage, cfg CodexGatewayDeepSeekRequestConfig) (string, bool) {
+	if codexGatewayChatCompatUsesOpenAIReasoning(cfg) {
+		effort := ""
+		thinkingEnabled := true
+		if len(raw) > 0 {
+			var parsed map[string]any
+			if err := json.Unmarshal(raw, &parsed); err == nil {
+				if rawEffort, ok := parsed["effort"].(string); ok {
+					if normalized := codexGatewayAgnesReasoningEffort(rawEffort); normalized != "" {
+						if normalized == "none" {
+							return "", false
+						}
+						effort = normalized
+						thinkingEnabled = true
+					}
+				}
+			}
+		}
+		return effort, thinkingEnabled
+	}
+
 	effort := "max"
 	if len(raw) > 0 {
 		var parsed map[string]any
@@ -2584,7 +2767,7 @@ func codexGatewayDeepSeekReasoningConfig(raw json.RawMessage, model CodexGateway
 				case "xhigh", "max":
 					effort = "max"
 				case "none", "minimal":
-					if allowDisable {
+					if cfg.AllowReasoningDisable {
 						return "max", false
 					}
 				}
@@ -2680,4 +2863,78 @@ func parseCodexGatewayRawFloat(raw json.RawMessage) (float64, bool) {
 
 func codexGatewayDeepSeekImagePlaceholder() string {
 	return "[unsupported input_image omitted]"
+}
+
+func codexGatewayChatCompatProvider(model CodexGatewayModel, cfg CodexGatewayDeepSeekRequestConfig) string {
+	modelProvider := strings.ToLower(strings.TrimSpace(model.Provider))
+	if modelProvider != "" {
+		if codexGatewayChatCompatProviderSupported(modelProvider) {
+			return modelProvider
+		}
+		return ""
+	}
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if codexGatewayChatCompatProviderSupported(provider) {
+		return provider
+	}
+	return ""
+}
+
+func codexGatewayChatCompatProviderSupported(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case string(CodexGatewayProviderDeepSeek), string(CodexGatewayProviderAgnes):
+		return true
+	default:
+		return false
+	}
+}
+
+func codexGatewayChatCompatProviderName(cfg CodexGatewayDeepSeekRequestConfig) string {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	switch provider {
+	case string(CodexGatewayProviderAgnes):
+		return string(CodexGatewayProviderAgnes)
+	default:
+		return string(CodexGatewayProviderDeepSeek)
+	}
+}
+
+func codexGatewayModelDeclaresNoNativeImages(model CodexGatewayModel) bool {
+	if len(model.InputModalities) > 0 {
+		return !codexGatewayStringSliceContains(model.InputModalities, "image")
+	}
+	return false
+}
+
+func codexGatewayChatCompatUsesOpenAIReasoning(cfg CodexGatewayDeepSeekRequestConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.ReasoningMode), "openai")
+}
+
+func codexGatewayChatCompatUsesAgnesOfficialThinking(provider string, cfg CodexGatewayDeepSeekRequestConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), string(CodexGatewayProviderAgnes)) &&
+		codexGatewayChatCompatUsesOpenAIReasoning(cfg)
+}
+
+func codexGatewayAgnesToolRequestDisablesOfficialThinking(provider string, body map[string]any) bool {
+	if !strings.EqualFold(strings.TrimSpace(provider), string(CodexGatewayProviderAgnes)) {
+		return false
+	}
+	tools, ok := body["tools"].([]any)
+	return ok && len(tools) > 0
+}
+
+func codexGatewayChatCompatIncludesThinkingParam(cfg CodexGatewayDeepSeekRequestConfig) bool {
+	return !codexGatewayChatCompatUsesOpenAIReasoning(cfg)
+}
+
+func codexGatewayChatCompatProviderDisplayName(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
+	case string(CodexGatewayProviderAgnes):
+		return "AGNES"
+	case "", string(CodexGatewayProviderDeepSeek):
+		return "DeepSeek"
+	default:
+		return provider
+	}
 }
