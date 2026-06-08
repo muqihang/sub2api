@@ -145,6 +145,50 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(wrapper.find('[data-testid="command-metric-intervention-queue"]').exists()).toBe(true)
   })
 
+  it('shows health legend percentages and marks needs-intervention as priority work', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({ account_id: 1, state: 'production' }),
+      accountFixture({ account_id: 2, state: 'rate_limited' }),
+      accountFixture({ account_id: 3, state: 'quarantined' }),
+      accountFixture({ account_id: 4, state: 'inactive' }),
+    ])
+
+    expect(wrapper.find('[data-testid="legend-needs_intervention"]').text()).toContain('25.0%')
+    expect(wrapper.find('[data-testid="legend-needs_intervention"]').text()).toContain('需优先处理')
+    expect(wrapper.find('[data-testid="legend-paused"]').text()).toContain('25.0%')
+    expect(wrapper.find('[data-testid="legend-paused"]').text()).toContain('等待恢复')
+    expect(wrapper.find('[data-testid="legend-active"]').text()).toContain('25.0%')
+  })
+
+  it('explains cooldown accounts as rate-limit cooldown and missing recovery time', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        account_id: 11,
+        state: 'rate_limited',
+        state_label: '限流冷却中',
+        five_hour_window: {
+          used: 5,
+          limit: 5,
+          remaining: 0,
+          utilization: 1,
+          reset_at: null,
+          status: 'blocked',
+          available: true,
+        },
+        recommendation: {
+          label: '等待恢复',
+          detail: '限流冷却中。',
+          action_kind: 'wait_rate_limit',
+        },
+      }),
+    ])
+
+    const card = wrapper.find('[data-testid="command-metric-cooling-window"]')
+    expect(card.text()).toContain('限流冷却账号')
+    expect(card.text()).toContain('等待恢复')
+    expect(card.text()).toContain('暂无恢复时间，需看详情')
+  })
+
   it('renders total RPM capacity in the top command metrics when summary RPM is available', async () => {
     const wrapper = await mountWithFixture(
       [accountFixture()],
@@ -157,8 +201,8 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     )
 
     const metrics = wrapper.find('[data-testid="dashboard-v2-command-metrics"]')
-    expect(metrics.text()).toContain('总 RPM 可供调用')
-    expect(metrics.text()).toContain('当前 0 / 总 170 RPM')
+    expect(metrics.text()).toContain('每分钟请求占用')
+    expect(metrics.text()).toContain('已用 0 / 上限 170，剩余 170 RPM')
   })
 
   it('still renders total RPM capacity when runtime RPM data is unavailable', async () => {
@@ -172,7 +216,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
       },
     )
 
-    expect(wrapper.find('[data-testid="dashboard-v2-command-metrics"]').text()).toContain('当前数据不足 / 总 170 RPM')
+    expect(wrapper.find('[data-testid="dashboard-v2-command-metrics"]').text()).toContain('数据不足 / 上限 170 RPM')
   })
 
   it('renders an unconfigured RPM fallback only when total RPM capacity is not configured', async () => {
@@ -186,7 +230,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
       },
     )
 
-    expect(wrapper.find('[data-testid="dashboard-v2-command-metrics"]').text()).toContain('未配置 RPM 容量')
+    expect(wrapper.find('[data-testid="dashboard-v2-command-metrics"]').text()).toContain('未配置每分钟请求上限')
   })
 
 
@@ -223,16 +267,16 @@ describe('FormalPoolStatusDashboardModalV2', () => {
 
     expect(wrapper.find('[data-testid="column-five-hour"]').text()).toContain('限额余量')
     const row = wrapper.find('tr[data-account-row]')
-    expect(row.text()).toContain('5h 剩余 58.0%，已用 42.0%')
-    expect(row.text()).toContain('7d 剩余 9.0%，已用 91.0%')
+    expect(row.text()).toContain('5 小时额度 剩余 58.0%，已用 42.0%')
+    expect(row.text()).toContain('7 天额度 剩余 9.0%，已用 91.0%')
     expect(row.text()).not.toContain('20.0%')
 
     await wrapper.find('[data-testid^="expand-"]').trigger('click')
     const drawer = wrapper.find('[data-testid^="drawer-"]')
-    expect(drawer.text()).toContain('5h 限额')
+    expect(drawer.text()).toContain('5 小时额度')
     expect(drawer.text()).toContain('剩余 58.0%')
     expect(drawer.text()).toContain('已用 42.0%')
-    expect(drawer.text()).toContain('周/7d 限额')
+    expect(drawer.text()).toContain('7 天额度')
     expect(drawer.text()).toContain('剩余 9.0%')
     expect(drawer.text()).toContain('已用 91.0%')
   })
@@ -269,15 +313,15 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     ])
 
     const row = wrapper.find('tr[data-account-row]')
-    expect(row.text()).toContain('5h 剩余 80.0%，已用 20.0%')
-    expect(row.text()).toContain('7d 数据不足/未采样')
+    expect(row.text()).toContain('5 小时额度 剩余 80.0%，已用 20.0%')
+    expect(row.text()).toContain('7 天额度 数据不足/未采样')
 
     await wrapper.find('[data-testid^="expand-"]').trigger('click')
     const drawer = wrapper.find('[data-testid^="drawer-"]')
-    expect(drawer.text()).toContain('5h 限额')
+    expect(drawer.text()).toContain('5 小时额度')
     expect(drawer.text()).toContain('剩余 80.0%')
     expect(drawer.text()).toContain('已用 20.0%')
-    expect(drawer.text()).toContain('周/7d 限额')
+    expect(drawer.text()).toContain('7 天额度')
     expect(drawer.text()).toContain('数据不足/未采样')
   })
 
@@ -350,7 +394,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expectNoRailBorderClasses(rows[0].classes())
   })
 
-  it('renders the warming row with a sky rail element and the "预热中 · low weight" copy', async () => {
+  it('renders the warming row with a sky rail element and the "预热中 · 低权重" copy', async () => {
     const wrapper = await mountWithFixture([
       accountFixture({ account_id: 21, state: 'warming', state_label: '预热中' }),
     ])
@@ -369,7 +413,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     const label = warmingRow.find('[data-testid="warming-presentation-label"]')
     expect(label.exists()).toBe(true)
     expect(label.text()).toContain('预热中')
-    expect(label.text()).toContain('low weight')
+    expect(label.text()).toContain('低权重')
   })
 
   it('renders a visible row rail element per row whose tone matches the bucket', async () => {
@@ -482,26 +526,123 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(text).toContain('疑似限额-anthropic-setup-207.97.155.20')
     expect(text).not.toContain('sk-ant-secret-token')
     expect(text).not.toContain(`账号 #${rawAccountId}`)
-    expect(text).toContain('账号（未命名）')
+    expect(text).toContain(`名称缺失（账号 ID ${rawAccountId}）`)
   })
 
   it('renders recent request copy and failure diagnostics in Chinese', async () => {
+    const isoSuccess = '2026-06-01T14:32:08Z'
+    const localizedIsoSuccess = new Date(isoSuccess).toLocaleString('zh-CN', { hour12: false })
     const wrapper = await mountWithFixture([
       accountFixture({ account_id: 91, last_success_hint: '14:32:01', last_failure_code: 'auth', last_failure_bucket: 'rate_limited' }),
-      accountFixture({ account_id: 92, last_success_hint: '', last_used_at: '2026-06-01T14:32:08Z', last_failure_code: 'formal_pool_healthcheck_failed' }),
+      accountFixture({ account_id: 92, last_success_hint: isoSuccess, last_used_at: '2026-06-01T14:32:08Z', last_failure_code: 'formal_pool_healthcheck_failed' }),
       accountFixture({ account_id: 93, last_success_hint: '', last_used_at: null, last_failure_code: '', last_failure_bucket: 'status_429' }),
       accountFixture({ account_id: 94, last_success_hint: '', last_used_at: null, last_failure_code: 'unknown sk-ant-secret-token' }),
+      accountFixture({ account_id: 95, last_success_hint: '', last_used_at: '2026-06-01T14:32:08Z' }),
     ])
 
     const text = wrapper.text()
-    expect(text).toContain('最近成功：14:32:01')
-    expect(text).toContain('最近调度：')
+    expect(text).toContain('最近成功调度：14:32:01')
+    expect(text).toContain(`最近成功调度：${localizedIsoSuccess}`)
+    expect(text).toContain('最近调度时间：')
     expect(text).toContain('从未调度')
     expect(text).toContain('授权/登录失败')
     expect(text).toContain('健康检查未通过')
     expect(text).toContain('限流')
-    expect(text).toContain('诊断：unknown [redacted]')
+    expect(text).toContain('未知错误，需查看诊断')
     expect(text).not.toContain('sk-ant-secret-token')
+  })
+
+  it('adds Chinese secondary reason badges explaining why rows need attention', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({ account_id: 101, state: 'error', state_label: '错误', last_failure_code: 'auth' }),
+      accountFixture({ account_id: 102, state: 'error', state_label: '错误', last_failure_code: 'proxy_mismatch' }),
+      accountFixture({ account_id: 103, state: 'evidence_missing', state_label: '证据不足', last_failure_code: 'formal_pool_healthcheck_failed' }),
+      accountFixture({
+        account_id: 104,
+        state: 'not_schedulable',
+        state_label: '不可调度',
+        recommendation: { label: '检查门禁', detail: '不可调度', action_kind: 'inspect_gate' },
+      }),
+      accountFixture({ account_id: 105, state: 'data_missing', state_label: '数据不足' }),
+      accountFixture({ account_id: 106, state: 'quarantined', state_label: '已隔离' }),
+      accountFixture({ account_id: 107, state: 'rate_limited', state_label: '限流冷却中' }),
+      accountFixture({ account_id: 108, state: 'future_state' as FormalPoolDashboardState, state_label: '' }),
+    ])
+
+    const reasons = wrapper.findAll('[data-testid^="reason-badge-"]').map((badge) => badge.text())
+    expect(reasons).toContain('登录失效')
+    expect(reasons).toContain('代理出口不一致')
+    expect(reasons).toContain('健康检查缺失')
+    expect(reasons).toContain('调度门禁')
+    expect(reasons).toContain('运行指标未采集')
+    expect(reasons).toContain('已隔离')
+    expect(reasons).toContain('限流冷却')
+    expect(reasons).toContain('需查看诊断')
+  })
+
+  it('shows an operator next-step CTA inside expanded account details', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        account_id: 201,
+        state: 'evidence_missing',
+        recommendation: {
+          label: '补齐运行证据',
+          detail: '缺少健康检查证据',
+          action_kind: 'inspect_gate',
+        },
+      }),
+    ])
+
+    await wrapper.find('[data-testid^="expand-"]').trigger('click')
+
+    const drawer = wrapper.find('[data-testid^="drawer-"]')
+    expect(drawer.text()).toContain('建议下一步')
+    expect(drawer.text()).toContain('打开诊断并处理')
+    expect(drawer.text()).toContain('查看调度门禁和运行证据')
+    expect(drawer.text()).not.toContain('gate')
+  })
+
+  it('emits diagnose with the account id when the detail CTA is clicked', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        account_id: 201,
+        state: 'evidence_missing',
+        recommendation: {
+          label: '补齐运行证据',
+          detail: '缺少健康检查证据',
+          action_kind: 'inspect_gate',
+        },
+      }),
+    ])
+
+    await wrapper.find('[data-testid^="expand-"]').trigger('click')
+    await wrapper.find('[data-testid^="recommendation-cta-"]').trigger('click')
+
+    expect(wrapper.emitted('diagnose')).toEqual([[201]])
+    expect(wrapper.emitted('close')).toBeFalsy()
+  })
+
+  it('uses diagnosis wording for wait recommendation CTAs because the click opens diagnostics', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        account_id: 202,
+        state: 'rate_limited',
+        recommendation: {
+          label: '等待恢复',
+          detail: '等待额度窗口恢复。',
+          action_kind: 'wait_rate_limit',
+        },
+      }),
+    ])
+
+    await wrapper.find('[data-testid^="expand-"]').trigger('click')
+    const drawerText = wrapper.find('[data-testid^="drawer-"]').text()
+    expect(drawerText).toContain('查看等待恢复详情')
+    expect(drawerText).toContain('打开诊断查看等待原因')
+    expect(drawerText).not.toContain('稍后刷新复查')
+
+    await wrapper.find('[data-testid^="recommendation-cta-"]').trigger('click')
+    expect(wrapper.emitted('diagnose')).toEqual([[202]])
   })
 
   it('scrubs raw sensitive backend display fields before rendering them in the DOM', async () => {
@@ -539,7 +680,34 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     for (const fragment of sensitiveFragments) {
       expect(html).not.toContain(fragment)
     }
-    expect(html).toContain('[redacted]')
+    expect(html).toContain('敏感信息已隐藏')
+    expect(html).not.toContain('[redacted]')
+  })
+
+  it('does not show raw English debug copy such as gate, low weight, unknown, or redacted', async () => {
+    const wrapper = await mountWithFixture([
+      accountFixture({
+        account_id: 301,
+        state: 'not_schedulable',
+        state_label: '',
+        last_failure_code: 'unknown sk-ant-secret-token',
+        recommendation: {
+          label: '',
+          detail: 'inspect gate sk-ant-secret-token',
+          action_kind: 'inspect_gate',
+        },
+      }),
+      accountFixture({ account_id: 302, state: 'warming', state_label: '预热中' }),
+    ])
+
+    await wrapper.find('[data-testid^="expand-"]').trigger('click')
+    const text = wrapper.text()
+    expect(text).not.toMatch(/\bgate\b/i)
+    expect(text).not.toMatch(/\blow weight\b/i)
+    expect(text).not.toMatch(/\bunknown\b/i)
+    expect(text).not.toContain('[redacted]')
+    expect(text).toContain('需查看诊断')
+    expect(text).toContain('敏感信息已隐藏')
   })
 
 
@@ -560,7 +728,7 @@ describe('FormalPoolStatusDashboardModalV2', () => {
     expect(html).not.toContain(`drawer-${rawAccountId}`)
     expect(html).not.toContain(`账号 #${rawAccountId}`)
     expect(wrapper.text()).not.toContain(`账号 #${rawAccountId}`)
-    expect(wrapper.text()).toContain('账号（未命名）')
+    expect(wrapper.text()).toContain(`名称缺失（账号 ID ${rawAccountId}）`)
   })
 
   it('emits close when the close button is clicked', async () => {

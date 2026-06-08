@@ -16,7 +16,7 @@
       >
         <div>
           <p class="text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Account command center
+            账号调度中心
           </p>
           <h2
             id="formal-pool-dashboard-v2-title"
@@ -32,7 +32,7 @@
                 class="h-1.5 w-1.5 rounded-full"
                 :class="autoRefreshDotClass"
               ></span>
-              自动刷新 · 30s
+              每 30 秒自动更新
             </span>
             <span v-if="loading" class="text-slate-400">刷新中…</span>
           </div>
@@ -63,7 +63,7 @@
           v-if="error"
           class="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-800/60 dark:bg-rose-950/30 dark:text-rose-300"
         >
-          {{ scrubFormalPoolDisplayText(error, '刷新号池实时看板失败') }}
+          {{ dashboardDisplayText(error, '刷新号池实时看板失败') }}
         </div>
 
         <!-- Hero: health distribution bar + 3 command metrics -->
@@ -118,7 +118,7 @@
               <div
                 v-for="legend in legendEntries"
                 :key="legend.bucket"
-                class="flex items-center gap-1.5"
+                class="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-1.5 gap-y-0.5"
                 :data-testid="`legend-${legend.bucket}`"
               >
                 <span class="h-2 w-2 rounded-full" :class="legend.dotClass"></span>
@@ -128,6 +128,13 @@
                   :class="legend.bucket === 'needs_intervention' && legend.count > 0 ? 'font-medium text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'"
                 >
                   {{ legend.count }}
+                </span>
+                <span class="tabular-nums text-slate-400 dark:text-slate-500">{{ legend.percent }}</span>
+                <span
+                  class="col-span-4 pl-3.5 text-[11px]"
+                  :class="legend.bucket === 'needs_intervention' && legend.count > 0 ? 'text-rose-600 dark:text-rose-300' : 'text-slate-400 dark:text-slate-500'"
+                >
+                  {{ legend.hint }}
                 </span>
               </div>
             </div>
@@ -139,7 +146,7 @@
               class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-900"
               data-testid="command-metric-usable-capacity"
             >
-              <div class="text-xs text-slate-500 dark:text-slate-400">总 RPM 可供调用</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">每分钟请求占用</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
                 {{ summaryRpmCapacityText }}
               </div>
@@ -151,12 +158,12 @@
               class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-900"
               data-testid="command-metric-cooling-window"
             >
-              <div class="text-xs text-slate-500 dark:text-slate-400">冷却窗口</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">限流冷却账号</div>
               <div class="mt-1 text-2xl font-semibold tabular-nums text-amber-600 dark:text-amber-400">
                 {{ buckets.paused }}
               </div>
               <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                暂停 · 等待自动恢复
+                {{ cooldownWindowText }}
               </div>
             </article>
             <article
@@ -210,7 +217,6 @@
                   : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-dark-800'
               "
               data-testid="lane-all"
-              role="tab"
               :aria-selected="activeBucketFilter === 'all'"
               @click="activeBucketFilter = 'all'"
             >
@@ -313,6 +319,12 @@
                       >
                         {{ displayStateText(row) }}
                       </span>
+                      <span
+                        class="mt-1 inline-flex rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-slate-200 dark:bg-dark-800 dark:text-slate-300 dark:ring-dark-600"
+                        :data-testid="`reason-badge-${rowDomRef(row, rowIndex)}`"
+                      >
+                        {{ reasonBadgeText(row) }}
+                      </span>
                       <div
                         v-if="isWarmingState(row.state)"
                         class="mt-1 text-xs text-sky-700 dark:text-sky-300"
@@ -388,7 +400,7 @@
                       ></span>
                       <div class="grid grid-cols-1 gap-3 sm:grid-cols-5">
                         <article class="rounded-lg bg-slate-50 p-3 dark:bg-dark-800/70">
-                          <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">RPM</div>
+                          <div class="text-[11px] text-slate-400 dark:text-slate-500">每分钟请求数</div>
                           <div class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
                             {{ formatRpmText(row.rpm) }}
                           </div>
@@ -406,13 +418,13 @@
                           </div>
                         </article>
                         <article class="rounded-lg bg-slate-50 p-3 dark:bg-dark-800/70">
-                          <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">5h 限额</div>
+                          <div class="text-[11px] text-slate-400 dark:text-slate-500">5 小时额度</div>
                           <div class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
                             {{ formatFiveHourQuota(row) }}
                           </div>
                         </article>
                         <article class="rounded-lg bg-slate-50 p-3 dark:bg-dark-800/70">
-                          <div class="text-[11px] uppercase text-slate-400 dark:text-slate-500">周/7d 限额</div>
+                          <div class="text-[11px] text-slate-400 dark:text-slate-500">7 天额度</div>
                           <div class="mt-1 text-sm font-medium text-slate-800 dark:text-slate-200">
                             {{ formatPassiveUsageQuota(row.passive_usage_7d) }}
                           </div>
@@ -422,12 +434,22 @@
                         v-if="hasRecommendationDisplay(row)"
                         class="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-xs dark:border-dark-700 dark:bg-dark-900"
                       >
+                        <div class="mb-1 font-semibold text-slate-900 dark:text-slate-100">建议下一步</div>
                         <div class="font-medium text-slate-800 dark:text-slate-100">
                           {{ recommendationText(row) }}
                         </div>
                         <div v-if="recommendationDetailText(row)" class="mt-1 text-slate-500 dark:text-slate-400">
                           {{ recommendationDetailText(row) }}
                         </div>
+                        <button
+                          type="button"
+                          class="mt-3 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 dark:border-dark-600 dark:text-slate-200 dark:hover:bg-dark-800"
+                          :data-testid="`recommendation-cta-${rowDomRef(row, rowIndex)}`"
+                          @click="emitDiagnose(row)"
+                        >
+                          {{ recommendationCtaLabel(row) }}
+                        </button>
+                        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{{ recommendationCtaHint(row) }}</p>
                       </div>
                     </td>
                   </tr>
@@ -458,6 +480,7 @@ import {
   formatConcurrencyText,
   formatDashboardPercent,
   formatFormalPoolRecentFailureText,
+  formatFormalPoolRecentSuccessHint,
   formatRpmText,
   getBucketLanePresentation,
   getDashboardBucket,
@@ -476,6 +499,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
+  diagnose: [accountId: number]
 }>()
 
 // V2 is deliberately calmer than V1: 30s instead of 5s.
@@ -541,14 +565,26 @@ const distribution = computed(() => {
 const legendEntries = computed(() =>
   DASHBOARD_BUCKET_ORDER.map((bucket) => {
     const preset = getBucketLanePresentation(bucket)
+    const count = buckets.value[bucket]
     return {
       bucket,
       label: preset.label,
       dotClass: preset.dotClass,
-      count: buckets.value[bucket],
+      count,
+      percent: formatDashboardPercent((buckets.value.total || 0) > 0 ? count / buckets.value.total : 0),
+      hint: bucketLegendHint(bucket, count),
     }
   }),
 )
+
+const cooldownWindowText = computed(() => {
+  const count = buckets.value.paused
+  if (count <= 0) return '暂无限流冷却账号'
+  const nextReset = earliestCooldownResetText()
+  return nextReset
+    ? `${count} 个限流冷却账号 · 等待恢复：${nextReset}`
+    : `${count} 个限流冷却账号 · 等待恢复 · 暂无恢复时间，需看详情`
+})
 
 const totalText = computed(() => `${buckets.value.total} 个账号`)
 
@@ -556,12 +592,13 @@ const summaryRpmCapacityText = computed(() => {
   const summary = dashboard.value?.summary
   const totalLimit = summary?.total_rpm_limit ?? 0
   if (totalLimit <= 0) {
-    return '未配置 RPM 容量'
+    return '未配置每分钟请求上限'
   }
   if (summary?.rpm_available) {
-    return `当前 ${summary.total_current_rpm} / 总 ${totalLimit} RPM`
+    const current = summary.total_current_rpm ?? 0
+    return `已用 ${current} / 上限 ${totalLimit}，剩余 ${Math.max(0, totalLimit - current)} RPM`
   }
-  return `当前数据不足 / 总 ${totalLimit} RPM`
+  return `数据不足 / 上限 ${totalLimit} RPM`
 })
 
 const lastUpdatedText = computed(() => {
@@ -700,11 +737,11 @@ function formatLegacyFiveHourQuota(row: FormalPoolStatusDashboardAccount): strin
 }
 
 function formatFiveHourRemainingText(row: FormalPoolStatusDashboardAccount): string {
-  return `5h ${formatFiveHourQuota(row)}`
+  return `5 小时额度 ${formatFiveHourQuota(row)}`
 }
 
 function formatSevenDayRemainingText(row: FormalPoolStatusDashboardAccount): string {
-  return `7d ${formatPassiveUsageSummary(row.passive_usage_7d)}`
+  return `7 天额度 ${formatPassiveUsageSummary(row.passive_usage_7d)}`
 }
 
 function formatFiveHourQuota(row: FormalPoolStatusDashboardAccount): string {
@@ -733,8 +770,15 @@ function formatQuotaResetText(value: string | null | undefined): string {
 }
 
 function displayAccountLabel(row: FormalPoolStatusDashboardAccount): string {
-  const label = safeFormalPoolOperatorLabel(row.account_label, '账号（未命名）')
-  return /^账号\s*#\d+$/i.test(label) ? '账号（未命名）' : label
+  const rawLabel = String(row.account_label || '').trim()
+  const missingFallback = `名称缺失（账号 ID ${row.account_id}）`
+  if (!rawLabel || /^账号\s*#\d+$/i.test(rawLabel)) return missingFallback
+
+  const hiddenFallback = `名称已隐藏（账号 ID ${row.account_id}）`
+  const label = safeFormalPoolOperatorLabel(row.account_label, hiddenFallback)
+  if (label === hiddenFallback) return hiddenFallback
+  if (/^账号\s*#\d+$/i.test(label)) return `名称缺失（账号 ID ${row.account_id}）`
+  return label
 }
 
 function rowDomRef(row: FormalPoolStatusDashboardAccount, index: number): string {
@@ -743,13 +787,15 @@ function rowDomRef(row: FormalPoolStatusDashboardAccount, index: number): string
 }
 
 function displayPlatformType(row: FormalPoolStatusDashboardAccount): string {
-  const platform = scrubFormalPoolDisplayText(row.platform, '未知平台')
-  const type = scrubFormalPoolDisplayText(row.type, '未知类型')
+  const platform = platformLabel(row.platform)
+  const type = accountTypeLabel(row.type)
   return `${platform} · ${type}`
 }
 
 function displayStateText(row: FormalPoolStatusDashboardAccount): string {
-  return scrubFormalPoolDisplayText(row.state_label || row.state, '未知')
+  const label = dashboardDisplayText(row.state_label || '', '')
+  if (label) return label
+  return stateText(row.state)
 }
 
 function displayFailureText(row: FormalPoolStatusDashboardAccount): string {
@@ -757,23 +803,122 @@ function displayFailureText(row: FormalPoolStatusDashboardAccount): string {
 }
 
 function formatRecent(row: FormalPoolStatusDashboardAccount): string {
-  if (row.last_success_hint) return `最近成功：${scrubFormalPoolDisplayText(row.last_success_hint, '未知')}`
+  if (row.last_success_hint) return `最近成功调度：${formatFormalPoolRecentSuccessHint(row.last_success_hint)}`
   if (!row.last_used_at) return '从未调度'
   const date = new Date(row.last_used_at)
-  if (Number.isNaN(date.getTime())) return `最近调度：${scrubFormalPoolDisplayText(row.last_used_at, '未知')}`
-  return `最近调度：${date.toLocaleString('zh-CN', { hour12: false })}`
+  if (Number.isNaN(date.getTime())) return `最近调度时间：${dashboardDisplayText(row.last_used_at, '未知')}`
+  return `最近调度时间：${date.toLocaleString('zh-CN', { hour12: false })}`
 }
 
 function recommendationText(row: FormalPoolStatusDashboardAccount): string {
-  return scrubFormalPoolDisplayText(row.recommendation?.label || getDashboardRecommendationText(row), '数据不足')
+  return dashboardDisplayText(row.recommendation?.label || getDashboardRecommendationText(row), '数据不足')
 }
 
 function recommendationDetailText(row: FormalPoolStatusDashboardAccount): string {
-  return scrubFormalPoolDisplayText(row.recommendation?.detail, '')
+  return dashboardDisplayText(row.recommendation?.detail, '')
 }
 
 function hasRecommendationDisplay(row: FormalPoolStatusDashboardAccount): boolean {
   return Boolean(row.recommendation?.label || row.recommendation?.detail)
+}
+
+function recommendationCtaLabel(row: FormalPoolStatusDashboardAccount): string {
+  const kind = String(row.recommendation?.action_kind || '').toLowerCase()
+  if (kind.includes('wait')) return '查看等待恢复详情'
+  if (kind.includes('manual') || kind.includes('risk')) return '转人工复核'
+  return '打开诊断并处理'
+}
+
+function recommendationCtaHint(row: FormalPoolStatusDashboardAccount): string {
+  const kind = String(row.recommendation?.action_kind || '').toLowerCase()
+  if (kind.includes('gate') || kind.includes('evidence')) return '查看调度门禁和运行证据，按诊断面板提示处理。'
+  if (kind.includes('wait')) return '打开诊断查看等待原因、恢复窗口和下一步处理建议。'
+  if (kind.includes('manual') || kind.includes('risk')) return '需要人工登录上游确认风控、暂停或身份验证状态。'
+  return '进入诊断面板查看原因、证据和可执行修复动作。'
+}
+
+function emitDiagnose(row: FormalPoolStatusDashboardAccount): void {
+  emit('diagnose', row.account_id)
+}
+
+function bucketLegendHint(bucket: FormalPoolFourBucket, count: number): string {
+  if (bucket === 'needs_intervention') return count > 0 ? '需优先处理' : '无需处理'
+  if (bucket === 'paused') return count > 0 ? '等待恢复' : '无冷却'
+  if (bucket === 'active') return '可参与调度'
+  return '不参与调度'
+}
+
+function earliestCooldownResetText(): string {
+  const resets = allRows.value
+    .filter((row) => getDashboardBucket(row.state) === 'paused')
+    .map((row) => row.passive_usage_5h?.reset_at || row.five_hour_window?.reset_at || row.passive_usage_7d?.reset_at || '')
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter((date) => !Number.isNaN(date.getTime()))
+    .sort((a, b) => a.getTime() - b.getTime())
+  const first = resets[0]
+  if (!first) return ''
+  return first.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function reasonBadgeText(row: FormalPoolStatusDashboardAccount): string {
+  const code = String(row.last_failure_code || '').toLowerCase()
+  const bucket = String(row.last_failure_bucket || '').toLowerCase()
+  const actionKind = String(row.recommendation?.action_kind || '').toLowerCase()
+  const state = String(row.state || '').toLowerCase()
+  const signal = `${code} ${bucket} ${actionKind} ${state}`
+
+  if (/(auth|unauthori[sz]ed|status_401|login)/.test(signal)) return '登录失效'
+  if (/(proxy_mismatch|bucket_mismatch|出口|proxy)/.test(signal)) return '代理出口不一致'
+  if (/(healthcheck|health_check|evidence_missing)/.test(signal)) return '健康检查缺失'
+  if (/(gate|not_schedulable)/.test(signal)) return '调度门禁'
+  if (/(runtime_metrics|metric|data_missing)/.test(signal)) return '运行指标未采集'
+  if (/quarantined/.test(signal)) return '已隔离'
+  if (/(rate_limited|status_429|cooldown|限流)/.test(signal)) return '限流冷却'
+  return '需查看诊断'
+}
+
+function dashboardDisplayText(value: string | null | undefined, fallback = '—'): string {
+  return scrubFormalPoolDisplayText(value, fallback)
+    .replace(/\[redacted\]/gi, '敏感信息已隐藏')
+    .replace(/\breset\b/gi, '恢复窗口')
+    .replace(/\bcooldown\b/gi, '冷却')
+    .replace(/\bgate\b/gi, '调度门禁')
+    .replace(/\bunknown\b/gi, '未知')
+    .replace(/\blow weight\b/gi, '低权重')
+    .replace(/查看\s+调度门禁/g, '查看调度门禁')
+    .replace(/等待\s+恢复窗口\s+后复查/g, '等待恢复窗口后复查')
+}
+
+function platformLabel(value: string | null | undefined): string {
+  const normalized = String(value || '').toLowerCase()
+  if (normalized === 'anthropic') return 'Claude 官方账号'
+  return dashboardDisplayText(value, '未知平台')
+}
+
+function accountTypeLabel(value: string | null | undefined): string {
+  const normalized = String(value || '').toLowerCase()
+  if (normalized === 'oauth') return 'OAuth 登录'
+  if (normalized === 'setup-token' || normalized === 'setup_token') return 'Setup Token 登录'
+  return dashboardDisplayText(value, '未知类型')
+}
+
+function stateText(value: string | null | undefined): string {
+  const normalized = String(value || '').toLowerCase()
+  const labels: Record<string, string> = {
+    production: '生产中',
+    normal: '生产中',
+    warming: '预热中',
+    rate_limited: '限流冷却中',
+    manual_risk: '需人工处理',
+    error: '错误，需诊断',
+    quarantined: '已隔离',
+    inactive: '已停用',
+    not_schedulable: '不可调度',
+    evidence_missing: '运行证据缺失',
+    data_missing: '数据不足',
+  }
+  return labels[normalized] || '未知状态，需查看诊断'
 }
 
 function toggleRow(id: number): void {

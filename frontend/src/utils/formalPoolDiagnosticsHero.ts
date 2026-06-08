@@ -16,6 +16,7 @@ export type FormalPoolDiagnosticsActionKey =
   | 'oneClickOAuthReauth'
   | 'replaceSetupToken'
   | 'genericTokenReplace'
+  | 'refreshLoginState'
   | 'replaceAccountAndProxy'
   | 'wait'
   | 'manualReview'
@@ -62,8 +63,8 @@ const actionDefinitions: Record<FormalPoolDiagnosticsActionKey, FormalPoolDiagno
   },
   oneClickOAuthReauth: {
     key: 'oneClickOAuthReauth',
-    label: 'OAuth one-click reauth',
-    description: 'No backend API exists in this phase.',
+    label: '一键 OAuth 重新授权',
+    description: '当前版本没有这个后端能力，不能作为可点击按钮展示。',
     behavior: 'none',
   },
   replaceSetupToken: {
@@ -78,6 +79,12 @@ const actionDefinitions: Record<FormalPoolDiagnosticsActionKey, FormalPoolDiagno
     description: '禁止泛化 token 替换；只能按账号类型走安全路径。',
     behavior: 'none',
   },
+  refreshLoginState: {
+    key: 'refreshLoginState',
+    label: '刷新登录态并重测',
+    description: '先尝试用已有 Refresh Token 刷新登录态；成功后重新拉取诊断。若刷新失败，需更换 Setup Token。',
+    behavior: 'api',
+  },
   replaceAccountAndProxy: {
     key: 'replaceAccountAndProxy',
     label: '重新上号并更换代理',
@@ -86,7 +93,7 @@ const actionDefinitions: Record<FormalPoolDiagnosticsActionKey, FormalPoolDiagno
   },
   wait: {
     key: 'wait',
-    label: '等待 5h 用量窗口恢复',
+    label: '等待 5 小时用量窗口恢复',
     description: '限流窗口恢复前不要触发真实上游健康检查。',
     behavior: 'none',
   },
@@ -104,32 +111,32 @@ const actionDefinitions: Record<FormalPoolDiagnosticsActionKey, FormalPoolDiagno
   },
   runtimeRegister: {
     key: 'runtimeRegister',
-    label: '运行时注册 / 映射',
-    description: '调用现有 runtime-register API 补齐网关身份映射。',
+    label: '注册运行映射',
+    description: '为网关补齐账号与固定出口的运行映射。',
     behavior: 'api',
   },
   runtimeRegisterThenHealthcheck: {
     key: 'runtimeRegisterThenHealthcheck',
-    label: '更换代理后再执行 runtime-register / healthcheck',
-    description: '代理修复前禁止单独健康检查；修复后按顺序复查。',
+    label: '更换代理后再重新检查运行映射和健康状态',
+    description: '代理修复前不要单独做健康检查；修复后系统会按顺序复查。',
     behavior: 'guide',
   },
   healthcheck: {
     key: 'healthcheck',
     label: '定向健康检查',
-    description: '调用现有 healthcheck API；会发起一次真实上游请求，需确认。',
+    description: '会发起一次真实上游请求，需确认后执行。',
     behavior: 'api',
   },
   startWarming: {
     key: 'startWarming',
     label: '进入预热期',
-    description: '健康检查证据完整后调用现有 start-warming API，恢复低权重调度并刷新调度器。',
+    description: '健康检查证据完整后，恢复低权重调度并刷新调度器。',
     behavior: 'api',
   },
   directHealthcheckBeforeProxyRepair: {
     key: 'directHealthcheckBeforeProxyRepair',
-    label: 'Direct healthcheck before proxy repair',
-    description: '代理 mismatch/fallback 修复前禁止直接健康检查。',
+    label: '代理修复前直接健康检查',
+    description: '代理出口异常修复前禁止直接健康检查。',
     behavior: 'none',
   },
   refreshDiagnostics: {
@@ -141,13 +148,13 @@ const actionDefinitions: Record<FormalPoolDiagnosticsActionKey, FormalPoolDiagno
   quarantine: {
     key: 'quarantine',
     label: '隔离账号',
-    description: '调用现有账号隔离 API；V2 会归一化返回结果。',
+    description: '将账号移出调度，等待人工确认后再恢复。',
     behavior: 'api',
     destructive: true,
   },
   autoRepair: {
     key: 'autoRepair',
-    label: 'Auto repair',
+    label: '自动修复',
     description: '上游 hold / KYC / 风控不能自动修复。',
     behavior: 'none',
   },
@@ -185,6 +192,32 @@ function hasAny(text: string, ...needles: string[]): boolean {
   return needles.some((needle) => text.includes(needle))
 }
 
+function hasAuthSignal(signals: string): boolean {
+  return hasAny(
+    signals,
+    'status_401',
+    '401',
+    'auth',
+    'unauthorized',
+    'invalid_auth',
+    'authentication_error',
+    'identity_boundary_fail',
+    'invalid_grant',
+    'refresh_token_invalid',
+  )
+}
+
+function isUpstreamAuthFailure(diagnostics: FormalPoolOperationsDiagnostics | null | undefined, signals: string): boolean {
+  return diagnostics?.failure_origin === 'upstream' && hasAuthSignal(signals)
+}
+
+function primaryFailureCodeForDisplay(diagnostics: FormalPoolOperationsDiagnostics | null | undefined, signals: string, authSignal = hasAuthSignal(signals)): unknown {
+  if (authSignal || isUpstreamAuthFailure(diagnostics, signals)) {
+    return diagnostics?.onboarding_last_error_bucket || diagnostics?.status_code_bucket || diagnostics?.healthcheck_safe_error_bucket || diagnostics?.healthcheck_safe_error_code || diagnostics?.failure_code
+  }
+  return diagnostics?.failure_code || diagnostics?.status_code_bucket || diagnostics?.healthcheck_safe_error_bucket || diagnostics?.healthcheck_safe_error_code
+}
+
 function safe(value: unknown, fallback = '数据不足'): string {
   return scrubFormalPoolDisplayText(String(value ?? ''), fallback)
 }
@@ -209,7 +242,13 @@ const classificationDisplayNames: Record<string, string> = {
   token_exchange: '授权换取失败',
   invalid_grant: '授权已失效或授权码无效',
   refresh_token_invalid: '授权已失效或授权码无效',
+  auth: '认证失败',
+  formal_pool_healthcheck_failed: '健康检查失败',
+  formal_pool_healthcheck: '正式号池健康检查',
+  identity_boundary_fail: '上游身份边界校验失败',
   setup_token_expired: 'Setup Token 登录态已过期',
+  invalid_auth: '认证失败',
+  authentication_error: '认证失败',
   status_401: '401 / 认证失败',
   status_403: '403 / 禁止访问或风控',
   status_429: '5 小时窗口冷却/限流',
@@ -223,16 +262,24 @@ const classificationDisplayNames: Record<string, string> = {
   evidence_missing: '运行证据不完整',
   runtime_evidence_incomplete: '运行证据不完整',
   healthcheck_evidence_missing: '健康检查证据不完整',
-  raw_capture_missing: '运行证据不完整：缺少 raw capture 证据',
+  raw_capture_missing: '运行证据不完整：缺少上游请求证据',
   cc_gateway_not_seen: '运行证据不完整：未看到 CC Gateway 证据',
-  fallback_detected: '发现 fallback',
-  fallback: '发现 fallback',
+  fallback_detected: '发现备用线路',
+  fallback: '发现备用线路',
   account_on_hold: '上游账号被暂停或限制',
   account_hold: '上游账号被暂停或限制',
   hold: '上游账号被暂停或限制',
   kyc: '需要完成账号验证',
   risk: '上游账号风控提示',
   unusual_activity: '上游提示异常活动',
+  imported: '已导入，待验证',
+  refreshed: '登录态已刷新',
+  runtime_registered: '运行时已注册映射',
+  healthcheck_passed: '健康检查通过',
+  warming: '预热中',
+  production: '生产中',
+  quarantined: '已隔离，需要修复',
+  legacy_unknown: '历史账号，状态未知',
 }
 
 const checkDisplayNames: Record<string, string> = {
@@ -240,10 +287,10 @@ const checkDisplayNames: Record<string, string> = {
   runtime_evidence_complete: '运行证据完整性',
   runtime_evidence_incomplete: '运行证据不完整',
   healthcheck_evidence_persisted: '健康检查证据持久化',
-  raw_capture_present: 'Raw capture 证据',
+  raw_capture_present: '上游请求证据',
   cc_gateway_seen: 'CC Gateway 证据',
   proxy_mismatch: '代理出口不一致',
-  fallback_detected: '发现 fallback',
+  fallback_detected: '发现备用线路',
   stage_gate: '阶段准入检查',
 }
 
@@ -278,11 +325,11 @@ function codeDisplayMap(kind: FormalPoolDiagnosticDisplayKind): Record<string, s
 }
 
 function unknownPrefix(kind: FormalPoolDiagnosticDisplayKind): string {
-  if (kind === 'origin') return '未知来源'
-  if (kind === 'status') return '未知状态'
-  if (kind === 'check') return '未知检查项'
-  if (kind === 'action') return '未知动作'
-  return '未知分类'
+  if (kind === 'origin') return '来源未返回可识别分类'
+  if (kind === 'status') return '状态未返回可识别分类'
+  if (kind === 'check') return '检查项未识别'
+  if (kind === 'action') return '建议动作未识别'
+  return '失败分类未识别'
 }
 
 export function formatFormalPoolDiagnosticCode(
@@ -295,7 +342,7 @@ export function formatFormalPoolDiagnosticCode(
   const normalized = normalizedCode(raw)
   const label = codeDisplayMap(kind)[normalized]
   if (label) return label
-  return `${unknownPrefix(kind)}（${raw}）`
+  return unknownPrefix(kind)
 }
 
 export function formatFormalPoolDiagnosticCodeWithRaw(
@@ -306,7 +353,7 @@ export function formatFormalPoolDiagnosticCodeWithRaw(
   const raw = safe(value, '').trim()
   if (!raw) return fallback
   const label = formatFormalPoolDiagnosticCode(raw, kind, fallback)
-  if (label.includes(`（${raw}）`)) return label
+  if (label === unknownPrefix(kind) || label.includes(`（${raw}）`)) return label
   return `${label}（${raw}）`
 }
 
@@ -380,9 +427,11 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     hasCheckStatus(diagnostics, 'healthcheck_evidence_persisted') ||
     hasAny(signals, 'raw_capture_missing', 'cc_gateway_not_seen')
   const evidenceMissing = gatewayRuntimeMappingEvidenceMissing || healthcheckOrCaptureEvidenceMissing
+  const upstreamAuthFailure = isUpstreamAuthFailure(diagnostics, signals)
+  const authSignal = hasAuthSignal(signals)
   const hasTokenRepairSignal =
-    (account?.type === 'oauth' && (recommends(rec, 'reauthorize_oauth', 'repair_token') || hasAny(signals, 'invalid_grant', 'refresh_token_invalid', 'reauthorize'))) ||
-    (account?.type === 'setup-token' && (recommends(rec, 'replace_setup_token', 'repair_token') || hasAny(signals, 'setup_token_expired', 'session_expired', 'invalid_grant')))
+    (account?.type === 'oauth' && (upstreamAuthFailure || authSignal || recommends(rec, 'reauthorize_oauth', 'repair_token') || hasAny(signals, 'invalid_grant', 'refresh_token_invalid', 'reauthorize'))) ||
+    (account?.type === 'setup-token' && (upstreamAuthFailure || authSignal || recommends(rec, 'replace_setup_token', 'repair_token') || hasAny(signals, 'setup_token_expired', 'session_expired', 'invalid_grant')))
   const hasManualRiskSignal = recommends(rec, 'manual_review') || diagnostics?.risk_text_detected === true || hasAny(signals, 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold')
   const hasExplicitProxyFailure = diagnostics?.proxy_mismatch === true || diagnostics?.fallback_detected === true || diagnostics?.failure_origin === 'proxy' || hasAny(signals, 'proxy_mismatch', 'fallback')
   const hasRateLimitSignal = !hasExplicitProxyFailure && (recommends(rec, 'wait_rate_limit') || hasAny(signals, 'status_429', 'rate_limit', '5h', 'long_context_usage_credits'))
@@ -395,7 +444,8 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     diagnostics?.proxy_mismatch === true ||
     diagnostics?.fallback_detected === true ||
     diagnostics?.risk_text_detected === true ||
-    hasAny(signals, 'invalid_grant', 'refresh_token_invalid', 'reauthorize', 'setup_token_expired', 'session_expired', 'status_429', 'rate_limit', '5h', 'long_context_usage_credits', 'proxy_mismatch', 'fallback', 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold')
+    upstreamAuthFailure ||
+    hasAny(signals, 'invalid_grant', 'refresh_token_invalid', 'reauthorize', 'setup_token_expired', 'session_expired', 'status_401', '401', 'identity_boundary_fail', 'status_429', 'rate_limit', '5h', 'long_context_usage_credits', 'proxy_mismatch', 'fallback', 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold')
   const highRiskPromotionBlock =
     diagnostics?.proxy_mismatch === true ||
     diagnostics?.fallback_detected === true ||
@@ -404,8 +454,8 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     hasAny(signals, 'proxy_mismatch', 'fallback', 'status_429', 'rate_limit', '5h', 'long_context_usage_credits', 'status_403', '403', 'hold', 'kyc', 'risk', 'unusual_activity', 'account_on_hold')
 
   const baseBullets = [
-    `失败来源：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.failure_origin, 'origin', '数据不足')}`,
-    `失败分类：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.failure_code || diagnostics?.status_code_bucket, 'classification', '数据不足')}`,
+    `失败来源：${formatFormalPoolDiagnosticCode(diagnostics?.failure_origin, 'origin', '数据不足')}`,
+    `失败分类：${formatFormalPoolDiagnosticCode(primaryFailureCodeForDisplay(diagnostics, signals, authSignal), 'classification', '数据不足')}`,
   ]
 
   if (evidenceMissing && !hasHigherPriorityRepair) {
@@ -415,12 +465,12 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       lane: 'needs_intervention',
       tone: 'sky',
       title: '运行证据缺失',
-      summary: '先补齐 runtime / gateway / healthcheck 证据；证据缺失时禁止升级生产状态。',
+      summary: '先补齐运行映射、网关记录和健康检查证据；证据缺失时不能升级到生产状态。',
       rootCauseBullets: [
         ...baseBullets,
         runtimeRegistrationEvidenceComplete
-          ? 'runtime / gateway 注册证据已完整，下一步只补 healthcheck / raw capture 证据。'
-          : '缺少 runtime / gateway 注册映射证据，先执行 runtime-register。',
+          ? '运行映射和网关记录已完整，下一步只需补健康检查证据。'
+          : '缺少运行映射或网关记录，先注册运行映射。',
       ],
       primaryAction: primary,
       secondaryActions: [],
@@ -442,10 +492,10 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       lane: 'paused',
       tone: 'sky',
       title: '健康检查已通过，可进入预热',
-      summary: 'runtime / gateway / healthcheck 证据完整，可以点击进入预热期；进入后账号会以低权重参与调度。',
+      summary: '运行映射、网关记录和健康检查证据完整，可以进入预热期；进入后账号会以低权重参与调度。',
       rootCauseBullets: [
         ...baseBullets,
-        '当前账号处于 healthcheck_passed，后端诊断推荐 start_warming。',
+        '当前账号已通过健康检查，系统建议进入预热期。',
       ],
       primaryAction: action('startWarming'),
       secondaryActions: [action('refreshDiagnostics')],
@@ -467,10 +517,10 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       lane: 'active',
       tone: 'emerald',
       title: '预热完成，可进入生产',
-      summary: 'runtime / gateway / healthcheck 证据完整，可以手动切换到生产期。',
+      summary: '运行映射、网关记录和健康检查证据完整，可以切换到生产期。',
       rootCauseBullets: [
         ...baseBullets,
-        '当前账号处于 warming，后端诊断推荐 promote_production。',
+        '当前账号处于预热期，系统建议进入生产调度。',
       ],
       primaryAction: action('promoteProduction'),
       secondaryActions: [action('refreshDiagnostics')],
@@ -495,7 +545,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       summary: '账号处于 production 且证据完整，但本地调度开关或状态未开启；点击后恢复生产调度。',
       rootCauseBullets: [
         ...baseBullets,
-        '当前账号处于 production，后端诊断推荐 promote_production 用于恢复调度。',
+        '当前账号已处于生产阶段，系统建议恢复生产调度。',
       ],
       primaryAction: action('promoteProduction'),
       secondaryActions: [action('refreshDiagnostics')],
@@ -503,13 +553,58 @@ export function deriveFormalPoolDiagnosticsHero(input: {
     }
   }
 
-  if (recommends(rec, 'monitor')) {
+  const explicitProxyOrigin = diagnostics?.failure_origin === 'proxy'
+
+  if (account?.type === 'oauth' && hasTokenRepairSignal && !explicitProxyOrigin) {
+    const secondaries: FormalPoolDiagnosticsHeroAction[] = []
+    if (recommends(rec, 'swap_proxy')) secondaries.push(action('swapProxy'))
+    if (recommends(rec, 'replace_account_and_proxy')) secondaries.push(action('replaceAccountAndProxy'))
+    if (recommends(rec, 'runtime_register')) secondaries.push(action('runtimeRegister'))
+    return {
+      scenario: 'oauth_invalid_grant',
+      lane: 'needs_intervention',
+      tone: 'rose',
+      title: 'OAuth 授权已失效',
+      summary: '上游拒绝刷新登录态；当前只能引导重新 OAuth 授权，不能显示一键授权假按钮。',
+      rootCauseBullets: [...baseBullets, 'OAuth 账号不会显示 Setup Token 替换输入。'],
+      primaryAction: action('guideOAuthReauth'),
+      secondaryActions: unique(secondaries),
+      forbiddenActions: forbiddenActions('oneClickOAuthReauth'),
+    }
+  }
+
+  if (account?.type === 'setup-token' && hasTokenRepairSignal && !explicitProxyOrigin) {
+    const secondaries: FormalPoolDiagnosticsHeroAction[] = []
+    if (upstreamAuthFailure || authSignal) secondaries.push(action('refreshLoginState'))
+    if (recommends(rec, 'swap_proxy')) secondaries.push(action('swapProxy'))
+    if (recommends(rec, 'replace_account_and_proxy')) secondaries.push(action('replaceAccountAndProxy'))
+    const title = upstreamAuthFailure || authSignal ? '上游认证失败，需要更换 Setup Token' : 'Setup Token 登录态已过期'
+    const summary = upstreamAuthFailure || authSignal
+      ? '健康检查已打到上游，但上游返回 401 / 认证失败；刷新登录态失败时说明 Refresh Token 已失效，需要替换新的 Setup Token。'
+      : '使用 setup-token 账号专用替换登录态流程；不显示泛化 token 替换。'
+    const extraBullet = upstreamAuthFailure || authSignal
+      ? '已确认不是运行映射或网关记录缺失；请更换 Setup Token 后重新检查运行映射和健康状态。'
+      : '替换后可继续检查运行映射和健康状态。'
+    return {
+      scenario: 'setup_token_expired',
+      lane: 'needs_intervention',
+      tone: 'rose',
+      title,
+      summary,
+      rootCauseBullets: [...baseBullets, extraBullet],
+      primaryAction: action('replaceSetupToken'),
+      secondaryActions: unique(secondaries),
+      forbiddenActions: forbiddenActions('genericTokenReplace'),
+    }
+  }
+
+  if (recommends(rec, 'monitor') && !hasHigherPriorityRepair) {
     return {
       scenario: 'monitor',
       lane: 'active',
       tone: 'emerald',
       title: '账号处于可用观测状态',
-      summary: '诊断建议为 monitor：无需修复按钮，必要时只刷新诊断。',
+      summary: '当前没有需要修复的信号；必要时刷新诊断即可。',
       rootCauseBullets: ['调度和证据未显示需要介入的信号。'],
       primaryAction: action('none'),
       secondaryActions: [action('refreshDiagnostics')],
@@ -523,50 +618,15 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       lane: 'needs_intervention',
       tone: 'amber',
       title: '代理出口证据不一致',
-      summary: '先修复代理链路；代理修复前禁止直接 healthcheck。',
+      summary: '先修复代理链路；代理修复前禁止直接健康检查。',
       rootCauseBullets: [
         ...baseBullets,
         `代理出口不一致：${diagnostics?.proxy_mismatch === true ? '是' : '否'}`,
-        `发现 fallback：${diagnostics?.fallback_detected === true ? '是' : '否'}`,
+        `发现备用线路：${diagnostics?.fallback_detected === true ? '是' : '否'}`,
       ],
       primaryAction: action('swapProxy'),
       secondaryActions: [action('runtimeRegisterThenHealthcheck')],
       forbiddenActions: forbiddenActions('directHealthcheckBeforeProxyRepair'),
-    }
-  }
-
-  if (account?.type === 'oauth' && hasTokenRepairSignal) {
-    const secondaries: FormalPoolDiagnosticsHeroAction[] = []
-    if (recommends(rec, 'swap_proxy')) secondaries.push(action('swapProxy'))
-    if (recommends(rec, 'replace_account_and_proxy')) secondaries.push(action('replaceAccountAndProxy'))
-    if (recommends(rec, 'runtime_register')) secondaries.push(action('runtimeRegister'))
-    return {
-      scenario: 'oauth_invalid_grant',
-      lane: 'needs_intervention',
-      tone: 'rose',
-      title: 'OAuth refresh token 已失效',
-      summary: '上游拒绝 refresh；当前阶段只能引导重新 OAuth，不能显示一键授权假按钮。',
-      rootCauseBullets: [...baseBullets, 'OAuth 账号不会显示 Setup Token 替换输入。'],
-      primaryAction: action('guideOAuthReauth'),
-      secondaryActions: unique(secondaries),
-      forbiddenActions: forbiddenActions('oneClickOAuthReauth'),
-    }
-  }
-
-  if (account?.type === 'setup-token' && hasTokenRepairSignal) {
-    const secondaries: FormalPoolDiagnosticsHeroAction[] = []
-    if (recommends(rec, 'swap_proxy')) secondaries.push(action('swapProxy'))
-    if (recommends(rec, 'replace_account_and_proxy')) secondaries.push(action('replaceAccountAndProxy'))
-    return {
-      scenario: 'setup_token_expired',
-      lane: 'needs_intervention',
-      tone: 'rose',
-      title: 'Setup Token 登录态已过期',
-      summary: '使用 setup-token 账号专用替换登录态流程；不显示泛化 token 替换。',
-      rootCauseBullets: [...baseBullets, '替换后可选择继续 runtime-register / healthcheck。'],
-      primaryAction: action('replaceSetupToken'),
-      secondaryActions: unique(secondaries),
-      forbiddenActions: forbiddenActions('genericTokenReplace'),
     }
   }
 
@@ -575,9 +635,9 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       scenario: 'rate_limited_5h',
       lane: 'paused',
       tone: 'amber',
-      title: '5h 用量窗口冷却中',
+      title: '5 小时用量窗口冷却中',
       summary: '这是暂停/冷却状态，默认等待恢复；不要用健康检查制造更多真实请求。',
-      rootCauseBullets: [...baseBullets, `窗口：${formatFormalPoolDiagnosticCodeWithRaw(diagnostics?.formal_pool_rate_limit_window || '5h', 'status')}`],
+      rootCauseBullets: [...baseBullets, `窗口：${formatFormalPoolDiagnosticCode(diagnostics?.formal_pool_rate_limit_window || '5h', 'status')}`],
       primaryAction: action('wait'),
       secondaryActions: [action('refreshDiagnostics')],
       forbiddenActions: forbiddenActions('healthcheck'),
@@ -592,7 +652,7 @@ export function deriveFormalPoolDiagnosticsHero(input: {
       lane: 'needs_intervention',
       tone: 'rose',
       title: '上游账号状态需要人工介入',
-      summary: '403 / hold / KYC / 风控不是普通自动修复场景；保持隔离并人工确认。',
+      summary: '上游返回 403、账号暂停、身份验证或风控时，系统不能自动修复；请人工确认后再处理。',
       rootCauseBullets: [...baseBullets, '不要重复健康检查或自动刷新凭证。'],
       primaryAction: action('manualReview'),
       secondaryActions: secondaries,

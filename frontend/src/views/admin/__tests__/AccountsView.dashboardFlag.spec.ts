@@ -80,9 +80,12 @@ vi.mock('vue-router', () => ({
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
+  const messages: Record<string, string> = {
+    'admin.accounts.formalPool.effectiveBlocked': 'DB 调度已开，但正式号池调度门禁仍阻止调度',
+  }
   return {
     ...actual,
-    useI18n: () => ({ t: (key: string) => key }),
+    useI18n: () => ({ t: (key: string) => messages[key] ?? key }),
   }
 })
 
@@ -95,8 +98,12 @@ const LegacyDashboardStub = {
 
 const V2DashboardStub = {
   props: ['show'],
-  emits: ['close'],
-  template: '<div data-test="dashboard-v2" :data-show="String(show)"></div>',
+  emits: ['close', 'diagnose'],
+  template: `
+    <div data-test="dashboard-v2" :data-show="String(show)">
+      <button v-if="show" data-test="dashboard-v2-diagnose" @click="$emit('diagnose', 42)">diagnose</button>
+    </div>
+  `,
 }
 
 const LegacyDiagnosticsStub = {
@@ -108,7 +115,7 @@ const LegacyDiagnosticsStub = {
 const V2DiagnosticsStub = {
   props: ['show', 'account'],
   emits: ['close', 'updated'],
-  template: '<div data-test="diagnostics-v2" :data-show="String(show)"></div>',
+  template: '<div data-test="diagnostics-v2" :data-show="String(show)" :data-account-id="account?.id ?? \'\'"></div>',
 }
 
 const baseStubs = {
@@ -119,7 +126,13 @@ const baseStubs = {
   },
   DataTable: {
     props: ['columns', 'data', 'density'],
-    template: '<div data-test="data-table"></div>',
+    template: `
+      <div data-test="data-table">
+        <div v-for="row in data" :key="row.id" data-test="data-row">
+          <slot name="cell-schedulable" :row="row" :value="row.schedulable" />
+        </div>
+      </div>
+    `,
   },
   Pagination: true,
   ConfirmDialog: true,
@@ -215,5 +228,64 @@ describe('admin AccountsView dashboard flag switch', () => {
 
     expect(wrapper.find('[data-test="diagnostics-v2"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="diagnostics-legacy"]').exists()).toBe(false)
+  })
+
+  it('opens V2 diagnostics for the account emitted by the V2 dashboard diagnose CTA', async () => {
+    useNewAccountManagementUx.value = true
+    listAccounts.mockResolvedValue({
+      items: [
+        {
+          id: 42,
+          name: 'claude-oauth-42',
+          platform: 'anthropic',
+          type: 'oauth',
+          is_formal_pool: true,
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = await mountAccountsView()
+    await wrapper.find('button[title="号池实时看板"]').trigger('click')
+    expect(wrapper.find('[data-test="dashboard-v2"]').attributes('data-show')).toBe('true')
+
+    await wrapper.find('[data-test="dashboard-v2-diagnose"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="diagnostics-v2"]').attributes('data-show')).toBe('true')
+    expect(wrapper.find('[data-test="diagnostics-v2"]').attributes('data-account-id')).toBe('42')
+  })
+
+  it('shows Chinese scheduling gate copy in the visible table UI without English Gate', async () => {
+    listAccounts.mockResolvedValue({
+      items: [
+        {
+          id: 77,
+          name: 'claude-oauth-77',
+          platform: 'anthropic',
+          type: 'oauth',
+          is_formal_pool: true,
+          schedulable: true,
+          effective_schedulable: false,
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = await mountAccountsView()
+    const text = wrapper.text()
+    expect(text).toContain('门禁')
+    expect(text).not.toMatch(/\bGate\b/)
+
+    const gateButton = wrapper.find('button[title*="调度门禁"]')
+    expect(gateButton.exists()).toBe(true)
+    expect(gateButton.text()).toBe('门禁')
+    expect(gateButton.attributes('title')).not.toMatch(/\bGate\b/i)
   })
 })

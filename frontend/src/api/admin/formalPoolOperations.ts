@@ -1,5 +1,6 @@
 import { apiClient } from '../client'
 import type { Account, FormalPoolOperationsDiagnostics } from '@/types'
+import { refreshCredentials } from './accounts'
 
 export interface FormalPoolOperationResult {
   account: FormalPoolOperationFailureAccount
@@ -74,6 +75,14 @@ export async function replaceSetupToken(accountId: number, payload: ReplaceSetup
   return runOperation(() => apiClient.post<FormalPoolOperationResult>(`/admin/accounts/${accountId}/setup-token/replace`, payload))
 }
 
+export async function refreshLoginState(accountId: number): Promise<FormalPoolOperationResult> {
+  return runOperation(async () => {
+    const account = await refreshCredentials(accountId)
+    const diagnostics = await getDiagnostics(account.id).catch(() => undefined)
+    return { data: { account, diagnostics } }
+  })
+}
+
 export async function runtimeRegister(accountId: number): Promise<FormalPoolOperationResult> {
   return runOperation(() => apiClient.post<FormalPoolOperationResult>(`/admin/accounts/${accountId}/formal-pool/runtime-register`))
 }
@@ -104,6 +113,7 @@ export async function quarantine(accountId: number, reason: string): Promise<For
 
 const formalPoolOperationsAPI = {
   getDiagnostics,
+  refreshLoginState,
   replaceSetupToken,
   runtimeRegister,
   healthcheck,

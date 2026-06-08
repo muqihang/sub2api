@@ -120,7 +120,8 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     expect(hero.primaryAction?.key).toBe('wait')
     expect(hero.primaryAction?.behavior).toBe('none')
     expect(keys(hero.secondaryActions)).toEqual(['refreshDiagnostics'])
-    expect(hero.rootCauseBullets.join('\n')).toContain('窗口：5 小时窗口（5h）')
+    expect(hero.rootCauseBullets.join('\n')).toContain('窗口：5 小时窗口')
+    expect(hero.rootCauseBullets.join('\n')).not.toContain('（5h）')
     expect(hero.rootCauseBullets.join('\n')).not.toContain('未知状态（5h）')
     expectForbidden(hero, ['healthcheck'])
   })
@@ -225,6 +226,81 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
 
     expect(hero.scenario).toBe('oauth_invalid_grant')
     expect(hero.primaryAction?.key).toBe('guideOAuthReauth')
+  })
+
+  it('setup-token upstream 401 auth shows authorization failure instead of misleading evidence missing', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'quarantined',
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        failure_source: 'formal_pool_healthcheck',
+        healthcheck_status: 'quarantined',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        healthcheck_safe_error_bucket: 'auth',
+        onboarding_last_error_code: 'identity_boundary_fail',
+        onboarding_last_error_bucket: 'status_401',
+        runtime_evidence_complete: true,
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        proxy_mismatch: false,
+        fallback_detected: false,
+        risk_text_detected: false,
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+
+    expect(hero.scenario).toBe('setup_token_expired')
+    expect(hero.title).toContain('上游认证失败')
+    expect(hero.summary).toContain('401')
+    expect(hero.primaryAction?.key).toBe('replaceSetupToken')
+    expect(hero.rootCauseBullets.join('\n')).toContain('401 / 认证失败')
+    expect(hero.rootCauseBullets.join('\n')).not.toContain('运行证据')
+  })
+
+  it('setup-token auth failure is not hidden by stale proxy mismatch or monitor recommendations', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        onboarding_last_error_code: 'identity_boundary_fail',
+        proxy_mismatch: true,
+        fallback_detected: true,
+        recommended_actions: [
+          { key: 'monitor', label: 'Monitor', severity: 'info' },
+          { key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' },
+          { key: 'repair_token', label: 'Repair token', severity: 'danger' },
+        ],
+      }),
+    })
+
+    expect(hero.scenario).toBe('setup_token_expired')
+    expect(hero.primaryAction?.key).toBe('replaceSetupToken')
+    expect(hero.title).toContain('上游认证失败')
+  })
+
+  it('setup-token 401 auth signal still chooses token repair when failure_origin is not upstream', () => {
+    const hero = deriveFormalPoolDiagnosticsHero({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'unknown',
+        failure_code: 'formal_pool_healthcheck_failed',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        onboarding_last_error_code: 'identity_boundary_fail',
+        runtime_evidence_complete: true,
+        recommended_actions: [],
+      }),
+    })
+
+    expect(hero.scenario).toBe('setup_token_expired')
+    expect(hero.primaryAction?.key).toBe('replaceSetupToken')
+    expect(hero.rootCauseBullets.join('\n')).toContain('401 / 认证失败')
   })
 
   it('does not let generic evidence-missing override rate-limit, proxy, or manual-risk recommendations', () => {
@@ -341,14 +417,43 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     const bullets = hero.rootCauseBullets.join('\n')
     expect(bullets).toContain('代理出口不一致')
     expect(bullets).toContain('出口分组不一致')
-    expect(bullets).toContain('发现 fallback')
+    expect(bullets).toContain('发现备用线路')
     expect(bullets).not.toContain('失败来源：proxy_mismatch')
     expect(bullets).not.toContain('失败分类：bucket_mismatch')
     expect(bullets).not.toContain('proxy_mismatch：true')
     expect(bullets).not.toContain('fallback_detected：true')
   })
 
-  it('uses Chinese fallback copy for unknown diagnostic codes while retaining the code for troubleshooting', () => {
+  it('keeps known backend diagnostic codes out of default hero bullets', () => {
+    const authHero = deriveFormalPoolDiagnosticsHero({
+      account: account(),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'invalid_grant',
+      }),
+    })
+    const rateLimitHero = deriveFormalPoolDiagnosticsHero({
+      account: account(),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        status_code_bucket: 'status_429',
+      }),
+    })
+
+    const authBullets = authHero.rootCauseBullets.join('\n')
+    expect(authBullets).toContain('上游返回异常')
+    expect(authBullets).toContain('授权已失效或授权码无效')
+    expect(authBullets).not.toContain('（upstream）')
+    expect(authBullets).not.toContain('（invalid_grant）')
+
+    const rateLimitBullets = rateLimitHero.rootCauseBullets.join('\n')
+    expect(rateLimitBullets).toContain('上游返回异常')
+    expect(rateLimitBullets).toContain('限流')
+    expect(rateLimitBullets).not.toContain('（upstream）')
+    expect(rateLimitBullets).not.toContain('（status_429）')
+  })
+
+  it('keeps unknown backend diagnostic codes out of hero copy', () => {
     const hero = deriveFormalPoolDiagnosticsHero({
       account: account(),
       diagnostics: diagnostics({
@@ -358,8 +463,10 @@ describe('deriveFormalPoolDiagnosticsHero', () => {
     })
 
     const bullets = hero.rootCauseBullets.join('\n')
-    expect(bullets).toContain('未知来源（custom_origin）')
-    expect(bullets).toContain('未知分类（custom_bucket_mystery）')
+    expect(bullets).toContain('来源未返回可识别分类')
+    expect(bullets).toContain('失败分类未识别')
+    expect(bullets).not.toContain('custom_origin')
+    expect(bullets).not.toContain('custom_bucket_mystery')
     expect(bullets).not.toContain('失败来源：custom_origin')
     expect(bullets).not.toContain('失败分类：custom_bucket_mystery')
   })

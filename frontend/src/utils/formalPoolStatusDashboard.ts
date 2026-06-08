@@ -174,11 +174,11 @@ export function getBucketLanePresentation(
 /**
  * Warming-specific rail override. Warming sits inside the `active` bucket so
  * it shares the bucket's sort priority, but the V2 design wants warming rows
- * to wear a sky rail and a "预热中 · low weight" label to distinguish from
+ * to wear a sky rail and a "预热中 · 低权重" label to distinguish from
  * fully-promoted production accounts.
  */
 export const WARMING_RAIL_CLASS = 'border-l-4 border-sky-500 bg-sky-50/40 dark:border-sky-400 dark:bg-sky-900/10'
-export const WARMING_PRESENTATION_LABEL = '预热中 · low weight'
+export const WARMING_PRESENTATION_LABEL = '预热中 · 低权重'
 
 const INSUFFICIENT_DATA_TEXT = '数据不足'
 const UNCONFIGURED_TEXT = '未配置'
@@ -215,12 +215,33 @@ const FORMAL_POOL_RECENT_FAILURE_TEXT: Record<string, string> = {
   authentication: '授权/登录失败',
   unauthorized: '授权/登录失败',
   status_401: '授权/登录失败',
+  '401': '授权/登录失败',
+  invalid_grant: '授权已失效，请重新授权',
+  refresh_token_invalid: '刷新令牌失效，请重新授权',
+  setup_token_expired: 'Setup Token 已过期',
+  session_expired: '登录会话已过期',
   formal_pool_healthcheck_failed: '健康检查未通过',
   healthcheck_failed: '健康检查未通过',
   rate_limited: '限流中',
   status_429: '限流中',
-  proxy_mismatch: '代理不匹配',
-  bucket_mismatch: '状态分组不匹配',
+  '429': '限流中',
+  proxy_mismatch: '代理出口不一致',
+  bucket_mismatch: '出口分组不一致',
+  status_403: '上游风控或权限异常',
+  '403': '上游风控或权限异常',
+  '5h': '5 小时额度不足，等待额度恢复',
+  '7d': '7 天额度不足，等待额度恢复',
+  long_context_usage_credits: '5 小时额度不足',
+  usage_credits_required: '额度不足，需要等待恢复',
+  fallback: '降级兜底触发，需查看诊断',
+  fallback_detected: '降级兜底触发，需查看诊断',
+  raw_capture_missing: '采集证据缺失，需查看诊断',
+  cc_gateway_not_seen: '网关运行证据缺失，需查看诊断',
+  runtime_register: '调度器接入未完成',
+  runtime_registered: '调度器接入证据异常',
+  not_schedulable: '调度门禁阻止调度',
+  gate: '调度门禁阻止调度',
+  redacted_sensitive: '敏感信息已隐藏，需查看诊断',
 }
 /**
  * V2 dashboard displays backend-provided diagnostic labels. Treat them as
@@ -269,13 +290,32 @@ export function formatFormalPoolRecentFailureText(
   code: string | null | undefined,
   bucket: string | null | undefined,
 ): string {
-  const raw = String(code || bucket || '').trim()
-  if (!raw) return ''
+  const rawCode = String(code || '').trim()
+  const rawBucket = String(bucket || '').trim()
+  if (!rawCode && !rawBucket) return ''
 
-  const mapped = FORMAL_POOL_RECENT_FAILURE_TEXT[raw.toLowerCase()]
-  if (mapped) return mapped
+  const mappedCode = rawCode ? FORMAL_POOL_RECENT_FAILURE_TEXT[rawCode.toLowerCase()] : ''
+  if (mappedCode) return mappedCode
 
-  return `诊断：${safeFormalPoolOperatorLabel(scrubFormalPoolDisplayText(raw, '未知'), '[redacted]')}`
+  const mappedBucket = rawBucket ? FORMAL_POOL_RECENT_FAILURE_TEXT[rawBucket.toLowerCase()] : ''
+  if (mappedBucket) return mappedBucket
+
+  return '未知错误，需查看诊断'
+}
+
+export function formatFormalPoolRecentSuccessHint(
+  value: string | null | undefined,
+  fallback = '未知',
+): string {
+  const text = String(value || '').trim()
+  if (!text) return fallback
+
+  const date = new Date(text)
+  if (!Number.isNaN(date.getTime())) {
+    return date.toLocaleString('zh-CN', { hour12: false })
+  }
+
+  return scrubFormalPoolDisplayText(text, fallback).replace(/\[redacted\]/gi, '敏感信息已隐藏')
 }
 
 
@@ -319,7 +359,7 @@ const STATE_PRESENTATION: Record<string, StatePresentation> = {
   },
   not_schedulable: {
     className: 'formal-pool-state formal-pool-state--warning',
-    recommendation: '不可调度：需查看 gate 原因。'
+    recommendation: '不可调度：需查看调度门禁原因。'
   },
   evidence_missing: {
     className: 'formal-pool-state formal-pool-state--warning',

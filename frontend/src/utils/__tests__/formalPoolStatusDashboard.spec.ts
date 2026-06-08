@@ -8,6 +8,7 @@ import {
   formatConcurrencyText,
   formatDashboardPercent,
   formatFiveHourWindow,
+  formatFormalPoolRecentSuccessHint,
   formatFormalPoolRecentFailureText,
   formatRpmText,
   getBucketLanePresentation,
@@ -259,12 +260,53 @@ describe('formalPoolStatusDashboard formatting helpers', () => {
     expect(formatFormalPoolRecentFailureText('', 'status_429')).toContain('限流')
 
     const unknown = formatFormalPoolRecentFailureText('', 'custom sk-ant-secret-token')
-    expect(unknown).toBe('诊断：custom [redacted]')
+    expect(unknown).toBe('未知错误，需查看诊断')
     expect(unknown).not.toContain('sk-ant-secret-token')
 
     const bareCredential = formatFormalPoolRecentFailureText('', 'user:pass@proxy-host:8080')
-    expect(bareCredential).toBe('诊断：[redacted]')
+    expect(bareCredential).toBe('未知错误，需查看诊断')
     expect(bareCredential).not.toContain('user:pass')
+  })
+
+  it('maps common recent failure codes to operator Chinese without leaking raw codes', () => {
+    const cases: Array<[string, string]> = [
+      ['5h', '5 小时额度'],
+      ['7d', '7 天额度'],
+      ['fallback', '降级兜底'],
+      ['fallback_detected', '降级兜底'],
+      ['raw_capture_missing', '采集证据缺失'],
+      ['cc_gateway_not_seen', '网关运行证据缺失'],
+      ['invalid_grant', '授权已失效'],
+      ['refresh_token_invalid', '刷新令牌失效'],
+      ['setup_token_expired', 'Setup Token 已过期'],
+      ['session_expired', '登录会话已过期'],
+      ['status_401', '授权/登录失败'],
+      ['401', '授权/登录失败'],
+      ['status_429', '限流中'],
+      ['429', '限流中'],
+      ['status_403', '上游风控或权限异常'],
+      ['403', '上游风控或权限异常'],
+      ['runtime_register', '调度器接入'],
+      ['runtime_registered', '调度器接入'],
+      ['not_schedulable', '调度门禁'],
+      ['gate', '调度门禁'],
+    ]
+
+    for (const [code, expected] of cases) {
+      const text = formatFormalPoolRecentFailureText(code, '')
+      expect(text).toContain(expected)
+      expect(text).not.toBe('未知错误，需查看诊断')
+      expect(text.toLowerCase()).not.toContain(code.toLowerCase())
+    }
+  })
+
+  it('formats parseable recent success hints as zh-CN local time and scrubs non-date hints', () => {
+    const iso = '2026-06-01T14:32:08Z'
+    const expected = new Date(iso).toLocaleString('zh-CN', { hour12: false })
+
+    expect(formatFormalPoolRecentSuccessHint(iso)).toBe(expected)
+    expect(formatFormalPoolRecentSuccessHint('14:32:01')).toBe('14:32:01')
+    expect(formatFormalPoolRecentSuccessHint('raw_body sk-ant-secret-token')).toBe('敏感信息已隐藏 敏感信息已隐藏')
   })
 
   it('scrubs formal pool display text fail-closed while preserving safe operator copy', () => {
@@ -305,11 +347,11 @@ describe('V2 four-bucket mapping', () => {
   it('warming maps to active bucket but is still warming-presented', () => {
     expect(getDashboardBucket('warming')).toBe('active')
     expect(isWarmingState('warming')).toBe(true)
-    // warming gets the sky rail / "预热中 · low weight" treatment overlay on
+    // warming gets the sky rail / "预热中 · 低权重" treatment overlay on
     // top of the active bucket — never demoted to needs_intervention.
     expect(WARMING_RAIL_CLASS).toContain('sky')
     expect(WARMING_PRESENTATION_LABEL).toContain('预热中')
-    expect(WARMING_PRESENTATION_LABEL).toContain('low weight')
+    expect(WARMING_PRESENTATION_LABEL).toContain('低权重')
   })
 
   it('normal and production are active', () => {

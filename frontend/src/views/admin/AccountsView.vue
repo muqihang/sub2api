@@ -250,7 +250,7 @@
                 class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 transition hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
                 :title="t('admin.accounts.formalPool.effectiveBlocked')"
                 @click.stop="openFormalPoolDiagnostics(row)"
-              >Gate</button>
+              >门禁</button>
             </div>
           </template>
           <template #cell-onboarding_stage="{ row }">
@@ -381,6 +381,7 @@
       v-else
       :show="showFormalPoolStatusDashboard"
       @close="showFormalPoolStatusDashboard = false"
+      @diagnose="openFormalPoolDiagnosticsFromDashboard"
     />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
@@ -1555,6 +1556,20 @@ const openFormalPoolDiagnostics = (account: Account) => {
   if (!account.is_formal_pool) return
   formalPoolDiagnosticsAccount.value = account
   showFormalPoolDiagnostics.value = true
+}
+const openFormalPoolDiagnosticsFromDashboard = async (accountId: number) => {
+  let account = accounts.value.find(item => item.id === accountId) ?? null
+  if (!account) {
+    try {
+      account = await adminAPI.accounts.getById(accountId)
+    } catch (error) {
+      console.error('Failed to load account before opening formal pool diagnostics:', error)
+      return
+    }
+  }
+  if (!account) return
+  showFormalPoolStatusDashboard.value = false
+  openFormalPoolDiagnostics(account)
 }
 const closeFormalPoolDiagnostics = () => {
   showFormalPoolDiagnostics.value = false

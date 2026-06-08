@@ -21,6 +21,7 @@ vi.mock('@/components/common/ConfirmDialog.vue', () => ({
 
 const {
   getDiagnostics,
+  refreshLoginState,
   replaceSetupToken,
   runtimeRegister,
   healthcheck,
@@ -29,8 +30,12 @@ const {
   quarantine,
   promoteProduction,
   routerPush,
+  adminProxyGetAllWithCount,
+  adminProxyGetAll,
+  appShowSuccess,
 } = vi.hoisted(() => ({
   getDiagnostics: vi.fn(),
+  refreshLoginState: vi.fn(),
   replaceSetupToken: vi.fn(),
   runtimeRegister: vi.fn(),
   healthcheck: vi.fn(),
@@ -39,6 +44,9 @@ const {
   quarantine: vi.fn(),
   promoteProduction: vi.fn(),
   routerPush: vi.fn(),
+  adminProxyGetAllWithCount: vi.fn(),
+  adminProxyGetAll: vi.fn(),
+  appShowSuccess: vi.fn(),
 }))
 
 vi.mock('@/api/admin/formalPoolOperations', async () => {
@@ -46,6 +54,7 @@ vi.mock('@/api/admin/formalPoolOperations', async () => {
   return {
     ...actual,
     getDiagnostics,
+    refreshLoginState,
     replaceSetupToken,
     runtimeRegister,
     healthcheck,
@@ -57,7 +66,16 @@ vi.mock('@/api/admin/formalPoolOperations', async () => {
 })
 
 vi.mock('@/stores/app', () => ({
-  useAppStore: () => ({ showSuccess: vi.fn(), showError: vi.fn() }),
+  useAppStore: () => ({ showSuccess: appShowSuccess, showError: vi.fn() }),
+}))
+
+vi.mock('@/api/admin', () => ({
+  adminAPI: {
+    proxies: {
+      getAllWithCount: adminProxyGetAllWithCount,
+      getAll: adminProxyGetAll,
+    },
+  },
 }))
 
 vi.mock('vue-router', () => ({
@@ -150,16 +168,37 @@ describe('FormalPoolDiagnosticsModalV2', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     routerPush.mockResolvedValue(undefined)
+    adminProxyGetAllWithCount.mockResolvedValue([])
+    adminProxyGetAll.mockResolvedValue([])
   })
 
   it('renders a compact command bar with environment badge, generated time, refresh state, and primary action', async () => {
     const wrapper = await mountModal({ diagnostics: diagnostics({ generated_at: '2026-06-01T14:32:08Z' } as Partial<FormalPoolOperationsDiagnostics>) })
 
     expect(wrapper.find('[data-testid="diagnostics-v2-command-bar"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="diagnostics-v2-environment"]').text()).toContain('正式号池')
+    const environment = wrapper.get('[data-testid="diagnostics-v2-environment"]').text()
+    expect(environment).toBe('正式号池 · Claude / OAuth 登录')
+    expect(environment).not.toContain('anthropic')
+    expect(environment).not.toContain('oauth')
     expect(wrapper.get('[data-testid="diagnostics-v2-generated-at"]').text()).toContain('2026-06-01T14:32:08Z')
     expect(wrapper.get('[data-testid="diagnostics-v2-refresh-state"]').text()).toContain('已刷新')
     expect(wrapper.get('[data-testid="diagnostics-v2-primary-action"]').text()).toContain('查看 OAuth 重新授权步骤')
+  })
+
+  it('localizes setup-token environment badge without raw platform or type enums', async () => {
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'token_exchange',
+        failure_code: 'setup_token_expired',
+        recommended_actions: [{ key: 'replace_setup_token', label: 'Replace setup token', severity: 'danger' }],
+      }),
+    })
+
+    const environment = wrapper.get('[data-testid="diagnostics-v2-environment"]').text()
+    expect(environment).toBe('正式号池 · Claude / Setup Token 登录')
+    expect(environment).not.toContain('anthropic')
+    expect(environment).not.toContain('setup-token')
   })
 
   it('separates root-cause analysis from allowed actions and does not render OAuth one-click reauth', async () => {
@@ -171,6 +210,195 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(wrapper.text()).toContain('当前后端无一键 OAuth 重新授权 API')
     expect(wrapper.find('[data-testid="action-oneClickOAuthReauth"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('一键重新授权')
+  })
+
+  it('uses operator-facing Chinese copy instead of engineering terms in the default diagnostics view', async () => {
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'proxy',
+        failure_code: 'proxy_mismatch',
+        proxy_mismatch: true,
+        fallback_detected: true,
+        recommended_actions: [{ key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' }],
+      }),
+    })
+
+    const defaultText = wrapper.text()
+    expect(defaultText).toContain('账号诊断中心')
+    expect(defaultText).toContain('状态分组')
+    expect(defaultText).toContain('更换代理后再重新检查运行映射和健康状态')
+    expect(defaultText).not.toContain('Diagnostics command center')
+    expect(defaultText).not.toContain('raw token')
+    expect(defaultText).not.toContain('进入 DOM')
+    expect(defaultText).not.toContain('真实已有 API')
+    expect(defaultText).not.toContain('runtime-register / healthcheck')
+    expect(defaultText).not.toContain('lanes')
+
+    await wrapper.get('[data-testid="evidence-toggle"]').trigger('click')
+    const evidenceText = wrapper.text()
+    expect(evidenceText).toContain('默认折叠 · 查看已脱敏的排查依据')
+    expect(wrapper.get('[data-testid="evidence-search"]').attributes('placeholder')).toBe('搜索脱敏证据，例如 代理出口 / 认证失败 / 429')
+    expect(evidenceText).not.toContain('lifecycle / gateway / proxy / upstream')
+    expect(evidenceText).not.toContain('proxy mismatch / status_429')
+    expect(evidenceText).not.toContain('Raw capture')
+    expect(evidenceText).not.toContain('fallback')
+    expect(evidenceText).not.toContain('proxy_mismatch')
+    expect(evidenceText).not.toContain('fallback_detected')
+    expect(evidenceText).not.toContain('Swap proxy')
+  })
+
+  it('explains setup-token upstream 401 in Chinese and exposes refresh/login-token repair actions', async () => {
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'quarantined',
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        failure_source: 'formal_pool_healthcheck',
+        healthcheck_status: 'quarantined',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        healthcheck_safe_error_bucket: 'auth',
+        onboarding_last_error_code: 'identity_boundary_fail',
+        onboarding_last_error_bucket: 'status_401',
+        runtime_evidence_complete: true,
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        proxy_mismatch: false,
+        fallback_detected: false,
+        risk_text_detected: false,
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+
+    const root = wrapper.get('[data-testid="diagnostics-v2-root-cause"]').text()
+    expect(root).toContain('上游认证失败')
+    expect(root).toContain('401 / 认证失败')
+    expect(root).not.toContain('运行证据缺失')
+    expect(root).not.toContain('formal_pool_healthcheck_failed')
+    expect(wrapper.get('[data-testid="action-refreshLoginState"]').text()).toContain('刷新登录态并重测')
+    expect(wrapper.get('[data-testid="action-replaceSetupToken"]').text()).toContain('替换 Setup Token')
+  })
+
+  it('calls refreshLoginState from setup-token auth failure repair action', async () => {
+    refreshLoginState.mockResolvedValue({
+      account: account({ type: 'setup-token', status: 'error', onboarding_stage: 'quarantined' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        status_code_bucket: 'status_401',
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        runtime_evidence_complete: true,
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="action-refreshLoginState"]').trigger('click')
+    await flushPromises()
+
+    expect(refreshLoginState).toHaveBeenCalledWith(42)
+  })
+
+  it('shows a Chinese token-expired message when refreshLoginState fails with invalid_grant', async () => {
+    refreshLoginState.mockRejectedValue({
+      status: 400,
+      code: 'REFRESH_TOKEN_INVALID',
+      message: 'internal error',
+    })
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        healthcheck_safe_error_bucket: 'auth',
+        onboarding_last_error_code: 'identity_boundary_fail',
+        onboarding_last_error_bucket: 'status_401',
+        runtime_evidence_complete: true,
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="action-refreshLoginState"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('刷新登录态失败')
+    expect(wrapper.text()).toContain('Refresh Token 可能已失效')
+    expect(wrapper.text()).toContain('请更换新的 Setup Token')
+    expect(wrapper.text()).not.toContain('internal error')
+  })
+
+  it('uses a generic Chinese error when operation errors are not specifically recognized', async () => {
+    refreshLoginState.mockRejectedValue({
+      status: 502,
+      code: 'GATE_BLOCKED',
+      message: 'gate blocked/runtime_register failed/raw_capture missing',
+    })
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        runtime_evidence_complete: true,
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="action-refreshLoginState"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('操作失败：后端返回了未识别的诊断错误')
+    expect(wrapper.text()).not.toContain('gate blocked')
+    expect(wrapper.text()).not.toContain('runtime_register failed')
+    expect(wrapper.text()).not.toContain('raw_capture missing')
+  })
+
+  it('shows healthcheck and onboarding auth evidence in Chinese instead of hiding it under unknown state', async () => {
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        failure_source: 'formal_pool_healthcheck',
+        healthcheck_status: 'quarantined',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        healthcheck_safe_error_bucket: 'auth',
+        onboarding_last_error_code: 'identity_boundary_fail',
+        onboarding_last_error_bucket: 'status_401',
+        last_cc_gateway_error_code: 'invalid_auth',
+        healthcheck_evidence_persisted: false,
+        runtime_evidence_complete: true,
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="evidence-toggle"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="evidence-item-healthcheck_status"] div').text()).toContain('隔离')
+    expect(wrapper.get('[data-testid="evidence-item-healthcheck_safe_error_code"] div').text()).toContain('认证失败')
+    expect(wrapper.get('[data-testid="evidence-item-onboarding_last_error_code"] div').text()).toContain('上游身份边界校验失败')
+    expect(wrapper.get('[data-testid="evidence-item-healthcheck_evidence_persisted"] div').text()).toBe('否')
+    expect(wrapper.get('[data-testid="evidence-group-upstream"]').text()).not.toContain('未知状态')
   })
 
   it('renders replace-account-and-proxy guidance as a navigation action', async () => {
@@ -234,8 +462,8 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     expect(wrapper.find('[data-testid="evidence-group-proxy"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="evidence-group-upstream"]').exists()).toBe(true)
 
-    await wrapper.get('[data-testid="evidence-search"]').setValue('proxy mismatch')
-    expect(wrapper.get('[data-testid="evidence-group-proxy"]').text()).toContain('proxy_mismatch')
+    await wrapper.get('[data-testid="evidence-search"]').setValue('代理出口')
+    expect(wrapper.get('[data-testid="evidence-group-proxy"]').text()).toContain('代理出口不一致')
     expect(wrapper.find('[data-testid="evidence-item-cc_gateway_seen"]').exists()).toBe(false)
   })
 
@@ -291,9 +519,9 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     const checksText = wrapper.get('[data-testid="evidence-group-checks"]').text()
     const actionsText = wrapper.get('[data-testid="evidence-group-actions"]').text()
 
-    expect(checksText).toContain('latest healthcheck evidence is required before warming')
+    expect(checksText).toContain('进入预热前需要先保存健康检查证据')
     expect(checksText).not.toContain('未知分类')
-    expect(actionsText).toContain('Swap proxy and revalidate')
+    expect(actionsText).toContain('更换出口代理并重新检查')
     expect(actionsText).not.toContain('未知动作')
   })
 
@@ -307,7 +535,7 @@ describe('FormalPoolDiagnosticsModalV2', () => {
         recommended_actions: [{ key: 'wait_rate_limit', label: 'Wait', severity: 'warning' }],
       }),
     })
-    expect(rateLimited.text()).toContain('等待 5h 用量窗口恢复')
+    expect(rateLimited.text()).toContain('等待 5 小时用量窗口恢复')
     expect(rateLimited.find('[data-testid="action-healthcheck"]').exists()).toBe(false)
     rateLimited.unmount()
 
@@ -324,7 +552,211 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     })
     expect(proxyMismatch.find('[data-testid="action-swapProxy"]').exists()).toBe(true)
     expect(proxyMismatch.find('[data-testid="action-healthcheck"]').exists()).toBe(false)
-    expect(proxyMismatch.text()).toContain('更换代理后再执行 runtime-register / healthcheck')
+    expect(proxyMismatch.text()).toContain('更换代理后再重新检查运行映射和健康状态')
+  })
+
+
+  it('loads selectable proxies, fills proxy id from a card, and submits swap proxy without making manual id the only entry', async () => {
+    adminProxyGetAllWithCount.mockResolvedValue([
+      {
+        id: 12,
+        name: '东京出口 A',
+        protocol: 'http',
+        host: 'tokyo-a.example.com',
+        port: 8080,
+        username: null,
+        status: 'active',
+        account_count: 3,
+        created_at: '2026-06-01T00:00:00Z',
+        updated_at: '2026-06-01T00:00:00Z',
+      },
+      {
+        id: 7,
+        name: '当前出口',
+        protocol: 'socks5',
+        host: 'current.example.com',
+        port: 1080,
+        username: null,
+        status: 'active',
+        account_count: 9,
+        created_at: '2026-06-01T00:00:00Z',
+        updated_at: '2026-06-01T00:00:00Z',
+      },
+    ])
+    swapProxy.mockResolvedValue({
+      account: account({ status: 'active', onboarding_stage: 'runtime_registered', proxy_id: 12 }),
+      diagnostics: diagnostics({ onboarding_stage: 'runtime_registered', proxy_mismatch: false }),
+    })
+
+    const wrapper = await mountModal({
+      account: account({ proxy_id: 7 }),
+      diagnostics: diagnostics({
+        failure_origin: 'proxy',
+        proxy_mismatch: true,
+        fallback_detected: true,
+        recommended_actions: [{ key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' }],
+      }),
+    })
+
+    expect(adminProxyGetAllWithCount).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="swap-proxy-selector"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="swap-proxy-card-12"]').text()).toContain('东京出口 A')
+    expect(wrapper.get('[data-testid="swap-proxy-card-12"]').text()).toContain('tokyo-a.example.com:8080')
+    expect(wrapper.get('[data-testid="swap-proxy-card-12"]').text()).toContain('绑定 3 个账号')
+    expect(wrapper.get('[data-testid="swap-proxy-card-12"]').text()).toContain('启用')
+    expect(wrapper.text()).not.toContain('新出口代理 ID 是唯一入口')
+
+    await wrapper.get('[data-testid="swap-proxy-card-12"]').trigger('click')
+    expect((wrapper.get('[data-testid="swap-proxy-id-input"]').element as HTMLInputElement).value).toBe('12')
+
+    await wrapper.get('[data-testid="action-swapProxy"]').trigger('click')
+    await flushPromises()
+
+    expect(swapProxy).toHaveBeenCalledWith(42, {
+      proxy_id: 12,
+      run_proxy_test: true,
+      run_runtime_register: true,
+      run_healthcheck: true,
+    })
+  })
+
+  it('shows Chinese empty and failed proxy selector states with management and reload actions', async () => {
+    adminProxyGetAllWithCount.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('network down')).mockResolvedValueOnce([])
+    adminProxyGetAll.mockRejectedValueOnce(new Error('fallback down'))
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'proxy',
+        proxy_mismatch: true,
+        recommended_actions: [{ key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' }],
+      }),
+    })
+
+    expect(wrapper.get('[data-testid="swap-proxy-empty"]').text()).toContain('暂无可选代理')
+    expect(wrapper.get('[data-testid="swap-proxy-empty"]').text()).toContain('去代理管理添加 IP')
+    await wrapper.get('[data-testid="swap-proxy-manage"]').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith('/admin/proxies')
+
+    await wrapper.get('[data-testid="swap-proxy-reload"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="swap-proxy-error"]').text()).toContain('代理列表加载失败')
+    expect(wrapper.get('[data-testid="swap-proxy-error"]').text()).toContain('重新加载')
+
+    await wrapper.get('[data-testid="swap-proxy-reload"]').trigger('click')
+    await flushPromises()
+    expect(adminProxyGetAllWithCount).toHaveBeenCalledTimes(3)
+  })
+
+  it('shows an in-panel success result card and a specific Chinese success toast after an operation', async () => {
+    runtimeRegister.mockResolvedValue({
+      account: account({ status: 'active', onboarding_stage: 'runtime_registered' }),
+      diagnostics: diagnostics({
+        onboarding_stage: 'runtime_registered',
+        failure_origin: 'control_plane',
+        failure_code: 'healthcheck_evidence_missing',
+        status_code_bucket: 'status_2xx',
+        cc_gateway_runtime_registered: true,
+        cc_gateway_runtime_registered_at: '2026-06-01T00:00:00Z',
+        runtime_evidence_complete: true,
+        healthcheck_evidence_persisted: false,
+        recommended_actions: [{ key: 'healthcheck', label: 'Healthcheck', severity: 'info' }],
+      }),
+    })
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'control_plane',
+        failure_code: 'runtime_evidence_incomplete',
+        status_code_bucket: 'status_2xx',
+        runtime_evidence_complete: false,
+        recommended_actions: [{ key: 'runtime_register', label: 'Runtime register', severity: 'info' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="action-runtimeRegister"]').trigger('click')
+    await flushPromises()
+
+    const card = wrapper.get('[data-testid="operation-result-card"]')
+    expect(card.text()).toContain('已执行：注册运行映射')
+    expect(card.text()).toContain('最新状态')
+    expect(card.text()).toContain('最新诊断')
+    expect(card.text()).toContain('下一步建议')
+    expect(card.text()).toContain('刷新诊断')
+    expect(card.text()).toContain('继续健康检查')
+    expect(appShowSuccess).toHaveBeenCalledWith('正式号池操作已完成：注册运行映射')
+  })
+
+  it('shows the localized busy action label instead of the raw action key', async () => {
+    let resolveOperation: ((value: {
+      account: Account
+      diagnostics: FormalPoolOperationsDiagnostics
+    }) => void) | undefined
+    runtimeRegister.mockReturnValue(new Promise((resolve) => {
+      resolveOperation = resolve
+    }))
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'control_plane',
+        failure_code: 'runtime_evidence_incomplete',
+        status_code_bucket: 'status_2xx',
+        runtime_evidence_complete: false,
+        recommended_actions: [{ key: 'runtime_register', label: 'Runtime register', severity: 'info' }],
+      }),
+    })
+
+    await wrapper.get('[data-testid="action-runtimeRegister"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="diagnostics-v2-allowed-actions"]').text()).toContain('执行中：注册运行映射')
+    expect(wrapper.get('[data-testid="diagnostics-v2-allowed-actions"]').text()).not.toContain('执行中：runtimeRegister')
+
+    resolveOperation?.({
+      account: account({ status: 'active', onboarding_stage: 'runtime_registered' }),
+      diagnostics: diagnostics({ onboarding_stage: 'runtime_registered' }),
+    })
+    await flushPromises()
+  })
+
+  it('opens a manual handling checklist instead of only scrolling for manual review', async () => {
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'account_on_hold',
+        status_code_bucket: 'status_403',
+        risk_text_detected: true,
+        recommended_actions: [{ key: 'manual_review', label: 'Manual review', severity: 'danger' }],
+      }),
+    })
+
+    expect(wrapper.find('[data-testid="action-manualReview"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="guide-manualReview"]').text()).toContain('下一步说明')
+
+    const checklist = wrapper.get('[data-testid="manual-review-checklist"]')
+    expect(checklist.text()).toContain('人工处理清单')
+    expect(checklist.text()).not.toContain('人工处理 checklist')
+    expect(checklist.text()).toContain('登录上游')
+    expect(checklist.text()).toContain('检查暂停/KYC/风控')
+    expect(checklist.text()).toContain('处理后刷新诊断')
+  })
+
+  it('renders proxy follow-up guide as a non-clickable instruction card', async () => {
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'proxy',
+        failure_code: 'proxy_mismatch',
+        proxy_mismatch: true,
+        fallback_detected: true,
+        recommended_actions: [
+          { key: 'swap_proxy', label: 'Swap proxy', severity: 'warning' },
+          { key: 'runtime_register', label: 'Runtime register', severity: 'info' },
+          { key: 'healthcheck', label: 'Healthcheck', severity: 'info' },
+        ],
+      }),
+    })
+
+    expect(wrapper.find('[data-testid="action-runtimeRegisterThenHealthcheck"]').exists()).toBe(false)
+    const guide = wrapper.get('[data-testid="guide-runtimeRegisterThenHealthcheck"]')
+    expect(guide.text()).toContain('下一步说明')
+    expect(guide.text()).toContain('更换代理后再重新检查运行映射和健康状态')
+    expect(guide.element.tagName).not.toBe('BUTTON')
   })
 
   it('requires a different replacement proxy id before executing swap proxy', async () => {
@@ -546,7 +978,7 @@ describe('FormalPoolDiagnosticsModalV2', () => {
       }),
     })
 
-    expect(wrapper.get('[data-testid="diagnostics-v2-root-cause"]').text()).toContain('evidence_missing')
+    expect(wrapper.get('[data-testid="diagnostics-v2-root-cause"]').text()).toContain('运行证据缺失')
     expect(wrapper.find('[data-testid="action-promoteProduction"]').exists()).toBe(false)
     expect(wrapper.html()).not.toContain('进入生产')
   })
@@ -619,6 +1051,58 @@ describe('FormalPoolDiagnosticsModalV2', () => {
     const pushed = JSON.stringify(routerPush.mock.calls)
     expect(pushed).not.toContain(String(rawAccountId))
     expect(pushed).not.toContain(String(rawProxyId))
+  })
+
+  it('keeps unknown backend codes and unmatched English free text out of the default hero UI', async () => {
+    const wrapper = await mountModal({
+      diagnostics: diagnostics({
+        failure_origin: 'custom_origin' as FormalPoolOperationsDiagnostics['failure_origin'],
+        failure_code: 'custom_bucket_mystery',
+        status_code_bucket: undefined,
+        checks: [
+          { name: 'stage_gate', status: 'fail', message: 'gate blocked/runtime_register failed/raw_capture missing' },
+          { name: 'stage_gate', status: 'fail', message: 'backend says coconut exploded' },
+        ],
+        recommended_actions: [],
+      }),
+    })
+
+    const heroText = wrapper.get('[data-testid="diagnostics-v2-root-cause"]').text()
+    expect(heroText).toContain('来源未返回可识别分类')
+    expect(heroText).toContain('失败分类未识别')
+    expect(heroText).not.toContain('custom_origin')
+    expect(heroText).not.toContain('custom_bucket_mystery')
+    expect(wrapper.text()).not.toContain('gate blocked')
+    expect(wrapper.text()).not.toContain('runtime_register failed')
+    expect(wrapper.text()).not.toContain('raw_capture missing')
+
+    await wrapper.get('[data-testid="evidence-toggle"]').trigger('click')
+    expect(wrapper.get('[data-testid="evidence-item-check_0_stage_gate"] div').text()).toContain('运行映射处理失败')
+    expect(wrapper.get('[data-testid="evidence-item-check_1_stage_gate"] div').text()).toContain('后端返回了未识别的诊断说明')
+  })
+
+  it('uses fully Chinese operator-facing wording in visible controls and auth summary', async () => {
+    const wrapper = await mountModal({
+      account: account({ type: 'setup-token' }),
+      diagnostics: diagnostics({
+        failure_origin: 'upstream',
+        failure_code: 'formal_pool_healthcheck_failed',
+        status_code_bucket: 'status_401',
+        healthcheck_safe_error_code: 'auth',
+        runtime_evidence_complete: true,
+        cc_gateway_seen: true,
+        raw_capture_present: true,
+        recommended_actions: [{ key: 'repair_token', label: 'Repair token', severity: 'danger' }],
+      }),
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('Setup Token 会话密钥')
+    expect(text).toContain('401 / 认证失败')
+    expect(text).not.toContain('Setup Token session key')
+    expect(text).not.toContain('开新 session')
+    expect(text).not.toContain('人工处理 checklist')
+    expect(text).not.toContain('401 / auth')
   })
 
   it('clicking healthcheck opens ConfirmDialog and does NOT call healthcheck API', async () => {
