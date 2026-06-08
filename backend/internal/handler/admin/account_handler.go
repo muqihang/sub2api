@@ -985,7 +985,7 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 		// Use Anthropic/Claude OAuth service to refresh token
 		tokenInfo, err := h.oauthService.RefreshAccountToken(ctx, account)
 		if err != nil {
-			return nil, "", err
+			return nil, "", safeClaudeRefreshFailure(account, err)
 		}
 
 		// Copy existing credentials to preserve non-token settings (e.g., intercept_warmup_requests)
@@ -1027,6 +1027,20 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	h.adminService.EnsureAntigravityPrivacy(ctx, updatedAccount)
 
 	return updatedAccount, "", nil
+}
+
+func safeClaudeRefreshFailure(account *service.Account, err error) error {
+	if err == nil {
+		return nil
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "invalid_grant") || strings.Contains(text, "refresh token not found or invalid") {
+		if account != nil && account.Type == service.AccountTypeSetupToken {
+			return infraerrors.BadRequest("REFRESH_TOKEN_INVALID", "Refresh Token 已失效，请更换新的 Setup Token 后重新运行时注册和健康检查")
+		}
+		return infraerrors.BadRequest("REFRESH_TOKEN_INVALID", "Refresh Token 已失效，请重新授权账号")
+	}
+	return err
 }
 
 // Refresh handles refreshing account credentials
