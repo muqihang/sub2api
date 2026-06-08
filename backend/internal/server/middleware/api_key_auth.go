@@ -146,6 +146,9 @@ func validateAndSetAPIKeyContext(
 		writeError = defaultAPIKeyAuthErrorWriter
 	}
 
+	// 记录已加载的 API Key，供 Ops 错误日志在鉴权早退时安全回退使用。
+	SetOpsFallbackAPIKey(c, apiKey)
+
 	// ── 3. 基础鉴权（始终执行） ─────────────────────────────────
 
 	if !apiKey.IsActive() &&
@@ -158,8 +161,12 @@ func validateAndSetAPIKeyContext(
 
 	if len(apiKey.IPWhitelist) > 0 || len(apiKey.IPBlacklist) > 0 {
 		clientIP := ip.GetTrustedClientIP(c)
+		if cfg.TrustForwardedIPForAPIKeyACL() {
+			clientIP = ip.GetClientIP(c)
+		}
 		allowed, _ := ip.CheckIPRestrictionWithCompiledRules(clientIP, apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
 		if !allowed {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonIPRestriction)
 			writeError(c, 403, "ACCESS_DENIED", "Access denied")
 			return false
 		}
@@ -174,6 +181,17 @@ func validateAndSetAPIKeyContext(
 	if !apiKey.User.IsActive() {
 		logAPIKeyAuthFailure(c, apiKeySource, apiKeyString, "user_inactive", apiKey)
 		writeError(c, 401, "USER_INACTIVE", "User account is not active")
+		return false
+	}
+
+	if code, message, ok := validateAPIKeyGroupAvailable(apiKey); !ok {
+		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
+		writeError(c, 403, code, message)
+		return false
+	}
+	if !validateAPIKeyGroupAllowed(apiKey) {
+		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
+		writeError(c, 403, "GROUP_NOT_ALLOWED", "API Key 所属专属分组不再允许当前用户使用")
 		return false
 	}
 
@@ -310,6 +328,26 @@ func GetAPIKeyFromContext(c *gin.Context) (*service.APIKey, bool) {
 	return apiKey, ok
 }
 
+// SetOpsFallbackAPIKey 记录已加载的 API Key，供 Ops 错误日志在鉴权早退时回退使用。
+// 与 ContextKeyAPIKey 区分：写入它不代表请求已通过鉴权，因此不影响 handler、
+// 审计日志等对“已鉴权”的判断。
+func SetOpsFallbackAPIKey(c *gin.Context, apiKey *service.APIKey) {
+	if c == nil || apiKey == nil {
+		return
+	}
+	c.Set(string(ContextKeyOpsFallbackAPIKey), apiKey)
+}
+
+// GetOpsFallbackAPIKey 读取 Ops 错误日志专用的回退 API Key。
+func GetOpsFallbackAPIKey(c *gin.Context) (*service.APIKey, bool) {
+	value, exists := c.Get(string(ContextKeyOpsFallbackAPIKey))
+	if !exists {
+		return nil, false
+	}
+	apiKey, ok := value.(*service.APIKey)
+	return apiKey, ok
+}
+
 // GetSubscriptionFromContext 从上下文中获取订阅信息
 func GetSubscriptionFromContext(c *gin.Context) (*service.UserSubscription, bool) {
 	value, exists := c.Get(string(ContextKeySubscription))
@@ -329,4 +367,48 @@ func setGroupContext(c *gin.Context, group *service.Group) {
 	}
 	ctx := context.WithValue(c.Request.Context(), ctxkey.Group, group)
 	c.Request = c.Request.WithContext(ctx)
+}
+
+func abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool {
+	code, message, ok := validateAPIKeyGroupAvailable(apiKey)
+	if ok {
+		return false
+	}
+	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
+	AbortWithError(c, 403, code, message)
+	return true
+}
+
+func abortIfAPIKeyGroupNotAllowed(c *gin.Context, apiKey *service.APIKey) bool {
+	if validateAPIKeyGroupAllowed(apiKey) {
+		return false
+	}
+	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
+	AbortWithError(c, 403, "GROUP_NOT_ALLOWED", "API Key 所属专属分组不再允许当前用户使用")
+	return true
+}
+
+func validateAPIKeyGroupAllowed(apiKey *service.APIKey) bool {
+	if apiKey == nil || apiKey.GroupID == nil || apiKey.User == nil || apiKey.Group == nil {
+		return true
+	}
+	group := apiKey.Group
+	if group.IsSubscriptionType() {
+		return true
+	}
+	return apiKey.User.CanBindGroup(group.ID, group.IsExclusive)
+}
+
+func validateAPIKeyGroupAvailable(apiKey *service.APIKey) (string, string, bool) {
+	if apiKey == nil || apiKey.GroupID == nil {
+		return "", "", true
+	}
+	group := apiKey.Group
+	if group == nil || strings.EqualFold(group.Status, "deleted") {
+		return "GROUP_DELETED", "API Key 所属分组已删除", false
+	}
+	if !group.IsActive() {
+		return "GROUP_DISABLED", "API Key 所属分组已停用", false
+	}
+	return "", "", true
 }

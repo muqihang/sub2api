@@ -1070,7 +1070,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/chat/completions")
 		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
-		parsed := &ParsedRequest{Body: body, Model: "claude-sonnet-4-6", Stream: false}
+		parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsChatCompletions(ctx, c, account, body, parsed)
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -1109,7 +1109,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/responses")
 		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"input":"hello"}`)
-		parsed := &ParsedRequest{Body: body, Model: "claude-sonnet-4-6", Stream: false}
+		parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsResponses(ctx, c, account, body, parsed)
 		require.NoError(t, err)
 		require.NotNil(t, result)

@@ -191,7 +191,7 @@ func TestCCGatewayBoundary_ForwardAsChatCompletionsSkipsMimicryAndProxy(t *testi
 	expectedBody, err := json.Marshal(anthropicReq)
 	require.NoError(t, err)
 
-	parsed := &ParsedRequest{Body: body, Model: ccReq.Model, Stream: false}
+	parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: ccReq.Model, Stream: false}
 	_, err = svc.ForwardAsChatCompletions(ctx, c, account, body, parsed)
 	require.Error(t, err)
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
@@ -216,7 +216,7 @@ func TestCCGatewayBoundary_ForwardAsResponsesSkipsMimicryAndProxy(t *testing.T) 
 	expectedBody, err := json.Marshal(anthropicReq)
 	require.NoError(t, err)
 
-	parsed := &ParsedRequest{Body: body, Model: responsesReq.Model, Stream: false}
+	parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: responsesReq.Model, Stream: false}
 	_, err = svc.ForwardAsResponses(ctx, c, account, body, parsed)
 	require.Error(t, err)
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())

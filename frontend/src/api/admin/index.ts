@@ -33,6 +33,7 @@ import affiliatesAPI from './affiliates'
 import augmentGatewayAPI from './augmentGateway'
 import claudeOnboardingAPI from './claudeOnboarding'
 import formalPoolOperationsAPI from './formalPoolOperations'
+import riskControlAPI from './riskControl'
 
 /**
  * Unified admin API object for convenient access
@@ -67,7 +68,8 @@ export const adminAPI = {
   affiliates: affiliatesAPI,
   augmentGateway: augmentGatewayAPI,
   claudeOnboarding: claudeOnboardingAPI,
-  formalPoolOperations: formalPoolOperationsAPI
+  formalPoolOperations: formalPoolOperationsAPI,
+  riskControl: riskControlAPI
 }
 
 export {
@@ -100,7 +102,8 @@ export {
   affiliatesAPI,
   augmentGatewayAPI,
   claudeOnboardingAPI,
-  formalPoolOperationsAPI
+  formalPoolOperationsAPI,
+  riskControlAPI
 }
 
 export default adminAPI
@@ -110,3 +113,4 @@ export type { BalanceHistoryItem } from './users'
 export type { ErrorPassthroughRule, CreateRuleRequest, UpdateRuleRequest } from './errorPassthrough'
 export type { BackupAgentHealth, DataManagementConfig } from './dataManagement'
 export type { TLSFingerprintProfile, CreateProfileRequest, UpdateProfileRequest } from './tlsFingerprintProfile'
+export type { ContentModerationConfig, ContentModerationLog, ModerationMode } from './riskControl'

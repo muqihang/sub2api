@@ -182,7 +182,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthMapsServerSessionIntoMetadataAndH
 	c := ccGatewayTestContext("/v1/messages")
 	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
 
-	req, err := svc.buildUpstreamRequest(ctx, c, account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
+	req, _, err := svc.buildUpstreamRequest(ctx, c, account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
 	require.NoError(t, err)
 
 	mappedSessionID := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
@@ -226,7 +226,7 @@ func TestGatewayService_CCGatewayAnthropicSessionMappingIsolatedAcrossUsers(t *t
 		t.Helper()
 		c := ccGatewayTestContext("/v1/messages")
 		c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
-		req, err := svc.buildUpstreamRequest(WithClaudeCodeSessionUserScope(context.Background(), scope), c, account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
+		req, _, err := svc.buildUpstreamRequest(WithClaudeCodeSessionUserScope(context.Background(), scope), c, account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
 		require.NoError(t, err)
 		return getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
 	}
@@ -270,7 +270,7 @@ func TestGatewayService_CCGatewayCountTokensMapsServerSessionIntoMetadataAndHead
 	c := ccGatewayTestContext("/v1/messages/count_tokens")
 	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
 
-	req, err := svc.buildCountTokensRequest(WithClaudeCodeSessionUserScope(context.Background(), "user:alpha"), c, account, body, "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
+	req, _, err := svc.buildCountTokensRequest(WithClaudeCodeSessionUserScope(context.Background(), "user:alpha"), c, account, body, "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
 	require.NoError(t, err)
 
 	mappedSessionID := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id")
@@ -311,7 +311,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 	}
 
 	ctx := SetClaudeCodeVersion(context.Background(), "2.1.150")
-	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
+	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", req.URL.String())
@@ -355,7 +355,7 @@ func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparent
 	c.Request.Header.Set("x-app", "fake-cli")
 	c.Request.Header.Set("x-claude-code-session-id", "client-session")
 	c.Request.Header.Set("x-sub2api-persona-trusted", "client-trust")
-	req, err := svc.buildCountTokensRequest(context.Background(), c, account, []byte(`{"model":"claude-3-7-sonnet-20250219"}`), "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
+	req, _, err := svc.buildCountTokensRequest(context.Background(), c, account, []byte(`{"model":"claude-3-7-sonnet-20250219"}`), "setup-token", "oauth", "claude-3-7-sonnet-20250219", false, false)
 	require.NoError(t, err)
 
 	require.Equal(t, "http://cc-gateway:8443/v1/messages/count_tokens?beta=true", req.URL.String())
@@ -386,7 +386,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughBuildsTransparentRequ
 	c.Request.Header.Set("x-claude-code-session-id", "client-session")
 	c.Request.Header.Set("x-stainless-runtime", "fake-runtime")
 	c.Request.Header.Set("x-sub2api-persona-trusted", "client-trust")
-	req, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
+	req, _, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
 		buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"x"}`), "selected-api-key")
 	require.NoError(t, err)
 
@@ -416,7 +416,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughRejectsLegacyEgressFa
 	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens"
 	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 
-	_, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
+	_, _, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
 		buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), ccGatewayTestContext("/v1/messages"), account, []byte(`{"model":"x"}`), "selected-api-key")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "egress bucket")
@@ -649,7 +649,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthExactPolicyVersionKeepsKnownOpus4
 	}
 
 	ctx := SetClaudeCodeVersion(context.Background(), "2.1.150")
-	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-6", true, false, false)
+	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-6", true, false, false)
 	require.NoError(t, err)
 	require.Equal(t, "2.1.150", getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Contains(t, readRequestBody(t, req), `"max_tokens":32000`)
@@ -692,7 +692,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftPolicyVersionPasses(t *
 		Method:         http.MethodPost,
 		Route:          "/v1/messages",
 	})
-	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
+	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
 	require.NoError(t, err)
 	require.Equal(t, "2.1.151", getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Equal(t, "1", getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))
@@ -727,7 +727,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftWithoutTrustedContextFa
 	}
 
 	ctx := SetClaudeCodeVersion(context.Background(), "2.1.151")
-	req, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
+	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
 	require.NoError(t, err)
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Empty(t, getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))

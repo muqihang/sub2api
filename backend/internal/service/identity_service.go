@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -26,7 +27,7 @@ var (
 
 // 默认指纹值（当客户端未提供时使用）
 var defaultFingerprint = Fingerprint{
-	UserAgent:               "claude-cli/2.1.150 (external, sdk-cli)",
+	UserAgent:               claude.DefaultHeaders["User-Agent"],
 	StainlessLang:           "js",
 	StainlessPackageVersion: "0.94.0",
 	StainlessOS:             "Linux",

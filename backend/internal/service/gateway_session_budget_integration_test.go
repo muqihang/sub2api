@@ -189,13 +189,13 @@ func TestGatewaySessionBudgetObserveOnly_CCGatewayAccountRefCorrelates(t *testin
 }
 
 func TestGatewaySessionBudgetObserveOnly_NewGatewayServiceWiresDefaultSink(t *testing.T) {
-	svc := NewGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := NewGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.NotNil(t, svc.sessionBudgetObserve, "real GatewayService construction should wire observe-only sink")
 }
 
 func TestGatewaySessionBudgetObserveOnly_NewGatewayServiceUsesExportPathWhenConfigured(t *testing.T) {
 	t.Setenv("SUB2API_SESSION_BUDGET_EXPORT_PATH", filepath.Join(t.TempDir(), "budget.jsonl"))
-	svc := NewGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := NewGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	_, ok := svc.sessionBudgetObserve.(*FileSessionBudgetObserveSink)
 	require.True(t, ok, "staging must be able to export redacted session budget ledger")
 }

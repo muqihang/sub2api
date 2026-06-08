@@ -120,4 +120,5 @@ func registerRoutes(
 	routes.RegisterCodexGatewayRoutes(r, h, codexGatewayAuth, opsService, settingService, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, settingService)
 	routes.RegisterCodexEntryCenterRoutes(v1, h, jwtAuth, settingService)
+	handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)
 }

@@ -183,6 +183,10 @@ func TestScanUsageLog_AllowsLegacyNullEntityAuditFields(t *testing.T) {
 			nil,       // ip_address
 			0,         // image_count
 			nil,       // image_size
+			nil,       // image_input_size
+			nil,       // image_output_size
+			nil,       // image_size_source
+			nil,       // image_size_breakdown
 			nil,       // service_tier
 			nil,       // reasoning_effort
 			nil,       // inbound_endpoint
@@ -230,6 +234,36 @@ func TestScanUsageLog_AllowsLegacyNullEntityAuditFields(t *testing.T) {
 	require.Nil(t, log.EntityType)
 	require.Nil(t, log.ClaimedEntityID)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
+	imageSize := "4K"
+	inputSize := "1024x1024"
+	outputSize := "3840x2160"
+	source := "output"
+	prepared := prepareUsageLogInsert(&service.UsageLog{
+		UserID:             1,
+		APIKeyID:           2,
+		AccountID:          3,
+		RequestID:          "req-image-metadata",
+		Model:              "gpt-image-2",
+		RequestedModel:     "gpt-image-2",
+		ImageCount:         2,
+		ImageSize:          &imageSize,
+		ImageInputSize:     &inputSize,
+		ImageOutputSize:    &outputSize,
+		ImageSizeSource:    &source,
+		ImageSizeBreakdown: map[string]int{"1K": 1, "4K": 1},
+		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
+	})
+
+	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[37])
+	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[38])
+	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[39])
+	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[40])
+	breakdownJSON, ok := prepared.args[41].(string)
+	require.True(t, ok)
+	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
 }
 
 func TestCoalesceTrimmedString(t *testing.T) {
@@ -282,16 +316,16 @@ func TestUsageLogInsertStoresAugmentScopeFields(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 
-	require.Equal(t, clientProduct, prepared.args[48].(sql.NullString).String)
-	require.Equal(t, requestScope, prepared.args[49].(sql.NullString).String)
-	require.Equal(t, featureScope, prepared.args[50].(sql.NullString).String)
-	require.Equal(t, augmentSessionID, prepared.args[51].(sql.NullString).String)
-	require.Equal(t, routePolicyVersion, prepared.args[52].(sql.NullString).String)
-	require.Equal(t, pricingVersion, prepared.args[53].(sql.NullString).String)
-	require.Equal(t, billable, prepared.args[54].(sql.NullBool).Bool)
-	require.Equal(t, upstreamAttemptID, prepared.args[57].(sql.NullString).String)
-	require.Equal(t, estimatedCost, prepared.args[64].(sql.NullFloat64).Float64)
-	require.Equal(t, settledCost, prepared.args[65].(sql.NullFloat64).Float64)
+	require.Equal(t, clientProduct, prepared.args[52].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[53].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[54].(sql.NullString).String)
+	require.Equal(t, augmentSessionID, prepared.args[55].(sql.NullString).String)
+	require.Equal(t, routePolicyVersion, prepared.args[56].(sql.NullString).String)
+	require.Equal(t, pricingVersion, prepared.args[57].(sql.NullString).String)
+	require.Equal(t, billable, prepared.args[58].(sql.NullBool).Bool)
+	require.Equal(t, upstreamAttemptID, prepared.args[61].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[68].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[69].(sql.NullFloat64).Float64)
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
 		WithArgs(anySliceToDriverValues(prepared.args)...).
@@ -331,9 +365,9 @@ func TestPrepareUsageLogInsert_PreservesEntityAndAugmentColumnOrder(t *testing.T
 	require.Equal(t, int64(99), prepared.args[7].(sql.NullInt64).Int64)
 	require.Equal(t, entityType, prepared.args[8].(sql.NullString).String)
 	require.Equal(t, claimedEntityID, prepared.args[9].(sql.NullString).String)
-	require.Equal(t, clientProduct, prepared.args[48].(sql.NullString).String)
-	require.Equal(t, requestScope, prepared.args[49].(sql.NullString).String)
-	require.Equal(t, featureScope, prepared.args[50].(sql.NullString).String)
+	require.Equal(t, clientProduct, prepared.args[52].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[53].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[54].(sql.NullString).String)
 
 	query, _ := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
 	require.Contains(t, query, "upstream_model,\n\t\t\tentity_id,\n\t\t\tentity_type,\n\t\t\tclaimed_entity_id,\n\t\t\tgroup_id,")
@@ -383,7 +417,7 @@ func TestUsageLogPricingVersionDoesNotChangeHistoricalCost(t *testing.T) {
 	prepared := prepareUsageLogInsert(log)
 	require.Equal(t, 2.5, prepared.args[24])
 	require.Equal(t, 2.0, prepared.args[25])
-	require.Equal(t, pricingVersion, prepared.args[53].(sql.NullString).String)
+	require.Equal(t, pricingVersion, prepared.args[57].(sql.NullString).String)
 }
 
 func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
@@ -404,7 +438,7 @@ func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 	require.Equal(t, "req-provider-retry", prepared.requestID)
-	require.Equal(t, upstreamAttemptID, prepared.args[57].(sql.NullString).String)
+	require.Equal(t, upstreamAttemptID, prepared.args[61].(sql.NullString).String)
 }
 
 func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
@@ -432,11 +466,11 @@ func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
 		},
 	}
 	prepared := prepareUsageLogInsert(log)
-	require.Equal(t, inputUnitPrice, prepared.args[59].(sql.NullFloat64).Float64)
-	require.Equal(t, outputUnitPrice, prepared.args[60].(sql.NullFloat64).Float64)
-	require.Equal(t, cacheReadUnitPrice, prepared.args[61].(sql.NullFloat64).Float64)
-	require.Equal(t, cacheCreationUnitPrice, prepared.args[62].(sql.NullFloat64).Float64)
-	require.Equal(t, reasoningUnitPrice, prepared.args[63].(sql.NullFloat64).Float64)
+	require.Equal(t, inputUnitPrice, prepared.args[63].(sql.NullFloat64).Float64)
+	require.Equal(t, outputUnitPrice, prepared.args[64].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheReadUnitPrice, prepared.args[65].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheCreationUnitPrice, prepared.args[66].(sql.NullFloat64).Float64)
+	require.Equal(t, reasoningUnitPrice, prepared.args[67].(sql.NullFloat64).Float64)
 }
 
 func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testing.T) {
@@ -464,10 +498,42 @@ func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testi
 		},
 	}
 	prepared := prepareUsageLogInsert(log)
-	require.Equal(t, false, prepared.args[54].(sql.NullBool).Bool)
-	require.Equal(t, settlementStatus, prepared.args[58].(sql.NullString).String)
-	require.Equal(t, estimatedCost, prepared.args[64].(sql.NullFloat64).Float64)
-	require.Equal(t, settledCost, prepared.args[65].(sql.NullFloat64).Float64)
+	require.Equal(t, false, prepared.args[58].(sql.NullBool).Bool)
+	require.Equal(t, settlementStatus, prepared.args[62].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[68].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[69].(sql.NullFloat64).Float64)
+}
+
+func TestAppendUsageLogBillingModeWhereCondition(t *testing.T) {
+	tests := []struct {
+		name          string
+		billingMode   string
+		wantCondition string
+	}{
+		{
+			name:          "image includes legacy image rows",
+			billingMode:   string(service.BillingModeImage),
+			wantCondition: "(billing_mode = $1 OR COALESCE(image_count, 0) > 0)",
+		},
+		{
+			name:          "token includes legacy non-image rows",
+			billingMode:   string(service.BillingModeToken),
+			wantCondition: "(billing_mode = $1 OR ((billing_mode IS NULL OR billing_mode = '') AND COALESCE(image_count, 0) <= 0))",
+		},
+		{
+			name:          "per request remains exact",
+			billingMode:   string(service.BillingModePerRequest),
+			wantCondition: "billing_mode = $1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conditions, args := appendUsageLogBillingModeWhereCondition(nil, nil, tt.billingMode)
+			require.Equal(t, []string{tt.wantCondition}, conditions)
+			require.Equal(t, []any{tt.billingMode}, args)
+		})
+	}
 }
 
 func anySliceToDriverValues(values []any) []driver.Value {
@@ -792,6 +858,67 @@ func (s usageLogScannerStub) Scan(dest ...any) error {
 }
 
 func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
+	t.Run("image_size_metadata_is_scanned", func(t *testing.T) {
+		now := time.Now().UTC()
+		values := []any{
+			int64(4),
+			int64(13),
+			int64(23),
+			int64(33),
+			sql.NullString{Valid: true, String: "req-image-metadata"},
+			"gpt-image-2",
+			sql.NullString{Valid: true, String: "gpt-image-2"},
+			sql.NullString{},
+			sql.NullInt64{},  // entity_id
+			sql.NullString{}, // entity_type
+			sql.NullString{}, // claimed_entity_id
+			sql.NullInt64{},
+			sql.NullInt64{},
+			0, 0, 0, 0, 0, 0,
+			0, 0.0, // image_output_tokens, image_output_cost
+			0.0, 0.0, 0.0, 0.0, 0.8, 0.8,
+			1.0,
+			sql.NullFloat64{},
+			int16(service.BillingTypeBalance),
+			int16(service.RequestTypeSync),
+			false,
+			false,
+			sql.NullInt64{},
+			sql.NullInt64{},
+			sql.NullString{},
+			sql.NullString{},
+			2,
+			sql.NullString{Valid: true, String: "4K"},
+			sql.NullString{Valid: true, String: "1024x1024"},
+			sql.NullString{Valid: true, String: "3840x2160"},
+			sql.NullString{Valid: true, String: "output"},
+			sql.NullString{Valid: true, String: `{"4K":2}`},
+			sql.NullString{},
+			sql.NullString{},
+			sql.NullString{},
+			sql.NullString{},
+			false,
+			sql.NullInt64{},
+			sql.NullString{},
+			sql.NullString{},
+			sql.NullString{},
+			sql.NullFloat64{},
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
+		require.NoError(t, err)
+		require.Equal(t, 2, log.ImageCount)
+		require.NotNil(t, log.ImageSize)
+		require.Equal(t, "4K", *log.ImageSize)
+		require.NotNil(t, log.ImageInputSize)
+		require.Equal(t, "1024x1024", *log.ImageInputSize)
+		require.NotNil(t, log.ImageOutputSize)
+		require.Equal(t, "3840x2160", *log.ImageOutputSize)
+		require.NotNil(t, log.ImageSizeSource)
+		require.Equal(t, "output", *log.ImageSizeSource)
+		require.Equal(t, map[string]int{"4K": 2}, log.ImageSizeBreakdown)
+	})
+
 	t.Run("request_type_ws_v2_overrides_legacy", func(t *testing.T) {
 		now := time.Now().UTC()
 		values := []any{
@@ -834,6 +961,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			0,
 			sql.NullString{},
+			sql.NullString{}, // image_input_size
+			sql.NullString{}, // image_output_size
+			sql.NullString{}, // image_size_source
+			sql.NullString{}, // image_size_breakdown
 			sql.NullString{Valid: true, String: "priority"},
 			sql.NullString{},
 			sql.NullString{},
@@ -886,6 +1017,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			0,
 			sql.NullString{},
+			sql.NullString{}, // image_input_size
+			sql.NullString{}, // image_output_size
+			sql.NullString{}, // image_size_source
+			sql.NullString{}, // image_size_breakdown
 			sql.NullString{Valid: true, String: "flex"},
 			sql.NullString{},
 			sql.NullString{},
@@ -938,6 +1073,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			0,
 			sql.NullString{},
+			sql.NullString{}, // image_input_size
+			sql.NullString{}, // image_output_size
+			sql.NullString{}, // image_size_source
+			sql.NullString{}, // image_size_breakdown
 			sql.NullString{Valid: true, String: "priority"},
 			sql.NullString{},
 			sql.NullString{},

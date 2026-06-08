@@ -45,14 +45,26 @@ func TestDefaultAntigravityModelMapping_Claude45AliasesFallbackTo46(t *testing.T
 	}
 }
 
-func TestDefaultAntigravityModelMapping_Opus48PassesThroughDirectly(t *testing.T) {
+func TestDefaultAntigravityModelMapping_ContainsOpus48(t *testing.T) {
 	t.Parallel()
 
 	got, ok := DefaultAntigravityModelMapping["claude-opus-4-8"]
 	if !ok {
-		t.Fatalf("expected mapping for claude-opus-4-8 to exist")
+		t.Fatal("expected mapping for claude-opus-4-8 to exist")
 	}
 	if got != "claude-opus-4-8" {
-		t.Fatalf("claude-opus-4-8 must pass through directly, got %q", got)
+		t.Fatalf("unexpected claude-opus-4-8 mapping: got %q", got)
+	}
+}
+
+func TestDefaultBedrockModelMapping_ContainsOpus48(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultBedrockModelMapping["claude-opus-4-8"]
+	if !ok {
+		t.Fatal("expected Bedrock mapping for claude-opus-4-8 to exist")
+	}
+	if got != "us.anthropic.claude-opus-4-8-v1" {
+		t.Fatalf("unexpected Bedrock claude-opus-4-8 mapping: got %q", got)
 	}
 }

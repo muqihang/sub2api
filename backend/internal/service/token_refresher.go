@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -96,12 +97,18 @@ func (r *OpenAITokenRefresher) CanRefresh(account *Account) bool {
 // NeedsRefresh 检查token是否需要刷新
 // expires_at 缺失且处于限流状态时需要刷新，防止限流期间 token 静默过期
 func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
-	if account != nil && account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
+	if account == nil {
+		return false
+	}
+	if strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
+		return false
+	}
+	if account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
 		return true
 	}
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return account != nil && (account.IsRateLimited() || account.Status == StatusDisabled)
+		return account.IsRateLimited() || account.Status == StatusDisabled
 	}
 
 	return time.Until(*expiresAt) < refreshWindow

@@ -150,7 +150,7 @@ func (r *formalRateLimitRepo) SetRateLimited(_ context.Context, _ int64, resetAt
 	r.lastResetAt = resetAt
 	return nil
 }
-func (r *formalRateLimitRepo) SetModelRateLimit(context.Context, int64, string, time.Time) error {
+func (r *formalRateLimitRepo) SetModelRateLimit(context.Context, int64, string, time.Time, ...string) error {
 	return nil
 }
 func (r *formalRateLimitRepo) SetOverloaded(context.Context, int64, time.Time) error { return nil }
@@ -164,6 +164,9 @@ func (r *formalRateLimitRepo) ClearRateLimit(context.Context, int64) error      
 func (r *formalRateLimitRepo) ClearAntigravityQuotaScopes(context.Context, int64) error { return nil }
 func (r *formalRateLimitRepo) ClearModelRateLimits(context.Context, int64) error        { return nil }
 func (r *formalRateLimitRepo) UpdateSessionWindow(context.Context, int64, *time.Time, *time.Time, string) error {
+	return nil
+}
+func (r *formalRateLimitRepo) UpdateSessionWindowEnd(context.Context, int64, time.Time) error {
 	return nil
 }
 func (r *formalRateLimitRepo) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
@@ -188,6 +191,7 @@ func (r *formalRateLimitRepo) BulkUpdate(context.Context, []int64, AccountBulkUp
 }
 func (r *formalRateLimitRepo) IncrementQuotaUsed(context.Context, int64, float64) error { return nil }
 func (r *formalRateLimitRepo) ResetQuotaUsed(context.Context, int64) error              { return nil }
+func (r *formalRateLimitRepo) RevertProxyFallback(context.Context, int64) error         { return nil }
 
 func TestRateLimitService_FormalPoolAnthropic429PersistsSafeWindowExtraWithoutQuarantine(t *testing.T) {
 	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{91: {

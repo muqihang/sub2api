@@ -65,7 +65,7 @@ func TestCCGatewayControlPlane_ForwardAsChatCompletionsFailsClosedWithoutFailove
 
 	var ccReq apicompat.ChatCompletionsRequest
 	require.NoError(t, json.Unmarshal(body, &ccReq))
-	parsed := &ParsedRequest{Body: body, Model: ccReq.Model, Stream: false}
+	parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: ccReq.Model, Stream: false}
 
 	_, err := svc.ForwardAsChatCompletions(ctx, c, account, body, parsed)
 	require.Error(t, err)
@@ -245,7 +245,7 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelResponsesAndCountTokensDo
 				body := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 				var ccReq apicompat.ChatCompletionsRequest
 				require.NoError(t, json.Unmarshal(body, &ccReq))
-				parsed := &ParsedRequest{Body: body, Model: ccReq.Model, Stream: false}
+				parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: ccReq.Model, Stream: false}
 				_, err := svc.ForwardAsChatCompletions(ctx, c, account, body, parsed)
 				return err
 			},
@@ -255,7 +255,7 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelResponsesAndCountTokensDo
 			path: "/v1/responses",
 			run: func(svc *GatewayService, ctx context.Context, c *gin.Context, account *Account) error {
 				body := []byte(`{"model":"claude-3-7-sonnet-20250219","input":"hello","stream":false}`)
-				parsed := &ParsedRequest{Body: body, Model: "claude-3-7-sonnet-20250219", Stream: false}
+				parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-3-7-sonnet-20250219", Stream: false}
 				_, err := svc.ForwardAsResponses(ctx, c, account, body, parsed)
 				return err
 			},

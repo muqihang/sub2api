@@ -712,7 +712,7 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 	if !summary.ScopeContainsUserInference || !summary.ScopeContainsClaudeCode {
 		return nil, infraerrors.BadRequest("INVALID_CLAUDE_CODE_OAUTH_SCOPE", "formal pool requires full Claude Code OAuth scope")
 	}
-	if strings.TrimSpace(stringFromAny(credentials["refresh_token"])) == "" {
+	if strings.TrimSpace(formalPoolStringFromAny(credentials["refresh_token"])) == "" {
 		return nil, infraerrors.BadRequest("REFRESH_TOKEN_REQUIRED", "formal pool OAuth account requires refresh token")
 	}
 	accountRef := formalPoolSafeRef("account", rec.ID+":"+rec.ProxyRef+":"+rec.AccountName)
@@ -791,7 +791,7 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 	if summary.ScopeContainsClaudeCode {
 		return nil, infraerrors.BadRequest("SETUP_TOKEN_SCOPE_MISMATCH", "setup-token cookie flow must not import full Claude Code OAuth scope")
 	}
-	if strings.TrimSpace(stringFromAny(credentials["refresh_token"])) == "" {
+	if strings.TrimSpace(formalPoolStringFromAny(credentials["refresh_token"])) == "" {
 		return nil, infraerrors.BadRequest("REFRESH_TOKEN_REQUIRED", "formal pool setup-token account requires refresh token")
 	}
 	accountRef := formalPoolSafeRef("account", rec.ID+":"+rec.ProxyRef+":"+rec.AccountName)
@@ -1010,10 +1010,10 @@ func formalPoolOnboardingHealthcheckExtra(account *Account, result *FormalPoolAc
 		extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginUpstream)
 		extra[FormalPoolExtraLastFailureCode] = "formal_pool_healthcheck_failed"
 		extra[FormalPoolExtraLastFailureSource] = "formal_pool_healthcheck"
-		if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorCode])) == "" {
+		if strings.TrimSpace(formalPoolStringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorCode])) == "" {
 			extra[FormalPoolExtraHealthcheckSafeErrorCode] = "unknown"
 		}
-		if strings.TrimSpace(stringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorBucket])) == "" {
+		if strings.TrimSpace(formalPoolStringFromAny(extra[FormalPoolExtraHealthcheckSafeErrorBucket])) == "" {
 			extra[FormalPoolExtraHealthcheckSafeErrorBucket] = "unknown"
 		}
 	}
@@ -1140,7 +1140,7 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 		}
 		return nil, err
 	}
-	if strings.TrimSpace(stringFromAny(credentials["access_token"])) == "" || strings.TrimSpace(stringFromAny(credentials["refresh_token"])) == "" {
+	if strings.TrimSpace(formalPoolStringFromAny(credentials["access_token"])) == "" || strings.TrimSpace(formalPoolStringFromAny(credentials["refresh_token"])) == "" {
 		return nil, infraerrors.BadRequest("REFRESH_ONLY_CREDENTIALS_INCOMPLETE", "refresh-only must return access and refresh tokens")
 	}
 	if _, err := s.accounts.UpdateFormalPoolAccountCredentials(ctx, rec.AccountID, credentials); err != nil {
@@ -1149,7 +1149,7 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 	stamp := formalPoolTimestamp(s.store.now())
 	targetStage := FormalPoolStageRefreshed
 	targetStatus := FormalPoolOnboardingStatusRefreshed
-	if rec.CCGatewayRuntimeRegistered || stringFromAny(account.Extra[FormalPoolExtraRuntimeRegistered]) == "true" {
+	if rec.CCGatewayRuntimeRegistered || formalPoolStringFromAny(account.Extra[FormalPoolExtraRuntimeRegistered]) == "true" {
 		targetStage = FormalPoolStageRuntimeRegistered
 		targetStatus = FormalPoolOnboardingStatusRuntimeRegistered
 	}
@@ -1428,7 +1428,7 @@ func formalPoolChecksAllPass(checks []FormalPoolAcceptanceCheck) bool {
 	return true
 }
 
-func stringFromAny(v any) string {
+func formalPoolStringFromAny(v any) string {
 	if s, ok := v.(string); ok {
 		return s
 	}

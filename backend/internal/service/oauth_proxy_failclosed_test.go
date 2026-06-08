@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -86,6 +87,18 @@ func (m *oauthProxyFailClosedRepo) CountAccountsByProxyID(ctx context.Context, p
 }
 func (m *oauthProxyFailClosedRepo) ListAccountSummariesByProxyID(ctx context.Context, proxyID int64) ([]ProxyAccountSummary, error) {
 	panic("ListAccountSummariesByProxyID not implemented")
+}
+func (m *oauthProxyFailClosedRepo) SweepExpiredProxies(ctx context.Context, now time.Time) (int64, error) {
+	panic("SweepExpiredProxies not implemented")
+}
+func (m *oauthProxyFailClosedRepo) ListAllForFallback(ctx context.Context) ([]Proxy, error) {
+	panic("ListAllForFallback not implemented")
+}
+func (m *oauthProxyFailClosedRepo) CountExpired(ctx context.Context) (int64, error) {
+	panic("CountExpired not implemented")
+}
+func (m *oauthProxyFailClosedRepo) CountExpiringSoon(ctx context.Context, now time.Time) (int64, error) {
+	panic("CountExpiringSoon not implemented")
 }
 
 func TestOAuthService_GenerateAuthURL_ProxyLookupFailureFailsClosed(t *testing.T) {

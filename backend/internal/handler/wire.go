@@ -39,6 +39,7 @@ func ProvideAdminHandlers(
 	channelHandler *admin.ChannelHandler,
 	channelMonitorHandler *admin.ChannelMonitorHandler,
 	channelMonitorTemplateHandler *admin.ChannelMonitorRequestTemplateHandler,
+	contentModerationHandler *admin.ContentModerationHandler,
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
 	augmentGatewayHandler *admin.AugmentGatewayHandler,
@@ -76,6 +77,7 @@ func ProvideAdminHandlers(
 		Channel:                channelHandler,
 		ChannelMonitor:         channelMonitorHandler,
 		ChannelMonitorTemplate: channelMonitorTemplateHandler,
+		ContentModeration:      contentModerationHandler,
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
 		AugmentGateway:         augmentGatewayHandler,
@@ -113,8 +115,17 @@ func ProvideFormalPoolOnboardingHandler(
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
-func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo) *SettingHandler {
-	return NewSettingHandler(settingService, buildInfo.Version)
+func ProvideSettingHandler(settingService *service.SettingService, buildInfo BuildInfo, notificationEmailService *service.NotificationEmailService) *SettingHandler {
+	h := NewSettingHandler(settingService, buildInfo.Version)
+	h.SetNotificationEmailService(notificationEmailService)
+	return h
+}
+
+// ProvideAdminSettingHandler creates admin.SettingHandler with notification template APIs.
+func ProvideAdminSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService, userAttributeService *service.UserAttributeService, notificationEmailService *service.NotificationEmailService) *admin.SettingHandler {
+	h := admin.NewSettingHandler(settingService, emailService, turnstileService, opsService, paymentConfigService, paymentService, userAttributeService)
+	h.SetNotificationEmailService(notificationEmailService)
+	return h
 }
 
 // ProvideAuthHandler wires AuthHandler with explicit Augment dependencies while
@@ -127,6 +138,7 @@ func ProvideAuthHandler(
 	promoService *service.PromoService,
 	redeemService *service.RedeemService,
 	totpService *service.TotpService,
+	userAttributeService *service.UserAttributeService,
 	augmentPluginService *service.AugmentPluginService,
 	augmentGatewayService *service.AugmentGatewayService,
 	augmentOfficialSessionService *service.AugmentOfficialSessionService,
@@ -141,6 +153,7 @@ func ProvideAuthHandler(
 		promoService,
 		redeemService,
 		totpService,
+		userAttributeService,
 		augmentPluginService,
 		augmentGatewayService,
 		augmentOfficialSessionService,
@@ -258,7 +271,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewProxyHandler,
 	admin.NewRedeemHandler,
 	admin.NewPromoHandler,
-	admin.NewSettingHandler,
+	ProvideAdminSettingHandler,
 	admin.NewOpsHandler,
 	ProvideSystemHandler,
 	admin.NewSubscriptionHandler,
@@ -272,6 +285,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewChannelHandler,
 	admin.NewChannelMonitorHandler,
 	admin.NewChannelMonitorRequestTemplateHandler,
+	admin.NewContentModerationHandler,
 	admin.NewPaymentHandler,
 	admin.NewAffiliateHandler,
 	ProvideAugmentGatewayHandler,

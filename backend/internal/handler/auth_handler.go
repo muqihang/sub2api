@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
@@ -30,9 +31,14 @@ type AuthHandler struct {
 	augmentOfficialSessionService *service.AugmentOfficialSessionService
 	augmentOfficialPoolService    *service.AugmentOfficialPoolSessionService
 	augmentGatewayUsageService    *service.AugmentGatewayUsageService
+	userAttributeService          *service.UserAttributeService
+
+	dingTalkClientInstance *DingTalkClient
+	dingTalkClientMu       sync.Mutex
 }
 
-// NewAuthHandler creates a new AuthHandler
+// NewAuthHandler creates a new AuthHandler. Optional deps keep older tests and
+// local Augment wiring source-compatible while allowing upstream auth enrichers.
 func NewAuthHandler(
 	cfg *config.Config,
 	authService *service.AuthService,
@@ -41,9 +47,10 @@ func NewAuthHandler(
 	promoService *service.PromoService,
 	redeemService *service.RedeemService,
 	totpService *service.TotpService,
-	augmentDeps ...any,
+	deps ...any,
 ) *AuthHandler {
-	augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentOfficialPoolService, augmentGatewayUsageService := resolveAuthHandlerAugmentDeps(augmentDeps...)
+	augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentOfficialPoolService, augmentGatewayUsageService := resolveAuthHandlerAugmentDeps(deps...)
+	userAttributeService := resolveAuthHandlerUserAttributeService(deps...)
 	return &AuthHandler{
 		cfg:                           cfg,
 		authService:                   authService,
@@ -57,7 +64,17 @@ func NewAuthHandler(
 		augmentOfficialSessionService: augmentOfficialSessionService,
 		augmentOfficialPoolService:    augmentOfficialPoolService,
 		augmentGatewayUsageService:    augmentGatewayUsageService,
+		userAttributeService:          userAttributeService,
 	}
+}
+
+func resolveAuthHandlerUserAttributeService(deps ...any) *service.UserAttributeService {
+	for _, dep := range deps {
+		if typed, ok := dep.(*service.UserAttributeService); ok {
+			return typed
+		}
+	}
+	return nil
 }
 
 func resolveAuthHandlerAugmentDeps(augmentDeps ...any) (*service.AugmentPluginService, *service.AugmentGatewayService, *service.AugmentOfficialSessionService, *service.AugmentOfficialPoolSessionService, *service.AugmentGatewayUsageService) {
@@ -240,7 +257,7 @@ func (h *AuthHandler) SendVerifyCode(c *gin.Context) {
 		return
 	}
 
-	result, err := h.authService.SendVerifyCodeAsync(c.Request.Context(), req.Email)
+	result, err := h.authService.SendVerifyCodeAsync(c.Request.Context(), req.Email, c.GetHeader("Accept-Language"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -639,7 +656,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 
 	// Request password reset (async)
 	// Note: This returns success even if email doesn't exist (to prevent enumeration)
-	if err := h.authService.RequestPasswordResetAsync(c.Request.Context(), req.Email, frontendBaseURL); err != nil {
+	if err := h.authService.RequestPasswordResetAsync(c.Request.Context(), req.Email, frontendBaseURL, c.GetHeader("Accept-Language")); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
