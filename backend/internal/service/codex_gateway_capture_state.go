@@ -72,6 +72,11 @@ func (m *CodexGatewayCaptureManager) RecordProviderResult(trace *CodexGatewayTra
 		"cache_creation_1h_tokens":       result.Usage.CacheCreation1hTokens,
 		"provider_usage_extra_available": result.Usage.ProviderUsageExtra != nil,
 	}
+	if strings.EqualFold(strings.TrimSpace(trace.Meta.Provider), string(CodexGatewayProviderAgnes)) {
+		cacheUsage["provider_prompt_cache_status"] = "unsupported"
+		cacheUsage["provider_prompt_cache_detail"] = "AGNES upstream usage does not expose prompt cache hit fields"
+		cacheUsage["provider_prompt_cache_diagnostics"] = []string{"provider_prompt_cache_unsupported"}
+	}
 	if len(result.Usage.ProviderUsageExtra) > 0 {
 		if value, ok := result.Usage.ProviderUsageExtra["prompt_cache_hit_tokens"]; ok {
 			cacheUsage["prompt_cache_hit_tokens"] = value
@@ -168,10 +173,16 @@ func codexGatewayProviderUsagePresent(usage CodexGatewayProviderUsage) bool {
 }
 
 func (m *CodexGatewayCaptureManager) mergeCacheUsage(trace *CodexGatewayTrace, values map[string]any) {
-	values = codexGatewayCaptureEnrichCacheUsage(values)
+	providerCacheUnsupported := codexGatewayCaptureProviderPromptCacheUnsupported(values)
+	if !providerCacheUnsupported {
+		values = codexGatewayCaptureEnrichCacheUsage(values)
+	}
 	trace.mu.Lock()
 	if trace.cacheUsage == nil {
 		trace.cacheUsage = make(map[string]any)
+	}
+	if providerCacheUnsupported {
+		codexGatewayCaptureClearDerivedPromptCacheMetrics(trace.cacheUsage)
 	}
 	for key, value := range values {
 		trace.cacheUsage[key] = value
@@ -179,6 +190,27 @@ func (m *CodexGatewayCaptureManager) mergeCacheUsage(trace *CodexGatewayTrace, v
 	snapshot := cloneCaptureMap(trace.cacheUsage)
 	trace.mu.Unlock()
 	m.writeJSON(trace, "cache_usage.json", snapshot)
+}
+
+func codexGatewayCaptureClearDerivedPromptCacheMetrics(cacheUsage map[string]any) {
+	if len(cacheUsage) == 0 {
+		return
+	}
+	delete(cacheUsage, "prompt_cache_hit_tokens")
+	delete(cacheUsage, "prompt_cache_miss_tokens")
+	delete(cacheUsage, "cache_hit_ratio")
+	delete(cacheUsage, "cache_hit_rate")
+	delete(cacheUsage, "cache_miss_input_tokens")
+	delete(cacheUsage, "cache_miss_attribution")
+	delete(cacheUsage, "prefix_hash_changed_reason")
+}
+
+func codexGatewayCaptureProviderPromptCacheUnsupported(values map[string]any) bool {
+	if len(values) == 0 {
+		return false
+	}
+	status := strings.TrimSpace(codexGatewayCaptureStringValue(values["provider_prompt_cache_status"]))
+	return strings.EqualFold(status, "unsupported")
 }
 
 func (m *CodexGatewayCaptureManager) mergeToolClosure(trace *CodexGatewayTrace, values map[string]any) {

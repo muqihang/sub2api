@@ -8,6 +8,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCodexGatewayAdminService_ListProviderGroupsIncludesAgnes(t *testing.T) {
+	svc := NewCodexGatewayAdminService(config.GatewayCodexConfig{
+		ProviderGroups: config.GatewayCodexProviderGroupsConfig{
+			OpenAI:    1001,
+			DeepSeek:  2002,
+			Anthropic: 3003,
+			Agnes:     4004,
+		},
+	}, nil)
+
+	rows, err := svc.ListProviderGroups(context.Background())
+	require.NoError(t, err)
+
+	byProvider := make(map[CodexGatewayProvider]CodexGatewayProviderRuntime, len(rows))
+	for _, row := range rows {
+		byProvider[row.Provider] = row
+	}
+	require.Equal(t, int64(4004), byProvider[CodexGatewayProviderAgnes].GroupID)
+	require.Equal(t, CodexGatewayProviderGroupAgnesNamespace, byProvider[CodexGatewayProviderAgnes].Namespace)
+	require.True(t, byProvider[CodexGatewayProviderAgnes].Healthy)
+}
+
+func TestCodexGatewayAdminService_UpdateProviderGroupAcceptsAgnes(t *testing.T) {
+	svc := NewCodexGatewayAdminService(config.GatewayCodexConfig{}, nil)
+
+	updated, err := svc.UpdateProviderGroup(context.Background(), CodexGatewayProviderAgnes, 4004)
+	require.NoError(t, err)
+	require.Equal(t, CodexGatewayProviderAgnes, updated.Provider)
+	require.Equal(t, int64(4004), updated.GroupID)
+	require.True(t, updated.Healthy)
+
+	state, err := svc.LoadCodexGatewayRegistryState(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(4004), state.ProviderGroups[CodexGatewayProviderAgnes].GroupID)
+}
+
 func TestCodexGatewayAdminService_ListModels_UsesVariantCheckerForClaudeVisibility(t *testing.T) {
 	svc := NewCodexGatewayAdminService(config.GatewayCodexConfig{
 		EnabledModels: []string{

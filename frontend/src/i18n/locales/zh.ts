@@ -818,6 +818,8 @@ export default {
     cacheTtlOverriddenLabel: 'TTL 替换',
     cacheTtlOverridden5m: '按 5m 计费',
     cacheTtlOverridden1h: '按 1h 计费',
+    providerPromptCacheUnsupported: '上游提示缓存不支持',
+    providerPromptCacheUnsupportedShort: '缓存不支持',
     totalRequests: '总请求数',
     totalTokens: '总 Token',
     totalCost: '总消费',

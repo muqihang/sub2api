@@ -449,6 +449,10 @@ type AdminUsageLog struct {
 	// BillingTier 计费层级标签（per_request/image 模式）
 	BillingTier *string `json:"billing_tier,omitempty"`
 
+	// ProviderPromptCacheStatus explains provider-side prompt cache availability for admin diagnostics.
+	ProviderPromptCacheStatus *string `json:"provider_prompt_cache_status,omitempty"`
+	ProviderPromptCacheDetail *string `json:"provider_prompt_cache_detail,omitempty"`
+
 	// AccountRateMultiplier 账号计费倍率快照（nil 表示按 1.0 处理）
 	AccountRateMultiplier *float64 `json:"account_rate_multiplier"`
 	// AccountStatsCost 自定义定价规则计算的账号统计费用（nil 表示使用默认公式）

@@ -66,12 +66,28 @@ func (m *CodexGatewayCaptureManager) writeSessionReport(trace *CodexGatewayTrace
 		"visible_output_started":  state.VisibleOutputStarted,
 	}
 	if len(cacheEfficiency) > 0 {
-		record["prompt_cache_hit_tokens"] = cacheEfficiency["prompt_cache_hit_tokens"]
-		record["prompt_cache_miss_tokens"] = cacheEfficiency["prompt_cache_miss_tokens"]
-		record["cache_hit_ratio"] = cacheEfficiency["cache_hit_ratio"]
-		record["cache_hit_rate"] = cacheEfficiency["cache_hit_rate"]
-		record["cache_miss_input_tokens"] = cacheEfficiency["cache_miss_input_tokens"]
+		if value, ok := cacheEfficiency["prompt_cache_hit_tokens"]; ok {
+			record["prompt_cache_hit_tokens"] = value
+		}
+		if value, ok := cacheEfficiency["prompt_cache_miss_tokens"]; ok {
+			record["prompt_cache_miss_tokens"] = value
+		}
+		if value, ok := cacheEfficiency["cache_hit_ratio"]; ok {
+			record["cache_hit_ratio"] = value
+		}
+		if value, ok := cacheEfficiency["cache_hit_rate"]; ok {
+			record["cache_hit_rate"] = value
+		}
+		if value, ok := cacheEfficiency["cache_miss_input_tokens"]; ok {
+			record["cache_miss_input_tokens"] = value
+		}
 		record["cache_diagnostics"] = cacheEfficiency["diagnostics"]
+		if status, ok := cacheEfficiency["provider_prompt_cache_status"]; ok {
+			record["provider_prompt_cache_status"] = status
+		}
+		if detail, ok := cacheEfficiency["provider_prompt_cache_detail"]; ok {
+			record["provider_prompt_cache_detail"] = detail
+		}
 		if missAttribution, ok := cacheEfficiency["miss_attribution"]; ok {
 			record["cache_miss_attribution"] = missAttribution
 		}
@@ -118,6 +134,22 @@ func (m *CodexGatewayCaptureManager) writeJSONLAtPath(trace *CodexGatewayTrace, 
 
 func codexGatewayCaptureCacheEfficiency(cacheUsage map[string]any, provider any) map[string]any {
 	inputTokens, inputOK := codexGatewayCaptureIntValue(cacheUsage["input_tokens"])
+	if strings.EqualFold(strings.TrimSpace(codexGatewayCaptureStringValue(provider)), string(CodexGatewayProviderAgnes)) {
+		if !inputOK || inputTokens <= 0 {
+			return nil
+		}
+		out := map[string]any{
+			"input_tokens":                   inputTokens,
+			"provider_prompt_cache_status":   "unsupported",
+			"provider_prompt_cache_detail":   "AGNES upstream usage does not expose prompt cache hit fields",
+			"provider_usage_extra_available": cacheUsage["provider_usage_extra_available"],
+			"diagnostics":                    []string{"provider_prompt_cache_unsupported"},
+		}
+		if cacheReadTokens, readOK := codexGatewayCaptureIntValue(cacheUsage["cache_read_input_tokens"]); readOK {
+			out["cache_read_input_tokens"] = cacheReadTokens
+		}
+		return out
+	}
 	hitTokens, missTokens, hitRate, ok := codexGatewayCapturePromptCacheMetrics(cacheUsage)
 	if !inputOK || !ok || inputTokens <= 0 {
 		return nil

@@ -1214,6 +1214,10 @@ export interface AdminUsageLog extends UsageLog {
   channel_id?: number | null
   billing_tier?: string | null
 
+  // Provider-side prompt cache diagnostics（仅管理员可见）
+  provider_prompt_cache_status?: string | null
+  provider_prompt_cache_detail?: string | null
+
   // 用户请求 IP（仅管理员可见）
   ip_address?: string | null
 

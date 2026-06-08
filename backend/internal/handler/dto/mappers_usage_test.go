@@ -173,6 +173,33 @@ func TestUsageLogFromService_IncludesEntityAuditFields(t *testing.T) {
 	require.Equal(t, claimedEntityID, *adminDTO.ClaimedEntityID)
 }
 
+func TestUsageLogFromServiceAdmin_MarksAgnesPromptCacheUnsupported(t *testing.T) {
+	t.Parallel()
+
+	clientProduct := service.CodexUsageClientProduct
+	featureScope := string(service.CodexGatewayProviderAgnes)
+	log := &service.UsageLog{
+		RequestID: "req_agnes_cache",
+		Model:     "agnes-2.0-flash",
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct: &clientProduct,
+			FeatureScope:  &featureScope,
+		},
+	}
+
+	userDTO := UsageLogFromService(log)
+	adminDTO := UsageLogFromServiceAdmin(log)
+
+	userJSON, err := json.Marshal(userDTO)
+	require.NoError(t, err)
+	require.NotContains(t, string(userJSON), "provider_prompt_cache_status")
+
+	require.NotNil(t, adminDTO.ProviderPromptCacheStatus)
+	require.Equal(t, "unsupported", *adminDTO.ProviderPromptCacheStatus)
+	require.NotNil(t, adminDTO.ProviderPromptCacheDetail)
+	require.Contains(t, *adminDTO.ProviderPromptCacheDetail, "AGNES upstream")
+}
+
 func TestAccountFromService_ExposesOpenAIGatewayTLS(t *testing.T) {
 	t.Parallel()
 

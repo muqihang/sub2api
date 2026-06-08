@@ -645,17 +645,32 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 	if l == nil {
 		return nil
 	}
+	providerPromptCacheStatus, providerPromptCacheDetail := providerPromptCacheDiagnosticsFromUsageLog(l)
 	return &AdminUsageLog{
-		UsageLog:              usageLogFromServiceUser(l),
-		UpstreamModel:         l.UpstreamModel,
-		ChannelID:             l.ChannelID,
-		ModelMappingChain:     l.ModelMappingChain,
-		BillingTier:           l.BillingTier,
-		AccountRateMultiplier: l.AccountRateMultiplier,
-		AccountStatsCost:      l.AccountStatsCost,
-		IPAddress:             l.IPAddress,
-		Account:               AccountSummaryFromService(l.Account),
+		UsageLog:                  usageLogFromServiceUser(l),
+		UpstreamModel:             l.UpstreamModel,
+		ChannelID:                 l.ChannelID,
+		ModelMappingChain:         l.ModelMappingChain,
+		BillingTier:               l.BillingTier,
+		ProviderPromptCacheStatus: providerPromptCacheStatus,
+		ProviderPromptCacheDetail: providerPromptCacheDetail,
+		AccountRateMultiplier:     l.AccountRateMultiplier,
+		AccountStatsCost:          l.AccountStatsCost,
+		IPAddress:                 l.IPAddress,
+		Account:                   AccountSummaryFromService(l.Account),
 	}
+}
+
+func providerPromptCacheDiagnosticsFromUsageLog(l *service.UsageLog) (*string, *string) {
+	if l == nil || l.ClientProduct == nil || *l.ClientProduct != service.CodexUsageClientProduct {
+		return nil, nil
+	}
+	if l.FeatureScope == nil || *l.FeatureScope != string(service.CodexGatewayProviderAgnes) {
+		return nil, nil
+	}
+	status := "unsupported"
+	detail := "AGNES upstream usage does not expose provider prompt cache hit fields; zero cache tokens mean unsupported/unknown, not a confirmed cold miss."
+	return &status, &detail
 }
 
 func UsageCleanupTaskFromService(task *service.UsageCleanupTask) *UsageCleanupTask {

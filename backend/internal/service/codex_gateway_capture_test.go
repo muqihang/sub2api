@@ -1161,6 +1161,116 @@ func TestCodexGatewayCaptureV2CacheEfficiencyDiagnostics(t *testing.T) {
 	)
 }
 
+func TestCodexGatewayCaptureV2AgnesCacheUsageIsMarkedUnsupportedInsteadOfCold(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("01234567890123456789012345678901"), 0o600))
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              keyPath,
+		CorrelationHashKeyFile:   keyPath,
+		CaptureSuccessSampleRate: 1,
+	})
+	defer manager.Close()
+
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+		TraceID:  "agnes_cache_unsupported",
+		Method:   "POST",
+		Path:     "/codex/v1/responses",
+		Model:    "agnes-2.0-flash",
+		Provider: "agnes",
+	})
+	require.NotNil(t, trace)
+	manager.RecordProviderResult(trace, CodexGatewayProviderResult{
+		UpstreamRequestID: "agnes_upstream_secret_request_id",
+		UpstreamModel:     "agnes-2.0-flash",
+		Usage: CodexGatewayProviderUsage{
+			InputTokens:  24000,
+			OutputTokens: 20,
+			TotalTokens:  24020,
+		},
+	})
+	manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, manager.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "agnes_cache_unsupported")
+	cacheUsage := readCaptureJSONFile(t, filepath.Join(traceDir, "cache_usage.json"))
+	require.Equal(t, "unsupported", cacheUsage["provider_prompt_cache_status"])
+	require.Contains(t, fmtAny(cacheUsage), "provider_prompt_cache_unsupported")
+	require.NotContains(t, fmtAny(cacheUsage), "prompt_cache_miss_tokens")
+	require.NotContains(t, fmtAny(cacheUsage), "cache_hit_ratio")
+
+	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
+	efficiency := report["cache_efficiency"].(map[string]any)
+	require.Equal(t, "unsupported", efficiency["provider_prompt_cache_status"])
+	require.Equal(t, "AGNES upstream usage does not expose prompt cache hit fields", efficiency["provider_prompt_cache_detail"])
+	require.Contains(t, fmtAny(efficiency), "provider_prompt_cache_unsupported")
+	require.NotContains(t, fmtAny(efficiency), "cache_cold_or_prefix_changed")
+	require.NotContains(t, fmtAny(efficiency), "low_cache_hit_rate")
+
+	sessionReport, err := os.ReadFile(filepath.Join(baseDir, time.Now().Format("2006-01-02"), "session_report.jsonl"))
+	require.NoError(t, err)
+	require.Contains(t, string(sessionReport), `"provider_prompt_cache_status":"unsupported"`)
+	require.Contains(t, string(sessionReport), "provider_prompt_cache_unsupported")
+	require.NotContains(t, string(sessionReport), "prompt_cache_miss_tokens")
+	require.NotContains(t, string(sessionReport), "cache_hit_ratio")
+}
+
+func TestCodexGatewayCapture_AgnesUnsupportedClearsDerivedColdCacheMetrics(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, "hash.key")
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		Level:                    "summary",
+		BaseDir:                  baseDir,
+		HashKeyFile:              keyPath,
+		CorrelationHashKeyFile:   keyPath,
+		CaptureSuccessSampleRate: 1,
+	})
+	defer manager.Close()
+
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+		TraceID:  "agnes_cache_unsupported_after_request_metrics",
+		Method:   "POST",
+		Path:     "/codex/v1/responses",
+		Model:    "agnes-2.0-flash",
+		Provider: "agnes",
+	})
+	require.NotNil(t, trace)
+
+	// Request-side diagnostics can derive a cold-cache ratio before the provider
+	// result is known. AGNES later marks provider prompt cache as unsupported, so
+	// those derived cold-cache fields must be removed instead of shown as misses.
+	manager.mergeCacheUsage(trace, map[string]any{
+		"input_tokens":            24000,
+		"cache_read_input_tokens": 0,
+	})
+	manager.RecordProviderResult(trace, CodexGatewayProviderResult{
+		UpstreamModel: "agnes-2.0-flash",
+		Usage: CodexGatewayProviderUsage{
+			InputTokens:  24000,
+			OutputTokens: 20,
+			TotalTokens:  24020,
+		},
+	})
+	manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, manager.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "agnes_cache_unsupported_after_request_metrics")
+	cacheUsage := readCaptureJSONFile(t, filepath.Join(traceDir, "cache_usage.json"))
+	require.Equal(t, "unsupported", cacheUsage["provider_prompt_cache_status"])
+	require.NotContains(t, fmtAny(cacheUsage), "prompt_cache_miss_tokens")
+	require.NotContains(t, fmtAny(cacheUsage), "prompt_cache_hit_tokens")
+	require.NotContains(t, fmtAny(cacheUsage), "cache_hit_ratio")
+
+	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
+	efficiency := report["cache_efficiency"].(map[string]any)
+	require.Equal(t, "unsupported", efficiency["provider_prompt_cache_status"])
+	require.NotContains(t, fmtAny(efficiency), "prompt_cache_miss_tokens")
+	require.NotContains(t, fmtAny(efficiency), "cache_hit_ratio")
+}
+
 func readCaptureJSONFile(t *testing.T, path string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)

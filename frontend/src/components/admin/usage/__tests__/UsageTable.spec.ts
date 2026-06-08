@@ -22,6 +22,8 @@ const messages: Record<string, string> = {
   'usage.original': 'Original',
   'usage.userBilled': 'User billed',
   'usage.accountBilled': 'Account billed',
+  'usage.providerPromptCacheUnsupported': 'Provider prompt cache unsupported',
+  'usage.providerPromptCacheUnsupportedShort': 'Cache unsupported',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -41,6 +43,7 @@ const DataTableStub = {
       <div v-for="row in data" :key="row.request_id">
         <slot name="cell-model" :row="row" :value="row.model" />
         <slot name="cell-cost" :row="row" />
+        <slot name="cell-tokens" :row="row" />
       </div>
     </div>
   `,
@@ -146,5 +149,56 @@ describe('admin UsageTable tooltip', () => {
     const text = wrapper.text()
     expect(text).toContain('claude-sonnet-4')
     expect(text).toContain('claude-sonnet-4-20250514')
+  })
+
+  it('marks AGNES provider prompt cache as unsupported instead of a cold miss', async () => {
+    const row = {
+      request_id: 'req-agnes-cache-unsupported',
+      model: 'agnes-2.0-flash',
+      actual_cost: 0,
+      total_cost: 0,
+      account_rate_multiplier: 1,
+      rate_multiplier: 1,
+      input_cost: 0,
+      output_cost: 0,
+      cache_creation_cost: 0,
+      cache_read_cost: 0,
+      input_tokens: 24000,
+      output_tokens: 20,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
+      image_count: 0,
+      billing_mode: 'token',
+      provider_prompt_cache_status: 'unsupported',
+      provider_prompt_cache_detail: 'AGNES upstream usage does not expose provider prompt cache hit fields.',
+    }
+
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [row],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('Cache unsupported')
+
+    const tooltipTriggers = wrapper.findAll('.group.relative')
+    await tooltipTriggers[tooltipTriggers.length - 1].trigger('mouseenter')
+    await nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('Provider prompt cache unsupported')
+    expect(text).toContain('AGNES upstream usage does not expose provider prompt cache hit fields.')
   })
 })

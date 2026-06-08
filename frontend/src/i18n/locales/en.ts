@@ -814,6 +814,8 @@ export default {
     cacheTtlOverriddenLabel: 'TTL Override',
     cacheTtlOverridden5m: 'Billed as 5m',
     cacheTtlOverridden1h: 'Billed as 1h',
+    providerPromptCacheUnsupported: 'Provider prompt cache unsupported',
+    providerPromptCacheUnsupportedShort: 'Cache unsupported',
     totalRequests: 'Total Requests',
     totalTokens: 'Total Tokens',
     totalCost: 'Total Cost',
