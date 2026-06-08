@@ -25,13 +25,22 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+.tmp/
 
 # Node modules (will be installed in container)
 frontend/node_modules/
 node_modules/
+frontend/*.tsbuildinfo
 
 # Go build cache (will be built in container)
 backend/vendor/
+backend/bin/
+backend/.tmp/
+backend/data/
+
+# Local worktrees and sidecar tooling are not used by the Dockerfile COPY steps.
+.worktrees/
+tools/
 
 # Test files
 *_test.go
@@ -75,3 +84,11 @@ deploy/redis_data/
 .claude/
 issues/
 CLAUDE.md
+
+# Local captured desktop bundles / probes.
+app-session-*.js
+comment-preload.js
+main-*.js
+sidebar-*.js
+*.sub2api-data.json
+order_*.txt

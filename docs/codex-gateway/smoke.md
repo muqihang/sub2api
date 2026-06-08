@@ -25,6 +25,13 @@ curl -N http://127.0.0.1:3000/codex/v1/responses \
 curl -N http://127.0.0.1:3000/codex/v1/responses \
   -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
   -H "Content-Type: application/json" \
+  -d '{"model":"agnes-2.0-flash","input":[{"role":"user","content":[{"type":"input_text","text":"describe this tiny image in one sentence"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="}]}],"reasoning":{"effort":"high"},"stream":true}'
+```
+
+```bash
+curl -N http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
   -d '{"model":"claude-sonnet-4-6","input":"reply with ok","stream":true}'
 ```
 
@@ -50,7 +57,7 @@ curl -sS http://127.0.0.1:3000/api/v1/admin/codex-gateway/state-store/summary \
 ### Codex client smoke
 
 1. Start Codex Desktop/CLI with `wire_api = "responses"` and `base_url = ".../codex/v1"`.
-2. Confirm `/codex/v1/models` shows GPT entries and, once provider-group gates are satisfied, DeepSeek V4 Pro/Flash and Claude entries.
+2. Confirm `/codex/v1/models` shows GPT entries and, once provider-group gates are satisfied, DeepSeek V4 Pro/Flash, Claude, and AGNES entries.
 3. Run a plain chat turn on `gpt-5.5`.
 4. Switch to `deepseek-v4-pro` and verify a streamed text reply.
 5. Run a shell tool turn.
@@ -61,7 +68,31 @@ curl -sS http://127.0.0.1:3000/api/v1/admin/codex-gateway/state-store/summary \
 10. Switch to `claude-sonnet-4-6` and verify a streamed text reply.
 11. Switch to `claude-opus-4-6-thinking`, select a non-none reasoning effort, and run a small tool-read turn.
 12. Continue the same Claude Thinking conversation with a follow-up tool-result turn and verify the stream completes.
-13. Use `gpt-5.4` as controller and dispatch DeepSeek and Claude subagents; verify the controller can summarize their results.
+13. Switch to `agnes-2.0-flash`, select high reasoning, and verify a streamed text reply plus one image-input turn.
+14. Use `gpt-5.4` as controller and dispatch DeepSeek, Claude, and AGNES subagents; verify the controller can summarize their results.
+
+### AGNES cache diagnostics smoke
+
+AGNES cache evidence must be reported as provider-unsupported unless the
+upstream starts returning explicit cache-hit fields. Do not treat `0` cache
+tokens as a confirmed cold miss for AGNES.
+
+1. Send two same-shape AGNES requests in the same Codex thread.
+2. Verify the upstream request shape includes a scoped `prompt_cache_key`.
+3. Verify the admin usage row shows AGNES as cache unsupported instead of only a
+   silent zero cache token count.
+4. Verify gateway capture marks the trace with
+   `provider_prompt_cache_status:"unsupported"` and the diagnostic
+   `provider_prompt_cache_unsupported`.
+
+Expected:
+
+- billing keeps `cache_read_tokens=0` unless the AGNES upstream returns a real
+  provider cache metric;
+- capture/reporting explains the unsupported metric, so 0 cache tokens are not
+  misdiagnosed as a gateway cache-regression;
+- repeated same-shape requests should preserve deterministic request shape,
+  tool schema order, session key, and scoped `prompt_cache_key`.
 
 ### Protocol capture smoke
 
@@ -569,3 +600,79 @@ Expected cache behavior:
 - the discovery turn may have lower cache because `tool_search_output.tools` changes the next-turn prompt shape;
 - after warmup, repeated same-shape turns should keep stable tool schema ordering and should not produce unexplained `0 cached` runs;
 - if `0 cached` appears, the capture report must show whether the request had `previous_response_id_present`, stable replay diagnostics, and cache attribution fields.
+
+## Codex Desktop Full-Capture Coverage Smoke
+
+These smoke entries are keyed by matrix row id from `docs/codex-gateway/codex-desktop-full-capture-v3.md`. Do not mark a row `shipped` just because a file exists. A shipped row needs: action-specific dynamic evidence, static denominator comparison where applicable, redaction-negative checks, and high-confidence trace joins where the row crosses Desktop and Gateway.
+
+Pre-launch:
+
+```bash
+# install renderer addBinding bridge
+zhumeng-agent codex capture install --app /Applications/Codex.app
+# launch Desktop with CDP open
+open -a /Applications/Codex.app --args --remote-debugging-port=9222
+# attach the bridge in the background
+zhumeng-agent codex capture attach --cdp-port 9222 --trace-dir /tmp/codex-desktop-capture-smoke
+```
+
+### Required exercises
+
+One full text turn is not enough. Run only exercises that are safe for the local account and environment. Record skipped exercises as `gap` with a reason.
+
+1. Fresh login / refresh / logout where safe (C3, C18, C21, C23).
+2. New thread, resume existing thread, cancel/abort turn, permission denied path, malformed/error path if available (C1, C14, C17).
+3. Menu/context-menu/worktree command/open frontmost window/browser sidebar path (C10, C24).
+4. MCP OAuth or MCP startup, plugin marketplace/cache, skill trigger, subagent spawn/wait/close (C20).
+5. Computer Use, browser-use, node_repl each in a tiny safe workflow (C7-C9).
+6. External-agent detect/import in a disposable fixture if available (C22).
+7. Realtime session with mic permission accepted and denied paths if available (C16).
+8. Binary/static baseline pass against the current app (C6, C11, C12, C19).
+
+### Per-row evidence checks
+
+- C1 / C14 / C17: `app_server_v2.jsonl` must include method/notification shape, request ids where present, error schema, cancel/abort, reconnect or explicit not-observed marker, and event ordering. Required events are action-specific; `model/rerouted` is optional unless the smoke action forces reroute.
+- C2 / C23: `network.events.jsonl` must include path-level shape entries for `https://chatgpt.com/backend-api`, Codex Desktop auth/profile/MFA paths under `api.openai.com` / `auth.openai.com`, connector/entitlement/model/device/feature endpoints when exercised, and telemetry/updater hosts when exercised. Body shape/hash must exist in shape-only mode; raw bodies require `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_NETWORK`.
+- C3 / C21: `oauth.state.jsonl` must include redacted OAuth/PKCE/MFA or explicit skipped marker; JWT bodies show claim key sets only. Remote-control pairing/revoke must be captured when exercised.
+- C4 / C5 / C25: `telemetry.shape.jsonl` must record DSN/endpoint, transport mode, event/span/log/crash metadata shape. Raw messages and crash dumps must be absent unless `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_TELEMETRY` is set.
+- C6 / C11 / C12 / C19: baseline output must validate schema, hashes, version pin, codesign parse, entitlements parse, asar listing completeness, static denominator extraction, updater appcast metadata, and signature validation status. Raw deobfuscated source must not be committed.
+- C7 / C13: `pipe.cua.jsonl` must include process spawn argv/cwd/env shape, binary hash, frame methods, trust decisions, stderr/stdout class, crash/restart or explicit not-observed marker, and permission denial when exercised. Raw screenshot bytes must be absent unless `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_CUA` is set.
+- C8: `pipe.browser.jsonl` must include peer auth, CDP relay, navigation/download lifecycle, crash/restart or explicit not-observed marker. Raw page bodies require `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_BROWSER`.
+- C9: `pipe.node_repl.jsonl` must include invocation lifecycle, allowlist evaluation, request meta shape, stdout/stderr class, crash/restart or explicit not-observed marker. Raw code must be absent unless `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_NODE_REPL` is set.
+- C10 / C24: `ipc.events.jsonl` must include static denominator comparison, runtime samples for `codex_desktop:*` channels exercised by the UI, explicit method ids exercised by the smoke, and UI-to-app-server chain links. Preload-patch-only evidence can make the row `partial`, not `shipped`.
+- C15: dev URL evidence only passes when the smoke explicitly launches a dev build or feature override. Otherwise mark C15 skipped/gap; do not pass on “no dev surface hit”.
+- C16: `realtime.events.jsonl` must record PeerConnection lifecycle, SDP, transcript ordering, codec/chunk class, mic permission outcome, interrupt/barge-in/VAD where exercised. Raw audio requires `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_REALTIME`.
+- C18: `local_state.schema.json` must include filesystem schema and credential item names only. Secret values, token values, local absolute paths, repo URLs, branch names, and raw session content must be absent.
+- C20: plugin/MCP/skills/subagent evidence must include plugin manifest/cache/marketplace shape, MCP transport/OAuth/startup shape, skill trigger/loader/cache, `multi_agent_v1.*` discovery/spawn/wait/close lifecycle, and deferred tool output families when exercised.
+- C22: external-agent import evidence must include detect/import schema, source discovery, completion notification, generated-file staging, failure/retry or explicit not-observed marker.
+
+### Redaction-negative checks
+
+Run these after the report is generated. They must return no matches unless the exact row raw unlock is set and the session TTL/retention policy explicitly permits it.
+
+```bash
+TRACE=/tmp/codex-desktop-capture-smoke
+rg -n --hidden --no-ignore -S 'Authorization:|Bearer |refresh_token|access_token|device_token|Cookie:|Set-Cookie:' "$TRACE"
+rg -n --hidden --no-ignore -S '/Users/|git@github.com|https://github.com/.+/.+|branch:|commit [0-9a-f]{7,40}' "$TRACE"
+rg -n --hidden --no-ignore -S 'data:image/|iVBORw0KGgo|RIFF|WEBM|BEGIN PRIVATE KEY|BEGIN OPENSSH PRIVATE KEY' "$TRACE"
+```
+
+Expected: no output. If output appears, keep the affected matrix row at `gap` and fix redaction before proceeding.
+
+### Report and join checks
+
+```bash
+zhumeng-agent codex capture report \
+  --trace-dir /tmp/codex-desktop-capture-smoke \
+  --gateway-trace-dir data/codex-gateway-captures/$(date +%Y-%m-%d)
+# planned subcommand; implement before relying on it for shipped status
+zhumeng-agent codex capture matrix --trace-dir /tmp/codex-desktop-capture-smoke
+```
+
+Expected:
+
+- every shipped row appears in the report with `coverage_denominator_count`, `seen_count`, `unseen_required[]`, and `sampled_optional[]`;
+- every gap row appears in the doctor and matrix output with a documented next action;
+- rows that cross Desktop and Gateway have at least one high-confidence shared-HMAC join in `trace_link.jsonl`; timestamp-only `low_confidence` links do not satisfy shipped status;
+- `unmatched_expected` rows are emitted for expected gateway peers that were not found;
+- replay/golden fixtures exist for rows where replay is meaningful, or an explicit not-replayable rationale exists.
