@@ -20,6 +20,15 @@ func TestAnthropicOnlyCompatProtocolAcceptsMessagesRoutes(t *testing.T) {
 	}
 }
 
+func TestAnthropicOnlyCompatProtocolAcceptsSystemRoleMessagesForClaudeModels(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":32000,"messages":[{"role":"system","content":"private system"},{"role":"user","content":"hello"}]}`)
+
+	decision, err := ValidateAnthropicOnlyCompatIngress(http.MethodPost, "/v1/messages", body)
+	require.NoError(t, err)
+	require.Equal(t, "/v1/messages", decision.InboundRoute)
+	require.Equal(t, "/v1/messages?beta=true", decision.CCGatewayRoute)
+}
+
 func TestAnthropicOnlyCompatProtocolRejectsOpenAIProtocolRoutes(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello RAW_TOKEN_SENTINEL PROXY_CREDENTIAL_SENTINEL ACCOUNT_REF_SENTINEL"}]}`)
 
@@ -57,9 +66,14 @@ func TestAnthropicOnlyCompatProtocolRejectsOpenAIShapedBodyOnMessages(t *testing
 			name: "openai function tool shape",
 			body: `{"model":"claude-sonnet-4-6","tools":[{"type":"function","function":{"name":"leak","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"hello"}]}`,
 		},
+
 		{
-			name: "system role in messages",
-			body: `{"model":"claude-sonnet-4-6","messages":[{"role":"system","content":"private system"},{"role":"user","content":"hello"}]}`,
+			name: "developer role in messages",
+			body: `{"model":"claude-sonnet-4-6","messages":[{"role":"developer","content":"private developer"},{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name: "tool role in messages",
+			body: `{"model":"claude-sonnet-4-6","messages":[{"role":"tool","content":"private tool"},{"role":"user","content":"hello"}]}`,
 		},
 		{
 			name: "openai model",

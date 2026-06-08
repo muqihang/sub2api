@@ -198,7 +198,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		}
 		auditSummary := service.NewAnthropicCompatAuditSummaryWithShape(decision, shapeAudit)
 		c.Set("anthropic_compat_audit_summary", auditSummary)
-		c.Request = c.Request.WithContext(service.WithAnthropicCompatAuditSummary(c.Request.Context(), auditSummary))
+		ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), auditSummary)
+		// Compat ingress has already accepted the request as Anthropic /v1/messages.
+		// Preserve the Claude Code client marker for downstream group routing; the
+		// earlier detector can miss newer CLI shapes before normalization fills the
+		// server-selected Claude Code system prompt.
+		ctx = service.SetClaudeCodeClient(ctx, true)
+		if version := service.NewClaudeCodeValidator().ExtractVersion(c.Request.UserAgent()); version != "" {
+			ctx = service.SetClaudeCodeVersion(ctx, version)
+		}
+		c.Request = c.Request.WithContext(ctx)
 	}
 
 	setOpsRequestContext(c, "", false, body)

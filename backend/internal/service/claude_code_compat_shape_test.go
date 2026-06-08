@@ -109,3 +109,38 @@ func TestNormalizeAnthropicCompatMessagesBodyPreservesToolSchemaParameterNames(t
 	require.True(t, gjson.GetBytes(normalized, "tools.0.input_schema.properties.defer_loading").Exists())
 	require.True(t, gjson.GetBytes(normalized, "tools.0.input_schema.properties.eager_input_streaming").Exists())
 }
+
+func TestNormalizeAnthropicCompatMessagesBodyMovesSystemRoleMessagesToTopLevelSystem(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","system":[{"type":"text","text":"existing top-level system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"system","content":"private system string sentinel"},{"role":"user","content":"first user"},{"role":"system","content":[{"type":"text","text":"private system block sentinel"},{"type":"image","source":{"type":"base64","data":"IMAGE_PROMPT_SENTINEL"}}]},{"role":"assistant","content":"assistant reply"},{"role":"user","content":"second user"}]}`)
+
+	normalized, shape, err := NormalizeAnthropicCompatMessagesBody(body)
+	require.NoError(t, err)
+	require.Contains(t, shape.ServerFilledFields, "system")
+
+	messages := gjson.GetBytes(normalized, "messages").Array()
+	require.Len(t, messages, 3)
+	require.Equal(t, "user", messages[0].Get("role").String())
+	require.Equal(t, "first user", messages[0].Get("content").String())
+	require.Equal(t, "assistant", messages[1].Get("role").String())
+	require.Equal(t, "assistant reply", messages[1].Get("content").String())
+	require.Equal(t, "user", messages[2].Get("role").String())
+	require.Equal(t, "second user", messages[2].Get("content").String())
+	require.NotContains(t, string(normalized), `"role":"system"`)
+
+	system := gjson.GetBytes(normalized, "system")
+	require.True(t, system.IsArray())
+	require.Contains(t, system.Get("0.text").String(), "server-normalized Anthropic /v1/messages")
+	require.Contains(t, system.Get("1.text").String(), "Working directory:")
+	require.Equal(t, "existing top-level system", system.Get("2.text").String())
+	require.Equal(t, "ephemeral", system.Get("2.cache_control.type").String())
+	require.Equal(t, "private system string sentinel", system.Get("3.text").String())
+	require.Equal(t, "private system block sentinel", system.Get("4.text").String())
+	require.NotContains(t, string(normalized), "IMAGE_PROMPT_SENTINEL")
+
+	decision := AnthropicCompatIngressDecision{InboundRoute: AnthropicCompatInboundMessages, CCGatewayRoute: AnthropicCompatCCGatewayMessages, ClientType: AnthropicCompatClientType}
+	summary := NewAnthropicCompatAuditSummaryWithShape(decision, shape)
+	safe := BuildAnthropicCompatOpsRequestBodySummary(normalized, summary, "", false)
+	for _, forbidden := range []string{"private system string sentinel", "private system block sentinel", "first user", "assistant reply", "second user", "IMAGE_PROMPT_SENTINEL"} {
+		require.NotContains(t, string(safe), forbidden)
+	}
+}
