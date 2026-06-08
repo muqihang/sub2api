@@ -406,6 +406,12 @@ func forceAnthropicCompatNonNative(c *gin.Context) {
 	if _, ok := service.AnthropicCompatAuditSummaryFromContext(c.Request.Context()); !ok {
 		return
 	}
+	// Real Claude Code CLI traffic can enter the compat /v1/messages path.
+	// Do not downgrade official Claude Code user agents to non-native, or
+	// ClaudeCodeOnly groups will reject legitimate CLI requests before routing.
+	if claudeCodeValidator.ValidateUserAgent(c.GetHeader("User-Agent")) {
+		return
+	}
 	ctx := service.SetClaudeCodeClient(c.Request.Context(), false)
 	ctx = service.SetClaudeCodeVersion(ctx, "")
 	c.Request = c.Request.WithContext(ctx)

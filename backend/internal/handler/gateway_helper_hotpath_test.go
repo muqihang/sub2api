@@ -370,7 +370,7 @@ func (s *helperConcurrencyCacheStubWithError) AcquireAccountSlot(ctx context.Con
 	return false, s.err
 }
 
-func TestForceAnthropicCompatNonNativeOverridesSpoofedClaudeCodeUA(t *testing.T) {
+func TestForceAnthropicCompatNonNativePreservesOfficialClaudeCodeUA(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -381,6 +381,24 @@ func TestForceAnthropicCompatNonNativeOverridesSpoofedClaudeCodeUA(t *testing.T)
 	SetClaudeCodeClientContext(c, body, nil)
 	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
 	require.Equal(t, "2.1.150", service.GetClaudeCodeVersion(c.Request.Context()))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+	require.Equal(t, "2.1.150", service.GetClaudeCodeVersion(c.Request.Context()))
+}
+
+func TestForceAnthropicCompatNonNativeStillDowngradesNonOfficialUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+	c.Request = c.Request.WithContext(service.SetClaudeCodeVersion(c.Request.Context(), "2.1.150"))
 
 	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
 	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
