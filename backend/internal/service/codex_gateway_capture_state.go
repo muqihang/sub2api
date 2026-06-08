@@ -16,7 +16,9 @@ func (m *CodexGatewayCaptureManager) recordClientRequestDiagnostics(trace *Codex
 	cacheUsage := map[string]any{
 		"request_prefix_hash": m.redact.HashText(codexGatewayCaptureStablePrefix(body)),
 	}
-	if promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); promptCacheKey != "" {
+	promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	cacheUsage["prompt_cache_key_present"] = promptCacheKey != ""
+	if promptCacheKey != "" {
 		cacheUsage["prompt_cache_key_hash"] = m.redact.HashText(promptCacheKey)
 	}
 	m.mergeCacheUsage(trace, cacheUsage)
@@ -24,12 +26,17 @@ func (m *CodexGatewayCaptureManager) recordClientRequestDiagnostics(trace *Codex
 	results := codexGatewayCaptureFindToolResults(body)
 	if len(results) > 0 {
 		received, orphan, linkedTraceIDs := m.registerReceivedToolResults(trace, results)
-		m.mergeToolClosure(trace, map[string]any{
+		duplicate := codexGatewayCaptureDuplicateToolResults(results, m.redact)
+		closure := map[string]any{
 			"received_results":  received,
-			"duplicate_results": codexGatewayCaptureDuplicateToolResults(results, m.redact),
+			"duplicate_results": duplicate,
 			"orphan_results":    orphan,
 			"linked_trace_ids":  linkedTraceIDs,
-		})
+		}
+		for key, value := range codexGatewayCaptureToolPairingDiagnostics(orphan, duplicate) {
+			closure[key] = value
+		}
+		m.mergeToolClosure(trace, closure)
 	}
 	diagnostics := m.codexGatewayCaptureRequestDiagnostics(body)
 	if len(diagnostics) > 0 {
@@ -206,6 +213,7 @@ func codexGatewayCaptureClearDerivedPromptCacheMetrics(cacheUsage map[string]any
 	delete(cacheUsage, "cache_miss_input_tokens")
 	delete(cacheUsage, "cache_miss_attribution")
 	delete(cacheUsage, "prefix_hash_changed_reason")
+	delete(cacheUsage, "cache_change_hint")
 }
 
 func codexGatewayCaptureProviderPromptCacheUnsupported(values map[string]any) bool {
@@ -298,6 +306,24 @@ func codexGatewayCaptureDuplicateToolResults(values []codexGatewayCaptureToolRes
 		}
 	}
 	return out
+}
+
+func codexGatewayCaptureToolPairingDiagnostics(orphan, duplicate []map[string]any) map[string]any {
+	reasons := make([]string, 0, 2)
+	if len(orphan) > 0 {
+		reasons = append(reasons, "orphan_tool_output")
+	}
+	if len(duplicate) > 0 {
+		reasons = append(reasons, "duplicate_tool_result")
+	}
+	if len(reasons) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"tool_pairing_invalid": true,
+		"tool_pairing_action":  "diagnose_only",
+		"tool_pairing_reasons": reasons,
+	}
 }
 
 func codexGatewayCaptureStablePrefix(body []byte) string {

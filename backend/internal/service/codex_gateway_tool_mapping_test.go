@@ -120,6 +120,33 @@ func TestCodexGatewayToolMapping_SortsRequiredSchemaKeys(t *testing.T) {
 	require.Equal(t, mustMarshalJSON(t, first.Tools[0]), mustMarshalJSON(t, second.Tools[0]))
 }
 
+func TestCodexGatewayToolMapping_SortsDependentRequiredSchemaKeys(t *testing.T) {
+	rawA := json.RawMessage(`[
+		{"type":"function","name":"search","parameters":{
+			"type":"object",
+			"properties":{"mode":{"type":"string"},"query":{"type":"string"},"limit":{"type":"integer"}},
+			"dependentRequired":{"mode":["limit","query"],"query":["mode"]}
+		}}
+	]`)
+	rawB := json.RawMessage(`[
+		{"type":"function","name":"search","parameters":{
+			"type":"object",
+			"properties":{"limit":{"type":"integer"},"query":{"type":"string"},"mode":{"type":"string"}},
+			"dependentRequired":{"query":["mode"],"mode":["query","limit"]}
+		}}
+	]`)
+
+	first, err := BuildCodexGatewayToolMapping(rawA, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+	second, err := BuildCodexGatewayToolMapping(rawB, CodexGatewayToolMappingConfig{})
+	require.NoError(t, err)
+
+	require.Equal(t, mustMarshalJSON(t, first.Tools[0]), mustMarshalJSON(t, second.Tools[0]))
+	params := first.Tools[0]["function"].(map[string]any)["parameters"].(map[string]any)
+	dependent := params["dependentRequired"].(map[string]any)
+	require.Equal(t, []any{"limit", "query"}, dependent["mode"])
+}
+
 func TestCodexGatewayToolMapping_DoesNotSortSemanticSchemaArrays(t *testing.T) {
 	raw := json.RawMessage(`[
 		{"type":"function","name":"pick_value","parameters":{

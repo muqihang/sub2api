@@ -4103,6 +4103,7 @@ func TestCodexGatewayDeepSeekRequest_MapsAssistantToolCallsAndBackfillsReasoning
 					}
 				]
 			},
+			{"type":"function_call_output","call_id":"call_1","output":"opened"},
 			{
 				"type":"message",
 				"role":"assistant",
@@ -4132,7 +4133,7 @@ func TestCodexGatewayDeepSeekRequest_MapsAssistantToolCallsAndBackfillsReasoning
 	require.NoError(t, err)
 
 	messages := prepared.Body["messages"].([]any)
-	require.Len(t, messages, 2)
+	require.Len(t, messages, 3)
 
 	first := messages[0].(map[string]any)
 	require.Equal(t, "assistant", first["role"])
@@ -4140,9 +4141,93 @@ func TestCodexGatewayDeepSeekRequest_MapsAssistantToolCallsAndBackfillsReasoning
 	require.Equal(t, "", first["reasoning_content"])
 	require.Equal(t, "browser__open-page", first["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["name"])
 
-	second := messages[1].(map[string]any)
+	toolOutput := messages[1].(map[string]any)
+	require.Equal(t, "tool", toolOutput["role"])
+	require.Equal(t, "call_1", toolOutput["tool_call_id"])
+
+	second := messages[2].(map[string]any)
 	require.Equal(t, "assistant", second["role"])
 	require.Equal(t, "", second["reasoning_content"])
+}
+
+func TestCodexGatewayDeepSeekRequest_RejectsDanglingCurrentToolCalls(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_dangling","name":"get_weather","arguments":"{}"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"get_weather","parameters":{"type":"object"}}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{SessionKey: "session_dangling", IsolationKey: "iso_dangling"}, CodexGatewayDeepSeekRequestConfig{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "dangling tool call")
+}
+
+func TestCodexGatewayDeepSeekRequest_CapturesDanglingToolCallFailCloseDiagnostics(t *testing.T) {
+	baseDir := t.TempDir()
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              filepath.Join(baseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer manager.Close()
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+		TraceID:  "dangling_tool_fail_close",
+		Provider: "deepseek",
+		Model:    "deepseek-v4-pro",
+	})
+	require.NotNil(t, trace)
+
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	_, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_private_dangling","name":"get_weather","arguments":"{}"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"PRIVATE_NEXT_PROMPT"}]}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"get_weather","parameters":{"type":"object"}}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_dangling_diag",
+		IsolationKey: "iso_dangling_diag",
+		CaptureTrace: trace,
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.Error(t, err)
+	manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "error"})
+	require.NoError(t, manager.Close())
+
+	diagnostics := readCaptureJSONFile(t, filepath.Join(baseDir, time.Now().Format("2006-01-02"), "dangling_tool_fail_close", "client_request.diagnostics.json"))
+	deepseek := diagnostics["deepseek_cache"].(map[string]any)
+	require.Equal(t, true, deepseek["tool_pairing_invalid"])
+	require.Equal(t, "fail_close", deepseek["tool_pairing_action"])
+	require.Contains(t, fmtAny(deepseek["tool_pairing_reasons"]), "dangling_tool_call")
+	require.NotContains(t, fmtAny(diagnostics), "call_private_dangling")
+	require.NotContains(t, fmtAny(diagnostics), "PRIVATE_NEXT_PROMPT")
+}
+
+func TestCodexGatewayDeepSeekRequest_AllowsFinalAssistantToolCallWithoutOutput(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_pending","name":"get_weather","arguments":"{}"}
+		]`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"get_weather","parameters":{"type":"object"}}
+		]`),
+	}, nil, CodexGatewayDeepSeekRequestContext{SessionKey: "session_pending", IsolationKey: "iso_pending"}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	messages := prepared.Body["messages"].([]any)
+	require.Len(t, messages, 1)
+	assistant := messages[0].(map[string]any)
+	require.Equal(t, "assistant", assistant["role"])
+	require.Equal(t, "call_pending", assistant["tool_calls"].([]any)[0].(map[string]any)["id"])
 }
 
 func TestCodexGatewayDeepSeekRequest_RejectsInvalidStateAndUnpairedToolOutputs(t *testing.T) {

@@ -47,6 +47,9 @@ type codexGatewayDeepSeekReplayDiagnostics struct {
 	PreviousResponseIDPresent bool
 	StateLookupStatus         string
 	ReplayMode                string
+	ToolPairingInvalid        bool
+	ToolPairingAction         string
+	ToolPairingReasons        []string
 }
 
 func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayDeepSeekRequestContext, cfg CodexGatewayDeepSeekRequestConfig) (CodexGatewayPreparedDeepSeekRequest, error) {
@@ -282,7 +285,7 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 		if diagnosticPrefix == "" {
 			diagnosticPrefix = "deepseek"
 		}
-		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, replayDiag, ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
+		if diagnostics := codexGatewayDeepSeekCaptureDiagnostics(body, userID, userIDDiag, replayDiag, codexGatewayRequestPromptCacheKeyPresent(req), ctx.CaptureTrace.manager.redact); len(diagnostics) > 0 {
 			requestDiagnostics[diagnosticPrefix+"_cache"] = diagnostics
 			if cacheUsage := codexGatewayDeepSeekCacheUsageFields(diagnostics); len(cacheUsage) > 0 {
 				ctx.CaptureTrace.manager.mergeCacheUsage(ctx.CaptureTrace, cacheUsage)
@@ -355,6 +358,11 @@ func (d codexGatewayDeepSeekReplayDiagnostics) toCaptureMap() map[string]any {
 	}
 	if mode := strings.TrimSpace(d.ReplayMode); mode != "" {
 		out["previous_response_replay_mode"] = mode
+	}
+	if d.ToolPairingInvalid {
+		out["tool_pairing_invalid"] = true
+		out["tool_pairing_action"] = strings.TrimSpace(d.ToolPairingAction)
+		out["tool_pairing_reasons"] = uniqueCodexGatewayStrings(d.ToolPairingReasons)
 	}
 	return out
 }
@@ -573,6 +581,27 @@ func codexGatewayDeepSeekFinalizeChatCompletionsBody(body map[string]any) map[st
 	return body
 }
 
+func codexGatewayDeepSeekRequestAllowlistKeys() []string {
+	keys := make([]string, 0, len(codexGatewayDeepSeekChatCompletionsAllowlist))
+	for key := range codexGatewayDeepSeekChatCompletionsAllowlist {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func codexGatewayRequestPromptCacheKeyPresent(req CodexGatewayResponsesCreateRequest) bool {
+	if strings.TrimSpace(req.PromptCacheKey) != "" {
+		return true
+	}
+	raw, ok := req.RawFields["prompt_cache_key"]
+	if !ok || len(raw) == 0 {
+		return false
+	}
+	var value string
+	return json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != ""
+}
+
 func codexGatewayDeepSeekRestrictHostedToolMapping(mapping CodexGatewayToolMappingResult) CodexGatewayToolMappingResult {
 	if len(mapping.Tools) == 0 || len(mapping.NameMap) == 0 {
 		mapping.IgnoredHostedToolTypes = uniqueCodexGatewayStrings(mapping.IgnoredHostedToolTypes)
@@ -757,6 +786,7 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 	}
 
 	for _, item := range items {
+		hadOpenCalls := len(openCalls) > 0
 		msg, newCalls, err := convertCodexGatewayInputItem(item, toolMapping, cfg)
 		if err != nil {
 			return nil, nil, replayDiag, err
@@ -784,6 +814,12 @@ func buildCodexGatewayDeepSeekMessages(req CodexGatewayResponsesCreateRequest, s
 				return nil, nil, replayDiag, err
 			}
 			continue
+		}
+		if msg != nil && hadOpenCalls && strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "tool" {
+			replayDiag.ToolPairingInvalid = true
+			replayDiag.ToolPairingAction = "fail_close"
+			replayDiag.ToolPairingReasons = []string{"dangling_tool_call"}
+			return nil, nil, replayDiag, fmt.Errorf("codex deepseek request has dangling tool call before subsequent message")
 		}
 		if msg != nil {
 			flushPendingToolCallAssistant()

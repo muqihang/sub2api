@@ -464,6 +464,11 @@ func TestCodexGatewayCaptureToolClosureAndCacheDiagnostics(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(toolClosure), "call_id_hash")
 	require.Contains(t, string(toolClosure), "call_ids_hashed")
+	toolClosureJSON := readCaptureJSONFile(t, filepath.Join(traceDir, "tool_closure.json"))
+	require.Equal(t, true, toolClosureJSON["tool_pairing_invalid"])
+	require.Equal(t, "diagnose_only", toolClosureJSON["tool_pairing_action"])
+	require.Contains(t, string(toolClosure), "orphan_tool_output")
+	require.Contains(t, string(toolClosure), "duplicate_tool_result")
 	require.NotContains(t, string(toolClosure), "call_b")
 	require.NotContains(t, string(toolClosure), "call_a")
 	require.NotContains(t, string(toolClosure), "private output")
@@ -471,6 +476,8 @@ func TestCodexGatewayCaptureToolClosureAndCacheDiagnostics(t *testing.T) {
 	cacheUsage, err := os.ReadFile(filepath.Join(traceDir, "cache_usage.json"))
 	require.NoError(t, err)
 	require.Contains(t, string(cacheUsage), "prompt_cache_key_hash")
+	cacheUsageJSON := readCaptureJSONFile(t, filepath.Join(traceDir, "cache_usage.json"))
+	require.Equal(t, true, cacheUsageJSON["prompt_cache_key_present"])
 	require.Contains(t, string(cacheUsage), "request_prefix_hash")
 	require.Contains(t, string(cacheUsage), "cache_read_input_tokens")
 	require.Contains(t, string(cacheUsage), "80")
@@ -925,7 +932,9 @@ func TestCodexGatewayCaptureV2DeepSeekCacheMissAttribution(t *testing.T) {
 	report3 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_tool_change", "trace_report.json"))
 	require.Contains(t, fmtAny(report3["cache_efficiency"]), "tool_schema_changed")
 	require.Contains(t, fmtAny(report3["cache_efficiency"]), "prefix_hash_changed_reason")
+	require.Contains(t, fmtAny(report3["cache_efficiency"]), "cache_change_hint")
 	require.Contains(t, fmtAny(report3["cache_usage"]), "tool_schema_hash")
+	require.Contains(t, fmtAny(report3["cache_usage"]), "cache_change_hint")
 
 	report4 := readCaptureJSONFile(t, filepath.Join(dateDir, "miss_user_change", "trace_report.json"))
 	require.Contains(t, fmtAny(report4["cache_efficiency"]), "user_id_changed")
@@ -1022,6 +1031,14 @@ func TestCodexGatewayCaptureV2DeepSeekRecordsFullPrefixDiagnostics(t *testing.T)
 		"static_prefix_hash",
 		"message_prefix_hash",
 		"request_shape_hash",
+		"tools_hash",
+		"messages_prefix_hash",
+		"stable_prefix_bytes",
+		"tool_count",
+		"tool_schema_bytes",
+		"request_allowlist_hash",
+		"gateway_injection_version",
+		"prompt_cache_key_present",
 	} {
 		require.Contains(t, deepseek, key)
 	}
@@ -1029,6 +1046,15 @@ func TestCodexGatewayCaptureV2DeepSeekRecordsFullPrefixDiagnostics(t *testing.T)
 	require.Equal(t, "full_replay_messages", deepseek["previous_response_replay_mode"])
 	require.Equal(t, "hit", deepseek["state_lookup_status"])
 	require.Equal(t, float64(3), deepseek["message_count"])
+	require.Equal(t, deepseek["tool_schema_hash"], deepseek["tools_hash"])
+	require.Equal(t, deepseek["message_prefix_hash"], deepseek["messages_prefix_hash"])
+	require.Equal(t, false, deepseek["prompt_cache_key_present"])
+	require.Greater(t, deepseek["stable_prefix_bytes"].(float64), float64(0))
+	require.Equal(t, float64(1), deepseek["tool_count"])
+	require.Greater(t, deepseek["tool_schema_bytes"].(float64), float64(0))
+	require.Equal(t, codexGatewayDeepSeekStableHash(manager.redact, codexGatewayDeepSeekRequestAllowlistKeys()), deepseek["request_allowlist_hash"])
+	require.NotEqual(t, codexGatewayDeepSeekStableHash(manager.redact, codexGatewayDeepSeekRequestShapeExcludedFields), deepseek["request_allowlist_hash"])
+	require.Equal(t, codexGatewayDeepSeekCacheSerializationVersion, deepseek["gateway_injection_version"])
 
 	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
 	require.Contains(t, fmtAny(report["cache_usage"]), "messages_full_hash")
@@ -1043,6 +1069,60 @@ func TestCodexGatewayCaptureV2DeepSeekRecordsFullPrefixDiagnostics(t *testing.T)
 		"Authorization",
 		"sk-",
 	)
+}
+
+func TestCodexGatewayCaptureDeepSeekPromptCacheKeyStaysClientMetadata(t *testing.T) {
+	baseDir := t.TempDir()
+	keyPath := filepath.Join(baseDir, ".key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("01234567890123456789012345678901"), 0o600))
+	manager := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              keyPath,
+		CorrelationHashKeyFile:   keyPath,
+		CaptureSuccessSampleRate: 1,
+	})
+
+	body := []byte(`{
+		"model":"deepseek-v4-pro",
+		"prompt_cache_key":"client-cache-secret",
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+	trace := manager.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{
+		TraceID:  "deepseek_prompt_cache_key_metadata",
+		Method:   "POST",
+		Path:     "/codex/v1/responses",
+		Model:    "deepseek-v4-pro",
+		Provider: "deepseek",
+	})
+	require.NotNil(t, trace)
+	manager.RecordClientRequest(trace, nil, body)
+	req, err := DecodeCodexGatewayResponsesCreateRequest(body)
+	require.NoError(t, err)
+	prepared, err := BuildCodexGatewayDeepSeekRequest(CodexGatewayModel{
+		Slug:          "deepseek-v4-pro",
+		Provider:      "deepseek",
+		UpstreamModel: "deepseek-v4-pro",
+	}, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_prompt_cache_metadata",
+		IsolationKey: "iso_prompt_cache_metadata",
+		CaptureTrace: trace,
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	require.NotContains(t, prepared.Body, "prompt_cache_key")
+	manager.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "ok"})
+	require.NoError(t, manager.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "deepseek_prompt_cache_key_metadata")
+	cacheUsage := readCaptureJSONFile(t, filepath.Join(traceDir, "cache_usage.json"))
+	require.Equal(t, true, cacheUsage["prompt_cache_key_present"])
+	require.Contains(t, fmtAny(cacheUsage), "prompt_cache_key_hash")
+	require.NotContains(t, fmtAny(cacheUsage), "client-cache-secret")
+
+	diagnostics := readCaptureJSONFile(t, filepath.Join(traceDir, "client_request.diagnostics.json"))
+	deepseek := diagnostics["deepseek_cache"].(map[string]any)
+	require.Equal(t, true, deepseek["prompt_cache_key_present"])
+	require.Equal(t, false, deepseek["upstream_prompt_cache_key_present"])
 }
 
 func TestCodexGatewayCaptureV2DeepSeekCacheUsagePrefersProviderExtra(t *testing.T) {
@@ -1247,8 +1327,10 @@ func TestCodexGatewayCapture_AgnesUnsupportedClearsDerivedColdCacheMetrics(t *te
 	// result is known. AGNES later marks provider prompt cache as unsupported, so
 	// those derived cold-cache fields must be removed instead of shown as misses.
 	manager.mergeCacheUsage(trace, map[string]any{
-		"input_tokens":            24000,
-		"cache_read_input_tokens": 0,
+		"input_tokens":               24000,
+		"cache_read_input_tokens":    0,
+		"prefix_hash_changed_reason": "tool_schema_changed",
+		"cache_change_hint":          "tool_schema_changed",
 	})
 	manager.RecordProviderResult(trace, CodexGatewayProviderResult{
 		UpstreamModel: "agnes-2.0-flash",
@@ -1267,12 +1349,15 @@ func TestCodexGatewayCapture_AgnesUnsupportedClearsDerivedColdCacheMetrics(t *te
 	require.NotContains(t, fmtAny(cacheUsage), "prompt_cache_miss_tokens")
 	require.NotContains(t, fmtAny(cacheUsage), "prompt_cache_hit_tokens")
 	require.NotContains(t, fmtAny(cacheUsage), "cache_hit_ratio")
+	require.NotContains(t, fmtAny(cacheUsage), "prefix_hash_changed_reason")
+	require.NotContains(t, fmtAny(cacheUsage), "cache_change_hint")
 
 	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
 	efficiency := report["cache_efficiency"].(map[string]any)
 	require.Equal(t, "unsupported", efficiency["provider_prompt_cache_status"])
 	require.NotContains(t, fmtAny(efficiency), "prompt_cache_miss_tokens")
 	require.NotContains(t, fmtAny(efficiency), "cache_hit_ratio")
+	require.NotContains(t, fmtAny(efficiency), "cache_change_hint")
 }
 
 func readCaptureJSONFile(t *testing.T, path string) map[string]any {

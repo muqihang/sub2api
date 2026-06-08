@@ -706,6 +706,12 @@ func canonicalizeCodexGatewayToolSchemaWithContext(value any, propertyContainer 
 				}
 				continue
 			}
+			if key == "dependentRequired" {
+				if dependent, ok := normalizeCodexGatewayDependentRequiredSchemaKeys(child); ok {
+					out[key] = dependent
+				}
+				continue
+			}
 			out[key] = canonicalizeCodexGatewayToolSchemaWithContext(child, false)
 		}
 		return out
@@ -751,6 +757,27 @@ func normalizeCodexGatewayRequiredSchemaKeys(value any) ([]any, bool) {
 		}
 		return left < right
 	})
+	return out, true
+}
+
+func normalizeCodexGatewayDependentRequiredSchemaKeys(value any) (map[string]any, bool) {
+	items, ok := value.(map[string]any)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	out := make(map[string]any, len(items))
+	for key, raw := range items {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if required, ok := normalizeCodexGatewayRequiredSchemaKeys(raw); ok {
+			out[key] = required
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
 	return out, true
 }
 

@@ -322,7 +322,7 @@ func codexGatewayDeepSeekToolOutputFallbackPreviewOnly(value any) bool {
 	return true
 }
 
-func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, userDiag codexGatewayDeepSeekUserIDDiagnostics, replayDiag codexGatewayDeepSeekReplayDiagnostics, redactor *CodexGatewayCaptureRedactor) map[string]any {
+func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, userDiag codexGatewayDeepSeekUserIDDiagnostics, replayDiag codexGatewayDeepSeekReplayDiagnostics, clientPromptCacheKeyPresent bool, redactor *CodexGatewayCaptureRedactor) map[string]any {
 	if redactor == nil || len(body) == 0 {
 		return nil
 	}
@@ -333,18 +333,30 @@ func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, 
 	staticPrefix := codexGatewayDeepSeekStaticPrefix(body)
 	toolSchema := codexGatewayDeepSeekToolSchema(body)
 	requestShape := codexGatewayDeepSeekRequestShape(body)
+	stablePrefix := map[string]any{"static_prefix": staticPrefix, "tool_schema": toolSchema, "message_prefix": messagePrefix}
+	toolSchemaHash := codexGatewayDeepSeekStableHash(redactor, toolSchema)
+	messagePrefixHash := codexGatewayDeepSeekStableHash(redactor, messagePrefix)
 	out := map[string]any{
-		"detected":            true,
-		"raw_body_hash":       codexGatewayDeepSeekStableHash(redactor, body),
-		"messages_full_hash":  codexGatewayDeepSeekStableHash(redactor, messages),
-		"message_suffix_hash": codexGatewayDeepSeekStableHash(redactor, messageSuffix),
-		"message_last_hash":   codexGatewayDeepSeekStableHash(redactor, messageLast),
-		"request_prefix_hash": codexGatewayDeepSeekStableHash(redactor, map[string]any{"static_prefix": staticPrefix, "tool_schema": toolSchema, "message_prefix": messagePrefix}),
-		"static_prefix_hash":  codexGatewayDeepSeekStableHash(redactor, staticPrefix),
-		"tool_schema_hash":    codexGatewayDeepSeekStableHash(redactor, toolSchema),
-		"message_prefix_hash": codexGatewayDeepSeekStableHash(redactor, messagePrefix),
-		"request_shape_hash":  codexGatewayDeepSeekStableHash(redactor, requestShape),
-		"message_count":       len(messages),
+		"detected":                          true,
+		"raw_body_hash":                     codexGatewayDeepSeekStableHash(redactor, body),
+		"messages_full_hash":                codexGatewayDeepSeekStableHash(redactor, messages),
+		"message_suffix_hash":               codexGatewayDeepSeekStableHash(redactor, messageSuffix),
+		"message_last_hash":                 codexGatewayDeepSeekStableHash(redactor, messageLast),
+		"request_prefix_hash":               codexGatewayDeepSeekStableHash(redactor, stablePrefix),
+		"static_prefix_hash":                codexGatewayDeepSeekStableHash(redactor, staticPrefix),
+		"tool_schema_hash":                  toolSchemaHash,
+		"tools_hash":                        toolSchemaHash,
+		"message_prefix_hash":               messagePrefixHash,
+		"messages_prefix_hash":              messagePrefixHash,
+		"request_shape_hash":                codexGatewayDeepSeekStableHash(redactor, requestShape),
+		"stable_prefix_bytes":               codexGatewayStableJSONBytes(stablePrefix),
+		"tool_count":                        codexGatewayDeepSeekToolCount(toolSchema),
+		"tool_schema_bytes":                 codexGatewayStableJSONBytes(toolSchema),
+		"request_allowlist_hash":            codexGatewayDeepSeekStableHash(redactor, codexGatewayDeepSeekRequestAllowlistKeys()),
+		"gateway_injection_version":         codexGatewayDeepSeekCacheSerializationVersion,
+		"prompt_cache_key_present":          clientPromptCacheKeyPresent,
+		"upstream_prompt_cache_key_present": strings.TrimSpace(firstCodexGatewayToolString(body["prompt_cache_key"])) != "",
+		"message_count":                     len(messages),
 		"message_prefix_count": func() int {
 			if len(messages) < codexGatewayDeepSeekMessagePrefixLimit {
 				return len(messages)
@@ -408,8 +420,17 @@ func codexGatewayDeepSeekCacheUsageFields(diagnostics map[string]any) map[string
 	copyKey("message_last_hash")
 	copyKey("static_prefix_hash")
 	copyKey("tool_schema_hash")
+	copyKey("tools_hash")
 	copyKey("message_prefix_hash")
+	copyKey("messages_prefix_hash")
 	copyKey("request_shape_hash")
+	copyKey("stable_prefix_bytes")
+	copyKey("tool_count")
+	copyKey("tool_schema_bytes")
+	copyKey("request_allowlist_hash")
+	copyKey("gateway_injection_version")
+	copyKey("prompt_cache_key_present")
+	copyKey("upstream_prompt_cache_key_present")
 	copyKey("previous_response_id_present")
 	copyKey("previous_response_replay_mode")
 	copyKey("state_lookup_status")
@@ -447,6 +468,22 @@ func codexGatewayDeepSeekStableHash(redactor *CodexGatewayCaptureRedactor, value
 		return ""
 	}
 	return redactor.HashText(string(payload))
+}
+
+func codexGatewayStableJSONBytes(value any) int {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	return len(payload)
+}
+
+func codexGatewayDeepSeekToolCount(toolSchema any) int {
+	tools, ok := toolSchema.([]any)
+	if !ok {
+		return 0
+	}
+	return len(tools)
 }
 
 func codexGatewayDeepSeekStaticPrefix(body map[string]any) map[string]any {
@@ -555,7 +592,9 @@ func (m *CodexGatewayCaptureManager) cacheEfficiency(trace *CodexGatewayTrace, p
 				cacheUpdates["cache_miss_attribution"] = missAttribution
 				if reason := codexGatewayDeepSeekPrefixHashChangedReason(missAttribution); reason != "" {
 					efficiency["prefix_hash_changed_reason"] = reason
+					efficiency["cache_change_hint"] = reason
 					cacheUpdates["prefix_hash_changed_reason"] = reason
+					cacheUpdates["cache_change_hint"] = reason
 				}
 			}
 		}
@@ -716,8 +755,17 @@ func codexGatewayDeepSeekSessionDiagnostics(requestDiag map[string]any) map[stri
 		"message_last_hash",
 		"static_prefix_hash",
 		"tool_schema_hash",
+		"tools_hash",
 		"message_prefix_hash",
+		"messages_prefix_hash",
 		"request_shape_hash",
+		"stable_prefix_bytes",
+		"tool_count",
+		"tool_schema_bytes",
+		"request_allowlist_hash",
+		"gateway_injection_version",
+		"prompt_cache_key_present",
+		"upstream_prompt_cache_key_present",
 		"previous_response_id_present",
 		"previous_response_replay_mode",
 		"state_lookup_status",
