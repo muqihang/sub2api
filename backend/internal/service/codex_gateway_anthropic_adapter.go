@@ -439,9 +439,94 @@ func codexGatewayAnthropicStateReplayMessages(base []json.RawMessage, state Code
 	assistant := codexGatewayAnthropicAssistantMessageFromState(state)
 	raw, err := json.Marshal(assistant)
 	if err == nil && len(raw) > 0 {
+		if len(state.ToolCalls) > 0 && codexGatewayAnthropicReplayBaseHasToolResult(base) {
+			out := codexGatewayAnthropicToolReplayContextMessages(base)
+			out = append(out, raw)
+			return out
+		}
 		return []json.RawMessage{raw}
 	}
 	return nil
+}
+
+func codexGatewayAnthropicReplayBaseHasToolResult(base []json.RawMessage) bool {
+	for _, raw := range base {
+		var msg map[string]any
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+		content, _ := msg["content"].([]any)
+		for _, partAny := range content {
+			part, _ := partAny.(map[string]any)
+			if strings.TrimSpace(firstCodexGatewayToolString(part["type"])) == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexGatewayAnthropicToolReplayContextMessages(base []json.RawMessage) []json.RawMessage {
+	if len(base) == 0 {
+		return nil
+	}
+	var lastUser json.RawMessage
+	for _, raw := range base {
+		var msg map[string]any
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+		if clipped, ok := codexGatewayAnthropicClipReplayContextMessage(msg); ok {
+			lastUser = clipped
+		}
+	}
+	if len(lastUser) == 0 {
+		return nil
+	}
+	return []json.RawMessage{lastUser}
+}
+
+func codexGatewayAnthropicClipReplayContextMessage(msg map[string]any) (json.RawMessage, bool) {
+	if strings.TrimSpace(firstCodexGatewayToolString(msg["role"])) != "user" {
+		return nil, false
+	}
+	text := strings.TrimSpace(codexGatewayAnthropicReplayContextText(msg["content"]))
+	if text == "" {
+		return nil, false
+	}
+	text = codexGatewayDeepSeekTruncateString(text, codexGatewayDeepSeekToolReplayMaxContextChars)
+	out, err := json.Marshal(map[string]any{
+		"role": "user",
+		"content": []map[string]any{{
+			"type": "text",
+			"text": text,
+		}},
+	})
+	if err != nil || len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func codexGatewayAnthropicReplayContextText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, partAny := range typed {
+			part, _ := partAny.(map[string]any)
+			switch strings.TrimSpace(firstCodexGatewayToolString(part["type"])) {
+			case "text", "input_text", "output_text":
+				if text := strings.TrimSpace(stringifyCodexGatewayContentText(part["text"])); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 func codexGatewayAnthropicFinishStatus(reason string) string {

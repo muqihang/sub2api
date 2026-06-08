@@ -533,6 +533,122 @@ func TestBuildCodexGatewayAnthropicRequest_PreservesThinkingForLargeToolReplay(t
 	require.Equal(t, "max", gjson.GetBytes(raw, "output_config.effort").String())
 }
 
+func TestBuildCodexGatewayAnthropicRequest_SummarizesLargeComputerUseToolOutput(t *testing.T) {
+	largeAXTree := "Computer Use state (CUA App Version: 799)\n<app_state>\nApp=/Applications/Doubao.app\n" +
+		strings.Repeat("0 标准窗口 豆包, Second Sidebar Group\n1 按钮 历史会话\n2 静态文本 推荐内容\n", 900) +
+		"188 文本输入区 Ask anything enabled=true focused=true element_index=188\n" +
+		"189 按钮 发送 enabled=true element_index=189\n" +
+		"190 静态文本 胡辣汤、烩面、黄河鲤鱼都是郑州特色\n</app_state>"
+	rawOutput, err := json.Marshal([]any{
+		map[string]any{"type": "input_text", "text": "Wall time: 8.7346 seconds\nOutput:"},
+		map[string]any{"type": "input_text", "text": largeAXTree},
+		map[string]any{"type": "image_url", "image_url": "data:image/png;base64," + strings.Repeat("A", 40000)},
+	})
+	require.NoError(t, err)
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"input":[
+			{"type":"message","role":"user","content":"use Doubao"},
+			{"type":"function_call","call_id":"call_state","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"/Applications/Doubao.app\"}"},
+			{"type":"function_call_output","call_id":"call_state","output":` + string(rawOutput) + `}
+		],
+		"tools":[{"type":"function","name":"mcp__computer_use__get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	content := gjson.GetBytes(raw, "messages.2.content.0.content").String()
+	require.Less(t, len(content), 12000)
+	require.Contains(t, content, "accessibility_tree")
+	require.Contains(t, content, "operable_lines")
+	require.Contains(t, content, "188 文本输入区")
+	require.Contains(t, content, "189 按钮")
+	require.Contains(t, content, "binary_or_image")
+	require.NotContains(t, content, "Second Sidebar Group")
+	require.NotContains(t, content, strings.Repeat("A", 1024))
+}
+
+func TestCodexGatewayAnthropicStateReplayMessages_DoesNotAccumulateComputerUseToolResults(t *testing.T) {
+	largeAXTree := "Computer Use state (CUA App Version: 799)\n<app_state>\n" +
+		strings.Repeat("0 标准窗口 豆包, Second Sidebar Group\n1 按钮 历史会话\n", 1200) +
+		"188 文本输入区 Ask anything enabled=true element_index=188\n" +
+		"189 按钮 发送 enabled=true element_index=189\n</app_state>"
+	base := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":[{"type":"text","text":"Use Doubao with Computer Use and answer the weather question.` + strings.Repeat(" keep-context", 800) + `"}]}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"call_state","name":"mcp__computer_use__get_app_state","input":{"app":"/Applications/Doubao.app"}}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_state","content":` + strconv.Quote(largeAXTree+"\nimage_url=data:image/png;base64,"+strings.Repeat("A", 40000)) + `}]}`),
+	}
+	replay := codexGatewayAnthropicStateReplayMessages(base, CodexGatewayResponseState{
+		AssistantContentPresent: true,
+		AssistantContent:        "Need to type into Doubao.",
+		ToolCalls: []CodexGatewayStoredToolCall{{
+			ID:        "call_set",
+			Type:      CodexGatewayToolKindNamespace,
+			Alias:     "mcp__computer_use__set_value",
+			Name:      "set_value",
+			Arguments: `{"app":"com.bot.pc.doubao","element_index":"188","value":"明天郑州天气怎么样啊"}`,
+		}},
+		ToolNameMap: map[string]CodexGatewayToolNameMapEntry{
+			"mcp__computer_use__set_value": {Alias: "mcp__computer_use__set_value", Kind: CodexGatewayToolKindNamespace, NamespacePath: "mcp__computer_use__", Name: "set_value"},
+		},
+	})
+
+	require.Len(t, replay, 2)
+	require.Contains(t, string(replay[0]), `"role":"user"`)
+	require.Contains(t, string(replay[0]), "Use Doubao with Computer Use")
+	require.Less(t, len(replay[0]), 3000)
+	require.Contains(t, string(replay[1]), `"type":"tool_use"`)
+	require.Contains(t, string(replay[1]), "mcp__computer_use__set_value")
+	rawReplay, err := json.Marshal(replay)
+	require.NoError(t, err)
+	require.NotContains(t, string(rawReplay), "Second Sidebar Group")
+	require.NotContains(t, string(rawReplay), strings.Repeat("A", 1024))
+}
+
+func TestBuildCodexGatewayAnthropicRequest_ComputerUseAddsNativeOperationStrategy(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Doubao with Computer Use."}]}],
+		"tools":[{"type":"namespace","name":"mcp__computer_use__","tools":[
+			{"type":"function","name":"list_apps","parameters":{"type":"object","properties":{}}},
+			{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}},
+			{"type":"function","name":"set_value","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"value":{"type":"string"}},"required":["app","element_index","value"]}},
+			{"type":"function","name":"press_key","parameters":{"type":"object","properties":{"app":{"type":"string"},"key":{"type":"string"}},"required":["app","key"]}}
+		]}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	strategy := gjson.GetBytes(raw, "system.#.text").Array()
+	joined := ""
+	for _, item := range strategy {
+		joined += item.String() + "\n"
+	}
+	require.Contains(t, joined, "Computer Use strategy")
+	require.Contains(t, joined, "prefer bundle identifier")
+	require.Contains(t, joined, "set_value")
+}
+
 func TestBuildCodexGatewayAnthropicRequest_DisablesThinkingForForcedToolChoice(t *testing.T) {
 	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
 		"model":"claude-opus-4-6-thinking",

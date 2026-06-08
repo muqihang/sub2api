@@ -46,7 +46,7 @@ func BuildCodexGatewayAnthropicRequest(model CodexGatewayModel, req CodexGateway
 		body["top_p"] = v
 	}
 
-	systemBlocks := codexGatewayAnthropicSystemBlocks(req, toolMapping.IgnoredHostedToolTypes, cfg)
+	systemBlocks := codexGatewayAnthropicSystemBlocks(req, toolMapping, cfg)
 	if len(systemBlocks) > 0 {
 		body["system"] = systemBlocks
 	}
@@ -103,22 +103,34 @@ func codexGatewayAnthropicMaxTokens(max *int, model CodexGatewayModel) int {
 	return 8192
 }
 
-func codexGatewayAnthropicSystemBlocks(req CodexGatewayResponsesCreateRequest, ignored []string, cfg CodexGatewayAnthropicRequestConfig) []any {
+func codexGatewayAnthropicSystemBlocks(req CodexGatewayResponsesCreateRequest, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayAnthropicRequestConfig) []any {
 	var blocks []any
-	if instructions, ok := parseCodexGatewayJSONString(req.Instructions); ok && strings.TrimSpace(instructions) != "" {
+	instructions, hasInstructions := parseCodexGatewayJSONString(req.Instructions)
+	if hasInstructions && strings.TrimSpace(instructions) != "" {
 		blocks = append(blocks, map[string]any{
 			"type":          "text",
 			"text":          instructions,
 			"cache_control": codexGatewayAnthropicCacheControl(cfg),
 		})
 	}
-	if len(ignored) > 0 {
+	if codexGatewayAnthropicToolMappingHasComputerUse(toolMapping) && !strings.Contains(instructions, codexGatewayDeepSeekComputerUseInstruction) {
+		blocks = append(blocks, map[string]any{
+			"type":          "text",
+			"text":          codexGatewayDeepSeekComputerUseInstruction,
+			"cache_control": codexGatewayAnthropicCacheControl(cfg),
+		})
+	}
+	if len(toolMapping.IgnoredHostedToolTypes) > 0 {
 		blocks = append(blocks, map[string]any{
 			"type": "text",
-			"text": codexGatewayAnthropicHostedToolNotice(ignored),
+			"text": codexGatewayAnthropicHostedToolNotice(toolMapping.IgnoredHostedToolTypes),
 		})
 	}
 	return blocks
+}
+
+func codexGatewayAnthropicToolMappingHasComputerUse(mapping CodexGatewayToolMappingResult) bool {
+	return codexGatewayDeepSeekToolMappingHasComputerUse(mapping)
 }
 
 func codexGatewayAnthropicHostedToolNotice(toolTypes []string) string {
@@ -531,7 +543,7 @@ func convertCodexGatewayFunctionCallOutputItemToAnthropic(m map[string]any) (map
 	if callID == "" {
 		return nil, fmt.Errorf("function_call_output requires call_id")
 	}
-	output, err := normalizeCodexGatewayToolOutput(m["output"])
+	output, err := normalizeCodexGatewayAnthropicToolOutput(m["output"])
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +565,7 @@ func convertCodexGatewayToolSearchOutputItemToAnthropic(m map[string]any) (map[s
 	var output string
 	var err error
 	if _, hasOutput := m["output"]; hasOutput {
-		output, err = normalizeCodexGatewayToolOutput(m["output"])
+		output, err = normalizeCodexGatewayAnthropicToolOutput(m["output"])
 	} else {
 		output, err = normalizeCodexGatewayToolOutput(canonicalizeCodexGatewayToolSchema(m["tools"]))
 	}
@@ -568,6 +580,10 @@ func convertCodexGatewayToolSearchOutputItemToAnthropic(m map[string]any) (map[s
 			"content":     output,
 		}},
 	}, nil
+}
+
+func normalizeCodexGatewayAnthropicToolOutput(value any) (string, error) {
+	return normalizeCodexGatewayDeepSeekToolOutput(value)
 }
 
 func buildCodexGatewayAnthropicToolChoice(raw json.RawMessage, toolMapping CodexGatewayToolMappingResult) (any, bool, error) {
