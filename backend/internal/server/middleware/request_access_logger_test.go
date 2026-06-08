@@ -218,6 +218,31 @@ func TestLogger_BrowserEgressAccessLogRedactsNonceAndClientIP(t *testing.T) {
 	requireFieldsNotContain(t, event, "198.51.100.77")
 }
 
+func TestLogger_AccessLogUsesForwardedClientIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := initMiddlewareTestLogger(t)
+
+	r := gin.New()
+	r.Use(Logger())
+	r.GET("/api/test", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.RemoteAddr = "104.23.251.120:443"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.42")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+
+	event := findTestLogEvent(t, sink.list(), "http request completed")
+	if got := event.Fields["client_ip"]; got != "203.0.113.42" {
+		t.Fatalf("client_ip=%q, want real forwarded ip", got)
+	}
+}
+
 func TestLogger_BrowserEgressGinErrorsRedactsNonceAndClientIP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	sink := initMiddlewareTestLogger(t)

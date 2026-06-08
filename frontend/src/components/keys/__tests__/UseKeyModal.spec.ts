@@ -33,6 +33,78 @@ vi.mock('@/api/zhumengAgent', () => ({
 import UseKeyModal from '../UseKeyModal.vue'
 
 describe('UseKeyModal', () => {
+  it('renders GPT-5.5, Codex-safe context limits, and goals feature in OpenAI Codex config', () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKeyId: 42,
+        apiKey: 'sk-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
+    const configToml = codeBlocks.find((content) => content.includes('model_provider = "OpenAI"'))
+
+    expect(configToml).toBeDefined()
+    expect(configToml).toContain('model = "gpt-5.5"')
+    expect(configToml).toContain('review_model = "gpt-5.5"')
+    expect(configToml).toContain('model_context_window = 272000')
+    expect(configToml).toContain('model_auto_compact_token_limit = 244800')
+    expect(configToml).toContain('[features]\ngoals = true')
+  })
+
+  it('renders GPT-5.5, Codex-safe context limits, and goals feature in OpenAI Codex WebSocket config', async () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKeyId: 42,
+        apiKey: 'sk-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const wsTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.codexCliWs')
+    )
+
+    expect(wsTab).toBeDefined()
+    await wsTab!.trigger('click')
+    await nextTick()
+
+    const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
+    const configToml = codeBlocks.find((content) => content.includes('supports_websockets = true'))
+
+    expect(configToml).toBeDefined()
+    expect(configToml).toContain('model = "gpt-5.5"')
+    expect(configToml).toContain('review_model = "gpt-5.5"')
+    expect(configToml).toContain('model_context_window = 272000')
+    expect(configToml).toContain('model_auto_compact_token_limit = 244800')
+    expect(configToml).toContain('[features]\nresponses_websockets_v2 = true\ngoals = true')
+  })
+
   it('allows switching the generated OpenAI config between GPT-5.4 and GPT-5.5', async () => {
     listCodexManagedDevices.mockResolvedValue([])
     const wrapper = mount(UseKeyModal, {

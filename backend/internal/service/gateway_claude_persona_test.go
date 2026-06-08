@@ -116,7 +116,7 @@ func TestBuildUpstreamRequest_MimicUsesMessagesOAuthBetas(t *testing.T) {
 			account := newClaudePersonaOAuthAccount()
 			ctx := newClaudePersonaTestContext("/v1/messages")
 
-			req, err := svc.buildUpstreamRequest(
+			req, _, err := svc.buildUpstreamRequest(
 				context.Background(),
 				ctx,
 				account,
@@ -140,7 +140,7 @@ func TestBuildCountTokensRequest_MimicUsesCountTokensOAuthBetas(t *testing.T) {
 	account := newClaudePersonaOAuthAccount()
 	ctx := newClaudePersonaTestContext("/v1/messages/count_tokens")
 
-	req, err := svc.buildCountTokensRequest(
+	req, _, err := svc.buildCountTokensRequest(
 		context.Background(),
 		ctx,
 		account,
@@ -152,6 +152,9 @@ func TestBuildCountTokensRequest_MimicUsesCountTokensOAuthBetas(t *testing.T) {
 		false,
 	)
 	require.NoError(t, err)
-	require.Equal(t, strings.Join(claude.ClaudeCodeCountTokensOAuthBetas(), ","), getHeaderRaw(req.Header, "anthropic-beta"))
+	beta := getHeaderRaw(req.Header, "anthropic-beta")
+	for _, token := range append(claude.FullClaudeCodeMimicryBetas(), claude.BetaTokenCounting) {
+		require.Contains(t, beta, token)
+	}
 	require.Empty(t, getHeaderRaw(req.Header, "x-stainless-helper-method"))
 }

@@ -382,9 +382,27 @@ func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *Ope
 			tokenInfo.Email = info.Email
 		}
 	}
+	if strings.TrimSpace(tokenInfo.SubscriptionExpiresAt) == "" {
+		if expiresAt := fetchChatGPTSubscriptionExpiresAt(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL, resolveChatGPTSubscriptionAccountID(tokenInfo, orgID)); expiresAt != "" {
+			tokenInfo.SubscriptionExpiresAt = expiresAt
+		}
+	}
 
 	// 尝试设置隐私（关闭训练数据共享），best-effort
 	tokenInfo.PrivacyMode = disableOpenAITraining(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL)
+}
+
+func resolveChatGPTSubscriptionAccountID(tokenInfo *OpenAITokenInfo, orgID string) string {
+	for _, candidate := range []string{
+		tokenInfo.ChatGPTAccountID,
+		tokenInfo.OrganizationID,
+		orgID,
+	} {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // RefreshAccountToken refreshes token for an OpenAI OAuth account
@@ -405,6 +423,24 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 			return nil, refreshErr
 		}
 	}
+
+	var proxyURL string
+	if account.ProxyID != nil {
+		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
+		if err == nil && proxy != nil {
+			proxyURL = proxy.URL()
+		}
+	}
+	if s.gatewayCoreService != nil {
+		egress, err := s.gatewayCoreService.ResolveEgress(ctx, account, proxyURL)
+		if err != nil {
+			return nil, err
+		}
+		if egress != nil {
+			proxyURL = egress.ProxyURL
+		}
+	}
+
 	if refreshToken == "" {
 		accessToken := ""
 		if rawAccessToken := strings.TrimSpace(account.GetCredential("access_token")); rawAccessToken != "" {
@@ -432,40 +468,25 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 				}
 			}
 			tokenInfo := &OpenAITokenInfo{
-				AccessToken:      accessToken,
-				RefreshToken:     "",
-				IDToken:          idToken,
-				ClientID:         clientID,
-				Email:            account.GetCredential("email"),
-				ChatGPTAccountID: account.GetCredential("chatgpt_account_id"),
-				ChatGPTUserID:    account.GetCredential("chatgpt_user_id"),
-				OrganizationID:   account.GetCredential("organization_id"),
-				PlanType:         account.GetCredential("plan_type"),
+				AccessToken:           accessToken,
+				RefreshToken:          "",
+				IDToken:               idToken,
+				ClientID:              clientID,
+				Email:                 account.GetCredential("email"),
+				ChatGPTAccountID:      account.GetCredential("chatgpt_account_id"),
+				ChatGPTUserID:         account.GetCredential("chatgpt_user_id"),
+				OrganizationID:        account.GetCredential("organization_id"),
+				PlanType:              account.GetCredential("plan_type"),
+				SubscriptionExpiresAt: account.GetCredential("subscription_expires_at"),
 			}
 			if expiresAt := account.GetCredentialAsTime("expires_at"); expiresAt != nil {
 				tokenInfo.ExpiresAt = expiresAt.Unix()
 				tokenInfo.ExpiresIn = int64(time.Until(*expiresAt).Seconds())
 			}
+			s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
 			return tokenInfo, nil
 		}
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_NO_REFRESH_TOKEN", "no refresh token available")
-	}
-
-	var proxyURL string
-	if account.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
-	}
-	if s.gatewayCoreService != nil {
-		egress, err := s.gatewayCoreService.ResolveEgress(ctx, account, proxyURL)
-		if err != nil {
-			return nil, err
-		}
-		if egress != nil {
-			proxyURL = egress.ProxyURL
-		}
 	}
 
 	clientID := ""
@@ -476,6 +497,7 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 			return nil, clientIDErr
 		}
 	}
+
 	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 }
 

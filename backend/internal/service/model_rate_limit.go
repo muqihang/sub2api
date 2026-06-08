@@ -4,9 +4,15 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
-const modelRateLimitsKey = "model_rate_limits"
+const (
+	modelRateLimitsKey                 = "model_rate_limits"
+	antigravityGeminiModelRateLimitKey = "antigravity:gemini"
+	openAIImageGenerationRateLimitKey  = "openai:image_generation"
+)
 
 // isRateLimitActiveForKey 检查指定 key 的限流是否生效
 func (a *Account) isRateLimitActiveForKey(key string) bool {
@@ -28,12 +34,8 @@ func (a *Account) getRateLimitRemainingForKey(key string) time.Duration {
 }
 
 func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedModel string) bool {
-	if a == nil {
-		return false
-	}
-
-	for _, modelKey := range a.modelRateLimitLookupKeys(ctx, requestedModel) {
-		if a.isRateLimitActiveForKey(modelKey) {
+	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
+		if a.isRateLimitActiveForKey(key) {
 			return true
 		}
 	}
@@ -47,17 +49,61 @@ func (a *Account) GetModelRateLimitRemainingTime(requestedModel string) time.Dur
 }
 
 func (a *Account) GetModelRateLimitRemainingTimeWithContext(ctx context.Context, requestedModel string) time.Duration {
-	if a == nil {
-		return 0
-	}
-
-	var maxRemaining time.Duration
-	for _, modelKey := range a.modelRateLimitLookupKeys(ctx, requestedModel) {
-		if remaining := a.getRateLimitRemainingForKey(modelKey); remaining > maxRemaining {
-			maxRemaining = remaining
+	remaining := time.Duration(0)
+	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
+		if keyRemaining := a.getRateLimitRemainingForKey(key); keyRemaining > remaining {
+			remaining = keyRemaining
 		}
 	}
-	return maxRemaining
+	return remaining
+}
+
+func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedModel string) []string {
+	if a == nil {
+		return nil
+	}
+
+	var keys []string
+	for _, modelKey := range a.modelRateLimitLookupKeys(ctx, requestedModel) {
+		modelKey = strings.TrimSpace(modelKey)
+		if modelKey == "" {
+			continue
+		}
+		keys = appendUniqueModelRateLimitKey(keys, modelKey)
+		switch a.Platform {
+		case PlatformAntigravity:
+			if isAntigravityGeminiModel(modelKey) && modelKey != antigravityGeminiModelRateLimitKey {
+				keys = appendUniqueModelRateLimitKey(keys, antigravityGeminiModelRateLimitKey)
+			}
+		case PlatformOpenAI:
+			if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) && modelKey != openAIImageGenerationRateLimitKey {
+				keys = appendUniqueModelRateLimitKey(keys, openAIImageGenerationRateLimitKey)
+			}
+		}
+	}
+	return keys
+}
+
+func openAIImageGenerationRateLimitApplies(ctx context.Context, requestedModel, modelKey string) bool {
+	if isOpenAIImageGenerationModel(requestedModel) || isOpenAIImageGenerationModel(modelKey) {
+		return true
+	}
+	return OpenAIImageGenerationIntentFromContext(ctx)
+}
+
+func WithOpenAIImageGenerationIntent(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ctxkey.OpenAIImageGenerationIntent, true)
+}
+
+func OpenAIImageGenerationIntentFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, ok := ctx.Value(ctxkey.OpenAIImageGenerationIntent).(bool)
+	return ok && enabled
 }
 
 func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requestedModel string) string {
@@ -109,6 +155,22 @@ func appendUniqueModelRateLimitKey(keys []string, key string) []string {
 		}
 	}
 	return append(keys, key)
+}
+
+func isAntigravityGeminiModel(model string) bool {
+	return strings.HasPrefix(normalizeAntigravityModelName(model), "gemini-")
+}
+
+func antigravityModelRateLimitKeys(model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+	keys := []string{model}
+	if isAntigravityGeminiModel(model) && model != antigravityGeminiModelRateLimitKey {
+		keys = appendUniqueModelRateLimitKey(keys, antigravityGeminiModelRateLimitKey)
+	}
+	return keys
 }
 
 func (a *Account) modelRateLimitResetAt(scope string) *time.Time {

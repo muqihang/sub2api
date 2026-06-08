@@ -135,7 +135,7 @@ func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account, 
 	repo := &openAIEgressPolicyHandlerAccountRepo{accounts: []service.Account{account}}
 	core := service.NewOpenAIGatewayCoreService(repo, cfg, nil)
 	upstream := &openAIEgressPolicyHandlerUpstream{}
-	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingCache.Stop)
 	serviceOptionalDeps = append(serviceOptionalDeps, core)
 

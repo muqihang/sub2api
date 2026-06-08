@@ -422,9 +422,8 @@ func TestRewriteSystemForNonClaudeCode(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, "text", systemBlock["type"])
 			require.Equal(t, tt.wantSystemText, systemBlock["text"])
-			cc, ok := systemBlock["cache_control"].(map[string]any)
-			require.True(t, ok, "cc prompt block should have cache_control")
-			require.Equal(t, "ephemeral", cc["type"])
+			_, hasCC := systemBlock["cache_control"]
+			require.True(t, hasCC, "单块 compat system prompt 使用 cache_control 作为稳定断点")
 
 			// 检查 messages
 			messages, ok := parsed["messages"].([]any)

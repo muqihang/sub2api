@@ -13,12 +13,17 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // claudeCodeValidator is a singleton validator for Claude Code client detection
 var claudeCodeValidator = service.NewClaudeCodeValidator()
 
-const claudeCodeParsedRequestContextKey = "claude_code_parsed_request"
+const (
+	claudeCodeParsedRequestContextKey  = "claude_code_parsed_request"
+	claudeCodeServerForwardedCompatKey = "claude_code_server_forwarded_compat"
+	openAIParsedRequestBodyContextKey  = "openai_parsed_request_body"
+)
 
 // SetClaudeCodeClientContext 检查请求是否来自 Claude Code 客户端，并设置到 context 中
 // 返回更新后的 context
@@ -31,8 +36,17 @@ func SetClaudeCodeClientContext(c *gin.Context, body []byte, parsedReq *service.
 	}
 
 	ua := c.GetHeader("User-Agent")
-	// Fast path：非官方 Claude Code UA 直接判定 false，避免热路径二次 JSON 反序列化。
+	// Fast path: official Claude Code UA is strongest. For server-to-server
+	// forwarding (sub2api/new-api -> sub2api), the HTTP client UA can become
+	// Go-http-client while the preserved beta/tool shape still identifies the
+	// original Claude Code compatibility lane. Do not downgrade that lane here.
 	if !claudeCodeValidator.ValidateUserAgent(ua) {
+		if isServerForwardedClaudeCodeCompat(c, body) {
+			c.Set(claudeCodeServerForwardedCompatKey, true)
+			ctx := service.SetClaudeCodeClient(c.Request.Context(), true)
+			c.Request = c.Request.WithContext(ctx)
+			return
+		}
 		ctx := service.SetClaudeCodeClient(c.Request.Context(), false)
 		c.Request = c.Request.WithContext(ctx)
 		return
@@ -74,8 +88,12 @@ func claudeCodeBodyMapFromParsedRequest(parsedReq *service.ParsedRequest) map[st
 	bodyMap := map[string]any{
 		"model": parsedReq.Model,
 	}
-	if parsedReq.System != nil || parsedReq.HasSystem {
-		bodyMap["system"] = parsedReq.System
+	if parsedReq.HasSystem {
+		if system, ok := parsedReq.SystemValue(); ok {
+			bodyMap["system"] = system
+		} else {
+			bodyMap["system"] = nil
+		}
 	}
 	if parsedReq.MetadataUserID != "" {
 		bodyMap["metadata"] = map[string]any{"user_id": parsedReq.MetadataUserID}
@@ -87,7 +105,7 @@ func claudeCodeBodyMapFromContextCache(c *gin.Context) map[string]any {
 	if c == nil {
 		return nil
 	}
-	if cached, ok := c.Get(service.OpenAIParsedRequestBodyKey); ok {
+	if cached, ok := c.Get(openAIParsedRequestBodyContextKey); ok {
 		if bodyMap, ok := cached.(map[string]any); ok {
 			return bodyMap
 		}
@@ -101,6 +119,86 @@ func claudeCodeBodyMapFromContextCache(c *gin.Context) map[string]any {
 		}
 	}
 	return nil
+}
+
+func isServerForwardedClaudeCodeCompat(c *gin.Context, body []byte) bool {
+	if !isServerForwardedCompatBase(c) {
+		return false
+	}
+	if headerHasToken(c.GetHeader("anthropic-beta"), "claude-code-20250219") {
+		return true
+	}
+	return bodyHasClaudeCodeToolFingerprint(body)
+}
+
+func isServerForwardedCompatBase(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	audit, ok := service.AnthropicCompatAuditSummaryFromContext(c.Request.Context())
+	if !ok {
+		return false
+	}
+	if audit.InboundRoute != service.AnthropicCompatInboundMessages || audit.ClientType != service.AnthropicCompatClientType {
+		return false
+	}
+	if c.Request.URL == nil || c.Request.URL.Path != service.AnthropicCompatInboundMessages {
+		return false
+	}
+	ua := strings.TrimSpace(c.GetHeader("User-Agent"))
+	return strings.HasPrefix(ua, "Go-http-client/")
+}
+
+func hasServerForwardedCompatMarker(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	marked, ok := c.Get(claudeCodeServerForwardedCompatKey)
+	return ok && marked == true
+}
+
+func bodyHasClaudeCodeToolFingerprint(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return false
+	}
+	toolNames := map[string]struct{}{}
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		name := strings.ToLower(strings.TrimSpace(tool.Get("name").String()))
+		if name != "" {
+			toolNames[name] = struct{}{}
+		}
+		return true
+	})
+	if len(toolNames) >= 10 {
+		return true
+	}
+	if len(toolNames) < 4 {
+		return false
+	}
+	needed := 0
+	for _, name := range []string{"bash", "read", "grep", "glob", "todowrite"} {
+		if _, ok := toolNames[name]; ok {
+			needed++
+		}
+	}
+	return needed >= 4
+}
+
+func headerHasToken(headerValue, token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	for _, part := range strings.Split(headerValue, ",") {
+		if strings.TrimSpace(part) == token {
+			return true
+		}
+	}
+	return false
 }
 
 // 并发槽位等待相关常量
@@ -336,6 +434,9 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 	for {
 		select {
 		case <-ctx.Done():
+			if parentErr := c.Request.Context().Err(); parentErr != nil {
+				return nil, parentErr
+			}
 			return nil, &ConcurrencyError{
 				SlotType:  slotType,
 				IsTimeout: true,
@@ -406,10 +507,10 @@ func forceAnthropicCompatNonNative(c *gin.Context) {
 	if _, ok := service.AnthropicCompatAuditSummaryFromContext(c.Request.Context()); !ok {
 		return
 	}
-	// Real Claude Code CLI traffic can enter the compat /v1/messages path.
-	// Do not downgrade official Claude Code user agents to non-native, or
-	// ClaudeCodeOnly groups will reject legitimate CLI requests before routing.
-	if claudeCodeValidator.ValidateUserAgent(c.GetHeader("User-Agent")) {
+	// Real Claude Code traffic can enter through another server-side gateway,
+	// which may replace the User-Agent with its Go HTTP client. Preserve requests
+	// that still carry audited Claude Code compat evidence.
+	if claudeCodeValidator.ValidateUserAgent(c.GetHeader("User-Agent")) || hasServerForwardedCompatMarker(c) || isServerForwardedClaudeCodeCompat(c, nil) {
 		return
 	}
 	ctx := service.SetClaudeCodeClient(c.Request.Context(), false)

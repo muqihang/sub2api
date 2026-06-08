@@ -73,7 +73,14 @@ vi.mock('vue-i18n', async () => {
 
 const DataTableStub = {
   props: ['columns', 'data', 'density'],
-  template: '<div data-test="data-table" :data-density="density || \'normal\'"></div>'
+  template: `
+    <div data-test="data-table" :data-density="density || 'normal'">
+      <span v-for="column in columns" :key="column.key" data-test="column-key">{{ column.key }}</span>
+      <div v-for="row in data" :key="row.id">
+        <slot name="cell-created_at" :value="row.created_at" :row="row" />
+      </div>
+    </div>
+  `
 }
 
 const FormalPoolStatusDashboardModalStub = {
@@ -183,5 +190,36 @@ describe('admin AccountsView bulk edit scope', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-test="formal-pool-dashboard-modal"]').attributes('data-show')).toBe('true')
+  })
+
+  it('renders the created_at column by default', async () => {
+    listAccounts.mockResolvedValue({
+      items: [
+        {
+          id: 1,
+          name: 'test-account',
+          platform: 'anthropic',
+          type: 'oauth',
+          status: 'active',
+          schedulable: true,
+          created_at: '2026-03-07T10:00:00Z',
+          updated_at: '2026-03-07T10:00:00Z'
+        }
+      ],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1
+    })
+
+    const wrapper = await mountAccountsView()
+
+    const columnKeys = wrapper.findAll('[data-test="column-key"]').map(node => node.text())
+    expect(columnKeys).toContain('created_at')
+    const columns = wrapper.getComponent(DataTableStub).props('columns') as Array<{ key: string; label: string; sortable: boolean }>
+    expect(columns.find(column => column.key === 'created_at')).toMatchObject({
+      label: 'admin.accounts.columns.createdAt',
+      sortable: true
+    })
   })
 })

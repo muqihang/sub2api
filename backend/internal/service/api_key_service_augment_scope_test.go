@@ -52,6 +52,9 @@ func (s *apiKeyAugmentRepoStub) Update(ctx context.Context, key *APIKey) error {
 func (s *apiKeyAugmentRepoStub) Delete(ctx context.Context, id int64) error {
 	panic("unexpected Delete call")
 }
+func (s *apiKeyAugmentRepoStub) DeleteWithAudit(ctx context.Context, id int64) error {
+	panic("unexpected DeleteWithAudit call")
+}
 func (s *apiKeyAugmentRepoStub) ListByUserID(ctx context.Context, userID int64, params pagination.PaginationParams, filters APIKeyListFilters) ([]APIKey, *pagination.PaginationResult, error) {
 	panic("unexpected ListByUserID call")
 }
@@ -111,6 +114,9 @@ func (s *apiKeyAugmentUserRepoStub) GetByID(ctx context.Context, id int64) (*Use
 	}
 	return s.user, nil
 }
+func (s *apiKeyAugmentUserRepoStub) GetByIDIncludeDeleted(ctx context.Context, id int64) (*User, error) {
+	return s.GetByID(ctx, id)
+}
 
 func (s *apiKeyAugmentUserRepoStub) Create(ctx context.Context, user *User) error {
 	panic("unexpected Create call")
@@ -159,6 +165,12 @@ func (s *apiKeyAugmentUserRepoStub) DeductBalance(ctx context.Context, id int64,
 }
 func (s *apiKeyAugmentUserRepoStub) UpdateConcurrency(ctx context.Context, id int64, amount int) error {
 	panic("unexpected UpdateConcurrency call")
+}
+func (s *apiKeyAugmentUserRepoStub) BatchSetConcurrency(ctx context.Context, userIDs []int64, value int) (int, error) {
+	panic("unexpected BatchSetConcurrency call")
+}
+func (s *apiKeyAugmentUserRepoStub) BatchAddConcurrency(ctx context.Context, userIDs []int64, delta int) (int, error) {
+	panic("unexpected BatchAddConcurrency call")
 }
 func (s *apiKeyAugmentUserRepoStub) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	panic("unexpected ExistsByEmail call")

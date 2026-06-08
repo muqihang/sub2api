@@ -618,7 +618,10 @@ model_auto_compact_token_limit = ${limits.autoCompactTokenLimit}
 name = "OpenAI"
 base_url = "${baseUrl}"
 wire_api = "responses"
-requires_openai_auth = true`
+requires_openai_auth = true
+
+[features]
+goals = true`
 
   // auth.json content
   const authContent = `{
@@ -662,7 +665,8 @@ supports_websockets = true
 requires_openai_auth = true
 
 [features]
-responses_websockets_v2 = true`
+responses_websockets_v2 = true
+goals = true`
 
   // auth.json content
   const authContent = `{
@@ -842,6 +846,17 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
           budgetTokens: 24576,
           type: 'enabled'
         }
+      }
+    },
+    'gemini-3.5-flash': {
+      name: 'Gemini 3.5 Flash',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
       }
     },
     'gemini-3-flash-preview': {

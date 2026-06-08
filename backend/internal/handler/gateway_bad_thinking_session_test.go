@@ -24,7 +24,7 @@ func (c *thinkingIsolationCache) DeleteSessionAccountID(_ context.Context, group
 
 func TestGatewayHandler_IsolatesBadThinkingSessionByClearingStickyBinding(t *testing.T) {
 	cache := &thinkingIsolationCache{}
-	gatewaySvc := service.NewGatewayService(nil, nil, nil, nil, nil, nil, nil, cache, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewGatewayService(nil, nil, nil, nil, nil, nil, nil, cache, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	h := &GatewayHandler{gatewayService: gatewaySvc}
 	groupID := int64(7)
 

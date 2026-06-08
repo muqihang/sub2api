@@ -409,6 +409,7 @@ func (r *codexGatewayRoutesAPIKeyRepo) GetByKeyForAuth(ctx context.Context, key 
 }
 func (r *codexGatewayRoutesAPIKeyRepo) Update(context.Context, *service.APIKey) error { return nil }
 func (r *codexGatewayRoutesAPIKeyRepo) Delete(context.Context, int64) error           { return nil }
+func (r *codexGatewayRoutesAPIKeyRepo) DeleteWithAudit(context.Context, int64) error  { return nil }
 func (r *codexGatewayRoutesAPIKeyRepo) ListByUserID(context.Context, int64, pagination.PaginationParams, service.APIKeyListFilters) ([]service.APIKey, *pagination.PaginationResult, error) {
 	return nil, &pagination.PaginationResult{}, nil
 }

@@ -94,11 +94,14 @@ var ProviderSet = wire.NewSet(
 	NewChannelRepository,
 	NewChannelMonitorRepository,
 	NewChannelMonitorRequestTemplateRepository,
+	NewContentModerationRepository,
 	NewAffiliateRepository,
 	NewEntityRegistryRepository,
 	NewEntityRateLimitPolicyRepository,
 	NewCodexAgentRepository,
 	wire.Bind(new(service.CodexAgentRepository), new(*codexAgentRepository)),
+	NewUserPlatformQuotaRepository,     // T14: user x platform quota
+	NewUserPlatformQuotaServiceAdapter, // T14: adapter -> service.UserPlatformQuotaRepository
 
 	// Cache implementations
 	NewGatewayCache,
@@ -119,6 +122,7 @@ var ProviderSet = wire.NewSet(
 	NewRedeemCache,
 	NewUpdateCache,
 	NewGeminiTokenCache,
+	NewLeaderLockCache,
 	ProvideSchedulerCache,
 	ProvideAugmentOfficialSessionStore,
 	ProvideAugmentOfficialPoolSessionStore,
@@ -130,6 +134,7 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 	NewEntityRateLimitCache,
+	NewContentModerationHashCache,
 
 	// Encryptors
 	NewAESEncryptor,

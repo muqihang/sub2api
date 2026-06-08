@@ -178,7 +178,7 @@ func TestSetClaudeCodeClientContext_FastPathAndStrictPath(t *testing.T) {
 	})
 }
 
-func TestSetClaudeCodeClientContext_ReuseParsedRequestAndContextCache(t *testing.T) {
+func TestSetClaudeCodeClientContext_ReuseParsedRequest(t *testing.T) {
 	t.Run("reuse parsed request without body unmarshal", func(t *testing.T) {
 		c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
 		c.Request.Header.Set("User-Agent", "claude-cli/1.0.1")
@@ -186,34 +186,11 @@ func TestSetClaudeCodeClientContext_ReuseParsedRequestAndContextCache(t *testing
 		c.Request.Header.Set("anthropic-beta", "message-batches-2024-09-24")
 		c.Request.Header.Set("anthropic-version", "2023-06-01")
 
-		parsedReq := &service.ParsedRequest{
-			Model: "claude-3-5-sonnet-20241022",
-			System: []any{
-				map[string]any{"text": "You are Claude Code, Anthropic's official CLI for Claude."},
-			},
-			MetadataUserID: "user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account__session_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-		}
+		parsedReq, err := service.ParseGatewayRequest(service.NewRequestBodyRef(validClaudeCodeBodyJSON()), "")
+		require.NoError(t, err)
 
 		// body 非法 JSON，如果函数复用 parsedReq 成功则仍应判定为 Claude Code。
 		SetClaudeCodeClientContext(c, []byte(`{invalid`), parsedReq)
-		require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
-	})
-
-	t.Run("reuse context cache without body unmarshal", func(t *testing.T) {
-		c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
-		c.Request.Header.Set("User-Agent", "claude-cli/1.0.1")
-		c.Request.Header.Set("X-App", "claude-code")
-		c.Request.Header.Set("anthropic-beta", "message-batches-2024-09-24")
-		c.Request.Header.Set("anthropic-version", "2023-06-01")
-		c.Set(service.OpenAIParsedRequestBodyKey, map[string]any{
-			"model": "claude-3-5-sonnet-20241022",
-			"system": []any{
-				map[string]any{"text": "You are Claude Code, Anthropic's official CLI for Claude."},
-			},
-			"metadata": map[string]any{"user_id": "user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account__session_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
-		})
-
-		SetClaudeCodeClientContext(c, []byte(`{invalid`), nil)
 		require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
 	})
 }
@@ -330,6 +307,25 @@ func TestWaitForSlotWithPingTimeout_TimeoutAndStreamPing(t *testing.T) {
 	})
 }
 
+func TestWaitForSlotWithPingTimeout_ParentContextCanceled(t *testing.T) {
+	cache := &helperConcurrencyCacheStub{
+		accountSeq: []bool{false},
+	}
+	concurrency := service.NewConcurrencyService(cache)
+	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
+	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+	reqCtx, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(reqCtx)
+	cancel()
+
+	streamStarted := false
+	release, err := helper.waitForSlotWithPingTimeout(c, "account", 101, 2, time.Second, false, &streamStarted, true)
+	require.Nil(t, release)
+	require.ErrorIs(t, err, context.Canceled)
+	var cErr *ConcurrencyError
+	require.False(t, errors.As(err, &cErr))
+}
+
 func TestWaitForSlotWithPingTimeout_AcquireError(t *testing.T) {
 	errCache := &helperConcurrencyCacheStubWithError{
 		err: errors.New("redis unavailable"),
@@ -374,7 +370,7 @@ func TestForceAnthropicCompatNonNativePreservesOfficialClaudeCodeUA(t *testing.T
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	body := []byte(`{"model":"claude-sonnet-4-6","metadata":{"user_id":"{\"device_id\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	body := []byte(`{"model":"claude-sonnet-4-6","metadata":{"user_id":"{\"device_id\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
 	c.Request.Header.Set("User-Agent", "claude-cli/2.1.150 (external, sdk-cli)")
 
@@ -389,6 +385,132 @@ func TestForceAnthropicCompatNonNativePreservesOfficialClaudeCodeUA(t *testing.T
 
 	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
 	require.Equal(t, "2.1.150", service.GetClaudeCodeVersion(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextPreservesClaudeCodeToolShapeFromProxyUAWithoutBeta(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","tools":[{"name":"Bash","input_schema":{"type":"object"}},{"name":"Read","input_schema":{"type":"object"}},{"name":"Grep","input_schema":{"type":"object"}},{"name":"Glob","input_schema":{"type":"object"}},{"name":"TodoWrite","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/1.1")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextPreservesLargeForwardedToolSetWithoutKnownNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"tool_01"},{"name":"tool_02"},{"name":"tool_03"},{"name":"tool_04"},{"name":"tool_05"},{"name":"tool_06"},{"name":"tool_07"},{"name":"tool_08"},{"name":"tool_09"},{"name":"tool_10"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/1.1")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextDowngradesProxyUAWithoutClaudeCodeToolShape(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","tools":[{"name":"lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/1.1")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	forceAnthropicCompatNonNative(c)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextPreservesClaudeCodeCompatBetaFromProxyUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,effort-2025-11-24,oauth-2025-04-20")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestForceAnthropicCompatNonNativePreservesClaudeCodeCompatBetaFromProxyUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,effort-2025-11-24,oauth-2025-04-20")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextDowngradesProxyUAWithoutCompatAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+
+	SetClaudeCodeClientContext(c, body, nil)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextDowngradesProxyUAWithoutExactClaudeCodeBeta(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "not-claude-code-20250219,claude-code-20250219x,interleaved-thinking-2025-05-14")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
 }
 
 func TestForceAnthropicCompatNonNativeStillDowngradesNonOfficialUA(t *testing.T) {

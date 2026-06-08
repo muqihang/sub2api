@@ -116,9 +116,19 @@ func ClaudeCodeCountTokensOAuthBetas() []string {
 	}
 }
 
-// Deprecated: prefer endpoint-specific helpers such as ClaudeCodeMessagesOAuthBetas.
+// FullClaudeCodeMimicryBetas returns the body-independent full Claude Code OAuth beta set.
+// For /v1/messages requests prefer ClaudeCodeMessagesOAuthBetasForBody when the body is available.
 func FullClaudeCodeMimicryBetas() []string {
-	return ClaudeCodeMessagesOAuthBetas()
+	return []string{
+		BetaClaudeCode,
+		BetaOAuth,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaAdvisorTool,
+		BetaEffort,
+		BetaExtendedCacheTTL,
+	}
 }
 
 // DefaultHeaders 是 Claude Code 客户端默认请求头。
@@ -126,7 +136,7 @@ var DefaultHeaders = map[string]string{
 	// Keep these in sync with recent Claude CLI traffic to reduce the chance
 	// that Claude Code-scoped OAuth credentials are rejected as "non-CLI" usage.
 	// 版本参考：对齐 Parrot (src/transform/cc_mimicry.py:49) 的 CLI_USER_AGENT。
-	"User-Agent":                                "claude-cli/2.1.150 (external, sdk-cli)",
+	"User-Agent":                                "claude-cli/" + CLICurrentVersion + " (external, sdk-cli)",
 	"X-Stainless-Lang":                          "js",
 	"X-Stainless-Package-Version":               "0.94.0",
 	"X-Stainless-OS":                            "Linux",

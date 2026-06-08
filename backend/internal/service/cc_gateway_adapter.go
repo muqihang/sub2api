@@ -155,6 +155,10 @@ func (s *GatewayService) hasExplicitCCGatewayAnthropicConfig(account *Account) b
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraEnabled)) != ""
 }
 
+func requiresCCGatewayAnthropicFailClosed(account *Account) bool {
+	return IsFormalPoolAccount(account)
+}
+
 // GetExplicitCCGatewayCanaryAccount fetches a canary-only account for a
 // request that has already opted into the explicit canary control plane.
 func (s *GatewayService) GetExplicitCCGatewayCanaryAccount(ctx context.Context, req CCGatewayAnthropicCanaryRequest) (*Account, error) {
@@ -281,7 +285,7 @@ func (s *GatewayService) selectCCGatewayAnthropicRoute(account *Account, route c
 
 func (s *GatewayService) selectCCGatewayAnthropicRouteForMode(account *Account, route ccGatewayAnthropicRoute, explicitCanary bool) (bool, error) {
 	if !s.shouldUseCCGatewayAnthropic(account) {
-		if s.hasExplicitCCGatewayAnthropicConfig(account) {
+		if s.hasExplicitCCGatewayAnthropicConfig(account) || requiresCCGatewayAnthropicFailClosed(account) {
 			return false, fmt.Errorf("cc gateway disabled or missing for anthropic account %d", account.ID)
 		}
 		return false, nil
@@ -298,7 +302,13 @@ func (s *GatewayService) selectCCGatewayAnthropicRouteForMode(account *Account, 
 	if canaryOnly && !explicitCanary {
 		return false, fmt.Errorf("cc gateway canary-only account %d is not eligible for broad routing", account.ID)
 	}
-	if account.Status != StatusActive || (!explicitCanary && !account.IsSchedulable()) {
+	if IsFormalPoolAccount(account) && !explicitCanary {
+		if !account.IsSchedulable() {
+			return false, fmt.Errorf("cc gateway lifecycle ineligible for account %d", account.ID)
+		}
+	} else if account.Status != "" && account.Status != StatusActive {
+		return false, fmt.Errorf("cc gateway lifecycle ineligible for account %d", account.ID)
+	} else if account.Status != "" && !explicitCanary && !account.IsSchedulable() {
 		return false, fmt.Errorf("cc gateway lifecycle ineligible for account %d", account.ID)
 	}
 	if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version == "" || !ccGatewayPolicyVersionCompatible(version) {

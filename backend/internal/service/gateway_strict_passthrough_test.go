@@ -93,7 +93,7 @@ func newAnthropicCountTokensSuccessResponse() *http.Response {
 
 func parseAnthropicRequestForTest(t *testing.T, body []byte) *ParsedRequest {
 	t.Helper()
-	parsed, err := ParseGatewayRequest(body, PlatformAnthropic)
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
 	require.NoError(t, err)
 	return parsed
 }
@@ -357,7 +357,11 @@ func TestCountTokensMimicry_OverridesFakeMetadataAndSetsSessionHeader(t *testing
 
 	err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.NoError(t, err)
-	require.Equal(t, strings.Join(claude.ClaudeCodeCountTokensOAuthBetas(), ","), getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
+	beta := getHeaderRaw(upstream.lastReq.Header, "anthropic-beta")
+	for _, token := range append(claude.FullClaudeCodeMimicryBetas(), claude.BetaTokenCounting) {
+		require.Contains(t, beta, token)
+	}
+	require.NotContains(t, beta, "suspicious-beta")
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Helper-Method"))
 	require.Equal(t, claude.DefaultHeaders["X-Stainless-Lang"], getHeaderRaw(upstream.lastReq.Header, "X-Stainless-Lang"))
 
@@ -470,9 +474,14 @@ func newFormalPoolAuthRetryGateway(t *testing.T, account *Account, upstream *for
 	provider := NewClaudeTokenProvider(repo, cache, nil)
 	provider.SetRefreshAPI(refreshAPI, executor)
 	schedulerCache := &formalPoolGatewaySchedulerCache{}
+	cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+	cfg.Gateway.CCGateway.Enabled = true
+	cfg.Gateway.CCGateway.BaseURL = "http://cc-gateway:8443"
+	cfg.Gateway.CCGateway.Token = "ccg-token"
+	cfg.Gateway.CCGateway.Providers.Anthropic = true
 	return &GatewayService{
 		accountRepo:         repo,
-		cfg:                 &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		cfg:                 cfg,
 		identityService:     NewIdentityService(&identityCacheStub{}),
 		httpUpstream:        upstream,
 		claudeTokenProvider: provider,
@@ -488,6 +497,22 @@ func newFormalPoolRefreshAccount(accountType string) *Account {
 	account.Credentials["access_token"] = "old-token"
 	account.Credentials["refresh_token"] = "refresh-token"
 	account.Credentials["expires_at"] = time.Now().Add(time.Hour).Format(time.RFC3339)
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-05-29T00:00:00Z"
+	account.Extra[FormalPoolExtraHealthcheckStatus] = "passed"
+	account.Extra[FormalPoolExtraHealthcheckStatusCodeBucket] = "status_2xx"
+	account.Extra[FormalPoolExtraHealthcheckRawRef] = "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	account.Extra[FormalPoolExtraHealthcheckCCGatewaySeen] = "true"
+	account.Extra[FormalPoolExtraHealthcheckFallbackDetected] = "false"
+	account.Extra[FormalPoolExtraHealthcheckProxyMismatch] = "false"
+	account.Extra[FormalPoolExtraHealthcheckRiskTextDetected] = "false"
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
 	return account
 }

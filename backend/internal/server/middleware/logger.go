@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -38,7 +39,7 @@ func Logger() gin.HandlerFunc {
 
 		method := c.Request.Method
 		statusCode := c.Writer.Status()
-		clientIP := c.ClientIP()
+		clientIP := ip.GetClientIP(c)
 		logPath := path
 		isBrowserEgressCheck := strings.HasPrefix(path, browserEgressCheckPathPrefix)
 		if isBrowserEgressCheck {
