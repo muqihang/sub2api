@@ -16,6 +16,33 @@ class CaptureMode(StrEnum):
     SHADOW_TELEMETRY = "shadow_telemetry"
 
 
+class ToolSearchMode(StrEnum):
+    AUTO = "auto"
+    TRUE = "true"
+    STANDARD = "standard"
+
+
+class FgtsMode(StrEnum):
+    OBSERVE_ONLY = "observe_only"
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeCodeCapabilityProfile:
+    profile_id: str
+    claude_code_version_family: str
+    persona_profile_id: str
+    tool_search_mode: ToolSearchMode = ToolSearchMode.AUTO
+    fgts_mode: FgtsMode = FgtsMode.OBSERVE_ONLY
+    control_plane_policy_version: str = ""
+    capture_level: str = "summary"
+    netwatch_required: bool = True
+    server_shape_healthcheck_version: str = ""
+    tool_search_healthcheck_passed: bool = False
+    kill_switches: tuple[str, ...] = field(default_factory=tuple)
+
+
 @dataclass(frozen=True, slots=True)
 class ClaudeCodeProfile:
     profile_id: str
@@ -29,6 +56,10 @@ class ClaudeCodeProfile:
     fgts_enabled: bool | None = None
     anthropic_betas: tuple[str, ...] = field(default_factory=tuple)
     disable_experimental_betas: bool | None = None
+    capability_profile_id: str | None = None
+    persona_profile_id: str | None = None
+    control_plane_policy_version: str | None = None
+    server_shape_healthcheck_version: str | None = None
 
 
 _SAFE_PROFILE_SEGMENT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -96,16 +127,62 @@ def build_safe_env(
 
     if profile.node_extra_ca_certs is not None:
         env["NODE_EXTRA_CA_CERTS"] = str(profile.node_extra_ca_certs.expanduser())
-    if profile.enable_tool_search is not None:
-        env["ENABLE_TOOL_SEARCH"] = profile.enable_tool_search
+    tool_search_env_value = profile.enable_tool_search or "auto"
+    env["ENABLE_TOOL_SEARCH"] = tool_search_env_value
     if profile.fgts_enabled is not None:
         env["CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"] = "1" if profile.fgts_enabled else "0"
     if profile.anthropic_betas:
         env["ANTHROPIC_BETAS"] = ",".join(profile.anthropic_betas)
     if profile.disable_experimental_betas is not None:
         env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1" if profile.disable_experimental_betas else "0"
+    if profile.capability_profile_id is not None:
+        env["ZHUMENG_CLAUDE_CAPABILITY_PROFILE_ID"] = profile.capability_profile_id
+    if profile.persona_profile_id is not None:
+        env["ZHUMENG_CLAUDE_PERSONA_PROFILE_ID"] = profile.persona_profile_id
+    if profile.control_plane_policy_version is not None:
+        env["ZHUMENG_CLAUDE_CONTROL_PLANE_POLICY_VERSION"] = profile.control_plane_policy_version
+    if profile.server_shape_healthcheck_version is not None:
+        env["ZHUMENG_CLAUDE_SHAPE_HEALTHCHECK_VERSION"] = profile.server_shape_healthcheck_version
+    env["ZHUMENG_CLAUDE_TOOL_SEARCH_MODE"] = tool_search_env_value
 
     return env
+
+
+def apply_capability_profile(
+    profile: ClaudeCodeProfile,
+    capability: ClaudeCodeCapabilityProfile,
+    *,
+    tool_search_env_value: str | None = None,
+) -> ClaudeCodeProfile:
+    enable_tool_search = tool_search_env_value or _toolsearch_env_value(capability)
+    fgts_enabled = None
+    if capability.fgts_mode == FgtsMode.ENABLED:
+        fgts_enabled = True
+    elif capability.fgts_mode == FgtsMode.DISABLED:
+        fgts_enabled = False
+    return ClaudeCodeProfile(
+        profile_id=profile.profile_id,
+        guard_base_url=profile.guard_base_url,
+        zhumeng_entry_api_key=profile.zhumeng_entry_api_key,
+        config_dir=profile.config_dir,
+        capture_mode=profile.capture_mode,
+        netwatch_interval=profile.netwatch_interval,
+        node_extra_ca_certs=profile.node_extra_ca_certs,
+        enable_tool_search=enable_tool_search,
+        fgts_enabled=fgts_enabled,
+        anthropic_betas=profile.anthropic_betas,
+        disable_experimental_betas=profile.disable_experimental_betas,
+        capability_profile_id=capability.profile_id,
+        persona_profile_id=capability.persona_profile_id,
+        control_plane_policy_version=capability.control_plane_policy_version,
+        server_shape_healthcheck_version=capability.server_shape_healthcheck_version,
+    )
+
+
+def _toolsearch_env_value(capability: ClaudeCodeCapabilityProfile) -> str:
+    if capability.tool_search_mode == ToolSearchMode.STANDARD:
+        return "false"
+    return "auto"
 
 
 def _can_inherit_env_key(key: str, *, include_ssh_auth_sock: bool) -> bool:
