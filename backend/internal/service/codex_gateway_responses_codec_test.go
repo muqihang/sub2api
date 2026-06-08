@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestCodexGatewayResponsesCodec_PreservesRawFields(t *testing.T) {
@@ -192,6 +193,51 @@ func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {
 	require.Equal(t, "fc_call_2", customDone["item_id"])
 	require.Equal(t, float64(2), customDone["output_index"])
 	require.Equal(t, "*** Begin Patch\n*** End Patch", customDone["input"])
+}
+
+func TestCodexGatewayResponseEvents_WireShapeRequiredFields(t *testing.T) {
+	var buf bytes.Buffer
+	writer := NewCodexGatewayResponseEventWriter(&buf)
+
+	messageWithoutContent := json.RawMessage(`{"id":"msg_empty","type":"message","role":"assistant","status":"in_progress"}`)
+	reasoningWithoutSummary := json.RawMessage(`{"id":"rs_empty","type":"reasoning","status":"in_progress"}`)
+	functionWithEmptyArguments := json.RawMessage(`{"id":"fc_empty","type":"function_call","call_id":"call_empty","name":"empty_args","arguments":""}`)
+
+	require.NoError(t, writer.WriteOutputItemAdded("resp_wire", 0, messageWithoutContent))
+	require.NoError(t, writer.WriteOutputItemDone("resp_wire", 0, messageWithoutContent))
+	require.NoError(t, writer.WriteOutputItemAdded("resp_wire", 1, reasoningWithoutSummary))
+	require.NoError(t, writer.WriteOutputItemDone("resp_wire", 1, reasoningWithoutSummary))
+	require.NoError(t, writer.WriteFunctionCallArgumentsDone("resp_wire", "fc_empty", 2, functionWithEmptyArguments))
+	require.NoError(t, writer.WriteReasoningSummaryTextDelta("resp_wire", "rs_empty", 1, 0, "summary"))
+	require.NoError(t, writer.WriteReasoningSummaryTextDone("resp_wire", "rs_empty", 1, 0, "summary"))
+
+	events := parseCodexGatewayOrderedEvents(t, buf.String())
+	messageAdded := nthCodexGatewayEventPayload(t, events, "response.output_item.added", 0)
+	messageContent := gjson.GetBytes(messageAdded, "item.content")
+	require.True(t, messageContent.Exists())
+	require.True(t, messageContent.IsArray())
+	require.Equal(t, int64(0), gjson.GetBytes(messageAdded, "item.content.#").Int())
+	require.Equal(t, int64(0), gjson.GetBytes(messageAdded, "output_index").Int())
+
+	reasoningDone := nthCodexGatewayEventPayload(t, events, "response.output_item.done", 1)
+	reasoningSummary := gjson.GetBytes(reasoningDone, "item.summary")
+	require.True(t, reasoningSummary.Exists())
+	require.True(t, reasoningSummary.IsArray())
+	require.Equal(t, int64(0), gjson.GetBytes(reasoningDone, "item.summary.#").Int())
+	require.Equal(t, int64(1), gjson.GetBytes(reasoningDone, "output_index").Int())
+
+	funcDone := firstCodexGatewayEventPayload(t, events, "response.function_call_arguments.done")
+	require.True(t, gjson.GetBytes(funcDone, "arguments").Exists())
+	require.Equal(t, "", gjson.GetBytes(funcDone, "arguments").String())
+	require.True(t, gjson.GetBytes(funcDone, "item.arguments").Exists())
+	require.Equal(t, "", gjson.GetBytes(funcDone, "item.arguments").String())
+
+	summaryDelta := firstCodexGatewayEventPayload(t, events, "response.reasoning_summary_text.delta")
+	require.Equal(t, int64(1), gjson.GetBytes(summaryDelta, "output_index").Int())
+	require.Equal(t, int64(0), gjson.GetBytes(summaryDelta, "summary_index").Int())
+	summaryDone := firstCodexGatewayEventPayload(t, events, "response.reasoning_summary_text.done")
+	require.Equal(t, int64(1), gjson.GetBytes(summaryDone, "output_index").Int())
+	require.Equal(t, int64(0), gjson.GetBytes(summaryDone, "summary_index").Int())
 }
 
 func TestCodexGatewayErrors_InvalidRequestEnvelope(t *testing.T) {

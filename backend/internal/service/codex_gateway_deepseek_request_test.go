@@ -2323,6 +2323,35 @@ func TestCodexGatewayDeepSeekRequest_PreviousResponseDeltaMatchesFullReplayPrefi
 	require.Equal(t, fullPrepared.Body["messages"], deltaPrepared.Body["messages"])
 }
 
+func TestCodexGatewayDeepSeekRequest_StructuredFunctionOutputArrayInputImageUsesDeterministicPlaceholder(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: mustMarshalRawMessage(t, []any{
+			map[string]any{"type": "function_call", "call_id": "call_img", "name": "capture_screen", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "call_img", "output": []any{
+				map[string]any{"type": "input_text", "text": "screenshot follows"},
+				map[string]any{"type": "input_image", "image_url": "data:image/png;base64,QUJDRA==", "detail": "high"},
+			}},
+		}),
+		Tools: json.RawMessage(`[{"type":"function","name":"capture_screen","parameters":{"type":"object"}}]`),
+	}
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_structured_image_output",
+		IsolationKey: "iso_structured_image_output",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	content := gjson.GetBytes(raw, "messages.1.content").String()
+	require.Contains(t, content, "screenshot follows")
+	require.Contains(t, content, "binary_or_image")
+	require.Contains(t, content, "sha256")
+	require.NotContains(t, content, "QUJDRA==")
+}
+
 func TestCodexGatewayDeepSeekRequest_ReplaysPreviousToolLoopStateAndNormalizesOutputs(t *testing.T) {
 	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{
 		TTL:      time.Minute,

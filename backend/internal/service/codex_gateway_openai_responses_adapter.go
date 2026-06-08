@@ -155,6 +155,8 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	var usage OpenAIUsage
 	clientOutputStarted := false
 	sawTerminal := false
+	streamResponseID := ""
+	streamModel := ""
 	var finalResponse CodexGatewayResponse
 	var finalResponseSet bool
 
@@ -177,6 +179,15 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 				a.gateway.parseSSEUsageBytes(payloadBytes, &usage)
 				eventType = strings.TrimSpace(gjson.GetBytes(payloadBytes, "type").String())
 				codexGatewayCaptureUpstreamStreamEvent(req.CaptureTrace, firstNonBlankString(eventType, "openai.response.event"), payloadBytes)
+				if responseID := strings.TrimSpace(gjson.GetBytes(payloadBytes, "response.id").String()); responseID != "" {
+					streamResponseID = responseID
+				}
+				if responseID := strings.TrimSpace(gjson.GetBytes(payloadBytes, "response_id").String()); responseID != "" && streamResponseID == "" {
+					streamResponseID = responseID
+				}
+				if model := strings.TrimSpace(gjson.GetBytes(payloadBytes, "response.model").String()); model != "" {
+					streamModel = model
+				}
 				if openAIStreamEventIsTerminal(payload) {
 					sawTerminal = true
 					if responseRaw := gjson.GetBytes(payloadBytes, "response"); responseRaw.Exists() && responseRaw.Raw != "" {
@@ -242,6 +253,29 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		if !clientOutputStarted {
 			return CodexGatewayProviderResult{}, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, ResponseBody: []byte("missing terminal event")}
 		}
+		failedResponse := CodexGatewayResponse{
+			ID:     strings.TrimSpace(streamResponseID),
+			Object: "response",
+			Model:  firstNonBlankString(streamModel, result.UpstreamModel),
+			Status: "failed",
+			Output: []json.RawMessage{},
+			Error: &CodexGatewayResponseError{
+				Code:    "upstream_error",
+				Message: "OpenAI stream ended before completion (missing terminal event).",
+				RawFields: map[string]json.RawMessage{
+					"type": json.RawMessage(`"api_error"`),
+				},
+			},
+		}
+		writer := NewCodexGatewayResponseEventWriter(req.Request.StreamWriter)
+		if err := writer.WriteResponseFailed(failedResponse); err != nil {
+			return CodexGatewayProviderResult{}, err
+		}
+		if req.Request.Flush != nil {
+			req.Request.Flush()
+		}
+		result.Response = failedResponse
+		result.ResponseID = failedResponse.ID
 		return result, nil
 	}
 	if !clientOutputStarted && preOutput.Len() > 0 {

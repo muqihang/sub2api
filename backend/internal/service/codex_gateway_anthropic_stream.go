@@ -143,6 +143,7 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), defaultMaxLineSize)
 	dataLines := make([]string, 0, 4)
+	var handledStreamErrorResponse *CodexGatewayResponse
 	flush := func() error {
 		if len(dataLines) == 0 {
 			return nil
@@ -162,6 +163,14 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 		}
 		codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, eventType, payloadBytes)
 		if err := state.consumePayload(payloadBytes, writer); err != nil {
+			if state.hasClientVisibleOutputStarted() {
+				response, finishErr := state.finishError(writer, err)
+				if finishErr != nil {
+					return finishErr
+				}
+				handledStreamErrorResponse = &response
+				return nil
+			}
 			return err
 		}
 		if state.hasClientVisibleOutputStarted() {
@@ -187,6 +196,15 @@ func executeCodexGatewayAnthropicStreamWithHostedToolTurns(
 	}
 	if err := flush(); err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
+	}
+	if handledStreamErrorResponse != nil {
+		if err := deferredWriter.Flush(); err != nil {
+			return CodexGatewayDeepSeekAdapterResult{}, err
+		}
+		result.ProviderResult = state.providerResult(resp.Header.Get("x-request-id"))
+		result.ProviderResult.Response = *handledStreamErrorResponse
+		result.ProviderResult.ResponseID = strings.TrimSpace(handledStreamErrorResponse.ID)
+		return result, nil
 	}
 
 	if calls := state.serverHandledHostedToolCalls(); len(calls) > 0 {
@@ -749,6 +767,108 @@ func (s *codexGatewayAnthropicStreamState) finishEarly(writer *CodexGatewayRespo
 		return "response.failed", writer.WriteResponseFailed(response)
 	}
 	return "response.incomplete", writer.WriteResponseIncomplete(response)
+}
+
+func (s *codexGatewayAnthropicStreamState) finishError(writer *CodexGatewayResponseEventWriter, cause error) (CodexGatewayResponse, error) {
+	if err := s.writeErrorDoneEvents(writer); err != nil {
+		return CodexGatewayResponse{}, err
+	}
+	message := "Anthropic stream error."
+	if cause != nil && strings.TrimSpace(cause.Error()) != "" {
+		message = cause.Error()
+	}
+	response := CodexGatewayResponse{
+		ID:     s.responseID,
+		Object: "response",
+		Model:  codexGatewayAnthropicResponseModel(s.model, s.upstreamModel),
+		Status: "failed",
+		Output: s.errorOutputItems(),
+		Usage:  s.usageRaw,
+		Error: &CodexGatewayResponseError{
+			Code:    "upstream_error",
+			Message: message,
+			RawFields: map[string]json.RawMessage{
+				"type": json.RawMessage(`"api_error"`),
+			},
+		},
+	}
+	return response, writer.WriteResponseFailed(response)
+}
+
+func (s *codexGatewayAnthropicStreamState) writeErrorDoneEvents(writer *CodexGatewayResponseEventWriter) error {
+	for _, index := range s.sortedOutputIndexes() {
+		if s.messageAdded && index == s.messageIndex {
+			if err := s.writeMessageEvents(writer); err != nil {
+				return err
+			}
+			continue
+		}
+		call := s.toolCallByOutputIndex(index)
+		if call == nil || !call.ItemEmitted || call.CallID == "" || call.Name == "" {
+			continue
+		}
+		doneItem := s.toolCallDoneItem(call)
+		doneItem["status"] = "incomplete"
+		rawItem, _ := json.Marshal(doneItem)
+		itemType := codexGatewayAnthropicClientVisibleToolItemType(CodexGatewayToolNameMapEntry{
+			Alias:     call.Alias,
+			Kind:      call.Kind,
+			Namespace: call.Namespace,
+			Name:      call.Name,
+		})
+		if call.Kind == CodexGatewayToolKindCustom {
+			if err := writer.WriteCustomToolCallInputDone(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, firstCodexGatewayToolString(doneItem["input"])); err != nil {
+				return err
+			}
+		} else if itemType != CodexGatewayOutputItemTypeLocalShellCall && itemType != CodexGatewayOutputItemTypeToolSearchCall {
+			if err := writer.WriteFunctionCallArgumentsDone(s.responseID, codexGatewayAnthropicToolItemID(call.CallID), call.OutputIndex, rawItem); err != nil {
+				return err
+			}
+		}
+		if err := writer.WriteOutputItemDone(s.responseID, call.OutputIndex, rawItem); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *codexGatewayAnthropicStreamState) errorOutputItems() []json.RawMessage {
+	byIndex := cloneCodexGatewayIndexedRawMessages(s.prefixOutputItems)
+	if byIndex == nil {
+		byIndex = make(map[int]json.RawMessage, 1+len(s.toolCalls))
+	}
+	if s.messageAdded {
+		rawItem, _ := json.Marshal(map[string]any{
+			"type":   "message",
+			"id":     s.messageID,
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": s.messageText.String(),
+			}},
+		})
+		byIndex[s.messageIndex] = rawItem
+	}
+	for _, call := range s.sortedToolCallsByOutputIndex() {
+		if call == nil || !call.ItemEmitted || call.OutputIndex < 0 {
+			continue
+		}
+		item := s.toolCallDoneItem(call)
+		item["status"] = "incomplete"
+		rawItem, _ := json.Marshal(item)
+		byIndex[call.OutputIndex] = rawItem
+	}
+	indexes := make([]int, 0, len(byIndex))
+	for index := range byIndex {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	out := make([]json.RawMessage, 0, len(indexes))
+	for _, index := range indexes {
+		out = append(out, byIndex[index])
+	}
+	return out
 }
 
 func (s *codexGatewayAnthropicStreamState) writeDoneEvents(writer *CodexGatewayResponseEventWriter) error {

@@ -472,6 +472,51 @@ func TestExecuteCodexGatewayAnthropicStream_DoesNotUseAnthropicWebSearchBetaHead
 	require.Empty(t, gotBeta)
 }
 
+func TestExecuteCodexGatewayAnthropicStream_ErrorAfterItemOpenEmitsFailed(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"input":[{"type":"message","role":"user","content":"hello"}],
+		"stream":true
+	}`))
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_error_after_open","type":"message","role":"assistant","model":"claude-opus-4-8","content":[],"usage":{"input_tokens":1}}}`,
+			``,
+			`event: content_block_start`,
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_err","name":"capture_screen","input":{}}}`,
+			``,
+			`event: error`,
+			`data: {"type":"error","error":{"type":"api_error","message":"upstream boom"}}`,
+			``,
+		}, "\n")))
+	}))
+	defer server.Close()
+
+	var dst bytes.Buffer
+	result, err := ExecuteCodexGatewayAnthropicStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"test-key",
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+		&dst,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "failed", result.ProviderResult.Response.Status)
+	stream := dst.String()
+	require.Contains(t, stream, "event: response.output_item.added")
+	require.Contains(t, stream, "event: response.failed")
+	require.Contains(t, stream, "upstream boom")
+}
+
 func TestExecuteCodexGatewayAnthropicStream_ConnectionRefusedReturnsFailoverError(t *testing.T) {
 	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
 		"model":"claude-opus-4-7-thinking",

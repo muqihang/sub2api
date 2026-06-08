@@ -56,21 +56,23 @@ type codexGatewayGoldenUpstream struct {
 }
 
 type codexGatewayGoldenExpectation struct {
-	TerminalEvent   string                   `json:"terminal_event,omitempty"`
-	ResponseStatus  string                   `json:"response_status,omitempty"`
-	FailoverStatus  int                      `json:"failover_status,omitempty"`
-	Usage           *codexGatewayGoldenUsage `json:"usage,omitempty"`
-	ReasoningText   string                   `json:"reasoning_text,omitempty"`
-	OutputText      string                   `json:"output_text,omitempty"`
-	OutputTypes     []string                 `json:"output_types,omitempty"`
-	ToolName        string                   `json:"tool_name,omitempty"`
-	ToolArguments   string                   `json:"tool_arguments,omitempty"`
-	StoredToolCalls int                      `json:"stored_tool_calls,omitempty"`
-	ErrorType       string                   `json:"error_type,omitempty"`
-	ErrorCode       string                   `json:"error_code,omitempty"`
-	ErrorMessage    string                   `json:"error_message,omitempty"`
-	Messages        json.RawMessage          `json:"messages,omitempty"`
-	ErrorContains   string                   `json:"error_contains,omitempty"`
+	TerminalEvent       string                   `json:"terminal_event,omitempty"`
+	ResponseStatus      string                   `json:"response_status,omitempty"`
+	FailoverStatus      int                      `json:"failover_status,omitempty"`
+	Usage               *codexGatewayGoldenUsage `json:"usage,omitempty"`
+	ReasoningText       string                   `json:"reasoning_text,omitempty"`
+	OutputText          string                   `json:"output_text,omitempty"`
+	OutputTypes         []string                 `json:"output_types,omitempty"`
+	ToolName            string                   `json:"tool_name,omitempty"`
+	ToolArguments       string                   `json:"tool_arguments,omitempty"`
+	StoredToolCalls     int                      `json:"stored_tool_calls,omitempty"`
+	ErrorType           string                   `json:"error_type,omitempty"`
+	ErrorCode           string                   `json:"error_code,omitempty"`
+	ErrorMessage        string                   `json:"error_message,omitempty"`
+	Messages            json.RawMessage          `json:"messages,omitempty"`
+	MessagesContains    []string                 `json:"messages_contains,omitempty"`
+	MessagesNotContains []string                 `json:"messages_not_contains,omitempty"`
+	ErrorContains       string                   `json:"error_contains,omitempty"`
 }
 
 type codexGatewayGoldenUsage struct {
@@ -225,6 +227,9 @@ func TestCodexGatewayDeepSeekIntegrationGolden_RequestFixtures(t *testing.T) {
 		"reasoning_tool_loop_replay_request",
 		"final_assistant_reasoning_replay_request",
 		"missing_reasoning_invalid_state_request",
+		"structured_tool_output_input_text_request",
+		"structured_tool_output_input_image_request",
+		"tool_search_call_output_request",
 	} {
 		fixture := loadCodexGatewayGoldenFixture(t, fixtureName)
 		t.Run(fixture.Name, func(t *testing.T) {
@@ -234,11 +239,12 @@ func TestCodexGatewayDeepSeekIntegrationGolden_RequestFixtures(t *testing.T) {
 				UpstreamModel: "deepseek-v4-pro",
 			}
 			stateStore := newCodexGatewayGoldenStateStore()
-			require.NotNil(t, fixture.SeedState)
-			if fixture.Expect.ErrorContains != "" {
-				insertCodexGatewayGoldenState(t, stateStore, *fixture.SeedState)
-			} else {
-				require.NoError(t, stateStore.Put(*fixture.SeedState))
+			if fixture.SeedState != nil {
+				if fixture.Expect.ErrorContains != "" {
+					insertCodexGatewayGoldenState(t, stateStore, *fixture.SeedState)
+				} else {
+					require.NoError(t, stateStore.Put(*fixture.SeedState))
+				}
 			}
 
 			prepared, err := BuildCodexGatewayDeepSeekRequest(
@@ -260,7 +266,16 @@ func TestCodexGatewayDeepSeekIntegrationGolden_RequestFixtures(t *testing.T) {
 
 			rawMessages, err := json.Marshal(prepared.Body["messages"])
 			require.NoError(t, err)
-			require.JSONEq(t, string(fixture.Expect.Messages), string(rawMessages))
+			if len(fixture.Expect.Messages) > 0 {
+				require.JSONEq(t, string(fixture.Expect.Messages), string(rawMessages))
+			}
+			messagesText := string(rawMessages)
+			for _, want := range fixture.Expect.MessagesContains {
+				require.Contains(t, messagesText, want)
+			}
+			for _, forbidden := range fixture.Expect.MessagesNotContains {
+				require.NotContains(t, messagesText, forbidden)
+			}
 		})
 	}
 }

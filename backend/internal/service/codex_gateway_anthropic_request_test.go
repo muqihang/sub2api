@@ -878,6 +878,38 @@ func TestCodexGatewayAnthropicMapErrorBody_SanitizesCloudflareHTML(t *testing.T)
 	require.NotContains(t, string(body), "<!DOCTYPE html>")
 }
 
+func TestBuildCodexGatewayAnthropicRequest_StructuredFunctionOutputArrayInputImageUsesDeterministicFallback(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"input":[
+			{"type":"function_call","call_id":"call_img","name":"capture_screen","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_img","output":[
+				{"type":"input_text","text":"screenshot follows"},
+				{"type":"input_image","image_url":"data:image/png;base64,QUJDRA==","detail":"high"}
+			]}
+		],
+		"tools":[{"type":"function","name":"capture_screen","parameters":{"type":"object"}}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	content := gjson.GetBytes(raw, "messages.1.content.0.content").String()
+	require.Contains(t, content, "screenshot follows")
+	require.Contains(t, content, "binary_or_image")
+	require.Contains(t, content, "sha256")
+	require.NotContains(t, content, "QUJDRA==")
+}
+
 func TestBuildCodexGatewayAnthropicRequest_ReplaysPreviousToolUseBeforeToolResult(t *testing.T) {
 	store := NewCodexGatewayStateStore(CodexGatewayStateStoreConfig{})
 	require.NoError(t, store.Put(CodexGatewayResponseState{

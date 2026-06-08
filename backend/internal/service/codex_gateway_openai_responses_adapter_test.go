@@ -184,6 +184,37 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteSupportsUpstreamAccountType(
 	require.Equal(t, "resp_upstream", result.ProviderResult.ResponseID)
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_PreservesStructuredFunctionOutputArrayBeforeUpstream(t *testing.T) {
+	adapter, upstream := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_structured","object":"response","model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)),
+	}, nil)
+
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"input":[
+			{"type":"function_call_output","call_id":"call_img","output":[
+				{"type":"input_text","text":"screenshot follows"},
+				{"type":"input_image","image_url":"data:image/png;base64,QUJDRA==","detail":"high"}
+			]}
+		],
+		"stream":false
+	}`)
+
+	_, err := adapter.Complete(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{Body: body},
+		Model:   CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "function_call_output", gjson.GetBytes(upstream.lastBody, "input.0.type").String())
+	require.Equal(t, "input_text", gjson.GetBytes(upstream.lastBody, "input.0.output.0.type").String())
+	require.Equal(t, "screenshot follows", gjson.GetBytes(upstream.lastBody, "input.0.output.0.text").String())
+	require.Equal(t, "input_image", gjson.GetBytes(upstream.lastBody, "input.0.output.1.type").String())
+	require.Equal(t, "data:image/png;base64,QUJDRA==", gjson.GetBytes(upstream.lastBody, "input.0.output.1.image_url").String())
+	require.Equal(t, "high", gjson.GetBytes(upstream.lastBody, "input.0.output.1.detail").String())
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_StripsPlaintextReasoningHistoryBeforeUpstream(t *testing.T) {
 	adapter, upstream := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
 		StatusCode: http.StatusOK,
@@ -404,7 +435,7 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamDoesNotFailoverAfterClientOutp
 	require.Contains(t, out.String(), `"type":"response.failed"`)
 }
 
-func TestCodexGatewayOpenAIResponsesAdapter_StreamAllowsMissingTerminalAfterClientOutputStarts(t *testing.T) {
+func TestCodexGatewayOpenAIResponsesAdapter_StreamEmitsFailureWhenTerminalMissingAfterClientOutputStarts(t *testing.T) {
 	streamBody := "" +
 		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
 		"data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_1\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"
@@ -423,8 +454,13 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamAllowsMissingTerminalAfterClie
 		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
 	})
 	require.NoError(t, err)
-	require.Empty(t, result.ResponseID)
+	require.Equal(t, "resp_1", result.ResponseID)
+	require.Equal(t, "failed", result.Response.Status)
 	require.Contains(t, out.String(), `"type":"response.output_text.delta"`)
+	require.Contains(t, out.String(), "event: response.failed")
+	require.Contains(t, out.String(), `"type":"response.failed"`)
+	require.Contains(t, out.String(), `"sequence_number":0`)
+	require.Contains(t, out.String(), `missing terminal event`)
 	require.NotContains(t, out.String(), `[DONE]`)
 }
 

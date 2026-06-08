@@ -187,6 +187,7 @@ func (w *CodexGatewayResponseEventWriter) WriteResponseInProgress(response Codex
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteOutputItemAdded(responseID string, outputIndex int, item json.RawMessage) error {
+	item = normalizeCodexGatewayOutputItemWireFields(item)
 	payload := map[string]any{
 		"type":         "response.output_item.added",
 		"response_id":  responseID,
@@ -237,6 +238,28 @@ func (w *CodexGatewayResponseEventWriter) WriteReasoningTextDone(responseID, ite
 		"item_id":       itemID,
 		"output_index":  outputIndex,
 		"content_index": contentIndex,
+		"text":          text,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteReasoningSummaryTextDelta(responseID, itemID string, outputIndex, summaryIndex int, delta string) error {
+	return w.write("response.reasoning_summary_text.delta", map[string]any{
+		"type":          "response.reasoning_summary_text.delta",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"summary_index": summaryIndex,
+		"delta":         delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteReasoningSummaryTextDone(responseID, itemID string, outputIndex, summaryIndex int, text string) error {
+	return w.write("response.reasoning_summary_text.done", map[string]any{
+		"type":          "response.reasoning_summary_text.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"summary_index": summaryIndex,
 		"text":          text,
 	})
 }
@@ -303,6 +326,7 @@ func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDone(responseI
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(responseID, itemID string, outputIndex int, item json.RawMessage) error {
+	item = normalizeCodexGatewayOutputItemWireFields(item)
 	payload := map[string]any{
 		"type":         "response.function_call_arguments.done",
 		"response_id":  responseID,
@@ -312,13 +336,13 @@ func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(respons
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(item, &parsed); err == nil {
-		if callID := strings.TrimSpace(firstCodexGatewayToolString(parsed["call_id"])); callID != "" {
+		if callID, ok := codexGatewayOutputItemStringField(parsed, "call_id"); ok && strings.TrimSpace(callID) != "" {
 			payload["call_id"] = callID
 		}
-		if name := strings.TrimSpace(firstCodexGatewayToolString(parsed["name"])); name != "" {
+		if name, ok := codexGatewayOutputItemStringField(parsed, "name"); ok && strings.TrimSpace(name) != "" {
 			payload["name"] = name
 		}
-		if arguments := strings.TrimSpace(firstCodexGatewayToolString(parsed["arguments"])); arguments != "" {
+		if arguments, ok := codexGatewayOutputItemStringField(parsed, "arguments"); ok {
 			payload["arguments"] = arguments
 		}
 	}
@@ -326,6 +350,7 @@ func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(respons
 }
 
 func (w *CodexGatewayResponseEventWriter) WriteOutputItemDone(responseID string, outputIndex int, item json.RawMessage) error {
+	item = normalizeCodexGatewayOutputItemWireFields(item)
 	payload := map[string]any{
 		"type":         "response.output_item.done",
 		"response_id":  responseID,
@@ -334,6 +359,57 @@ func (w *CodexGatewayResponseEventWriter) WriteOutputItemDone(responseID string,
 	}
 	addCodexGatewayOutputItemIdentityFields(payload, item)
 	return w.write("response.output_item.done", payload)
+}
+
+func normalizeCodexGatewayOutputItemWireFields(item json.RawMessage) json.RawMessage {
+	if len(item) == 0 {
+		return item
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(item, &parsed); err != nil {
+		return item
+	}
+	changed := false
+	switch strings.TrimSpace(firstCodexGatewayToolString(parsed["type"])) {
+	case "message":
+		if _, ok := parsed["content"]; !ok || parsed["content"] == nil {
+			parsed["content"] = []any{}
+			changed = true
+		}
+	case "reasoning":
+		if _, ok := parsed["summary"]; !ok || parsed["summary"] == nil {
+			parsed["summary"] = []any{}
+			changed = true
+		}
+	case "function_call":
+		if _, ok := parsed["arguments"]; !ok || parsed["arguments"] == nil {
+			parsed["arguments"] = ""
+			changed = true
+		}
+	}
+	if !changed {
+		return item
+	}
+	raw, err := json.Marshal(parsed)
+	if err != nil {
+		return item
+	}
+	return raw
+}
+
+func codexGatewayOutputItemStringField(parsed map[string]any, key string) (string, bool) {
+	if parsed == nil {
+		return "", false
+	}
+	value, ok := parsed[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := value.(string)
+	if !ok {
+		return firstCodexGatewayToolString(value), firstCodexGatewayToolString(value) != ""
+	}
+	return s, true
 }
 
 func addCodexGatewayOutputItemIdentityFields(payload map[string]any, item json.RawMessage) {

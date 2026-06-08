@@ -1,0 +1,76 @@
+{
+  "name": "tool_search_call_output_request",
+  "mode": "request",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "tool_search_call",
+        "call_id": "call_search",
+        "status": "completed",
+        "execution": "client",
+        "arguments": {
+          "query": "spawn_agent",
+          "limit": 10
+        }
+      },
+      {
+        "type": "tool_search_output",
+        "call_id": "call_search",
+        "status": "completed",
+        "execution": "client",
+        "tools": [
+          {
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [
+              {
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "tool_search",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  },
+  "expect": {
+    "messages_contains": [
+      "tool_search",
+      "call_search",
+      "multi_agent_v1",
+      "spawn_agent"
+    ]
+  }
+}
