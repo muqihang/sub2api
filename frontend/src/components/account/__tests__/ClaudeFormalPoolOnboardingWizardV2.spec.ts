@@ -1,8 +1,22 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent } from 'vue'
 
 import ClaudeFormalPoolOnboardingWizardV2 from '../ClaudeFormalPoolOnboardingWizardV2.vue'
 import type { FormalPoolAcceptanceResult, FormalPoolSession } from '@/api/admin/claudeOnboarding'
+
+vi.mock('@/components/common/ConfirmDialog.vue', () => ({
+  default: defineComponent({
+    name: 'ConfirmDialog',
+    props: ['show', 'title', 'message', 'confirmText', 'cancelText', 'danger', 'zIndex'],
+    emits: ['confirm', 'cancel'],
+    template:
+      '<div v-if="show" data-testid="confirm-dialog-stub" :data-title="title" :data-message="message" :data-danger="String(danger)">' +
+      '<button data-testid="confirm-dialog-stub-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button>' +
+      '<button data-testid="confirm-dialog-stub-cancel" @click="$emit(\'cancel\')">{{ cancelText }}</button>' +
+      '</div>',
+  }),
+}))
 
 const onboardingApi = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -310,6 +324,50 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.find('[data-testid="reload-groups"]').exists()).toBe(true)
   })
 
+  it('shows dynamic missing items while the create session button is disabled', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const startButton = wrapper.find('[data-testid="start-session"]')
+    expect(startButton.attributes('disabled')).toBeDefined()
+
+    const missing = wrapper.find('[data-testid="start-session-missing-items"]')
+    expect(missing.exists()).toBe(true)
+    expect(missing.text()).toContain('账号名称')
+    expect(missing.text()).toContain('代理')
+    expect(missing.text()).toContain('分组')
+
+    await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
+    await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+    await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="start-session-missing-items"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="start-session"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('shows create-proxy missing host and port with Chinese proxy field labels', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="proxy-mode-select"]').setValue('create')
+    await wrapper.find('[data-testid="account-name-input"]').setValue('claude-new-proxy')
+    await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+    await wrapper.find('[data-testid="create-proxy-port-input"]').setValue('')
+    await flushPromises()
+
+    const missing = wrapper.find('[data-testid="start-session-missing-items"]')
+    expect(missing.text()).toContain('创建代理地址')
+    expect(missing.text()).toContain('创建代理端口')
+    expect(wrapper.text()).toContain('代理地址')
+    expect(wrapper.text()).toContain('示例：proxy.example.com')
+    expect(wrapper.text()).toContain('代理端口')
+    expect(wrapper.text()).toContain('示例：1080')
+    expect(wrapper.text()).toContain('代理用户名')
+    expect(wrapper.text()).toContain('没有账号密码可留空')
+    expect(wrapper.text()).toContain('代理密码')
+  })
+
   it('reload buttons call list APIs again', async () => {
     const wrapper = mountWizard()
     await flushPromises()
@@ -479,7 +537,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await wrapper.find('[data-testid="account-name-input"]').setValue('claude-new-proxy')
     await wrapper.find('[data-testid="group-card-9"]').trigger('click')
     await wrapper.find('input[placeholder="代理备注名称"]').setValue('New managed proxy')
-    await wrapper.find('input[placeholder="代理 host"]').setValue('proxy.example.net')
+    await wrapper.find('input[placeholder="示例：proxy.example.com"]').setValue('proxy.example.net')
     await wrapper.find('[data-testid="create-proxy-port-input"]').setValue(18080)
     await wrapper.find('[data-testid="start-session"]').trigger('click')
     await flushPromises()
@@ -519,7 +577,8 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
 
     await startSession(wrapper)
 
-    expect(wrapper.find('[data-testid="browser-egress-status"]').text()).toContain('idle')
+    expect(wrapper.find('[data-testid="browser-egress-status"]').text()).toContain('未开始')
+    expect(wrapper.find('[data-testid="browser-egress-status"]').text()).not.toContain('idle')
     expect(wrapper.find('[data-testid="browser-egress-check-url"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('/browser-egress-check/')
   })
@@ -549,6 +608,83 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await flushPromises()
     expect(writeText).toHaveBeenCalledWith(realUrl)
     vi.unstubAllGlobals()
+  })
+
+  it('shows the OAuth 1/2/3 human flow, copies the generated authorization link, and keeps the raw URL hidden', async () => {
+    const rawCode = 'oauth-code-DO-NOT-LEAK-12345'
+    const realUrl = `https://claude.ai/oauth/authorize?code=${rawCode}`
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const wrapper = mountWizard()
+    await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="oauth-human-flow"]').text()).toContain('1')
+    expect(wrapper.find('[data-testid="oauth-human-flow"]').text()).toContain('复制授权链接')
+    expect(wrapper.find('[data-testid="oauth-human-flow"]').text()).toContain('同出口浏览器')
+    expect(wrapper.find('[data-testid="oauth-human-flow"]').text()).toContain('粘贴授权码并创建账号')
+    expect(wrapper.text()).toContain('生成授权链接')
+    expect(wrapper.text()).not.toContain('生成 OAuth URL')
+
+    onboardingApi.generateAuthUrl.mockResolvedValueOnce(sessionFixture({
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      auth_url: realUrl,
+    }))
+    await wrapper.find('[data-testid="generate-oauth-url"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('授权链接已生成')
+    expect(wrapper.html()).not.toContain(rawCode)
+    expect(wrapper.html()).not.toContain(realUrl)
+
+    await wrapper.find('[data-testid="copy-oauth-url"]').trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledWith(realUrl)
+    expect(wrapper.find('[data-testid="oauth-copy-status"]').text()).toContain('已复制授权链接')
+    vi.unstubAllGlobals()
+  })
+
+  it('shows a retryable message when copying the OAuth authorization link fails', async () => {
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      auth_url: 'https://claude.ai/oauth/authorize?code=copy-fails',
+    })
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+
+    await wrapper.find('[data-testid="copy-oauth-url"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="oauth-copy-status"]').text()).toContain('复制失败，请重试')
+    vi.unstubAllGlobals()
+  })
+
+  it('uses Chinese primary action text and avoids raw engineering words in the onboarding UX', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    const proxyStepText = wrapper.text()
+    expect(proxyStepText).toContain('标准消耗：约 7 天平滑使用（推荐）')
+    expect(proxyStepText).toContain('加速消耗：请求更积极，但仍需通过健康门禁')
+    expect(proxyStepText).not.toContain('Exchange code')
+    expect(proxyStepText).not.toContain('OAuth URL')
+    expect(proxyStepText).not.toContain('Host')
+    expect(proxyStepText).not.toContain('Port')
+    expect(proxyStepText).not.toContain('Username')
+    expect(proxyStepText).not.toContain('Password')
+
+    await startSession(wrapper, { browser_egress_verified: true, browser_egress_check_status: 'verified' })
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+
+    const authStepText = wrapper.text()
+    expect(authStepText).toContain('复制授权链接')
+    expect(authStepText).toContain('提交授权码并创建账号')
+    expect(authStepText).not.toContain('Exchange code')
+    expect(authStepText).not.toContain('OAuth URL')
   })
 
 
@@ -601,7 +737,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
 
     expect(onboardingApi.createSession).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).not.toContain('session-2')
-    expect(wrapper.get('[data-testid="session-ref"]').text()).toContain('session ref unavailable')
+    expect(wrapper.get('[data-testid="session-ref"]').text()).toContain('会话编号暂不可用')
   })
 
   it('shows mismatch buckets or generic copy and never raw IP addresses', async () => {
@@ -618,8 +754,14 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
 
     const mismatch = wrapper.find('[data-testid="browser-egress-mismatch"]')
     expect(mismatch.exists()).toBe(true)
+    expect(mismatch.text()).toContain('浏览器出口分组')
+    expect(mismatch.text()).toContain('代理出口分组')
     expect(mismatch.text()).toContain('browser_bucket_A')
     expect(mismatch.text()).toContain('proxy_bucket_B')
+    expect(mismatch.text()).toContain('出口不一致')
+    expect(mismatch.text()).not.toContain('Browser bucket')
+    expect(mismatch.text()).not.toContain('Proxy bucket')
+    expect(mismatch.text().toLowerCase()).not.toContain('mismatch')
     expect(wrapper.text()).not.toContain('203.0.113.10')
     expect(wrapper.text()).not.toContain('198.51.100.7')
   })
@@ -646,7 +788,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
 
     expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
     expect(wrapper.find('[data-testid="stepper-lock-reason-auth"]').text()).toContain('代理健康检查')
-    expect(wrapper.find('[data-testid="setup-token-egress-skip"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="setup-token-proxy-not-ready"]').text()).toContain('代理健康检查未通过')
     expect(wrapper.find('[data-testid="test-proxy"]').text()).toContain('测试代理健康')
 
     onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({
@@ -676,37 +818,309 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await flushPromises()
 
     expect(onboardingApi.setupTokenCookieAuthAndCreate).toHaveBeenCalledWith('session-1', 'safe-test-token')
+    expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('active')
+    expect(wrapper.text()).toContain('完成上号检查，进入预热期')
   })
 
-  it('gates runtime healthcheck, warming, and production with clear real directed healthcheck copy', async () => {
+  it('does not let Setup Token continue when proxy health did not pass', async () => {
+    const wrapper = mountWizard()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="auth-mode-setup-token"]').setValue()
+    await startSession(wrapper)
+
+    onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({
+      status: 'idle',
+      browser_egress_check_status: 'mismatch',
+      browser_egress_verified: false,
+    }))
+    await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
+    expect(wrapper.find('[data-testid="setup-token-input"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('代理健康检查未通过')
+  })
+
+  it('shows one operator-friendly recommended gate action and hides manual engineering actions by default', async () => {
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      status: 'refreshed',
+      account_id: 42,
+      cc_gateway_runtime_registered: false,
+      healthcheck_passed: false,
+    })
+
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+
+    expect(wrapper.text()).toContain('完成上号检查，进入预热期')
+    expect(wrapper.text()).not.toContain('Refresh / Runtime / Healthcheck / Warming / Production')
+    expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('继续下一步：接入调度器')
+    expect(wrapper.text()).toContain('让调度器识别这个账号，之后才能做健康检查')
+    expect(wrapper.text()).toContain('登录态确认')
+    expect(wrapper.text()).toContain('调度器接入')
+    expect(wrapper.text()).toContain('上游可用性检查')
+    expect(wrapper.text()).not.toContain('运行映射')
+    expect(wrapper.find('[data-testid="refresh-only"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="runtime-register"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="healthcheck"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="start-warming"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="promote-production"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="advanced-manual-toggle"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="refresh-only"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="runtime-register"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="healthcheck"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="start-warming"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="promote-production"]').exists()).toBe(true)
+  })
+
+  it('starts the recommended gate flow with credential refresh before runtime registration', async () => {
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      status: 'imported',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      cc_gateway_runtime_registered: false,
+      healthcheck_passed: false,
+    })
+
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+
+    const recommendedButton = wrapper.find('[data-testid="recommended-gate-action"]')
+    expect(recommendedButton.text()).toContain('继续下一步：刷新登录状态')
+    expect(wrapper.text()).toContain('先确认登录态仍可用')
+
+    onboardingApi.refreshOnly.mockResolvedValueOnce(sessionFixture({
+      status: 'refreshed',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      cc_gateway_runtime_registered: false,
+      healthcheck_passed: false,
+    }))
+    await recommendedButton.trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.refreshOnly).toHaveBeenCalledWith('session-1')
+    expect(onboardingApi.runtimeRegister).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('继续下一步：接入调度器')
+  })
+
+  it('advances the recommended gate action through health check and warming with Chinese labels', async () => {
     const wrapper = mountWizard()
     await startSession(wrapper, {
       status: 'runtime_registered',
       account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
       cc_gateway_runtime_registered: true,
       healthcheck_passed: false,
     })
 
     await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
 
-    const healthcheckButton = wrapper.find('[data-testid="healthcheck"]')
-    expect(healthcheckButton.text()).toContain('一次真实 directed healthcheck/上游请求')
-    expect(healthcheckButton.attributes('disabled')).toBeUndefined()
-    expect(wrapper.find('[data-testid="start-warming"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.find('[data-testid="promote-production"]').attributes('disabled')).toBeDefined()
+    const recommendedButton = () => wrapper.find('[data-testid="recommended-gate-action"]')
+    expect(recommendedButton().text()).toContain('继续下一步：做一次上游可用性检查')
 
     onboardingApi.healthcheck.mockResolvedValueOnce(acceptanceFixture())
-    await healthcheckButton.trigger('click')
+    await recommendedButton().trigger('click')
+    await flushPromises()
+    expect(onboardingApi.healthcheck).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').attributes('data-message')).toContain('真实上游请求')
+    await wrapper.find('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="stage-healthcheck_passed"]').classes()).toContain('is-active')
-    expect(wrapper.find('[data-testid="start-warming"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="stage-healthcheck_passed"]').text()).toContain('上游可用性已通过')
+    expect(recommendedButton().text()).toContain('继续下一步：进入低权重预热')
 
     onboardingApi.startWarming.mockResolvedValueOnce(sessionFixture({ status: 'warming', account_id: 42, healthcheck_passed: true }))
-    await wrapper.find('[data-testid="start-warming"]').trigger('click')
+    await recommendedButton().trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('新号 low weight')
-    expect(wrapper.find('[data-testid="promote-production"]').attributes('disabled')).toBeUndefined()
+
+    expect(recommendedButton().text()).toContain('切换到生产调度')
+    expect(wrapper.text()).toContain('账号已在低权重预热期，可按策略切换到生产调度')
+  })
+
+  it('does not run the manual health check until the operator confirms', async () => {
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      status: 'runtime_registered',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      cc_gateway_runtime_registered: true,
+      healthcheck_passed: false,
+    })
+
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+    await wrapper.find('[data-testid="advanced-manual-toggle"]').trigger('click')
+    await wrapper.find('[data-testid="healthcheck"]').trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.healthcheck).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="confirm-dialog-stub-cancel"]').trigger('click')
+    expect(wrapper.find('[data-testid="healthcheck-confirm-dialog"]').exists()).toBe(false)
+    expect(onboardingApi.healthcheck).not.toHaveBeenCalled()
+  })
+
+  it('renders Chinese stage labels instead of raw engineering statuses', async () => {
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      status: 'production',
+      account_id: 42,
+      cc_gateway_runtime_registered: true,
+      healthcheck_passed: true,
+    })
+
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="stage-runtime_registered"]').text()).toContain('已接入调度器')
+    expect(wrapper.find('[data-testid="stage-healthcheck_passed"]').text()).toContain('上游可用性已通过')
+    expect(wrapper.find('[data-testid="stage-warming"]').text()).toContain('预热期')
+    expect(wrapper.find('[data-testid="stage-production"]').text()).toContain('生产调度中')
+    expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('查看诊断状态')
+    expect(wrapper.text()).not.toContain('runtime_registered')
+    expect(wrapper.text()).not.toContain('healthcheck_passed')
+    expect(wrapper.text()).not.toContain('new号 low weight')
+    expect(wrapper.text()).not.toContain('Promote production')
+  })
+
+  it('keeps production promotion in the recommended flow when the account is warming', async () => {
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      status: 'warming',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      cc_gateway_runtime_registered: true,
+      healthcheck_passed: true,
+    })
+
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+
+    const recommendedButton = wrapper.find('[data-testid="recommended-gate-action"]')
+    expect(recommendedButton.text()).toContain('切换到生产调度')
+
+    onboardingApi.promoteProduction.mockResolvedValueOnce(sessionFixture({
+      status: 'production',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      cc_gateway_runtime_registered: true,
+      healthcheck_passed: true,
+    }))
+    await recommendedButton.trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.promoteProduction).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="promote-production-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="confirm-dialog-stub-cancel"]').trigger('click')
+    expect(onboardingApi.promoteProduction).not.toHaveBeenCalled()
+
+    await recommendedButton.trigger('click')
+    await wrapper.find('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith('session-1')
+    expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('查看诊断状态')
+  })
+
+
+  it('confirms manual production promotion before calling the API', async () => {
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      status: 'warming',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      cc_gateway_runtime_registered: true,
+      healthcheck_passed: true,
+    })
+
+    await wrapper.find('[data-testid="stepper-gates"]').trigger('click')
+    await wrapper.find('[data-testid="advanced-manual-toggle"]').trigger('click')
+
+    onboardingApi.promoteProduction.mockResolvedValueOnce(sessionFixture({
+      status: 'production',
+      account_id: 42,
+      browser_egress_verified: true,
+      browser_egress_check_status: 'verified',
+      cc_gateway_runtime_registered: true,
+      healthcheck_passed: true,
+    }))
+    await wrapper.find('[data-testid="promote-production"]').trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.promoteProduction).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="promote-production-confirm-dialog"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith('session-1')
+  })
+
+  it('renders browser egress statuses in Chinese without raw status codes', async () => {
+    const cases = [
+      ['idle', '未开始'],
+      ['verified', '已通过'],
+      ['mismatch', '出口不一致'],
+      ['expired', '已过期'],
+    ] as const
+
+    for (const [rawStatus, label] of cases) {
+      const wrapper = mountWizard()
+      await startSession(wrapper, { browser_egress_check_status: rawStatus, browser_egress_verified: rawStatus === 'verified' })
+      const statusText = wrapper.find('[data-testid="browser-egress-status"]').text()
+      expect(statusText).toContain(label)
+      expect(statusText).not.toContain(rawStatus)
+    }
+
+    const wrapper = mountWizard()
+    await flushPromises()
+    await wrapper.find('[data-testid="auth-mode-setup-token"]').setValue()
+    await startSession(wrapper, {
+      status: 'proxy_verified',
+      browser_egress_check_status: 'waiting',
+      browser_egress_verified: false,
+    })
+
+    const setupTokenStatusText = wrapper.find('[data-testid="browser-egress-status"]').text()
+    expect(setupTokenStatusText).toContain('代理健康已通过')
+    expect(setupTokenStatusText).not.toContain('waiting')
+  })
+
+  it('keeps raw diagnostic JSON folded on the evidence page and shows operator labels', async () => {
+    const wrapper = mountWizard()
+    await startSession(wrapper, {
+      status: 'production',
+      account_id: 42,
+      proxy_ref: 'proxy_bucket_safe',
+      egress_bucket: 'egress_bucket_safe',
+      cc_gateway_runtime_registered: true,
+      healthcheck_passed: true,
+    })
+
+    await wrapper.find('[data-testid="stepper-evidence"]').trigger('click')
+
+    expect(wrapper.text()).toContain('代理标识')
+    expect(wrapper.text()).toContain('出口分组')
+    expect(wrapper.text()).not.toContain('Proxy ref')
+    expect(wrapper.text()).not.toContain('Egress bucket')
+    expect(wrapper.text()).not.toContain('cc_gateway_runtime_registered')
+    expect(wrapper.text()).not.toContain('healthcheck_passed')
+    expect(wrapper.find('[data-testid="advanced-safe-session-json"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="advanced-safe-session-toggle"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="advanced-safe-session-json"]').exists()).toBe(true)
   })
 
   it('scrubs sensitive backend and account-source display text before it reaches the DOM', async () => {
@@ -857,15 +1271,15 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
       browser_egress_verified: false,
       browser_egress_check_status: 'mismatch',
     }))
-    const generateAuthButton = wrapper.findAll('button').find((button) => button.text().includes('生成 OAuth URL'))
-    expect(generateAuthButton).toBeTruthy()
-    await generateAuthButton!.trigger('click')
+    const generateAuthButton = wrapper.find('[data-testid="generate-oauth-url"]')
+    expect(generateAuthButton.exists()).toBe(true)
+    await generateAuthButton.trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
     expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('locked')
     expect(wrapper.find('[data-testid="stepper-auth"]').attributes('aria-current')).toBeUndefined()
-    expect(wrapper.text()).toContain('Proxy setup')
+    expect(wrapper.text()).toContain('代理与出口设置')
     expect(wrapper.text()).not.toContain('授权与创建不可调度账号')
   })
 
@@ -883,14 +1297,15 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
       browser_egress_verified: false,
       browser_egress_check_status: 'mismatch',
     }))
+    await wrapper.find('[data-testid="advanced-manual-toggle"]').trigger('click')
     await wrapper.find('[data-testid="refresh-only"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="stepper-proxy"]').attributes('data-step-status')).toBe('active')
     expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('locked')
     expect(wrapper.find('[data-testid="stepper-gates"]').attributes('aria-current')).toBeUndefined()
-    expect(wrapper.text()).toContain('Proxy setup')
-    expect(wrapper.text()).not.toContain('Refresh / Runtime / Healthcheck / Warming / Production')
+    expect(wrapper.text()).toContain('代理与出口设置')
+    expect(wrapper.find('[data-testid="recommended-gate-action"]').exists()).toBe(false)
   })
 
   it('once an account is created and healthcheck passes, every reachable step shows done/active visuals', async () => {
