@@ -51,6 +51,15 @@ func TestCodexAgentSchemaConstants(t *testing.T) {
 	require.Equal(t, "user_id", codexdeviceauditlog.UserColumn)
 }
 
+func TestCodexAgentServiceDefaultCodexConfigProfileDisablesWebsockets(t *testing.T) {
+	profile := (&CodexAgentService{}).DefaultCodexConfigProfile()
+
+	require.Equal(t, "zhumeng-codex", profile.ModelProvider)
+	require.Equal(t, "responses", profile.WireAPI)
+	require.True(t, profile.RequiresOpenAIAuth)
+	require.False(t, profile.SupportsWebsockets)
+}
+
 func TestCodexAgentServiceCreateSetupGrantDoesNotLeakAPIKey(t *testing.T) {
 	var captured CreateCodexSetupGrantParams
 	svc := newTestCodexAgentService(

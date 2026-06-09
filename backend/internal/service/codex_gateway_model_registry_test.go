@@ -210,6 +210,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 		AutoCompactTokenLimit         int    `json:"auto_compact_token_limit,omitempty"`
 		MaxContextWindow              int    `json:"max_context_window,omitempty"`
 		EffectiveContextWindowPercent int    `json:"effective_context_window_percent,omitempty"`
+		SupportsWebsockets            *bool  `json:"supports_websockets,omitempty"`
 	}
 
 	reg := NewCodexGatewayModelRegistry(
@@ -258,6 +259,7 @@ func TestCodexGatewayModelRegistry_ExportCodexCLICatalogJSON(t *testing.T) {
 		require.Contains(t, model.BaseInstructions, "`rg`")
 		require.Contains(t, model.BaseInstructions, "Try to use `edit`")
 		require.Contains(t, model.BaseInstructions, "For multi-line file creation or rewrites")
+		require.Nil(t, model.SupportsWebsockets, "Codex Gateway catalog must not advertise WS until full WS v2 support is implemented")
 		require.NotEmpty(t, model.SupportedReasoningLevels)
 		require.NotEmpty(t, model.SupportedReasoningLevels[0].Description)
 	}

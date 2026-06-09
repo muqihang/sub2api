@@ -914,6 +914,32 @@ func TestCodexGatewayDeepSeekRequest_NativeParityFixtureComputerUseOutputSizes(t
 	}
 }
 
+func TestCodexGatewayDeepSeekRequest_NativeParityFixtureComputerUseSemanticCompression(t *testing.T) {
+	fixture := loadCodexGatewayDeepSeekNativeParityFixture(t, "computer_use_semantic_compression_cases.json")
+	require.Equal(t, codexGatewayDeepSeekComputerUseCompressionVersion, gjson.GetBytes(fixture, "compression_version").String())
+	cases := gjson.GetBytes(fixture, "cases").Array()
+	require.NotEmpty(t, cases)
+	for _, tc := range cases {
+		name := tc.Get("name").String()
+		t.Run(name, func(t *testing.T) {
+			var output any
+			require.NoError(t, json.Unmarshal([]byte(tc.Get("output").Raw), &output))
+			normalized, err := normalizeCodexGatewayDeepSeekToolOutput(output)
+			require.NoError(t, err)
+			for _, expected := range tc.Get("expect_contains").Array() {
+				require.Contains(t, normalized, expected.String())
+			}
+			for _, forbidden := range tc.Get("expect_not_contains").Array() {
+				require.NotContains(t, normalized, forbidden.String())
+			}
+			for _, path := range tc.Get("expect_paths").Array() {
+				require.True(t, gjson.Get(normalized, path.String()).Exists(), "expected normalized output path %s in %s", path.String(), normalized)
+			}
+			require.LessOrEqual(t, len(normalized), codexGatewayDeepSeekToolOutputMaxChars+256)
+		})
+	}
+}
+
 func TestCodexGatewayDeepSeekRequest_ConvertsToolSearchCallToDeepSeekToolCall(t *testing.T) {
 	req := CodexGatewayResponsesCreateRequest{
 		Model: "deepseek-v4-pro",
@@ -1385,6 +1411,63 @@ func TestCodexGatewayDeepSeekRequest_ComputerUseAddsNativeOperationStrategy(t *t
 	require.Contains(t, setValueIndex["description"], "get_app_state")
 	scroll := deepSeekRequestToolFunctionBySuffix(t, tools, "__scroll")
 	require.Contains(t, scroll["description"], "Avoid scrolling")
+}
+
+func TestCodexGatewayDeepSeekRequest_ComputerUseStrategyInjectedOnlyWhenToolsPresentAndDeduped(t *testing.T) {
+	tools := json.RawMessage(`[
+		{"type":"namespace","name":"mcp__computer_use__","tools":[
+			{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+		]}
+	]`)
+	input := json.RawMessage(`[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Computer Use to inspect Codex."}]}
+	]`)
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+
+	noToolPrepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model: "deepseek-v4-pro",
+		Input: input,
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_no_cu_tools",
+		IsolationKey: "user_no_cu_tools",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	noToolMessages := mustMarshalJSON(t, noToolPrepared.Body["messages"])
+	require.NotContains(t, string(noToolMessages), "bundle identifier values from list_apps")
+
+	instructions, err := json.Marshal(codexGatewayDeepSeekComputerUseInstruction)
+	require.NoError(t, err)
+	dedupedPrepared, err := BuildCodexGatewayDeepSeekRequest(model, CodexGatewayResponsesCreateRequest{
+		Model:        "deepseek-v4-pro",
+		Instructions: instructions,
+		Input:        input,
+		Tools:        tools,
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_cu_deduped",
+		IsolationKey: "user_cu_deduped",
+	}, CodexGatewayDeepSeekRequestConfig{})
+	require.NoError(t, err)
+	dedupedMessages := mustMarshalJSON(t, dedupedPrepared.Body["messages"])
+	require.Equal(t, 1, strings.Count(string(dedupedMessages), "Computer Use strategy"))
+	require.Equal(t, 1, strings.Count(string(dedupedMessages), "bundle identifier values from list_apps"))
+
+	agnesModel := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+	agnesInstructions, err := json.Marshal(codexGatewayAgnesComputerUseInstruction)
+	require.NoError(t, err)
+	agnesPrepared, err := BuildCodexGatewayDeepSeekRequest(agnesModel, CodexGatewayResponsesCreateRequest{
+		Model:        "agnes-2.0-flash",
+		Instructions: agnesInstructions,
+		Input:        input,
+		Tools:        tools,
+	}, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu_deduped",
+		IsolationKey: "user_agnes_cu_deduped",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+	agnesMessages := mustMarshalJSON(t, agnesPrepared.Body["messages"])
+	require.Equal(t, 1, strings.Count(string(agnesMessages), "Computer Use strategy"))
+	require.Equal(t, 1, strings.Count(string(agnesMessages), "AGNES Computer Use continuation"))
 }
 
 func TestCodexGatewayDeepSeekRequest_ParallelToolCallsFalseDoesNotDuplicateSerialInstructionOnReplay(t *testing.T) {

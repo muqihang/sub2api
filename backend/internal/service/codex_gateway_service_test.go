@@ -611,6 +611,26 @@ func TestCodexGatewayService_ResponsesDeepSeekPreviousResponseIDDispatchesToExec
 	require.Equal(t, "deepseek", captured.Model.Provider)
 }
 
+func TestCodexGatewayService_ResponsesOpenAIHTTPPreviousResponseIDRequiresWSV2(t *testing.T) {
+	registry := NewDefaultCodexGatewayModelRegistry()
+	executorCalled := false
+	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{
+		completeFn: func(_ context.Context, _ CodexGatewayProviderRequest) (*CodexGatewayServiceResponse, error) {
+			executorCalled = true
+			return nil, nil
+		},
+	})
+
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey: validCodexGatewayAPIKeyForTest(),
+		Body:   []byte(`{"model":"gpt-5.5","previous_response_id":"resp_openai_prev"}`),
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.False(t, executorCalled)
+	require.Contains(t, gjson.GetBytes(resp.Body, "error.message").String(), "Responses WebSocket v2")
+}
+
 func TestCodexGatewayService_ResponsesRejectsHiddenModel(t *testing.T) {
 	registry := NewDefaultCodexGatewayModelRegistry()
 	svc := NewCodexGatewayService(registry, &codexGatewayExecutorStub{

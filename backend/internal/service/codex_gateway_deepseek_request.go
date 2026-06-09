@@ -36,6 +36,8 @@ const codexGatewayDeepSeekComputerUseInstruction = "Computer Use strategy: when 
 
 const codexGatewayAgnesComputerUseInstruction = codexGatewayDeepSeekComputerUseInstruction + " AGNES Computer Use continuation: Do not stop after saying what you will do next; if the task is incomplete, immediately call the next Computer Use tool in the same turn. Every new turn or Continue after a pause must call get_app_state for the target app before press_key, click, set_value, type_text, or scroll. For Electron apps, prefer bundle IDs, set_value on a settable text input, press_key Return, then one get_app_state to read visible_text. If visible_text already contains enough answer text, use it to finish instead of repeated scrolling."
 
+const codexGatewayDeepSeekComputerUseCompressionVersion = "deepseek-computer-use-compression-v1"
+
 const (
 	codexGatewayDeepSeekToolOutputMaxChars           = 3500
 	codexGatewayDeepSeekToolOutputStringPreviewChars = 1200
@@ -220,11 +222,8 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	}
 	if len(messages) > 0 {
 		codexGatewayBackfillDeepSeekAssistantReasoning(messages)
-		if codexGatewayDeepSeekToolMappingHasComputerUse(toolMapping) && codexGatewayDeepSeekMessagesHaveUserTurn(messages) && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekComputerUseInstruction) && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayAgnesComputerUseInstruction) {
-			computerUseInstruction := codexGatewayDeepSeekComputerUseInstruction
-			if strings.EqualFold(provider, string(CodexGatewayProviderAgnes)) {
-				computerUseInstruction = codexGatewayAgnesComputerUseInstruction
-			}
+		computerUseInstruction, injectComputerUseInstruction := codexGatewayDeepSeekComputerUseInstructionForProvider(provider, messages, leadingMessages)
+		if codexGatewayDeepSeekToolMappingHasComputerUse(toolMapping) && codexGatewayDeepSeekMessagesHaveUserTurn(messages) && injectComputerUseInstruction {
 			leadingMessages = append(leadingMessages, map[string]any{
 				"role":    "system",
 				"content": computerUseInstruction,
@@ -399,16 +398,32 @@ func codexGatewayDeepSeekDeduplicateLeadingSystemMessages(leadingMessages, repla
 }
 
 func codexGatewayDeepSeekSystemPrefixHasContent(messages []any, content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
 	for _, msg := range messages {
 		m, ok := msg.(map[string]any)
-		if !ok || m["role"] != "system" {
+		if !ok || strings.TrimSpace(firstCodexGatewayToolString(m["role"])) != "system" {
 			return false
 		}
-		if m["content"] == content {
+		msgContent := strings.TrimSpace(firstCodexGatewayToolString(m["content"]))
+		if msgContent == content || codexGatewayInstructionsContain(msgContent, content) {
 			return true
 		}
 	}
 	return false
+}
+
+func codexGatewayDeepSeekComputerUseInstructionForProvider(provider string, messages, leadingMessages []any) (string, bool) {
+	hasDeepSeekInstruction := codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekComputerUseInstruction) ||
+		codexGatewayDeepSeekSystemPrefixHasContent(leadingMessages, codexGatewayDeepSeekComputerUseInstruction)
+	hasAgnesInstruction := codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayAgnesComputerUseInstruction) ||
+		codexGatewayDeepSeekSystemPrefixHasContent(leadingMessages, codexGatewayAgnesComputerUseInstruction)
+	if strings.EqualFold(provider, string(CodexGatewayProviderAgnes)) {
+		return codexGatewayAgnesComputerUseInstruction, !hasAgnesInstruction
+	}
+	return codexGatewayDeepSeekComputerUseInstruction, !hasDeepSeekInstruction && !hasAgnesInstruction
 }
 
 func codexGatewayDeepSeekMessagesHaveUserTurn(messages []any) bool {
@@ -1661,7 +1676,7 @@ func codexGatewayDeepSeekCompactSemanticToolSummaryMap(in map[string]any, class 
 
 func codexGatewayDeepSeekCompactSemanticToolSummaryMapWithBudget(in map[string]any, class string, textChars, maxLines, lineChars int) map[string]any {
 	out := make(map[string]any, len(in))
-	for _, key := range []string{"content_class", "field", "truncated", "original_chars", "sha256", "media_type", "extraction_mode"} {
+	for _, key := range []string{"content_class", "compression_version", "field", "truncated", "original_chars", "sha256", "media_type", "extraction_mode", "app_context", "latest_error"} {
 		if value, ok := in[key]; ok {
 			out[key] = value
 		}
@@ -1930,13 +1945,14 @@ func codexGatewayDeepSeekSummarizeStructuredVisualState(field string, value any)
 			contentClass = "accessibility_tree"
 		}
 		return map[string]any{
-			"content_class":   contentClass,
-			"field":           field,
-			"truncated":       true,
-			"original_chars":  len(text),
-			"sha256":          codexGatewayDeepSeekTextSHA256(text),
-			"operable_lines":  lines,
-			"extraction_mode": "structured_fields",
+			"content_class":       contentClass,
+			"compression_version": codexGatewayDeepSeekComputerUseCompressionVersion,
+			"field":               field,
+			"truncated":           true,
+			"original_chars":      len(text),
+			"sha256":              codexGatewayDeepSeekTextSHA256(text),
+			"operable_lines":      lines,
+			"extraction_mode":     "structured_fields",
 		}, true
 	}
 	if isAccessibility {
@@ -2188,16 +2204,26 @@ func codexGatewayDeepSeekLooksLikeStandaloneVisualTree(value string) bool {
 			return true
 		}
 	}
+	if treeHints >= 2 && len(codexGatewayDeepSeekAccessibilityVisibleTextLines(value)) > 0 {
+		return true
+	}
 	return false
 }
 
 func codexGatewayDeepSeekSummarizeVisualTree(field, value string) map[string]any {
 	out := map[string]any{
-		"content_class":  "visual_tree",
-		"field":          field,
-		"truncated":      true,
-		"original_chars": len(value),
-		"sha256":         codexGatewayDeepSeekTextSHA256(value),
+		"content_class":       "visual_tree",
+		"compression_version": codexGatewayDeepSeekComputerUseCompressionVersion,
+		"field":               field,
+		"truncated":           true,
+		"original_chars":      len(value),
+		"sha256":              codexGatewayDeepSeekTextSHA256(value),
+	}
+	if appContext := codexGatewayDeepSeekComputerUseAppContext(value); len(appContext) > 0 {
+		out["app_context"] = appContext
+	}
+	if latestError := codexGatewayDeepSeekLatestErrorLine(value); latestError != "" {
+		out["latest_error"] = latestError
 	}
 	if lines := codexGatewayDeepSeekAccessibilityTreeLines(value); len(lines) > 0 {
 		out["operable_lines"] = lines
@@ -2219,11 +2245,12 @@ func codexGatewayDeepSeekSummarizeVisualTree(field, value string) map[string]any
 
 func codexGatewayDeepSeekSummarizeBinaryToolField(field, value string) map[string]any {
 	summary := map[string]any{
-		"content_class":  "binary_or_image",
-		"field":          field,
-		"truncated":      true,
-		"original_chars": len(value),
-		"sha256":         codexGatewayDeepSeekTextSHA256(value),
+		"content_class":       "binary_or_image",
+		"compression_version": codexGatewayDeepSeekComputerUseCompressionVersion,
+		"field":               field,
+		"truncated":           true,
+		"original_chars":      len(value),
+		"sha256":              codexGatewayDeepSeekTextSHA256(value),
 	}
 	if strings.HasPrefix(value, "data:image/") {
 		if comma := strings.Index(value, ","); comma > 0 {
@@ -2233,13 +2260,81 @@ func codexGatewayDeepSeekSummarizeBinaryToolField(field, value string) map[strin
 	return summary
 }
 
+func codexGatewayDeepSeekComputerUseAppContext(value string) map[string]any {
+	for _, raw := range strings.FieldsFunc(value, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "App=") {
+			continue
+		}
+		ctx := map[string]any{}
+		appPart := strings.TrimPrefix(line, "App=")
+		if idx := strings.Index(appPart, " ("); idx >= 0 {
+			appPart = appPart[:idx]
+		}
+		if appPart = strings.TrimSpace(appPart); appPart != "" {
+			ctx["app"] = codexGatewayDeepSeekTruncateString(appPart, 120)
+		}
+		if bundleID := codexGatewayDeepSeekExtractBundleID(line); bundleID != "" {
+			ctx["bundle_id"] = bundleID
+		}
+		if len(ctx) > 0 {
+			return ctx
+		}
+	}
+	return nil
+}
+
+func codexGatewayDeepSeekExtractBundleID(line string) string {
+	marker := "bundleID "
+	idx := strings.Index(line, marker)
+	if idx < 0 {
+		marker = "bundle_id="
+		idx = strings.Index(line, marker)
+	}
+	if idx < 0 {
+		return ""
+	}
+	value := strings.TrimSpace(line[idx+len(marker):])
+	if end := strings.IndexAny(value, ",) \t"); end >= 0 {
+		value = value[:end]
+	}
+	return codexGatewayDeepSeekTruncateString(strings.TrimSpace(value), 80)
+}
+
+func codexGatewayDeepSeekLatestErrorLine(value string) string {
+	var latest string
+	for _, raw := range strings.FieldsFunc(value, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lowered := strings.ToLower(line)
+		if strings.Contains(lowered, "error") ||
+			strings.Contains(lowered, "timeout") ||
+			strings.Contains(lowered, "stale") ||
+			strings.Contains(line, "错误") ||
+			strings.Contains(line, "报错") ||
+			strings.Contains(line, "超时") {
+			latest = codexGatewayDeepSeekTruncateString(line, 180)
+		}
+	}
+	return latest
+}
+
 func codexGatewayDeepSeekSummarizeAccessibilityTree(field, value string) map[string]any {
 	out := map[string]any{
-		"content_class":  "accessibility_tree",
-		"field":          field,
-		"truncated":      true,
-		"original_chars": len(value),
-		"sha256":         codexGatewayDeepSeekTextSHA256(value),
+		"content_class":       "accessibility_tree",
+		"compression_version": codexGatewayDeepSeekComputerUseCompressionVersion,
+		"field":               field,
+		"truncated":           true,
+		"original_chars":      len(value),
+		"sha256":              codexGatewayDeepSeekTextSHA256(value),
+	}
+	if appContext := codexGatewayDeepSeekComputerUseAppContext(value); len(appContext) > 0 {
+		out["app_context"] = appContext
+	}
+	if latestError := codexGatewayDeepSeekLatestErrorLine(value); latestError != "" {
+		out["latest_error"] = latestError
 	}
 	if lines := codexGatewayDeepSeekAccessibilityTreeLines(value); len(lines) > 0 {
 		out["operable_lines"] = lines

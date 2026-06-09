@@ -69,9 +69,6 @@ func ValidateCodexGatewayResponsesCreateRequest(req CodexGatewayResponsesCreateR
 	if strings.TrimSpace(req.Model) == "" {
 		return fmt.Errorf("model is required")
 	}
-	if req.PreviousResponseID != nil && strings.TrimSpace(*req.PreviousResponseID) != "" {
-		return fmt.Errorf("previous_response_id is not supported on the HTTP gateway path")
-	}
 	return nil
 }
 

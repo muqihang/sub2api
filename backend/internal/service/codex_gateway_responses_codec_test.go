@@ -52,7 +52,7 @@ func TestCodexGatewayResponsesCodec_PreservesRawFields(t *testing.T) {
 	require.Contains(t, req.RawFields, "client_metadata")
 }
 
-func TestCodexGatewayResponsesCodec_RejectsPreviousResponseIDForHTTPGateway(t *testing.T) {
+func TestCodexGatewayResponsesCodec_PreservesPreviousResponseIDForProviderManagedReplay(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-5.5",
 		"input":[{"role":"user","content":"hello"}],
@@ -62,9 +62,9 @@ func TestCodexGatewayResponsesCodec_RejectsPreviousResponseIDForHTTPGateway(t *t
 	req, err := DecodeCodexGatewayResponsesCreateRequest(body)
 	require.NoError(t, err)
 
-	err = ValidateCodexGatewayResponsesCreateRequest(req)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "previous_response_id")
+	require.NotNil(t, req.PreviousResponseID)
+	require.Equal(t, "resp_123", *req.PreviousResponseID)
+	require.NoError(t, ValidateCodexGatewayResponsesCreateRequest(req))
 }
 
 func TestCodexGatewayResponseEvents_StreamLifecycle(t *testing.T) {

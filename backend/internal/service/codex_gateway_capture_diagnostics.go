@@ -354,6 +354,7 @@ func codexGatewayDeepSeekCaptureDiagnostics(body map[string]any, userID string, 
 		"tool_schema_bytes":                 codexGatewayStableJSONBytes(toolSchema),
 		"request_allowlist_hash":            codexGatewayDeepSeekStableHash(redactor, codexGatewayDeepSeekRequestAllowlistKeys()),
 		"gateway_injection_version":         codexGatewayDeepSeekCacheSerializationVersion,
+		"computer_use_compression_version":  codexGatewayDeepSeekComputerUseCompressionVersion,
 		"prompt_cache_key_present":          clientPromptCacheKeyPresent,
 		"upstream_prompt_cache_key_present": strings.TrimSpace(firstCodexGatewayToolString(body["prompt_cache_key"])) != "",
 		"message_count":                     len(messages),
@@ -429,6 +430,7 @@ func codexGatewayDeepSeekCacheUsageFields(diagnostics map[string]any) map[string
 	copyKey("tool_schema_bytes")
 	copyKey("request_allowlist_hash")
 	copyKey("gateway_injection_version")
+	copyKey("computer_use_compression_version")
 	copyKey("prompt_cache_key_present")
 	copyKey("upstream_prompt_cache_key_present")
 	copyKey("previous_response_id_present")
@@ -764,6 +766,7 @@ func codexGatewayDeepSeekSessionDiagnostics(requestDiag map[string]any) map[stri
 		"tool_schema_bytes",
 		"request_allowlist_hash",
 		"gateway_injection_version",
+		"computer_use_compression_version",
 		"prompt_cache_key_present",
 		"upstream_prompt_cache_key_present",
 		"previous_response_id_present",

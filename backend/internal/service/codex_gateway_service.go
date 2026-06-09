@@ -262,6 +262,11 @@ func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayRes
 		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "model_visibility", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: fmt.Sprintf("model %q is not supported", parsed.Model)})
 		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, fmt.Sprintf("model %q is not supported", parsed.Model)), nil
 	}
+	if normalizeCodexGatewayProvider(CodexGatewayProvider(model.Provider)) == CodexGatewayProviderOpenAI && parsed.PreviousResponseID != nil && strings.TrimSpace(*parsed.PreviousResponseID) != "" {
+		message := "previous_response_id is only supported on Responses WebSocket v2 for OpenAI upstreams"
+		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "client", Stage: "validate", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeInvalidRequest, ErrorCode: CodexGatewayErrorCodeInvalidRequest, Message: message})
+		return codexGatewayHTTPErrorResponse(http.StatusBadRequest, CodexGatewayErrorTypeInvalidRequest, CodexGatewayErrorCodeInvalidRequest, message), nil
+	}
 	if err := codexGatewayInjectBaseInstructions(&parsed, model); err != nil {
 		s.finishCaptureError(trace, CodexGatewayCaptureError{Origin: "gateway", Stage: "instructions", Provider: model.Provider, Model: parsed.Model, UpstreamModel: model.UpstreamModel, ErrorType: CodexGatewayErrorTypeAPI, ErrorCode: "instructions_injection_failed", Message: err.Error()})
 		return codexGatewayHTTPErrorResponse(http.StatusInternalServerError, CodexGatewayErrorTypeAPI, "instructions_injection_failed", "failed to prepare model instructions"), nil

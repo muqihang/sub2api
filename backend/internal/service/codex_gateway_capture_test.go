@@ -1038,6 +1038,7 @@ func TestCodexGatewayCaptureV2DeepSeekRecordsFullPrefixDiagnostics(t *testing.T)
 		"tool_schema_bytes",
 		"request_allowlist_hash",
 		"gateway_injection_version",
+		"computer_use_compression_version",
 		"prompt_cache_key_present",
 	} {
 		require.Contains(t, deepseek, key)
@@ -1055,9 +1056,11 @@ func TestCodexGatewayCaptureV2DeepSeekRecordsFullPrefixDiagnostics(t *testing.T)
 	require.Equal(t, codexGatewayDeepSeekStableHash(manager.redact, codexGatewayDeepSeekRequestAllowlistKeys()), deepseek["request_allowlist_hash"])
 	require.NotEqual(t, codexGatewayDeepSeekStableHash(manager.redact, codexGatewayDeepSeekRequestShapeExcludedFields), deepseek["request_allowlist_hash"])
 	require.Equal(t, codexGatewayDeepSeekCacheSerializationVersion, deepseek["gateway_injection_version"])
+	require.Equal(t, codexGatewayDeepSeekComputerUseCompressionVersion, deepseek["computer_use_compression_version"])
 
 	report := readCaptureJSONFile(t, filepath.Join(traceDir, "trace_report.json"))
 	require.Contains(t, fmtAny(report["cache_usage"]), "messages_full_hash")
+	require.Contains(t, fmtAny(report["cache_usage"]), "computer_use_compression_version")
 	require.Contains(t, fmtAny(report["request_diagnostics"]), "previous_response_replay_mode")
 	assertCaptureDirDoesNotContain(t, traceDir,
 		"PRIVATE_REPLAY_PROMPT",

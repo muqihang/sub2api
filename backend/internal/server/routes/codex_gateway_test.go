@@ -85,6 +85,46 @@ func TestCodexGatewayRoutes_SurfaceRegistration(t *testing.T) {
 	require.Equal(t, http.StatusNotImplemented, w.Code)
 }
 
+func TestCodexGatewayRoutes_WebSocketUpgradeToResponsesIsNotSupported(t *testing.T) {
+	router := newCodexGatewayRoutesTestRouter(
+		&config.Config{Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, Codex: config.GatewayCodexConfig{Enabled: true}}},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			c.Set(string(servermiddleware.ContextKeyAPIKey), newCodexGatewayRoutesCodexOnlyKey(42, "valid"))
+			c.Next()
+		}),
+		&codexGatewayRoutesServiceStub{
+			responsesResp: &service.CodexGatewayServiceResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"id":"resp_http"}`),
+			},
+		},
+	)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/codex/v1/responses", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	require.Contains(t, w.Body.String(), `"code":"method_not_allowed"`)
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/codex/v1/responses", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req.Header.Set("Authorization", "Bearer valid")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotEqual(t, http.StatusSwitchingProtocols, w.Code)
+	require.NotEqual(t, "websocket", strings.ToLower(w.Header().Get("Upgrade")))
+}
+
 func TestCodexGatewayRoutes_ModelsRegisterOnlyWhenEnabled(t *testing.T) {
 	router := newCodexGatewayRoutesTestRouter(
 		&config.Config{Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, Codex: config.GatewayCodexConfig{Enabled: false}}},

@@ -71,6 +71,100 @@ curl -sS http://127.0.0.1:3000/api/v1/admin/codex-gateway/state-store/summary \
 13. Switch to `agnes-2.0-flash`, select high reasoning, and verify a streamed text reply plus one image-input turn.
 14. Use `gpt-5.4` as controller and dispatch DeepSeek, Claude, and AGNES subagents; verify the controller can summarize their results.
 
+### Checkpoint 4 WS gate and live capture matrix readiness
+
+This section is a readiness checklist, not a claimed live pass. Mark a row as
+`skipped` with an explicit reason when Codex Desktop/app-server is not running,
+the current backend is not wired into Desktop, capture is disabled, or the
+provider key/account is unavailable. Do not mark such rows as passed.
+
+Preconditions:
+
+1. Codex Desktop or Codex app-server is running against this backend.
+2. `/codex/v1/models` and `/codex/v1/responses` use the current worktree build.
+3. Gateway capture is enabled in summary/shape-only mode.
+4. Provider credentials exist for every provider being tested.
+5. `zhumeng-agent codex capture report` can read both Desktop and Gateway traces.
+
+#### WS readiness gate
+
+Codex Gateway is HTTP Responses only until full Responses WebSocket v2 support is
+implemented and explicitly enabled. OpenAI server-store continuation semantics
+must not leak into `/codex/v1/responses`.
+
+```bash
+curl -sS 'http://127.0.0.1:3000/codex/v1/models?catalog_format=codex_cli' \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  | jq '[.. | objects | select(has("supports_websockets"))]'
+```
+
+Expected: an empty list, or only explicit `supports_websockets:false` entries
+after a future fully gated WS implementation.
+
+```bash
+curl -i --http1.1 http://127.0.0.1:3000/codex/v1/responses \
+  -H 'Connection: Upgrade' \
+  -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=='
+```
+
+Expected: a normal HTTP error envelope such as `405 method_not_allowed`, never
+`101 Switching Protocols`.
+
+```bash
+curl -sS http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","input":"reply ok","stream":false}' | jq
+```
+
+Expected: HTTP works without `previous_response_id`.
+
+```bash
+curl -sS -i http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","previous_response_id":"resp_openai_prev","input":"continue"}'
+```
+
+Expected: OpenAI HTTP path rejects `previous_response_id` with a WS v2 message.
+DeepSeek/Claude/AGNES may accept `previous_response_id` only as
+Gateway-managed replay against local state; they must not depend on OpenAI
+server-store semantics.
+
+#### Live prompt matrix
+
+Run only safe prompts for available providers:
+
+| Row | Provider/model | Prompt focus | Pass evidence |
+| --- | --- | --- | --- |
+| C4-1 | any visible GPT/OpenAI model | Basic repo understanding with file read/search. | Terminal events and final `response.completed`. |
+| C4-2 | `deepseek-v4-pro` | Deferred tool search and subagent spawn model list. | Native `tool_search_call` plus matching `tool_search_output`; no hosted web-search rewrite. |
+| C4-3 | `deepseek-v4-pro` | Computer Use simple controllable app flow. | Visible text/operable lines retained; no raw screenshot/base64 in model text. |
+| C4-4 | `deepseek-v4-pro` | Computer Use Electron/canvas visible_text flow. | `visible_text`, app/bundle id, latest error/truncation status, and `computer_use_compression_version`. |
+| C4-5 | OpenAI/GPT or configured bridge | Web Search bridge. | Hosted search fields only on providers that support them; local/deferred tools otherwise. |
+| C4-6 | image-capable provider | Image input / structured tool output. | Structured content preserved where supported; text-only providers summarize safely. |
+| C4-7 | OpenAI WS-enabled environment only | Stop/Continue/Resume or WS/native continuation. | If WS unavailable, skip; if enabled, terminal events and WS v2 continuation diagnostics. |
+| C4-8 | `deepseek-v4-pro` | DeepSeek tool-call reasoning replay multi-turn. | Tool-call reasoning replay succeeds; no Reasonix blanket stripping. |
+| C4-9 | `deepseek-v4-pro` | DeepSeek cache prefix stability repeated prompt. | Stable prefix hashes and provider hit/miss usage when upstream returns it. |
+| C4-10 | Claude direct | Anthropic thinking/tool loop. | Thinking/tool replay and terminal events complete. |
+| C4-11 | `agnes-2.0-flash` | AGNES tool loop and interruption recovery. | AGNES-specific cache/key semantics, no DeepSeek official cache-control leak. |
+
+Validation checklist for every non-skipped row:
+
+- capture contains terminal events and a clear terminal status;
+- tool calls and tool outputs pair with no missing/orphan/duplicate results;
+- deferred tools are discovered and callable through native `tool_search` shape;
+- unsupported cache controls are absent from provider requests;
+- DeepSeek usage records `prompt_cache_hit_tokens` /
+  `prompt_cache_miss_tokens` when upstream returns them;
+- Computer Use output remains token-bounded and keeps `visible_text`,
+  actionable `operable_lines`, app/bundle id, latest error/truncation status,
+  and `computer_use_compression_version`;
+- no DeepSeek, Claude, or AGNES regression is introduced by provider-specific
+  prompt or compression changes.
+
 ### AGNES cache diagnostics smoke
 
 AGNES cache evidence must be reported as provider-unsupported unless the
@@ -465,7 +559,8 @@ As controller, return only whether either subagent found a blocking issue and th
 ### Expected failure checks
 
 - Generic or Augment-only API keys must be rejected on `/codex/v1/*`.
-- `previous_response_id` on the DeepSeek HTTP path must still return a 400 unless the request is replayed through gateway-managed state.
+- OpenAI HTTP `/codex/v1/responses` with `previous_response_id` must return a 400 WS v2 error.
+- DeepSeek/Claude/AGNES HTTP `previous_response_id` is allowed only as Gateway-managed replay through local state; missing or invalid local state must fail closed with replay diagnostics, not fall back to OpenAI server-store semantics.
 - DeepSeek models should disappear from `/codex/v1/models` when their provider group is unset or unhealthy.
 - Anthropic forced `tool_choice` should disable thinking only for that request.
 - Anthropic-compatible upstream `520`, `522`, or `524` HTML errors should be returned as clean `upstream_timeout` errors, not raw HTML.
