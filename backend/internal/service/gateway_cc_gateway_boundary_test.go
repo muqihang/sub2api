@@ -133,6 +133,42 @@ func TestCCGatewayBoundary_ForwardSkipsMimicryAndProxy(t *testing.T) {
 	require.Nil(t, upstream.lastProfile, "CC Gateway path must not use account TLS fingerprint profile")
 }
 
+func TestCCGatewayBoundary_ForwardNativeAuditMarkersWithoutCompatShape(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}`)
+
+	ctx = WithClaudeCodeNativeAuditSummary(ctx, ClaudeCodeNativeAuditSummary{
+		ClientType:              ClaudeCodeNativeClientType,
+		NativeAttested:          true,
+		GuardVersion:            "guard_v1",
+		ClaudeCodeVersion:       "2.1.150",
+		LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
+		InboundRoute:            AnthropicCompatInboundMessages,
+		CCGatewayRoute:          AnthropicCompatCCGatewayMessages,
+		NetwatchRequired:        true,
+		ServerFilledShape:       false,
+		ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+		ToolSearchMode:          "truthful_pass_through",
+		ToolReferencePresent:    true,
+	})
+	ctx = SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, ClaudeCodeNativeClientType, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
+	require.Equal(t, "true", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeGuardAttestedHeader))
+	require.Equal(t, "false", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeServerFilledShapeHeader))
+	require.Equal(t, ClaudeCodeNativeTakeoverHealthProfile, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeHealthcheckProfileHeader))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, AnthropicCompatClientTypeHeader))
+	require.True(t, bytes.Equal(body, upstream.lastBody), "native takeover path must preserve real Claude Code body without server-filled compat shape")
+	require.Empty(t, upstream.lastProxyURL, "CC Gateway native path must not use account proxy")
+}
+
 func TestCCGatewayBoundary_StripsDownstreamBillingBeforeSignPrimary(t *testing.T) {
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
 	svc := newCCGatewayBoundaryService(upstream)
@@ -171,6 +207,37 @@ func TestCCGatewayBoundary_ForwardCountTokensSkipsMimicryAndProxy(t *testing.T) 
 	require.Equal(t, parsedUID.SessionID, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
 	require.Empty(t, upstream.lastProxyURL, "CC Gateway count_tokens path must not use account proxy")
 	require.Nil(t, upstream.lastProfile, "CC Gateway count_tokens path must not use account TLS fingerprint profile")
+}
+
+func TestCCGatewayBoundary_ForwardNativeCountTokensAuditMarkersWithoutCompatShape(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicCountTokensSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages/count_tokens")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	ctx = WithClaudeCodeNativeAuditSummary(ctx, ClaudeCodeNativeAuditSummary{
+		ClientType:              ClaudeCodeNativeClientType,
+		NativeAttested:          true,
+		GuardVersion:            "guard_v1",
+		ClaudeCodeVersion:       "2.1.150",
+		LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
+		InboundRoute:            "/v1/messages/count_tokens",
+		CCGatewayRoute:          "/v1/messages/count_tokens?beta=true",
+		NetwatchRequired:        true,
+		ServerFilledShape:       false,
+		ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+		ToolSearchMode:          "not_present",
+	})
+	c.Request = c.Request.WithContext(ctx)
+
+	err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages/count_tokens?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, ClaudeCodeNativeClientType, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
+	require.Equal(t, "false", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeServerFilledShapeHeader))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, AnthropicCompatClientTypeHeader))
+	require.True(t, bytes.Equal(body, upstream.lastBody), "native count_tokens path must preserve real Claude Code body")
 }
 
 func TestCCGatewayBoundary_ForwardAsChatCompletionsSkipsMimicryAndProxy(t *testing.T) {

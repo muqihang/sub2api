@@ -186,33 +186,39 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages {
-		decision, err := service.ValidateAnthropicOnlyCompatIngress(c.Request.Method, c.Request.URL.RequestURI(), body)
-		if err != nil {
-			if protocolErr, ok := err.(*service.AnthropicCompatProtocolError); ok {
-				h.errorResponse(c, protocolErr.Status, protocolErr.Code, protocolErr.Message)
+		if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
+			if !h.applyClaudeCodeNativeMessagesAttestation(c, body) {
 				return
 			}
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
-			return
+		} else {
+			decision, err := service.ValidateAnthropicOnlyCompatIngress(c.Request.Method, c.Request.URL.RequestURI(), body)
+			if err != nil {
+				if protocolErr, ok := err.(*service.AnthropicCompatProtocolError); ok {
+					h.errorResponse(c, protocolErr.Status, protocolErr.Code, protocolErr.Message)
+					return
+				}
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
+				return
+			}
+			var shapeAudit service.AnthropicCompatShapeAudit
+			body, shapeAudit, err = service.NormalizeAnthropicCompatMessagesBody(body)
+			if err != nil {
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
+				return
+			}
+			auditSummary := service.NewAnthropicCompatAuditSummaryWithShape(decision, shapeAudit)
+			c.Set("anthropic_compat_audit_summary", auditSummary)
+			ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), auditSummary)
+			// Compat ingress has already accepted the request as Anthropic /v1/messages.
+			// Preserve the Claude Code client marker for downstream group routing; the
+			// earlier detector can miss newer CLI shapes before normalization fills the
+			// server-selected Claude Code system prompt.
+			ctx = service.SetClaudeCodeClient(ctx, true)
+			if version := service.NewClaudeCodeValidator().ExtractVersion(c.Request.UserAgent()); version != "" {
+				ctx = service.SetClaudeCodeVersion(ctx, version)
+			}
+			c.Request = c.Request.WithContext(ctx)
 		}
-		var shapeAudit service.AnthropicCompatShapeAudit
-		body, shapeAudit, err = service.NormalizeAnthropicCompatMessagesBody(body)
-		if err != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
-			return
-		}
-		auditSummary := service.NewAnthropicCompatAuditSummaryWithShape(decision, shapeAudit)
-		c.Set("anthropic_compat_audit_summary", auditSummary)
-		ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), auditSummary)
-		// Compat ingress has already accepted the request as Anthropic /v1/messages.
-		// Preserve the Claude Code client marker for downstream group routing; the
-		// earlier detector can miss newer CLI shapes before normalization fills the
-		// server-selected Claude Code system prompt.
-		ctx = service.SetClaudeCodeClient(ctx, true)
-		if version := service.NewClaudeCodeValidator().ExtractVersion(c.Request.UserAgent()); version != "" {
-			ctx = service.SetClaudeCodeVersion(ctx, version)
-		}
-		c.Request = c.Request.WithContext(ctx)
 	}
 
 	setOpsRequestContext(c, "", false)
@@ -1133,7 +1139,17 @@ func (h *GatewayHandler) ControlPlaneIntent(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
 		return
 	}
-	intent, err := service.ParseAndValidateControlPlaneIntent(body)
+	intentService, err := service.NewControlPlaneIntentServiceFromEnv()
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_quarantine",
+				"message": "Invalid control-plane path matrix",
+			},
+		})
+		return
+	}
+	intent, err := intentService.ParseAndValidateIntent(body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{
@@ -1152,7 +1168,7 @@ func (h *GatewayHandler) ControlPlaneIntent(c *gin.Context) {
 		})
 		return
 	}
-	decision := service.NewControlPlaneIntentService().EvaluateParsedIntent(intent)
+	decision := intentService.EvaluateParsedIntent(intent)
 	if decision.Decision == "suppress_204" {
 		c.Status(http.StatusNoContent)
 		return
@@ -1933,6 +1949,25 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 	})
 }
 
+func (h *GatewayHandler) applyClaudeCodeNativeMessagesAttestation(c *gin.Context, body []byte) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	nativeSummary, err := service.NewClaudeCodeNativeAttestationService().VerifyMessagesRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code native attestation")
+		return false
+	}
+	c.Set("claude_code_native_audit_summary", nativeSummary)
+	ctx := service.WithClaudeCodeNativeAuditSummary(c.Request.Context(), nativeSummary)
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	if nativeSummary.ClaudeCodeVersion != "" {
+		ctx = service.SetClaudeCodeVersion(ctx, nativeSummary.ClaudeCodeVersion)
+	}
+	c.Request = c.Request.WithContext(ctx)
+	return true
+}
+
 // CountTokens handles token counting endpoint
 // POST /v1/messages/count_tokens
 // 特点：校验订阅/余额，但不计算并发、不记录使用量
@@ -1972,6 +2007,12 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	if len(body) == 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
+	}
+
+	if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
+		if !h.applyClaudeCodeNativeMessagesAttestation(c, body) {
+			return
+		}
 	}
 
 	setOpsRequestContext(c, "", false)

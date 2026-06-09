@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,7 @@ from tools.cli_control_plane_guard import (
     RedactingForwarder,
     _cli_session_budget_ledger,
     body_summary,
+    build_native_messages_attestation_headers,
     classify_request,
     deep_body_summary,
     redact_headers,
@@ -27,6 +29,17 @@ from tools.cli_control_plane_policy import load_default_policy
 
 
 class CliControlPlaneGuardTest(unittest.TestCase):
+    def setUp(self):
+        self._native_secret_patch = unittest.mock.patch.dict(
+            'os.environ',
+            {'SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET': 'native-attestation-test-secret'},
+            clear=False,
+        )
+        self._native_secret_patch.start()
+
+    def tearDown(self):
+        self._native_secret_patch.stop()
+
     def test_cli_main_does_not_enforce_session_budget_by_default(self):
         args = argparse.Namespace(
             enforce_session_budget=False,
@@ -56,6 +69,18 @@ class CliControlPlaneGuardTest(unittest.TestCase):
     def test_cli_main_can_disable_session_budget_explicitly(self):
         args = argparse.Namespace(disable_session_budget=True, enforce_session_budget=True)
         self.assertIsNone(_cli_session_budget_ledger(args))
+
+    def test_native_messages_attestation_requires_explicit_secret(self):
+        with unittest.mock.patch.dict(
+            'os.environ',
+            {
+                'SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET': '',
+                'SUB2API_CONTROL_PLANE_ATTESTATION_SECRET': '',
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'explicit'):
+                build_native_messages_attestation_headers(b'{"messages":[]}', '/v1/messages', {})
 
     def test_classify_request_uses_default_policy_and_quarantines_unknown_routes(self):
         self.assertEqual(classify_request('POST', '/v1/messages?beta=true').action, 'forward_messages')
@@ -321,6 +346,55 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     self.assertEqual(CaptureHandler.count, 0)
                 finally:
                     forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_messages_forward_without_native_attestation_secret_fails_closed(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            count = 0
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.__class__.count += 1
+                self.send_response(200)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with unittest.mock.patch.dict('os.environ', {'SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET': ''}, clear=False):
+                with tempfile.TemporaryDirectory() as td:
+                    listen_port = _free_port()
+                    summary = Path(td) / 'summary.jsonl'
+                    forwarder = RedactingForwarder(GuardConfig(
+                        listen_host='127.0.0.1',
+                        listen_port=listen_port,
+                        upstream_base=f'http://127.0.0.1:{upstream_port}',
+                        sub2api_auth='sub2api-entry-key',
+                        summary_path=summary,
+                        native_attestation_secret=None,
+                    ))
+                    forwarder.start_background()
+                    try:
+                        req = urllib.request.Request(
+                            f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                            data=b'{"model":"claude-sonnet-4-6","messages":[]}',
+                            method='POST',
+                            headers={'content-type': 'application/json'},
+                        )
+                        with self.assertRaises(urllib.error.HTTPError) as ctx:
+                            urllib.request.urlopen(req, timeout=5)
+                        self.assertEqual(ctx.exception.code, 403)
+                        self.assertEqual(CaptureHandler.count, 0)
+                        dumped = summary.read_text(encoding='utf-8')
+                        self.assertIn('native_attestation_unavailable', dumped)
+                        self.assertNotIn('native-attestation-test-secret', dumped)
+                    finally:
+                        forwarder.stop()
         finally:
             upstream.shutdown()
 

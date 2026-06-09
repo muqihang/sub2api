@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -122,18 +123,55 @@ type ControlPlaneIntentDecision struct {
 	Audit       ControlPlaneIntentAudit `json:"audit"`
 }
 
-type ControlPlaneIntentService struct{}
+type ControlPlaneIntentService struct {
+	matrix *ControlPlanePathPolicyMatrix
+}
 
-func NewControlPlaneIntentService() *ControlPlaneIntentService {
-	return &ControlPlaneIntentService{}
+type ControlPlaneIntentServiceOption func(*ControlPlaneIntentService)
+
+func NewControlPlaneIntentService(opts ...ControlPlaneIntentServiceOption) *ControlPlaneIntentService {
+	svc := &ControlPlaneIntentService{matrix: NewDefaultControlPlanePathPolicyMatrix()}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(svc)
+		}
+	}
+	return svc
+}
+
+func WithControlPlaneIntentPolicyMatrix(matrix *ControlPlanePathPolicyMatrix) ControlPlaneIntentServiceOption {
+	return func(svc *ControlPlaneIntentService) {
+		if matrix != nil {
+			svc.matrix = matrix
+		}
+	}
+}
+
+func NewControlPlaneIntentServiceFromEnv() (*ControlPlaneIntentService, error) {
+	matrix, err := NewControlPlanePathPolicyMatrixFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return NewControlPlaneIntentService(WithControlPlaneIntentPolicyMatrix(matrix)), nil
 }
 
 func ParseAndValidateControlPlaneIntent(body []byte) (*ControlPlaneIntent, error) {
 	return parseAndValidateControlPlaneIntent(body)
 }
 
+func (s *ControlPlaneIntentService) ParseAndValidateIntent(body []byte) (*ControlPlaneIntent, error) {
+	intent, err := parseControlPlaneIntentStrict(body)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateIntent(intent); err != nil {
+		return nil, err
+	}
+	return intent, nil
+}
+
 func (s *ControlPlaneIntentService) EvaluateIntent(body []byte) (*ControlPlaneIntentDecision, error) {
-	intent, err := parseAndValidateControlPlaneIntent(body)
+	intent, err := s.ParseAndValidateIntent(body)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +197,17 @@ func (s *ControlPlaneIntentService) EvaluateParsedIntent(intent *ControlPlaneInt
 }
 
 func parseAndValidateControlPlaneIntent(body []byte) (*ControlPlaneIntent, error) {
+	intent, err := parseControlPlaneIntentStrict(body)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateControlPlaneIntent(intent); err != nil {
+		return nil, err
+	}
+	return intent, nil
+}
+
+func parseControlPlaneIntentStrict(body []byte) (*ControlPlaneIntent, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("control-plane intent must be valid json object")
@@ -183,10 +232,71 @@ func parseAndValidateControlPlaneIntent(body []byte) (*ControlPlaneIntent, error
 	if err := decoder.Decode(&intent); err != nil {
 		return nil, fmt.Errorf("control-plane intent schema decode failed")
 	}
-	if err := validateControlPlaneIntent(&intent); err != nil {
-		return nil, err
-	}
 	return &intent, nil
+}
+
+func (s *ControlPlaneIntentService) validateIntent(intent *ControlPlaneIntent) error {
+	if s == nil || s.matrix == nil || intent == nil || intent.Method != "GET" {
+		return validateControlPlaneIntent(intent)
+	}
+	if _, exists := s.matrix.policies[controlPlanePolicyKey(intent.Method, intent.PathTemplate)]; !exists {
+		return validateControlPlaneIntent(intent)
+	}
+	if err := validateControlPlaneIntentShapeExceptQuery(intent); err != nil {
+		return err
+	}
+	rawQuery := url.Values{}
+	for key, value := range intent.NormalizedQuery {
+		rawQuery.Set(key, value)
+	}
+	decision := s.matrix.Evaluate(intent.Method, intent.PathTemplate, rawQuery.Encode())
+	if decision.Policy == nil {
+		return fmt.Errorf("control-plane intent path is not allowlisted")
+	}
+	if len(intent.NormalizedQuery) > 0 {
+		if !controlPlaneEqualStringMaps(decision.NormalizedQuery, intent.NormalizedQuery) {
+			return fmt.Errorf("control-plane intent normalized_query does not match configured policy")
+		}
+		if err := validateQueryRef(intent.QueryRef); err != nil {
+			return err
+		}
+		if intent.QueryOmittedReason != nil {
+			return fmt.Errorf("control-plane intent query_omitted_reason must be omitted when normalized_query is present")
+		}
+	} else if err := validateControlPlaneQuery(intent.PathTemplate, intent.NormalizedQuery, intent.QueryRef, intent.QueryOmittedReason); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateControlPlaneIntentShapeExceptQuery(intent *ControlPlaneIntent) error {
+	if intent == nil {
+		return fmt.Errorf("control-plane intent is required")
+	}
+	savedQuery := intent.NormalizedQuery
+	savedQueryRef := intent.QueryRef
+	savedOmitted := intent.QueryOmittedReason
+	intent.NormalizedQuery = map[string]string{}
+	noQuery := "no_query"
+	intent.QueryRef = nil
+	intent.QueryOmittedReason = &noQuery
+	err := validateControlPlaneIntent(intent)
+	intent.NormalizedQuery = savedQuery
+	intent.QueryRef = savedQueryRef
+	intent.QueryOmittedReason = savedOmitted
+	return err
+}
+
+func controlPlaneEqualStringMaps(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func validateControlPlaneIntent(intent *ControlPlaneIntent) error {
@@ -233,6 +343,28 @@ func validateControlPlaneIntent(intent *ControlPlaneIntent) error {
 }
 
 func (s *ControlPlaneIntentService) decide(intent *ControlPlaneIntent) *ControlPlaneIntentDecision {
+	if s == nil {
+		s = NewControlPlaneIntentService()
+	}
+	if s.matrix != nil && intent.Method == "GET" {
+		query := url.Values{}
+		for key, value := range intent.NormalizedQuery {
+			query.Set(key, value)
+		}
+		matrixDecision := s.matrix.Evaluate(intent.Method, intent.PathTemplate, query.Encode())
+		if matrixDecision.Policy != nil || matrixDecision.Reason != "control_plane:path_not_allowlisted" {
+			decision := &ControlPlaneIntentDecision{
+				Decision: matrixDecision.Decision,
+				Reason:   matrixDecision.Reason,
+				Status:   matrixDecision.Status,
+			}
+			if matrixDecision.Policy != nil && matrixDecision.Policy.Action == ControlPlaneActionStub {
+				decision.ContentType = "application/json"
+				decision.Body = safeControlPlaneStubBody(matrixDecision.Policy)
+			}
+			return decision
+		}
+	}
 	if intent.Method == "POST" && (intent.PathTemplate == "/api/event_logging/v2/batch" || strings.HasPrefix(intent.PathTemplate, "/api/eval/")) {
 		return &ControlPlaneIntentDecision{
 			Decision: "suppress_204",
@@ -271,6 +403,29 @@ func (s *ControlPlaneIntentService) decide(intent *ControlPlaneIntent) *ControlP
 		Reason:   "control_plane:unknown_path:quarantine",
 		Status:   403,
 	}
+}
+
+func safeControlPlaneStubBody(policy *ControlPlanePathPolicy) map[string]any {
+	body := map[string]any{}
+	if policy == nil {
+		return body
+	}
+	if _, ok := policy.AllowedResponseKeys["ok"]; ok {
+		body["ok"] = true
+	}
+	if _, ok := policy.AllowedResponseKeys["data"]; ok {
+		body["data"] = []any{}
+	}
+	if _, ok := policy.AllowedResponseKeys["servers"]; ok {
+		body["servers"] = []any{}
+	}
+	if _, ok := policy.AllowedResponseKeys["features"]; ok {
+		body["features"] = []any{}
+	}
+	if _, ok := policy.AllowedResponseKeys["profile"]; ok {
+		body["profile"] = map[string]any{}
+	}
+	return body
 }
 
 func validateControlPlaneQuery(pathTemplate string, normalizedQuery map[string]string, queryRef *ControlPlaneScopedHMACRef, queryOmittedReason *string) error {

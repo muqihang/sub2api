@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 import argparse
+import base64
 import hmac
 import http.client
 import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import ssl
 import subprocess
@@ -54,6 +56,9 @@ SELECTED_HEADERS = {
     "x-stainless-runtime-version",
 }
 SENSITIVE_BODY_KEYS = {"messages", "prompt", "body", "cch"}
+NATIVE_CLIENT_TYPE = "claude_code_native"
+NATIVE_ATTESTATION_SCOPE = "claude_code_native_takeover"
+NATIVE_HEALTHCHECK_PROFILE = "real_claude_code_native_takeover_v1"
 CAPTURE_LEVELS = {"summary", "deep", "local-raw"}
 SAFE_VALUE_KEYS = {
     "event_name",
@@ -165,6 +170,7 @@ class GuardConfig:
     capture_level: str = "summary"
     local_raw_dir: Path | None = None
     allow_nonloopback_upstream: bool = False
+    native_attestation_secret: str | None = None
 
     def __post_init__(self) -> None:
         policy = self.policy or default_policy()
@@ -869,6 +875,7 @@ class RedactingForwarder:
                         "path": request_path,
                         "decision": decision.action,
                         "reason": decision.reason,
+                        **native_messages_summary_markers(dict(self.headers)),
                         **redact_headers(dict(self.headers)),
                         **body_summary(body),
                     }
@@ -977,6 +984,26 @@ class RedactingForwarder:
                     if key.lower() not in (SENSITIVE_HEADERS | {"host", "content-length"})
                 }
                 headers["Authorization"] = f"Bearer {parent.config.sub2api_auth}"
+                try:
+                    headers.update(build_native_messages_attestation_headers(
+                        body,
+                        request_path,
+                        dict(self.headers),
+                        secret=parent.config.native_attestation_secret,
+                    ))
+                except RuntimeError as exc:
+                    parent._record({
+                        "ts": time.time(),
+                        "event": "messages_gate_block",
+                        "decision": "block_403",
+                        "reason": "native_attestation_unavailable",
+                        "path": request_path,
+                        "error_type": type(exc).__name__,
+                    })
+                    self.send_response(403)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
                 if parent.config.extra_forward_headers:
                     for key, value in parent.config.extra_forward_headers.items():
                         if key.lower() not in SENSITIVE_HEADERS:
@@ -1581,6 +1608,84 @@ def _scoped_hmac_ref(value: str, *, scope: str) -> dict[str, Any]:
     }
 
 
+def build_native_messages_attestation_headers(body: bytes, request_path: str, source_headers: Mapping[str, str], *, secret: str | None = None) -> dict[str, str]:
+    """Attach internal native takeover markers; never include raw prompt/body."""
+    now = int(time.time())
+    key_id = os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID", "guard_v1")
+    version = int(os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", "1"))
+    secret = secret or os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "")
+    if not secret:
+        raise RuntimeError("explicit Claude Code native attestation secret is required")
+    local_session_ref = session_key_from_headers(source_headers)
+    local_session_value = str(local_session_ref.get("value", ""))
+    payload = {
+        "key_id": key_id,
+        "scope": os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE", NATIVE_ATTESTATION_SCOPE),
+        "version": version,
+        "issued_at": now,
+        "nonce": secrets.token_hex(16),
+        "method": "POST",
+        "request_uri": request_path,
+        "client_type": NATIVE_CLIENT_TYPE,
+        "guard_attested": True,
+        "guard_version": key_id,
+        "claude_code_version": _safe_claude_code_version(source_headers),
+        "local_session_ref": local_session_value,
+        "netwatch_required": True,
+        "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+    signature = _sign_native_messages_attestation(encoded, "POST", request_path, body, secret)
+    return {
+        "x-sub2api-client-type": NATIVE_CLIENT_TYPE,
+        "x-sub2api-guard-attested": "true",
+        "x-sub2api-guard-version": key_id,
+        "x-sub2api-claude-code-version": payload["claude_code_version"],
+        "x-sub2api-local-session-ref": local_session_value,
+        "x-sub2api-netwatch-required": "true",
+        "x-sub2api-native-attestation": encoded,
+        "x-sub2api-native-signature": signature,
+    }
+
+
+def native_messages_summary_markers(source_headers: Mapping[str, str]) -> dict[str, Any]:
+    local_session = session_key_from_headers(source_headers)
+    return {
+        "client_type": NATIVE_CLIENT_TYPE,
+        "native_attested": True,
+        "netwatch_required": True,
+        "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE,
+        "local_session_ref": local_session.get("value", ""),
+        "raw_body_persisted": False,
+        "raw_attestation_persisted": False,
+    }
+
+
+def _sign_native_messages_attestation(encoded: str, method: str, request_path: str, body: bytes, secret: str) -> str:
+    material = b"\n".join(
+        [
+            encoded.encode("ascii"),
+            method.upper().encode("ascii"),
+            request_path.encode("utf-8"),
+            sha256(body).hexdigest().encode("ascii"),
+        ]
+    )
+    digest = hmac.new(secret.encode("utf-8"), material, sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _safe_claude_code_version(headers: Mapping[str, str]) -> str:
+    ua = ""
+    for key, value in headers.items():
+        if key.lower() == "user-agent":
+            ua = value
+            break
+    match = re.search(r"(?:claude-cli|claude-code)/([0-9]+(?:\.[0-9]+){1,2})", ua, flags=re.IGNORECASE)
+    if not match:
+        return "unknown"
+    return match.group(1)
+
+
 
 def _cli_session_budget_ledger(args: argparse.Namespace) -> SessionBudgetLedger | None:
     if getattr(args, "disable_session_budget", False):
@@ -1677,6 +1782,7 @@ def main(argv: list[str] | None = None) -> int:
                 capture_level=args.capture_level,
                 local_raw_dir=args.local_raw_dir,
                 allow_nonloopback_upstream=args.allow_nonloopback_upstream,
+                native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"),
             )
         )
     except ValueError as exc:

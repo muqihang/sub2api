@@ -23,4 +23,4 @@ def test_macos_bundle_default_repo_root_resolves_current_checkout():
     expected = Path(__file__).resolve().parents[3]
 
     assert default_repo_root() == expected
-    assert default_repo_root().name == "sub2api-zhumeng-main"
+    assert (default_repo_root() / "tools" / "zhumeng-agent").is_dir()

@@ -36,6 +36,7 @@ from .adapters.codex.model_picker import inspect_plugin_mention_marketplace_app,
 from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup, restore_latest_plugin_mention_marketplace_backup
 from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
+from .adapters.claude_code.status import derive_claude_code_operator_status
 from .doctor import codex_doctor_report
 from .desktop import run_desktop_command
 from .diagnostics import desktop_diagnostic_report, public_state
@@ -552,6 +553,15 @@ def build_desktop_status(state: dict[str, object]) -> dict[str, object]:
         "plugin_mention_marketplace",
         "plugin-mention-marketplace",
     )
+    claude_code_status = derive_claude_code_operator_status(state, process_alive=is_process_alive).to_safe_dict()
+    adapters = {
+        "codex": {
+            "status": status if state.get("client") == "codex" else "not_configured",
+            "enhancements": enhancements,
+            "restart_required": bool(state.get("restart_required")),
+        },
+        "claude_code": claude_code_status,
+    }
     return {
         "status": status,
         "global_status": status,
@@ -569,13 +579,8 @@ def build_desktop_status(state: dict[str, object]) -> dict[str, object]:
             "device_id": state.get("device_id"),
             "managed_session_id_redacted": public_state(state).get("managed_session_id_redacted"),
         },
-        "adapters": {
-            "codex": {
-                "status": status if state.get("client") == "codex" else "not_configured",
-                "enhancements": enhancements,
-                "restart_required": bool(state.get("restart_required")),
-            }
-        },
+        "adapters": adapters,
+        "claude_code": claude_code_status,
         "model_picker": model_picker,
         "plugin_auth_gate": plugin_auth_gate,
         "plugin_mention_marketplace": plugin_mention_marketplace,
