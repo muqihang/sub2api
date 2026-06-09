@@ -282,6 +282,81 @@ def test_status_reports_desktop_injection_fields_from_aggregate_items(capsys):
     assert data["plugin_mention_marketplace"]["status"] == "patched"
 
 
+def test_status_includes_claude_code_operator_status(capsys, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "codex",
+                "proxy_port": 18081,
+                "claude_code_native": {
+                    "configured": True,
+                    "process": {"pid": 12345},
+                    "guard": {"status": "running", "attested": True},
+                    "profile": {"status": "ready", "profile_id": "real_claude_code_native_takeover_v1"},
+                    "shape_healthcheck": {"status": "pass"},
+                    "control_plane": {"safe_intent": True, "messages_signing_reused": False, "stores_raw": False},
+                    "netwatch": {
+                        "summary": {
+                            "potential_guard_bypass_count": 0,
+                            "official_or_public_bypass_count": 0,
+                            "remote_host_buckets": {"loopback": 1},
+                            "stores_payload": False,
+                            "stores_headers": False,
+                        }
+                    },
+                },
+            }
+
+    cli.default_state_store = lambda: FakeStore()
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: pid == 12345)
+
+    exit_code = main(["status", "--json"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["claude_code"]["status"] == "running"
+    assert data["adapters"]["claude_code"]["status"] == "running"
+    assert data["claude_code"]["guard"]["attested"] is True
+
+
+def test_status_claude_code_guard_bypass_is_raw_safe(capsys):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "codex",
+                "claude_code_native": {
+                    "configured": True,
+                    "raw_prompt": "raw-prompt-marker",
+                    "entry_api_token": "raw-token-marker",
+                    "guard": {"status": "running", "attested": True},
+                    "netwatch": {
+                        "summary": {
+                            "connection_count": 2,
+                            "potential_guard_bypass_count": 1,
+                            "official_or_public_bypass_count": 1,
+                            "remote_host_buckets": {"loopback": 1, "anthropic_or_claude": 1},
+                            "stores_payload": False,
+                            "stores_headers": False,
+                        }
+                    },
+                },
+            }
+
+    cli.default_state_store = lambda: FakeStore()
+
+    exit_code = main(["status", "--json"])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["claude_code"]["status"] == "guard_bypass"
+    dumped = json.dumps(data, sort_keys=True)
+    assert "raw-prompt-marker" not in dumped
+    assert "raw-token-marker" not in dumped
+    assert "api.anthropic.com" not in dumped
+
+
 def test_fetch_codex_model_catalog_falls_back_on_non_auth_errors():
     class FakeClient:
         def list_codex_models(self, **kwargs):
