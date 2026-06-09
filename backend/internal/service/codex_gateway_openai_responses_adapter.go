@@ -154,6 +154,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	var preOutput bytes.Buffer
 	var usage OpenAIUsage
 	clientOutputStarted := false
+	clientDisconnected := false
 	sawTerminal := false
 	streamResponseID := ""
 	streamModel := ""
@@ -215,11 +216,12 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 			}
 		}
 		if clientOutputStarted {
-			if _, err := io.WriteString(req.Request.StreamWriter, raw); err != nil {
-				return err
-			}
-			if req.Request.Flush != nil {
-				req.Request.Flush()
+			if !clientDisconnected {
+				if _, err := io.WriteString(req.Request.StreamWriter, raw); err != nil {
+					clientDisconnected = true
+				} else if req.Request.Flush != nil {
+					req.Request.Flush()
+				}
 			}
 		} else {
 			if _, err := preOutput.WriteString(raw); err != nil {
@@ -287,7 +289,6 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 			req.Request.Flush()
 		}
 	}
-
 	result.Usage = CodexGatewayProviderUsage{
 		InputTokens:          usage.InputTokens,
 		OutputTokens:         usage.OutputTokens,

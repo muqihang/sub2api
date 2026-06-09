@@ -435,6 +435,54 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamDoesNotFailoverAfterClientOutp
 	require.Contains(t, out.String(), `"type":"response.failed"`)
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_StreamDrainsUpstreamAfterClientDisconnect(t *testing.T) {
+	streamBody := "" +
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}` + "\n\n" +
+		`data: {"type":"response.output_text.delta","response_id":"resp_1","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}` + "\n\n" +
+		`data: {"type":"response.function_call_arguments.done","item_id":"call_1","output_index":1,"arguments":"{}"}` + "\n\n" +
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12}}}` + "\n\n"
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}, nil)
+	writer := &codexGatewayOpenAIFailingStreamWriter{failAfterWrites: 1}
+
+	result, err := adapter.Stream(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body:         []byte(`{"model":"gpt-5.5","stream":true}`),
+			StreamWriter: writer,
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "resp_1", result.ResponseID)
+	require.Equal(t, 9, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.Equal(t, 2, writer.writeCalls, "first visible frame writes, second detects disconnect; later upstream events are drained without writing")
+	require.Contains(t, writer.String(), `response.created`)
+	require.NotContains(t, writer.String(), `response.output_text.delta`)
+	require.NotContains(t, writer.String(), `response.completed`)
+}
+
+type codexGatewayOpenAIFailingStreamWriter struct {
+	buf             bytes.Buffer
+	writeCalls      int
+	failAfterWrites int
+}
+
+func (w *codexGatewayOpenAIFailingStreamWriter) Write(p []byte) (int, error) {
+	w.writeCalls++
+	if w.failAfterWrites >= 0 && w.writeCalls > w.failAfterWrites {
+		return 0, fmt.Errorf("client disconnected")
+	}
+	return w.buf.Write(p)
+}
+
+func (w *codexGatewayOpenAIFailingStreamWriter) String() string {
+	return w.buf.String()
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_StreamEmitsFailureWhenTerminalMissingAfterClientOutputStarts(t *testing.T) {
 	streamBody := "" +
 		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\"}}\n\n" +
