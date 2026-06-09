@@ -196,6 +196,54 @@ Live prompt matrix status for this run:
 Do not mark any skipped row as passed without a later Desktop/app-server trace
 captured against the exact backend build under test.
 
+Follow-up live Desktop smoke on 2026-06-08:
+
+- Backend under test:
+  `http://127.0.0.1:3017/codex/v1`
+- Docker image: `sub2api:codex-gateway-gap-audit-6948c5629`
+- Configuration source: cloned p1_6 provider configuration in an isolated
+  temporary Postgres/Redis environment; the original `3010` p1_6 database was
+  not migrated or modified.
+- Provider direct smoke evidence:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/evidence/direct_provider_smoke_3017_20260608202515.json`
+- Codex Desktop session mapping:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/evidence/desktop_live_smoke_session_mapping_final_20260608213648.md`
+- Gateway capture report:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/evidence/capture_report_desktop_live_20260608213804.json`
+- Gateway capture directory:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/data-configured2/codex-gateway-captures`
+
+The live Desktop run used the `clawdbot` workspace:
+`/Users/muqihang/chelingxi_workspace/clawdbot`. Codex Desktop was restarted
+after its temporary provider configuration was changed to `3017`, and the
+running app-server opened established connections to that port. The local
+provider catalog exposed `gpt-5.5`, `deepseek-v4-pro`,
+`claude-sonnet-4-6`, and `agnes-2.0-flash`; direct `/responses` requests to all
+three non-OpenAI upstream families returned HTTP 200 before the Desktop run.
+
+Live prompt matrix status for the 2026-06-08 Desktop run:
+
+| Row | Status | Model | Codex Desktop session id | Evidence notes |
+| --- | --- | --- | --- | --- |
+| C4-1 | Passed | `gpt-5.5` | `019eaaa7-6315-73f3-a7a0-e5f6fccf62d8` | Rerun used file search/read tools and produced a final answer listing inspected files. Supersedes weak null-output attempt `019eaa84-e33e-71c0-8b83-fe3d9165cdc4`. |
+| C4-2 | Passed | `deepseek-v4-pro` | `019eaa85-2a9f-72d2-ba26-0c95bf20483f` | Session contains native `tool_search_call` followed by `tool_search_output`; discovered `multi_agent_v1.spawn_agent` and model choices without hosted web-search rewrite. |
+| C4-3 | Passed | `deepseek-v4-pro` | `019eaa92-be6e-72a1-8d54-4ae7037a1add` | Computer Use inspected the frontmost app and reported visible text plus a safe action. Earlier attempt `019eaa85-d3f5-7c40-9945-51173a1f11fe` is not used as primary evidence because it exposed sensitive page text. |
+| C4-4 | Passed | `deepseek-v4-pro` | `019eaa94-2063-7440-8cbb-bbe96e36afc8` | Computer Use Electron/canvas-style app report completed with app identity and visible text. |
+| C4-5 | Passed | `gpt-5.5` | `019eaa95-550c-7ea1-a0d7-ac773a7a99c3` | Session contains `web_search_call` on the supporting provider. |
+| C4-6 | Passed | `gpt-5.5` | `019eaaa7-a853-73c2-a9db-8b2670101ee3` | Rerun created a tiny JSON object and preserved key/value structure in a one-sentence Chinese description. Supersedes weak ask-for-input attempt `019eaa95-8457-7093-a2b4-ad402f6185e5`. |
+| C4-7 | Skipped by design | `gpt-5.5` | `019eaa95-d897-7222-8884-04aac5d9906d` | Session confirmed HTTP mode with `supports_websockets=false` and skipped WS stop/continue/resume. |
+| C4-8 | Passed | `deepseek-v4-pro` | `019eaa97-1f8d-7f50-b844-43adbc0617d7` | Tool-read and follow-up completed on DeepSeek. |
+| C4-9 | Passed | `deepseek-v4-pro` | `019eaa97-cae5-7721-bdc1-0f0a5fe82b04` | Repeated same-shape prompt cache diagnostics completed. |
+| C4-10 | Passed | `claude-sonnet-4-6` | `019eaa98-8adf-7f51-9dc2-8a27099b0a84` | Claude file-inspection loop completed without DeepSeek prompt pollution. |
+| C4-11 | Passed | `agnes-2.0-flash` | `019eaa9a-b74e-7920-b441-689090c0461e` | AGNES tool/retry flow completed. The accidental `/goal` interruption attempt `019eaa99-641d-71a2-ab06-e3b1e0eefade` is explicitly discarded and not used as evidence. |
+
+The generated capture report found no content policy violations in the capture
+inputs it processed and summarized Gateway-side diagnostics, including
+DeepSeek replay/cache shape hashes and Computer Use normalized-output evidence.
+It did not include renderer hook app-server events because the manual Desktop
+run was validated from Codex session JSONL plus Gateway captures rather than a
+separate `codex capture attach` trace.
+
 #### Desktop live smoke handoff
 
 Use this handoff when a human is ready to wire Codex Desktop/app-server to the
