@@ -856,6 +856,7 @@ class GuardHarness:
             max_messages=max_messages,
             cost_envelope_limits=cost_envelope_limits,
             session_budget_ledger=session_budget_ledger,
+            native_attestation_secret='native-attestation-test-secret',
         ), execution_controller=execution_controller)
         self.patch_ssl_failure = patch_ssl_failure
         self._original_ssl_context = None

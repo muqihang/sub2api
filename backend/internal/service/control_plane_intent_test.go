@@ -24,6 +24,30 @@ func TestControlPlaneIntentServiceEvaluateIntentAcceptsBootstrapSafeIntent(t *te
 	require.Equal(t, "empty", decision.Audit.BodyLengthBucket)
 }
 
+func TestControlPlaneIntentServiceUsesConfiguredSafeMatrixOverlay(t *testing.T) {
+	matrix, err := NewControlPlanePathPolicyMatrixFromConfig(ControlPlanePathPolicyMatrixConfig{Policies: []ControlPlanePathPolicyConfig{{
+		Method: "GET", PathTemplate: "/api/claude_cli/safe_profile", Classification: "safe_profile_stubbed",
+		Action: ControlPlaneActionStub, CacheScope: "session", TTLSeconds: 60, QuarantineOnMismatch: true, RawForbidden: true,
+		QueryAllowlist:      map[string]ControlPlaneQueryRuleConfig{"entrypoint": {Kind: "enum", EnumValues: []string{"sdk-cli"}}},
+		AllowedResponseKeys: []string{"ok", "profile"},
+	}}})
+	require.NoError(t, err)
+	svc := NewControlPlaneIntentService(WithControlPlaneIntentPolicyMatrix(matrix))
+	payload := baseControlPlaneIntentPayload()
+	payload["path_template"] = "/api/claude_cli/safe_profile"
+	payload["classification"] = "safe_profile_stubbed"
+	payload["normalized_query"] = map[string]string{"entrypoint": "sdk-cli"}
+	payload["query_ref"] = map[string]any{"key_id": "local_guard_v1", "scope": "control_plane_query", "version": 1, "value": "hmac-sha256:" + strings.Repeat("d", 64)}
+
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+	decision, err := svc.EvaluateIntent(body)
+	require.NoError(t, err)
+	require.Equal(t, ControlPlaneActionStub, decision.Decision)
+	require.Equal(t, "control_plane:path_policy_allow", decision.Reason)
+	require.Equal(t, "safe_profile_stubbed", decision.Audit.Classification)
+}
+
 func TestControlPlaneIntentServiceEvaluateIntentRejectsPlainHashFields(t *testing.T) {
 	svc := NewControlPlaneIntentService()
 	payload := baseControlPlaneIntentPayload()

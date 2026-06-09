@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,6 +44,53 @@ func TestGatewayRoutesControlPlaneIntentLoopbackOnly(t *testing.T) {
 	req.Header.Set("x-sub2api-control-plane-attestation", attestationHeaders.Get("x-sub2api-control-plane-attestation"))
 	req.Header.Set("x-sub2api-control-plane-signature", attestationHeaders.Get("x-sub2api-control-plane-signature"))
 	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), "control_plane_quarantine")
+}
+
+func TestGatewayRoutesControlPlaneIntentUsesConfiguredSafeMatrixOverlay(t *testing.T) {
+	t.Setenv("SUB2API_CONTROL_PLANE_INTENT_TOKEN", "sub2api-intent-token")
+	t.Setenv(service.ControlPlanePathMatrixJSONEnv, `{"policies":[{"method":"GET","path_template":"/api/claude_cli/safe_profile","classification":"safe_profile_stubbed","action":"stub_json","cache_scope":"session","ttl_seconds":60,"quarantine_on_mismatch":true,"raw_forbidden":true,"query_allowlist":{"entrypoint":{"kind":"enum","enum_values":["sdk-cli"]}},"allowed_response_keys":["ok","profile"]}]}`)
+	setControlPlaneAttestationEnv(t)
+	router := newGatewayRoutesTestRouter()
+	body := mustJSONControlPlaneIntent(t, map[string]any{
+		"path_template":    "/api/claude_cli/safe_profile",
+		"classification":   "safe_profile_stubbed",
+		"normalized_query": map[string]string{"entrypoint": "sdk-cli"},
+	})
+	attestationHeaders := buildRouteControlPlaneAttestationHeaders(t, body, routeAttestationOptions{now: time.Now().Unix(), nonce: "route-nonce-safe-profile", keyID: "guard_v2"})
+
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/anthropic/control-plane/intent", bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:18080"
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-sub2api-intent-auth", "sub2api-intent-token")
+	req.Header.Set("x-sub2api-control-plane-attestation", attestationHeaders.Get("x-sub2api-control-plane-attestation"))
+	req.Header.Set("x-sub2api-control-plane-signature", attestationHeaders.Get("x-sub2api-control-plane-signature"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"path_template":"/api/claude_cli/safe_profile"`)
+	require.Contains(t, rec.Body.String(), `"profile":{}`)
+}
+
+func TestGatewayRoutesControlPlaneIntentUnsafeMatrixFailsClosed(t *testing.T) {
+	t.Setenv("SUB2API_CONTROL_PLANE_INTENT_TOKEN", "sub2api-intent-token")
+	t.Setenv(service.ControlPlanePathMatrixJSONEnv, `{"policies":[{"method":"GET","path_template":"/api/claude_cli/safe_profile","classification":"safe_profile_stubbed","action":"stub_json","cache_scope":"session","ttl_seconds":60,"quarantine_on_mismatch":true,"raw_forbidden":false,"allowed_response_keys":["ok"]}]}`)
+	setControlPlaneAttestationEnv(t)
+	router := newGatewayRoutesTestRouter()
+	body := mustJSONControlPlaneIntent(t, map[string]any{})
+	attestationHeaders := buildRouteControlPlaneAttestationHeaders(t, body, routeAttestationOptions{now: time.Now().Unix(), nonce: "route-nonce-unsafe-matrix", keyID: "guard_v2"})
+
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/anthropic/control-plane/intent", bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:18080"
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("x-sub2api-intent-auth", "sub2api-intent-token")
+	req.Header.Set("x-sub2api-control-plane-attestation", attestationHeaders.Get("x-sub2api-control-plane-attestation"))
+	req.Header.Set("x-sub2api-control-plane-signature", attestationHeaders.Get("x-sub2api-control-plane-signature"))
+	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusForbidden, rec.Code)

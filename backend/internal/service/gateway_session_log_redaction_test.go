@@ -53,6 +53,11 @@ func TestClaudeMimicDebugLineOmitsRawBodyPromptAndSession(t *testing.T) {
 	require.Contains(t, line, "body.length_bucket=")
 }
 
+func TestSafeHeaderValueForLogRedactsNativeAttestationHeaders(t *testing.T) {
+	require.Equal(t, "[redacted]", safeHeaderValueForLog("x-sub2api-native-attestation", "encoded-payload"))
+	require.Equal(t, "[redacted]", safeHeaderValueForLog("x-sub2api-native-signature", "signature-payload"))
+}
+
 func TestDebugLogGatewaySnapshotOmitsRawBodyAndSensitiveHeaders(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "gateway-debug-*.log")
 	require.NoError(t, err)

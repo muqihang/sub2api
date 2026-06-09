@@ -31,6 +31,14 @@ func SetClaudeCodeClientContext(c *gin.Context, body []byte, parsedReq *service.
 	if c == nil || c.Request == nil {
 		return
 	}
+	if native, ok := service.ClaudeCodeNativeAuditSummaryFromContext(c.Request.Context()); ok && native.NativeAttested {
+		ctx := service.SetClaudeCodeClient(c.Request.Context(), true)
+		if native.ClaudeCodeVersion != "" {
+			ctx = service.SetClaudeCodeVersion(ctx, native.ClaudeCodeVersion)
+		}
+		c.Request = c.Request.WithContext(ctx)
+		return
+	}
 	if parsedReq != nil {
 		c.Set(claudeCodeParsedRequestContextKey, parsedReq)
 	}

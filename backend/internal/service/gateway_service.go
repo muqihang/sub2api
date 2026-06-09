@@ -278,6 +278,7 @@ func safeHeaderValueForLog(key string, v string) string {
 	key = strings.ToLower(strings.TrimSpace(key))
 	if key == "authorization" || key == "x-api-key" || key == "x-cc-gateway-token" ||
 		strings.Contains(key, "cookie") || strings.Contains(key, "token") ||
+		strings.Contains(key, "attestation") || strings.Contains(key, "signature") ||
 		strings.Contains(key, "session") || strings.Contains(key, "account") ||
 		strings.Contains(key, "user") || strings.Contains(key, "org") ||
 		strings.Contains(key, "cch") || strings.Contains(key, "billing") {
@@ -6691,9 +6692,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		preserveClaudeCodeNativeWireBody(ctx, req, body)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
-		if auditSummary, ok := AnthropicCompatAuditSummaryFromContext(ctx); ok {
-			applyAnthropicCompatAuditHeaders(req.Header, auditSummary)
+		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
+			return nil, nil, err
 		}
 		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
 			body = mappedBody
@@ -10607,7 +10609,11 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		preserveClaudeCodeNativeWireBody(ctx, req, body)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
+			return nil, nil, err
+		}
 		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
 			body = mappedBody
 			if shouldStripCCGatewayDownstreamBillingMaterial(account) {

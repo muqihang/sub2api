@@ -126,6 +126,20 @@ def test_native_guard_plan_scrubs_proxy_recursion_and_keeps_secrets_out_of_comma
     assert "sub2api-entry-secret" not in repr(plan)
 
 
+def test_native_guard_plan_requires_explicit_attestation_secret(tmp_path: Path):
+    cfg = NativeGuardConfig(
+        mode=NativeGuardMode.STAGING,
+        listen_port=43117,
+        upstream_base="http://127.0.0.1:18080",
+        sub2api_auth="sub2api-entry",
+        summary_path=tmp_path / "guard-summary.jsonl",
+        repo_root=REPO_ROOT,
+    )
+
+    with pytest.raises(ValueError, match="attestation_secret"):
+        build_native_guard_plan(cfg, python_executable=Path(sys.executable))
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -160,6 +174,7 @@ def test_native_guard_forwards_messages_with_replacement_auth_and_redacted_summa
         sub2api_auth="sub2api-entry",
         summary_path=summary_path,
         repo_root=REPO_ROOT,
+        attestation_secret="attestation-secret",
     )
 
     with start_native_guard(build_native_guard_plan(cfg, python_executable=Path(sys.executable))) as guard:
@@ -198,6 +213,52 @@ def test_native_guard_forwards_messages_with_replacement_auth_and_redacted_summa
     assert "local-token-marker" not in summary
     assert "local-api-key-marker" not in summary
     assert "proxy-credential-marker" not in summary
+
+
+def test_native_guard_forwards_attested_native_markers_without_prompt_leak(tmp_path: Path):
+    CaptureHandler.requests = []
+    upstream = _start_server(CaptureHandler)
+    listen_port = _free_port()
+    summary_path = tmp_path / "guard-summary.jsonl"
+    cfg = NativeGuardConfig(
+        mode=NativeGuardMode.STAGING,
+        listen_port=listen_port,
+        upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+        sub2api_auth="sub2api-entry",
+        summary_path=summary_path,
+        repo_root=REPO_ROOT,
+        attestation_secret="attestation-secret",
+    )
+
+    with start_native_guard(build_native_guard_plan(cfg, python_executable=Path(sys.executable))):
+        payload = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "native-prompt-marker"}],
+            "max_tokens": 32,
+        }
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{listen_port}/v1/messages?beta=true",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 200
+
+    upstream.shutdown()
+    assert len(CaptureHandler.requests) == 1
+    headers = CaptureHandler.requests[0]["headers"]
+    assert headers["x-sub2api-client-type"] == "claude_code_native"
+    assert headers["x-sub2api-guard-attested"] == "true"
+    assert headers["x-sub2api-netwatch-required"] == "true"
+    assert headers["x-sub2api-native-attestation"]
+    assert headers["x-sub2api-native-signature"]
+    summary = summary_path.read_text(encoding="utf-8")
+    assert "claude_code_native" in summary
+    assert "native-prompt-marker" not in summary
 
 
 def test_native_guard_control_plane_intent_attestation_and_connect_block(tmp_path: Path):

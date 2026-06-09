@@ -81,6 +81,8 @@ def build_native_guard_plan(
     inherited_env: Mapping[str, str] | None = None,
     python_executable: Path | str | None = None,
 ) -> NativeGuardPlan:
+    if not config.attestation_secret:
+        raise ValueError("native guard attestation_secret is required")
     env = _build_guard_env(config, inherited_env=inherited_env)
     python_bin = str(python_executable or sys.executable)
     command = [
@@ -169,6 +171,8 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
     if config.attestation_secret is not None:
         env["SUB2API_CONTROL_PLANE_ATTESTATION_SECRET"] = config.attestation_secret
         env["SUB2API_CONTROL_PLANE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
+        env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"] = config.attestation_secret
+        env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
     if config.hmac_key is not None:
         env["SUB2API_CONTROL_PLANE_HMAC_KEY"] = config.hmac_key
         env["SUB2API_CONTROL_PLANE_HMAC_KEY_ID"] = config.hmac_key_id
