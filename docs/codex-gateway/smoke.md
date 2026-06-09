@@ -196,6 +196,97 @@ Live prompt matrix status for this run:
 Do not mark any skipped row as passed without a later Desktop/app-server trace
 captured against the exact backend build under test.
 
+#### Desktop live smoke handoff
+
+Use this handoff when a human is ready to wire Codex Desktop/app-server to the
+current backend build. Do not change the user's global Codex configuration
+silently; either use temporary CLI `-c` overrides or have the human make and
+later restore the Desktop config change.
+
+Current isolated backend, if still running:
+
+```bash
+. /tmp/sub2api-codex-gap-audit-isolated.env
+set -a
+. /tmp/sub2api-codex-gap-audit-isolated-key.env
+set +a
+curl -fsS "http://127.0.0.1:${PORT}/health"
+docker inspect "$APP" --format 'image={{.Config.Image}} status={{.State.Status}}'
+```
+
+Expected:
+
+- `PORT=3014`
+- `image=sub2api:codex-gateway-gap-audit-6948c5629`
+- app status is `running`
+- `/health` returns `{"status":"ok"}`
+
+Temporary Codex CLI transport smoke, without touching global config:
+
+```bash
+set -a
+. /tmp/sub2api-codex-gap-audit-isolated-key.env
+set +a
+/Applications/Codex.app/Contents/Resources/codex exec \
+  --ignore-user-config --ephemeral --json \
+  -C /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/codex-gateway-responses-gap-audit \
+  -s read-only \
+  -m gpt-5.5 \
+  -c 'model_provider="gap-audit-local"' \
+  -c 'model_providers.gap-audit-local.name="Gap Audit Local"' \
+  -c "model_providers.gap-audit-local.base_url=\"http://127.0.0.1:${PORT}/codex/v1\"" \
+  -c 'model_providers.gap-audit-local.wire_api="responses"' \
+  -c 'model_providers.gap-audit-local.requires_openai_auth=true' \
+  -c 'model_providers.gap-audit-local.env_key="SUB2API_CODEX_API_KEY"' \
+  -c 'model_providers.gap-audit-local.supports_websockets=false' \
+  -c 'features.responses_websockets_v2=false' \
+  'Reply exactly: codex smoke ok'
+```
+
+For true Desktop live smoke, the human should temporarily configure the Desktop
+provider to:
+
+```toml
+[model_providers.zhumeng-codex]
+base_url = "http://127.0.0.1:3014/codex/v1"
+wire_api = "responses"
+supports_websockets = false
+```
+
+and ensure the Codex process can read the temporary API key from
+`/tmp/sub2api-codex-gap-audit-isolated-key.env`. Restore the original remote
+`base_url` after the live smoke.
+
+Safe prompt set for Desktop live smoke:
+
+| Row | Prompt | Required evidence |
+| --- | --- | --- |
+| C4-1 | "In this repository, list the top-level directories relevant to Codex Gateway and briefly explain which files you inspected." | File read/search tool events, terminal `response.completed`, no tool-pairing diagnostics. |
+| C4-2 | "Use tool search/deferred tools to discover subagent-related tools, then summarize the available subagent model choices." | Native `tool_search_call` followed by `tool_search_output`; no hosted web-search rewrite. |
+| C4-3 | "Use Computer Use to inspect the frontmost controllable app and report visible text plus one safe action you could take; do not click destructive controls." | Retained `visible_text`/operable lines, bounded output, no raw screenshot/base64 in model text. |
+| C4-4 | "Use Computer Use on a visible Electron or canvas-style app window and report visible_text, app identity, and any latest error/truncation status." | `computer_use_compression_version`, app/bundle id, visible text, truncation/error status. |
+| C4-5 | "If web search is available for the selected provider, search for the current OpenAI Responses docs page title and cite only the title; otherwise explain why search is unavailable." | Hosted search only for supporting providers; local/deferred tools otherwise. |
+| C4-6 | "Describe a tiny inline image or structured tool output in one sentence, preserving structured content where the provider supports it." | Image/structured output preserved or safely summarized by text-only providers. |
+| C4-7 | "If WS v2 is enabled, perform stop/continue/resume; otherwise confirm HTTP mode and skip." | Skip when catalog has no WS support; if enabled, terminal events and WS continuation diagnostics. |
+| C4-8 | "On DeepSeek, perform a small tool-read turn, then a follow-up that uses the tool result and preserves thinking/tool-call replay." | DeepSeek reasoning replay succeeds; no blanket `reasoning_content` stripping. |
+| C4-9 | "On DeepSeek, repeat the same-shape short prompt twice in the same thread and compare cache diagnostics." | Stable prefix hashes and official hit/miss usage when upstream returns it, otherwise explicit absence reason. |
+| C4-10 | "On Claude thinking, inspect one repository file and answer a follow-up using the tool result." | Anthropic thinking/tool loop completes without DeepSeek prompt pollution. |
+| C4-11 | "On AGNES, run a simple tool loop and then a safe interruption/retry follow-up." | AGNES-specific cache/key semantics; no DeepSeek official cache-control leakage. |
+
+After the run, generate a capture report:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/codex-gateway-responses-gap-audit/tools/zhumeng-agent
+uv run zhumeng-agent codex capture report \
+  --trace-dir <desktop-trace-dir> \
+  --gateway-trace-dir /tmp/sub2api-codex-gap-audit-isolated-20260608190747/data/codex-gateway-captures
+```
+
+Record each row as `passed`, `failed`, or `skipped` with the exact reason. A
+provider/key/account absence is a valid skip reason; a protocol regression,
+missing terminal event, broken tool pairing, or cache/usage misreporting is a
+blocking failure.
+
 Validation checklist for every non-skipped row:
 
 - capture contains terminal events and a clear terminal status;
