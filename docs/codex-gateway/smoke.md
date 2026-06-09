@@ -244,6 +244,38 @@ It did not include renderer hook app-server events because the manual Desktop
 run was validated from Codex session JSONL plus Gateway captures rather than a
 separate `codex capture attach` trace.
 
+#### 2026-06-09 goal-mode Desktop live smoke on 3018
+
+This follow-up run checked Codex Desktop `/goal` semantics against the persistent
+3018 deployment after the live image was rebuilt with embedded frontend assets
+and OpenAI stream-drain hardening. It is additive evidence for goal-mode tool
+closure and terminal completion; it does not replace the full C4 matrix above.
+
+- Backend under test: `http://127.0.0.1:3018/codex/v1`
+- Docker image:
+  `sub2api:codex-gateway-gap-audit-openai-drain-embed-20260609023113`
+- App container: `sub2api-codex-gateway-live-app`
+- Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+- Gateway capture directory:
+  `/Users/muqihang/chelingxi_workspace/sub2api-codex-gateway-live/data/codex-gateway-captures`
+
+| Provider/model | Codex Desktop session id | Goal result | Evidence notes |
+| --- | --- | --- | --- |
+| DeepSeek `deepseek-v4-flash` | `019eabd6-2923-7a32-bdd9-c1a566b254c4` | Passed | Goal marked `complete` in 26s with 47,950 tokens. Session ran `pwd`, `git status --short`, and an `AGENTS.md` existence check, then called `update_goal`. Session JSONL contained no `stream disconnected`, `missing terminal`, `no available`, or `response.failed` hits. Gateway traces around the run were `ok`; DeepSeek tool closure linked emitted `exec_command`/`update_goal` calls with received results and no missing tool results. |
+| Claude `claude-sonnet-4-6` | `019eabd7-3ffb-7cb3-a94f-40a377b7e203` | Passed | Goal marked `complete` in 73s with 14,861 tokens. Session ran `pwd`, `ls -la | head`, avoided Computer Use as requested, and called `update_goal`. Session JSONL contained no `stream disconnected`, `missing terminal`, `no available`, or `response.failed` hits. Gateway traces around the run were `ok`; Anthropic cache diagnostics reported high prefix reuse on follow-up turns and tool closure linked the emitted tool calls with received results. |
+
+Observed caveats:
+
+- The Claude session attempted `create_goal` even though Desktop had already
+  opened the goal; the local tool returned the expected diagnostic and the model
+  continued by using the existing goal. This is acceptable and did not mutate the
+  canonical transcript beyond normal tool output.
+- The DeepSeek run used `deepseek-v4-flash`, not `deepseek-v4-pro`; it still
+  verifies the DeepSeek provider family goal-mode loop and terminal completion.
+- This run intentionally did not exercise Computer Use, because the goal prompt
+  asked Claude not to use it and the DeepSeek goal was a read-only shell/tool
+  loop.
+
 #### Desktop live smoke handoff
 
 Use this handoff when a human is ready to wire Codex Desktop/app-server to the
