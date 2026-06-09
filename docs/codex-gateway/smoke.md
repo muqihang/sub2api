@@ -151,6 +151,51 @@ Run only safe prompts for available providers:
 | C4-10 | Claude direct | Anthropic thinking/tool loop. | Thinking/tool replay and terminal events complete. |
 | C4-11 | `agnes-2.0-flash` | AGNES tool loop and interruption recovery. | AGNES-specific cache/key semantics, no DeepSeek official cache-control leak. |
 
+#### 2026-06-09 current-worktree evidence status
+
+This run used the current worktree image and an isolated stub upstream, not the
+user's Codex Desktop global configuration:
+
+- Git HEAD: `6948c5629019ba011282bdffcfa99a64c1ac8bc5`
+- Docker image: `sub2api:codex-gateway-gap-audit-6948c5629`
+- Local backend: `http://127.0.0.1:3014/codex/v1`
+- Evidence directory:
+  `/tmp/sub2api-codex-gap-audit-isolated-20260608190747/evidence`
+- Gateway capture directory:
+  `/tmp/sub2api-codex-gap-audit-isolated-20260608190747/data/codex-gateway-captures`
+- Capture mode: `summary`, `raw_payloads=false`
+
+Readiness gates recorded in that evidence directory:
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| Codex CLI catalog shape | Passed | `models_summary.json` shows 12 visible models; `models_codex_cli.json` has no `supports_websockets` fields. |
+| WS upgrade gate | Passed | `ws_upgrade_gate.txt` returns HTTP `405 method_not_allowed`, never `101 Switching Protocols`. |
+| OpenAI HTTP `previous_response_id` gate | Passed | `previous_response_id_gate.txt` returns HTTP `400` with the WS-v2-only message. |
+| Basic HTTP non-stream | Passed | `basic_nonstream_response.txt` returns `resp_stub_json` with completed output and usage. |
+| Basic HTTP stream | Passed | `basic_stream_response.sse` includes `response.completed` and `[DONE]`. |
+| Codex CLI non-interactive transport | Passed | `codex_cli_exec_smoke.jsonl` ends with `turn.completed`. The first temporary-stub run logged `OutputTextDelta without active item` because that stub emitted a minimal SSE stream without item/content open events before `response.output_text.delta`; a later lifecycle-shaped stub rerun, recorded as `codex_cli_exec_smoke_lifecycle_*.jsonl`, emits `item.completed` and `turn.completed` without that warning. This is still not a Desktop live-matrix pass and does not replace the lifecycle regression tests. |
+| `zhumeng-agent codex capture report` | Report generated, Desktop trace absent | `zhumeng_capture_report_empty_desktop.json` reports zero app-server/tool/model events because Desktop was not wired to this backend for this run. |
+
+Live prompt matrix status for this run:
+
+| Row | Status | Reason |
+| --- | --- | --- |
+| C4-1 | Skipped for Desktop live matrix | Codex CLI transport smoke passed, but Desktop/app-server was not wired to this exact backend build and the prompt was not a repo file-read/search live prompt. |
+| C4-2 | Skipped | Requires live DeepSeek provider plus Desktop/subagent tool exposure; isolated run used a stub upstream. |
+| C4-3 | Skipped | Requires live Desktop Computer Use flow; global Desktop config was not changed. |
+| C4-4 | Skipped | Requires live Desktop Electron/canvas Computer Use capture; global Desktop config was not changed. |
+| C4-5 | Skipped | Requires live Web Search/provider bridge verification; isolated run used a stub upstream. |
+| C4-6 | Skipped | Requires live image-capable provider or structured tool-output flow; isolated run used a stub upstream. |
+| C4-7 | Skipped by design | HTTP gateway currently advertises no WS support; the WS readiness gate above passed. |
+| C4-8 | Skipped | Requires live DeepSeek tool-call reasoning replay; isolated run used a stub upstream. |
+| C4-9 | Skipped | Requires live DeepSeek repeated prompt/cache usage evidence; isolated run used a stub upstream. |
+| C4-10 | Skipped | Requires live Claude direct thinking/tool loop; isolated run used a stub upstream. |
+| C4-11 | Skipped | Requires live AGNES tool loop/interruption recovery; isolated run used a stub upstream. |
+
+Do not mark any skipped row as passed without a later Desktop/app-server trace
+captured against the exact backend build under test.
+
 Validation checklist for every non-skipped row:
 
 - capture contains terminal events and a clear terminal status;
