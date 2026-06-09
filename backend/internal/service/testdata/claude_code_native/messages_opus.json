@@ -1,0 +1,9 @@
+{
+  "model": "claude-opus-4-7",
+  "max_tokens": 4096,
+  "stream": false,
+  "tools": [],
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "synthetic opus healthcheck content"}]}
+  ]
+}
