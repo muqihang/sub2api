@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,4 +69,83 @@ func TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsRespon
 	assert.Contains(t, body, ":\n\n")
 	assert.Contains(t, body, "event: response.failed\n")
 	assert.Contains(t, body, `"type":"response.failed"`)
+}
+
+func TestGatewayForwardErrorAlreadyCommunicated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("non-stream JSON error after write is already communicated", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		before := c.Writer.Size()
+		c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error"}})
+
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, assert.AnError)
+
+		require.True(t, reported)
+	})
+
+	t.Run("response committed marker is already communicated", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		before := c.Writer.Size()
+		c.JSON(http.StatusBadRequest, gin.H{"type": "error"})
+		service.MarkResponseCommitted(c)
+
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, assert.AnError)
+
+		require.True(t, reported)
+	})
+
+	t.Run("no write still needs fallback", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+		reported := gatewayForwardErrorAlreadyCommunicated(c, c.Writer.Size(), assert.AnError)
+
+		require.False(t, reported)
+	})
+
+	t.Run("partial SSE ping still needs terminal fallback", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
+		c.Header("Content-Type", "text/event-stream")
+		before := c.Writer.Size()
+		_, _ = c.Writer.WriteString(":\n\n")
+
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, assert.AnError)
+
+		require.False(t, reported)
+	})
+
+	t.Run("nil error still needs normal handling", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		before := c.Writer.Size()
+		c.JSON(http.StatusBadRequest, gin.H{"type": "error"})
+
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, nil)
+
+		require.False(t, reported)
+	})
+}
+
+func TestGatewayEnsureForwardErrorResponse_SkipsCommittedResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error"}})
+	service.MarkResponseCommitted(c)
+
+	h := &GatewayHandler{}
+	wrote := h.ensureForwardErrorResponse(c, false)
+
+	require.False(t, wrote)
+	require.NotContains(t, w.Body.String(), `"Upstream request failed"`)
 }

@@ -3712,6 +3712,7 @@ func (s *AntigravityGatewayService) writeClaudeError(c *gin.Context, status int,
 		"type":  "error",
 		"error": gin.H{"type": errType, "message": message},
 	})
+	MarkResponseCommitted(c)
 	return fmt.Errorf("%s", message)
 }
 
@@ -3751,6 +3752,7 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 			"type":  "error",
 			"error": gin.H{"type": ptErrType, "message": ptErrMsg},
 		})
+		MarkResponseCommitted(c)
 		if upstreamMsg == "" {
 			return fmt.Errorf("upstream error: %d", upstreamStatus)
 		}
@@ -3791,6 +3793,7 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 		"type":  "error",
 		"error": gin.H{"type": errType, "message": errMsg},
 	})
+	MarkResponseCommitted(c)
 	if upstreamMsg == "" {
 		return fmt.Errorf("upstream error: %d", upstreamStatus)
 	}
@@ -3819,6 +3822,7 @@ func (s *AntigravityGatewayService) writeGoogleError(c *gin.Context, status int,
 			"status":  statusStr,
 		},
 	})
+	MarkResponseCommitted(c)
 	return fmt.Errorf("%s", message)
 }
 

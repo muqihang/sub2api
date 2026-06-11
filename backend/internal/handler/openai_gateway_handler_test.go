@@ -1735,6 +1735,19 @@ data: {"type":"response.failed","error":{"message":"This content was flagged"}}
 		require.True(t, reported)
 	})
 
+	t.Run("committed JSON error after write", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
+		before := c.Writer.Size()
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error"}})
+		service.MarkResponseCommitted(c)
+
+		reported := openAIForwardErrorAlreadyCommunicated(c, before, errors.New("upstream error: 400"))
+
+		require.True(t, reported)
+	})
+
 	t.Run("no write still needs fallback", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)

@@ -1790,6 +1790,7 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 			"type":  "error",
 			"error": gin.H{"type": errType, "message": errMsg},
 		})
+		MarkResponseCommitted(c)
 		if upstreamMsg == "" {
 			upstreamMsg = errMsg
 		}
@@ -2298,6 +2299,7 @@ func (s *GeminiMessagesCompatService) writeClaudeError(c *gin.Context, status in
 		"type":  "error",
 		"error": gin.H{"type": errType, "message": message},
 	})
+	MarkResponseCommitted(c)
 	return fmt.Errorf("%s", message)
 }
 
@@ -2309,6 +2311,7 @@ func (s *GeminiMessagesCompatService) writeGoogleError(c *gin.Context, status in
 			"status":  googleapi.HTTPStatusToGoogleStatus(status),
 		},
 	})
+	MarkResponseCommitted(c)
 	return fmt.Errorf("%s", message)
 }
 

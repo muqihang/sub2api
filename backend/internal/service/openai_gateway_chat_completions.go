@@ -882,4 +882,5 @@ func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message 
 			"message": message,
 		},
 	})
+	MarkResponseCommitted(c)
 }

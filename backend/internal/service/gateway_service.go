@@ -7979,6 +7979,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 				"message": errMsg,
 			},
 		})
+		MarkResponseCommitted(c)
 
 		summary := upstreamMsg
 		if summary == "" {
@@ -8010,12 +8011,14 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 				Message:            upstreamMsg,
 			})
 			c.Data(http.StatusBadRequest, "application/json", body)
+			MarkResponseCommitted(c)
 			if upstreamMsg == "" {
 				upstreamMsg = "thinking signature rejected"
 			}
 			return nil, &SessionCorruptThinkingSignatureError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 		}
 		c.Data(http.StatusBadRequest, "application/json", body)
+		MarkResponseCommitted(c)
 		summary := upstreamMsg
 		if summary == "" {
 			summary = truncateForLog(body, 512)
@@ -8058,6 +8061,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			"message": errMsg,
 		},
 	})
+	MarkResponseCommitted(c)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -8168,6 +8172,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 				"message": errMsg,
 			},
 		})
+		MarkResponseCommitted(c)
 
 		summary := upstreamMsg
 		if summary == "" {
@@ -8187,6 +8192,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 			"message": "Upstream request failed after retries",
 		},
 	})
+	MarkResponseCommitted(c)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d (retries exhausted)", resp.StatusCode)
