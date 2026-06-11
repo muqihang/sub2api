@@ -145,7 +145,7 @@ Run only safe prompts for available providers:
 | C4-4 | `deepseek-v4-pro` | Computer Use Electron/canvas visible_text flow. | `visible_text`, app/bundle id, latest error/truncation status, and `computer_use_compression_version`. |
 | C4-5 | OpenAI/GPT or configured bridge | Web Search bridge. | Hosted search fields only on providers that support them; local/deferred tools otherwise. |
 | C4-6 | image-capable provider | Image input / structured tool output. | Structured content preserved where supported; text-only providers summarize safely. |
-| C4-7 | OpenAI WS-enabled environment only | Stop/Continue/Resume or WS/native continuation. | If WS unavailable, skip; if enabled, terminal events and WS v2 continuation diagnostics. |
+| C4-7 | OpenAI WS-enabled environment only, or explicit manual Stop test | Stop/interruption, user-driven continuation, `/goal` pause/resume when applicable, or WS/native continuation. | Do not assume ordinary-chat Continue/Resume buttons. If WS unavailable, record HTTP/manual-stop behavior; if WS enabled, require terminal events and WS v2 continuation diagnostics. |
 | C4-8 | `deepseek-v4-pro` | DeepSeek tool-call reasoning replay multi-turn. | Tool-call reasoning replay succeeds; no Reasonix blanket stripping. |
 | C4-9 | `deepseek-v4-pro` | DeepSeek cache prefix stability repeated prompt. | Stable prefix hashes and provider hit/miss usage when upstream returns it. |
 | C4-10 | Claude direct | Anthropic thinking/tool loop. | Thinking/tool replay and terminal events complete. |
@@ -196,6 +196,230 @@ Live prompt matrix status for this run:
 Do not mark any skipped row as passed without a later Desktop/app-server trace
 captured against the exact backend build under test.
 
+#### 2026-06-10 note on ordinary-chat Continue/Resume wording
+
+A later GPT-5.5 CP0 baseline in the `clawdbot` workspace confirmed that asking
+the model to stop after a stage produces a normal `task_complete` final answer;
+it does not create a guaranteed ordinary-chat Continue/Resume button. Future
+smoke rows should test real manual Stop/interruption, explicit user-driven
+continuation, `/goal` pause/resume, or protocol-level `previous_response_id`
+diagnostics instead of relying on a button label.
+
+#### 2026-06-10 GPT-5.5 user-driven continuation baseline
+
+- Codex Desktop session id: `019eb129-f13d-7870-928a-150f12e8424d`
+- Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+- Model: `gpt-5.5` via `zhumeng-codex`
+- Result: passed for ordinary-chat user-driven continuation. The session has two
+  turns. Turn 1 completed stage 1 and ended normally. The user then typed
+  `继续`; turn 2 read `README.md`, executed only stage 2, did not repeat stage
+  1, and ended with `task_complete`.
+- Interpretation: this is evidence for context-preserving explicit user
+  continuation, not evidence for an ordinary-chat Continue/Resume button or WS
+  `previous_response_id` continuation.
+
+#### 2026-06-10 GPT-5.4 baseline and user-driven continuation
+
+- Basic repo/tool_search baseline session id: `019eb132-e13a-7e82-af21-bb500416ee2d`
+  - Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+  - Model: `gpt-5.4` via `zhumeng-codex`
+  - Result: passed. The turn performed read-only cwd/top-level listing, read
+    `README.md` and `package.json`, issued native `tool_search_call`, received
+    `tool_search_output`, and ended with `task_complete`.
+- User-driven continuation session id: `019eb132-bb8a-7ff2-9118-a049993ccfa6`
+  - Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+  - Model: `gpt-5.4` via `zhumeng-codex`
+  - Result: passed. Turn 1 completed stage 1 and ended normally. The user then
+    typed `继续`; turn 2 read `README.md`, executed only stage 2, did not repeat
+    stage 1, and ended with `task_complete`.
+- Interpretation: GPT-5.4 matches GPT-5.5 for the CP0 basic repo/tool_search
+  baseline and ordinary-chat explicit user continuation. This is not evidence
+  for an ordinary-chat Continue/Resume button or WS `previous_response_id`
+  continuation.
+
+#### 2026-06-10 DeepSeek V4 Pro/Flash CP0 baseline and cache evidence
+
+These live sessions ran in the `clawdbot` workspace against the 3018 deployment
+(`zhumeng-codex` provider) and validate basic repo/tool_search behavior plus
+ordinary-chat explicit user continuation. Cache ratios below are computed from
+`usage_logs.cache_read_tokens / (input_tokens + cache_read_tokens)` for the
+matching DeepSeek `/codex/v1/responses -> /v1/chat/completions` usage rows.
+
+- DeepSeek V4 Pro session id: `019eb138-760a-7512-9f90-42e8ddf0eb12`
+  - Model verified by session context and backend usage: `deepseek-v4-pro`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`.
+  - Caveat: the model self-reported `GPT-5` in one answer even though routing
+    and backend usage were DeepSeek; treat this as model self-identification
+    drift, not a routing failure.
+  - Cache ratios: whole session `60.27%`; Prompt C `35.77%`; stage-1 continue
+    prompt `54.47%`; final `继续` turn `93.88%`; after the first two cold misses
+    `78.38%`.
+- DeepSeek V4 Flash session id: `019eb144-7dda-7700-81f4-9a0320171949`
+  - Model verified by session context and backend usage: `deepseek-v4-flash`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`.
+  - Caveat: the prompt text still said "DeepSeek V4 Pro", so the model report
+    title repeated Pro even though session/backend routing were Flash.
+  - Cache ratios: whole session `43.58%`; Prompt C `9.90%`; stage-1 continue
+    prompt `33.20%`; final `继续` turn `96.89%`; after the first two cold misses
+    `53.56%`; final three high-cache calls `97.46%`.
+
+Interpretation: both DeepSeek variants pass the CP0 non-Computer-Use baseline.
+Cold-start/cache-warmup behavior differs, but explicit continuation turns reach
+GPT-like high cache reuse once the prompt/tool prefix is warm.
+
+#### 2026-06-10 Claude Sonnet/Opus CP0 baseline and upstream 502 evidence
+
+These live sessions ran in the `clawdbot` workspace against the 3018 deployment
+(`zhumeng-codex` provider) and validate Anthropic-format Claude routing,
+repo/tool_search behavior, and ordinary-chat explicit user continuation. Cache
+ratios below use `usage_logs.cache_read_tokens / (input_tokens +
+cache_read_tokens)` for the matching Claude `/codex/v1/responses ->
+/v1/messages` usage rows.
+
+- Claude Sonnet 4.6 session id: `019eb14e-a414-79f1-ac72-1bef6616d419`
+  - Model verified by session context and backend usage: `claude-sonnet-4-6`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`.
+  - Caveat: the model self-reported `GPT-5` in one answer even though routing
+    and backend usage were Claude; treat this as model self-identification
+    drift, not a routing failure.
+  - Cache ratios: whole session `92.13%`; Prompt E `81.10%`; stage-1
+    continue prompt `99.54%`; final `继续` turn `98.41%`; after the first
+    request `97.05%`; final four high-cache calls `99.25%`.
+  - One failed Gateway capture during the test window returned upstream HTTP
+    `502` with `Content-Type: text/html`, `Server: cloudflare`, and
+    `Retry-After: 60`; trace classification was
+    `upstream_failed_before_visible_output` with zero upstream/client SSE
+    events.
+- Claude Opus 4.8 session id: `019eb158-c9f5-76c3-a738-f081432f4e30`
+  - Model verified by session context and backend usage: `claude-opus-4-8`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`. The
+    final session JSONL has three turns and no persisted `stream disconnected`
+    error; the user-visible errors correspond to failed Gateway capture traces
+    that were retried before the successful turns completed.
+  - Caveat: the model self-reported Codex/GPT-5 in one answer even though
+    routing and backend usage were Claude.
+  - Cache ratio: whole successful-session usage `94.89%` (`8` successful
+    Claude usage rows; `21,589` input tokens and `401,300` cache-read tokens).
+  - During the same window, seven failed Gateway capture traces returned
+    upstream HTTP `502` HTML pages from Cloudflare with `Retry-After: 60`,
+    lasted about `40-43s`, produced no upstream/client SSE events, and were
+    classified as `provider_5xx` / `upstream_failed_before_visible_output`.
+    Provider attempts show the requested Claude models being scheduled through
+    their high-reasoning `*-thinking` upstream variants because Codex requested
+    `reasoning_effort=xhigh`.
+- Claude Opus 4.7 session id: `019eb450-87f5-7320-a17a-c7f9be399419`
+  - Model verified by session context and backend usage: `claude-opus-4-7`.
+  - Result: passed for repo read/search and native `tool_search_call` +
+    `tool_search_output`. The session read `README.md` and `package.json`,
+    discovered the `multi_agent_v1` tool family, and stopped at
+    "阶段 1 完成，等待继续".
+  - Continuation caveat: the follow-up user turn was only `继续`, but the
+    original prompt did not define a concrete stage-2 task. The model preserved
+    context and correctly asked for the missing stage-2 objective instead of
+    repeating stage 1. Treat this as partial continuation evidence, not a clean
+    stage-2 execution pass.
+  - Cache ratio: whole successful-session usage `92.91%` (`6` successful
+    Claude usage rows; `20,598` input tokens and `269,856` cache-read tokens).
+  - No matching Claude Opus 4.7 Gateway capture in this test window returned
+    Anthropic HTTP `502`; unrelated OpenAI account errors in the same time range
+    must not be attributed to this Claude session.
+- Claude Haiku baseline: user chose to skip this row during CP0 because Sonnet
+  and Opus already covered the Claude Anthropic-format tool_search/continuation
+  path. Keep this as `skipped-by-operator`, not as pass evidence.
+
+Interpretation: the Claude CP0 functional baseline passed. The intermittent
+`stream disconnected before completion: Anthropic upstream returned HTTP 502
+HTML error page` failures are upstream/provider-edge failures before any model
+stream output, not evidence of malformed Responses-to-Anthropic translation.
+Because the live Anthropic group had only one eligible account, these transient
+Cloudflare/`Retry-After` failures could not be hidden by account failover.
+Future hardening should add Anthropic account failover/backoff and, if product
+policy allows, a controlled fallback from `*-thinking` to the non-thinking
+variant after repeated pre-output 5xx failures.
+
+#### 2026-06-11 AGNES 2.0 Flash CP0 baseline attempt
+
+- Codex Desktop session id: `019eb61d-51a2-7462-9663-1b593a7cb4c1`
+- Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+- Model verified by session context, Gateway captures, and usage rows:
+  `agnes-2.0-flash`.
+- Result: failed/inconclusive for the full CP0 baseline. The model completed
+  only partial stage-1 work:
+  - confirmed `pwd`;
+  - after interruption/continuation, listed the top-level directory;
+  - did not read `README.md`/`package.json`;
+  - did not emit `tool_search_call` or receive `tool_search_output`;
+  - did not reach the requested "阶段 1 完成，等待继续" marker or stage-2
+    continuation semantics.
+- Transport/protocol evidence: five matching AGNES `/codex/v1/responses ->
+  /v1/chat/completions` usage rows all returned HTTP `200` and corresponding
+  capture summaries were `status: ok`; there was no `stream disconnected`,
+  provider 5xx, or Gateway panic in this session window.
+- Cache evidence: whole attempt cache-read ratio was `0.00%` (`5` successful
+  AGNES usage rows; `121,329` input tokens, `236` output tokens,
+  `0` cache-read tokens). Capture diagnostics still recorded stable request
+  prefix/tool hashes and `prompt_cache_key_present:true`; treat the zero cache
+  as AGNES-provider cache unsupported/no upstream cache attribution, not as
+  proof of unstable serialization.
+- Interpretation: AGNES routing and basic function-call transport worked, but
+  this live prompt did not prove GPT-like multi-step tool/search behavior. Keep
+  this row open and retest with a smaller forced-tool prompt before marking
+  AGNES baseline as passed.
+
+Follow-up forced-tool retest:
+
+- Codex Desktop session id: `019eb632-3c54-7660-9ba3-2baeff1ad062`
+- Model verified by session context, Gateway captures, and usage rows:
+  `agnes-2.0-flash`.
+- Result: passed for focused native `tool_search` behavior. The model emitted a
+  real `tool_search_call` with query `subagent computer use browser`, received
+  `tool_search_output`, did not call `exec_command`, and reported that
+  `multi_agent_v1` was present while Browser/Computer Use namespaces were not in
+  that result set.
+- Transport/protocol evidence: two matching AGNES usage rows returned HTTP
+  `200`; capture summaries were `status: ok`; no provider 5xx or stream
+  disconnect was observed.
+- Cache evidence: cache-read ratio remained `0.00%` (`51,902` input tokens,
+  `164` output tokens, `0` cache-read tokens). Capture diagnostics recorded
+  stable request/tool hashes and `prompt_cache_key_present:true`; continue to
+  classify AGNES cache as provider-unsupported/no upstream attribution until the
+  upstream returns explicit cache usage.
+- Interpretation: AGNES can use Codex native `tool_search_call` /
+  `tool_search_output` when the task is narrowly scoped. The open gap is
+  multi-step autonomy/continuation smoothness, not basic `tool_search` protocol
+  routing.
+
+Follow-up forced file-read and continuation retest:
+
+- Codex Desktop session id: `019eb636-b254-7920-b3b4-5964a5cf9ceb`
+- Model verified by session context, Gateway captures, and usage rows:
+  `agnes-2.0-flash`.
+- Result: passed for focused file-tool and explicit continuation behavior.
+  Stage 1 called exactly `exec_command` with
+  `sed -n '1,20p' README.md`, summarized only those lines, reported
+  `exec_command`, and stopped with "阶段 1 完成，等待继续". After the user sent
+  `继续`, stage 2 called exactly `exec_command` with
+  `sed -n '21,40p' README.md`, summarized only the delta, and ended with
+  "阶段 2 完成".
+- Tool discipline: no `tool_search` calls and no extra shell commands appeared
+  in the session JSONL.
+- Transport/protocol evidence: four matching AGNES usage rows returned HTTP
+  `200`; capture summaries were `status: ok`; no provider 5xx, stream
+  disconnect, or Gateway error was observed.
+- Cache evidence: cache-read ratio remained `0.00%` (`85,283` input tokens,
+  `220` output tokens, `0` cache-read tokens). Capture diagnostics recorded
+  stable request/tool hashes and `prompt_cache_key_present:true`; classify the
+  zero cache as AGNES-provider cache unsupported/no upstream attribution, not a
+  Gateway serialization failure.
+- Interpretation: AGNES handles narrow, explicit file-tool and user-driven
+  continuation workflows correctly. The remaining AGNES gap is broad multi-step
+  autonomy under long instructions, not the core Responses-to-chat-completions
+  tool transport.
+
 Follow-up live Desktop smoke on 2026-06-08:
 
 - Backend under test:
@@ -231,7 +455,7 @@ Live prompt matrix status for the 2026-06-08 Desktop run:
 | C4-4 | Passed | `deepseek-v4-pro` | `019eaa94-2063-7440-8cbb-bbe96e36afc8` | Computer Use Electron/canvas-style app report completed with app identity and visible text. |
 | C4-5 | Passed | `gpt-5.5` | `019eaa95-550c-7ea1-a0d7-ac773a7a99c3` | Session contains `web_search_call` on the supporting provider. |
 | C4-6 | Passed | `gpt-5.5` | `019eaaa7-a853-73c2-a9db-8b2670101ee3` | Rerun created a tiny JSON object and preserved key/value structure in a one-sentence Chinese description. Supersedes weak ask-for-input attempt `019eaa95-8457-7093-a2b4-ad402f6185e5`. |
-| C4-7 | Skipped by design | `gpt-5.5` | `019eaa95-d897-7222-8884-04aac5d9906d` | Session confirmed HTTP mode with `supports_websockets=false` and skipped WS stop/continue/resume. |
+| C4-7 | Skipped by design | `gpt-5.5` | `019eaa95-d897-7222-8884-04aac5d9906d` | Session confirmed HTTP mode with `supports_websockets=false` and skipped WS continuation. Ordinary-chat Continue/Resume buttons were not assumed. |
 | C4-8 | Passed | `deepseek-v4-pro` | `019eaa97-1f8d-7f50-b844-43adbc0617d7` | Tool-read and follow-up completed on DeepSeek. |
 | C4-9 | Passed | `deepseek-v4-pro` | `019eaa97-cae5-7721-bdc1-0f0a5fe82b04` | Repeated same-shape prompt cache diagnostics completed. |
 | C4-10 | Passed | `claude-sonnet-4-6` | `019eaa98-8adf-7f51-9dc2-8a27099b0a84` | Claude file-inspection loop completed without DeepSeek prompt pollution. |
