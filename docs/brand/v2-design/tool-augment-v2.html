@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>逐梦 Augment Code | Zhumeng</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'Noto Sans SC', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            background: '#000000',
+            surface: '#0A0A0A',
+            surfaceHover: '#111111',
+            borderMuted: 'rgba(255, 255, 255, 0.08)',
+            textMain: '#EDEDED',
+            textMuted: '#A1A1AA',
+            accent: '#3B82F6', // A technical blue for Augment
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #000;
+      color: #EDEDED;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::selection { background: #3B82F6; color: #fff; }
+    .glass-nav {
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .text-gradient {
+      background: linear-gradient(to right, #fff, #A1A1AA);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .editor-window {
+      background: linear-gradient(180deg, #111 0%, #050505 100%);
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.05) inset;
+    }
+    .btn-primary {
+      background: #EDEDED;
+      color: #000;
+      transition: all 0.2s;
+    }
+    .btn-primary:hover { background: #fff; transform: scale(1.02); }
+  </style>
+</head>
+<body class="antialiased min-h-screen flex flex-col relative">
+
+<!-- Nav -->
+<nav class="fixed top-0 w-full z-50 glass-nav">
+  <div class="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-6">
+      <a href="homepage-v2.html" class="flex items-center gap-2 group">
+        <svg class="w-4 h-4 text-textMuted group-hover:text-textMain transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+        <span class="font-semibold text-sm tracking-tight text-textMuted group-hover:text-textMain">返回</span>
+      </a>
+      <div class="h-4 w-px bg-borderMuted"></div>
+      <span class="text-sm font-semibold flex items-center gap-2">
+        <div class="w-4 h-4 rounded bg-accent/20 flex items-center justify-center"><div class="w-1.5 h-1.5 rounded-full bg-accent"></div></div>
+        逐梦 Augment Code
+      </span>
+    </div>
+    <div class="flex items-center gap-4">
+      <a href="#" class="btn-primary text-xs font-semibold px-4 py-1.5 rounded-full">免费下载</a>
+    </div>
+  </div>
+</nav>
+
+<main class="flex-grow pt-32 pb-20">
+  <div class="max-w-5xl mx-auto px-6">
+
+    <!-- Hero Header -->
+    <div class="text-center mb-16">
+      <h1 class="text-4xl md:text-6xl font-bold tracking-tight mb-6">
+        终极 AI 结对程序员， <br/>
+        <span class="text-gradient">现在只需 1/10 的成本。</span>
+      </h1>
+      <p class="text-lg text-textMuted max-w-2xl mx-auto">
+        我们保留了 Augment 传奇的实时上下文引擎，并将昂贵的后端替换为 DeepSeek-V3 与智能路由。相同的原生体验，极低的账单。
+      </p>
+    </div>
+
+    <!-- Massive Editor Mockup -->
+    <div class="editor-window rounded-xl overflow-hidden mb-24">
+      <div class="h-10 border-b border-borderMuted bg-[#1a1a1a] flex items-center px-4 justify-between">
+        <div class="flex gap-2">
+          <div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
+          <div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
+          <div class="w-3 h-3 rounded-full bg-[#27c93f]"></div>
+        </div>
+        <div class="text-xs font-mono text-[#888]">payment_service.go — Augment</div>
+        <div class="w-12"></div>
+      </div>
+      <div class="grid grid-cols-12 h-[500px]">
+        <!-- Sidebar -->
+        <div class="col-span-3 border-r border-borderMuted bg-[#0A0A0A] p-4 font-mono text-[10px] text-[#666]">
+          <div class="mb-4 text-[#888] font-bold">资源管理器</div>
+          <div class="space-y-2">
+            <div class="flex items-center gap-2"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg> cmd</div>
+            <div class="flex items-center gap-2"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7"/></svg> internal</div>
+            <div class="pl-5 space-y-2">
+              <div class="text-[#ccc]">payment_service.go</div>
+              <div>auth.go</div>
+              <div>router.go</div>
+            </div>
+          </div>
+
+          <div class="mt-8 border-t border-borderMuted pt-4">
+            <div class="text-accent font-bold mb-2 flex items-center gap-2">
+              <div class="w-2 h-2 rounded-full bg-accent animate-pulse"></div>
+              上下文引擎
+            </div>
+            <div class="space-y-1">
+              <div>已索引: 12,847 个文件</div>
+              <div>Tokens: 2.4M</div>
+              <div class="text-green-500 mt-2">就绪。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Code Area -->
+        <div class="col-span-9 bg-[#000] p-6 font-mono text-sm overflow-hidden relative">
+          <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-900/10 via-transparent to-transparent pointer-events-none"></div>
+          <div class="text-[#555] mb-2">// 在这里生成一个 Stripe webhook 处理程序</div>
+          <div class="flex">
+            <div class="w-8 text-[#444] text-right pr-4 select-none">42<br>43<br>44<br>45<br>46</div>
+            <div class="flex-1">
+              <div><span class="text-[#FF7B72]">func</span> <span class="text-[#79C0FF]">HandleStripeWebhook</span>(<span class="text-[#FFA657]">ctx</span> <span class="text-[#79C0FF]">context.Context</span>, <span class="text-[#FFA657]">payload</span> <span class="text-[#79C0FF]">[]byte</span>) <span class="text-[#79C0FF]">error</span> {</div>
+              <div class="pl-4 text-[#555]">// AI 正在分析工作区...</div>
+              <div class="pl-4"><span class="text-[#FFA657]">event</span>, <span class="text-[#FFA657]">err</span> := <span class="text-[#79C0FF]">stripe.ConstructEvent</span>(...)</div>
+              <div class="pl-4"><span class="text-[#FF7B72]">if</span> <span class="text-[#FFA657]">err</span> != <span class="text-[#79C0FF]">nil</span> {</div>
+              <div class="pl-8"><span class="text-[#FF7B72]">return</span> <span class="text-[#79C0FF]">fmt.Errorf</span>(<span class="text-[#A5D6FF]">"invalid webhook"</span>)</div>
+            </div>
+          </div>
+
+          <!-- AI Generation overlay -->
+          <div class="mt-4 ml-12 border border-blue-500/30 bg-blue-500/5 rounded-lg p-3 backdrop-blur-sm">
+             <div class="flex items-center justify-between text-xs text-blue-400 mb-2">
+               <span class="flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> 逐梦路由: DeepSeek-V3</span>
+               <span class="text-[#888]">成本: ¥0.003</span>
+             </div>
+             <div class="text-[#A5D6FF]">switch event.Type { ... } // 瞬间生成 87 行代码</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature comparison -->
+    <div class="grid md:grid-cols-2 gap-8 border-t border-borderMuted pt-16">
+      <div>
+        <h3 class="text-xl font-bold mb-4 text-textMain">官方方案</h3>
+        <ul class="space-y-4 text-sm text-textMuted">
+          <li class="flex items-start gap-3"><span class="text-[#666]">✕</span> 绑定昂贵的特定模型</li>
+          <li class="flex items-start gap-3"><span class="text-[#666]">✕</span> 每个席位每月至少 50 美元</li>
+          <li class="flex items-start gap-3"><span class="text-[#666]">✕</span> 亚太地区延迟高</li>
+          <li class="flex items-start gap-3"><span class="text-[#666]">✕</span> 支付困难且难以合规</li>
+        </ul>
+      </div>
+      <div>
+        <h3 class="text-xl font-bold mb-4 text-accent">逐梦方案</h3>
+        <ul class="space-y-4 text-sm text-textMain">
+          <li class="flex items-start gap-3"><span class="text-accent">✓</span> 智能模型路由 (DeepSeek/Claude)</li>
+          <li class="flex items-start gap-3"><span class="text-accent">✓</span> 团队版 ¥299/人/月 (节省 80%)</li>
+          <li class="flex items-start gap-3"><span class="text-accent">✓</span> 企业级全球加速网络</li>
+          <li class="flex items-start gap-3"><span class="text-accent">✓</span> 统一计费、SSO 与本地化支持</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- CTA -->
+    <div class="mt-24 text-center border border-borderMuted bg-surface rounded-2xl p-12">
+      <h2 class="text-2xl font-bold mb-4">准备好升级你的团队了吗？</h2>
+      <p class="text-textMuted mb-8">获取 macOS/Windows 客户端，领取 100 万免费 Token。</p>
+      <a href="#" class="btn-primary px-8 py-3 rounded-full font-semibold">立即下载</a>
+    </div>
+
+  </div>
+</main>
+
+<footer class="border-t border-borderMuted bg-[#000] py-8 text-center text-xs text-[#666]">
+  Zhumeng © 2026. Augment Code 是 Augment Inc. 的商标。
+</footer>
+
+</body>
+</html>

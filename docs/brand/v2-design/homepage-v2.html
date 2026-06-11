@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>逐梦 Zhumeng | 前沿 AI 工具发现与增强平台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'Noto Sans SC', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            background: '#000000',
+            surface: '#0A0A0A',
+            surfaceHover: '#111111',
+            borderMuted: 'rgba(255, 255, 255, 0.08)',
+            borderFocus: 'rgba(255, 255, 255, 0.2)',
+            textMain: '#EDEDED',
+            textMuted: '#A1A1AA',
+            accent: '#00E599', // A vivid technical green/teal
+            accentGlow: 'rgba(0, 229, 153, 0.15)',
+          },
+          animation: {
+            'fade-in-up': 'fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+            'float': 'float 6s ease-in-out infinite',
+            'pulse-slow': 'pulseSlow 4s ease-in-out infinite',
+            'shimmer': 'shimmer 8s linear infinite',
+          },
+          keyframes: {
+            fadeInUp: {
+              '0%': { opacity: 0, transform: 'translateY(20px)' },
+              '100%': { opacity: 1, transform: 'translateY(0)' },
+            },
+            float: {
+              '0%, 100%': { transform: 'translateY(0)' },
+              '50%': { transform: 'translateY(-10px)' },
+            },
+            pulseSlow: {
+              '0%, 100%': { opacity: 0.5 },
+              '50%': { opacity: 1 },
+            },
+            shimmer: {
+              from: { backgroundPosition: '200% 0' },
+              to: { backgroundPosition: '-200% 0' },
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #000;
+      color: #EDEDED;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::selection {
+      background: #00E599;
+      color: #000;
+    }
+    .grid-pattern {
+      background-size: 40px 40px;
+      background-image:
+        linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      mask-image: radial-gradient(circle at center, black 40%, transparent 80%);
+    }
+    .glass-nav {
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .hero-glow {
+      position: absolute;
+      top: 20%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 600px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(0, 229, 153, 0.15) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .text-gradient {
+      background: linear-gradient(to right, #fff, #a1a1aa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .text-gradient-accent {
+      background: linear-gradient(135deg, #00E599 0%, #3B82F6 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .card-glass {
+      background: linear-gradient(180deg, rgba(25,25,25,0.6) 0%, rgba(10,10,10,0.8) 100%);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 4px 30px rgba(0,0,0,0.5);
+      transition: all 0.3s ease;
+    }
+    .card-glass:hover {
+      border-color: rgba(255,255,255,0.2);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 40px rgba(0, 229, 153, 0.08);
+    }
+    .btn-primary {
+      background: #EDEDED;
+      color: #000;
+      transition: all 0.2s;
+    }
+    .btn-primary:hover {
+      background: #fff;
+      transform: scale(1.02);
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #EDEDED;
+      transition: all 0.2s;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .shimmer-badge {
+      background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.05) 50%, rgba(255,255,255,0) 100%);
+      background-size: 200% 100%;
+      animation: shimmer 2s infinite;
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #000; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+  </style>
+</head>
+<body class="antialiased min-h-screen flex flex-col relative overflow-x-hidden">
+
+<!-- Nav -->
+<nav class="fixed top-0 w-full z-50 glass-nav">
+  <div class="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-8">
+      <a href="#" class="flex items-center gap-2 group">
+        <svg class="w-5 h-5 text-textMain group-hover:text-accent transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        <span class="font-semibold text-sm tracking-tight">逐梦</span>
+      </a>
+      <div class="hidden md:flex items-center gap-6 text-sm text-textMuted font-medium">
+        <a href="#products" class="hover:text-textMain transition-colors">产品</a>
+        <a href="#enterprise" class="hover:text-textMain transition-colors">企业方案</a>
+        <a href="#docs" class="hover:text-textMain transition-colors">文档</a>
+      </div>
+    </div>
+    <div class="flex items-center gap-4">
+      <a href="#" class="text-sm font-medium text-textMuted hover:text-textMain hidden md:block transition-colors">登录</a>
+      <a href="#" class="btn-primary text-xs font-semibold px-4 py-1.5 rounded-full">免费开始</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero Section -->
+<main class="flex-grow pt-32 pb-20 relative">
+  <div class="absolute inset-0 grid-pattern pointer-events-none z-0 opacity-50"></div>
+  <div class="hero-glow"></div>
+
+  <div class="max-w-7xl mx-auto px-6 relative z-10 flex flex-col items-center text-center">
+
+    <div class="opacity-0 animate-fade-in-up" style="animation-delay: 0.1s">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-borderMuted bg-surface/50 text-xs font-medium text-textMuted mb-8 backdrop-blur-sm relative overflow-hidden">
+        <div class="absolute inset-0 shimmer-badge"></div>
+        <span class="relative z-10 flex items-center gap-2">
+          <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse-slow"></span>
+          前沿 AI 工具发现与增强平台
+        </span>
+      </div>
+    </div>
+
+    <h1 class="text-5xl md:text-7xl font-bold tracking-tight mb-6 opacity-0 animate-fade-in-up" style="animation-delay: 0.2s">
+      构建你的下一代 <br/>
+      <span class="text-gradient">AI 工作流。</span>
+    </h1>
+
+    <p class="text-lg md:text-xl text-textMuted max-w-2xl mb-10 opacity-0 animate-fade-in-up leading-relaxed" style="animation-delay: 0.3s">
+      我们将 DeepSeek 等高性能模型注入 Augment、Claude Code 等世界级工具中。在不牺牲原生体验的前提下，让你的<strong class="text-textMain font-medium">成本骤降 80%</strong>。
+    </p>
+
+    <div class="flex flex-col sm:flex-row items-center gap-4 opacity-0 animate-fade-in-up" style="animation-delay: 0.4s">
+      <a href="#products" class="btn-primary px-6 py-3 rounded-full text-sm font-semibold flex items-center gap-2">
+        探索工具库
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+      </a>
+      <a href="#enterprise" class="btn-secondary px-6 py-3 rounded-full text-sm font-semibold flex items-center gap-2">
+        查看企业方案
+      </a>
+    </div>
+
+    <!-- Terminal Mockup -->
+    <div class="w-full max-w-4xl mt-20 opacity-0 animate-fade-in-up animate-float" style="animation-delay: 0.6s">
+      <div class="rounded-xl border border-borderMuted bg-[#0a0a0a] shadow-2xl overflow-hidden text-left relative group">
+        <div class="absolute inset-0 bg-gradient-to-b from-accent/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+        <div class="h-10 border-b border-borderMuted flex items-center px-4 bg-[#111]">
+          <div class="flex gap-2">
+            <div class="w-3 h-3 rounded-full bg-red-500/80"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/80"></div>
+          </div>
+          <div class="mx-auto flex items-center gap-2 text-xs font-mono text-textMuted">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+            zhumeng ~ 终端
+          </div>
+        </div>
+        <div class="p-6 font-mono text-sm leading-relaxed text-textMuted bg-[#050505]">
+          <div class="flex items-center gap-2">
+            <span class="text-accent">❯</span>
+            <span class="text-textMain">augment "在 payment.go 中添加 stripe webhook 处理程序"</span>
+          </div>
+          <div class="mt-2 pl-4 border-l border-borderMuted border-dashed">
+            <div class="text-[#888]">正在索引 12,847 个代码块... [完成]</div>
+            <div class="text-[#888]">路由至 <span class="text-blue-400">deepseek-v3</span> (成本优化)...</div>
+            <div class="text-accentGlow/80 mt-1">正在生成实现与测试代码...</div>
+          </div>
+          <div class="mt-2 text-accent flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+            完成。已更新 4 个文件。成本: ¥0.003 (节省 98%)
+          </div>
+          <div class="mt-2 flex items-center gap-2">
+            <span class="text-accent">❯</span> <span class="w-2 h-4 bg-textMain animate-pulse"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Value Prop / Solutions -->
+<section class="py-24 border-t border-borderMuted bg-surface relative z-10">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="grid md:grid-cols-3 gap-8">
+
+      <div class="card-glass p-8 rounded-2xl">
+        <div class="w-12 h-12 rounded-full bg-[#111] border border-borderMuted flex items-center justify-center mb-6">
+          <svg class="w-6 h-6 text-textMain" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold mb-3 text-textMain">模型注入</h3>
+        <p class="text-sm text-textMuted leading-relaxed">
+          打破厂商锁定。我们将高性能、高性价比的模型（如 DeepSeek）无缝注入到通常需要昂贵订阅的高级工具中。
+        </p>
+      </div>
+
+      <div class="card-glass p-8 rounded-2xl">
+        <div class="w-12 h-12 rounded-full bg-[#111] border border-borderMuted flex items-center justify-center mb-6">
+          <svg class="w-6 h-6 text-textMain" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold mb-3 text-textMain">企业级网络</h3>
+        <p class="text-sm text-textMuted leading-relaxed">
+          告别配置焦虑。我们的全球加速节点确保超低延迟和绝对稳定，完美符合企业合规要求。
+        </p>
+      </div>
+
+      <div class="card-glass p-8 rounded-2xl">
+        <div class="w-12 h-12 rounded-full bg-[#111] border border-borderMuted flex items-center justify-center mb-6">
+          <svg class="w-6 h-6 text-textMain" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold mb-3 text-textMain">统一工作区</h3>
+        <p class="text-sm text-textMuted leading-relaxed">
+          一个逐梦账号通行全平台。集中管理团队权限、审计使用情况和处理账单。不再为各个平台零散的订阅而烦恼。
+        </p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- Products Matrix -->
+<section id="products" class="py-32 relative z-10 border-t border-borderMuted bg-background">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="mb-16 md:mb-24">
+      <h2 class="text-3xl md:text-5xl font-bold tracking-tight text-textMain mb-4">核心应用矩阵。</h2>
+      <p class="text-textMuted text-lg max-w-2xl">由我们增强型智能网络驱动的专用工具。专为开发者、研究人员和团队打造。</p>
+    </div>
+
+    <div class="flex flex-col gap-6">
+
+      <!-- Augment Code -->
+      <a href="tool-augment-v2.html" class="group block relative overflow-hidden rounded-3xl border border-borderMuted bg-surfaceHover transition-all hover:border-borderFocus">
+        <div class="absolute inset-0 bg-gradient-to-r from-blue-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+        <div class="grid md:grid-cols-12 items-center gap-8 relative z-10">
+          <div class="md:col-span-5 p-10 md:p-12">
+            <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded bg-blue-500/10 text-blue-400 text-[10px] font-bold uppercase tracking-wider mb-6 border border-blue-500/20">旗舰产品</div>
+            <h3 class="text-3xl font-bold mb-4">逐梦 Augment Code</h3>
+            <p class="text-textMuted leading-relaxed mb-8">
+              具备完整代码库上下文的终极 AI 结对程序员。我们将昂贵的引擎替换为 DeepSeek-V3，在保留完整功能的同时节省了 80% 的成本。
+            </p>
+            <div class="flex items-center gap-4">
+              <span class="text-sm font-medium text-textMain group-hover:text-accent transition-colors flex items-center gap-2">
+                查看产品详情
+                <svg class="w-4 h-4 transform group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+              </span>
+            </div>
+          </div>
+          <div class="md:col-span-7 h-full min-h-[300px] border-t md:border-t-0 md:border-l border-borderMuted bg-[#050505] p-8 flex items-center justify-center">
+            <!-- abstract code visualization -->
+            <div class="w-full max-w-md space-y-3 font-mono text-xs text-[#555]">
+               <div class="h-4 w-3/4 bg-[#111] rounded"></div>
+               <div class="h-4 w-1/2 bg-[#111] rounded"></div>
+               <div class="h-4 w-5/6 bg-[#1a1a1a] rounded border border-blue-500/20 relative overflow-hidden">
+                 <div class="absolute top-0 left-0 h-full w-1/3 bg-blue-500/10 animate-pulse"></div>
+               </div>
+               <div class="h-4 w-2/3 bg-[#111] rounded"></div>
+               <div class="flex items-center gap-2 mt-4 text-blue-400/80">
+                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                 上下文引擎已激活
+               </div>
+            </div>
+          </div>
+        </div>
+      </a>
+
+      <div class="grid md:grid-cols-2 gap-6">
+        <!-- DeepRotor -->
+        <a href="#" class="group block relative overflow-hidden rounded-3xl border border-borderMuted bg-surfaceHover p-10 transition-all hover:border-borderFocus">
+          <div class="absolute inset-0 bg-gradient-to-b from-amber-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+          <div class="relative z-10">
+             <div class="w-10 h-10 rounded-lg bg-[#111] border border-borderMuted flex items-center justify-center mb-6 text-amber-400">
+               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+             </div>
+             <h3 class="text-2xl font-bold mb-3">DeepRotor 学术版</h3>
+             <p class="text-sm text-textMuted leading-relaxed mb-8">
+               高级论文阅读与研究助手。在泛读和精读模型之间无缝切换。为团队协作量身定制。
+             </p>
+             <span class="text-sm font-medium text-textMain group-hover:text-amber-400 transition-colors">查看详情 →</span>
+          </div>
+        </a>
+
+        <!-- Claude Code -->
+        <a href="#" class="group block relative overflow-hidden rounded-3xl border border-borderMuted bg-surfaceHover p-10 transition-all hover:border-borderFocus">
+          <div class="absolute inset-0 bg-gradient-to-b from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+          <div class="relative z-10">
+             <div class="w-10 h-10 rounded-lg bg-[#111] border border-borderMuted flex items-center justify-center mb-6 text-emerald-400">
+               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+             </div>
+             <h3 class="text-2xl font-bold mb-3">Claude Code 桌面版</h3>
+             <p class="text-sm text-textMuted leading-relaxed mb-8">
+               解锁官方般丝滑的终端体验。支持多模型路由，让你告别每月 200 美元的账单焦虑。
+             </p>
+             <span class="text-sm font-medium text-textMain group-hover:text-emerald-400 transition-colors">下载客户端 →</span>
+          </div>
+        </a>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="border-t border-borderMuted bg-[#000] pt-16 pb-8">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="flex flex-col md:flex-row justify-between items-center gap-6">
+      <div class="flex items-center gap-2">
+        <svg class="w-4 h-4 text-textMuted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        <span class="font-semibold text-sm text-textMuted">Zhumeng © 2026</span>
+      </div>
+      <div class="flex gap-6 text-xs text-[#666]">
+        <a href="#" class="hover:text-textMain transition-colors">Twitter / X</a>
+        <a href="#" class="hover:text-textMain transition-colors">GitHub</a>
+        <a href="#" class="hover:text-textMain transition-colors">服务条款</a>
+        <a href="#" class="hover:text-textMain transition-colors">隐私政策</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Simple intersection observer for fade-in animations if needed further
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.style.animationPlayState = 'running';
+      }
+    });
+  });
+</script>
+</body>
+</html>

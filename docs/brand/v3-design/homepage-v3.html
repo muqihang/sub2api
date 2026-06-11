@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zhumeng Core | AI Workflow Gateway</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Space Grotesk', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            base: '#050505',
+            panel: '#111111',
+            panelHover: '#1A1A1A',
+            border: '#2A2A2A',
+            textMain: '#F3F4F6',
+            textDim: '#9CA3AF',
+            brand: '#CCFF00', // Neon Yellow/Green
+            brandDim: 'rgba(204, 255, 0, 0.1)',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #050505;
+      color: #F3F4F6;
+      font-family: 'Space Grotesk', sans-serif;
+    }
+    ::selection { background: #CCFF00; color: #000; }
+
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+    }
+
+    .panel {
+      background-color: #111111;
+      border: 1px solid #2A2A2A;
+      border-radius: 16px;
+      overflow: hidden;
+      position: relative;
+      transition: border-color 0.3s ease;
+    }
+    .panel:hover {
+      border-color: #444;
+    }
+
+    .brand-glow {
+      position: absolute;
+      width: 200px;
+      height: 200px;
+      background: radial-gradient(circle, rgba(204,255,0,0.15) 0%, transparent 70%);
+      filter: blur(40px);
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* Terminal Typing Effect */
+    .typewriter {
+      overflow: hidden;
+      white-space: nowrap;
+      border-right: 2px solid #CCFF00;
+      animation: typing 3s steps(40, end), blink-caret .75s step-end infinite;
+    }
+    @keyframes typing { from { width: 0 } to { width: 100% } }
+    @keyframes blink-caret { from, to { border-color: transparent } 50% { border-color: #CCFF00; } }
+
+    .tag {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #9CA3AF;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col pt-6 pb-20 px-4 md:px-8">
+
+  <!-- Top Bar -->
+  <header class="max-w-7xl mx-auto w-full flex items-center justify-between mb-8">
+    <div class="flex items-center gap-4">
+      <div class="w-8 h-8 bg-brand rounded-sm flex items-center justify-center font-bold text-black text-xl">Z</div>
+      <div class="font-mono text-sm tracking-tight hidden sm:block">
+        <span class="text-brand">ZHUMENG</span> // CORE_GATEWAY
+      </div>
+    </div>
+    <div class="flex items-center gap-6 font-mono text-xs">
+      <a href="#" class="text-textDim hover:text-white transition">STATUS: ONLINE</a>
+      <a href="#" class="text-textDim hover:text-white transition">DOCS</a>
+      <a href="#" class="bg-white text-black px-4 py-2 rounded-sm hover:bg-brand transition font-bold">INITIATE</a>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto w-full flex-grow">
+
+    <!-- Bento Grid Layout -->
+    <div class="bento-grid">
+
+      <!-- HERO PANEL (Col: 1-8, Row: 1) -->
+      <div class="panel col-span-12 lg:col-span-8 p-10 flex flex-col justify-between min-h-[400px]">
+        <div class="brand-glow top-0 left-0"></div>
+        <div class="relative z-10">
+          <div class="flex gap-2 mb-6">
+            <span class="tag text-brand border-brand/30 bg-brand/10">ROUTING_ENGINE_V2</span>
+            <span class="tag">PLUG_AND_PLAY</span>
+          </div>
+          <h1 class="text-5xl md:text-6xl font-bold leading-[1.1] tracking-tight mb-6">
+            顶级 AI 生产力，<br/>
+            <span class="text-textDim">引擎由你定义。</span>
+          </h1>
+          <p class="text-lg text-textDim max-w-xl leading-relaxed font-sans">
+            我们不造轮子。我们将全球最强大的工具（Augment, Claude Code）与最具性价比的模型（DeepSeek-V3）强行缝合。体验原封不动，成本暴降 80%。
+          </p>
+        </div>
+        <div class="relative z-10 mt-12 flex gap-4">
+          <a href="#" class="bg-brand text-black font-bold font-mono text-sm px-6 py-3 rounded-sm hover:bg-white transition flex items-center gap-2">
+            [+] GET_STARTED
+          </a>
+          <a href="#" class="border border-border text-white font-bold font-mono text-sm px-6 py-3 rounded-sm hover:bg-white/5 transition">
+            ENTERPRISE_PLAN
+          </a>
+        </div>
+      </div>
+
+      <!-- LIVE TERMINAL PANEL (Col: 9-12, Row: 1) -->
+      <div class="panel col-span-12 lg:col-span-4 bg-[#0A0A0A] p-6 font-mono text-xs flex flex-col">
+        <div class="flex items-center justify-between border-b border-border pb-4 mb-4">
+          <div class="text-textDim">zhumeng-proxy.log</div>
+          <div class="flex gap-1.5">
+            <div class="w-2.5 h-2.5 rounded-full bg-border"></div>
+            <div class="w-2.5 h-2.5 rounded-full bg-border"></div>
+            <div class="w-2.5 h-2.5 rounded-full bg-brand"></div>
+          </div>
+        </div>
+        <div class="flex-grow space-y-2 text-textDim overflow-hidden">
+          <div><span class="text-brand">➜</span> <span class="text-white">Request intercepted:</span> Augment Code</div>
+          <div class="pl-4 border-l border-border">
+            <div>Analyzing intent: Complex refactor</div>
+            <div>Context size: 124K tokens</div>
+          </div>
+          <div><span class="text-brand">➜</span> <span class="text-white">Routing...</span></div>
+          <div class="pl-4 border-l border-border">
+            <div class="line-through text-red-400">Target: Claude-3.5-Sonnet (Cost: $0.37)</div>
+            <div class="text-brand">Target: DeepSeek-V3 (Cost: ¥0.02)</div>
+          </div>
+          <div class="text-white mt-4">> <span class="typewriter inline-block">Response generated. Saved 98%.</span></div>
+        </div>
+      </div>
+
+      <!-- PRODUCT: AUGMENT (Col: 1-6, Row: 2) -->
+      <a href="tool-augment-v3.html" class="panel col-span-12 md:col-span-6 lg:col-span-4 p-8 group cursor-pointer block">
+        <div class="flex justify-between items-start mb-12">
+          <div class="w-12 h-12 bg-blue-500/10 border border-blue-500/20 text-blue-500 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+          </div>
+          <svg class="w-5 h-5 text-border group-hover:text-brand transition transform group-hover:translate-x-1 group-hover:-translate-y-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </div>
+        <div class="tag mb-4 inline-block">FLAGSHIP</div>
+        <h3 class="text-2xl font-bold mb-2 group-hover:text-brand transition">Augment Code</h3>
+        <p class="text-textDim text-sm font-sans mb-6">全代码库上下文感知的终极 AI 结对程序员。保留强大引擎，注入平价模型。</p>
+        <div class="font-mono text-xs flex justify-between items-end border-t border-border pt-4">
+          <span class="text-textDim">原价: $50/mo</span>
+          <span class="text-brand font-bold text-base">¥99/mo</span>
+        </div>
+      </a>
+
+      <!-- PRODUCT: DEEPROTOR (Col: 7-12, Row: 2) -->
+      <a href="#" class="panel col-span-12 md:col-span-6 lg:col-span-4 p-8 group cursor-pointer block">
+        <div class="flex justify-between items-start mb-12">
+          <div class="w-12 h-12 bg-amber-500/10 border border-amber-500/20 text-amber-500 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+          </div>
+          <svg class="w-5 h-5 text-border group-hover:text-brand transition transform group-hover:translate-x-1 group-hover:-translate-y-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </div>
+        <div class="tag mb-4 inline-block text-amber-500 border-amber-500/30">RESEARCH</div>
+        <h3 class="text-2xl font-bold mb-2 group-hover:text-brand transition">DeepRotor 学术版</h3>
+        <p class="text-textDim text-sm font-sans mb-6">不仅是翻译，更是深度文献阅读与知识图谱构建。开箱即用，免配置。</p>
+        <div class="font-mono text-xs flex justify-between items-end border-t border-border pt-4">
+          <span class="text-textDim">单篇成本: ¥35</span>
+          <span class="text-brand font-bold text-base">¥7</span>
+        </div>
+      </a>
+
+      <!-- PRODUCT: CLAUDE CLI (Col: 1-4, Row: 3) -->
+      <a href="#" class="panel col-span-12 lg:col-span-4 p-8 group cursor-pointer block">
+        <div class="flex justify-between items-start mb-12">
+          <div class="w-12 h-12 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+          </div>
+          <svg class="w-5 h-5 text-border group-hover:text-brand transition transform group-hover:translate-x-1 group-hover:-translate-y-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </div>
+        <div class="tag mb-4 inline-block">CLI_TOOL</div>
+        <h3 class="text-2xl font-bold mb-2 group-hover:text-brand transition">Claude Code</h3>
+        <p class="text-textDim text-sm font-sans mb-6">官方的丝滑终端体验，我们的底层路由引擎。告别账单焦虑。</p>
+      </a>
+
+      <!-- ENTERPRISE / STATS PANEL (Col: 5-12, Row: 3) -->
+      <div class="panel col-span-12 lg:col-span-8 p-0 flex flex-col md:flex-row overflow-hidden">
+        <div class="p-10 flex-1 flex flex-col justify-center">
+          <div class="tag mb-4 inline-block w-fit">ORGANIZATIONS</div>
+          <h3 class="text-3xl font-bold mb-4">企业级确定性</h3>
+          <p class="text-textDim text-sm font-sans mb-8">
+            为 10 人到 500 人的研发团队提供统一网关。支持私有化部署、用量审计、SSO 对接。让 AI 资产完全自主可控。
+          </p>
+          <a href="#" class="font-mono text-sm text-brand flex items-center gap-2 hover:text-white transition">
+            [ REQUEST_DEMO ] ->
+          </a>
+        </div>
+        <div class="w-full md:w-64 bg-[#0A0A0A] border-l border-border p-6 flex flex-row md:flex-col gap-6 justify-center">
+          <div>
+            <div class="font-mono text-textDim text-[10px] mb-1">UPTIME</div>
+            <div class="text-3xl font-bold text-white">99.99%</div>
+          </div>
+          <div>
+            <div class="font-mono text-textDim text-[10px] mb-1">AVG_LATENCY</div>
+            <div class="text-3xl font-bold text-white">12ms</div>
+          </div>
+          <div>
+            <div class="font-mono text-textDim text-[10px] mb-1">MODELS_SUPPORTED</div>
+            <div class="text-3xl font-bold text-white">14+</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer class="max-w-7xl mx-auto w-full mt-16 border-t border-border pt-8 flex flex-col md:flex-row justify-between items-center gap-4 font-mono text-xs text-textDim">
+    <div>SYSTEM: ZHUMENG_CORE v2.0</div>
+    <div class="flex gap-4">
+      <a href="#" class="hover:text-brand transition">/DOCS</a>
+      <a href="#" class="hover:text-brand transition">/API</a>
+      <a href="#" class="hover:text-brand transition">/TERMS</a>
+    </div>
+    <div>© 2026 INITIATED.</div>
+  </footer>
+
+</body>
+</html>
