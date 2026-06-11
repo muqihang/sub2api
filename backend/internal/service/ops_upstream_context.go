@@ -32,6 +32,10 @@ const (
 	// ops_error_logger 中间件检查此 key，为 true 时跳过错误记录。
 	OpsSkipPassthroughKey = "ops_skip_passthrough"
 
+	// ResponseCommittedKey marks complete client-visible error responses already
+	// written by service helpers, so handlers do not append a fallback SSE frame.
+	ResponseCommittedKey = "response_committed"
+
 	// Client-side configuration denials should remain visible in ops_error_logs,
 	// but should be excluded from SLA/error-rate calculations.
 	OpsClientBusinessLimitedKey                          = "ops_client_business_limited"
@@ -48,6 +52,24 @@ func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
 	// source compatibility only; do not persist raw prompts/bodies in ops logs.
 	_ = c
 	_ = body
+}
+
+func MarkResponseCommitted(c *gin.Context) {
+	if c != nil {
+		c.Set(ResponseCommittedKey, true)
+	}
+}
+
+func IsResponseCommitted(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	v, ok := c.Get(ResponseCommittedKey)
+	if !ok {
+		return false
+	}
+	marked, _ := v.(bool)
+	return marked
 }
 
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {

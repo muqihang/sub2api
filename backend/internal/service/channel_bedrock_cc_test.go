@@ -60,7 +60,25 @@ func TestChannel_IsBedrockCCCompatEnabled_OldMapFormat(t *testing.T) {
 			featureKeyBedrockCCCompat: map[string]any{"bedrock": true},
 		},
 	}
-	require.False(t, c.IsBedrockCCCompatEnabled("bedrock"))
+	require.True(t, c.IsBedrockCCCompatEnabled("bedrock"))
+}
+
+func TestChannel_IsBedrockCCCompatEnabled_OldMapStringBoolFormat(t *testing.T) {
+	c := &Channel{
+		FeaturesConfig: map[string]any{
+			featureKeyBedrockCCCompat: map[string]bool{"bedrock": true},
+		},
+	}
+	require.True(t, c.IsBedrockCCCompatEnabled("bedrock"))
+}
+
+func TestChannel_IsBedrockCCCompatEnabled_OldMapFormatAnyPlatform(t *testing.T) {
+	c := &Channel{
+		FeaturesConfig: map[string]any{
+			featureKeyBedrockCCCompat: map[string]any{"anthropic": true},
+		},
+	}
+	require.True(t, c.IsBedrockCCCompatEnabled("bedrock"))
 }
 
 func TestChannel_IsBedrockCCCompatEnabled_MissingKey(t *testing.T) {

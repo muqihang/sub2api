@@ -4336,6 +4336,7 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		contentType = "application/json"
 	}
 	c.Data(resp.StatusCode, contentType, body)
+	MarkResponseCommitted(c)
 
 	if upstreamMsg == "" {
 		return fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -5104,6 +5105,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 
 	if isPreviousResponseIDUnsupportedResponse(resp.StatusCode, body) {
 		c.Data(resp.StatusCode, "application/json", body)
+		MarkResponseCommitted(c)
 		if upstreamMsg == "" {
 			return nil, fmt.Errorf("upstream error: %d previous_response_id unsupported", resp.StatusCode)
 		}
@@ -5136,6 +5138,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 				"message": errMsg,
 			},
 		})
+		MarkResponseCommitted(c)
 		if upstreamMsg == "" {
 			upstreamMsg = errMsg
 		}
@@ -5233,6 +5236,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			"message": errMsg,
 		},
 	})
+	MarkResponseCommitted(c)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)

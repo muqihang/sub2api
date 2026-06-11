@@ -471,3 +471,11 @@ func TestGetModelDisplayName_Opus48(t *testing.T) {
 		t.Fatalf("GetModelDisplayName(claude-opus-4-8) = %q", got)
 	}
 }
+
+func TestGetModelDisplayName_Fable5(t *testing.T) {
+	t.Parallel()
+
+	if got := GetModelDisplayName("claude-fable-5"); got != "Claude Fable 5" {
+		t.Fatalf("GetModelDisplayName(claude-fable-5) = %q", got)
+	}
+}

@@ -2475,14 +2475,16 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				"platform", platform,
 				"use_mixed", useMixed,
 				"count", len(accounts))
-			for _, acc := range accounts {
-				slog.Debug("account_scheduling_account_detail",
-					"account_id", acc.ID,
-					"name", acc.Name,
-					"platform", acc.Platform,
-					"type", acc.Type,
-					"status", acc.Status,
-					"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				for _, acc := range accounts {
+					slog.Debug("account_scheduling_account_detail",
+						"account_id", acc.ID,
+						"name", acc.Name,
+						"platform", acc.Platform,
+						"type", acc.Type,
+						"status", acc.Status,
+						"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+				}
 			}
 		}
 		return accounts, useMixed, err
@@ -2518,14 +2520,16 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 			"platform", platform,
 			"raw_count", len(accounts),
 			"filtered_count", len(filtered))
-		for _, acc := range filtered {
-			slog.Debug("account_scheduling_account_detail",
-				"account_id", acc.ID,
-				"name", acc.Name,
-				"platform", acc.Platform,
-				"type", acc.Type,
-				"status", acc.Status,
-				"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+		if slog.Default().Enabled(ctx, slog.LevelDebug) {
+			for _, acc := range filtered {
+				slog.Debug("account_scheduling_account_detail",
+					"account_id", acc.ID,
+					"name", acc.Name,
+					"platform", acc.Platform,
+					"type", acc.Type,
+					"status", acc.Status,
+					"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+			}
 		}
 		return filtered, useMixed, nil
 	}
@@ -2551,14 +2555,16 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 		"group_id", derefGroupID(groupID),
 		"platform", platform,
 		"count", len(accounts))
-	for _, acc := range accounts {
-		slog.Debug("account_scheduling_account_detail",
-			"account_id", acc.ID,
-			"name", acc.Name,
-			"platform", acc.Platform,
-			"type", acc.Type,
-			"status", acc.Status,
-			"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		for _, acc := range accounts {
+			slog.Debug("account_scheduling_account_detail",
+				"account_id", acc.ID,
+				"name", acc.Name,
+				"platform", acc.Platform,
+				"type", acc.Type,
+				"status", acc.Status,
+				"tls_fingerprint", acc.IsTLSFingerprintEnabled())
+		}
 	}
 	return accounts, useMixed, nil
 }
@@ -7979,6 +7985,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 				"message": errMsg,
 			},
 		})
+		MarkResponseCommitted(c)
 
 		summary := upstreamMsg
 		if summary == "" {
@@ -8010,12 +8017,14 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 				Message:            upstreamMsg,
 			})
 			c.Data(http.StatusBadRequest, "application/json", body)
+			MarkResponseCommitted(c)
 			if upstreamMsg == "" {
 				upstreamMsg = "thinking signature rejected"
 			}
 			return nil, &SessionCorruptThinkingSignatureError{StatusCode: resp.StatusCode, Message: upstreamMsg}
 		}
 		c.Data(http.StatusBadRequest, "application/json", body)
+		MarkResponseCommitted(c)
 		summary := upstreamMsg
 		if summary == "" {
 			summary = truncateForLog(body, 512)
@@ -8058,6 +8067,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			"message": errMsg,
 		},
 	})
+	MarkResponseCommitted(c)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -8168,6 +8178,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 				"message": errMsg,
 			},
 		})
+		MarkResponseCommitted(c)
 
 		summary := upstreamMsg
 		if summary == "" {
@@ -8187,6 +8198,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 			"message": "Upstream request failed after retries",
 		},
 	})
+	MarkResponseCommitted(c)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d (retries exhausted)", resp.StatusCode)

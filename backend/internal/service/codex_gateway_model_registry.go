@@ -775,6 +775,14 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		}
 	}
 
+	anthropicFableModel := func(priority int) CodexGatewayModel {
+		model := anthropicModel("claude-fable-5", "Claude Fable 5", "anthropic_direct", "claude-fable-5", "high", []string{"low", "high", "xhigh"}, priority)
+		model.ContextWindow = 1_048_576
+		model.AutoCompactTokenLimit = 900_000
+		model.MaxOutputTokens = 128_000
+		return model
+	}
+
 	return []CodexGatewayModel{
 		openAIModel("gpt-5.5", "GPT-5.5", 100),
 		openAIModel("gpt-5.4", "GPT-5.4", 90),
@@ -782,6 +790,7 @@ func defaultCodexGatewayModels() []CodexGatewayModel {
 		openAIModel("gpt-5.3-codex", "GPT-5.3 Codex", 70),
 		deepSeekModel("deepseek-v4-pro", "DeepSeek V4 Pro", 60),
 		deepSeekModel("deepseek-v4-flash", "DeepSeek V4 Flash", 50),
+		anthropicFableModel(49),
 		anthropicModel("claude-opus-4-8", "Claude Opus 4.8", "anthropic_direct", "claude-opus-4-8", "high", []string{"low", "high", "xhigh"}, 49),
 		anthropicModel("claude-opus-4-7", "Claude Opus 4.7", "anthropic_direct", "claude-opus-4-7", "high", []string{"low", "high", "xhigh"}, 48),
 		anthropicModel("claude-opus-4-7-thinking", "Claude Opus 4.7", "kiro_claude_thinking", "claude-opus-4-7-thinking", "high", []string{"low", "high", "xhigh"}, 47),

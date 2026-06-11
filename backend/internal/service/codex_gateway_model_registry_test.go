@@ -174,6 +174,39 @@ func TestCodexGatewayModelRegistry_DefaultCatalogOnlyExposesUnsuffixedClaudeMode
 	}, claudeSlugs)
 	_, ok := reg.Resolve("claude-opus-4-7-thinking")
 	require.False(t, ok)
+	_, ok = reg.Resolve("claude-fable-5")
+	require.False(t, ok, "Fable is registered but not in the default enabled model list")
+
+	_, ok = defaultCodexGatewayModelBySlug("claude-fable-5")
+	require.True(t, ok, "Fable should be available for explicit admin enablement")
+}
+
+func TestCodexGatewayModelRegistry_Fable5CanBeExplicitlyEnabledWithoutThinkingAlias(t *testing.T) {
+	reg := NewCodexGatewayModelRegistry(
+		config.GatewayCodexConfig{
+			EnabledModels: []string{"claude-fable-5"},
+			ProviderGroups: config.GatewayCodexProviderGroupsConfig{
+				Anthropic: 3003,
+			},
+		},
+	)
+
+	models := reg.Models()
+	require.Equal(t, []string{"claude-fable-5"}, codexGatewayModelSlugs(models))
+	fable := models[0]
+	require.Equal(t, "Claude Fable 5", fable.DisplayName)
+	require.Equal(t, "anthropic", fable.Provider)
+	require.Equal(t, "anthropic_direct", fable.ProviderVariant)
+	require.Equal(t, "claude-fable-5", fable.UpstreamModel)
+	require.Equal(t, "claude-fable-5", fable.UpstreamBaseModel)
+	require.Equal(t, "claude-fable-5", fable.UpstreamThinkingModel)
+	require.Equal(t, 1_048_576, fable.ContextWindow)
+	require.Equal(t, 900_000, fable.AutoCompactTokenLimit)
+	require.Equal(t, 128_000, fable.MaxOutputTokens)
+	require.Equal(t, []string{"low", "high", "xhigh"}, fable.SupportedReasoningLevels)
+
+	_, ok := reg.Resolve("claude-fable-5-thinking")
+	require.False(t, ok)
 }
 
 func TestCodexGatewayModelRegistry_ExportCatalogJSON(t *testing.T) {

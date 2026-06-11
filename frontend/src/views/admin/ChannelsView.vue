@@ -1142,15 +1142,11 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
     delete featuresConfig.codex_image_generation_bridge
   }
 
-  const bedrockCCCompat: Record<string, boolean> = {}
-  for (const section of form.platforms) {
-    if (!section.enabled) continue
-    if (section.platform === 'anthropic') {
-      bedrockCCCompat[section.platform] = !!section.bedrock_cc_compat
-    }
-  }
-  if (Object.keys(bedrockCCCompat).length > 0) {
-    featuresConfig.bedrock_cc_compat = bedrockCCCompat
+  const bedrockCCCompatEnabled = form.platforms.some(section =>
+    section.enabled && section.platform === 'anthropic' && !!section.bedrock_cc_compat
+  )
+  if (bedrockCCCompatEnabled) {
+    featuresConfig.bedrock_cc_compat = true
   } else {
     delete featuresConfig.bedrock_cc_compat
   }
@@ -1205,8 +1201,11 @@ function apiToForm(channel: Channel): PlatformSection[] {
     const webSearchEnabled = wsEmulation?.[platform] === true
     const codexImageGenerationBridge = fc?.codex_image_generation_bridge as Record<string, boolean> | undefined
     const codexImageGenerationBridgeEnabled = codexImageGenerationBridge?.[platform] === true
-    const bedrockCCCompat = fc?.bedrock_cc_compat as Record<string, boolean> | undefined
-    const bedrockCCCompatEnabled = bedrockCCCompat?.[platform] === true
+    const bedrockCCCompatRaw = fc?.bedrock_cc_compat
+    const bedrockCCCompatEnabled = bedrockCCCompatRaw === true ||
+      (typeof bedrockCCCompatRaw === 'object' &&
+        bedrockCCCompatRaw !== null &&
+        Object.values(bedrockCCCompatRaw as Record<string, unknown>).some(value => value === true))
 
     sections.push({
       platform,

@@ -535,4 +535,5 @@ func writeGatewayCCError(c *gin.Context, statusCode int, errType, message string
 			"message": message,
 		},
 	})
+	MarkResponseCommitted(c)
 }

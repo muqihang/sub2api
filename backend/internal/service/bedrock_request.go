@@ -193,6 +193,8 @@ func PrepareBedrockRequestBody(body []byte, modelID string, betaHeader string) (
 
 // PrepareBedrockRequestBodyWithTokens prepares a Bedrock request using pre-resolved beta tokens.
 // ccCompat 启用 CC 兼容模式时额外处理 thinking 类型转换和 tool_use.id 清理。
+// Claude Fable 5 的 Bedrock thinking shape 与 CC 模式相同：无论是否启用 CC 兼容，
+// 都必须将 enabled/budget_tokens 规整为 adaptive，避免普通 Bedrock 转发失败。
 func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens []string, ccCompat bool) ([]byte, error) {
 	var err error
 
@@ -215,6 +217,11 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 			return nil, fmt.Errorf("inject anthropic_beta: %w", err)
 		}
 		logger.LegacyPrintf("service.gateway", "[Bedrock] Injected beta tokens: %v (model=%s ccCompat=%v)", betaTokens, modelID, ccCompat)
+	} else if gjson.GetBytes(body, "anthropic_beta").Exists() {
+		body, err = sjson.DeleteBytes(body, "anthropic_beta")
+		if err != nil {
+			return nil, fmt.Errorf("remove anthropic_beta field: %w", err)
+		}
 	}
 
 	// 移除 model 字段（Bedrock 通过 URL 指定模型）
@@ -227,6 +234,16 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 	body, err = sjson.DeleteBytes(body, "stream")
 	if err != nil {
 		return nil, fmt.Errorf("remove stream field: %w", err)
+	}
+
+	// 移除 Bedrock Invoke 不支持的 OpenAI/Anthropic 兼容层元字段
+	body, err = sjson.DeleteBytes(body, "provider")
+	if err != nil {
+		return nil, fmt.Errorf("remove provider field: %w", err)
+	}
+	body, err = sjson.DeleteBytes(body, "metadata")
+	if err != nil {
+		return nil, fmt.Errorf("remove metadata field: %w", err)
 	}
 
 	// 转换 output_format（Bedrock Invoke 不支持此字段，但可将 schema 内联到最后一条 user message）
@@ -247,9 +264,12 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 	// 清理 cache_control 中 Bedrock 不支持的字段
 	body = sanitizeBedrockCacheControl(body, modelID)
 
-	// CC 兼容模式：修复 CC 发送的 Bedrock 不兼容字段
-	if ccCompat {
+	// CC 兼容模式：修复 CC 发送的 Bedrock 不兼容字段。
+	// Fable 5 的 adaptive thinking 是模型自身限制，必须覆盖普通 Bedrock 路径。
+	if ccCompat || isBedrockFable5(modelID) {
 		body = sanitizeBedrockThinking(body, modelID)
+	}
+	if ccCompat {
 		body = sanitizeBedrockToolUseIDs(body)
 	}
 
@@ -348,6 +368,9 @@ var claudeVersionRe = regexp.MustCompile(`claude-(?:haiku|sonnet|opus)-(\d+)[-.]
 // Claude 4.5+ 支持 cache_control 中的 ttl 字段（"5m" 和 "1h"）
 func isBedrockClaude45OrNewer(modelID string) bool {
 	lower := strings.ToLower(modelID)
+	if isBedrockFable5(lower) {
+		return true
+	}
 	matches := claudeVersionRe.FindStringSubmatch(lower)
 	if matches == nil {
 		return false
@@ -355,6 +378,10 @@ func isBedrockClaude45OrNewer(modelID string) bool {
 	major, _ := strconv.Atoi(matches[1])
 	minor, _ := strconv.Atoi(matches[2])
 	return major > 4 || (major == 4 && minor >= 5)
+}
+
+func isBedrockFable5(modelID string) bool {
+	return strings.Contains(strings.ToLower(modelID), "claude-fable-5")
 }
 
 // sanitizeBedrockCacheControl 清理 system 和 messages 中 cache_control 里
@@ -465,11 +492,12 @@ func parseAnthropicBetaHeader(header string) []string {
 // 参考: AWS Bedrock 官方文档 + litellm anthropic_beta_headers_config.json
 // 更新策略: 当 AWS Bedrock 新增支持的 beta token 时需同步更新此白名单
 var bedrockSupportedBetaTokens = map[string]bool{
-	"computer-use-2025-01-24": true,
-	"computer-use-2025-11-24": true,
-	"context-1m-2025-08-07":   true,
-	// "context-management-2025-06-27": false, // 无官方文档支持
-	"compact-2026-01-12": true, // 官方支持，仅 InvokeModel API（Opus 4.6+）
+	"computer-use-2025-01-24":                true,
+	"computer-use-2025-11-24":                true,
+	"context-1m-2025-08-07":                  true,
+	"context-management-2025-06-27":          true,
+	"compact-2026-01-12":                     true, // 官方支持，仅 InvokeModel API（Opus 4.6+）
+	"fine-grained-tool-streaming-2025-05-14": true,
 	// "interleaved-thinking-2025-05-14": false, // 无官方文档支持
 	"tool-search-tool-2025-10-19": true,
 	"tool-examples-2025-10-29":    true,
@@ -674,7 +702,7 @@ func sanitizeBedrockThinking(body []byte, modelID string) []byte {
 		return body
 	}
 
-	if isBedrockOpus47OrNewer(modelID) {
+	if isBedrockOpus47OrNewer(modelID) || isBedrockFable5(modelID) {
 		if thinkingType == "enabled" {
 			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
 			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
