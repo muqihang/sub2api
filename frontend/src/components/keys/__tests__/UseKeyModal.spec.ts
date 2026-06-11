@@ -215,6 +215,38 @@ describe('UseKeyModal', () => {
     expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
   })
 
+  it('renders Claude Fable 5 adaptive thinking in Antigravity OpenCode config', async () => {
+    listCodexManagedDevices.mockResolvedValue([])
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKeyId: 42,
+        apiKey: 'sk-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'antigravity-claude'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const codeBlock = wrapper.find('pre code')
+    expect(codeBlock.exists()).toBe(true)
+    const config = codeBlock.text()
+    const parsed = JSON.parse(config)
+    const fable = parsed.provider['antigravity-claude'].models['claude-fable-5']
+    expect(fable.limit.context).toBe(1048576)
+    expect(fable.limit.output).toBe(128000)
+    expect(fable.options.thinking).toEqual({ type: 'adaptive' })
+  })
+
   it('shows augment-only guidance instead of generic client snippets', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {

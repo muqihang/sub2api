@@ -266,6 +266,39 @@ func TestBuildCodexGatewayAnthropicRequest_DirectClaudeMapsHighAndXHighToSeparat
 	}
 }
 
+func TestBuildCodexGatewayAnthropicRequest_Fable5UsesSameAdaptiveUpstream(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-fable-5",
+		"input":[{"type":"message","role":"user","content":"hello"}],
+		"reasoning":{"effort":"xhigh"}
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{
+			Slug:                     "claude-fable-5",
+			Provider:                 "anthropic",
+			ProviderVariant:          "anthropic_direct",
+			UpstreamModel:            "claude-fable-5",
+			UpstreamBaseModel:        "claude-fable-5",
+			UpstreamThinkingModel:    "claude-fable-5",
+			DefaultReasoningLevel:    "high",
+			SupportedReasoningLevels: []string{"low", "high", "xhigh"},
+		},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "claude-fable-5", gjson.GetBytes(raw, "model").String())
+	require.Equal(t, "adaptive", gjson.GetBytes(raw, "thinking.type").String())
+	require.Equal(t, "max", gjson.GetBytes(raw, "output_config.effort").String())
+}
+
 func TestBuildCodexGatewayAnthropicRequest_MapsDeferredToolFamilyMatrixFromToolSearchOutput(t *testing.T) {
 	deferredTools := []any{
 		map[string]any{

@@ -258,4 +258,9 @@ func TestBuildBedrockURL(t *testing.T) {
 		url := BuildBedrockURL("us-east-1", "us.anthropic.claude-sonnet-4-6", true)
 		assert.Equal(t, "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-sonnet-4-6/invoke-with-response-stream", url)
 	})
+
+	t.Run("fable model ID without regional prefix", func(t *testing.T) {
+		url := BuildBedrockURL("eu-west-1", "anthropic.claude-fable-5", false)
+		assert.Equal(t, "https://bedrock-runtime.eu-west-1.amazonaws.com/model/anthropic.claude-fable-5/invoke", url)
+	})
 }

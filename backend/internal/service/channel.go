@@ -254,9 +254,25 @@ func (c *Channel) IsBedrockCCCompatEnabled(platform string) bool {
 	if c == nil || c.FeaturesConfig == nil {
 		return false
 	}
-	// 直接检查 bedrock_cc_compat 开关，不再检查 platform 子字段
-	enabled, ok := c.FeaturesConfig[featureKeyBedrockCCCompat].(bool)
-	return ok && enabled
+	switch v := c.FeaturesConfig[featureKeyBedrockCCCompat].(type) {
+	case bool:
+		return v
+	case map[string]any:
+		// Older UI builds wrote bedrock_cc_compat as a platform map. The flag is
+		// now channel-scoped, so preserve any explicitly-enabled legacy value.
+		for _, enabled := range v {
+			if b, ok := enabled.(bool); ok && b {
+				return true
+			}
+		}
+	case map[string]bool:
+		for _, enabled := range v {
+			if enabled {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // deepCopyFeaturesConfig creates a deep copy of FeaturesConfig to prevent cache pollution.

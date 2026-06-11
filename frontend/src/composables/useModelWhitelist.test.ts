@@ -19,3 +19,19 @@ describe('useModelWhitelist Opus 4.8 support', () => {
     })
   })
 })
+
+describe('useModelWhitelist Fable 5 support', () => {
+  it('exposes claude-fable-5 for Anthropic and Antigravity as direct pass-through', () => {
+    expect(claudeModels).toContain('claude-fable-5')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
+
+    const anthropicPreset = getPresetMappingsByPlatform('anthropic').find((m) => m.from === 'claude-fable-5')
+    expect(anthropicPreset?.to).toBe('claude-fable-5')
+
+    const antigravityPreset = getPresetMappingsByPlatform('antigravity').find((m) => m.from === 'claude-fable-5')
+    expect(antigravityPreset?.to).toBe('claude-fable-5')
+
+    const bedrockPreset = getPresetMappingsByPlatform('bedrock').find((m) => m.from === 'claude-fable-5')
+    expect(bedrockPreset?.to).toBe('anthropic.claude-fable-5')
+  })
+})

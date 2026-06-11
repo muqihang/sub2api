@@ -457,6 +457,28 @@ func TestAccountGetModelMapping_AntigravityRespectsWildcardOverride(t *testing.T
 	}
 }
 
+func TestAccountGetModelMapping_AntigravityAutoFillsFablePassthrough(t *testing.T) {
+	account := &Account{
+		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-6": "claude-sonnet-4-6",
+			},
+		},
+	}
+
+	mapping := account.GetModelMapping()
+	if mapping["claude-fable-5"] != "claude-fable-5" {
+		t.Fatalf("expected claude-fable-5 passthrough to be auto-filled, got: %q", mapping["claude-fable-5"])
+	}
+	if !account.IsModelSupported("claude-fable-5") {
+		t.Fatal("expected existing Antigravity mapping account to support claude-fable-5")
+	}
+	if mapped := account.GetMappedModel("claude-fable-5"); mapped != "claude-fable-5" {
+		t.Fatalf("expected claude-fable-5 passthrough, got: %q", mapped)
+	}
+}
+
 func TestAccountGetModelMapping_CacheInvalidatesOnCredentialsReplace(t *testing.T) {
 	account := &Account{
 		Credentials: map[string]any{

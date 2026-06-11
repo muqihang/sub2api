@@ -214,6 +214,7 @@ func modelFamilyBucket(model string) string {
 func modelNameBucket(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	allow := map[string]bool{
+		"claude-fable-5":           true,
 		"claude-sonnet-4-6":        true,
 		"claude-opus-4-6":          true,
 		"claude-opus-4-6-thinking": true,

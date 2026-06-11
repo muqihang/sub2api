@@ -54,6 +54,12 @@ func TestSessionBudgetLedger_RichClaudeCodeRequestObserveOnlySafeSummary(t *test
 	assertJSONDoesNotContain(t, entry, "do not store me", "secret output", "123e4567-e89b-12d3-a456-426614174000", "person@example.test")
 }
 
+func TestSessionBudgetLedger_Fable5ModelBucket(t *testing.T) {
+	if got := modelNameBucket("claude-fable-5"); got != "claude-fable-5" {
+		t.Fatalf("modelNameBucket(claude-fable-5) = %q", got)
+	}
+}
+
 func TestSessionBudgetLedger_RejectsRawScopedRefsAndSensitiveText(t *testing.T) {
 	_, _, err := BuildSessionBudgetLedgerEntry(SessionBudgetLedgerInput{
 		SessionRefOverride: "123e4567-e89b-12d3-a456-426614174000",
