@@ -1,0 +1,110 @@
+# Caddy 反代 - Cloudflare Full(strict) 端到端 HTTPS
+# 三个域名 + 大陆拦截策略（基于 CF 透传的 CF-IPCountry header）
+#
+# 策略：
+#   www.5566676.xyz / 5566676.xyz  → 拦截 CN（裸网络访问），翻墙后可访问
+#   api.5566676.xyz                → 不拦截 CN，但只放行 AI 网关路径
+
+{
+	auto_https disable_redirects
+}
+
+# --- 公共反代片段（用 snippet 减少重复）-----------------------------------
+(reverse_to_sub2api) {
+	reverse_proxy sub2api:8080 {
+		header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		header_up CF-Connecting-IP {http.request.header.CF-Connecting-IP}
+		header_up CF-IPCountry {http.request.header.CF-IPCountry}
+
+		transport http {
+			keepalive 120s
+			keepalive_idle_conns 256
+			read_buffer 16KB
+			write_buffer 16KB
+		}
+
+		health_uri /health
+		health_interval 30s
+		health_timeout 10s
+		health_status 200
+	}
+}
+
+(common_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# 调试：把 CF 透传的国家代码回写出来，部署后立刻可验证（验证完可删）
+		X-Detected-Country "{http.request.header.CF-IPCountry}"
+		-Server
+	}
+}
+
+(common_encoding) {
+	encode zstd gzip
+	request_body {
+		max_size 256MB
+	}
+}
+
+# --- 后台域名：拦截大陆 IP ------------------------------------------------
+www.5566676.xyz, 5566676.xyz {
+	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin.key
+
+	# 静态资源缓存
+	@static {
+		path /assets/*
+		path /logo.png
+		path /favicon.ico
+	}
+	header @static Cache-Control "public, max-age=31536000, immutable"
+
+	# 关键拦截规则：CF 标识 IP 来自 CN → 451 (Unavailable for legal reasons)
+	@cn_block {
+		header CF-IPCountry CN
+	}
+	respond @cn_block 451
+
+	import common_headers
+	import common_encoding
+	import reverse_to_sub2api
+
+	handle_errors {
+		respond "{err.status_code} {err.status_text}"
+	}
+}
+
+# --- API 子域名：产品定位是"AI 客户端调用"，浏览器看不到工作台 -------------
+# 黑名单设计：拦掉所有工作台入口（前端 + 后台 API），其他全放行。
+# 未来新增任何 gateway 路径都不需要改配置（只要不与黑名单冲突）。
+api.5566676.xyz {
+	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin.key
+
+	# 工作台入口三件套：前端首页 + 前端资源 + 后台管理 API
+	@workbench_paths {
+		path /
+		path /assets/*
+		path /api/v1/*
+	}
+	respond @workbench_paths 404
+
+	# 拦掉所有期望 HTML 的浏览器请求（AI 客户端用 Accept: */* 或 application/json，不带 text/html）
+	# 这让 api.5566676.xyz 的产品定位 100% 清晰：只服务程序化 API 调用
+	@browser_html {
+		header Accept *text/html*
+	}
+	respond @browser_html 404
+
+	import common_headers
+	import common_encoding
+	import reverse_to_sub2api
+
+	handle_errors {
+		respond "{err.status_code} {err.status_text}"
+	}
+}
+
+# --- HTTP:80 → HTTPS:443 永久重定向 ----------------------------------------
+:80 {
+	redir https://{host}{uri} permanent
+}
