@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const codexGatewayAnthropicDefaultCacheTTL = "1h"
+const (
+	codexGatewayAnthropicDefaultCacheTTL      = "1h"
+	codexGatewayAnthropicMessageCacheMinChars = 12000
+)
 
 func BuildCodexGatewayAnthropicRequest(model CodexGatewayModel, req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayAnthropicRequestContext, cfg CodexGatewayAnthropicRequestConfig) (CodexGatewayPreparedAnthropicRequest, error) {
 	if strings.TrimSpace(model.Provider) != "" && !strings.EqualFold(strings.TrimSpace(model.Provider), "anthropic") {
@@ -188,9 +191,7 @@ func codexGatewayAnthropicApplyMessageCacheBreakpoints(body map[string]any, mess
 	if len(targets) == 0 {
 		return
 	}
-	if len(targets) > 1 {
-		codexGatewayAnthropicReserveMessageCacheSlots(body, len(targets))
-	}
+	codexGatewayAnthropicReserveMessageCacheSlots(body, len(targets))
 	available := 4 - codexGatewayAnthropicNestedCacheControlCount(body)
 	if available <= 0 {
 		delete(body, "cache_control")
@@ -303,15 +304,61 @@ func codexGatewayAnthropicCacheControlCount(value any) int {
 
 func codexGatewayAnthropicMessageCacheBreakpointTargets(messages []any) []codexGatewayAnthropicMessageCacheTarget {
 	closed := codexGatewayAnthropicClosedCacheableMessageBlocks(messages)
-	if len(closed) <= 20 {
+	if len(closed) == 0 {
+		return nil
+	}
+	// Some Anthropic-compatible proxies do not reliably advance top-level
+	// automatic caching for large merged message histories, so fall back to an
+	// explicit message breakpoint once the reusable message prefix is sizable.
+	if len(closed) <= 20 && !codexGatewayAnthropicMessagesNeedMessageCacheBreakpoint(messages) {
 		return nil
 	}
 	last := closed[len(closed)-1]
 	targets := []codexGatewayAnthropicMessageCacheTarget{last}
-	if earlier, ok := codexGatewayAnthropicNearestClosedTargetAtOrBeforeOrdinal(closed, last.ordinal-20); ok {
-		targets = append(targets, earlier)
+	if len(closed) > 20 {
+		if earlier, ok := codexGatewayAnthropicNearestClosedTargetAtOrBeforeOrdinal(closed, last.ordinal-20); ok {
+			targets = append(targets, earlier)
+		}
 	}
 	return uniqueCodexGatewayAnthropicMessageCacheTargets(targets)
+}
+
+func codexGatewayAnthropicMessagesNeedMessageCacheBreakpoint(messages []any) bool {
+	total := 0
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := msg["content"].([]any)
+		for _, rawPart := range content {
+			part, _ := rawPart.(map[string]any)
+			if !codexGatewayAnthropicContentBlockIsCacheable(part) {
+				continue
+			}
+			total += codexGatewayAnthropicCacheableContentBlockChars(part)
+			if total >= codexGatewayAnthropicMessageCacheMinChars {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexGatewayAnthropicCacheableContentBlockChars(part map[string]any) int {
+	switch strings.TrimSpace(firstCodexGatewayToolString(part["type"])) {
+	case "text":
+		return len(strings.TrimSpace(firstCodexGatewayToolString(part["text"])))
+	case "tool_result":
+		if text := strings.TrimSpace(firstCodexGatewayToolString(part["content"])); text != "" {
+			return len(text)
+		}
+	}
+	raw, err := json.Marshal(part)
+	if err != nil {
+		return 0
+	}
+	return len(raw)
 }
 
 func codexGatewayAnthropicNearestClosedTargetAtOrBeforeOrdinal(targets []codexGatewayAnthropicMessageCacheTarget, maxOrdinal int) (codexGatewayAnthropicMessageCacheTarget, bool) {

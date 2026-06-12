@@ -147,6 +147,73 @@ func TestBuildCodexGatewayAnthropicRequest_DoesNotAddMessageBreakpointsForShortH
 	require.Equal(t, int64(3), countGJSONCacheControl(gjson.ParseBytes(raw)))
 }
 
+func TestBuildCodexGatewayAnthropicRequest_LongMergedMessageAddsMessageCacheBreakpoint(t *testing.T) {
+	largeToolResult := strings.Repeat("subagent replay cacheable text ", 700)
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"instructions":"You are Codex.",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"coordinate a subagent"}]},
+			{"type":"function_call","call_id":"call_1","name":"multi_agent_v1__spawn_agent","arguments":"{\"model\":\"gpt-5.5\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":` + strconv.Quote(largeToolResult) + `},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"summarize the result"}]}
+		],
+		"tools":[{"type":"function","name":"multi_agent_v1__spawn_agent","parameters":{"type":"object","properties":{"model":{"type":"string"}}}}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "cache_control").Exists(), "long merged histories should use explicit message cache breakpoints")
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "tools.0.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.2.content.1.cache_control.type").String())
+	require.LessOrEqual(t, countGJSONCacheControl(gjson.ParseBytes(raw)), int64(4))
+}
+
+func TestBuildCodexGatewayAnthropicRequest_LargeMergedTextHistoryAddsMessageCacheBreakpoint(t *testing.T) {
+	parts := []string{
+		`{"type":"input_text","text":"initial user objective"}`,
+		`{"type":"input_text","text":"` + strings.Repeat("cached transcript A ", 760) + `"}`,
+		`{"type":"input_text","text":"short stable bridge"}`,
+		`{"type":"input_text","text":"` + strings.Repeat("cached transcript B ", 1750) + `"}`,
+		`{"type":"input_text","text":"final follow up"}`,
+	}
+	req := CodexGatewayResponsesCreateRequest{
+		Model:        "claude-opus-4-8",
+		Instructions: json.RawMessage(`"You are Codex."`),
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[` + strings.Join(parts, ",") + `]}
+		]`),
+	}
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), gjson.GetBytes(raw, "messages.#").Int())
+	require.False(t, gjson.GetBytes(raw, "cache_control").Exists(), "large merged text histories should not rely on root automatic cache only")
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "system.0.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.0.content.4.cache_control.type").String())
+	require.False(t, gjson.GetBytes(raw, "messages.0.content.3.cache_control").Exists())
+	require.LessOrEqual(t, countGJSONCacheControl(gjson.ParseBytes(raw)), int64(4))
+}
+
 func TestBuildCodexGatewayAnthropicRequest_LongComputerUseHistoryReservesMessageCacheSlots(t *testing.T) {
 	var input strings.Builder
 	input.WriteString(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"use computer use for a long task"}]}`)
