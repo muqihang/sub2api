@@ -223,7 +223,7 @@ describe('UseKeyModal', () => {
         apiKeyId: 42,
         apiKey: 'sk-test',
         baseUrl: 'https://example.com/v1',
-        platform: 'antigravity-claude'
+        platform: 'antigravity'
       },
       global: {
         stubs: {
@@ -237,9 +237,16 @@ describe('UseKeyModal', () => {
       }
     })
 
-    const codeBlock = wrapper.find('pre code')
-    expect(codeBlock.exists()).toBe(true)
-    const config = codeBlock.text()
+    const opencodeTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.opencode')
+    )
+    expect(opencodeTab).toBeDefined()
+    await opencodeTab!.trigger('click')
+    await nextTick()
+
+    const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
+    const config = codeBlocks.find((content) => content.includes('"antigravity-claude"'))
+    expect(config).toBeDefined()
     const parsed = JSON.parse(config)
     const fable = parsed.provider['antigravity-claude'].models['claude-fable-5']
     expect(fable.limit.context).toBe(1048576)
