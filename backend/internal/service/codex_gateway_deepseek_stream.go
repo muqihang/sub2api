@@ -291,6 +291,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), defaultMaxLineSize)
 	dataLines := make([]string, 0, 4)
+	doneSeen := false
 
 	flush := func() error {
 		if len(dataLines) == 0 {
@@ -300,6 +301,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 		dataLines = dataLines[:0]
 		if payload == "" || payload == "[DONE]" {
 			if payload == "[DONE]" {
+				doneSeen = true
 				codexGatewayCaptureUpstreamStreamEvent(reqCtx.CaptureTrace, codexGatewayChatCompatProviderEventPrefix(firstNonBlankString(cfg.Provider, reqCtx.Provider))+".done", []byte(`{"done":true}`))
 			}
 			return nil
@@ -351,6 +353,7 @@ func executeCodexGatewayDeepSeekStreamWithHostedToolTurns(
 	if err := flush(); err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
+	state.inferAgnesTerminalFromUsageTrailer(doneSeen)
 
 	if calls := state.serverHandledHostedToolCalls(); len(calls) > 0 {
 		if err := state.writeReasoningBeforeClientAction(writer); err != nil {
@@ -459,6 +462,7 @@ type codexGatewayDeepSeekStreamState struct {
 	toolOrder         []int
 	usage             CodexGatewayProviderUsage
 	usageRaw          json.RawMessage
+	usageTrailerSeen  bool
 	finishReason      string
 	terminalSeen      bool
 	createdSent       bool
@@ -591,8 +595,28 @@ func (s *codexGatewayDeepSeekStreamState) consumePayload(payload []byte, writer 
 	}
 	if chunk.Usage != nil {
 		s.usageRaw, s.usage = codexGatewayDeepSeekUsageJSON(chunk.Usage)
+		if len(chunk.Choices) == 0 {
+			s.usageTrailerSeen = true
+		}
 	}
 	return nil
+}
+
+func (s *codexGatewayDeepSeekStreamState) inferAgnesTerminalFromUsageTrailer(doneSeen bool) {
+	if s == nil || s.terminalSeen || !doneSeen || !s.usageTrailerSeen {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(s.provider), string(CodexGatewayProviderAgnes)) {
+		return
+	}
+	if !s.messageAdded || strings.TrimSpace(s.messageText.String()) == "" {
+		return
+	}
+	if len(s.toolCalls) > 0 || strings.TrimSpace(s.blockedToolCallReason()) != "" {
+		return
+	}
+	s.finishReason = "stop"
+	s.terminalSeen = true
 }
 
 func (s *codexGatewayDeepSeekStreamState) writeReasoningAdded(writer *CodexGatewayResponseEventWriter) error {

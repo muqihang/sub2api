@@ -544,6 +544,158 @@ func TestCodexGatewayAgnesStreamUsesConfiguredUpstreamModelWhenProviderOmitModel
 	require.Contains(t, buf.String(), `"model":"agnes-2.0-flash"`)
 }
 
+func TestCodexGatewayAgnesStreamInfersCompletedFromUsageTrailerAndDone(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash", InputModalities: []string{"text", "image"}}
+	req := CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash", Input: json.RawMessage(`"hello"`)}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_agnes_usage_done","object":"chat.completion.chunk","model":"agnes-2.0-flash","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`,
+			"",
+			`data: {"id":"chatcmpl_agnes_usage_done","object":"chat.completion.chunk","model":"agnes-2.0-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"sk-agnes",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{Provider: "agnes"},
+		CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai", SupportsNativeImages: true},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "completed", result.ProviderResult.Response.Status)
+	require.Equal(t, 10, result.ProviderResult.Usage.InputTokens)
+	events := parseCodexGatewayOrderedEvents(t, buf.String())
+	require.Equal(t, "response.completed", events[len(events)-1].Event)
+	require.Equal(t, "completed", gjson.GetBytes(events[len(events)-1].Payload, "response.status").String())
+	require.Empty(t, gjson.GetBytes(events[len(events)-1].Payload, "response.incomplete_details.reason").String())
+}
+
+func TestCodexGatewayDeepSeekStreamDoesNotInferCompletedFromUsageTrailerAndDone(t *testing.T) {
+	model := CodexGatewayModel{Slug: "deepseek-v4-pro", Provider: "deepseek", UpstreamModel: "deepseek-v4-pro"}
+	req := CodexGatewayResponsesCreateRequest{Model: "deepseek-v4-pro", Input: json.RawMessage(`"hello"`)}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_deepseek_usage_done","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`,
+			"",
+			`data: {"id":"chatcmpl_deepseek_usage_done","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"sk-deepseek",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{},
+		CodexGatewayDeepSeekRequestConfig{},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "incomplete", result.ProviderResult.Response.Status)
+	events := parseCodexGatewayOrderedEvents(t, buf.String())
+	require.Equal(t, "response.incomplete", events[len(events)-1].Event)
+	require.Equal(t, codexGatewayDeepSeekStreamClosedReason, gjson.GetBytes(events[len(events)-1].Payload, "response.incomplete_details.reason").String())
+}
+
+func TestCodexGatewayAgnesStreamDoesNotInferCompletedWithoutDone(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash", InputModalities: []string{"text", "image"}}
+	req := CodexGatewayResponsesCreateRequest{Model: "agnes-2.0-flash", Input: json.RawMessage(`"hello"`)}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_agnes_usage_no_done","object":"chat.completion.chunk","model":"agnes-2.0-flash","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`,
+			"",
+			`data: {"id":"chatcmpl_agnes_usage_no_done","object":"chat.completion.chunk","model":"agnes-2.0-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"sk-agnes",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{Provider: "agnes"},
+		CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai", SupportsNativeImages: true},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "incomplete", result.ProviderResult.Response.Status)
+	events := parseCodexGatewayOrderedEvents(t, buf.String())
+	require.Equal(t, "response.incomplete", events[len(events)-1].Event)
+}
+
+func TestCodexGatewayAgnesStreamDoesNotInferCompletedForPartialToolCall(t *testing.T) {
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash", InputModalities: []string{"text", "image"}}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`"use tool"`),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
+		]`),
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_agnes_partial_tool","object":"chat.completion.chunk","model":"agnes-2.0-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_partial","type":"function","function":{"name":"get_weather","arguments":"{\"city\""}}]},"finish_reason":null}]}`,
+			"",
+			`data: {"id":"chatcmpl_agnes_partial_tool","object":"chat.completion.chunk","model":"agnes-2.0-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`,
+			"",
+			`data: [DONE]`,
+			"",
+		}, "\n"))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	result, err := ExecuteCodexGatewayDeepSeekStream(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		"sk-agnes",
+		model,
+		req,
+		nil,
+		CodexGatewayDeepSeekRequestContext{Provider: "agnes"},
+		CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai", SupportsNativeImages: true},
+		&buf,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "incomplete", result.ProviderResult.Response.Status)
+	events := parseCodexGatewayOrderedEvents(t, buf.String())
+	require.Equal(t, "response.incomplete", events[len(events)-1].Event)
+}
+
 func TestCodexGatewayDeepSeekStream(t *testing.T) {
 	t.Run("emits completed terminal event and swallows done", func(t *testing.T) {
 		model := CodexGatewayModel{
