@@ -84,6 +84,7 @@ func BuildCodexGatewayAnthropicRequest(model CodexGatewayModel, req CodexGateway
 			"content": []any{map[string]any{"type": "text", "text": ""}},
 		}}
 	}
+	codexGatewayAnthropicApplyMessageCacheBreakpoints(body, messages, cfg)
 	body["messages"] = messages
 
 	return CodexGatewayPreparedAnthropicRequest{
@@ -179,6 +180,216 @@ func codexGatewayAnthropicCacheControl(cfg CodexGatewayAnthropicRequestConfig) m
 		ttl = codexGatewayAnthropicDefaultCacheTTL
 	}
 	return map[string]any{"type": "ephemeral", "ttl": ttl}
+}
+
+func codexGatewayAnthropicApplyMessageCacheBreakpoints(body map[string]any, messages []any, cfg CodexGatewayAnthropicRequestConfig) {
+	codexGatewayAnthropicStripMessageCacheControls(messages)
+	targets := codexGatewayAnthropicMessageCacheBreakpointTargets(messages)
+	if len(targets) == 0 {
+		return
+	}
+	if len(targets) > 1 {
+		codexGatewayAnthropicReserveMessageCacheSlots(body, len(targets))
+	}
+	available := 4 - codexGatewayAnthropicNestedCacheControlCount(body)
+	if available <= 0 {
+		delete(body, "cache_control")
+		return
+	}
+	if len(targets) > available {
+		targets = targets[:available]
+	}
+	delete(body, "cache_control")
+	for _, target := range targets {
+		if target.message < 0 || target.message >= len(messages) || target.block < 0 {
+			continue
+		}
+		msg, ok := messages[target.message].(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, _ := msg["content"].([]any)
+		if target.block >= len(blocks) {
+			continue
+		}
+		block, ok := blocks[target.block].(map[string]any)
+		if !ok {
+			continue
+		}
+		if existing, ok := block["cache_control"].(map[string]any); ok && strings.TrimSpace(firstCodexGatewayToolString(existing["ttl"])) != "" {
+			continue
+		}
+		block["cache_control"] = codexGatewayAnthropicCacheControl(cfg)
+	}
+}
+
+func codexGatewayAnthropicStripMessageCacheControls(messages []any) {
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		blocks, _ := msg["content"].([]any)
+		for _, rawBlock := range blocks {
+			block, ok := rawBlock.(map[string]any)
+			if !ok {
+				continue
+			}
+			delete(block, "cache_control")
+		}
+	}
+}
+
+func codexGatewayAnthropicReserveMessageCacheSlots(body map[string]any, needed int) {
+	if needed <= 0 {
+		return
+	}
+	system, _ := body["system"].([]any)
+	cacheBlocks := make([]map[string]any, 0, len(system))
+	for _, rawBlock := range system {
+		block, ok := rawBlock.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := block["cache_control"]; ok {
+			cacheBlocks = append(cacheBlocks, block)
+		}
+	}
+	for 4-codexGatewayAnthropicNestedCacheControlCount(body) < needed && len(cacheBlocks) > 1 {
+		delete(cacheBlocks[0], "cache_control")
+		cacheBlocks = cacheBlocks[1:]
+	}
+}
+
+type codexGatewayAnthropicMessageCacheTarget struct {
+	message int
+	block   int
+	ordinal int
+}
+
+func codexGatewayAnthropicNestedCacheControlCount(body map[string]any) int {
+	count := 0
+	for key, value := range body {
+		if key == "cache_control" {
+			continue
+		}
+		count += codexGatewayAnthropicCacheControlCount(value)
+	}
+	return count
+}
+
+func codexGatewayAnthropicCacheControlCount(value any) int {
+	switch typed := value.(type) {
+	case map[string]any:
+		count := 0
+		for key, child := range typed {
+			if key == "cache_control" {
+				count++
+				continue
+			}
+			count += codexGatewayAnthropicCacheControlCount(child)
+		}
+		return count
+	case []any:
+		count := 0
+		for _, child := range typed {
+			count += codexGatewayAnthropicCacheControlCount(child)
+		}
+		return count
+	default:
+		return 0
+	}
+}
+
+func codexGatewayAnthropicMessageCacheBreakpointTargets(messages []any) []codexGatewayAnthropicMessageCacheTarget {
+	closed := codexGatewayAnthropicClosedCacheableMessageBlocks(messages)
+	if len(closed) <= 20 {
+		return nil
+	}
+	last := closed[len(closed)-1]
+	targets := []codexGatewayAnthropicMessageCacheTarget{last}
+	if earlier, ok := codexGatewayAnthropicNearestClosedTargetAtOrBeforeOrdinal(closed, last.ordinal-20); ok {
+		targets = append(targets, earlier)
+	}
+	return uniqueCodexGatewayAnthropicMessageCacheTargets(targets)
+}
+
+func codexGatewayAnthropicNearestClosedTargetAtOrBeforeOrdinal(targets []codexGatewayAnthropicMessageCacheTarget, maxOrdinal int) (codexGatewayAnthropicMessageCacheTarget, bool) {
+	for i := len(targets) - 1; i >= 0; i-- {
+		if targets[i].ordinal <= maxOrdinal {
+			return targets[i], true
+		}
+	}
+	return codexGatewayAnthropicMessageCacheTarget{}, false
+}
+
+func codexGatewayAnthropicClosedCacheableMessageBlocks(messages []any) []codexGatewayAnthropicMessageCacheTarget {
+	openCalls := make(map[string]int)
+	targets := make([]codexGatewayAnthropicMessageCacheTarget, 0, len(messages))
+	ordinal := 0
+	for i, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := msg["content"].([]any)
+		for blockIdx, rawPart := range content {
+			part, _ := rawPart.(map[string]any)
+			cacheable := codexGatewayAnthropicContentBlockIsCacheable(part)
+			switch strings.TrimSpace(firstCodexGatewayToolString(part["type"])) {
+			case "tool_use":
+				if id := strings.TrimSpace(firstCodexGatewayToolString(part["id"])); id != "" {
+					openCalls[id]++
+				}
+			case "tool_result":
+				if id := strings.TrimSpace(firstCodexGatewayToolString(part["tool_use_id"])); id != "" && openCalls[id] > 0 {
+					openCalls[id]--
+					if openCalls[id] == 0 {
+						delete(openCalls, id)
+					}
+				}
+			}
+			if cacheable && len(openCalls) == 0 {
+				targets = append(targets, codexGatewayAnthropicMessageCacheTarget{
+					message: i,
+					block:   blockIdx,
+					ordinal: ordinal,
+				})
+			}
+			if cacheable {
+				ordinal++
+			}
+		}
+	}
+	return targets
+}
+
+func codexGatewayAnthropicContentBlockIsCacheable(part map[string]any) bool {
+	switch strings.TrimSpace(firstCodexGatewayToolString(part["type"])) {
+	case "text":
+		return strings.TrimSpace(firstCodexGatewayToolString(part["text"])) != ""
+	case "image", "document", "tool_use", "tool_result":
+		return true
+	default:
+		return false
+	}
+}
+
+func uniqueCodexGatewayAnthropicMessageCacheTargets(targets []codexGatewayAnthropicMessageCacheTarget) []codexGatewayAnthropicMessageCacheTarget {
+	out := make([]codexGatewayAnthropicMessageCacheTarget, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if target.message < 0 || target.block < 0 {
+			continue
+		}
+		key := fmt.Sprintf("%d/%d", target.message, target.block)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, target)
+	}
+	return out
 }
 
 func buildCodexGatewayAnthropicMessages(req CodexGatewayResponsesCreateRequest, stateStore *CodexGatewayStateStore, ctx CodexGatewayAnthropicRequestContext, toolMapping CodexGatewayToolMappingResult, cfg CodexGatewayAnthropicRequestConfig, stateModelKey string) ([]any, error) {

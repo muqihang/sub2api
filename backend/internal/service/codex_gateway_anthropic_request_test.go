@@ -77,6 +77,167 @@ func TestBuildCodexGatewayAnthropicRequest_MapsMessagesToolsThinkingAndCache(t *
 	require.Equal(t, "call_1", gjson.GetBytes(raw, "messages.2.content.0.tool_use_id").String())
 }
 
+func TestBuildCodexGatewayAnthropicRequest_AddsMessageCacheBreakpointsForLongToolReplay(t *testing.T) {
+	var input strings.Builder
+	input.WriteString(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"coordinate a long subagent polling task"}]}`)
+	for i := 0; i < 25; i++ {
+		fmt.Fprintf(&input, `,{"type":"function_call","call_id":"call_%02d","name":"exec_command","arguments":"{\"cmd\":\"poll %02d\"}"}`, i, i)
+		fmt.Fprintf(&input, `,{"type":"function_call_output","call_id":"call_%02d","output":"poll result %02d"}`, i, i)
+	}
+	input.WriteString(`,{"type":"function_call","call_id":"call_open","name":"exec_command","arguments":"{\"cmd\":\"still running\"}"}]`)
+	req := CodexGatewayResponsesCreateRequest{
+		Model:        "claude-opus-4-8",
+		Instructions: json.RawMessage(`"You are Codex."`),
+		Input:        json.RawMessage(input.String()),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}}
+		]`),
+	}
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, int64(52), gjson.GetBytes(raw, "messages.#").Int())
+	require.False(t, gjson.GetBytes(raw, "cache_control").Exists(), "explicit long-history breakpoints should replace root automatic caching")
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "system.0.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "tools.0.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.50.content.0.cache_control.type").String())
+	require.Equal(t, "1h", gjson.GetBytes(raw, "messages.50.content.0.cache_control.ttl").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.30.content.0.cache_control.type").String())
+	require.False(t, gjson.GetBytes(raw, "messages.48.content.0.cache_control").Exists())
+	require.False(t, gjson.GetBytes(raw, "messages.51.content.0.cache_control").Exists(), "do not cache an open assistant tool_use without its tool_result")
+	require.Equal(t, int64(4), countGJSONCacheControl(gjson.ParseBytes(raw)))
+}
+
+func TestBuildCodexGatewayAnthropicRequest_DoesNotAddMessageBreakpointsForShortHistory(t *testing.T) {
+	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
+		"model":"claude-opus-4-8",
+		"instructions":"You are Codex.",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"inspect repo"}]},
+			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"}
+		],
+		"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}}]
+	}`))
+	require.NoError(t, err)
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "cache_control.type").String())
+	require.False(t, gjson.GetBytes(raw, "messages.0.content.0.cache_control").Exists())
+	require.False(t, gjson.GetBytes(raw, "messages.2.content.0.cache_control").Exists())
+	require.Equal(t, int64(3), countGJSONCacheControl(gjson.ParseBytes(raw)))
+}
+
+func TestBuildCodexGatewayAnthropicRequest_LongComputerUseHistoryReservesMessageCacheSlots(t *testing.T) {
+	var input strings.Builder
+	input.WriteString(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"use computer use for a long task"}]}`)
+	for i := 0; i < 25; i++ {
+		fmt.Fprintf(&input, `,{"type":"function_call","call_id":"call_%02d","name":"mcp__computer_use__get_app_state","arguments":"{\"app\":\"com.bot.pc.doubao\"}"}`, i)
+		fmt.Fprintf(&input, `,{"type":"function_call_output","call_id":"call_%02d","output":"state %02d"}`, i, i)
+	}
+	input.WriteString(`]`)
+	req := CodexGatewayResponsesCreateRequest{
+		Model:        "claude-opus-4-8",
+		Instructions: json.RawMessage(`"You are Codex."`),
+		Input:        json.RawMessage(input.String()),
+		Tools: json.RawMessage(`[
+			{"type":"function","name":"mcp__computer_use__get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}}
+		]`),
+	}
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "cache_control").Exists())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "tools.0.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "system.1.cache_control.type").String(), "keep the Computer Use strategy cached")
+	require.False(t, gjson.GetBytes(raw, "system.0.cache_control").Exists(), "drop the generic instruction breakpoint first to stay within Anthropic's 4-breakpoint cap")
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.50.content.0.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.30.content.0.cache_control.type").String())
+	require.Equal(t, int64(4), countGJSONCacheControl(gjson.ParseBytes(raw)))
+}
+
+func TestBuildCodexGatewayAnthropicRequest_LongSingleMessageUsesContentBlockLookback(t *testing.T) {
+	parts := make([]string, 0, 25)
+	for i := 0; i < 25; i++ {
+		parts = append(parts, fmt.Sprintf(`{"type":"input_text","text":"block %02d"}`, i))
+	}
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "claude-opus-4-8",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[` + strings.Join(parts, ",") + `]}
+		]`),
+	}
+
+	prepared, err := BuildCodexGatewayAnthropicRequest(
+		CodexGatewayModel{Slug: "claude-opus-4-8", Provider: "anthropic", ProviderVariant: "anthropic_direct", UpstreamModel: "claude-opus-4-8"},
+		req,
+		nil,
+		CodexGatewayAnthropicRequestContext{},
+		CodexGatewayAnthropicRequestConfig{},
+	)
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(prepared.Body)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "cache_control").Exists())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.0.content.24.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.0.content.4.cache_control.type").String())
+	require.False(t, gjson.GetBytes(raw, "messages.0.content.5.cache_control").Exists())
+	require.Equal(t, int64(2), countGJSONCacheControl(gjson.ParseBytes(raw)))
+}
+
+func TestBuildCodexGatewayAnthropicRequest_RebuildsExistingMessageCacheControlsWithinLimit(t *testing.T) {
+	messages := []any{}
+	for i := 0; i < 25; i++ {
+		block := map[string]any{"type": "text", "text": fmt.Sprintf("cached replay %02d", i)}
+		if i%5 == 0 {
+			block["cache_control"] = map[string]any{"type": "ephemeral", "ttl": "1h"}
+		}
+		messages = append(messages, map[string]any{"role": "user", "content": []any{block}})
+	}
+	body := map[string]any{"cache_control": codexGatewayAnthropicCacheControl(CodexGatewayAnthropicRequestConfig{})}
+
+	codexGatewayAnthropicApplyMessageCacheBreakpoints(body, messages, CodexGatewayAnthropicRequestConfig{})
+	body["messages"] = messages
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	require.False(t, gjson.GetBytes(raw, "cache_control").Exists())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.24.content.0.cache_control.type").String())
+	require.Equal(t, "ephemeral", gjson.GetBytes(raw, "messages.4.content.0.cache_control.type").String())
+	require.False(t, gjson.GetBytes(raw, "messages.0.content.0.cache_control").Exists())
+	require.False(t, gjson.GetBytes(raw, "messages.5.content.0.cache_control").Exists())
+	require.Equal(t, int64(2), countGJSONCacheControl(gjson.ParseBytes(raw)))
+}
+
 func TestBuildCodexGatewayAnthropicRequest_DisablesThinkingForPlainOpus(t *testing.T) {
 	req, err := DecodeCodexGatewayResponsesCreateRequest([]byte(`{
 		"model":"claude-opus-4-6",
@@ -1203,4 +1364,24 @@ func anthropicRequestToolByName(t *testing.T, tools []any, name string) map[stri
 	}
 	require.Failf(t, "anthropic request tool not found", "name=%s tools=%v", name, tools)
 	return nil
+}
+
+func countGJSONCacheControl(value gjson.Result) int64 {
+	var count int64
+	switch {
+	case value.IsObject():
+		if value.Get("cache_control").Exists() {
+			count++
+		}
+		value.ForEach(func(_, child gjson.Result) bool {
+			count += countGJSONCacheControl(child)
+			return true
+		})
+	case value.IsArray():
+		value.ForEach(func(_, child gjson.Result) bool {
+			count += countGJSONCacheControl(child)
+			return true
+		})
+	}
+	return count
 }
