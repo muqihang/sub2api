@@ -148,8 +148,8 @@ func TestValidateExplicitCCGatewayCanaryAccount(t *testing.T) {
 	require.ErrorContains(t, validateCCGatewayAnthropicCanaryAccountWithConfig(nonLocalConfig, account, req), "local")
 }
 
-func TestCCGatewayAnthropicPolicyVersionTracksClaudeCode2150Canary(t *testing.T) {
-	require.Equal(t, "2.1.150", ccGatewayAnthropicPolicyVersion)
+func TestCCGatewayAnthropicPolicyVersionTracksClaudeCode2170Interim(t *testing.T) {
+	require.Equal(t, "2.1.170", ccGatewayAnthropicPolicyVersion)
 }
 
 func TestGatewayService_CCGatewayAnthropicOAuthMapsServerSessionIntoMetadataAndHeader(t *testing.T) {
@@ -178,7 +178,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthMapsServerSessionIntoMetadataAndH
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	ctx := WithClaudeCodeSessionUserScope(SetClaudeCodeVersion(context.Background(), "2.1.150"), "user:alpha")
+	ctx := WithClaudeCodeSessionUserScope(SetClaudeCodeVersion(context.Background(), ccGatewayAnthropicPolicyVersion), "user:alpha")
 	c := ccGatewayTestContext("/v1/messages")
 	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
 
@@ -310,7 +310,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	ctx := SetClaudeCodeVersion(context.Background(), "2.1.150")
+	ctx := SetClaudeCodeVersion(context.Background(), ccGatewayAnthropicPolicyVersion)
 	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-3-7-sonnet-20250219", true, false, false)
 	require.NoError(t, err)
 
@@ -321,7 +321,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 	require.Equal(t, "42", getHeaderRaw(req.Header, "x-cc-account-id"))
 	require.Equal(t, "anthropic", getHeaderRaw(req.Header, "x-cc-provider"))
 	require.Equal(t, "oauth", getHeaderRaw(req.Header, "x-cc-token-type"))
-	require.Equal(t, "2.1.150", getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Empty(t, getHeaderRaw(req.Header, "Accept-Encoding"))
 	require.Empty(t, getHeaderRaw(req.Header, "x-cc-account-email"))
 	require.Empty(t, getHeaderRaw(req.Header, "x-cc-account-uuid"))
@@ -615,11 +615,49 @@ func TestGatewayService_SelectCCGatewayAnthropicRouteFailsClosedOnRouteAndLifecy
 	require.Contains(t, err.Error(), "lifecycle ineligible")
 }
 
-func TestCCGatewayPolicyVersionCompatibleAllowsObservedMinorDrift(t *testing.T) {
+func TestCCGatewayPolicyVersionCompatibleAllowsOldCCHCompatibleVersionsOnly(t *testing.T) {
 	require.True(t, ccGatewayPolicyVersionCompatible("2.1.150"))
-	require.True(t, ccGatewayPolicyVersionCompatible("2.1.151"))
+	require.True(t, ccGatewayPolicyVersionCompatible("2.1.153"))
+	require.True(t, ccGatewayPolicyVersionCompatible("2.1.169"))
+	require.True(t, ccGatewayPolicyVersionCompatible("2.1.170"))
+	require.False(t, ccGatewayPolicyVersionCompatible("2.1.151"), "unverified patches must not be inferred from the corpus")
+	require.False(t, ccGatewayPolicyVersionCompatible("2.1.171"), "2.1.171 was not published and must not be treated as a verified profile")
+	require.False(t, ccGatewayPolicyVersionCompatible("2.1.172"), "2.1.172+ CCH changed and must stay behind the delta gate")
+	require.False(t, ccGatewayPolicyVersionCompatible("2.1.126.test"))
 	require.False(t, ccGatewayPolicyVersionCompatible("2.2.0"))
 	require.False(t, ccGatewayPolicyVersionCompatible("3.0.0"))
+}
+
+func TestGatewayService_CCGatewayAnthropicOAuthStaleCompatibleExtraCanonicalizesToInterimPolicyVersion(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-opus-4-8","messages":[{"role":"user","content":"hi"}],"max_tokens":32000,"stream":true}`)
+	account := &Account{
+		ID:       54,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "selected-oauth-token",
+			"email":        "user@example.com",
+		},
+		Extra: map[string]any{
+			"account_uuid":                     "acct-uuid",
+			"organization_uuid":                "org-uuid",
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        "2.1.150",
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	svc := &GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}
+
+	req, _, err := svc.buildUpstreamRequest(context.Background(), ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-8", true, false, false)
+	require.NoError(t, err)
+	require.Equal(t, "2.1.150", account.GetExtraString("cc_gateway_policy_version"), "DB/account metadata remains unchanged")
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 }
 
 func TestGatewayService_CCGatewayAnthropicOAuthExactPolicyVersionKeepsKnownOpus46CapabilityFloor(t *testing.T) {
@@ -648,17 +686,17 @@ func TestGatewayService_CCGatewayAnthropicOAuthExactPolicyVersionKeepsKnownOpus4
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	ctx := SetClaudeCodeVersion(context.Background(), "2.1.150")
+	ctx := SetClaudeCodeVersion(context.Background(), ccGatewayAnthropicPolicyVersion)
 	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-6", true, false, false)
 	require.NoError(t, err)
-	require.Equal(t, "2.1.150", getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Contains(t, readRequestBody(t, req), `"max_tokens":32000`)
 	require.Contains(t, readRequestBody(t, req), `"stream":true`)
 	require.Contains(t, readRequestBody(t, req), `"thinking"`)
 	require.Contains(t, readRequestBody(t, req), `"context_management"`)
 }
 
-func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftPolicyVersionPasses(t *testing.T) {
+func TestGatewayService_CCGatewayAnthropicOAuthVerifiedLegacyDriftPolicyVersionPasses(t *testing.T) {
 	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-opus-4-7","messages":[{"role":"user","content":"hi"}],"max_tokens":32000,"stream":true,"thinking":{"type":"enabled","budget_tokens":1024},"context_management":{"edits":[]}}`)
 	account := &Account{
 		ID:       52,
@@ -673,7 +711,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftPolicyVersionPasses(t *
 			"organization_uuid":                "org-uuid",
 			"cc_gateway_enabled":               "true",
 			"cc_gateway_canary_only":           "false",
-			"cc_gateway_policy_version":        "2.1.151",
+			"cc_gateway_policy_version":        "2.1.153",
 			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
 			"cc_gateway_egress_bucket_enabled": "true",
 			"cc_gateway_egress_bucket":         "bucket-a",
@@ -684,7 +722,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftPolicyVersionPasses(t *
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	ctx := WithCCGatewayExplicitCanaryRequest(SetClaudeCodeVersion(context.Background(), "2.1.151"), CCGatewayAnthropicCanaryRequest{
+	ctx := WithCCGatewayExplicitCanaryRequest(SetClaudeCodeVersion(context.Background(), "2.1.153"), CCGatewayAnthropicCanaryRequest{
 		AccountID:      account.ID,
 		AccountHash:    "hmac-sha256:acct",
 		EgressBucket:   "bucket-a",
@@ -694,13 +732,13 @@ func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftPolicyVersionPasses(t *
 	})
 	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
 	require.NoError(t, err)
-	require.Equal(t, "2.1.151", getHeaderRaw(req.Header, "x-cc-policy-version"))
+	require.Equal(t, "2.1.153", getHeaderRaw(req.Header, "x-cc-policy-version"))
 	require.Equal(t, "1", getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))
 	require.Contains(t, readRequestBody(t, req), `"max_tokens":32000`)
 	require.Contains(t, readRequestBody(t, req), `"context_management"`)
 }
 
-func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftWithoutTrustedContextFallsBackToAnchoredPolicyVersion(t *testing.T) {
+func TestGatewayService_CCGatewayAnthropicOAuthVerifiedLegacyDriftWithoutTrustedContextFallsBackToAnchoredPolicyVersion(t *testing.T) {
 	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-opus-4-7","messages":[{"role":"user","content":"hi"}],"max_tokens":32000,"stream":true}`)
 	account := &Account{
 		ID:       53,
@@ -726,7 +764,7 @@ func TestGatewayService_CCGatewayAnthropicOAuthMinorDriftWithoutTrustedContextFa
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
 	}
 
-	ctx := SetClaudeCodeVersion(context.Background(), "2.1.151")
+	ctx := SetClaudeCodeVersion(context.Background(), "2.1.153")
 	req, _, err := svc.buildUpstreamRequest(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-oauth-token", "oauth", "claude-opus-4-7", true, false, false)
 	require.NoError(t, err)
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, "x-cc-policy-version"))

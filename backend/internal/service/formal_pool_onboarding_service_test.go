@@ -744,8 +744,8 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 		EgressBucket:   "claude-runtime-bucket",
 		ProxyURL:       "socks5h://user:pass@proxy.example:443",
 		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
-		PolicyVersion:  "2.1.150",
-		PersonaVariant: "claude-code-2.1.150-macos-local",
+		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
+		PersonaVariant: "claude-code-2.1.170-macos-local",
 		SessionPolicy:  "preserve_downstream_session_id",
 	})
 	if err != nil {
@@ -763,7 +763,7 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 		got["egress_bucket"] != "claude-runtime-bucket" ||
 		got["proxy_url"] != "socks5h://user:pass@proxy.example:443" ||
 		got["proxy_identity_ref"] != "hmac-sha256:runtime-proxy-ref" ||
-		got["policy_version"] != "2.1.150" ||
+		got["policy_version"] != ccGatewayAnthropicPolicyVersion ||
 		got["session_policy"] != "preserve_downstream_session_id" {
 		t.Fatalf("unexpected registration payload: %#v", got)
 	}
@@ -790,8 +790,8 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarFailsClosedOnGatewayError(t *tes
 		EgressBucket:   "claude-runtime-bucket",
 		ProxyURL:       "socks5h://proxy.example:443",
 		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
-		PolicyVersion:  "2.1.150",
-		PersonaVariant: "claude-code-2.1.150-macos-local",
+		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
+		PersonaVariant: "claude-code-2.1.170-macos-local",
 		SessionPolicy:  "preserve_downstream_session_id",
 	})
 	if err == nil || !strings.Contains(err.Error(), "status 403") {

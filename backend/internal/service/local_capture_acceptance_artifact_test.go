@@ -28,8 +28,8 @@ import (
 )
 
 const jointLocalCaptureArtifactSlug = "sub2api-cc-gateway-joint-local-capture"
-const jointExpectedGatewayUserAgent = "claude-cli/2.1.150 (external, sdk-cli)"
-const jointExpectedGatewayPersonaVariant = "claude-code-2.1.150-macos-local"
+const jointExpectedGatewayUserAgent = "claude-cli/2.1.170 (external, sdk-cli)"
+const jointExpectedGatewayPersonaVariant = "claude-code-2.1.170-macos-local"
 
 type jointRedactionRule struct {
 	Label  string
@@ -523,6 +523,10 @@ func ccGatewayRepoRoot() string {
 	if root := strings.TrimSpace(os.Getenv("CC_GATEWAY_REPO_ROOT")); root != "" {
 		return root
 	}
+	worktree := "/Users/muqihang/chelingxi_workspace/cc-gateway/.worktrees/claude-code-2173-main"
+	if _, err := os.Stat(filepath.Join(worktree, "package.json")); err == nil {
+		return worktree
+	}
 	return "/Users/muqihang/chelingxi_workspace/cc-gateway"
 }
 
@@ -624,7 +628,7 @@ process:
 shared_pool:
   max_body_bytes: 2097152
   billing_cch_mode: strip
-  message_beta_profile: claude_code_2_1_150_subscription_1m
+  message_beta_profile: claude_code_2_1_170_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
@@ -702,7 +706,7 @@ shared_pool:
   billing_cch_mode: sign
   signing_enabled: true
   signing_evidence_gates_approved: true
-  message_beta_profile: claude_code_2_1_150_subscription_1m
+  message_beta_profile: claude_code_2_1_170_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
@@ -770,7 +774,7 @@ process:
 shared_pool:
   max_body_bytes: 2097152
   billing_cch_mode: disabled
-  message_beta_profile: claude_code_2_1_150_subscription_1m
+  message_beta_profile: claude_code_2_1_170_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
@@ -899,7 +903,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			Passed:                   passed,
 			Notes: []string{
 				"sub2api->gateway rewrites metadata.user_id session to a server-issued UUID-like value before CC Gateway final-output handling",
-				"gateway final persona is canonical Claude Code 2.1.150 subscription profile",
+				"gateway final persona is canonical Claude Code 2.1.170 subscription profile",
 			},
 		}
 	})
@@ -960,7 +964,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			upstreamSummary.Body.BillingHeaderPresent &&
 			upstreamSummary.Body.CCHPresent &&
 			!strings.Contains(upstreamBody, "cch=00000;") &&
-			regexp.MustCompile(`cc_version=2\.1\.150\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
+			regexp.MustCompile(`cc_version=2\.1\.170\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
 			upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
 		return jointCaptureScenario{
 			Category:                 "sub2api_joint",

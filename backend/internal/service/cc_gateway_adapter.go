@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -39,14 +38,12 @@ const (
 	ccGatewayExtraCanaryOnly = "cc_gateway_canary_only"
 	ccGatewayExtraBillingCCH = "billing_cch_mode"
 
-	// First-wave shared-pool policy stays anchored to the verified Claude Code
-	// 2.1.150 registry profile. Same-minor CLI-through drift (for example
-	// 2.1.151) is still forwarded to CC Gateway for source-of-truth resolver
-	// handling; unknown newer minors/majors stay fail-closed at the resolver.
-	ccGatewayAnthropicPolicyVersion = "2.1.150"
+	// Interim shared-pool policy stays anchored to the highest available old-CCH
+	// compatible Claude Code profile, 2.1.170. Same-minor CLI-through drift is
+	// still forwarded to CC Gateway for source-of-truth resolver handling;
+	// unknown newer majors stay fail-closed at the resolver.
+	ccGatewayAnthropicPolicyVersion = "2.1.170"
 )
-
-var ccGatewayVersionRe = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`)
 
 type ccGatewayAnthropicRoute string
 
@@ -359,7 +356,7 @@ func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, accou
 	setHeaderRaw(req.Header, ccGatewayAccountIDHeader, ccGatewayAccountRef(account))
 	setHeaderRaw(req.Header, ccGatewayProviderHeader, PlatformAnthropic)
 	setHeaderRaw(req.Header, ccGatewayTokenTypeHeader, tokenType)
-	setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)))
+	setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
 	// Formal shared-pool Anthropic routing must not send raw email/account/org
 	// identity headers to CC Gateway. Account identity is selected by the
 	// server-owned x-cc-account-id ref and CC Gateway account_identities config.
@@ -380,8 +377,11 @@ func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request
 		}
 	}
 	if account != nil {
-		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" {
-			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, version)
+		// Stale compatible account metadata is admission-only. Do not mutate DB Extra
+		// here, but canonicalize final normal outbound persona to the verified
+		// interim policy version.
+		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" && ccGatewayPolicyVersionCompatible(version) {
+			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
 		}
 	}
 }
@@ -419,16 +419,15 @@ func ccGatewayAccountEmail(account *Account) string {
 }
 
 func ccGatewayPolicyVersionCompatible(version string) bool {
-	normalized := strings.TrimSpace(version)
-	if normalized == ccGatewayAnthropicPolicyVersion {
+	// Keep this as an explicit verified-corpus gate, not a broad <=2.1.170
+	// assumption. 2.1.171 was not published, and 2.1.172+ must stay behind
+	// the separate CCH delta investigation.
+	switch strings.TrimSpace(version) {
+	case "2.1.150", "2.1.153", "2.1.169", ccGatewayAnthropicPolicyVersion:
 		return true
-	}
-	base := ccGatewayVersionRe.FindStringSubmatch(ccGatewayAnthropicPolicyVersion)
-	candidate := ccGatewayVersionRe.FindStringSubmatch(normalized)
-	if len(base) != 4 || len(candidate) != 4 {
+	default:
 		return false
 	}
-	return base[1] == candidate[1] && base[2] == candidate[2]
 }
 
 func applyCCGatewayAntigravityHeaders(req *http.Request, p antigravityRetryLoopParams) {
