@@ -2980,8 +2980,259 @@ func TestCodexGatewayAgnesRequest_ComputerUseAddsAgnesContinuationStrategy(t *te
 	require.Contains(t, instruction, "Electron")
 	require.Contains(t, instruction, "set_value")
 	require.Contains(t, instruction, "Return")
+	require.Contains(t, instruction, "After a successful set_value")
+	require.Contains(t, instruction, "MUST call press_key Return")
+	require.Contains(t, instruction, "do not emit final_answer")
+	require.Contains(t, instruction, "After list_apps")
+	require.Contains(t, instruction, "bounded failure diagnosis")
+	serialInstruction := messages[1].(map[string]any)["content"].(string)
+	require.Contains(t, serialInstruction, "Serial tool calling is required")
 	require.Equal(t, "user", messages[len(messages)-1].(map[string]any)["role"])
 	require.Equal(t, map[string]any{"enable_thinking": false}, prepared.Body["chat_template_kwargs"])
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseRequiresInitialToolCall(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Computer Use to ask Doubao about weather."}]}
+		]`),
+		Tools: agnesComputerUseToolsRawMessage(),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu_required_initial",
+		IsolationKey: "iso_agnes_cu_required_initial",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	require.Equal(t, "required", prepared.Body["tool_choice"])
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseRequiresImplicitLocalAppOperation(t *testing.T) {
+	cases := []string{
+		"Open Doubao and ask about weather.",
+		"打开豆包问明天郑州天气怎么样。",
+	}
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			req := CodexGatewayResponsesCreateRequest{
+				Model: "agnes-2.0-flash",
+				Input: json.RawMessage(fmt.Sprintf(`[
+					{"type":"message","role":"user","content":[{"type":"input_text","text":%q}]}
+				]`, input)),
+				Tools: agnesComputerUseToolsRawMessage(),
+			}
+			model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+			prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+				SessionKey:   "session_agnes_implicit_cu_required",
+				IsolationKey: "iso_agnes_implicit_cu_required",
+				Provider:     "agnes",
+			}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+			require.NoError(t, err)
+
+			require.Equal(t, "required", prepared.Body["tool_choice"])
+		})
+	}
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseDoesNotForcePlainTextTask(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize this repository architecture without using external apps."}]}
+		]`),
+		Tools: agnesComputerUseToolsRawMessage(),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_plain_text_no_required",
+		IsolationKey: "iso_agnes_plain_text_no_required",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	require.NotContains(t, prepared.Body, "tool_choice")
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseDoesNotForceNegatedComputerUseTask(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Do not use Computer Use. Just summarize this repository architecture."}]}
+		]`),
+		Tools: agnesComputerUseToolsRawMessage(),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_negated_cu_no_required",
+		IsolationKey: "iso_agnes_negated_cu_no_required",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	require.NotContains(t, prepared.Body, "tool_choice")
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseDoesNotForceExplanatoryAppText(t *testing.T) {
+	cases := []string{
+		"How do I use Chrome devtools effectively?",
+		"Explain how to open files in Cursor.",
+		"Summarize Notes app features and common use cases.",
+	}
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			req := CodexGatewayResponsesCreateRequest{
+				Model: "agnes-2.0-flash",
+				Input: json.RawMessage(fmt.Sprintf(`[
+					{"type":"message","role":"user","content":[{"type":"input_text","text":%q}]}
+				]`, input)),
+				Tools: agnesComputerUseToolsRawMessage(),
+			}
+			model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+			prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+				SessionKey:   "session_agnes_explain_app_no_required",
+				IsolationKey: "iso_agnes_explain_app_no_required",
+				Provider:     "agnes",
+			}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+			require.NoError(t, err)
+
+			require.NotContains(t, prepared.Body, "tool_choice")
+		})
+	}
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseForcesGetAppStateAfterListApps(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Computer Use to ask Doubao about weather."}]},
+			{"type":"function_call","call_id":"call_list","name":"list_apps","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_list","output":"Doubao — /Applications/Doubao.app/ — com.bot.pc.doubao [running]"}
+		]`),
+		Tools: agnesComputerUseToolsRawMessage(),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu_required_get_state",
+		IsolationKey: "iso_agnes_cu_required_get_state",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	tools := prepared.Body["tools"].([]any)
+	getState := deepSeekRequestToolFunctionBySuffix(t, tools, "__get_app_state")
+	toolChoice := prepared.Body["tool_choice"].(map[string]any)
+	require.Equal(t, "function", toolChoice["type"])
+	require.Equal(t, getState["name"], toolChoice["function"].(map[string]any)["name"])
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseForcesReturnAfterDoubaoSetValue(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Computer Use to ask Doubao about weather."}]},
+			{"type":"function_call","call_id":"call_set","name":"set_value","arguments":"{\"app\":\"com.bot.pc.doubao\",\"element_index\":\"324\",\"value\":\"明天郑州天气怎么样？\"}"},
+			{"type":"function_call_output","call_id":"call_set","output":"App=com.bot.pc.doubao (pid 733) value set to 明天郑州天气怎么样？"}
+		]`),
+		Tools: agnesComputerUseToolsRawMessage(),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu_required_return",
+		IsolationKey: "iso_agnes_cu_required_return",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	tools := prepared.Body["tools"].([]any)
+	pressKey := deepSeekRequestToolFunctionBySuffix(t, tools, "__press_key")
+	toolChoice := prepared.Body["tool_choice"].(map[string]any)
+	require.Equal(t, "function", toolChoice["type"])
+	require.Equal(t, pressKey["name"], toolChoice["function"].(map[string]any)["name"])
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseDoesNotForceReturnAfterNonChatSetValue(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Computer Use to write a note in Notes."}]},
+			{"type":"function_call","call_id":"call_set","name":"set_value","arguments":"{\"app\":\"com.apple.Notes\",\"element_index\":\"15\",\"value\":\"测试备忘录\"}"},
+			{"type":"function_call_output","call_id":"call_set","output":"App=com.apple.Notes (pid 123) note body set to 测试备忘录"}
+		]`),
+		Tools: agnesComputerUseToolsRawMessage(),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu_notes_set_value",
+		IsolationKey: "iso_agnes_cu_notes_set_value",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	require.NotContains(t, prepared.Body, "tool_choice")
+}
+
+func TestCodexGatewayAgnesRequest_ComputerUseForcesGetAppStateAfterReturn(t *testing.T) {
+	req := CodexGatewayResponsesCreateRequest{
+		Model: "agnes-2.0-flash",
+		Input: json.RawMessage(`[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Use Computer Use to ask Doubao about weather."}]},
+			{"type":"function_call","call_id":"call_return","name":"press_key","arguments":"{\"app\":\"com.bot.pc.doubao\",\"key\":\"Return\"}"},
+			{"type":"function_call_output","call_id":"call_return","output":"Pressed Return in com.bot.pc.doubao"}
+		]`),
+		Tools: agnesComputerUseToolsRawMessage(),
+	}
+	model := CodexGatewayModel{Slug: "agnes-2.0-flash", Provider: "agnes", UpstreamModel: "agnes-2.0-flash"}
+
+	prepared, err := BuildCodexGatewayDeepSeekRequest(model, req, nil, CodexGatewayDeepSeekRequestContext{
+		SessionKey:   "session_agnes_cu_required_state_after_return",
+		IsolationKey: "iso_agnes_cu_required_state_after_return",
+		Provider:     "agnes",
+	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
+	require.NoError(t, err)
+
+	tools := prepared.Body["tools"].([]any)
+	getState := deepSeekRequestToolFunctionBySuffix(t, tools, "__get_app_state")
+	toolChoice := prepared.Body["tool_choice"].(map[string]any)
+	require.Equal(t, "function", toolChoice["type"])
+	require.Equal(t, getState["name"], toolChoice["function"].(map[string]any)["name"])
+}
+
+func deepSeekRequestToolContentByCallID(t *testing.T, body any, callID string) string {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	messages := gjson.GetBytes(raw, "messages").Array()
+	for _, message := range messages {
+		if message.Get("role").String() == "tool" && message.Get("tool_call_id").String() == callID {
+			return message.Get("content").String()
+		}
+	}
+	t.Fatalf("tool content for call_id %q not found", callID)
+	return ""
+}
+
+func agnesComputerUseToolsRawMessage() json.RawMessage {
+	return json.RawMessage(`[
+		{"type":"namespace","name":"mcp__computer_use__","tools":[
+			{"type":"function","name":"list_apps","parameters":{"type":"object","properties":{}}},
+			{"type":"function","name":"get_app_state","parameters":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}},
+			{"type":"function","name":"set_value","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"value":{"type":"string"}},"required":["app","element_index","value"]}},
+			{"type":"function","name":"press_key","parameters":{"type":"object","properties":{"app":{"type":"string"},"key":{"type":"string"}},"required":["app","key"]}},
+			{"type":"function","name":"type_text","parameters":{"type":"object","properties":{"app":{"type":"string"},"text":{"type":"string"}},"required":["app","text"]}},
+			{"type":"function","name":"scroll","parameters":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"string"},"direction":{"type":"string"}},"required":["app","element_index","direction"]}}
+		]}
+	]`)
 }
 
 func TestCodexGatewayDeepSeekRequest_ComputerUseVisibleTextKeepsEnoughDoubaoAnswer(t *testing.T) {
@@ -3029,12 +3280,7 @@ func TestCodexGatewayDeepSeekRequest_ComputerUseVisibleTextKeepsEnoughDoubaoAnsw
 	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
 	require.NoError(t, err)
 
-	raw, err := json.Marshal(prepared.Body)
-	require.NoError(t, err)
-	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
-	if toolContent == "" {
-		toolContent = gjson.GetBytes(raw, "messages.2.content").String()
-	}
+	toolContent := deepSeekRequestToolContentByCallID(t, prepared.Body, "call_state")
 	visibleText := gjson.Get(toolContent, "0.text.visible_text").Raw
 	if visibleText == "" {
 		visibleText = gjson.Get(toolContent, "1.text.visible_text").Raw
@@ -3096,9 +3342,7 @@ func TestCodexGatewayDeepSeekRequest_ComputerUseHighFidelityVisibleTextBudget(t 
 	}, CodexGatewayDeepSeekRequestConfig{Provider: "agnes", ReasoningMode: "openai"})
 	require.NoError(t, err)
 
-	raw, err := json.Marshal(prepared.Body)
-	require.NoError(t, err)
-	toolContent := gjson.GetBytes(raw, "messages.1.content").String()
+	toolContent := deepSeekRequestToolContentByCallID(t, prepared.Body, "call_state")
 	visibleText := gjson.Get(toolContent, "1.text.visible_text").Raw
 	if visibleText == "" {
 		visibleText = gjson.Get(toolContent, "0.text.visible_text").Raw

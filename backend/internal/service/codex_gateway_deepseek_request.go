@@ -34,7 +34,7 @@ const codexGatewayDeepSeekSerialToolInstruction = "Serial tool calling is requir
 
 const codexGatewayDeepSeekComputerUseInstruction = "Computer Use strategy: when operating local apps, prefer bundle identifier values from list_apps (for example com.vendor.App) over localized display names; localized display names may be invalid app arguments. For Electron/chat apps, after get_app_state exposes a settable text input, prefer set_value on that element, then press_key Return, then get_app_state to read visible_text or operable_lines. If an element ID is stale, refresh with get_app_state once and retry with the new element_index. Avoid scrolling or blind clicking unless visible_text/operable_lines show that the needed reply or control is off-screen."
 
-const codexGatewayAgnesComputerUseInstruction = codexGatewayDeepSeekComputerUseInstruction + " AGNES Computer Use continuation: Do not stop after saying what you will do next; if the task is incomplete, immediately call the next Computer Use tool in the same turn. Every new turn or Continue after a pause must call get_app_state for the target app before press_key, click, set_value, type_text, or scroll. For Electron apps, prefer bundle IDs, set_value on a settable text input, press_key Return, then one get_app_state to read visible_text. If visible_text already contains enough answer text, use it to finish instead of repeated scrolling."
+const codexGatewayAgnesComputerUseInstruction = codexGatewayDeepSeekComputerUseInstruction + " AGNES Computer Use continuation: Do not stop after saying what you will do next; if the task is incomplete, immediately call the next Computer Use tool in the same turn. After list_apps, choose the target bundle id and call get_app_state directly. Every new turn or Continue after a pause must call get_app_state for the target app before press_key, click, set_value, type_text, or scroll. For Electron apps, prefer bundle IDs, set_value on a settable text input, press_key Return, then one get_app_state to read visible_text. After a successful set_value in a chat input, MUST call press_key Return next in the same response/turn; do not emit final_answer or prose such as \"I will press Return now\" while the external task is incomplete. If visible_text already contains enough answer text, use it to finish instead of repeated scrolling. Only final answer after requested external actions are complete or after a bounded failure diagnosis."
 
 const codexGatewayDeepSeekComputerUseCompressionVersion = "deepseek-computer-use-compression-v1"
 
@@ -229,7 +229,11 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 				"content": computerUseInstruction,
 			})
 		}
-		if req.ParallelToolCalls != nil && !*req.ParallelToolCalls && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekSerialToolInstruction) {
+		requiresSerialToolInstruction := req.ParallelToolCalls != nil && !*req.ParallelToolCalls
+		if strings.EqualFold(provider, string(CodexGatewayProviderAgnes)) && codexGatewayDeepSeekToolMappingHasComputerUse(toolMapping) {
+			requiresSerialToolInstruction = true
+		}
+		if requiresSerialToolInstruction && !codexGatewayDeepSeekSystemPrefixHasContent(messages, codexGatewayDeepSeekSerialToolInstruction) {
 			leadingMessages = append(leadingMessages, map[string]any{
 				"role":    "system",
 				"content": codexGatewayDeepSeekSerialToolInstruction,
@@ -248,6 +252,8 @@ func BuildCodexGatewayDeepSeekRequest(model CodexGatewayModel, req CodexGatewayR
 	if choice, ok, err := buildCodexGatewayDeepSeekToolChoice(req.ToolChoice, toolMapping, rawToolsByAlias); err != nil {
 		return CodexGatewayPreparedDeepSeekRequest{}, err
 	} else if ok {
+		body["tool_choice"] = choice
+	} else if choice, ok := codexGatewayAgnesComputerUseToolChoice(provider, req, toolMapping); ok {
 		body["tool_choice"] = choice
 	}
 
@@ -450,6 +456,272 @@ func codexGatewayDeepSeekToolMappingHasComputerUse(mapping CodexGatewayToolMappi
 		}
 	}
 	return false
+}
+
+func codexGatewayAgnesComputerUseToolChoice(provider string, req CodexGatewayResponsesCreateRequest, mapping CodexGatewayToolMappingResult) (any, bool) {
+	if !strings.EqualFold(strings.TrimSpace(provider), string(CodexGatewayProviderAgnes)) {
+		return nil, false
+	}
+	if !codexGatewayDeepSeekToolMappingHasComputerUse(mapping) {
+		return nil, false
+	}
+	lastCall, hasComputerUseHistory := codexGatewayAgnesLastComputerUseOutput(req, mapping)
+	switch lastCall.ToolName {
+	case "list_apps":
+		if alias := codexGatewayAgnesComputerUseAlias(mapping, "get_app_state"); alias != "" {
+			return codexGatewayAgnesFunctionToolChoice(alias), true
+		}
+	case "set_value", "type_text":
+		if codexGatewayAgnesComputerUseLikelyChatSubmit(lastCall) {
+			if alias := codexGatewayAgnesComputerUseAlias(mapping, "press_key"); alias != "" {
+				return codexGatewayAgnesFunctionToolChoice(alias), true
+			}
+		}
+	case "press_key":
+		if codexGatewayAgnesComputerUseLikelyChatSubmit(lastCall) {
+			if alias := codexGatewayAgnesComputerUseAlias(mapping, "get_app_state"); alias != "" {
+				return codexGatewayAgnesFunctionToolChoice(alias), true
+			}
+		}
+	}
+	if hasComputerUseHistory {
+		return nil, false
+	}
+	if !codexGatewayAgnesRequestWantsComputerUse(req) {
+		return nil, false
+	}
+	return "required", true
+}
+
+type codexGatewayAgnesComputerUseCall struct {
+	ToolName  string
+	Arguments string
+	Output    string
+}
+
+func codexGatewayAgnesRequestWantsComputerUse(req CodexGatewayResponsesCreateRequest) bool {
+	text := strings.ToLower(string(req.Input))
+	for _, negated := range []string{
+		"do not use computer use",
+		"don't use computer use",
+		"without using computer use",
+		"without computer use",
+		"不要使用 computer use",
+		"不要用 computer use",
+		"别用 computer use",
+		"不使用 computer use",
+	} {
+		if strings.Contains(text, negated) {
+			return false
+		}
+	}
+	if strings.Contains(text, "computer use") || strings.Contains(text, "mcp__computer_use") {
+		return true
+	}
+	for _, explanatory := range []string{
+		"how do i ",
+		"how to ",
+		"explain how",
+		"summarize ",
+		"features",
+		"use cases",
+		"best practices",
+		"如何",
+		"教程",
+		"功能介绍",
+	} {
+		if strings.Contains(text, explanatory) {
+			return false
+		}
+	}
+	knownApp := strings.Contains(text, "doubao") ||
+		strings.Contains(text, "豆包") ||
+		strings.Contains(text, "cursor") ||
+		strings.Contains(text, "safari") ||
+		strings.Contains(text, "chrome") ||
+		strings.Contains(text, "notes") ||
+		strings.Contains(text, "备忘录") ||
+		strings.Contains(text, "textedit") ||
+		strings.Contains(text, "文本编辑")
+	if !knownApp {
+		return false
+	}
+	for _, action := range []string{
+		"open", "send", "write", "type", "create", "switch", "ask", "operate", "search",
+		"打开", "发送", "写入", "输入", "操作", "新建", "切换", "询问", "提问", "问", "查询", "搜索",
+	} {
+		if strings.Contains(text, action) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexGatewayAgnesComputerUseLikelyChatSubmit(call codexGatewayAgnesComputerUseCall) bool {
+	app := strings.ToLower(codexGatewayAgnesToolArgumentString(call.Arguments, "app"))
+	combined := strings.ToLower(strings.Join([]string{app, call.Arguments, call.Output}, "\n"))
+	for _, nonChat := range []string{"com.apple.notes", "notes", "com.todesktop.230313mzl4w4u92", "cursor", "textedit", "文本编辑", "备忘录"} {
+		if strings.Contains(app, nonChat) || strings.Contains(strings.ToLower(call.Output), nonChat) {
+			return false
+		}
+	}
+	for _, marker := range []string{
+		"com.bot.pc.doubao", "doubao", "豆包", "chat", "发消息", "send button", "message input", "chat input",
+	} {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexGatewayAgnesToolArgumentString(raw, key string) string {
+	raw = strings.TrimSpace(normalizeCodexGatewayToolArguments(raw))
+	if raw == "" || key == "" {
+		return ""
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(firstCodexGatewayToolString(parsed[key]))
+}
+
+func codexGatewayAgnesFunctionToolChoice(alias string) map[string]any {
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name": strings.TrimSpace(alias),
+		},
+	}
+}
+
+func codexGatewayAgnesComputerUseAlias(mapping CodexGatewayToolMappingResult, toolName string) string {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return ""
+	}
+	aliases := make([]string, 0, 1)
+	for alias, entry := range mapping.NameMap {
+		if strings.TrimSpace(entry.Name) != toolName {
+			continue
+		}
+		if !codexGatewayDeepSeekIsComputerUseToolIdentity(entry.Name, entry.Alias, firstCodexGatewayToolString(entry.Namespace, entry.NamespacePath)) {
+			continue
+		}
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	if len(aliases) == 0 {
+		return ""
+	}
+	return aliases[0]
+}
+
+func codexGatewayAgnesLastComputerUseOutput(req CodexGatewayResponsesCreateRequest, mapping CodexGatewayToolMappingResult) (codexGatewayAgnesComputerUseCall, bool) {
+	items, err := decodeCodexGatewayInputItems(req.Input)
+	if err != nil {
+		return codexGatewayAgnesComputerUseCall{}, false
+	}
+	calls := make(map[string]codexGatewayAgnesComputerUseCall)
+	lastOutputCallID := ""
+	hasComputerUseHistory := false
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ := strings.TrimSpace(firstCodexGatewayToolString(m["type"]))
+		switch typ {
+		case "function_call", "local_shell_call", "custom_tool_call", "tool_search_call":
+			callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
+			if callID == "" {
+				continue
+			}
+			if toolName, ok := codexGatewayAgnesComputerUseToolName(mapping, firstCodexGatewayToolString(m["name"])); ok {
+				calls[callID] = codexGatewayAgnesComputerUseCall{
+					ToolName:  toolName,
+					Arguments: normalizeCodexGatewayToolArguments(m["arguments"]),
+				}
+				hasComputerUseHistory = true
+			}
+		case "function_call_output", "local_shell_call_output", "custom_tool_call_output", "tool_search_output":
+			callID := strings.TrimSpace(firstCodexGatewayToolString(m["call_id"], m["tool_call_id"], m["id"]))
+			if callID != "" {
+				lastOutputCallID = callID
+				call := calls[callID]
+				call.Output = firstCodexGatewayToolString(m["output"])
+				calls[callID] = call
+			}
+		case "message":
+			if strings.TrimSpace(firstCodexGatewayToolString(m["role"])) == "assistant" {
+				for callID, call := range codexGatewayAgnesComputerUseToolCallsFromAssistantMessage(m, mapping) {
+					calls[callID] = call
+					hasComputerUseHistory = true
+				}
+			}
+		}
+	}
+	if lastOutputCallID == "" {
+		return codexGatewayAgnesComputerUseCall{}, hasComputerUseHistory
+	}
+	call, ok := calls[lastOutputCallID]
+	if ok && strings.TrimSpace(call.ToolName) != "" {
+		return call, true
+	}
+	return codexGatewayAgnesComputerUseCall{}, hasComputerUseHistory
+}
+
+func codexGatewayAgnesComputerUseToolCallsFromAssistantMessage(message map[string]any, mapping CodexGatewayToolMappingResult) map[string]codexGatewayAgnesComputerUseCall {
+	out := make(map[string]codexGatewayAgnesComputerUseCall)
+	calls, ok := message["tool_calls"].([]any)
+	if !ok {
+		return out
+	}
+	for _, rawCall := range calls {
+		call, ok := rawCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		callID := strings.TrimSpace(firstCodexGatewayToolString(call["id"], call["call_id"], call["tool_call_id"]))
+		if callID == "" {
+			continue
+		}
+		function, _ := call["function"].(map[string]any)
+		if toolName, ok := codexGatewayAgnesComputerUseToolName(mapping, firstCodexGatewayToolString(call["name"], function["name"])); ok {
+			out[callID] = codexGatewayAgnesComputerUseCall{
+				ToolName:  toolName,
+				Arguments: normalizeCodexGatewayToolArguments(function["arguments"]),
+			}
+		}
+	}
+	return out
+}
+
+func codexGatewayAgnesComputerUseToolName(mapping CodexGatewayToolMappingResult, rawName string) (string, bool) {
+	rawName = strings.TrimSpace(rawName)
+	if rawName == "" {
+		return "", false
+	}
+	if entry, ok := mapping.NameMap[rawName]; ok {
+		if codexGatewayDeepSeekIsComputerUseToolIdentity(entry.Name, entry.Alias, firstCodexGatewayToolString(entry.Namespace, entry.NamespacePath)) {
+			return strings.TrimSpace(entry.Name), true
+		}
+	}
+	if alias, err := resolveCodexGatewayToolAlias(mapping, rawName); err == nil && alias != "" {
+		if entry, ok := mapping.NameMap[alias]; ok && codexGatewayDeepSeekIsComputerUseToolIdentity(entry.Name, entry.Alias, firstCodexGatewayToolString(entry.Namespace, entry.NamespacePath)) {
+			return strings.TrimSpace(entry.Name), true
+		}
+	}
+	for _, entry := range mapping.NameMap {
+		if entry.Name != rawName && entry.Alias != rawName && codexGatewayOriginalToolPath(entry) != rawName {
+			continue
+		}
+		if codexGatewayDeepSeekIsComputerUseToolIdentity(entry.Name, entry.Alias, firstCodexGatewayToolString(entry.Namespace, entry.NamespacePath)) {
+			return strings.TrimSpace(entry.Name), true
+		}
+	}
+	return "", false
 }
 
 func codexGatewayDeepSeekMergeDeferredToolSearchOutputTools(mapping CodexGatewayToolMappingResult, input json.RawMessage, cfg CodexGatewayToolMappingConfig) (CodexGatewayToolMappingResult, error) {

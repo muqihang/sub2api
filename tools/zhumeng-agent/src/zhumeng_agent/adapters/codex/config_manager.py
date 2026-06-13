@@ -96,7 +96,6 @@ class CodexConfigManager:
         reasoning_effort = self._current_managed_reasoning_effort(provider)
         catalog_path = self.catalog_path_for_profile(profile)
         catalog_payload = model_catalog_payload or {"models": []}
-        default_limits = self._default_model_limits(catalog_payload, default_model)
         supports_websockets = CODEX_SUPPORTS_WEBSOCKETS
         feature_settings = self._feature_settings(enable_plugins=self._should_enable_plugins())
         feature_lines = ["[features]"]
@@ -107,8 +106,6 @@ class CodexConfigManager:
         config_text = (
             f'model_provider = "{provider}"\n\n'
             f'model = "{default_model}"\n'
-            f'model_context_window = {default_limits["context_window"]}\n'
-            f'model_auto_compact_token_limit = {default_limits["auto_compact_token_limit"]}\n'
             f'model_catalog_json = "{catalog_path}"\n'
             + (f'model_reasoning_effort = "{reasoning_effort}"\n\n' if reasoning_effort else "\n")
             + "\n".join(feature_lines)

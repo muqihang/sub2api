@@ -48,8 +48,8 @@ def test_no_existing_config_creates_managed_config(tmp_path: Path):
 
     assert 'model_provider = "zhumeng-codex"' in config_text
     assert 'model = "deepseek-v4-pro"' in config_text
-    assert "model_context_window = 1000000" in config_text
-    assert "model_auto_compact_token_limit = 850000" in config_text
+    assert "model_context_window" not in config_text
+    assert "model_auto_compact_token_limit" not in config_text
     assert 'model_catalog_json = "' in config_text
     assert '[model_providers.zhumeng-codex]' in config_text
     assert 'name = "Zhumeng Codex"' in config_text
@@ -185,9 +185,54 @@ def test_repair_preserves_current_managed_model_selection(tmp_path: Path):
     parsed = __import__("tomllib").loads(config_text)
     assert parsed["model"] == "deepseek-v4-flash"
     assert parsed["model_reasoning_effort"] == "xhigh"
-    assert parsed["model_context_window"] == 1000000
-    assert parsed["model_auto_compact_token_limit"] == 850000
+    assert "model_context_window" not in parsed
+    assert "model_auto_compact_token_limit" not in parsed
 
+
+
+def test_config_uses_per_model_catalog_limits_without_global_context_override(tmp_path: Path):
+    catalog = {
+        "models": [
+            {
+                "slug": "gpt-5.5",
+                "display_name": "GPT-5.5",
+                "context_window": 272000,
+                "auto_compact_token_limit": 244800,
+            },
+            {
+                "slug": "claude-opus-4-8",
+                "display_name": "Claude Opus 4.8",
+                "context_window": 1000000,
+                "auto_compact_token_limit": 850000,
+            },
+            {
+                "slug": "deepseek-v4-pro",
+                "display_name": "DeepSeek V4 Pro",
+                "context_window": 1000000,
+                "auto_compact_token_limit": 850000,
+            },
+        ]
+    }
+    (tmp_path / "config.toml").write_text(
+        "\n".join(
+            [
+                'model_provider = "zhumeng-codex"',
+                'model = "gpt-5.5"',
+                "model_context_window = 272000",
+                "model_auto_compact_token_limit = 244800",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manager = CodexConfigManager(tmp_path)
+
+    plan = manager.plan_configure(DEFAULT_PROFILE, 18081, "loopback-secret", catalog)
+    parsed = __import__("tomllib").loads(plan.config_text)
+
+    assert parsed["model"] == "gpt-5.5"
+    assert "model_context_window" not in parsed
+    assert "model_auto_compact_token_limit" not in parsed
 
 def test_discover_git_project_path_returns_repository_root(tmp_path: Path):
     repo = tmp_path / "repo"
