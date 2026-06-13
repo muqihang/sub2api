@@ -7,9 +7,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClaudeCodePersonaDefaultsTrack2170(t *testing.T) {
-	require.Equal(t, "2.1.170", CLICurrentVersion)
-	require.Equal(t, "claude-cli/2.1.170 (external, sdk-cli)", DefaultHeaders["User-Agent"])
+func TestClaudeCodePersonaDefaultsTrack2175(t *testing.T) {
+	require.Equal(t, "2.1.175", CLICurrentVersion)
+	require.Equal(t, "claude-cli/2.1.175 (external, sdk-cli)", DefaultHeaders["User-Agent"])
 	require.Equal(t, "0.94.0", DefaultHeaders["X-Stainless-Package-Version"])
 	require.Equal(t, "v24.3.0", DefaultHeaders["X-Stainless-Runtime-Version"])
 	_, hasTimeout := DefaultHeaders["X-Stainless-Timeout"]

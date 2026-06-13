@@ -38,11 +38,10 @@ const (
 	ccGatewayExtraCanaryOnly = "cc_gateway_canary_only"
 	ccGatewayExtraBillingCCH = "billing_cch_mode"
 
-	// Interim shared-pool policy stays anchored to the highest available old-CCH
-	// compatible Claude Code profile, 2.1.170. Same-minor CLI-through drift is
-	// still forwarded to CC Gateway for source-of-truth resolver handling;
-	// unknown newer majors stay fail-closed at the resolver.
-	ccGatewayAnthropicPolicyVersion = "2.1.170"
+	// Final shared-pool policy is anchored to the verified Claude Code 2.1.175
+	// profile. Stale compatible account metadata is admission-only and final
+	// normal outbound traffic canonicalizes to this version.
+	ccGatewayAnthropicPolicyVersion = "2.1.175"
 )
 
 type ccGatewayAnthropicRoute string
@@ -379,7 +378,7 @@ func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request
 	if account != nil {
 		// Stale compatible account metadata is admission-only. Do not mutate DB Extra
 		// here, but canonicalize final normal outbound persona to the verified
-		// interim policy version.
+		// final policy version.
 		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" && ccGatewayPolicyVersionCompatible(version) {
 			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
 		}
@@ -419,11 +418,11 @@ func ccGatewayAccountEmail(account *Account) string {
 }
 
 func ccGatewayPolicyVersionCompatible(version string) bool {
-	// Keep this as an explicit verified-corpus gate, not a broad <=2.1.170
-	// assumption. 2.1.171 was not published, and 2.1.172+ must stay behind
-	// the separate CCH delta investigation.
+	// Keep this as an explicit verified-corpus gate, not a broad semver range.
+	// 2.1.171 was not published; 2.1.172+ are not admitted unless promoted to
+	// an explicit verified profile such as the current 2.1.175 final persona.
 	switch strings.TrimSpace(version) {
-	case "2.1.150", "2.1.153", "2.1.169", ccGatewayAnthropicPolicyVersion:
+	case "2.1.150", "2.1.153", "2.1.169", "2.1.170", ccGatewayAnthropicPolicyVersion:
 		return true
 	default:
 		return false

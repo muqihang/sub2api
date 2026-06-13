@@ -745,7 +745,7 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 		ProxyURL:       "socks5h://user:pass@proxy.example:443",
 		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
 		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-		PersonaVariant: "claude-code-2.1.170-macos-local",
+		PersonaVariant: "claude-code-2.1.175-macos-local",
 		SessionPolicy:  "preserve_downstream_session_id",
 	})
 	if err != nil {
@@ -791,7 +791,7 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarFailsClosedOnGatewayError(t *tes
 		ProxyURL:       "socks5h://proxy.example:443",
 		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
 		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-		PersonaVariant: "claude-code-2.1.170-macos-local",
+		PersonaVariant: "claude-code-2.1.175-macos-local",
 		SessionPolicy:  "preserve_downstream_session_id",
 	})
 	if err == nil || !strings.Contains(err.Error(), "status 403") {
