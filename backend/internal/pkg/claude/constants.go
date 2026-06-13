@@ -64,7 +64,7 @@ const DefaultCacheControlTTL = "5m"
 // CLICurrentVersion 是 sub2api 当前对外伪装的 Claude Code CLI 版本号（三段 semver）。
 // 用于 billing attribution block 中的 cc_version=X.Y.Z.{fp} 前缀以及 fingerprint 计算。
 // 必须与 DefaultHeaders["User-Agent"] 中的版本号严格一致；不一致会被 Anthropic 判第三方。
-const CLICurrentVersion = "2.1.150"
+const CLICurrentVersion = "2.1.175"
 
 // ClaudeCodeMessagesBetas returns the real Claude Code /v1/messages beta tokens.
 func ClaudeCodeMessagesBetas() []string {
@@ -87,7 +87,7 @@ func ClaudeCodeMessagesOAuthBetas() []string {
 	}
 }
 
-// ClaudeCodeMessagesOAuthBetasForBody returns the observed Claude Code CLI 2.1.150
+// ClaudeCodeMessagesOAuthBetasForBody returns the observed Claude Code CLI 2.1.175
 // OAuth /v1/messages beta sequence for a specific request shape.
 func ClaudeCodeMessagesOAuthBetasForBody(body []byte) []string {
 	betas := []string{

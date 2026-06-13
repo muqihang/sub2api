@@ -28,8 +28,8 @@ import (
 )
 
 const jointLocalCaptureArtifactSlug = "sub2api-cc-gateway-joint-local-capture"
-const jointExpectedGatewayUserAgent = "claude-cli/2.1.150 (external, sdk-cli)"
-const jointExpectedGatewayPersonaVariant = "claude-code-2.1.150-macos-local"
+const jointExpectedGatewayUserAgent = "claude-cli/2.1.175 (external, sdk-cli)"
+const jointExpectedGatewayPersonaVariant = "claude-code-2.1.175-macos-local"
 
 type jointRedactionRule struct {
 	Label  string
@@ -523,6 +523,10 @@ func ccGatewayRepoRoot() string {
 	if root := strings.TrimSpace(os.Getenv("CC_GATEWAY_REPO_ROOT")); root != "" {
 		return root
 	}
+	worktree := "/Users/muqihang/chelingxi_workspace/cc-gateway/.worktrees/claude-code-2173-main"
+	if _, err := os.Stat(filepath.Join(worktree, "package.json")); err == nil {
+		return worktree
+	}
 	return "/Users/muqihang/chelingxi_workspace/cc-gateway"
 }
 
@@ -624,7 +628,7 @@ process:
 shared_pool:
   max_body_bytes: 2097152
   billing_cch_mode: strip
-  message_beta_profile: claude_code_2_1_150_subscription_1m
+  message_beta_profile: claude_code_2_1_175_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
@@ -702,7 +706,7 @@ shared_pool:
   billing_cch_mode: sign
   signing_enabled: true
   signing_evidence_gates_approved: true
-  message_beta_profile: claude_code_2_1_150_subscription_1m
+  message_beta_profile: claude_code_2_1_175_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
@@ -770,7 +774,7 @@ process:
 shared_pool:
   max_body_bytes: 2097152
   billing_cch_mode: disabled
-  message_beta_profile: claude_code_2_1_150_subscription_1m
+  message_beta_profile: claude_code_2_1_175_subscription_1m
 account_identities:
   "301":
     device_id: "%s"
@@ -899,7 +903,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			Passed:                   passed,
 			Notes: []string{
 				"sub2api->gateway rewrites metadata.user_id session to a server-issued UUID-like value before CC Gateway final-output handling",
-				"gateway final persona is canonical Claude Code 2.1.150 subscription profile",
+				"gateway final persona is canonical Claude Code 2.1.175 subscription profile",
 			},
 		}
 	})
@@ -960,7 +964,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			upstreamSummary.Body.BillingHeaderPresent &&
 			upstreamSummary.Body.CCHPresent &&
 			!strings.Contains(upstreamBody, "cch=00000;") &&
-			regexp.MustCompile(`cc_version=2\.1\.150\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
+			regexp.MustCompile(`cc_version=`+regexp.QuoteMeta(ccGatewayAnthropicPolicyVersion)+`\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
 			upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
 		return jointCaptureScenario{
 			Category:                 "sub2api_joint",
@@ -987,6 +991,65 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			},
 		}
 	})
+
+	for _, modelCase := range []struct {
+		name  string
+		model string
+	}{
+		{name: "oauth_native_messages_sign_primary_opus48", model: "claude-opus-4-8"},
+		{name: "oauth_native_messages_sign_primary_fable5", model: "claude-fable-5"},
+	} {
+		modelCase := modelCase
+		run(modelCase.name, func() jointCaptureScenario {
+			captureServer.reset()
+			gatewayUpstream.reset()
+			account := newJointOAuthAccount()
+			c, ctx, rec := newJointContext("/v1/messages")
+			body := []byte(fmt.Sprintf(`{"model":%q,"stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello model shape"}]}]}`, modelCase.model))
+			result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, http.StatusOK, rec.Code)
+			hop1 := gatewayUpstream.popSingle(t)
+			hop2 := captureServer.popSingle(t)
+			sub2apiSummary := summarizeGatewayHop(hop1, body)
+			upstreamSummary := summarizeRawCaptureHop(hop2)
+			upstreamBody := string(hop2.Body)
+			passed := !sub2apiSummary.BodyUnchangedFromClient &&
+				!sub2apiSummary.Body.BillingHeaderPresent &&
+				!sub2apiSummary.Body.CCHPresent &&
+				upstreamSummary.Body.BillingHeaderPresent &&
+				upstreamSummary.Body.CCHPresent &&
+				strings.Contains(upstreamBody, `"model":"`+modelCase.model+`"`) &&
+				!strings.Contains(upstreamBody, "cch=00000;") &&
+				regexp.MustCompile(`cc_version=`+regexp.QuoteMeta(ccGatewayAnthropicPolicyVersion)+`\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
+				upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
+			return jointCaptureScenario{
+				Category:                 "sub2api_joint",
+				Route:                    "/v1/messages?beta=true",
+				PolicyDecision:           "forward_sign_primary",
+				SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
+				EgressBucketID:           "bucket-a",
+				PolicyVersion:            ccGatewayAnthropicPolicyVersion,
+				ResponseStatus:           rec.Code,
+				ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
+				ClientBodyRef:            jointBodyRef(body),
+				Sub2APIToGateway:         &sub2apiSummary,
+				GatewayToUpstream:        &upstreamSummary,
+				RequestCount:             hop2Count(hop1, hop2),
+				FailClosed:               false,
+				NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
+				NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
+				Sub2APIFinalMutation:     !sub2apiSummary.BodyUnchangedFromClient,
+				CCGatewayOwnsFinalOutput: upstreamSummary.Body.BillingHeaderPresent && upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent,
+				Passed:                   passed,
+				Notes: []string{
+					"2.1.175 sign-primary model shape reached localhost upstream with CC Gateway-owned billing/CCH",
+					"mock upstream shape pass does not prove real upstream entitlement",
+				},
+			}
+		})
+	}
 
 	run("apikey_native_messages_strip", func() jointCaptureScenario {
 		captureServer.reset()

@@ -159,7 +159,7 @@ func upgradeLegacyDefaultMimicryFingerprint(fp *Fingerprint) bool {
 
 // GetOrCreateMimicryFingerprint returns a safe fingerprint for non-Claude-Code OAuth mimicry.
 // It MUST NOT derive values from client request headers. Cached fingerprints win; on cache miss
-// it synthesizes a Claude Code 2.1.150 default fingerprint with a fresh client_id.
+// it synthesizes a Claude Code 2.1.175 default fingerprint with a fresh client_id.
 func (s *IdentityService) GetOrCreateMimicryFingerprint(ctx context.Context, accountID int64) (*Fingerprint, error) {
 	if s == nil || s.cache == nil {
 		return nil, fmt.Errorf("identity cache unavailable")

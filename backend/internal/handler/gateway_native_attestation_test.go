@@ -65,7 +65,7 @@ func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI str
 		"client_type":               service.ClaudeCodeNativeClientType,
 		"guard_attested":            true,
 		"guard_version":             "guard_v1",
-		"claude_code_version":       "2.1.150",
+		"claude_code_version":       "2.1.175",
 		"local_session_ref":         "hmac-sha256:" + strings.Repeat("a", 64),
 		"netwatch_required":         true,
 		"shape_healthcheck_profile": service.ClaudeCodeNativeTakeoverHealthProfile,

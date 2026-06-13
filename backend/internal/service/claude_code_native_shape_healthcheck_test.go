@@ -32,7 +32,7 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 			Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 				RequestURI:              ClaudeCodeNativeInboundMessages + "?beta=true",
 				GuardVersion:            "guard_v1",
-				ClaudeCodeVersion:       "2.1.150",
+				ClaudeCodeVersion:       "2.1.175",
 				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
 				ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
 			}, messagesSonnet),
@@ -44,7 +44,7 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 			Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 				RequestURI:              ClaudeCodeNativeInboundMessages,
 				GuardVersion:            "guard_v1",
-				ClaudeCodeVersion:       "2.1.150",
+				ClaudeCodeVersion:       "2.1.175",
 				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("b", 64),
 				ShapeHealthcheckProfile: ClaudeCodeNativeToolSearchHealthProfile,
 			}, messagesOpus),
@@ -56,7 +56,7 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 			Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 				RequestURI:              ClaudeCodeNativeInboundCountTokens,
 				GuardVersion:            "guard_v1",
-				ClaudeCodeVersion:       "2.1.150",
+				ClaudeCodeVersion:       "2.1.175",
 				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("c", 64),
 				ShapeHealthcheckProfile: ClaudeCodeNativeControlPlaneHealthProfile,
 			}, countTokens),
@@ -68,7 +68,7 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 			Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 				RequestURI:              ClaudeCodeNativeInboundCountTokens,
 				GuardVersion:            "guard_v1",
-				ClaudeCodeVersion:       "2.1.150",
+				ClaudeCodeVersion:       "2.1.175",
 				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("d", 64),
 				ShapeHealthcheckProfile: ClaudeCodeNativeNetwatchHealthProfile,
 			}, countTokens),
@@ -112,7 +112,7 @@ func TestClaudeCodeNativeShapeHealthcheckFailsClosedOnBypassOrRealUpstream(t *te
 		Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 			RequestURI:              ClaudeCodeNativeInboundMessages,
 			GuardVersion:            "guard_v1",
-			ClaudeCodeVersion:       "2.1.150",
+			ClaudeCodeVersion:       "2.1.175",
 			LocalSessionRef:         "hmac-sha256:" + strings.Repeat("d", 64),
 			ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
 		}, body),
@@ -146,7 +146,7 @@ func TestClaudeCodeNativeShapeHealthcheckRequiresExplicitToolSearchMarkers(t *te
 			Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 				RequestURI:              ClaudeCodeNativeInboundMessages,
 				GuardVersion:            "guard_v1",
-				ClaudeCodeVersion:       "2.1.150",
+				ClaudeCodeVersion:       "2.1.175",
 				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("e", 64),
 				ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
 			}, plainTools),
@@ -158,7 +158,7 @@ func TestClaudeCodeNativeShapeHealthcheckRequiresExplicitToolSearchMarkers(t *te
 			Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 				RequestURI:              ClaudeCodeNativeInboundCountTokens,
 				GuardVersion:            "guard_v1",
-				ClaudeCodeVersion:       "2.1.150",
+				ClaudeCodeVersion:       "2.1.175",
 				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("f", 64),
 				ShapeHealthcheckProfile: ClaudeCodeNativeToolSearchHealthProfile,
 			}, countTokens),
@@ -184,7 +184,7 @@ func TestClaudeCodeNativeShapeHealthcheckSafeSummariesRejectSensitiveOrBypassFie
 		Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 			RequestURI:              ClaudeCodeNativeInboundMessages,
 			GuardVersion:            "guard_v1",
-			ClaudeCodeVersion:       "2.1.150",
+			ClaudeCodeVersion:       "2.1.175",
 			LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
 			ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
 		}, body),
@@ -213,7 +213,7 @@ func TestClaudeCodeNativeShapeHealthcheckSafeSummariesRejectTypeCoercionAndBroad
 		Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
 			RequestURI:              ClaudeCodeNativeInboundMessages,
 			GuardVersion:            "guard_v1",
-			ClaudeCodeVersion:       "2.1.150",
+			ClaudeCodeVersion:       "2.1.175",
 			LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
 			ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
 		}, body),
