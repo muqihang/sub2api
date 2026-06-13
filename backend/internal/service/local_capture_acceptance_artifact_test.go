@@ -992,6 +992,65 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		}
 	})
 
+	for _, modelCase := range []struct {
+		name  string
+		model string
+	}{
+		{name: "oauth_native_messages_sign_primary_opus48", model: "claude-opus-4-8"},
+		{name: "oauth_native_messages_sign_primary_fable5", model: "claude-fable-5"},
+	} {
+		modelCase := modelCase
+		run(modelCase.name, func() jointCaptureScenario {
+			captureServer.reset()
+			gatewayUpstream.reset()
+			account := newJointOAuthAccount()
+			c, ctx, rec := newJointContext("/v1/messages")
+			body := []byte(fmt.Sprintf(`{"model":%q,"stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello model shape"}]}]}`, modelCase.model))
+			result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, http.StatusOK, rec.Code)
+			hop1 := gatewayUpstream.popSingle(t)
+			hop2 := captureServer.popSingle(t)
+			sub2apiSummary := summarizeGatewayHop(hop1, body)
+			upstreamSummary := summarizeRawCaptureHop(hop2)
+			upstreamBody := string(hop2.Body)
+			passed := !sub2apiSummary.BodyUnchangedFromClient &&
+				!sub2apiSummary.Body.BillingHeaderPresent &&
+				!sub2apiSummary.Body.CCHPresent &&
+				upstreamSummary.Body.BillingHeaderPresent &&
+				upstreamSummary.Body.CCHPresent &&
+				strings.Contains(upstreamBody, `"model":"`+modelCase.model+`"`) &&
+				!strings.Contains(upstreamBody, "cch=00000;") &&
+				regexp.MustCompile(`cc_version=`+regexp.QuoteMeta(ccGatewayAnthropicPolicyVersion)+`\.[a-f0-9]{3}`).MatchString(upstreamBody) &&
+				upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
+			return jointCaptureScenario{
+				Category:                 "sub2api_joint",
+				Route:                    "/v1/messages?beta=true",
+				PolicyDecision:           "forward_sign_primary",
+				SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
+				EgressBucketID:           "bucket-a",
+				PolicyVersion:            ccGatewayAnthropicPolicyVersion,
+				ResponseStatus:           rec.Code,
+				ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
+				ClientBodyRef:            jointBodyRef(body),
+				Sub2APIToGateway:         &sub2apiSummary,
+				GatewayToUpstream:        &upstreamSummary,
+				RequestCount:             hop2Count(hop1, hop2),
+				FailClosed:               false,
+				NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
+				NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
+				Sub2APIFinalMutation:     !sub2apiSummary.BodyUnchangedFromClient,
+				CCGatewayOwnsFinalOutput: upstreamSummary.Body.BillingHeaderPresent && upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent,
+				Passed:                   passed,
+				Notes: []string{
+					"2.1.175 sign-primary model shape reached localhost upstream with CC Gateway-owned billing/CCH",
+					"mock upstream shape pass does not prove real upstream entitlement",
+				},
+			}
+		})
+	}
+
 	run("apikey_native_messages_strip", func() jointCaptureScenario {
 		captureServer.reset()
 		gatewayUpstream.reset()
