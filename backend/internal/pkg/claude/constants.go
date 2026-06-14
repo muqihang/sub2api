@@ -22,13 +22,14 @@ const (
 	BetaFastMode                 = "fast-mode-2026-02-01"
 
 	// 新增（对齐官方 CLI 2.1.9x 以来的流量）
-	BetaPromptCachingScope = "prompt-caching-scope-2026-01-05"
-	BetaEffort             = "effort-2025-11-24"
-	BetaAdvisorTool        = "advisor-tool-2026-03-01"
-	BetaStructuredOutputs  = "structured-outputs-2025-12-15"
-	BetaRedactThinking     = "redact-thinking-2026-02-12"
-	BetaContextManagement  = "context-management-2025-06-27"
-	BetaExtendedCacheTTL   = "extended-cache-ttl-2025-04-11"
+	BetaPromptCachingScope    = "prompt-caching-scope-2026-01-05"
+	BetaEffort                = "effort-2025-11-24"
+	BetaAdvisorTool           = "advisor-tool-2026-03-01"
+	BetaStructuredOutputs     = "structured-outputs-2025-12-15"
+	BetaMidConversationSystem = "mid-conversation-system-2026-04-07"
+	BetaRedactThinking        = "redact-thinking-2026-02-12"
+	BetaContextManagement     = "context-management-2025-06-27"
+	BetaExtendedCacheTTL      = "extended-cache-ttl-2025-04-11"
 )
 
 // DroppedBetas 是转发时需要从 anthropic-beta header 中移除的 beta token 列表。
@@ -103,6 +104,33 @@ func ClaudeCodeMessagesOAuthBetasForBody(body []byte) []string {
 		return append(betas, BetaExtendedCacheTTL)
 	}
 	return append(betas, BetaStructuredOutputs)
+}
+
+// ClaudeCode2175Subscription1MBetas returns the verified Claude Code 2.1.175
+// subscription/1M messages beta sequence used by CC Gateway's native profile.
+func ClaudeCode2175Subscription1MBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaContext1M,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaMidConversationSystem,
+		BetaEffort,
+	}
+}
+
+// ClaudeCode2175APIKeyNon1MBetas returns the verified Claude Code 2.1.175
+// API-key/non-1M messages beta sequence captured in Plan B.
+func ClaudeCode2175APIKeyNon1MBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaMidConversationSystem,
+		BetaEffort,
+	}
 }
 
 // ClaudeCodeCountTokensOAuthBetas returns the OAuth /v1/messages/count_tokens beta tokens.

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func loadNativeFixture(t *testing.T, name string) []byte {
@@ -20,6 +21,7 @@ func loadNativeFixture(t *testing.T, name string) []byte {
 func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals(t *testing.T) {
 	messagesSonnet := loadNativeFixture(t, "messages_toolsearch_sonnet.json")
 	messagesOpus := loadNativeFixture(t, "messages_opus.json")
+	messagesRich := loadNativeFixture(t, "messages_rich_native_shape.json")
 	countTokens := loadNativeFixture(t, "count_tokens_sonnet.json")
 	controlPlaneSafe := loadNativeFixture(t, "control_plane_safe_intent_summary.json")
 	netwatchSafe := loadNativeFixture(t, "netwatch_summary.json")
@@ -48,6 +50,18 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("b", 64),
 				ShapeHealthcheckProfile: ClaudeCodeNativeToolSearchHealthProfile,
 			}, messagesOpus),
+		},
+		{
+			Name:  "messages_rich_native_shape",
+			Route: ClaudeCodeNativeInboundMessages,
+			Body:  messagesRich,
+			Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
+				RequestURI:              ClaudeCodeNativeInboundMessages,
+				GuardVersion:            "guard_v1",
+				ClaudeCodeVersion:       "2.1.175",
+				LocalSessionRef:         "hmac-sha256:" + strings.Repeat("e", 64),
+				ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+			}, messagesRich),
 		},
 		{
 			Name:  "count_tokens_sonnet",
@@ -86,6 +100,10 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 	require.Equal(t, ClaudeCodeNativeShapeHealthcheckPass, health.Status)
 	require.Equal(t, health.Denominator, health.Passed)
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("tool_search_fixture"))
+	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("system_fixture"))
+	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("context_management_fixture"))
+	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("output_config_fixture"))
+	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("adaptive_thinking_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("count_tokens_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("control_plane_safe_intent_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("netwatch_fixture"))
@@ -98,7 +116,7 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 
 	safe, err := json.Marshal(health)
 	require.NoError(t, err)
-	for _, forbidden := range []string{"synthetic native healthcheck content", "synthetic opus healthcheck content", "synthetic count tokens content", "api.anthropic.com", "authorization", "cookie", "raw_"} {
+	for _, forbidden := range []string{"synthetic native healthcheck content", "synthetic opus healthcheck content", "synthetic count tokens content", "synthetic native rich shape content", "synthetic native system identity block", "api.anthropic.com", "authorization", "cookie", "raw_"} {
 		require.NotContains(t, string(safe), forbidden)
 	}
 }
@@ -237,4 +255,16 @@ func TestClaudeCodeNativeShapeHealthcheckAllowsBlockAndShadowControlPlaneDecisio
 		summary := []byte(`{"safe_intent":true,"method":"GET","path_template":"/api/claude_cli/bootstrap","decision":"` + decision + `","status":403,"stores_raw":false,"messages_signing_reused":false,"response_schema_keys":["ok"]}`)
 		require.True(t, validClaudeCodeNativeControlPlaneSafeIntent(summary), decision)
 	}
+}
+
+func TestClaudeCodeNativeShapeHealthcheckRequiresRichFixtureObjectShapes(t *testing.T) {
+	malformed := gjson.Parse(`{"system":[{}],"context_management":null,"output_config":"effort","thinking":{"type":"adaptive"}}`)
+	require.False(t, claudeCodeNativeHasSystemFixture(malformed))
+	require.False(t, claudeCodeNativeHasContextManagementFixture(malformed))
+	require.False(t, claudeCodeNativeHasOutputConfigFixture(malformed))
+
+	wellFormed := gjson.Parse(`{"system":[{"type":"text","text":"synthetic"}],"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},"output_config":{"effort":"high"}}`)
+	require.True(t, claudeCodeNativeHasSystemFixture(wellFormed))
+	require.True(t, claudeCodeNativeHasContextManagementFixture(wellFormed))
+	require.True(t, claudeCodeNativeHasOutputConfigFixture(wellFormed))
 }
