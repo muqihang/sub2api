@@ -291,3 +291,43 @@ func TestCCGatewayBoundary_ForwardAsResponsesSkipsMimicryAndProxy(t *testing.T) 
 	require.Empty(t, upstream.lastProxyURL, "CC Gateway responses path must not use account proxy")
 	require.Nil(t, upstream.lastProfile, "CC Gateway responses path must not use account TLS fingerprint profile")
 }
+
+func TestCCGatewayBoundary_ForwardNativeRichShapeWithoutDowngradingBodyFields(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := loadNativeFixture(t, "messages_rich_native_shape.json")
+
+	ctx = WithClaudeCodeNativeAuditSummary(ctx, buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
+		RequestURI:              ClaudeCodeNativeInboundMessages,
+		GuardVersion:            "guard_v1",
+		ClaudeCodeVersion:       "2.1.175",
+		LocalSessionRef:         "hmac-sha256:" + strings.Repeat("f", 64),
+		ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+	}, body))
+	c.Request = c.Request.WithContext(ctx)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(body, upstream.lastBody), "native rich body must reach CC Gateway without Sub2API field downgrade")
+	require.Equal(t, ClaudeCodeNativeClientType, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
+	require.Equal(t, "true", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeGuardAttestedHeader))
+	require.Equal(t, "false", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeServerFilledShapeHeader))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, AnthropicCompatClientTypeHeader))
+
+	out := upstream.lastBody
+	require.Equal(t, "adaptive", gjson.GetBytes(out, "thinking.type").String())
+	require.True(t, gjson.GetBytes(out, "context_management.edits.0.type").Exists())
+	require.Equal(t, "high", gjson.GetBytes(out, "output_config.effort").String())
+	require.Len(t, gjson.GetBytes(out, "tools").Array(), 3)
+	require.ElementsMatch(t, []string{"Bash", "Edit", "Read"}, []string{
+		gjson.GetBytes(out, "tools.0.name").String(),
+		gjson.GetBytes(out, "tools.1.name").String(),
+		gjson.GetBytes(out, "tools.2.name").String(),
+	})
+	require.Len(t, gjson.GetBytes(out, "system").Array(), 2)
+	require.True(t, gjson.GetBytes(out, "eager_input_streaming").Bool())
+	require.Empty(t, upstream.lastProxyURL, "native CC Gateway path must not use account proxy")
+	require.Nil(t, upstream.lastProfile, "native CC Gateway path must not use account TLS fingerprint profile")
+}

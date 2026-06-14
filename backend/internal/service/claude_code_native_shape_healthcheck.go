@@ -19,6 +19,10 @@ var ClaudeCodeNativeShapeHealthcheckFields = []string{
 	"messages_fixture",
 	"tool_search_fixture",
 	"thinking_fixture",
+	"system_fixture",
+	"context_management_fixture",
+	"output_config_fixture",
+	"adaptive_thinking_fixture",
 	"tools_fixture",
 	"count_tokens_fixture",
 	"stream_fixture",
@@ -100,8 +104,20 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 		if route == ClaudeCodeNativeInboundCountTokens && fixture.Audit.InboundRoute == ClaudeCodeNativeInboundCountTokens {
 			checks["count_tokens_fixture"] = true
 		}
-		if root.Get("thinking").Exists() {
+		if thinking := root.Get("thinking"); thinking.Exists() {
 			checks["thinking_fixture"] = true
+			if strings.EqualFold(strings.TrimSpace(thinking.Get("type").String()), "adaptive") {
+				checks["adaptive_thinking_fixture"] = true
+			}
+		}
+		if claudeCodeNativeHasSystemFixture(root) {
+			checks["system_fixture"] = true
+		}
+		if claudeCodeNativeHasContextManagementFixture(root) {
+			checks["context_management_fixture"] = true
+		}
+		if claudeCodeNativeHasOutputConfigFixture(root) {
+			checks["output_config_fixture"] = true
 		}
 		if root.Get("stream").Bool() {
 			checks["stream_fixture"] = true
@@ -139,6 +155,32 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 		result.SafeEvidence = []byte(`{"control_plane":"safe_summary_present","netwatch":"safe_summary_present"}`)
 	}
 	return result
+}
+
+func claudeCodeNativeHasSystemFixture(root gjson.Result) bool {
+	system := root.Get("system")
+	if !system.Exists() {
+		return false
+	}
+	if system.IsArray() {
+		for _, item := range system.Array() {
+			if strings.TrimSpace(item.Get("type").String()) == "text" && strings.TrimSpace(item.Get("text").String()) != "" {
+				return true
+			}
+		}
+		return false
+	}
+	return strings.TrimSpace(system.String()) != ""
+}
+
+func claudeCodeNativeHasContextManagementFixture(root gjson.Result) bool {
+	edits := root.Get("context_management.edits")
+	return edits.IsArray() && len(edits.Array()) > 0
+}
+
+func claudeCodeNativeHasOutputConfigFixture(root gjson.Result) bool {
+	effort := root.Get("output_config.effort")
+	return effort.Exists() && strings.TrimSpace(effort.String()) != "" && !claudeCodeNativeUnsafeSummaryText(effort.String())
 }
 
 func HasClaudeCodeNativeShapeHealthcheckField(field string) bool {

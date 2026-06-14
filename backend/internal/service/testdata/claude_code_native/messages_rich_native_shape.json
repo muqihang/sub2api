@@ -1,0 +1,41 @@
+{
+  "model": "claude-opus-4-8",
+  "max_tokens": 32000,
+  "stream": false,
+  "system": [
+    {"type": "text", "text": "synthetic native system identity block"},
+    {"type": "text", "text": "synthetic native environment block"}
+  ],
+  "thinking": {"type": "adaptive"},
+  "context_management": {"edits": [{"type": "clear_tool_uses_20250919"}]},
+  "output_config": {"effort": "high"},
+  "tools": [
+    {
+      "name": "Bash",
+      "description": "Synthetic shell tool",
+      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}},
+      "tool_reference": {"id": "fixture_bash_ref"},
+      "defer_loading": true
+    },
+    {
+      "name": "Edit",
+      "description": "Synthetic edit tool",
+      "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}}
+    },
+    {
+      "name": "Read",
+      "description": "Synthetic read tool",
+      "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}}
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "synthetic system-reminder shape block"},
+        {"type": "text", "text": "synthetic native rich shape content"}
+      ]
+    }
+  ],
+  "eager_input_streaming": true
+}

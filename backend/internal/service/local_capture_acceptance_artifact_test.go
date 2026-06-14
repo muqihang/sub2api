@@ -62,14 +62,21 @@ type jointCaptureMetadataSummary struct {
 }
 
 type jointCaptureBodySummary struct {
-	BodyRef              string                       `json:"body_ref"`
-	SizeBytes            int                          `json:"size_bytes"`
-	TopLevelKeys         []string                     `json:"top_level_keys,omitempty"`
-	MessageCount         int                          `json:"message_count,omitempty"`
-	SystemCount          int                          `json:"system_count,omitempty"`
-	BillingHeaderPresent bool                         `json:"billing_header_present"`
-	CCHPresent           bool                         `json:"cch_present"`
-	Metadata             *jointCaptureMetadataSummary `json:"metadata,omitempty"`
+	BodyRef                  string                       `json:"body_ref"`
+	SizeBytes                int                          `json:"size_bytes"`
+	TopLevelKeys             []string                     `json:"top_level_keys,omitempty"`
+	MessageCount             int                          `json:"message_count,omitempty"`
+	SystemCount              int                          `json:"system_count,omitempty"`
+	ToolsCount               int                          `json:"tools_count,omitempty"`
+	ToolNames                []string                     `json:"tool_names,omitempty"`
+	ThinkingPresent          bool                         `json:"thinking_present,omitempty"`
+	ThinkingType             string                       `json:"thinking_type,omitempty"`
+	ContextManagementPresent bool                         `json:"context_management_present,omitempty"`
+	OutputConfigKeys         []string                     `json:"output_config_keys,omitempty"`
+	EagerInputStreaming      bool                         `json:"eager_input_streaming,omitempty"`
+	BillingHeaderPresent     bool                         `json:"billing_header_present"`
+	CCHPresent               bool                         `json:"cch_present"`
+	Metadata                 *jointCaptureMetadataSummary `json:"metadata,omitempty"`
 }
 
 type jointCaptureHopSummary struct {
@@ -104,6 +111,7 @@ type jointCaptureScenario struct {
 	NoRealUpstream           bool                    `json:"no_real_upstream"`
 	NoNativeFallback         bool                    `json:"no_native_fallback"`
 	Sub2APIFinalMutation     bool                    `json:"sub2api_final_mutation"`
+	Sub2APIShapeInvariant    string                  `json:"sub2api_shape_invariant,omitempty"`
 	CCGatewayOwnsFinalOutput bool                    `json:"cc_gateway_owns_final_output"`
 	Passed                   bool                    `json:"passed"`
 	Notes                    []string                `json:"notes,omitempty"`
@@ -992,6 +1000,67 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		}
 	})
 
+	run("oauth_native_messages_sign_primary_rich_shape", func() jointCaptureScenario {
+		captureServer.reset()
+		gatewayUpstream.reset()
+		account := newJointOAuthAccount()
+		c, ctx, rec := newJointContext("/v1/messages")
+		body := loadNativeFixture(t, "messages_rich_native_shape.json")
+		ctx = WithClaudeCodeNativeAuditSummary(ctx, buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
+			RequestURI:              ClaudeCodeNativeInboundMessages,
+			GuardVersion:            "guard_v1",
+			ClaudeCodeVersion:       ccGatewayAnthropicPolicyVersion,
+			LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
+			ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+		}, body))
+		c.Request = c.Request.WithContext(ctx)
+
+		result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Equal(t, http.StatusOK, rec.Code)
+		hop1 := gatewayUpstream.popSingle(t)
+		hop2 := captureServer.popSingle(t)
+		sub2apiSummary := summarizeGatewayHop(hop1, body)
+		upstreamSummary := summarizeRawCaptureHop(hop2)
+		passed := sub2apiSummary.BodyUnchangedFromClient &&
+			!sub2apiSummary.Body.BillingHeaderPresent &&
+			!sub2apiSummary.Body.CCHPresent &&
+			upstreamSummary.Body.BillingHeaderPresent &&
+			upstreamSummary.Body.CCHPresent &&
+			upstreamSummary.Body.ThinkingPresent && upstreamSummary.Body.ThinkingType == "adaptive" &&
+			upstreamSummary.Body.ContextManagementPresent &&
+			len(upstreamSummary.Body.OutputConfigKeys) == 1 && upstreamSummary.Body.OutputConfigKeys[0] == "effort" &&
+			upstreamSummary.Body.ToolsCount == 3 &&
+			upstreamSummary.Body.SystemCount >= 3 &&
+			upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
+		return jointCaptureScenario{
+			Category:                 "sub2api_joint",
+			Route:                    "/v1/messages?beta=true",
+			PolicyDecision:           "forward_sign_primary_native_rich",
+			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
+			EgressBucketID:           "bucket-a",
+			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
+			ResponseStatus:           rec.Code,
+			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
+			ClientBodyRef:            jointBodyRef(body),
+			Sub2APIToGateway:         &sub2apiSummary,
+			GatewayToUpstream:        &upstreamSummary,
+			RequestCount:             hop2Count(hop1, hop2),
+			FailClosed:               false,
+			NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
+			NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
+			Sub2APIFinalMutation:     false,
+			Sub2APIShapeInvariant:    "native_body_preserved",
+			CCGatewayOwnsFinalOutput: upstreamSummary.Body.BillingHeaderPresent && upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent,
+			Passed:                   passed,
+			Notes: []string{
+				"native-attested rich body reaches CC Gateway without Sub2API field downgrade",
+				"gateway sign-primary final output preserves rich native fields while owning billing/CCH",
+			},
+		}
+	})
+
 	for _, modelCase := range []struct {
 		name  string
 		model string
@@ -1333,7 +1402,8 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		report.NoRealUpstream = report.NoRealUpstream && scenario.NoRealUpstream
 		report.NoNativeFallback = report.NoNativeFallback && scenario.NoNativeFallback
 		if strings.HasPrefix(scenario.Category, "sub2api_joint") {
-			report.Sub2APINotFinalMutating = report.Sub2APINotFinalMutating && scenario.Sub2APIFinalMutation
+			shapeOK := scenario.Sub2APIFinalMutation || scenario.Sub2APIShapeInvariant == "native_body_preserved"
+			report.Sub2APINotFinalMutating = report.Sub2APINotFinalMutating && shapeOK
 			report.CCGatewayFinalOwner = report.CCGatewayFinalOwner && scenario.CCGatewayOwnsFinalOutput
 		}
 		if strings.Contains(scenario.PolicyDecision, "control_plane") || scenario.PolicyDecision == "block" || scenario.PolicyDecision == "defer_block" {
@@ -1537,6 +1607,40 @@ func summarizeBody(body []byte, sessionHeader string) jointCaptureBodySummary {
 			summary.SystemCount = 1
 		}
 	}
+	if tools, ok := parsed["tools"].([]any); ok {
+		summary.ToolsCount = len(tools)
+		names := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			obj, ok := tool.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, ok := obj["name"].(string)
+			if ok && name != "" && !claudeCodeNativeUnsafeSummaryText(name) {
+				names = append(names, name)
+			}
+		}
+		summary.ToolNames = names
+	}
+	if thinking, ok := parsed["thinking"].(map[string]any); ok {
+		summary.ThinkingPresent = true
+		if thinkingType, ok := thinking["type"].(string); ok && !claudeCodeNativeUnsafeSummaryText(thinkingType) {
+			summary.ThinkingType = thinkingType
+		}
+	}
+	if _, ok := parsed["context_management"].(map[string]any); ok {
+		summary.ContextManagementPresent = true
+	}
+	if outputConfig, ok := parsed["output_config"].(map[string]any); ok {
+		for _, key := range jointSortedKeys(outputConfig) {
+			if key != "" && !claudeCodeNativeUnsafeSummaryText(key) {
+				summary.OutputConfigKeys = append(summary.OutputConfigKeys, key)
+			}
+		}
+	}
+	if eager, ok := parsed["eager_input_streaming"].(bool); ok {
+		summary.EagerInputStreaming = eager
+	}
 	metadata, ok := parsed["metadata"].(map[string]any)
 	if !ok {
 		return summary
@@ -1673,17 +1777,22 @@ func writeJointLocalCaptureArtifacts(t *testing.T, report *jointCaptureReport) (
 			md.WriteString("- control-plane: `" + scenario.ResponseErrorKind + "/" + scenario.ResponseErrorCode + "`\n")
 		}
 		md.WriteString("- request count: `" + strconv.Itoa(scenario.RequestCount) + "`\n")
+		if scenario.Sub2APIShapeInvariant != "" {
+			md.WriteString("- sub2api shape invariant: `" + scenario.Sub2APIShapeInvariant + "`\n")
+		}
 		md.WriteString("- no real upstream: `" + strconv.FormatBool(scenario.NoRealUpstream) + "`\n")
 		md.WriteString("- no native fallback: `" + strconv.FormatBool(scenario.NoNativeFallback) + "`\n")
 		if scenario.Sub2APIToGateway != nil {
 			md.WriteString("- sub2api->gateway route: `" + scenario.Sub2APIToGateway.Route + "`\n")
 			md.WriteString("- sub2api->gateway body ref: `" + scenario.Sub2APIToGateway.Body.BodyRef + "`\n")
 			md.WriteString("- sub2api->gateway billing/cch: `" + strconv.FormatBool(scenario.Sub2APIToGateway.Body.BillingHeaderPresent) + "/" + strconv.FormatBool(scenario.Sub2APIToGateway.Body.CCHPresent) + "`\n")
+			md.WriteString("- sub2api->gateway native shape: `tools=" + strconv.Itoa(scenario.Sub2APIToGateway.Body.ToolsCount) + "; thinking=" + strconv.FormatBool(scenario.Sub2APIToGateway.Body.ThinkingPresent) + "; context_management=" + strconv.FormatBool(scenario.Sub2APIToGateway.Body.ContextManagementPresent) + "; output_config_keys=" + strings.Join(scenario.Sub2APIToGateway.Body.OutputConfigKeys, ",") + "`\n")
 		}
 		if scenario.GatewayToUpstream != nil {
 			md.WriteString("- gateway->upstream route: `" + scenario.GatewayToUpstream.Route + "`\n")
 			md.WriteString("- gateway->upstream body ref: `" + scenario.GatewayToUpstream.Body.BodyRef + "`\n")
 			md.WriteString("- gateway->upstream billing/cch: `" + strconv.FormatBool(scenario.GatewayToUpstream.Body.BillingHeaderPresent) + "/" + strconv.FormatBool(scenario.GatewayToUpstream.Body.CCHPresent) + "`\n")
+			md.WriteString("- gateway->upstream native shape: `tools=" + strconv.Itoa(scenario.GatewayToUpstream.Body.ToolsCount) + "; thinking=" + strconv.FormatBool(scenario.GatewayToUpstream.Body.ThinkingPresent) + "; context_management=" + strconv.FormatBool(scenario.GatewayToUpstream.Body.ContextManagementPresent) + "; output_config_keys=" + strings.Join(scenario.GatewayToUpstream.Body.OutputConfigKeys, ",") + "`\n")
 		}
 		for _, note := range scenario.Notes {
 			md.WriteString("- note: `" + note + "`\n")
