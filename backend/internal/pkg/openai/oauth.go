@@ -25,8 +25,12 @@ const (
 	// Default redirect URI (can be customized)
 	DefaultRedirectURI = "http://localhost:1455/auth/callback"
 
-	// Scopes
-	DefaultScopes = "openid profile email offline_access"
+	// Scopes match the official Codex CLI browser login flow.
+	DefaultScopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+
+	// DefaultOriginator identifies the official Codex CLI login surface.
+	DefaultOriginator = "codex_cli_rs"
+
 	// Session TTL
 	SessionTTL = 30 * time.Minute
 )
@@ -228,6 +232,7 @@ func BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, platfor
 	params.Set("id_token_add_organizations", "true")
 	if codexFlow {
 		params.Set("codex_cli_simplified_flow", "true")
+		params.Set("originator", DefaultOriginator)
 	}
 
 	return fmt.Sprintf("%s?%s", AuthorizeURL, params.Encode())
