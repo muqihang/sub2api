@@ -98,3 +98,24 @@ func TestDefaultModels_ContainsFable5(t *testing.T) {
 	}
 	t.Fatalf("expected claude-fable-5 in DefaultModels")
 }
+
+func TestClaudeCode2175ProfileBetasAreExplicit(t *testing.T) {
+	require.Equal(t, "mid-conversation-system-2026-04-07", BetaMidConversationSystem)
+	require.Equal(t, []string{
+		BetaClaudeCode,
+		BetaContext1M,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaMidConversationSystem,
+		BetaEffort,
+	}, ClaudeCode2175Subscription1MBetas())
+	require.Equal(t, []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaMidConversationSystem,
+		BetaEffort,
+	}, ClaudeCode2175APIKeyNon1MBetas())
+}
