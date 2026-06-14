@@ -155,6 +155,16 @@ docs/anti-ban/*
 !docs/anti-ban/42-formal-pool-operator-panel-runbook.md
 !docs/anti-ban/43-formal-pool-account-management-ux-v4.md
 !docs/anti-ban/46-zhumeng-agent-claude-code-native-takeover-plan.md
+!docs/anti-ban/51-formal-pool-claude-code-persona-safety-gap-analysis.md
+!docs/anti-ban/52-formal-pool-account-behavior-budget-strategy.md
+!docs/anti-ban/captures/
+docs/anti-ban/captures/*
+!docs/anti-ban/captures/real-baseline/
+docs/anti-ban/captures/real-baseline/*
+!docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/
+docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/*
+!docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/safe-deliverable/
+!docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/safe-deliverable/**
 !docs/brand/
 !docs/brand/zhumeng-intent-brief.md
 .serena/
