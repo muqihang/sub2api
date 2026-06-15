@@ -86,6 +86,7 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("authorization", "Bearer "+account.GetCredential("access_token"))
 	applyCCGatewayAnthropicHeaders(req, r.cfg, account, "oauth")
+	setHeaderRaw(req.Header, ccGatewayHealthcheckPersonaHeader, ccGatewayHealthcheckNon1MProfile)
 	applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 
 	resp, err := r.upstream.DoWithTLS(req, "", account.ID, account.Concurrency, nil)

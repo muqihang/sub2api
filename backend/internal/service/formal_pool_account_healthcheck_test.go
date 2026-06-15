@@ -133,6 +133,7 @@ func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMilli
 	require.Equal(t, "low", outputConfig["effort"])
 	require.NotContains(t, outputConfig, "format")
 	require.NotContains(t, strings.ToLower(upstream.lastHeaders.Get("anthropic-beta")), "context-1m")
+	require.Equal(t, "claude_code_2_1_175_api_key_non_1m", getHeaderRaw(upstream.lastHeaders, ccGatewayHealthcheckPersonaHeader))
 }
 
 func TestFormalPoolGatewayHealthcheckRunnerQuarantinesAuthFailure(t *testing.T) {
