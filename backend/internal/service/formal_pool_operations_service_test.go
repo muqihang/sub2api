@@ -624,6 +624,34 @@ func TestFormalPoolOperationsRuntimeRegister_UsesAccountProxyAndBucket(t *testin
 	require.Equal(t, "pending", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
 }
 
+func TestFormalPoolOperationsRuntimeRegister_PreservesWarmingStageAndScheduling(t *testing.T) {
+	t.Parallel()
+
+	store := newFormalPoolOperationsMutableStore(formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra()))
+	store.account.Status = StatusActive
+	store.account.Schedulable = true
+	store.account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	store.account.Extra[FormalPoolExtraHealthcheckStatus] = "passed"
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:         store,
+		Proxy:            &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 7, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime: runtime,
+		Now:              func() time.Time { return time.Date(2026, 6, 15, 4, 0, 0, 0, time.UTC) },
+	})
+
+	got, err := svc.RuntimeRegister(context.Background(), store.account.ID)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.True(t, runtime.called)
+	require.Equal(t, FormalPoolStageWarming, store.account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "passed", store.account.GetExtraString(FormalPoolExtraHealthcheckStatus))
+	require.True(t, store.account.Schedulable)
+	require.Equal(t, "true", store.account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.Equal(t, "2026-06-15T04:00:00Z", store.account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+}
+
 func TestFormalPoolOperationsReplaceSetupToken_ClearsRuntimeRegisteredTimestamp(t *testing.T) {
 	t.Parallel()
 
@@ -667,6 +695,8 @@ func TestFormalPoolOperationsHealthcheck_UpdatesPassedEvidence(t *testing.T) {
 	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckFallbackDetected]))
 	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckProxyMismatch]))
 	require.False(t, formalPoolOpsBool(store.account.Extra[FormalPoolExtraHealthcheckRiskTextDetected]))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorCode))
+	require.Empty(t, store.account.GetExtraString(FormalPoolExtraHealthcheckSafeErrorBucket))
 	require.Equal(t, "passed", store.account.GetExtraString(FormalPoolExtraLastHealthcheckResult))
 	require.False(t, store.account.Schedulable)
 	require.Equal(t, StatusActive, store.account.Status)
@@ -1652,9 +1682,9 @@ func completeHealthcheckEvidenceExtra() map[string]any {
 		FormalPoolExtraHealthcheckRiskTextDetected: false,
 		FormalPoolExtraRuntimeRegistered:           "true",
 		FormalPoolExtraRuntimeRegisteredAt:         "2026-05-29T00:00:00Z",
-		"cc_gateway_account_ref":                  "hmac-sha256:" + strings.Repeat("3", 64),
-		"cc_gateway_egress_bucket_enabled":        "true",
-		"cc_gateway_egress_bucket":                "claude-complete-evidence",
+		"cc_gateway_account_ref":                   "hmac-sha256:" + strings.Repeat("3", 64),
+		"cc_gateway_egress_bucket_enabled":         "true",
+		"cc_gateway_egress_bucket":                 "claude-complete-evidence",
 	}
 }
 
@@ -1742,6 +1772,35 @@ func TestFormalPoolRuntimeRegistrationReplayService_RebuildsRegistrationAndUpdat
 	require.False(t, account.Schedulable)
 	require.Equal(t, "true", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
 	require.Equal(t, "2026-05-30T01:02:03Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+}
+
+func TestFormalPoolRuntimeRegistrationReplayService_ReplaysCompleteWarmingEvidenceAfterGatewayRestart(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra())
+	account.Status = StatusActive
+	account.Schedulable = true
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-05-30T00:00:00Z"
+	proxyID := int64(79)
+	account.ProxyID = &proxyID
+	store := &formalPoolRuntimeReplayStore{accounts: []*Account{account}}
+	runtime := &formalPoolOperationsRuntimeFake{}
+	proxy := &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 79, Protocol: "http", Host: "startup-proxy.local", Port: 8080, Status: StatusActive}}
+	svc := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: store, Proxy: proxy, CCGatewayRuntime: runtime, Now: func() time.Time { return time.Date(2026, 6, 15, 4, 1, 2, 0, time.UTC) }})
+
+	result, err := svc.Replay(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Scanned)
+	require.Equal(t, 1, result.Registered)
+	require.True(t, runtime.called)
+	require.Equal(t, account.GetExtraString("cc_gateway_account_ref"), runtime.input.AccountRef)
+	require.Equal(t, account.GetExtraString("cc_gateway_egress_bucket"), runtime.input.EgressBucket)
+	require.True(t, account.Schedulable)
+	require.Equal(t, FormalPoolStageWarming, account.GetExtraString(FormalPoolExtraOnboardingStage))
+	require.Equal(t, "2026-06-15T04:01:02Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
 }
 
 type formalPoolRuntimeReplayStore struct {

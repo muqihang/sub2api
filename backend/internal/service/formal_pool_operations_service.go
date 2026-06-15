@@ -1291,20 +1291,26 @@ func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Contex
 	}
 	now := s.now()
 	extra := map[string]any{
-		"onboarding_state":                      FormalPoolStageRuntimeRegistered,
-		FormalPoolExtraOnboardingStage:          FormalPoolStageRuntimeRegistered,
-		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(now),
-		FormalPoolExtraRuntimeRegistered:        "true",
-		FormalPoolExtraRuntimeRegisteredAt:      formalPoolTimestamp(now),
-		FormalPoolExtraHealthcheckStatus:        "pending",
-		FormalPoolExtraLastFailureOrigin:        "",
-		FormalPoolExtraLastFailureCode:          "",
-		FormalPoolExtraLastFailureSource:        "",
-		FormalPoolExtraLastCCGatewayErrorCode:   "",
-		FormalPoolExtraQuarantineReason:         "",
-		FormalPoolExtraQuarantineAt:             "",
+		FormalPoolExtraRuntimeRegistered:      "true",
+		FormalPoolExtraRuntimeRegisteredAt:    formalPoolTimestamp(now),
+		FormalPoolExtraLastFailureOrigin:      "",
+		FormalPoolExtraLastFailureCode:        "",
+		FormalPoolExtraLastFailureSource:      "",
+		FormalPoolExtraLastCCGatewayErrorCode: "",
+		FormalPoolExtraQuarantineReason:       "",
+		FormalPoolExtraQuarantineAt:           "",
 	}
-	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, extra)
+	if !formalPoolStageAtLeastHealthcheck(account) {
+		extra["onboarding_state"] = FormalPoolStageRuntimeRegistered
+		extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRuntimeRegistered
+		extra[FormalPoolExtraOnboardingStageUpdatedAt] = formalPoolTimestamp(now)
+		extra[FormalPoolExtraHealthcheckStatus] = "pending"
+	}
+	schedulable := false
+	if FormalPoolAccountStage(account) == FormalPoolStageWarming || FormalPoolAccountStage(account) == FormalPoolStageProduction {
+		schedulable = account.Schedulable
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, schedulable, StatusActive, extra)
 	if err != nil {
 		return nil, err
 	}
@@ -1480,8 +1486,10 @@ func (s *FormalPoolOperationsService) healthcheckExtra(account *Account, result 
 		extra[FormalPoolExtraHealthcheckFallbackDetected] = result.FallbackDetected
 		extra[FormalPoolExtraHealthcheckProxyMismatch] = result.ProxyMismatch
 		extra[FormalPoolExtraHealthcheckRiskTextDetected] = result.RiskTextDetected
-		extra[FormalPoolExtraHealthcheckSafeErrorCode] = sanitizeReasonCode(result.SafeErrorCode)
-		extra[FormalPoolExtraHealthcheckSafeErrorBucket] = sanitizeReasonCode(result.SafeErrorBucket)
+		if !passed {
+			extra[FormalPoolExtraHealthcheckSafeErrorCode] = sanitizeReasonCode(result.SafeErrorCode)
+			extra[FormalPoolExtraHealthcheckSafeErrorBucket] = sanitizeReasonCode(result.SafeErrorBucket)
+		}
 		if isSafeLedgerRef(result.RawCaptureRef) {
 			extra[FormalPoolExtraHealthcheckRawRef] = strings.TrimSpace(result.RawCaptureRef)
 		} else {
@@ -1514,6 +1522,15 @@ func (s *FormalPoolOperationsService) healthcheckExtra(account *Account, result 
 
 func formalPoolAccountAlreadyQuarantined(account *Account) bool {
 	return account != nil && FormalPoolAccountStage(account) == FormalPoolStageQuarantined
+}
+
+func formalPoolStageAtLeastHealthcheck(account *Account) bool {
+	switch FormalPoolAccountStage(account) {
+	case FormalPoolStageHealthcheckPassed, FormalPoolStageWarming, FormalPoolStageProduction:
+		return true
+	default:
+		return false
+	}
 }
 
 func formalPoolStartWarmingEvidenceComplete(account *Account) bool {

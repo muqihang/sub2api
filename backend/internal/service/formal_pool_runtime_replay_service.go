@@ -29,7 +29,7 @@ func (s *formalPoolRuntimeRegistrationReplayAccountStore) ListFormalPoolRuntimeR
 	out := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		account := accounts[i]
-		if formalPoolRuntimeReplayCandidate(&account) {
+		if formalPoolRuntimeReplayEligible(&account) {
 			copy := account
 			out = append(out, &copy)
 		}
@@ -153,10 +153,7 @@ func (s *FormalPoolRuntimeRegistrationReplayService) Replay(ctx context.Context)
 }
 
 func formalPoolRuntimeReplayCandidate(account *Account) bool {
-	if !formalPoolRuntimeReplayEligible(account) {
-		return false
-	}
-	return !runtimeEvidenceComplete(account)
+	return formalPoolRuntimeReplayEligible(account)
 }
 
 func formalPoolRuntimeReplayEligible(account *Account) bool {
