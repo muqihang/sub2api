@@ -16,9 +16,13 @@ OLD_MODEL_PICKER_EXPR = "if(l?a.has(e.model):!e.hidden){"
 NEW_MODEL_PICKER_EXPR = "if(!e.hidden|l&a.has(e.model)){"
 CURRENT_MODEL_PICKER_EXPR = "if(d?a.has(e.model):!e.hidden){"
 CURRENT_PATCHED_MODEL_PICKER_EXPR = "if(!e.hidden|d&a.has(e.model)){"
+CODEX_260609_MODEL_PICKER_EXPR = "if(s?t.has(n.model):!n.hidden){"
+CODEX_260609_PATCHED_MODEL_PICKER_EXPR = "if(!n.hidden|s&t.has(n.model)){"
 READABLE_PATCHED_MODEL_PICKER_EXPR = "if(!e.hidden||l&&a.has(e.model)){"
 OLD_PLUGIN_AUTH_GATE_EXPR = "function e(e){return e!==`chatgpt`}"
 NEW_PLUGIN_AUTH_GATE_EXPR = "function e(e){return!1&&e!==`xxxx`}"
+CODEX_260609_PLUGIN_AUTH_GATE_EXPR = "function pe(e){return e!==`chatgpt`}"
+CODEX_260609_PATCHED_PLUGIN_AUTH_GATE_EXPR = "function pe(e){return!1&&e!==`xxxx`}"
 OLD_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:[`shared-with-me`]"
 NEW_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:void 0/*zhumeng*/ "
 CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR = "c={additionalMarketplaceKinds:s?[`shared-with-me`]:[]}"
@@ -29,6 +33,12 @@ CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_U_EXPR = "u={additionalMarketplaceKin
 MODEL_PICKER_REPLACEMENTS = (
     (OLD_MODEL_PICKER_EXPR, NEW_MODEL_PICKER_EXPR),
     (CURRENT_MODEL_PICKER_EXPR, CURRENT_PATCHED_MODEL_PICKER_EXPR),
+    (CODEX_260609_MODEL_PICKER_EXPR, CODEX_260609_PATCHED_MODEL_PICKER_EXPR),
+)
+
+PLUGIN_AUTH_GATE_REPLACEMENTS = (
+    (OLD_PLUGIN_AUTH_GATE_EXPR, NEW_PLUGIN_AUTH_GATE_EXPR),
+    (CODEX_260609_PLUGIN_AUTH_GATE_EXPR, CODEX_260609_PATCHED_PLUGIN_AUTH_GATE_EXPR),
 )
 
 PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS = (
@@ -275,12 +285,13 @@ def patch_plugin_auth_gate_app(
             f"old={counts['old']} new={counts['new']} outside={counts['outside']}"
         )
 
-    old_bytes = OLD_PLUGIN_AUTH_GATE_EXPR.encode("utf-8")
-    new_bytes = NEW_PLUGIN_AUTH_GATE_EXPR.encode("utf-8")
+    old_expr, new_expr = plugin_auth_gate_replacement_for_data(archive.data)
+    old_bytes = old_expr.encode("utf-8")
+    new_bytes = new_expr.encode("utf-8")
     if len(old_bytes) != len(new_bytes):
         raise ModelPickerPatchError(f"replacement length mismatch {len(old_bytes)} != {len(new_bytes)}")
 
-    entry_match = find_plugin_auth_gate_entry(archive, OLD_PLUGIN_AUTH_GATE_EXPR)
+    entry_match = find_plugin_auth_gate_entry(archive, old_expr)
     offset = entry_match["start"] + bytes(archive.data[entry_match["start"] : entry_match["end"]]).index(old_bytes)
 
     patched = bytearray(archive.data)
@@ -830,20 +841,19 @@ def expression_counts(data: bytes | bytearray) -> dict[str, int]:
 
 def plugin_auth_gate_counts(data: bytes | bytearray) -> dict[str, int]:
     archive = read_asar_from_data(data)
-    old_expr = OLD_PLUGIN_AUTH_GATE_EXPR.encode("utf-8")
-    new_expr = NEW_PLUGIN_AUTH_GATE_EXPR.encode("utf-8")
+    old_exprs = [old.encode("utf-8") for old, _ in PLUGIN_AUTH_GATE_REPLACEMENTS]
+    new_exprs = [new.encode("utf-8") for _, new in PLUGIN_AUTH_GATE_REPLACEMENTS]
     counts = {"old": 0, "new": 0, "outside": 0}
     for entry_match in file_entries(archive):
         content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
-        old_count = content.count(old_expr)
-        new_count = content.count(new_expr)
+        old_count = sum(content.count(expr) for expr in old_exprs)
+        new_count = sum(content.count(expr) for expr in new_exprs)
         if is_plugin_auth_gate_candidate(entry_match["path"]):
             counts["old"] += old_count
             counts["new"] += new_count
         else:
             counts["outside"] += old_count + new_count
     return counts
-
 
 def plugin_auth_gate_status(counts: dict[str, int]) -> str:
     if counts.get("outside", 0) != 0:
@@ -858,11 +868,10 @@ def plugin_auth_gate_status(counts: dict[str, int]) -> str:
 def plugin_auth_gate_offset_for_status(data: bytes | bytearray, status: str) -> int | None:
     archive = read_asar_from_data(data)
     if status == "unpatched":
-        return find_plugin_auth_gate_offset(archive, OLD_PLUGIN_AUTH_GATE_EXPR)
+        return first_plugin_auth_gate_offset(archive, [old for old, _ in PLUGIN_AUTH_GATE_REPLACEMENTS])
     if status == "patched":
-        return find_plugin_auth_gate_offset(archive, NEW_PLUGIN_AUTH_GATE_EXPR)
+        return first_plugin_auth_gate_offset(archive, [new for _, new in PLUGIN_AUTH_GATE_REPLACEMENTS])
     return None
-
 
 def plugin_mention_marketplace_counts(data: bytes | bytearray) -> dict[str, int]:
     archive = read_asar_from_data(data)
@@ -932,6 +941,14 @@ def model_picker_replacement_for_data(data: bytes | bytearray) -> tuple[str, str
     matches = [(old, new) for old, new in MODEL_PICKER_REPLACEMENTS if haystack.count(old.encode("utf-8")) == 1]
     if len(matches) != 1:
         raise ModelPickerPatchError(f"expected one model picker replacement candidate, found {len(matches)}")
+    return matches[0]
+
+
+def plugin_auth_gate_replacement_for_data(data: bytes | bytearray) -> tuple[str, str]:
+    haystack = bytes(data)
+    matches = [(old, new) for old, new in PLUGIN_AUTH_GATE_REPLACEMENTS if haystack.count(old.encode("utf-8")) == 1]
+    if len(matches) != 1:
+        raise ModelPickerPatchError(f"expected one plugin auth gate replacement candidate, found {len(matches)}")
     return matches[0]
 
 
@@ -1047,7 +1064,7 @@ def candidate_model_query_files(archive: AsarArchive) -> list[str]:
                     walk(child, [*path, name])
         if "offset" in node and "size" in node:
             file_path = "/".join(path)
-            if file_path.startswith("webview/assets/model-queries-") and file_path.endswith(".js"):
+            if is_model_picker_candidate(file_path):
                 candidates.append(file_path)
 
     walk(archive.header, [])
@@ -1058,6 +1075,13 @@ def candidate_plugin_auth_gate_files(archive: AsarArchive) -> list[str]:
     return [entry["path"] for entry in file_entries(archive) if is_plugin_auth_gate_candidate(entry["path"])]
 
 
+def is_model_picker_candidate(file_path: str) -> bool:
+    return (
+        file_path.startswith("webview/assets/model-queries-")
+        or file_path.startswith("webview/assets/models-and-reasoning-efforts-")
+    ) and file_path.endswith(".js")
+
+
 def candidate_plugin_mention_marketplace_files(archive: AsarArchive) -> list[str]:
     return [entry["path"] for entry in file_entries(archive) if is_plugin_mention_marketplace_candidate(entry["path"])]
 
@@ -1066,6 +1090,7 @@ def is_plugin_auth_gate_candidate(file_path: str) -> bool:
     return (
         file_path.startswith("webview/assets/gradient-")
         or file_path.startswith("webview/assets/plugin-auth-")
+        or file_path.startswith("webview/assets/use-plugins-")
     ) and file_path.endswith(".js")
 
 
@@ -1182,16 +1207,17 @@ def find_plugin_mention_marketplace_entries_legacy(archive: AsarArchive, express
     return matches
 
 
-def find_plugin_auth_gate_offset(archive: AsarArchive, expression: str) -> int | None:
-    expression_bytes = expression.encode("utf-8")
+def first_plugin_auth_gate_offset(archive: AsarArchive, expressions: list[str]) -> int | None:
+    expression_bytes = [expression.encode("utf-8") for expression in expressions]
     offsets = []
     for entry_match in file_entries(archive):
         if not is_plugin_auth_gate_candidate(entry_match["path"]):
             continue
         content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
-        index = content.find(expression_bytes)
-        if index >= 0:
-            offsets.append(entry_match["start"] + index)
+        for expr in expression_bytes:
+            index = content.find(expr)
+            if index >= 0:
+                offsets.append(entry_match["start"] + index)
     if len(offsets) != 1:
         return None
     return offsets[0]

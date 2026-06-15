@@ -13,6 +13,10 @@ from zhumeng_agent.adapters.codex.model_picker import (
     NEW_PLUGIN_MENTION_MARKETPLACE_EXPR,
     CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_C_EXPR,
     CURRENT_PATCHED_PLUGIN_MENTION_MARKETPLACE_U_EXPR,
+    CODEX_260609_MODEL_PICKER_EXPR,
+    CODEX_260609_PATCHED_MODEL_PICKER_EXPR,
+    CODEX_260609_PLUGIN_AUTH_GATE_EXPR,
+    CODEX_260609_PATCHED_PLUGIN_AUTH_GATE_EXPR,
     NEW_MODEL_PICKER_EXPR,
     NEW_PLUGIN_AUTH_GATE_EXPR,
     OLD_PLUGIN_MENTION_MARKETPLACE_EXPR,
@@ -226,6 +230,25 @@ def test_patch_rewrites_current_model_picker_expression(tmp_path: Path):
     data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
     assert data.count(current_expression.encode("utf-8")) == 0
     assert data.count(expected_expression.encode("utf-8")) == 1
+
+
+def test_patch_rewrites_codex_260609_model_picker_expression(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + CODEX_260609_MODEL_PICKER_EXPR.encode("utf-8") + b" suffix",
+        filename="models-and-reasoning-efforts-test.js",
+    )
+
+    result = patch_model_picker_app(app, backup_root=tmp_path / "backups", sign=False, verify_signature=False)
+
+    assert result["status"] == "patched"
+    assert result["target_file"] == "webview/assets/models-and-reasoning-efforts-test.js"
+    data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
+    assert data.count(CODEX_260609_MODEL_PICKER_EXPR.encode("utf-8")) == 0
+    assert data.count(CODEX_260609_PATCHED_MODEL_PICKER_EXPR.encode("utf-8")) == 1
+    status = inspect_model_picker_app(app)
+    assert status["status"] == "patched"
+    assert status["integrity_ok"] is True
 
 
 def test_patch_is_idempotent_when_expression_is_already_patched(tmp_path: Path):
@@ -525,6 +548,25 @@ def test_plugin_auth_gate_patch_rolls_back_when_codesign_fails(tmp_path: Path, m
 
     assert asar.read_bytes() == before_asar
     assert plist_path.read_bytes() == before_plist
+
+
+def test_plugin_auth_gate_patch_handles_codex_260609_use_plugins_chunk(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + CODEX_260609_PLUGIN_AUTH_GATE_EXPR.encode("utf-8") + b" suffix",
+        filename="use-plugins-test.js",
+    )
+
+    result = patch_plugin_auth_gate_app(app, backup_root=tmp_path / "backups", sign=False, verify_signature=False)
+
+    assert result["status"] == "patched"
+    assert result["target_file"] == "webview/assets/use-plugins-test.js"
+    data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
+    assert data.count(CODEX_260609_PLUGIN_AUTH_GATE_EXPR.encode("utf-8")) == 0
+    assert data.count(CODEX_260609_PATCHED_PLUGIN_AUTH_GATE_EXPR.encode("utf-8")) == 1
+    status = inspect_plugin_auth_gate_app(app)
+    assert status["status"] == "patched"
+    assert status["integrity_ok"] is True
 
 
 def test_plugin_mention_marketplace_patch_enables_default_marketplaces_and_updates_integrity(tmp_path: Path):
