@@ -1,0 +1,44 @@
+{
+  "captured_at": "2026-06-16",
+  "purpose": "CP3 official-docs snapshot for resolver fixtures only; provider capabilities remain untrusted until runtime probe/catalog signing.",
+  "sources": {
+    "deepseek_anthropic_api": "https://api-docs.deepseek.com/guides/anthropic_api",
+    "deepseek_kv_cache": "https://api-docs.deepseek.com/guides/kv_cache",
+    "deepseek_thinking_mode": "https://api-docs.deepseek.com/guides/thinking_mode",
+    "deepseek_v4_release": "https://api-docs.deepseek.com/news/news260424",
+    "zai_latest_model": "https://docs.z.ai/devpack/latest-model",
+    "zai_other_tools": "https://docs.z.ai/devpack/tool/others",
+    "kimi_models": "https://platform.kimi.ai/docs/models",
+    "openai_models": "https://platform.openai.com/docs/models"
+  },
+  "observations": {
+    "deepseek": {
+      "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+      "anthropic_base_url": "https://api.deepseek.com/anthropic",
+      "openai_base_url": "https://api.deepseek.com",
+      "thinking_effort_mapping": {"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max"},
+      "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+      "cache_key_strategy": "provider_automatic_prefix_cache_best_effort",
+      "runtime_verified": false
+    },
+    "zai_glm": {
+      "claude_code_display_models": ["glm-5.2", "glm-5.2[1m]", "glm-5-turbo", "glm-4.7", "glm-4.5-air"],
+      "docs_observed_language_models": ["glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7", "glm-4.6", "glm-4.5"],
+      "anthropic_base_url": "https://api.z.ai/api/anthropic",
+      "coding_openai_compatible_base_url": "https://api.z.ai/api/coding/paas/v4",
+      "cache_key_strategy": "unknown_probe_required",
+      "runtime_verified": false
+    },
+    "kimi": {
+      "models": ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
+      "anthropic_base_url": "https://api.moonshot.ai/anthropic",
+      "openai_base_url": "https://api.moonshot.ai/v1",
+      "cache_key_strategy": "provider_cache_metadata_unverified_probe_required",
+      "runtime_verified": false
+    },
+    "openai": {
+      "catalog_strategy": "signed_dynamic_catalog_required_no_static_gpt_defaults",
+      "runtime_verified": false
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "expected": {
+    "must_not_contain_keys": [
+      "reasoning_content",
+      "signature",
+      "provider_private_state_ref",
+      "raw_tool_runner_state"
+    ]
+  },
+  "input_messages": [
+    {
+      "content": "visible DeepSeek answer",
+      "provider_private_state_ref": "deepseek-local-123",
+      "reasoning_content": "internal chain",
+      "role": "assistant",
+      "signature": "foreign-signature"
+    },
+    {
+      "raw_tool_runner_state": {
+        "argv": [
+          "rg",
+          "secret"
+        ]
+      },
+      "role": "tool",
+      "safe_tool_result": {
+        "content": "safe grep summary",
+        "tool_use_id": "toolu_1"
+      }
+    },
+    {
+      "evidence_summary": {
+        "checks": [
+          "pytest -q"
+        ],
+        "files": [
+          "src/a.py"
+        ]
+      },
+      "role": "assistant"
+    }
+  ],
+  "name": "claude_deepseek_claude_boundary",
+  "provenance_snapshot": {
+    "conversation_ref": "cp3b-fixture",
+    "source_hash": "sha256:230a772e90dcb82710ba421b72050446f7eaed8c90e1c2e271f1f5e15f91f58a",
+    "source_message_count": 3,
+    "turns": [
+      {
+        "provider": "deepseek",
+        "range": [
+          2,
+          3
+        ],
+        "route": "deepseek_bridge"
+      }
+    ]
+  },
+  "replay_context": "normal",
+  "source_profile": {
+    "client_type": "claude_code_bridge_deepseek",
+    "model_id": "deepseek-v4-pro",
+    "native_replay_allowed": false,
+    "provider": "deepseek",
+    "route": "deepseek_bridge"
+  },
+  "target_profile": {
+    "client_type": "claude_code_native",
+    "model_id": "claude-sonnet-4-6",
+    "native_replay_allowed": true,
+    "provider": "claude",
+    "route": "claude_native"
+  }
+}

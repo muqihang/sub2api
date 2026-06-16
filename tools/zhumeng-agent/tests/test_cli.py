@@ -29,6 +29,7 @@ def restore_cli_globals_after_test():
             "default_state_store",
             "default_config_manager",
             "default_http_client",
+            "default_codex_app_path",
             "resolve_codex_home",
             "codex_doctor_report",
             "detect_codex_app_path",

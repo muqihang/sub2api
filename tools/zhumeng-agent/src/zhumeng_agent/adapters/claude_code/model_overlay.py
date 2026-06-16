@@ -421,6 +421,403 @@ def _write_cp2_patches_metadata(runtime_plan: ManagedRuntimeInstallPlan, proof: 
     patches_path.write_bytes(_canonical_json_bytes(patches))
 
 
+
+CP3A_BACKGROUND_TASKS = frozenset({"title", "compact", "summary", "probe", "fast", "simple", "haiku"})
+CP3A_PROVIDER_LOCAL_ALIASES = frozenset({"fast", "simple", "haiku"})
+CP3A_HARDCODED_CLAUDE_ALIASES = frozenset({
+    "claude-haiku-legacy-hardcoded",
+    "claude-haiku",
+    "claude-3-haiku",
+    "claude-3-5-haiku",
+})
+CP3A_PATCH_POINTS = (
+    "agent_model_options",
+    "agent_model_resolver",
+    "workflow_alias_resolver",
+    "active_profile_dynamic_model_resolver",
+    "background_model_resolver",
+)
+CP3A_PATCH_PROBE_MARKERS = {
+    "agent_model_options": ("getAgentModelOptions", "agent_model_options"),
+    "agent_model_resolver": ("resolveAgentModel", "agent_model_resolver"),
+    "workflow_alias_resolver": ("resolveWorkflowModel", "workflow_alias_resolver"),
+    "active_profile_dynamic_model_resolver": ("active_profile_dynamic_model_resolver", "currentProviderProfile"),
+    "background_model_resolver": (
+        "resolveBackgroundModel",
+        "background_model_resolver",
+        "title compact summary probe",
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProviderProfile:
+    profile_id: str
+    provider: str
+    main_model_id: str
+    fast_model_id: str
+    family_aliases: Mapping[str, str] = field(default_factory=dict)
+    native_formal_pool: bool = False
+
+    def model_for_alias(self, alias: str) -> str | None:
+        return self.family_aliases.get(alias)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAgentModelOption:
+    option_id: str
+    label: str
+    provider: str
+    model_id: str | None = None
+    is_default: bool = False
+    native_egress_allowed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelResolution:
+    requested: str
+    resolved_model_id: str
+    provider: str
+    provider_profile_id: str
+    route: str
+    client_type: str
+    native_egress_allowed: bool
+    formal_pool_allowed: bool
+    replay_boundary: str
+    resolution_source: str
+    dynamic_profile_resolved: bool = False
+    explicit_claude_opt_in: bool = False
+    raw_history_replay_allowed: bool = False
+    audit_label: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelOverlayContract:
+    proof: RuntimeModelOverlayProof
+    provider_profiles: tuple[RuntimeProviderProfile, ...]
+    overlay_mode: str = "cp3_contract_only"
+    bridge_live_feature_flag: bool = False
+
+    @property
+    def provider_profiles_by_id(self) -> Mapping[str, RuntimeProviderProfile]:
+        return {profile.profile_id: profile for profile in self.provider_profiles}
+
+    @property
+    def provider_profiles_by_provider(self) -> Mapping[str, RuntimeProviderProfile]:
+        return {profile.provider: profile for profile in self.provider_profiles}
+
+    @property
+    def models_by_id(self) -> Mapping[str, RuntimeModelOverlayEntry]:
+        return self.proof.models_by_id
+
+
+def build_cp3a_model_overlay_contract(
+    proof: RuntimeModelOverlayProof,
+    *,
+    provider_profiles: tuple[RuntimeProviderProfile, ...] | None = None,
+) -> RuntimeModelOverlayContract:
+    assert_bridge_models_are_offline_only(proof)
+    profiles = provider_profiles or _default_cp3a_provider_profiles(proof)
+    _validate_cp3a_profiles(proof, profiles)
+    return RuntimeModelOverlayContract(proof=proof, provider_profiles=profiles, bridge_live_feature_flag=False)
+
+
+def build_agent_model_options(contract: RuntimeModelOverlayContract) -> tuple[RuntimeAgentModelOption, ...]:
+    options = [
+        RuntimeAgentModelOption(
+            option_id="inherit",
+            label="Inherit from parent",
+            provider="inherit",
+            is_default=True,
+            native_egress_allowed=False,
+        )
+    ]
+    for entry in contract.proof.models:
+        options.append(
+            RuntimeAgentModelOption(
+                option_id=entry.model_id,
+                label=entry.display_label,
+                provider=entry.provider,
+                model_id=entry.model_id,
+                native_egress_allowed=entry.route == "claude_native" and entry.formal_pool_eligible,
+            )
+        )
+    return tuple(options)
+
+
+def resolve_subagent_model(
+    contract: RuntimeModelOverlayContract,
+    *,
+    parent_model_id: str,
+    requested_model: str,
+    explicit_claude_opt_in: bool = False,
+) -> RuntimeModelResolution:
+    parent_entry = _entry_for_model(contract, parent_model_id)
+    parent_profile = _profile_for_provider(contract, parent_entry.provider)
+    requested = requested_model.strip()
+    if requested == "inherit":
+        return _resolution_for_entry(
+            contract,
+            parent_entry,
+            requested=requested,
+            active_provider=parent_entry.provider,
+            source="inherit",
+            boundary="same_provider",
+        )
+    if requested in CP3A_PROVIDER_LOCAL_ALIASES:
+        alias_model = parent_profile.model_for_alias(requested)
+        if not alias_model:
+            raise RuntimeOverlayError(f"unknown Claude Code runtime model alias for provider: {requested}")
+        entry = _entry_for_model(contract, alias_model)
+        if entry.provider != parent_entry.provider:
+            raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+        return _resolution_for_entry(
+            contract,
+            entry,
+            requested=requested,
+            active_provider=parent_entry.provider,
+            source="provider_local_alias",
+            boundary="same_provider" if entry.provider == parent_entry.provider else "safe_tool_result",
+            dynamic=True,
+        )
+    entry = _entry_for_model(contract, requested)
+    if entry.provider == "claude" and parent_entry.provider != "claude" and not explicit_claude_opt_in:
+        raise RuntimeOverlayError("explicit Claude opt-in is required before consuming Claude formal pool from a non-Claude profile")
+    boundary = "same_provider" if entry.provider == parent_entry.provider else "safe_tool_result"
+    return _resolution_for_entry(
+        contract,
+        entry,
+        requested=requested,
+        active_provider=parent_entry.provider,
+        source="explicit_model",
+        boundary=boundary,
+        explicit_claude_opt_in=explicit_claude_opt_in,
+        audit_label="explicit_claude_formal_pool_subagent" if entry.provider == "claude" and explicit_claude_opt_in else "",
+    )
+
+
+def resolve_workflow_model_alias(
+    contract: RuntimeModelOverlayContract,
+    *,
+    active_model_id: str,
+    requested_model: str,
+    explicit_claude_opt_in: bool = False,
+    allow_hardcoded_claude_remap: bool = True,
+) -> RuntimeModelResolution:
+    active_entry = _entry_for_model(contract, active_model_id)
+    active_profile = _profile_for_provider(contract, active_entry.provider)
+    requested = requested_model.strip()
+    if active_entry.provider != "claude" and requested in CP3A_HARDCODED_CLAUDE_ALIASES:
+        if not allow_hardcoded_claude_remap:
+            raise RuntimeOverlayError("hardcoded Claude workflow model requires explicit Claude opt-in or provider-local remap")
+        requested = "fast"
+    if requested in CP3A_PROVIDER_LOCAL_ALIASES:
+        alias_model = active_profile.model_for_alias(requested)
+        if not alias_model:
+            raise RuntimeOverlayError(f"unknown Claude Code runtime workflow alias: {requested_model}")
+        entry = _entry_for_model(contract, alias_model)
+        if entry.provider != active_entry.provider:
+            raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+        return _resolution_for_entry(
+            contract,
+            entry,
+            requested=requested_model,
+            active_provider=active_entry.provider,
+            source="provider_local_alias",
+            boundary="same_provider",
+            dynamic=True,
+        )
+    entry = _entry_for_model(contract, requested)
+    if active_entry.provider != "claude" and entry.provider == "claude" and not explicit_claude_opt_in:
+        raise RuntimeOverlayError("explicit Claude opt-in is required before workflow consumes Claude formal pool")
+    return _resolution_for_entry(
+        contract,
+        entry,
+        requested=requested_model,
+        active_provider=active_entry.provider,
+        source="explicit_model",
+        boundary="same_provider" if entry.provider == active_entry.provider else "safe_tool_result",
+        explicit_claude_opt_in=explicit_claude_opt_in,
+        audit_label="explicit_claude_formal_pool_workflow" if entry.provider == "claude" and explicit_claude_opt_in else "",
+    )
+
+
+def resolve_background_model(contract: RuntimeModelOverlayContract, *, active_model_id: str, task: str) -> RuntimeModelResolution:
+    task_id = task.strip()
+    if task_id not in CP3A_BACKGROUND_TASKS:
+        raise RuntimeOverlayError(f"unknown Claude Code background model task: {task}")
+    active_entry = _entry_for_model(contract, active_model_id)
+    active_profile = _profile_for_provider(contract, active_entry.provider)
+    alias_model = active_profile.model_for_alias(task_id) or active_profile.fast_model_id
+    entry = _entry_for_model(contract, alias_model)
+    if entry.provider != active_entry.provider:
+        raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+    return _resolution_for_entry(
+        contract,
+        entry,
+        requested=task_id,
+        active_provider=active_entry.provider,
+        source="active_profile_background_task",
+        boundary="same_provider",
+        dynamic=True,
+    )
+
+
+def probe_cp3a_patch_points(
+    runtime_plan: ManagedRuntimeInstallPlan,
+    *,
+    expected_file_hashes: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    candidates = _runtime_probe_files(runtime_plan)
+    file_hashes = {str(path): _hash_file(path) for path in candidates}
+    hash_mismatches: list[str] = []
+    if expected_file_hashes is not None:
+        for file_name, expected_hash in expected_file_hashes.items():
+            matched = [digest for path, digest in file_hashes.items() if Path(path).name == file_name]
+            if matched != [expected_hash]:
+                hash_mismatches.append(file_name)
+    probe_text = "\n".join(_read_probe_file(path) for path in candidates)
+    patch_points: dict[str, dict[str, object]] = {}
+    missing: list[str] = []
+    for point, markers in CP3A_PATCH_PROBE_MARKERS.items():
+        found = any(marker in probe_text for marker in markers)
+        patch_points[point] = {"found": found, "markers": list(markers), "mode": "contract_probe"}
+        if not found:
+            missing.append(point)
+    status = "degraded_fail_closed" if missing or hash_mismatches else "ready"
+    return {
+        "runtime": "claude-code",
+        "checkpoint": "CP3A",
+        "runtime_version": runtime_plan.upstream_version,
+        "status": status,
+        "patch_points": patch_points,
+        "missing_patch_points": missing,
+        "bridge_live_feature_flag": False,
+        "native_egress_allowed_when_probe_missing": False if status != "ready" else True,
+        "bundle_hash_verified": not hash_mismatches if expected_file_hashes is not None else False,
+        "hash_mismatches": hash_mismatches,
+    }
+
+
+def _default_cp3a_provider_profiles(proof: RuntimeModelOverlayProof) -> tuple[RuntimeProviderProfile, ...]:
+    model_ids = set(proof.model_allowlist)
+
+    def has(model_id: str) -> bool:
+        return model_id in model_ids
+
+    profiles: list[RuntimeProviderProfile] = []
+    if has("claude-sonnet-4-6"):
+        profiles.append(
+            RuntimeProviderProfile(
+                profile_id="claude-native",
+                provider="claude",
+                main_model_id="claude-sonnet-4-6",
+                fast_model_id="claude-sonnet-4-6",
+                family_aliases={alias: "claude-sonnet-4-6" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                native_formal_pool=True,
+            )
+        )
+    if has("deepseek-v4-pro") and has("deepseek-v4-flash"):
+        profiles.append(
+            RuntimeProviderProfile(
+                profile_id="deepseek",
+                provider="deepseek",
+                main_model_id="deepseek-v4-pro",
+                fast_model_id="deepseek-v4-flash",
+                family_aliases={alias: "deepseek-v4-flash" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                native_formal_pool=False,
+            )
+        )
+    if has("glm-5.2") and has("glm-5-turbo"):
+        profiles.append(
+            RuntimeProviderProfile(
+                profile_id="glm",
+                provider="glm",
+                main_model_id="glm-5.2",
+                fast_model_id="glm-5-turbo",
+                family_aliases={alias: "glm-5-turbo" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                native_formal_pool=False,
+            )
+        )
+    if has("kimi-k2.7-code") and has("kimi-k2.7-code-highspeed"):
+        profiles.append(
+            RuntimeProviderProfile(
+                profile_id="kimi",
+                provider="kimi",
+                main_model_id="kimi-k2.7-code",
+                fast_model_id="kimi-k2.7-code-highspeed",
+                family_aliases={alias: "kimi-k2.7-code-highspeed" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                native_formal_pool=False,
+            )
+        )
+    return tuple(profiles)
+
+
+def _validate_cp3a_profiles(proof: RuntimeModelOverlayProof, profiles: tuple[RuntimeProviderProfile, ...]) -> None:
+    model_ids = set(proof.model_allowlist)
+    for profile in profiles:
+        if profile.main_model_id not in model_ids or profile.fast_model_id not in model_ids:
+            raise RuntimeOverlayError("CP3A provider profile references a model outside the overlay proof")
+        main_entry = proof.models_by_id[profile.main_model_id]
+        fast_entry = proof.models_by_id[profile.fast_model_id]
+        if main_entry.provider != profile.provider or fast_entry.provider != profile.provider:
+            raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+        for alias, model_id in profile.family_aliases.items():
+            if alias not in CP3A_BACKGROUND_TASKS and alias not in CP3A_PROVIDER_LOCAL_ALIASES:
+                raise RuntimeOverlayError(f"CP3A provider profile uses an unsupported alias: {alias}")
+            if model_id not in model_ids:
+                raise RuntimeOverlayError("CP3A provider alias references a model outside the overlay proof")
+            if proof.models_by_id[model_id].provider != profile.provider:
+                raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+
+
+def _entry_for_model(contract: RuntimeModelOverlayContract, model_id: str) -> RuntimeModelOverlayEntry:
+    entry = contract.models_by_id.get(model_id.strip())
+    if entry is None:
+        raise RuntimeOverlayError(f"unknown Claude Code runtime model: {model_id}")
+    return entry
+
+
+def _profile_for_provider(contract: RuntimeModelOverlayContract, provider: str) -> RuntimeProviderProfile:
+    profile = contract.provider_profiles_by_provider.get(provider)
+    if profile is None:
+        raise RuntimeOverlayError(f"unknown Claude Code runtime provider profile: {provider}")
+    return profile
+
+
+def _resolution_for_entry(
+    contract: RuntimeModelOverlayContract,
+    entry: RuntimeModelOverlayEntry,
+    *,
+    requested: str,
+    active_provider: str,
+    source: str,
+    boundary: str,
+    dynamic: bool = False,
+    explicit_claude_opt_in: bool = False,
+    audit_label: str = "",
+) -> RuntimeModelResolution:
+    profile = _profile_for_provider(contract, entry.provider)
+    native_allowed = entry.route == "claude_native" and entry.provider == "claude" and entry.formal_pool_eligible
+    formal_pool_allowed = native_allowed
+    raw_history_replay_allowed = entry.provider == active_provider and entry.provider == "claude"
+    return RuntimeModelResolution(
+        requested=requested,
+        resolved_model_id=entry.model_id,
+        provider=entry.provider,
+        provider_profile_id=profile.profile_id,
+        route=entry.route,
+        client_type=entry.client_type,
+        native_egress_allowed=native_allowed,
+        formal_pool_allowed=formal_pool_allowed,
+        replay_boundary=boundary,
+        resolution_source=source,
+        dynamic_profile_resolved=dynamic,
+        explicit_claude_opt_in=explicit_claude_opt_in,
+        raw_history_replay_allowed=raw_history_replay_allowed,
+        audit_label=audit_label,
+    )
+
 def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
     return (
         RuntimeModelOverlayEntry(

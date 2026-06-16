@@ -1,0 +1,39 @@
+{
+  "input_messages": [
+    {
+      "content": "raw provider tool result without safe_tool_result envelope",
+      "role": "tool",
+      "tool_use_id": "toolu_raw"
+    }
+  ],
+  "name": "invalid_tool_result_fail_closed",
+  "provenance_snapshot": {
+    "conversation_ref": "cp3b-invalid-tool",
+    "source_hash": "sha256:3fa95c2d9836313cf0c42ece3eae0c303f4caa727296a02330ce98fc8a5c1df7",
+    "source_message_count": 1,
+    "turns": [
+      {
+        "provider": "deepseek",
+        "range": [
+          6,
+          6
+        ]
+      }
+    ]
+  },
+  "replay_context": "normal",
+  "source_profile": {
+    "client_type": "claude_code_bridge_deepseek",
+    "model_id": "deepseek-v4-pro",
+    "native_replay_allowed": false,
+    "provider": "deepseek",
+    "route": "deepseek_bridge"
+  },
+  "target_profile": {
+    "client_type": "claude_code_native",
+    "model_id": "claude-sonnet-4-6",
+    "native_replay_allowed": true,
+    "provider": "claude",
+    "route": "claude_native"
+  }
+}
