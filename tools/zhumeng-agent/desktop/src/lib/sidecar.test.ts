@@ -14,6 +14,7 @@ describe("sidecar client", () => {
     await client.status();
     await client.modelsStatus();
     await client.openCodex();
+    await client.openClaude();
     await client.setup("codex", "setup-code", "https://example.com");
     await client.reauth("codex", "reauth-code", "https://example.com");
     await client.patchEnhancements("/Applications/Codex.app");
@@ -24,6 +25,7 @@ describe("sidecar client", () => {
       ["desktop", "status", "--json"],
       ["desktop", "models", "status", "--client", "codex", "--json"],
       ["desktop", "open", "--app", "codex", "--json"],
+      ["desktop", "open", "--app", "zhumeng-claude", "--json"],
       ["desktop", "setup", "--client", "codex", "--code", "setup-code", "--server", "https://example.com", "--json"],
       ["desktop", "reauth", "--client", "codex", "--code", "reauth-code", "--server", "https://example.com", "--json"],
       ["desktop", "codex-enhancements", "patch", "--app", "/Applications/Codex.app", "--item", "all", "--json"]

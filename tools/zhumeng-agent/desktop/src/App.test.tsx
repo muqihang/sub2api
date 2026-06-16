@@ -20,6 +20,7 @@ const sidecarHoisted = vi.hoisted(() => ({
   modelsStatus: vi.fn(async (): Promise<Record<string, unknown> & { models: CatalogModel[] }> => ({ models: [] })),
   repair: vi.fn(),
   openCodex: vi.fn(async () => undefined),
+  openClaude: vi.fn(async () => undefined),
   setup: vi.fn(),
   reauth: vi.fn(),
   patchEnhancements: vi.fn(),
@@ -33,6 +34,7 @@ const initialDeepLinks = deepLinkHoisted.initial;
 const sidecarStatusMock = sidecarHoisted.status;
 const sidecarModelsStatusMock = sidecarHoisted.modelsStatus;
 const openCodexMock = sidecarHoisted.openCodex;
+const openClaudeMock = sidecarHoisted.openClaude;
 const sidecarSetupMock = sidecarHoisted.setup;
 
 vi.mock("@tauri-apps/plugin-deep-link", () => ({
@@ -74,6 +76,7 @@ describe("App visual shell", () => {
     sidecarModelsStatusMock.mockReset();
     sidecarModelsStatusMock.mockResolvedValue({ models: [] });
     openCodexMock.mockClear();
+    openClaudeMock.mockClear();
     sidecarSetupMock.mockClear();
     sidecarStatusMock.mockImplementation(async () => ({
       status: "configured",
@@ -175,7 +178,18 @@ describe("App visual shell", () => {
     expect(callouts.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("apps hub lists every registered app and exposes a coming-soon state for Claude", async () => {
+  it("apps hub lists Claude Code as a supported app with an open action", async () => {
+    sidecarStatusMock.mockImplementation(async () => ({
+      status: "configured",
+      global_status: "configured",
+      proxy: { status: "configured", port: 51793 },
+      authorization: { status: "configured", device_id: 9 },
+      adapters: {
+        codex: { status: "not_configured", enhancements: {}, restart_required: false },
+        claude_code: { status: "ready", configured: true, running: false }
+      },
+      model_catalog: { model_count: 0, models: [] }
+    }));
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /应用/ }));
@@ -185,7 +199,10 @@ describe("App visual shell", () => {
     expect(screen.getByTestId("app-card-custom")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("app-card-claude"));
-    expect(await screen.findByTestId("app-detail-coming-soon")).toBeInTheDocument();
+    expect(await screen.findByTestId("app-detail")).toBeInTheDocument();
+    expect(screen.queryByTestId("app-detail-coming-soon")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await waitFor(() => expect(openClaudeMock).toHaveBeenCalledTimes(1));
   });
 
   it("setup wizard exposes an app picker and shows a coming-soon empty state for Claude", async () => {
@@ -216,12 +233,13 @@ describe("App visual shell", () => {
     expect(await screen.findByTestId("catalog-page")).toBeInTheDocument();
   });
 
-  it("deep link open?app=claude routes to the Claude detail without launching Codex", async () => {
+  it("deep link open?app=claude routes to Claude Code and launches zhumeng-claude, not Codex", async () => {
     initialDeepLinks.current = ["zhumeng-agent://open?app=claude"];
 
     render(<App />);
 
-    expect(await screen.findByTestId("app-detail-coming-soon")).toBeInTheDocument();
+    expect(await screen.findByTestId("app-detail")).toBeInTheDocument();
+    await waitFor(() => expect(openClaudeMock).toHaveBeenCalledTimes(1));
     expect(openCodexMock).not.toHaveBeenCalled();
   });
 
@@ -356,7 +374,7 @@ describe("App visual shell", () => {
     fireEvent.click(await screen.findByRole("option", { name: "English" }));
 
     fireEvent.click(await screen.findByRole("button", { name: /Apps/ }));
-    expect(await screen.findByText("Coming soon (2)")).toBeInTheDocument();
+    expect(await screen.findByText("Coming soon (1)")).toBeInTheDocument();
   });
 
   it("uses the custom listbox popover for language and model filters", async () => {

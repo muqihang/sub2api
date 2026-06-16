@@ -36,6 +36,7 @@ def restore_cli_globals_after_test():
             "patch_codex_enhancements",
             "select_cdp_port",
             "launch_codex_process",
+            "launch_claude_code_process",
             "capture_installation_enabled",
             "inject_capture_hook_via_cdp",
             "run_managed_claude_code",
@@ -706,17 +707,126 @@ def test_claude_code_start_fails_closed_without_server_native_attestation_secret
     assert calls == []
 
 
+def test_launch_claude_code_process_detaches_stdio_for_fire_and_forget(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(pid=6262)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+
+    process = cli.launch_claude_code_process(
+        ["python", "-m", "zhumeng_agent", "claude-code", "start"],
+        env={"NO_PROXY": "127.0.0.1"},
+        cwd=tmp_path,
+        detach_stdio=True,
+    )
+
+    assert process.pid == 6262
+    assert calls[0][0] == ["python", "-m", "zhumeng_agent", "claude-code", "start"]
+    kwargs = calls[0][1]
+    assert kwargs["cwd"] == str(tmp_path)
+    assert kwargs["env"] == {"NO_PROXY": "127.0.0.1"}
+    assert kwargs["stdin"] is cli.subprocess.DEVNULL
+    assert kwargs["stdout"] is cli.subprocess.DEVNULL
+    assert kwargs["stderr"] is cli.subprocess.DEVNULL
+    assert kwargs["start_new_session"] is True
+
+
 def test_zhumeng_claude_entrypoint_maps_to_claude_code_start(monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "main", lambda argv=None: calls.append(argv) or 0)
 
     assert cli.zhumeng_claude_main(["--print"]) == 0
     assert cli.zhumeng_claude_main(["start", "--executable", "managed-claude", "--", "--print"]) == 0
+    assert cli.zhumeng_claude_main(["status", "--runtime-root", "/tmp/runtime"]) == 0
+    assert cli.zhumeng_claude_main(["restart", "--runtime-root", "/tmp/runtime"]) == 0
+    assert cli.zhumeng_claude_main(["alias", "enable", "--shell-rc", "/tmp/rc"]) == 0
 
     assert calls == [
         ["claude-code", "start", "--", "--print"],
         ["claude-code", "start", "--executable", "managed-claude", "--", "--print"],
+        ["claude-code", "status", "--runtime-root", "/tmp/runtime"],
+        ["claude-code", "restart", "--runtime-root", "/tmp/runtime"],
+        ["claude-code", "alias", "enable", "--shell-rc", "/tmp/rc"],
     ]
+
+
+def test_claude_code_runtime_install_status_rollback_and_alias_commands(capsys, tmp_path: Path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    shell_rc = tmp_path / ".zshrc"
+    shell_rc.write_text("# user rc\n", encoding="utf-8")
+
+    class VersionRunner:
+        def __call__(self, command, **kwargs):
+            return SimpleNamespace(stdout="Claude Code v2.1.175\n", stderr="", returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", VersionRunner())
+
+    install_exit = main([
+        "claude-code",
+        "install",
+        "--executable",
+        str(tmp_path / "claude"),
+        "--runtime-root",
+        str(runtime_root),
+    ])
+    assert install_exit == 0
+    install_data = parse_output(capsys)
+    assert install_data["command"] == "claude-code install"
+    assert install_data["status"] == "installed"
+    assert install_data["active_version"] == "2.1.175"
+    assert install_data["official_claude_unaffected"] is True
+
+    assert main(["claude-code", "status", "--runtime-root", str(runtime_root)]) == 0
+    status_data = parse_output(capsys)
+    assert status_data["status"] == "enabled"
+    assert status_data["active_version"] == "2.1.175"
+
+    def fail_if_restart_spawns(*_args, **_kwargs):
+        raise AssertionError("restart must not spawn a second unmanaged Claude Code process")
+
+    cli.launch_claude_code_process = fail_if_restart_spawns
+    assert main(["claude-code", "restart", "--runtime-root", str(runtime_root)]) == 1
+    restart_data = parse_output(capsys)
+    assert restart_data["status"] == "restart_unavailable"
+    assert restart_data["active_version"] == "2.1.175"
+    assert restart_data["official_claude_unaffected"] is True
+    assert restart_data["nonblocking"] is False
+    assert "no running managed Claude Code process" in restart_data["message"]
+    assert (runtime_root / "claude-code" / "2.1.175" / "manifest.json").exists()
+
+    assert main(["claude-code", "alias", "enable", "--shell-rc", str(shell_rc)]) == 0
+    alias_data = parse_output(capsys)
+    assert alias_data["status"] == "enabled"
+    assert "alias claude=" not in shell_rc.read_text(encoding="utf-8")
+    assert 'alias zhumeng-claude="zhumeng-claude"' in shell_rc.read_text(encoding="utf-8")
+
+    assert main(["claude-code", "alias", "disable", "--shell-rc", str(shell_rc)]) == 0
+    disable_alias_data = parse_output(capsys)
+    assert disable_alias_data["status"] == "disabled"
+    assert "zhumeng-claude alias disabled" in shell_rc.read_text(encoding="utf-8")
+
+    assert main(["claude-code", "rollback", "--runtime-root", str(runtime_root)]) == 0
+    rollback_data = parse_output(capsys)
+    assert rollback_data["status"] == "disabled"
+    assert rollback_data["rollback_action"] == "disable_active_pointer_without_delete"
+    assert rollback_data["requires_user_confirmation_for_delete"] is True
+    assert (runtime_root / "claude-code" / "2.1.175" / "manifest.json").exists()
+
+    assert main(["claude-code", "uninstall", "--runtime-root", str(runtime_root)]) == 0
+    uninstall_data = parse_output(capsys)
+    assert uninstall_data["status"] == "disabled"
+    assert uninstall_data["rollback_action"] == "disable_active_pointer_without_delete"
+    assert uninstall_data["requires_user_confirmation_for_delete"] is True
+    assert (runtime_root / "claude-code" / "2.1.175" / "manifest.json").exists()
+
+    assert main(["claude-code", "doctor", "--runtime-root", str(runtime_root)]) == 0
+    doctor_data = parse_output(capsys)
+    assert doctor_data["status"] == "disabled"
+    assert doctor_data["official_claude_unaffected"] is True
+    assert doctor_data["destructive_cleanup_requires_confirmation"] is True
 
 
 def test_fetch_codex_model_catalog_falls_back_on_non_auth_errors():

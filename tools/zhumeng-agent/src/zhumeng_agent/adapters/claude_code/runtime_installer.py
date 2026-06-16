@@ -18,6 +18,10 @@ DEFAULT_PATCH_POINTS = (
     "isolated_config",
     "guard_env",
 )
+GLOBAL_CLAUDE_BINARY_PATHS = frozenset({
+    Path("/opt/homebrew/bin/claude"),
+    Path("/usr/local/bin/claude"),
+})
 
 
 class RuntimeInstallerError(RuntimeError):
@@ -59,6 +63,16 @@ class ManagedRuntimeInstallPlan:
     patches: Mapping[str, object] = field(repr=False)
     rollback_metadata: Mapping[str, object]
     planned_write_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ShellAliasPlan:
+    action: str
+    shell_rc: Path
+    alias_name: str
+    target_command: str
+    marker_start: str = "# >>> zhumeng-claude managed alias >>>"
+    marker_end: str = "# <<< zhumeng-claude managed alias <<<"
 
 
 def build_managed_runtime_install_plan(
@@ -180,6 +194,7 @@ def write_managed_runtime_artifacts(plan: ManagedRuntimeInstallPlan) -> None:
     patches_path = ensure_managed_runtime_write_path(plan.patches_path, runtime_root=plan.runtime_root)
     rollback_metadata_path = ensure_managed_runtime_write_path(plan.rollback_metadata_path, runtime_root=plan.runtime_root)
     hash_lock_path = ensure_managed_runtime_write_path(plan.hash_lock_path, runtime_root=plan.runtime_root)
+    active_pointer = ensure_managed_runtime_write_path(plan.active_pointer, runtime_root=plan.runtime_root)
     version_dir = ensure_managed_runtime_write_path(plan.version_dir, runtime_root=plan.runtime_root)
     cache_path = ensure_managed_runtime_write_path(plan.cache_path, runtime_root=plan.runtime_root)
     for path in plan.planned_write_paths:
@@ -207,15 +222,189 @@ def write_managed_runtime_artifacts(plan: ManagedRuntimeInstallPlan) -> None:
     patches_path.write_bytes(patches_bytes)
     rollback_metadata_path.write_bytes(rollback_bytes)
     hash_lock_path.write_bytes(_canonical_json_bytes(hash_lock))
+    active_pointer.write_bytes(_canonical_json_bytes({
+        "runtime": RUNTIME_NAME,
+        "status": "enabled",
+        "active_version": plan.upstream_version,
+        "manifest_path": str(plan.manifest_path),
+        "global_overwrite": False,
+        "official_claude_unaffected": True,
+    }))
+
+
+def read_managed_runtime_status(runtime_root: Path) -> dict[str, object]:
+    runtime_root = runtime_root.expanduser()
+    runtime_dir = runtime_root / RUNTIME_NAME
+    active_pointer = runtime_dir / "active"
+    if not active_pointer.exists():
+        return {
+            "runtime": RUNTIME_NAME,
+            "status": "not_installed",
+            "active_version": None,
+            "integrity": {"status": "missing_active_pointer"},
+            "official_claude_unaffected": True,
+            "destructive_cleanup_requires_confirmation": True,
+        }
+    try:
+        active = json.loads(active_pointer.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "runtime": RUNTIME_NAME,
+            "status": "invalid_active_pointer",
+            "active_version": None,
+            "integrity": {"status": "invalid_active_pointer"},
+            "official_claude_unaffected": True,
+            "destructive_cleanup_requires_confirmation": True,
+        }
+    if not isinstance(active, dict):
+        active = {}
+    active_version = str(active.get("active_version") or "") or None
+    manifest_path = active.get("manifest_path")
+    status = str(active.get("status") or ("enabled" if active_version else "not_installed"))
+    integrity = _runtime_integrity(manifest_path)
+    if status == "enabled" and integrity.get("status") != "pass":
+        status = "integrity_failed"
+    return {
+        "runtime": RUNTIME_NAME,
+        "status": status,
+        "active_version": active_version,
+        "active_pointer": str(active_pointer),
+        "manifest_path": str(manifest_path) if manifest_path else "",
+        "integrity": integrity,
+        "official_claude_unaffected": True,
+        "destructive_cleanup_requires_confirmation": True,
+    }
+
+
+def disable_managed_runtime(runtime_root: Path) -> dict[str, object]:
+    runtime_root = runtime_root.expanduser()
+    active_pointer = ensure_managed_runtime_write_path(runtime_root / RUNTIME_NAME / "active", runtime_root=runtime_root)
+    previous = read_managed_runtime_status(runtime_root)
+    active_version = previous.get("active_version")
+    manifest_path = previous.get("manifest_path") or ""
+    active_pointer.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "runtime": RUNTIME_NAME,
+        "status": "disabled",
+        "active_version": active_version,
+        "manifest_path": manifest_path,
+        "rollback_action": "disable_active_pointer_without_delete",
+        "global_overwrite": False,
+        "official_claude_unaffected": True,
+        "requires_user_confirmation_for_delete": True,
+    }
+    active_pointer.write_bytes(_canonical_json_bytes(payload))
+    return dict(payload)
+
+
+def build_shell_alias_plan(
+    *,
+    action: str,
+    shell_rc: Path,
+    alias_name: str = "zhumeng-claude",
+    target_command: str = "zhumeng-claude",
+) -> ShellAliasPlan:
+    action = str(action).strip().lower()
+    alias_name = str(alias_name).strip()
+    target_command = str(target_command).strip()
+    if action not in {"enable", "disable", "status"}:
+        raise RuntimeInstallerError(f"unsupported shell alias action: {action}")
+    if alias_name == "claude" or target_command == "claude" or target_command.endswith("/claude"):
+        raise RuntimeInstallerError("refuses to alias official Claude Code")
+    return ShellAliasPlan(action=action, shell_rc=Path(shell_rc).expanduser(), alias_name=alias_name, target_command=target_command)
+
+
+def apply_shell_alias_plan(plan: ShellAliasPlan) -> dict[str, object]:
+    shell_rc = plan.shell_rc
+    existing = shell_rc.read_text(encoding="utf-8") if shell_rc.exists() else ""
+    managed_block = _shell_alias_block(plan) if plan.action == "enable" else _disabled_shell_alias_block(plan)
+    if plan.action == "status":
+        return {
+            "status": "enabled" if _extract_managed_block(existing, plan) and f"alias {plan.alias_name}=" in existing else "disabled",
+            "shell_rc": str(shell_rc),
+            "alias_name": plan.alias_name,
+            "official_claude_unaffected": True,
+        }
+    updated = _replace_managed_block(existing, plan, managed_block)
+    shell_rc.parent.mkdir(parents=True, exist_ok=True)
+    shell_rc.write_text(updated, encoding="utf-8")
+    return {
+        "status": "enabled" if plan.action == "enable" else "disabled",
+        "shell_rc": str(shell_rc),
+        "alias_name": plan.alias_name,
+        "target_command": plan.target_command,
+        "official_claude_unaffected": True,
+        "deleted": False,
+    }
+
+
+def _shell_alias_block(plan: ShellAliasPlan) -> str:
+    return "\n".join((
+        plan.marker_start,
+        "# Managed by zhumeng-agent; do not alias the official `claude` binary.",
+        f"alias {plan.alias_name}=\"{plan.target_command}\"",
+        plan.marker_end,
+    ))
+
+
+def _disabled_shell_alias_block(plan: ShellAliasPlan) -> str:
+    return "\n".join((
+        plan.marker_start,
+        "# zhumeng-claude alias disabled; enable with `zhumeng-claude alias enable`.",
+        plan.marker_end,
+    ))
+
+
+def _extract_managed_block(content: str, plan: ShellAliasPlan) -> str | None:
+    start = content.find(plan.marker_start)
+    end = content.find(plan.marker_end)
+    if start < 0 or end < start:
+        return None
+    return content[start:end + len(plan.marker_end)]
+
+
+def _replace_managed_block(content: str, plan: ShellAliasPlan, block: str) -> str:
+    existing_block = _extract_managed_block(content, plan)
+    block_with_newline = block.rstrip() + "\n"
+    if existing_block is not None:
+        return content.replace(existing_block, block.rstrip(), 1).rstrip() + "\n"
+    prefix = content
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    return prefix + block_with_newline
+
+
+def _runtime_integrity(manifest_path_value: object) -> dict[str, object]:
+    if not manifest_path_value:
+        return {"status": "missing_manifest", "manifest_hash_matches": False}
+    manifest_path = Path(str(manifest_path_value))
+    hash_lock_path = manifest_path.parent / "hash.lock"
+    if not manifest_path.exists() or not hash_lock_path.exists():
+        return {"status": "missing_manifest", "manifest_hash_matches": False}
+    try:
+        hash_lock = json.loads(hash_lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid_hash_lock", "manifest_hash_matches": False}
+    expected = ""
+    if isinstance(hash_lock, dict):
+        expected = str(hash_lock.get("manifest_hash") or "")
+    actual = _hash_existing_file(manifest_path)
+    matches = bool(actual and expected and actual == expected)
+    return {
+        "status": "pass" if matches else "hash_mismatch",
+        "manifest_hash_matches": matches,
+        "manifest_hash": actual or "",
+        "expected_manifest_hash": expected,
+    }
 
 
 def ensure_managed_runtime_write_path(path: Path, *, runtime_root: Path) -> Path:
     raw_path = path.expanduser()
-    if raw_path == Path("/opt/homebrew/bin/claude"):
+    if raw_path in GLOBAL_CLAUDE_BINARY_PATHS:
         raise RuntimeInstallerError("refuses to overwrite global Claude Code binary")
     expanded_root = runtime_root.expanduser().resolve(strict=False)
     expanded_path = raw_path.resolve(strict=False)
-    if expanded_path == Path("/opt/homebrew/bin/claude"):
+    if expanded_path in GLOBAL_CLAUDE_BINARY_PATHS:
         raise RuntimeInstallerError("refuses to overwrite global Claude Code binary")
     if expanded_path == expanded_root:
         return expanded_path

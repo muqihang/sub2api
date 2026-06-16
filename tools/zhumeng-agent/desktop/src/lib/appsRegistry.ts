@@ -42,6 +42,18 @@ function resolveCodexConnection(status: DesktopStatus): AppConnectionStatus {
   return "connected";
 }
 
+function resolveClaudeCodeConnection(status: DesktopStatus): AppConnectionStatus {
+  const adapter = status.adapters?.claude_code;
+  const adapterStatus = adapter?.status;
+  if (!adapterStatus || adapterStatus === "not_configured") {
+    return "pending";
+  }
+  if (adapterStatus === "error" || adapterStatus === "quarantined" || adapterStatus === "guard_bypass") {
+    return "error";
+  }
+  return "connected";
+}
+
 function plannedConnection(): AppConnectionStatus {
   return "planned";
 }
@@ -65,13 +77,14 @@ const APP_LIST = [
     id: "claude" as const,
     initial: "A",
     iconVariant: "claude" as const,
-    supported: false,
+    supported: true,
     hasEnhancements: false,
-    hasModelPreview: false,
-    hasOpenAction: false,
-    learnMorePath: "/docs/claude",
+    hasModelPreview: true,
+    hasOpenAction: true,
+    defaultAppPath: "zhumeng-claude",
+    learnMorePath: "/docs/claude-code",
     wizardKind: "coming-soon" as const,
-    resolveConnectionStatus: plannedConnection
+    resolveConnectionStatus: resolveClaudeCodeConnection
   },
   {
     id: "custom" as const,

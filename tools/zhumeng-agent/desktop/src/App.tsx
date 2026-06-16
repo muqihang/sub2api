@@ -132,6 +132,8 @@ function App() {
           setPage("app-detail");
           if (target === "codex") {
             void runAction(() => sidecar.openCodex());
+          } else if (target === "claude") {
+            void runAction(() => sidecar.openClaude());
           }
         } else {
           if (!isAppId(parsed.client)) {
@@ -249,6 +251,13 @@ function App() {
     setPage("wizard");
   }
 
+  function openRuntimeForApp(id: AppId) {
+    if (id === "claude") {
+      return runAction(() => sidecar.openClaude());
+    }
+    return runAction(() => sidecar.openCodex());
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -324,7 +333,7 @@ function App() {
                 onBack={() => setPage("apps")}
                 onRepair={() => runAction(() => sidecar.repair())}
                 onPatch={() => runAction(() => sidecar.patchEnhancements(targetPath))}
-                onOpenCodex={() => runAction(() => sidecar.openCodex())}
+                onOpenRuntime={() => openRuntimeForApp(app.id)}
                 onGoWizard={(id) => startWizardForApp(id)}
                 onGoCatalog={() => setPage("catalog")}
               />
@@ -750,7 +759,7 @@ function AppHubCard({ t, app, status, onEnter, onStartWizard }: { t: Translation
   );
 }
 
-function AppDetailPage({ t, status, models, app, onBack, onRepair, onPatch, onOpenCodex, onGoWizard, onGoCatalog }: {
+function AppDetailPage({ t, status, models, app, onBack, onRepair, onPatch, onOpenRuntime, onGoWizard, onGoCatalog }: {
   t: Translation;
   status: DesktopStatus;
   models: CatalogModel[];
@@ -758,7 +767,7 @@ function AppDetailPage({ t, status, models, app, onBack, onRepair, onPatch, onOp
   onBack: () => void;
   onRepair: () => void;
   onPatch: () => void;
-  onOpenCodex: () => void;
+  onOpenRuntime: () => void;
   onGoWizard: (id: AppId) => void;
   onGoCatalog: () => void;
 }) {
@@ -786,7 +795,7 @@ function AppDetailPage({ t, status, models, app, onBack, onRepair, onPatch, onOp
                 {t.actions.reauthorize}
               </button>
               {app.hasOpenAction ? (
-                <button className="secondary-action" onClick={onOpenCodex}>
+                <button className="secondary-action" onClick={onOpenRuntime}>
                   <ExternalLink size={14} />
                   {t.actions.open}
                 </button>

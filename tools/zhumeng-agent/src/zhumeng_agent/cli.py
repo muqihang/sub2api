@@ -37,6 +37,15 @@ from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup,
 from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
 from .adapters.claude_code.launcher import run_managed_claude_code
+from .adapters.claude_code.runtime_installer import (
+    RuntimeInstallerError,
+    apply_shell_alias_plan,
+    build_managed_runtime_install_plan,
+    build_shell_alias_plan,
+    disable_managed_runtime,
+    read_managed_runtime_status,
+    write_managed_runtime_artifacts,
+)
 from .adapters.claude_code.status import derive_claude_code_operator_status
 from .doctor import codex_doctor_report
 from .desktop import run_desktop_command
@@ -99,6 +108,24 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_start.add_argument("--project-cwd", type=Path, default=Path.cwd())
     claude_code_start.add_argument("--guard-port", type=int)
     claude_code_start.add_argument("args", nargs=argparse.REMAINDER)
+    claude_code_install = claude_code_subparsers.add_parser("install")
+    claude_code_install.add_argument("--executable", default="claude")
+    claude_code_install.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_status = claude_code_subparsers.add_parser("status")
+    claude_code_status.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_doctor = claude_code_subparsers.add_parser("doctor")
+    claude_code_doctor.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_restart = claude_code_subparsers.add_parser("restart")
+    claude_code_restart.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_rollback = claude_code_subparsers.add_parser("rollback")
+    claude_code_rollback.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_uninstall = claude_code_subparsers.add_parser("uninstall")
+    claude_code_uninstall.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_alias = claude_code_subparsers.add_parser("alias")
+    claude_code_alias_subparsers = claude_code_alias.add_subparsers(dest="alias_action", required=True)
+    for action in ("enable", "disable", "status"):
+        alias_parser = claude_code_alias_subparsers.add_parser(action)
+        alias_parser.add_argument("--shell-rc", required=True, type=Path)
 
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--json", action="store_true")
@@ -182,6 +209,26 @@ def run_codex_process(args: list[str], env: dict[str, str]) -> int:
 
 def launch_codex_process(command: list[str]) -> None:
     subprocess.Popen(command)
+
+
+def launch_claude_code_process(
+    command: list[str],
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    *,
+    detach_stdio: bool = False,
+):
+    if detach_stdio:
+        return subprocess.Popen(
+            command,
+            env=env,
+            cwd=str(cwd) if cwd is not None else None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    return subprocess.Popen(command, env=env, cwd=str(cwd) if cwd is not None else None)
 
 
 def default_codex_app_path() -> Path | None:
@@ -723,7 +770,24 @@ def desktop_diagnose_data() -> dict[str, object]:
 
 
 def desktop_open_app(app: str) -> dict[str, object]:
-    if app in {"claude-code", "zhumeng-claude"}:
+    if app == "zhumeng-claude":
+        command = [sys.executable, "-m", "zhumeng_agent", "claude-code", "start"]
+        process = launch_claude_code_process(
+            command,
+            env=merge_env_no_proxy(dict(os.environ)),
+            cwd=Path.cwd(),
+            detach_stdio=True,
+        )
+        return {
+            "status": "started",
+            "app": app,
+            "pid": int(getattr(process, "pid", 0) or 0),
+            "launch_command": command,
+            "nonblocking": True,
+            "stdio_detached": True,
+            "official_claude_unaffected": True,
+        }
+    if app == "claude-code":
         return build_claude_code_start_payload(
             executable="claude",
             state_root=state_dir(),
@@ -1028,6 +1092,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "claude-code":
         if args.claude_code_command == "start":
             return handle_claude_code_start(args)
+        if args.claude_code_command in {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias"}:
+            return handle_claude_code_runtime_command(args)
         parser.error("unknown claude-code command")
 
     if args.command == "codex":
@@ -1230,6 +1296,77 @@ def handle_claude_code_start(args: argparse.Namespace) -> int:
     return emit(payload)
 
 
+def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
+    try:
+        if args.claude_code_command == "install":
+            plan = build_managed_runtime_install_plan(
+                executable=args.executable,
+                runtime_root=args.runtime_root,
+                runner=subprocess.run,
+            )
+            write_managed_runtime_artifacts(plan)
+            status = read_managed_runtime_status(args.runtime_root)
+            return emit({
+                "command": "claude-code install",
+                "status": "installed",
+                "runtime": "claude-code",
+                "runtime_root": str(args.runtime_root),
+                "active_version": status.get("active_version"),
+                "manifest_path": status.get("manifest_path"),
+                "official_claude_unaffected": True,
+            })
+        if args.claude_code_command == "status":
+            return emit({"command": "claude-code status", **read_managed_runtime_status(args.runtime_root)})
+        if args.claude_code_command == "doctor":
+            status = read_managed_runtime_status(args.runtime_root)
+            return emit({
+                "command": "claude-code doctor",
+                **status,
+                "destructive_cleanup_requires_confirmation": True,
+            })
+        if args.claude_code_command == "restart":
+            status = read_managed_runtime_status(args.runtime_root)
+            if status.get("status") not in {"enabled", "ready"}:
+                return emit_failed({
+                    "command": "claude-code restart",
+                    **status,
+                    "message": "managed Claude Code runtime is not enabled",
+                    "nonblocking": False,
+                })
+            return emit_failed({
+                "command": "claude-code restart",
+                **status,
+                "status": "restart_unavailable",
+                "message": "no running managed Claude Code process state is available; use zhumeng-claude start to launch a new session",
+                "nonblocking": False,
+                "official_claude_unaffected": True,
+                "destructive_cleanup_requires_confirmation": True,
+            })
+        if args.claude_code_command in {"rollback", "uninstall"}:
+            disabled = disable_managed_runtime(args.runtime_root)
+            return emit({
+                "command": f"claude-code {args.claude_code_command}",
+                **disabled,
+            })
+        if args.claude_code_command == "alias":
+            plan = build_shell_alias_plan(action=args.alias_action, shell_rc=args.shell_rc)
+            result = apply_shell_alias_plan(plan)
+            return emit({
+                "command": f"claude-code alias {args.alias_action}",
+                **result,
+            })
+    except RuntimeInstallerError as err:
+        return emit_failed({
+            "command": f"claude-code {args.claude_code_command}",
+            "status": "not_configured",
+            "message": str(err),
+        })
+    return emit_failed({
+        "command": f"claude-code {args.claude_code_command}",
+        "status": "unknown_command",
+    })
+
+
 def build_claude_code_start_payload(
     *,
     executable: Path | str,
@@ -1279,8 +1416,11 @@ def build_claude_code_start_payload(
 
 def zhumeng_claude_main(argv: Sequence[str] | None = None) -> int:
     passthrough = list(argv) if argv is not None else list(sys.argv[1:])
+    cp7_runtime_commands = {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias"}
     if passthrough and passthrough[0] == "start":
         return main(["claude-code", "start", *passthrough[1:]])
+    if passthrough and passthrough[0] in cp7_runtime_commands:
+        return main(["claude-code", *passthrough])
     return main(["claude-code", "start", "--", *passthrough])
 
 def handle_codex_capture(argv: list[str]) -> int:

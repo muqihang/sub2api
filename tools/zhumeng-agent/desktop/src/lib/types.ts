@@ -87,6 +87,12 @@ export interface DesktopStatus {
       enhancements?: Record<string, unknown>;
       restart_required?: boolean;
     };
+    claude_code?: {
+      status?: string;
+      configured?: boolean;
+      running?: boolean;
+      restart_required?: boolean;
+    };
   };
   model_catalog?: {
     model_count?: number;

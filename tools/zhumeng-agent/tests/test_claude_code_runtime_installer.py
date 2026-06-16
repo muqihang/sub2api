@@ -10,8 +10,12 @@ import pytest
 
 from zhumeng_agent.adapters.claude_code.runtime_installer import (
     RuntimeInstallerError,
+    apply_shell_alias_plan,
     build_managed_runtime_install_plan,
+    build_shell_alias_plan,
+    disable_managed_runtime,
     ensure_managed_runtime_write_path,
+    read_managed_runtime_status,
     write_managed_runtime_artifacts,
 )
 
@@ -89,6 +93,18 @@ def test_runtime_installer_materializes_manifest_hash_lock_and_rollback_metadata
     assert rollback["active_pointer"] == str(runtime_root / "claude-code" / "active")
     assert rollback["global_overwrite"] is False
 
+    active = json.loads(plan.active_pointer.read_text(encoding="utf-8"))
+    assert active["runtime"] == "claude-code"
+    assert active["status"] == "enabled"
+    assert active["active_version"] == "2.1.175"
+    assert active["manifest_path"] == str(plan.manifest_path)
+
+    status = read_managed_runtime_status(runtime_root)
+    assert status["status"] == "enabled"
+    assert status["active_version"] == "2.1.175"
+    assert status["official_claude_unaffected"] is True
+    assert status["integrity"]["status"] == "pass"
+
 
 def test_runtime_installer_never_targets_global_claude_binary(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
@@ -99,10 +115,14 @@ def test_runtime_installer_never_targets_global_claude_binary(tmp_path: Path):
     )
 
     global_claude = Path("/opt/homebrew/bin/claude")
+    usr_local_claude = Path("/usr/local/bin/claude")
     assert str(global_claude) not in {str(path) for path in plan.planned_write_paths}
+    assert str(usr_local_claude) not in {str(path) for path in plan.planned_write_paths}
     assert all(runtime_root in path.parents for path in plan.planned_write_paths)
     with pytest.raises(RuntimeInstallerError, match="refuses to overwrite global Claude Code binary"):
         ensure_managed_runtime_write_path(global_claude, runtime_root=runtime_root)
+    with pytest.raises(RuntimeInstallerError, match="refuses to overwrite global Claude Code binary"):
+        ensure_managed_runtime_write_path(usr_local_claude, runtime_root=runtime_root)
 
 
 def test_runtime_installer_uses_managed_cache_and_does_not_read_default_claude_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -248,3 +268,76 @@ def test_runtime_installer_hashes_existing_upstream_executable_contents(tmp_path
     )
 
     assert plan.manifest.upstream_hash == "sha256:" + hashlib.sha256(b"fake-claude-code-binary").hexdigest()
+
+
+def test_runtime_rollback_disables_active_pointer_without_deleting_artifacts(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    plan = build_managed_runtime_install_plan(
+        executable=tmp_path / "claude",
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    rollback = disable_managed_runtime(runtime_root)
+
+    assert rollback["status"] == "disabled"
+    assert rollback["rollback_action"] == "disable_active_pointer_without_delete"
+    assert rollback["global_overwrite"] is False
+    assert plan.manifest_path.exists()
+    assert plan.patches_path.exists()
+    assert plan.hash_lock_path.exists()
+    active = json.loads(plan.active_pointer.read_text(encoding="utf-8"))
+    assert active["status"] == "disabled"
+    assert active["active_version"] == "2.1.175"
+    assert active["requires_user_confirmation_for_delete"] is True
+
+    status = read_managed_runtime_status(runtime_root)
+    assert status["status"] == "disabled"
+    assert status["active_version"] == "2.1.175"
+
+
+def test_shell_alias_enable_disable_never_aliases_official_claude(tmp_path: Path):
+    shell_rc = tmp_path / ".zshrc"
+    shell_rc.write_text("export KEEP_ME=1\n", encoding="utf-8")
+
+    enable_plan = build_shell_alias_plan(action="enable", shell_rc=shell_rc)
+    enabled = apply_shell_alias_plan(enable_plan)
+
+    content = shell_rc.read_text(encoding="utf-8")
+    assert enabled["status"] == "enabled"
+    assert "export KEEP_ME=1" in content
+    assert 'alias zhumeng-claude="zhumeng-claude"' in content
+    assert "alias claude=" not in content
+    assert "/opt/homebrew/bin/claude" not in content
+
+    disabled = apply_shell_alias_plan(build_shell_alias_plan(action="disable", shell_rc=shell_rc))
+
+    content = shell_rc.read_text(encoding="utf-8")
+    assert disabled["status"] == "disabled"
+    assert "export KEEP_ME=1" in content
+    assert 'alias zhumeng-claude="zhumeng-claude"' not in content
+    assert "zhumeng-claude alias disabled" in content
+    assert not disabled.get("deleted")
+
+
+def test_shell_alias_plan_rejects_attempt_to_shadow_official_claude(tmp_path: Path):
+    with pytest.raises(RuntimeInstallerError, match="refuses to alias official Claude Code"):
+        build_shell_alias_plan(action="enable", shell_rc=tmp_path / ".zshrc", alias_name="claude")
+
+
+def test_runtime_status_fails_closed_on_manifest_hash_mismatch(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    plan = build_managed_runtime_install_plan(
+        executable=tmp_path / "claude",
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+    plan.manifest_path.write_text('{"runtime":"tampered"}\n', encoding="utf-8")
+
+    status = read_managed_runtime_status(runtime_root)
+
+    assert status["status"] == "integrity_failed"
+    assert status["integrity"]["status"] == "hash_mismatch"
+    assert status["integrity"]["manifest_hash_matches"] is False

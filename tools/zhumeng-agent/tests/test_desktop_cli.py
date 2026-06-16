@@ -23,6 +23,7 @@ def restore_cli_defaults():
             "build_codex_launch_command",
             "select_cdp_port",
             "launch_codex_process",
+            "launch_claude_code_process",
             "inspect_codex_enhancements",
             "patch_codex_enhancements",
             "restore_codex_enhancements",
@@ -263,6 +264,32 @@ def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, m
     assert calls[0]["guard_listen_port"] == 43117
     dumped = json.dumps(payload)
     assert "sub2api-entry-secret" not in dumped
+    assert "loopback-secret" not in dumped
+
+
+def test_desktop_open_zhumeng_claude_alias_starts_nonblocking_managed_runtime(capsys, tmp_path: Path):
+    launched = {}
+    cli.launch_claude_code_process = lambda command, env=None, cwd=None, detach_stdio=False: launched.update({
+        "command": command,
+        "env": env,
+        "cwd": cwd,
+        "detach_stdio": detach_stdio,
+    }) or SimpleNamespace(pid=4242)
+
+    exit_code = main(["desktop", "open", "--app", "zhumeng-claude", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["command"] == "desktop open"
+    assert payload["status"] == "started"
+    assert payload["data"]["app"] == "zhumeng-claude"
+    assert payload["data"]["pid"] == 4242
+    assert payload["data"]["stdio_detached"] is True
+    assert launched["detach_stdio"] is True
+    assert launched["command"][:4] == [cli.sys.executable, "-m", "zhumeng_agent", "claude-code"]
+    assert launched["command"][4] == "start"
+    dumped = json.dumps(payload)
+    assert "access-token" not in dumped
     assert "loopback-secret" not in dumped
 
 

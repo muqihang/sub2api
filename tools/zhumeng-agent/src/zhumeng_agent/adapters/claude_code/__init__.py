@@ -38,7 +38,15 @@ from .model_overlay import (
     verify_cp4_route_hint_headers,
     write_model_overlay_proof_artifacts,
 )
-from .runtime_installer import RuntimeInstallerError, build_managed_runtime_install_plan, write_managed_runtime_artifacts
+from .runtime_installer import (
+    RuntimeInstallerError,
+    apply_shell_alias_plan,
+    build_managed_runtime_install_plan,
+    build_shell_alias_plan,
+    disable_managed_runtime,
+    read_managed_runtime_status,
+    write_managed_runtime_artifacts,
+)
 from .provider_probe import (
     BridgeTransportDecision,
     ProviderProbeCatalog,
@@ -111,6 +119,7 @@ __all__ = [
     "assert_cp2_provider_entries_are_not_runtime_verified",
     "assert_cp2_signing_verifier_gate",
     "assert_claude_native_replay_safe",
+    "apply_shell_alias_plan",
     "apply_capability_profile",
     "build_agent_model_options",
     "build_claude_code_launch_plan",
@@ -122,14 +131,17 @@ __all__ = [
     "build_cross_provider_subagent_result",
     "build_route_hint_stub",
     "build_managed_runtime_install_plan",
+    "build_shell_alias_plan",
     "build_isolated_config_dir",
     "build_safe_env",
     "disable_model_overlay_proof",
+    "disable_managed_runtime",
     "derive_claude_code_operator_status",
     "detect_claude_code_version",
     "freeze_safe_summary",
     "probe_cp2_patch_points",
     "probe_cp3a_patch_points",
+    "read_managed_runtime_status",
     "resolve_background_model",
     "resolve_subagent_model",
     "resolve_workflow_model_alias",
