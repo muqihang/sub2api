@@ -247,7 +247,7 @@ User / terminal
 
 单进程路由事实：Claude Code 进程通常只有一个 `ANTHROPIC_BASE_URL` 指向 local guard；用户在 `/model` 切到 DeepSeek/GPT/AGNES 时，请求仍打到同一个 guard。因此 native vs bridge 的逐请求判定不能依赖 base URL，只能依赖 `body.model` 与 overlay/cloud catalog 派生出的 signed route hint，并由 guard/backend 独立交叉校验。
 
-推荐 trust split：managed runtime overlay 负责显示模型、根据签名 catalog 生成当前请求的 route hint；guard 只做验签、核对 `body.model` 与 hint、盖对应 client type/attestation 或 fail closed；cloud backend 作为最终权威再次校验 model->route->account 绑定并执行扇出。guard 不应持有完整 provider secret，也不应直接按 route 连接多个上游；guard 继续只发往 Sub2API cloud 这个单一 upstream。
+推荐 trust split：managed runtime overlay 负责显示模型、根据签名 catalog 生成当前请求的 route hint；guard 只做验签、核对 `body.model` 与 hint、盖对应 client type/attestation 或 fail closed；cloud backend 作为最终权威重新用服务端 catalog 解析 `body.model` 并判定 model->route->account 绑定。客户端 route hint 只作为一致性/审计/triage 信号，不能作为 native 授权依据。guard 不应持有完整 provider secret，也不应直接按 route 连接多个上游；guard 继续只发往 Sub2API cloud 这个单一 upstream。
 
 ### 4.1 Runtime layer
 
@@ -354,11 +354,11 @@ Guard 和 backend 都必须校验签名、有效期、nonce/anti-replay、reques
 - 非 Claude 模型不得带 `claude_code_native`。
 - 非 Claude 模型不得走 CC Gateway formal subscription account pool。
 - Claude native 与 bridge 的 usage/cost/cache/evidence 必须分开记账。
-- 模型路由不得只靠字符串前缀散判，必须来自 Sub2API 下发且由 guard/后端共同校验的 signed/catalog route；prefix 只能作为诊断信号，不能作为授权依据。
+- 模型路由不得只靠字符串前缀散判；guard 只能用 Sub2API 下发的 signed catalog / route hint 做本机一致性检查，backend 必须用服务端 catalog 自行推导 route 并裁决授权；prefix 和客户端 route hint 都只能作为诊断/审计信号，不能作为授权依据。
 - route decision、runtime hash、overlay hash、catalog version 应进入 native/bridge safe audit summary，便于排查混路由。
-- Stage 1 中，Sub2API cloud catalog 是 ProviderRegistry 背后的 route source of truth；它不是永久唯一实现，也不得推动 CP4 提前实现本地 BYOK/OAuth provider registry。
+- Stage 1 中，Sub2API cloud catalog 是 ProviderRegistry 背后的 route source of truth；它不是永久唯一实现，也不得推动 CP5 提前实现本地 BYOK/OAuth provider registry。
 - Catalog trust 必须包含 pinned trust root、签名校验、过期时间、撤销机制、单调版本或 anti-rollback 检查；离线 catalog 只能用于非正式 degraded/diagnostic，不能让 formal-pool eligibility 放行。
-- Claude formal pool admission 必须同时满足：`provider_owner=zhumeng_managed`、`credential_scope=formal_pool`、`gateway_location=cloud` 或 approved gateway、`route=claude_code_native`、native attestation 有效、runtime/overlay/catalog hash 有效。用户自有 Anthropic-compatible/OAuth provider 即使指向 Anthropic API，也必须走 distinct non-formal route。
+- Claude formal pool admission 必须同时满足：`provider_owner=zhumeng_managed`、`credential_scope=formal_pool`、`gateway_location=cloud` 或 approved gateway、服务端 catalog 推导出的 `route=claude_code_native`、native attestation 有效、runtime/overlay/catalog hash 有效。用户自有 Anthropic-compatible/OAuth provider 即使指向 Anthropic API，也必须走 distinct non-formal route。
 
 Per-request routing trust contract：
 
@@ -379,7 +379,7 @@ nonce/timestamp
 2. guard 校验 route hint 签名和 freshness，核对 `body.model`、route、client_type、catalog/runtime/overlay hash 一致。
 3. hint 为 native 时，guard 才能追加 `claude_code_native` attestation；hint 为 bridge 时，guard 只能追加 `claude_code_bridge_*` client type，绝不能盖 native attestation。
 4. unknown model、hint 缺失、hint 与 body 不一致、bridge 模型伪造 native header、body 声称 Claude 但 route=bridge，全部 fail closed。
-5. backend 再独立复核同一 contract，并以服务端 catalog/account policy 为最终裁决。
+5. backend 不接受客户端 route hint 作为 native 授权依据；它必须用服务端权威 catalog 按 `body.model` 自行推导 route，并结合 shape healthcheck、persona/profile、account budget、credential scope 与 policy 作最终裁决。客户端 hint 只用于发现进程内 desync、提高误用门槛和审计定位。
 
 ### 4.4 Bridge layer
 
@@ -509,7 +509,8 @@ Subagent 默认策略应优先 `inherit`，避免用户主模型切到 DeepSeek 
 6. agent model resolve：按 parent profile 继承或映射。
 7. ToolSearch env：默认 `ENABLE_TOOL_SEARCH=true`，但受 profile/healthcheck 控制。
 8. capability metadata：为非 Claude 模型标注 bridge capability。
-9. per-request route hint：为每个出站 `/v1/messages` 请求注入短期签名 route hint，供 guard/backend 与 `body.model` 交叉校验；若版本无法安全注入，则必须降级并 fail closed 到 native-only 或外部选择模式。
+9. family/default model env remap：非 Claude profile 下必须重映射 `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` 以及等价 fast/compact/title/summary 默认模型到当前 provider，避免 Claude Code 后台任务静默走 Claude。
+10. per-request route hint：为每个出站 `/v1/messages` 请求注入短期签名 route hint，供 guard 做一致性检查、供 backend 审计定位；backend 授权必须以服务端 catalog 自行解析 `body.model` 为准。若版本无法安全注入，则必须降级并 fail closed 到 native-only 或外部选择模式。
 
 ### 6.1.1 Claude native overlay 安全边界
 
@@ -805,6 +806,7 @@ Claude Code 自身会维护 transcript，因此逐梦 overlay 不能只在服务
 
 - 每个出站请求的 route hint 与当前 transcript provenance snapshot 绑定；
 - bridge 返回给 Claude Code 的 assistant content 必须先转为 `ReplaySafeAnthropicTranscript` 允许的 block；
+- guard/bridge 对 Claude-origin history 的剥离/转换只能是 in-flight 瞬态处理，绝不回写进 Claude Code 持久化 transcript；
 - runtime 本地可维护 provider_private_state_ref，但该 ref 不能进入 Claude Code transcript、audit 或跨 provider replay；
 - resume/compact/checkpoint 时必须能重新构造 provenance snapshot，构造失败则要求新会话或用户确认摘要；
 - 真实 Claude-origin turn 字节级不改写，避免破坏 Anthropic thinking signature。
@@ -856,6 +858,8 @@ Anthropic Messages
 重点：
 
 - tool_use id 稳定；
+- `input_json_delta` 分片 JSON 重组语义与 Anthropic SSE 一致；
+- `stop_reason=tool_use` 保真，不能误写成 `end_turn`；
 - function/tool schema 保真；
 - reasoning effort 映射；
 - previous_response_id 如可用则内部使用，不暴露给 Claude Code；
@@ -917,6 +921,7 @@ DeepSeek Pro
 - 若当前 session profile 为 non-Claude 且请求 alias 为 fast/simple/haiku，映射到当前 provider fast model；
 - 若 workflow 明确要求 Claude-only capability，则 UI 提示 fallback 到 Claude 或禁用该 workflow。
 - 非 Claude profile 下，workflow/subagent 脚本或工具硬编码 Claude model id 时，默认不得静默消耗 Claude formal pool；应先重映射到当前 provider 等价模型，或要求用户显式 opt-in 并在 UI/audit 中标记会消耗 Claude 号池。
+- Claude Code 自身的后台/快模型调用也必须纳入映射，包括标题生成、compact/历史摘要、quota 或模型可用性探测、Haiku 级小任务；非 Claude profile 下若无法证明已重映射，native egress 必须为 0 或 fail closed。
 
 ## 13. 本地文件与隐私边界
 
@@ -1214,8 +1219,9 @@ CP3B：Transcript boundary contract and fixtures。
 
 - overlay 注入 signed route hint；
 - guard 校验 route hint 与 `body.model`、catalog/runtime/overlay hash、session、nonce/timestamp 一致；
+- guard 维护 nonce replay cache 与时钟窗口，确保 stale/replayed hint fail closed；
 - guard 按 route 追加 `claude_code_native` 或 `claude_code_bridge_*`，unknown fail closed；
-- backend 独立复核 model->route->account binding；
+- backend 用服务端 catalog 自行解析 `body.model` 并复核 model->route->account binding；客户端 route hint 不参与 native 授权；
 - guard 保持单一 Sub2API cloud upstream，不直接按 route 连接多个 provider。
 
 测试：
@@ -1223,7 +1229,8 @@ CP3B：Transcript boundary contract and fixtures。
 - body 声称 Claude 但 route=bridge：fail closed；
 - bridge 模型伪造 native header/client_type：fail closed；
 - unknown model / missing hint / stale catalog / replayed nonce：fail closed；
-- native route 才会盖 native attestation，bridge route 绝不盖 native。
+- native route 才会盖 native attestation，bridge route 绝不盖 native；
+- bridge route 正常转发时会盖 `claude_code_bridge_*` 并进入后端 bridge stub，stub 返回固定 Anthropic SSE；不能只测试 reject path。
 
 ### CP5：Provider router and bridge skeleton
 
@@ -1242,6 +1249,7 @@ CP3B：Transcript boundary contract and fixtures。
 - non-Claude never enters formal pool；
 - Claude native still uses CC Gateway；
 - bridge stream produces Anthropic-compatible event order；
+- bridge tool-use SSE golden diff：以真实 Claude native tool-use SSE 为金样，断言 DeepSeek/GPT bridge 的事件类型、顺序、content_block index、`input_json_delta`、`stop_reason=tool_use` 等价；
 - spoofed model id / spoofed client_type 不能升级到 native；
 - route decision 与 catalog version 在 safe audit 中可追踪。
 
@@ -1268,9 +1276,11 @@ CP5 exit gate：
 - Claude Code CLI live smoke；
 - ToolSearch fixture；
 - subagent smoke；
+- pure DeepSeek profile background fixture：包含标题生成、compact/摘要、后台快模型任务，断言 guard/backend native egress 计数为 0；
 - Claude -> DeepSeek -> Claude switch fixture；
 - foreign thinking/signature cleaning fixture；
 - resume/compact/history replay cleaning fixture；
+- mid-tool-loop provider switch fixture：Claude tool_use 未配对时切 DeepSeek/GPT，必须先在原 provider 收尾或转安全摘要，不能把残缺历史发给新 provider；
 - bridge ToolSearch fixture：DeepSeek/GPT 在 `ENABLE_TOOL_SEARCH=true` 下能物化 deferred tools 或通过 shim 正常工具调用；
 - local transcript privacy fixture：本地 provider state 加密/隔离、session scoped、不进 audit、退出可清理；
 - Codex Gateway no-regression fixture：DeepSeek cache/reasoning/tool_search、OpenAI Responses/cache、AGNES beta path、Computer Use provider-specific compression 不被降级；
@@ -1338,8 +1348,8 @@ CP5 exit gate：
 | 法务/授权风险 | P1 | 用户本机下载官方包，本地 overlay，不分发修改后二进制 |
 | raw sensitive 泄漏 | P0 | summary-only capture + sensitive scan |
 | attestation secret 被本机提取 | P0 | 把 attestation 降级为过滤器；服务端预算、shape/persona verifier、route/account policy 和吊销为最终防线 |
-| 单进程内请求被错误路由 | P0 | per-request signed route hint + body.model 交叉校验 + backend 复核 |
-| Workflow/subagent 硬编码 Claude 静默扣号池 | P1 | 非 Claude profile 默认 provider-local remap，跨 provider 需显式 opt-in |
+| 单进程内请求被错误路由 | P0 | per-request signed route hint + body.model 交叉校验；backend 以服务端 catalog 自行裁决，hint 不授权 |
+| Workflow/subagent/后台快模型静默扣 Claude 号池 | P0 | 非 Claude profile 默认 provider-local remap；标题/compact/summary/probe fixture 要求 native egress=0 |
 | 本地 provider state 形成新隐私面 | P1 | 加密/仅内存、session scope、退出清理、禁止进入 audit/safe deliverable |
 | 本地 provider 与云端托管 provider 混路由 | P0 | provider_owner / credential_scope / gateway_location 进入 route decision 与 audit |
 | 用户 OAuth token 泄漏或被云端化 | P0 | local encrypted vault/keychain，默认不上传，一键撤销 |
@@ -1367,7 +1377,7 @@ CP5 exit gate：
 14. Runtime overlay 可回滚；破坏性删除需要用户确认。
 15. DeepSeek/GPT/AGNES 即使兼容 Anthropic Messages，也不得被标记为 `claude_code_native` 或进入 Claude formal pool。
 16. catalog route 与 request model/client_type 不一致时 fail closed；伪造 `claude_code_native`、catalog version/hash、runtime hash、overlay hash、provider_owner、credential_scope、gateway_location、body shape hash 任一不能进入 formal pool。
-17. Claude formal pool admission 必须同时满足 approved owner/scope/location、signed fresh catalog、valid native attestation、known runtime/overlay/catalog hash、CC Gateway persona/profile。
+17. Claude formal pool admission 必须同时满足 approved owner/scope/location、服务端 catalog 权威判定 native route、valid native attestation、known runtime/overlay/catalog hash、CC Gateway persona/profile；客户端 route hint 不得作为 native 授权依据。
 18. Claude native overlay 不改变 Claude 请求 body/harness/system/tool/thinking/context_management；shape equality / verifier / CC Gateway signing pipeline 必须通过。
 19. Claude -> DeepSeek/GPT/AGNES -> Claude 切换时，非 Claude thinking/reasoning/signature/provider 私有历史不会出现在 Anthropic 上游请求中。
 20. Claude -> DeepSeek/GPT/AGNES 时，Claude thinking/signature/private metadata 不会泄露到非 Claude provider。
@@ -1378,12 +1388,14 @@ CP5 exit gate：
 25. Catalog 签名、过期、撤销、anti-rollback、offline fail-closed 规则有测试覆盖。
 26. 47 号至少定义或保留 ProviderRegistry / PolicyEngine / GatewayRuntime seams；Stage 1 cloud Sub2API catalog 是 source of truth behind the interface，但不是永久唯一实现。
 27. Bridge parity 不降级既有 Codex Gateway DeepSeek/OpenAI Responses/AGNES/Computer Use/usage-cache-accounting 调优，并有 no-regression tests。
-28. 单进程 routing trust contract 通过对抗测试：body/model 与 route hint 不一致、bridge 伪造 native、unknown/stale/replayed hint 均 fail closed。
+28. 单进程 routing trust contract 通过对抗测试：body/model 与 route hint 不一致、bridge 伪造 native、unknown/stale/replayed hint 均 fail closed；backend 必须用服务端 catalog 自行推导 route。
 29. Attestation secret 按本地可提取建模，服务端 budget/persona/shape/account policy/吊销为 formal pool 最终安全依赖。
 30. Bridge 入口维护 `ReplaySafeAnthropicTranscript` 不变式，出口 verifier 只做兜底；真实 Claude-origin turn 不被改写。
-31. 非 Claude profile 下 workflow/subagent 硬编码 Claude model 不得静默消耗 formal pool。
-32. Bridge ToolSearch、local transcript privacy、rolling known-good candidate 晋级均有 fixture 或 release checklist 覆盖。
-33. 相关 Python/Go/bridge tests PASS。
+31. 非 Claude profile 下 workflow/subagent/标题/compact/summary/probe 等硬编码或隐式 Claude model 不得静默消耗 formal pool；pure DeepSeek profile fixture 中 native egress 计数为 0。
+32. Bridge tool-use SSE golden diff 覆盖 `input_json_delta`、content_block index 与 `stop_reason=tool_use`。
+33. In-flight history stripping 不回写 Claude Code 持久化 transcript；mid-tool-loop provider switch 有 fail-closed 或摘要收尾 fixture。
+34. Bridge ToolSearch、local transcript privacy、rolling known-good candidate 晋级均有 fixture 或 release checklist 覆盖。
+35. 相关 Python/Go/bridge tests PASS。
 
 ### 17.2 Stage 2 forward-compat constraints, not 47 runtime launch blockers
 
