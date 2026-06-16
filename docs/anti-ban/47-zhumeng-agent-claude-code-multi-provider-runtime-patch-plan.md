@@ -31,7 +31,7 @@
 4. 通过 local loopback guard + Sub2API provider router 分离两条通道：
    - `claude_code_native`：真实 Claude Code + Claude 模型 + CC Gateway formal pool。
    - `claude_code_bridge_*`：真实 Claude Code UI/工具壳 + 非 Claude 模型协议转换，不进入 Claude formal pool。
-5. 对 DeepSeek/GPT/AGNES 等非 Claude 模型，优先使用或模拟 Anthropic Messages 协议以提高 Claude Code CLI 兼容性；但 **Anthropic 协议兼容不等于 Claude native 安全证明**，不能把非 Claude 的 thinking/reasoning/signature/provider 私有历史原样带回 Claude formal pool。
+5. 对 DeepSeek/GPT/AGNES/GLM/Kimi 等非 formal-pool Claude 模型，Claude Code CLI 侧必须以 Anthropic Messages 为第一协议面：若上游官方提供 Anthropic-compatible `/v1/messages`，优先直连或最小包装该协议；只有缺失或探测不合格时，才从 OpenAI-compatible/Responses 转成 Anthropic facade。但 **Anthropic 协议兼容不等于 Claude native 安全证明**，不能把非 Claude 的 thinking/reasoning/signature/provider 私有历史原样带回 Claude formal pool。
 6. 增加跨供应商会话历史边界：同 provider 内尽量保真，跨 provider 尤其切回 Claude native 时必须清洗、摘要或新开会话，避免 DeepSeek/GPT 的思考块、工具调用历史、assistant replay 污染 Anthropic 上游请求。
 7. 终端体验支持三档：逐梦 Agent 点击启动、`zhumeng-claude` 命令、用户显式同意后的 shell alias/shim `claude`。
 
@@ -454,6 +454,14 @@ Sub2API 应向逐梦 Agent 下发 Claude Code runtime 专用模型 catalog：
       "credential_scope": "provider_pool",
       "gateway_location": "cloud",
       "description": "Fast low-cost model for coding tasks",
+      "protocol": {
+        "protocol_family": "anthropic_messages",
+        "preferred_claude_code_protocol": "anthropic_compatible_v1_messages",
+        "anthropic_messages_native_or_compatible": true,
+        "openai_compatible_fallback": true,
+        "probe_required": true,
+        "codex_gateway_protocol": "openai_compatible_to_responses"
+      },
       "capabilities": {
         "tool_use": true,
         "subagents": true,
@@ -486,6 +494,8 @@ Sub2API 应向逐梦 Agent 下发 Claude Code runtime 专用模型 catalog：
 - ToolSearch 若只是 bridge 等价，不得标成 `native`；
 - DeepSeek/GPT 即使兼容 Anthropic Messages 协议，也只能标成 `anthropic_messages_protocol=true` 或 `bridge`，不得标成 `claude_code_native`；
 - 非 Claude provider 的 thinking/reasoning/signature 默认不可重放进 Claude native 历史，catalog 必须显式声明 `replayable_into_claude_native=false`。
+- Claude Code 路径的 protocol metadata 必须区分 `preferred_claude_code_protocol` 与 Codex Gateway 的 `codex_gateway_protocol`：例如 DeepSeek 在 Codex Desktop/Codex Gateway 里可以继续走 OpenAI-compatible -> Responses；但在 Claude Code CLI 里应优先走官方或探测通过的 Anthropic-compatible `/v1/messages`。
+- 对 GLM/Z.AI、Kimi/Moonshot、Qwen、MiniMax 等未来 provider，不得只凭宣传或模型名默认启用 Anthropic-compatible bridge；必须通过 provider probe 确认 `/v1/messages`、tool_use、stream SSE、usage/cache/error 形状，再写入 catalog。
 
 ### 5.3 默认模型映射
 
@@ -838,7 +848,19 @@ CanonicalAgentTurn
   metadata safe summary
 ```
 
-### 11.2 既有 Codex Gateway 能力复用原则
+### 11.2 Claude Code 协议面优先级
+
+Claude Code CLI 发出的原生请求是 Anthropic `/v1/messages`。因此 47 号的 provider bridge 必须优先服务 Claude Code 的 Anthropic Messages 语义，而不是照搬 Codex Gateway 的 OpenAI-compatible -> Responses 路径。
+
+优先级：
+
+1. **官方或探测通过的 Anthropic-compatible `/v1/messages`**：DeepSeek 已有官方 Anthropic API beta 文档；GLM/Z.AI、Kimi/Moonshot 等若官方提供 Claude Code 或 Anthropic-compatible 接入文档，也应优先按此路径接入。
+2. **Provider-native Anthropic-like 能力最小包装**：若 provider 不是完整 Anthropic 兼容，但 tool_use/stream/reasoning/cache 形状接近，可做最小包装，并在 catalog 中标明缺口。
+3. **OpenAI-compatible/Responses fallback**：只有当 provider 没有可用 Anthropic-compatible surface，或 probe 证明其 Anthropic-compatible surface 不稳定时，才走 OpenAI-compatible/Responses -> Anthropic Messages facade。
+
+这与 Codex Gateway 的 DeepSeek 路径不同：Codex Desktop/Codex Gateway 当前可以使用 OpenAI-compatible -> Responses 转换；Claude Code CLI 接入 DeepSeek 时，应优先使用 DeepSeek 官方 Anthropic-compatible `/v1/messages`，这样更贴近 Claude Code 的工具流、SSE、stop_reason 和消息历史语义。
+
+### 11.3 既有 Codex Gateway 能力复用原则
 
 47 号 Claude Code bridge 不能用一个降级的 Anthropic façade 替换已有 Codex Gateway 专项能力。需要区分复用边界：现有 Codex Gateway 面向 OpenAI Responses / Codex Desktop 形态，Claude Code bridge 面向 Anthropic Messages façade；可直接复用的是 provider adapter、cache、reasoning、accounting、error、Computer Use policy 等底层能力，不是把 OpenAI Responses 协议表面原样塞进 Anthropic Messages。实现时必须复用并保住现有：
 
@@ -850,7 +872,7 @@ CanonicalAgentTurn
 
 每个 provider bridge 的测试都必须有 no-regression 断言，证明 Claude Code 接管没有把 Codex Gateway 已有调优降级。
 
-### 11.3 OpenAI / GPT bridge
+### 11.4 OpenAI / GPT bridge
 
 转换方向：
 
@@ -872,9 +894,14 @@ Anthropic Messages
 - stop/error 事件转为 Claude Code 可理解格式；
 - 不让 GPT 走 Computer Use 高保真压缩策略时误影响 Claude native。
 
-### 11.4 DeepSeek bridge
+### 11.5 DeepSeek bridge
 
-复用 Codex Gateway DeepSeek 经验：
+DeepSeek 在两个产品面里的最佳协议不同：
+
+- Codex Desktop / Codex Gateway：继续保留已调优的 OpenAI-compatible -> Responses 路径和相关 cache/reasoning/tool 策略。
+- Claude Code CLI / Claude Gateway：优先走 DeepSeek 官方或 probe 通过的 Anthropic-compatible `/v1/messages`，只在该路径缺失、不稳定或能力低于 fallback 时，才退到 OpenAI-compatible -> Anthropic facade。
+
+需要复用 Codex Gateway DeepSeek 经验，但复用的是底层策略，不是协议表面：
 
 - OpenAI-compatible 特殊字段；
 - KV cache 友好 prompt 稳定化；
@@ -882,7 +909,26 @@ Anthropic Messages
 - reasoning/thinking 显示策略；
 - 失败时保留 session isolation，避免 thought signature 污染。
 
-### 11.5 External Claude-like / Anthropic-compatible bridge
+对 Anthropic-compatible DeepSeek path 还必须额外验证：
+
+- `/v1/messages` request/response shape；
+- streaming SSE event order；
+- tool_use/tool_result 与 `stop_reason=tool_use`；
+- provider reasoning 与 Claude Code 可见文本的边界；
+- usage/cache 命中字段是否能映射到 Sub2API accounting；
+- error passthrough 是否保持 Claude Code 可恢复。
+
+### 11.6 GLM / Kimi / 其它 Anthropic-compatible 国产模型
+
+GLM/Z.AI、Kimi/Moonshot、Qwen、MiniMax 等后续模型不能通过 scattered hardcode 接入。统一要求：
+
+- catalog 声明 `provider_family`、`protocol_family`、`preferred_claude_code_protocol`、`openai_compatible_fallback`、`probe_required`；
+- 若官方提供 Claude Code/Anthropic-compatible 文档，优先实现 Anthropic Messages path；
+- 若同时提供 OpenAI-compatible 与 Anthropic-compatible，两条 path 都可保留，但 Claude Code 默认选择 Anthropic-compatible，Codex Gateway 默认选择 Responses/OpenAI-compatible，除非实测证明相反；
+- provider probe 必须覆盖 text、tools、stream、error、usage/cache、context window、image/input 限制；
+- 所有非 formal-pool Claude provider 默认不可进入 `claude_code_native`。
+
+### 11.7 External Claude-like / Anthropic-compatible bridge
 
 逐梦云端或后续本地 BYOK 可能接入外部 Claude-like 上游，例如 Kiro/反代 Claude、第三方 Anthropic-compatible API、企业自建 Anthropic-compatible provider。这类模型的目标是能力最大化和协议保真，但安全身份必须与 formal pool native 分开：
 
@@ -894,7 +940,7 @@ Anthropic Messages
 - 可以与 Claude 主控/子代理协作，但跨入 formal-pool Claude native 时仍走 safe final answer / safe tool_result / evidence summary boundary；
 - 若后续某外部 Claude-like 上游被纳入 formal pool，必须另走 formal onboarding、capture、shape/persona、budget、account-safety 审核，不能只改 catalog route。
 
-### 11.6 AGNES bridge
+### 11.8 AGNES bridge
 
 AGNES 目前稳定性较弱，首发可标 beta：
 
@@ -1289,7 +1335,8 @@ CP5 exit gate：
 - usage/cache；
 - error passthrough；
 - stop/timeout；
-- Anthropic Messages protocol compatibility 优先路径；
+- Anthropic Messages protocol compatibility 优先路径：DeepSeek/GLM/Kimi 等 provider 若官方或 probe 支持 `/v1/messages`，Claude Code bridge 优先使用该 path；OpenAI-compatible/Responses 只作为 fallback；
+- protocol probe：逐 provider 记录 Anthropic-compatible 与 OpenAI-compatible 两条 path 的 text/tools/stream/usage/cache/error 差异，catalog 只能启用实测通过的能力；
 - 接入 CP3 定义的 provider transcript boundary sanitizer 到真实 bridge path。
 
 测试：
@@ -1417,7 +1464,9 @@ CP5 exit gate：
 33. In-flight history stripping 不回写 Claude Code 持久化 transcript；mid-tool-loop provider switch 有 fail-closed 或摘要收尾 fixture。
 34. Bridge ToolSearch、local transcript privacy、rolling known-good candidate 晋级均有 fixture 或 release checklist 覆盖。
 35. 外部 Claude-like / Anthropic-compatible 上游作为 bridge 时不进入 formal pool，但能最大化保留 Anthropic Messages 能力，并有 capability truthfulness/probe 测试。
-36. 相关 Python/Go/bridge tests PASS。
+36. Claude Code provider bridge 的首选协议由 `preferred_claude_code_protocol` 决定；DeepSeek/GLM/Kimi 等若 Anthropic-compatible path probe 通过，必须优先使用 `/v1/messages`，不得无理由绕回 OpenAI-compatible -> Responses。
+37. Codex Gateway 与 Claude Code Gateway 的协议面不得混淆：Codex Desktop 侧可以继续 OpenAI-compatible -> Responses，Claude Code 侧必须以 Anthropic Messages 语义验收。
+38. 相关 Python/Go/bridge tests PASS。
 
 ### 17.2 Stage 2 forward-compat constraints, not 47 runtime launch blockers
 
