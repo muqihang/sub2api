@@ -720,6 +720,15 @@ class RedactingForwarder:
                 })
                 return None
         model_id = _native_attestation_model_id(body)
+        if not model_id.startswith("claude-"):
+            self._record({
+                "ts": time.time(),
+                "event": "messages_gate_block",
+                "decision": "block_403",
+                "reason": "non_claude_without_route_catalog",
+                "path": request_path,
+            })
+            return None
         return RouteDecision(
             model_id=model_id,
             provider="claude",
@@ -948,6 +957,21 @@ class RedactingForwarder:
                         self.send_header("content-length", "0")
                         self.end_headers()
                         return
+                    validation_error = validate_cp5_bridge_body(route_decision, body)
+                    if validation_error:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "messages_body_invalid",
+                            "validation_error": validation_error,
+                            "path": request_path,
+                            **messages_route_summary_markers(route_decision, dict(self.headers)),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
                     envelope = evaluate_cost_envelope(body, parent.config)
                     request_record = {
                         "ts": time.time(),
@@ -1059,7 +1083,20 @@ class RedactingForwarder:
 
             def _forward_messages(self, body: bytes, request_path: str, route_decision: RouteDecision) -> None:
                 if not route_decision.native_attestation_allowed and not route_decision.live_request_allowed:
-                    self._respond_cp4_bridge_stub(request_path, route_decision)
+                    if _request_target_path(request_path) == "/v1/messages/count_tokens":
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "bridge_count_tokens_unavailable",
+                            "path": request_path,
+                            **bridge_skeleton_audit_markers(route_decision),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    self._respond_cp5_bridge_skeleton(body, request_path, route_decision)
                     return
                 url = parent.config.upstream_base.rstrip("/") + request_path
                 headers = {
@@ -1075,6 +1112,7 @@ class RedactingForwarder:
                             request_path,
                             dict(self.headers),
                             secret=parent.config.native_attestation_secret,
+                            route_decision=route_decision,
                         ))
                     except RuntimeError as exc:
                         parent._record({
@@ -1182,19 +1220,34 @@ class RedactingForwarder:
                     if stop_event is not None:
                         parent._record({"ts": time.time(), **stop_event})
 
-            def _respond_cp4_bridge_stub(self, request_path: str, route_decision: RouteDecision) -> None:
-                data = cp4_bridge_stub_sse_body(route_decision)
+            def _respond_cp5_bridge_skeleton(self, body: bytes, request_path: str, route_decision: RouteDecision) -> None:
+                validation_error = validate_cp5_bridge_body(route_decision, body)
+                if validation_error:
+                    parent._record({
+                        "ts": time.time(),
+                        "event": "messages_gate_block",
+                        "decision": "block_403",
+                        "reason": "bridge_body_invalid",
+                        "validation_error": validation_error,
+                        "path": request_path,
+                        **bridge_skeleton_audit_markers(route_decision),
+                    })
+                    self.send_response(403)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    stop_event = parent.execution_controller.on_message_completed()
+                    if stop_event is not None:
+                        parent._record({"ts": time.time(), **stop_event})
+                    return
+
+                data = cp5_bridge_skeleton_sse_body(route_decision, body=body)
                 parent._record({
                     "ts": time.time(),
-                    "event": "messages_bridge_stub_response",
-                    "decision": "bridge_stub_cp4",
+                    "event": "messages_bridge_skeleton_response",
+                    "decision": "bridge_skeleton_cp5",
                     "path": request_path,
                     "status": 200,
-                    "route": route_decision.route,
-                    "client_type": route_decision.client_type,
-                    "provider": route_decision.provider,
-                    "live_request_allowed": False,
-                    "native_attested": False,
+                    **bridge_skeleton_audit_markers(route_decision),
                     "response_content_type": "text/event-stream",
                     "response_body_size": len(data),
                 })
@@ -1726,7 +1779,14 @@ def _scoped_hmac_ref(value: str, *, scope: str) -> dict[str, Any]:
     }
 
 
-def build_native_messages_attestation_headers(body: bytes, request_path: str, source_headers: Mapping[str, str], *, secret: str | None = None) -> dict[str, str]:
+def build_native_messages_attestation_headers(
+    body: bytes,
+    request_path: str,
+    source_headers: Mapping[str, str],
+    *,
+    secret: str | None = None,
+    route_decision: RouteDecision | None = None,
+) -> dict[str, str]:
     """Attach internal native takeover markers; never include raw prompt/body."""
     now = int(time.time())
     key_id = os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID", "guard_v1")
@@ -1739,6 +1799,10 @@ def build_native_messages_attestation_headers(body: bytes, request_path: str, so
     local_session_value = str(local_session_ref.get("value", ""))
     model_id = _native_attestation_model_id(body)
     body_shape_hash = _native_body_shape_hash(body)
+    runtime_hash = route_decision.runtime_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH")
+    overlay_hash = route_decision.overlay_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH")
+    catalog_hash = route_decision.catalog_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH")
+    catalog_version = route_decision.catalog_version if route_decision is not None else "legacy-native"
     payload = {
         "key_id": key_id,
         "scope": os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE", NATIVE_ATTESTATION_SCOPE),
@@ -1759,9 +1823,10 @@ def build_native_messages_attestation_headers(body: bytes, request_path: str, so
         "provider_owner": NATIVE_PROVIDER_OWNER,
         "credential_scope": NATIVE_CREDENTIAL_SCOPE,
         "gateway_location": NATIVE_GATEWAY_LOCATION,
-        "runtime_hash": _native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
-        "overlay_hash": _native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
-        "catalog_hash": _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH"),
+        "runtime_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "catalog_hash": catalog_hash,
+        "catalog_version": catalog_version,
         "session_ref": local_session_value,
         "body_shape_hash": body_shape_hash,
     }
@@ -1863,19 +1928,136 @@ def messages_route_summary_markers(route_decision: RouteDecision, source_headers
         "native_attested": bool(route_decision.native_attestation_allowed),
         "formal_pool_allowed": bool(route_decision.formal_pool_allowed),
         "netwatch_required": bool(route_decision.native_attestation_allowed),
-        "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE if route_decision.native_attestation_allowed else "bridge_stub_cp4",
+        "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE if route_decision.native_attestation_allowed else "bridge_skeleton_cp5",
+        "runtime_hash": route_decision.runtime_hash,
+        "overlay_hash": route_decision.overlay_hash,
+        "catalog_hash": route_decision.catalog_hash,
+        "catalog_version": route_decision.catalog_version,
+        "provider_owner": route_decision.provider_owner,
+        "credential_scope": route_decision.credential_scope,
+        "gateway_location": route_decision.gateway_location,
         "local_session_ref": local_session.get("value", ""),
         "raw_body_persisted": False,
         "raw_attestation_persisted": False,
     }
 
 
-def cp4_bridge_stub_sse_body(route_decision: RouteDecision) -> bytes:
+def bridge_skeleton_audit_markers(route_decision: RouteDecision) -> dict[str, Any]:
+    return {
+        "route": route_decision.route,
+        "client_type": route_decision.client_type,
+        "provider": route_decision.provider,
+        "model": route_decision.model_id,
+        "live_request_allowed": bool(route_decision.live_request_allowed),
+        "native_attested": False,
+        "formal_pool_allowed": False,
+        "runtime_hash": route_decision.runtime_hash,
+        "overlay_hash": route_decision.overlay_hash,
+        "catalog_hash": route_decision.catalog_hash,
+        "catalog_version": route_decision.catalog_version,
+        "provider_owner": route_decision.provider_owner,
+        "credential_scope": route_decision.credential_scope,
+        "gateway_location": route_decision.gateway_location,
+    }
+
+
+OPENAI_ONLY_BRIDGE_TOP_LEVEL_FIELDS = {
+    "audio",
+    "frequency_penalty",
+    "background",
+    "conversation",
+    "function_call",
+    "functions",
+    "include",
+    "input",
+    "instructions",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "modalities",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "previous_response_id",
+    "prompt",
+    "prompt_cache_key",
+    "reasoning",
+    "response_format",
+    "seed",
+    "stop",
+    "store",
+    "stream_options",
+    "text",
+    "top_logprobs",
+    "truncation",
+    "user",
+}
+
+
+def validate_cp5_bridge_body(route_decision: RouteDecision, body: bytes) -> str | None:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - fail closed without echoing malformed input
+        return "json_body_required"
+    if not isinstance(payload, dict):
+        return "json_object_required"
+    model = payload.get("model")
+    if not isinstance(model, str) or model.strip() != route_decision.model_id:
+        return "model_binding_mismatch"
+    for field in OPENAI_ONLY_BRIDGE_TOP_LEVEL_FIELDS:
+        if field in payload:
+            return "openai_only_body_shape"
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return "messages_required"
+    for item in messages:
+        if not isinstance(item, dict):
+            return "message_shape_invalid"
+        if item.get("role") not in {"system", "user", "assistant"}:
+            return "message_role_invalid"
+    tool_names: set[str] = set()
+    tools = payload.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list):
+            return "tool_shape_invalid"
+        for item in tools:
+            if not isinstance(item, dict):
+                return "tool_shape_invalid"
+            if item.get("type") == "function" or "function" in item:
+                return "openai_function_tool_shape"
+            name = item.get("name")
+            schema = item.get("input_schema")
+            if not isinstance(name, str) or not _safe_bridge_tool_name(name.strip()) or not isinstance(schema, dict):
+                return "tool_shape_invalid"
+            tool_names.add(name.strip())
+    if "tool_choice" in payload:
+        choice = payload.get("tool_choice")
+        if not isinstance(choice, dict):
+            return "tool_choice_shape_invalid"
+        if choice.get("type") == "function" or "function" in choice:
+            return "openai_function_tool_shape"
+        choice_type = choice.get("type")
+        if choice_type == "tool":
+            name = choice.get("name")
+            if not isinstance(name, str) or not _safe_bridge_tool_name(name.strip()):
+                return "tool_choice_shape_invalid"
+            if name.strip() not in tool_names:
+                return "tool_choice_shape_invalid"
+        elif choice_type not in {"auto", "any", "none"}:
+            return "tool_choice_shape_invalid"
+    return None
+
+
+def cp5_bridge_skeleton_sse_body(route_decision: RouteDecision, *, body: bytes | None) -> bytes:
     model = json.dumps(route_decision.model_id, separators=(",", ":"))
-    content = "bridge stub"
+    tool_name = _bridge_skeleton_tool_name(body)
+    if tool_name:
+        return _cp5_bridge_tool_use_sse_body(model=model, tool_name=tool_name)
+    content = "bridge skeleton"
     return (
         "event: message_start\n"
-        f"data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_bridge_stub_cp4\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":{model},\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\n"
+        f"data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_bridge_skeleton_cp5\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":{model},\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\n"
         "event: content_block_start\n"
         "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
         "event: content_block_delta\n"
@@ -1884,6 +2066,57 @@ def cp4_bridge_stub_sse_body(route_decision: RouteDecision) -> bytes:
         "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
         "event: message_delta\n"
         "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n\n"
+    ).encode("utf-8")
+
+
+def cp4_bridge_stub_sse_body(route_decision: RouteDecision) -> bytes:
+    return cp5_bridge_skeleton_sse_body(route_decision, body=None)
+
+
+def _bridge_skeleton_tool_name(body: bytes | None) -> str:
+    if not body:
+        return ""
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - skeleton falls back to text on malformed body
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    choice = payload.get("tool_choice")
+    if isinstance(choice, dict) and choice.get("type") == "tool" and isinstance(choice.get("name"), str):
+        name = choice["name"].strip()
+        if _safe_bridge_tool_name(name):
+            return name
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        first = tools[0]
+        if isinstance(first, dict) and isinstance(first.get("name"), str):
+            name = first["name"].strip()
+            if _safe_bridge_tool_name(name):
+                return name
+    return ""
+
+
+def _safe_bridge_tool_name(value: str) -> bool:
+    return re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) is not None
+
+
+def _cp5_bridge_tool_use_sse_body(*, model: str, tool_name: str) -> bytes:
+    escaped_tool = json.dumps(tool_name, separators=(",", ":"))
+    partial_json = json.dumps(json.dumps({"city": "San Francisco"}, separators=(",", ":")), separators=(",", ":"))
+    return (
+        "event: message_start\n"
+        f"data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_bridge_skeleton_cp5\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":{model},\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\n"
+        "event: content_block_start\n"
+        f"data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"toolu_bridge_skeleton_cp5\",\"name\":{escaped_tool},\"input\":{{}}}}}}\n\n"
+        "event: content_block_delta\n"
+        f"data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{partial_json}}}}}\n\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
         "event: message_stop\n"
         "data: {\"type\":\"message_stop\"}\n\n"
     ).encode("utf-8")

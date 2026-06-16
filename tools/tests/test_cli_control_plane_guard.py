@@ -1,4 +1,5 @@
 import argparse
+import base64
 import copy
 import json
 import socket
@@ -24,6 +25,7 @@ from tools.cli_control_plane_guard import (
     classify_request,
     deep_body_summary,
     redact_headers,
+    validate_cp5_bridge_body,
 )
 from tools.claude_code_route_trust import (
     RouteHintReplayCache,
@@ -302,6 +304,57 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertFalse(decision.native_attestation_allowed)
         self.assertFalse(decision.formal_pool_allowed)
 
+
+    def test_cp5_native_route_hint_hashes_and_catalog_version_are_signed_into_attestation(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-native-catalog-v1',
+        )
+        body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}'
+        route_headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            model_id='claude-sonnet-4-6',
+            session_ref='session-native',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-native-attestation-bindings',
+        )
+        decision = verify_signed_route_hint_headers(
+            source_headers=route_headers,
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            session_ref='session-native',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+        with unittest.mock.patch.dict(
+            'os.environ',
+            {
+                'ZHUMENG_CLAUDE_RUNTIME_HASH': 'sha256:' + '9' * 64,
+                'ZHUMENG_CLAUDE_OVERLAY_HASH': 'sha256:' + '8' * 64,
+                'ZHUMENG_CLAUDE_CATALOG_HASH': 'sha256:' + '7' * 64,
+            },
+            clear=False,
+        ):
+            native_headers = build_native_messages_attestation_headers(
+                body,
+                '/v1/messages',
+                {'x-claude-code-session-id': 'session-native'},
+                secret='native-attestation-test-secret',
+                route_decision=decision,
+            )
+        payload = json.loads(base64.urlsafe_b64decode(native_headers['x-sub2api-native-attestation'] + '=='))
+        self.assertEqual(payload['runtime_hash'], 'sha256:' + '1' * 64)
+        self.assertEqual(payload['overlay_hash'], 'sha256:' + '2' * 64)
+        self.assertEqual(payload['catalog_hash'], 'sha256:' + '3' * 64)
+        self.assertEqual(payload['catalog_version'], 'cp5-native-catalog-v1')
+
     def test_cp4_route_hint_fails_closed_for_model_mismatch_stale_and_replay(self):
         catalog = cp4_fixture_route_catalog(
             runtime_hash='sha256:' + '1' * 64,
@@ -418,7 +471,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             )
 
 
-    def test_cp4_bridge_route_hint_returns_internal_stub_anthropic_sse_without_upstream_or_native_attestation(self):
+    def test_cp5_bridge_route_hint_returns_internal_skeleton_anthropic_sse_without_upstream_or_native_attestation(self):
         catalog = cp4_fixture_route_catalog(
             runtime_hash='sha256:' + '1' * 64,
             overlay_hash='sha256:' + '2' * 64,
@@ -491,7 +544,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         self.assertEqual(resp.status, 200)
                         self.assertEqual(resp.headers.get('content-type'), 'text/event-stream')
                     self.assertIn(b'event: message_start', data)
-                    self.assertIn(b'bridge stub', data)
+                    self.assertIn(b'bridge skeleton', data)
                     self.assertEqual(len(CaptureHandler.requests), 0)
                     replay_req = urllib.request.Request(
                         f'http://127.0.0.1:{listen_port}{path}',
@@ -510,11 +563,848 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     dumped = summary.read_text(encoding='utf-8')
                     self.assertIn('"client_type": "claude_code_bridge_deepseek"', dumped)
                     self.assertIn('"native_attested": false', dumped)
-                    self.assertIn('"event": "messages_bridge_stub_response"', dumped)
-                    self.assertIn('"decision": "bridge_stub_cp4"', dumped)
+                    self.assertIn('"event": "messages_bridge_skeleton_response"', dumped)
+                    self.assertIn('"decision": "bridge_skeleton_cp5"', dumped)
                     self.assertNotIn('route-hint-secret', dumped)
                     self.assertNotIn('native-attestation-test-secret', dumped)
                     self.assertNotIn('hello', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp5_bridge_skeleton_tool_use_sse_golden_and_safe_audit_without_upstream_or_native(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({
+                    'path': self.path,
+                    'headers': {key.lower(): value for key, value in self.headers.items()},
+                })
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = json.dumps({
+                    'model': 'gpt-5.5',
+                    'messages': [{'role': 'user', 'content': 'please call weather'}],
+                    'max_tokens': 16,
+                    'stream': True,
+                    'tools': [{
+                        'name': 'get_weather',
+                        'description': 'weather lookup',
+                        'input_schema': {
+                            'type': 'object',
+                            'properties': {'city': {'type': 'string'}},
+                            'required': ['city'],
+                        },
+                    }],
+                    'tool_choice': {'type': 'tool', 'name': 'get_weather'},
+                }, separators=(',', ':')).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='gpt-5.5',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-cp5-bridge-tool-use',
+                )
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        data = resp.read().decode('utf-8')
+                        self.assertEqual(resp.status, 200)
+                        self.assertEqual(resp.headers.get('content-type'), 'text/event-stream')
+                    self.assertEqual(len(CaptureHandler.requests), 0)
+                    expected_order = [
+                        'event: message_start',
+                        'event: content_block_start',
+                        'event: content_block_delta',
+                        'event: content_block_stop',
+                        'event: message_delta',
+                        'event: message_stop',
+                    ]
+                    positions = [data.index(marker) for marker in expected_order]
+                    self.assertEqual(positions, sorted(positions))
+                    self.assertIn('"type":"tool_use"', data)
+                    self.assertIn('"name":"get_weather"', data)
+                    self.assertIn('"type":"input_json_delta"', data)
+                    self.assertIn('"partial_json":"{', data)
+                    self.assertIn('"stop_reason":"tool_use"', data)
+                    self.assertNotIn('bridge stub', data)
+
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"event": "messages_bridge_skeleton_response"', dumped)
+                    self.assertIn('"decision": "bridge_skeleton_cp5"', dumped)
+                    self.assertIn('"provider": "openai"', dumped)
+                    self.assertIn('"route": "openai_bridge"', dumped)
+                    self.assertIn('"catalog_version": "cp5-test-v1"', dumped)
+                    self.assertIn('"runtime_hash": "sha256:' + '1' * 64 + '"', dumped)
+                    self.assertIn('"overlay_hash": "sha256:' + '2' * 64 + '"', dumped)
+                    self.assertIn('"catalog_hash": "sha256:' + '3' * 64 + '"', dumped)
+                    self.assertIn('"credential_scope": "bridge_pool"', dumped)
+                    self.assertIn('"formal_pool_allowed": false', dumped)
+                    self.assertIn('"native_attested": false', dumped)
+                    self.assertNotIn('route-hint-secret', dumped)
+                    self.assertNotIn('native-attestation-test-secret', dumped)
+                    self.assertNotIn('please call weather', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+
+    def test_cp5_bridge_body_allows_anthropic_valid_metadata_stop_sequences_top_k_and_thinking(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+        body = json.dumps({
+            'model': 'gpt-5.5',
+            'messages': [{'role': 'user', 'content': 'hello'}],
+            'stream': True,
+            'metadata': {'user_id': 'safe-user'},
+            'stop_sequences': ['DONE'],
+            'top_k': 5,
+            'thinking': {'type': 'enabled', 'budget_tokens': 1024},
+        }, separators=(',', ':')).encode('utf-8')
+        route_headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            model_id='gpt-5.5',
+            session_ref='session-bridge',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-anthropic-valid-fields',
+        )
+        decision = verify_signed_route_hint_headers(
+            source_headers=route_headers,
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            session_ref='session-bridge',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+
+        self.assertIsNone(validate_cp5_bridge_body(decision, body))
+
+    def test_cp5_bridge_skeleton_rejects_openai_function_tool_shape_without_upstream_or_prompt_leak(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({
+                    'path': self.path,
+                    'headers': {key.lower(): value for key, value in self.headers.items()},
+                })
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = json.dumps({
+                    'model': 'gpt-5.5',
+                    'messages': [{'role': 'user', 'content': 'function-tool-shape-must-not-leak'}],
+                    'stream': True,
+                    'tools': [{
+                        'type': 'function',
+                        'function': {'name': 'leak', 'parameters': {'type': 'object'}},
+                    }],
+                    'tool_choice': {'type': 'function', 'function': {'name': 'leak'}},
+                }, separators=(',', ':')).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='gpt-5.5',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-cp5-bridge-function-tool-shape',
+                )
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 403)
+                    self.assertEqual(len(CaptureHandler.requests), 0)
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"event": "messages_gate_block"', dumped)
+                    self.assertIn('"reason": "messages_body_invalid"', dumped)
+                    self.assertIn('"validation_error": "openai_function_tool_shape"', dumped)
+                    self.assertNotIn('function-tool-shape-must-not-leak', dumped)
+                    self.assertNotIn('"leak"', dumped)
+                    self.assertNotIn('route-hint-secret', dumped)
+                    self.assertNotIn('native-attestation-test-secret', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp5_bridge_count_tokens_fails_closed_before_skeleton_or_upstream(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({'path': self.path})
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = json.dumps({
+                    'model': 'gpt-5.5',
+                    'messages': [{'role': 'user', 'content': 'count-tokens-bridge-must-not-leak'}],
+                }, separators=(',', ':')).encode('utf-8')
+                path = '/v1/messages/count_tokens'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='gpt-5.5',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-cp5-bridge-count-tokens',
+                )
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 403)
+                    self.assertEqual(CaptureHandler.requests, [])
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"reason": "bridge_count_tokens_unavailable"', dumped)
+                    self.assertNotIn('count-tokens-bridge-must-not-leak', dumped)
+                    self.assertNotIn('event: message_start', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp5_no_catalog_non_claude_model_fails_closed_before_upstream_or_native_attestation(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({
+                    'path': self.path,
+                    'headers': {key.lower(): value for key, value in self.headers.items()},
+                })
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                ))
+                forwarder.start_background()
+                try:
+                    body = json.dumps({
+                        'model': 'gpt-5.5',
+                        'messages': [{'role': 'user', 'content': 'no-catalog-gpt-must-not-leak'}],
+                        'stream': True,
+                    }, separators=(',', ':')).encode('utf-8')
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=body,
+                        method='POST',
+                        headers={'content-type': 'application/json'},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 403)
+                    self.assertEqual(CaptureHandler.requests, [])
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"reason": "non_claude_without_route_catalog"', dumped)
+                    self.assertNotIn('no-catalog-gpt-must-not-leak', dumped)
+                    self.assertNotIn('native-attestation-test-secret', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp5_native_route_rejects_openai_chat_fields_before_upstream_or_native_attestation(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({
+                    'path': self.path,
+                    'headers': {key.lower(): value for key, value in self.headers.items()},
+                })
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = json.dumps({
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [{'role': 'user', 'content': 'native-chat-fields-must-not-leak'}],
+                    'stream': True,
+                    'max_tokens': 16,
+                    'n': 2,
+                    'stop': ['native-secret-stop'],
+                    'stream_options': {'include_usage': True},
+                    'user': 'native-user-leak',
+                }, separators=(',', ':')).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='claude-sonnet-4-6',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-cp5-native-chat-fields',
+                )
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 403)
+                    self.assertEqual(CaptureHandler.requests, [])
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"reason": "messages_body_invalid"', dumped)
+                    self.assertIn('"validation_error": "openai_only_body_shape"', dumped)
+                    self.assertNotIn('native-chat-fields-must-not-leak', dumped)
+                    self.assertNotIn('native-secret-stop', dumped)
+                    self.assertNotIn('native-user-leak', dumped)
+                    self.assertNotIn('native-attestation-test-secret', dumped)
+                    self.assertNotIn('route-hint-secret', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp5_bridge_skeleton_rejects_openai_chat_fields_without_upstream_or_prompt_leak(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({'path': self.path})
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = json.dumps({
+                    'model': 'gpt-5.5',
+                    'messages': [{'role': 'user', 'content': 'chat-fields-must-not-leak'}],
+                    'stream': True,
+                    'n': 2,
+                    'stop': ['secret-stop'],
+                    'stream_options': {'include_usage': True},
+                    'user': 'user-leak',
+                }, separators=(',', ':')).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='gpt-5.5',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-cp5-openai-chat-fields',
+                )
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 403)
+                    self.assertEqual(CaptureHandler.requests, [])
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"validation_error": "openai_only_body_shape"', dumped)
+                    self.assertNotIn('chat-fields-must-not-leak', dumped)
+                    self.assertNotIn('secret-stop', dumped)
+                    self.assertNotIn('user-leak', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp5_bridge_skeleton_rejects_openai_responses_fields_without_upstream_or_prompt_leak(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({'path': self.path})
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = json.dumps({
+                    'model': 'gpt-5.5',
+                    'messages': [{'role': 'user', 'content': 'responses-fields-must-not-leak'}],
+                    'stream': True,
+                    'reasoning': {'effort': 'low'},
+                    'text': {'format': {'type': 'text'}},
+                    'include': ['message.output_text.logprobs'],
+                    'previous_response_id': 'resp_leak',
+                    'truncation': 'auto',
+                    'prompt_cache_key': 'cache-leak',
+                    'max_output_tokens': 128,
+                    'conversation': 'conv_leak',
+                    'background': False,
+                }, separators=(',', ':')).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='gpt-5.5',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-cp5-openai-responses-fields',
+                )
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 403)
+                    self.assertEqual(CaptureHandler.requests, [])
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"validation_error": "openai_only_body_shape"', dumped)
+                    self.assertNotIn('responses-fields-must-not-leak', dumped)
+                    self.assertNotIn('cache-leak', dumped)
+                    self.assertNotIn('resp_leak', dumped)
+                    self.assertNotIn('route-hint-secret', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp5_bridge_skeleton_rejects_invalid_anthropic_tool_shapes_without_upstream_or_prompt_leak(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({'path': self.path})
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    max_messages=10,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    cases = [
+                        (
+                            'tools_not_array',
+                            {
+                                'model': 'gpt-5.5',
+                                'messages': [{'role': 'user', 'content': 'tools-object-must-not-leak'}],
+                                'stream': True,
+                                'tools': {'name': 'leak'},
+                            },
+                            'tool_shape_invalid',
+                            'tools-object-must-not-leak',
+                        ),
+                        (
+                            'tool_missing_name',
+                            {
+                                'model': 'gpt-5.5',
+                                'messages': [{'role': 'user', 'content': 'missing-name-must-not-leak'}],
+                                'stream': True,
+                                'tools': [{'input_schema': {'type': 'object'}}],
+                            },
+                            'tool_shape_invalid',
+                            'missing-name-must-not-leak',
+                        ),
+                        (
+                            'tool_missing_input_schema',
+                            {
+                                'model': 'gpt-5.5',
+                                'messages': [{'role': 'user', 'content': 'missing-schema-must-not-leak'}],
+                                'stream': True,
+                                'tools': [{'name': 'leak'}],
+                            },
+                            'tool_shape_invalid',
+                            'missing-schema-must-not-leak',
+                        ),
+                        (
+                            'tool_choice_tool_missing_name',
+                            {
+                                'model': 'gpt-5.5',
+                                'messages': [{'role': 'user', 'content': 'bad-choice-must-not-leak'}],
+                                'stream': True,
+                                'tools': [{'name': 'get_weather', 'input_schema': {'type': 'object'}}],
+                                'tool_choice': {'type': 'tool'},
+                            },
+                            'tool_choice_shape_invalid',
+                            'bad-choice-must-not-leak',
+                        ),
+                        (
+                            'tool_name_dot_not_anthropic_compatible',
+                            {
+                                'model': 'gpt-5.5',
+                                'messages': [{'role': 'user', 'content': 'bad-name-must-not-leak'}],
+                                'stream': True,
+                                'tools': [{'name': 'unsafe.tool', 'input_schema': {'type': 'object'}}],
+                            },
+                            'tool_shape_invalid',
+                            'bad-name-must-not-leak',
+                        ),
+                        (
+                            'tool_choice_string_not_object',
+                            {
+                                'model': 'gpt-5.5',
+                                'messages': [{'role': 'user', 'content': 'choice-string-must-not-leak'}],
+                                'stream': True,
+                                'tools': [{'name': 'get_weather', 'input_schema': {'type': 'object'}}],
+                                'tool_choice': 'auto',
+                            },
+                            'tool_choice_shape_invalid',
+                            'choice-string-must-not-leak',
+                        ),
+                        (
+                            'tool_choice_names_unknown_tool',
+                            {
+                                'model': 'gpt-5.5',
+                                'messages': [{'role': 'user', 'content': 'unknown-choice-must-not-leak'}],
+                                'stream': True,
+                                'tools': [{'name': 'get_weather', 'input_schema': {'type': 'object'}}],
+                                'tool_choice': {'type': 'tool', 'name': 'unknown_tool'},
+                            },
+                            'tool_choice_shape_invalid',
+                            'unknown-choice-must-not-leak',
+                        ),
+                    ]
+                    path = '/v1/messages?beta=true'
+                    for index, (name, payload, expected_error, secret_text) in enumerate(cases):
+                        with self.subTest(name):
+                            body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+                            route_headers = build_signed_route_hint_headers(
+                                body=body,
+                                request_path=path,
+                                catalog=catalog,
+                                model_id='gpt-5.5',
+                                session_ref='11111111-2222-4333-8444-555555555555',
+                                secret='route-hint-secret',
+                                now=None,
+                                nonce=f'nonce-cp5-invalid-tool-shape-{index}',
+                            )
+                            req = urllib.request.Request(
+                                f'http://127.0.0.1:{listen_port}{path}',
+                                data=body,
+                                method='POST',
+                                headers={
+                                    'content-type': 'application/json',
+                                    'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                                    **route_headers,
+                                },
+                            )
+                            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                                urllib.request.urlopen(req, timeout=5)
+                            self.assertEqual(ctx.exception.code, 403)
+                            dumped = summary.read_text(encoding='utf-8')
+                            self.assertIn('"validation_error": "' + expected_error + '"', dumped)
+                            self.assertNotIn(secret_text, dumped)
+                            self.assertNotIn('"leak"', dumped)
+                    self.assertEqual(CaptureHandler.requests, [])
                 finally:
                     forwarder.stop()
         finally:
@@ -1063,7 +1953,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                             'model': 'claude-sonnet-4-6',
                             'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
                             'max_tokens': 64,
-                            'tools': [{'name': 'calculator'}],
+                            'tools': [{'name': 'calculator', 'input_schema': {'type': 'object'}}],
                             'output_config': {'format': 'json'},
                         }).encode('utf-8'),
                         method='POST',
@@ -1259,7 +2149,12 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     while sleeper.poll() is None and time.time() < deadline:
                         time.sleep(0.05)
                     self.assertIsNotNone(sleeper.poll())
-                    summary_text = (Path(td) / 'summary.jsonl').read_text(encoding='utf-8')
+                    summary_path = Path(td) / 'summary.jsonl'
+                    summary_text = summary_path.read_text(encoding='utf-8')
+                    deadline = time.time() + 5
+                    while 'execution_controller_stop_requested' not in summary_text and time.time() < deadline:
+                        time.sleep(0.05)
+                        summary_text = summary_path.read_text(encoding='utf-8')
                     self.assertIn('execution_controller_stop_requested', summary_text)
                     self.assertEqual(CaptureHandler.count, 1)
                 finally:

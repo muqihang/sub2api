@@ -84,6 +84,35 @@ func TestClaudeCodeNativeAttestationAcceptsGuardSignedMessagesWithoutServerShape
 	require.NotContains(t, string(mustNativeJSON(t, summary)), "prompt must not be audited")
 }
 
+func TestClaudeCodeNativeAuditSummaryIncludesOnlySafeRouteEvidence(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	now := time.Unix(2050, 0)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"prompt must stay out of audit"}]}`)
+	headers := signedNativeHeadersForTest(t, body, "/v1/messages?beta=true", now, map[string]any{
+		"nonce":        "safe-route-evidence",
+		"runtime_hash": "sha256:" + stringOf('1', 64),
+		"overlay_hash": "sha256:" + stringOf('2', 64),
+		"catalog_hash": "sha256:" + stringOf('3', 64),
+	})
+	headers.Set(ClaudeCodeNativeCatalogVersionHeader, "catalog-v1")
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
+
+	summary, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages?beta=true", headers, body)
+	require.NoError(t, err)
+	raw := string(mustNativeJSON(t, summary))
+	require.Contains(t, raw, "sha256:"+stringOf('1', 64))
+	require.Contains(t, raw, "sha256:"+stringOf('2', 64))
+	require.Contains(t, raw, "sha256:"+stringOf('3', 64))
+	require.Contains(t, raw, "catalog-v1")
+	require.NotContains(t, raw, "prompt must stay out of audit")
+	require.NotContains(t, raw, "native-attestation-test-secret")
+	require.NotContains(t, raw, getHeaderRaw(headers, ClaudeCodeNativeAttestationHeader))
+}
+
 func TestClaudeCodeNativeAttestationRequiresRuntimeRouteCatalogAndBodyBindings(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", "sha256:"+stringOf('1', 64))
@@ -138,6 +167,48 @@ func TestClaudeCodeNativeAttestationRejectsUnknownRuntimeCatalogHashAndBridgeMod
 	_, err = svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", bridgeHeaders, bridgeBody)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "catalog admission")
+}
+
+func TestClaudeCodeNativeEnvJSONCatalogRejectsNonClaudeNativeEntries(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ROUTE_CATALOG_JSON", `[{"model_id":"gpt-5.5","route":"claude_code_native","provider_owner":"zhumeng_managed","credential_scope":"formal_pool","gateway_location":"cloud","catalog_fresh":true},{"model_id":"claude-sonnet-4-6","route":"claude_code_native","provider_owner":"zhumeng_managed","credential_scope":"formal_pool","gateway_location":"cloud","catalog_fresh":true}]`)
+	now := time.Unix(2152, 0)
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+	)
+
+	bridgeBody := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"must not be native"}]}`)
+	bridgeHeaders := signedNativeHeadersForTest(t, bridgeBody, "/v1/messages", now, map[string]any{"nonce": "env-json-gpt"})
+	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", bridgeHeaders, bridgeBody)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "catalog admission")
+
+	claudeBody := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	claudeHeaders := signedNativeHeadersForTest(t, claudeBody, "/v1/messages", now, map[string]any{"nonce": "env-json-claude"})
+	_, err = svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", claudeHeaders, claudeBody)
+	require.NoError(t, err)
+}
+
+func TestClaudeCodeNativeEnvFormalPoolModelsRejectNonClaudeEntries(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS", "gpt-5.5,deepseek-v4-pro,claude-sonnet-4-6")
+	now := time.Unix(2155, 0)
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+	)
+
+	bridgeBody := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"must not be native"}]}`)
+	bridgeHeaders := signedNativeHeadersForTest(t, bridgeBody, "/v1/messages", now, map[string]any{"nonce": "env-formal-pool-gpt"})
+	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", bridgeHeaders, bridgeBody)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "catalog admission")
+
+	claudeBody := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	claudeHeaders := signedNativeHeadersForTest(t, claudeBody, "/v1/messages", now, map[string]any{"nonce": "env-formal-pool-claude"})
+	_, err = svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", claudeHeaders, claudeBody)
+	require.NoError(t, err)
 }
 
 func TestClaudeCodeNativeAttestationRejectsInvalidConfiguredHashAllowlist(t *testing.T) {
@@ -374,6 +445,7 @@ func signedNativeHeadersForTestWithSecret(t *testing.T, body []byte, requestURI 
 		"runtime_hash":              "sha256:" + stringOf('1', 64),
 		"overlay_hash":              "sha256:" + stringOf('2', 64),
 		"catalog_hash":              "sha256:" + stringOf('3', 64),
+		"catalog_version":           "legacy-native",
 		"session_ref":               "hmac-sha256:" + stringOf('a', 64),
 		"body_shape_hash":           claudeCodeNativeBodyShapeHash(body),
 	}
@@ -402,6 +474,9 @@ func signedNativeHeadersForTestWithSecret(t *testing.T, body []byte, requestURI 
 	headers.Set(ClaudeCodeNativeNetwatchRequiredHeader, "true")
 	headers.Set(ClaudeCodeNativeAttestationHeader, encoded)
 	headers.Set(ClaudeCodeNativeSignatureHeader, signature)
+	if catalogVersion, _ := payload["catalog_version"].(string); catalogVersion != "" {
+		headers.Set(ClaudeCodeNativeCatalogVersionHeader, catalogVersion)
+	}
 	return headers
 }
 

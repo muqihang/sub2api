@@ -80,6 +80,7 @@ func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI str
 		"runtime_hash":              "sha256:" + strings.Repeat("1", 64),
 		"overlay_hash":              "sha256:" + strings.Repeat("2", 64),
 		"catalog_hash":              "sha256:" + strings.Repeat("3", 64),
+		"catalog_version":           "legacy-native",
 		"session_ref":               localSessionRef,
 		"body_shape_hash":           handlerTestNativeBodyShapeHash(body),
 	}
@@ -101,6 +102,7 @@ func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI str
 	headers.Set(service.ClaudeCodeNativeGuardAttestedHeader, "true")
 	headers.Set(service.ClaudeCodeNativeLocalSessionRefHeader, localSessionRef)
 	headers.Set(service.ClaudeCodeNativeNetwatchRequiredHeader, "true")
+	headers.Set(service.ClaudeCodeNativeCatalogVersionHeader, "legacy-native")
 	headers.Set(service.ClaudeCodeNativeAttestationHeader, encoded)
 	headers.Set(service.ClaudeCodeNativeSignatureHeader, base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
 	return headers

@@ -66,6 +66,34 @@ func TestAnthropicOnlyCompatProtocolRejectsOpenAIShapedBodyOnMessages(t *testing
 			name: "openai function tool shape",
 			body: `{"model":"claude-sonnet-4-6","tools":[{"type":"function","function":{"name":"leak","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"hello"}]}`,
 		},
+		{
+			name: "openai function tool type without function",
+			body: `{"model":"claude-sonnet-4-6","tools":[{"type":"function","name":"leak","parameters":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name: "openai function tool choice",
+			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"function","function":{"name":"leak"}},"messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name: "invalid anthropic tool missing name",
+			body: `{"model":"claude-sonnet-4-6","tools":[{"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name: "invalid anthropic tool missing input schema",
+			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"leak"}],"messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name: "invalid anthropic tool name",
+			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"unsafe.tool","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name: "invalid anthropic tool choice missing name",
+			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool"},"messages":[{"role":"user","content":"hello"}]}`,
+		},
+		{
+			name: "invalid anthropic tool choice unknown tool",
+			body: `{"model":"claude-sonnet-4-6","tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"unknown_tool"},"messages":[{"role":"user","content":"hello"}]}`,
+		},
 
 		{
 			name: "developer role in messages",
@@ -82,6 +110,10 @@ func TestAnthropicOnlyCompatProtocolRejectsOpenAIShapedBodyOnMessages(t *testing
 		{
 			name: "openai max completion tokens",
 			body: `{"model":"claude-sonnet-4-6","max_completion_tokens":100,"messages":[{"role":"user","content":"private prompt"}]}`,
+		},
+		{
+			name: "openai chat completion options",
+			body: `{"model":"claude-sonnet-4-6","n":2,"stop":["private stop"],"stream_options":{"include_usage":true},"user":"private-user","messages":[{"role":"user","content":"private prompt"}]}`,
 		},
 	}
 

@@ -163,7 +163,7 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                     'model': 'claude-sonnet-4-6',
                     'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
                     'max_tokens': 32,
-                    'tools': [{'name': 'lookup'}],
+                    'tools': [{'name': 'lookup', 'input_schema': {'type': 'object'}}],
                     'output_config': {'format': 'json'},
                 }
                 result = harness.request(
@@ -241,7 +241,7 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
         try:
             with GuardHarness(capture.server_url) as harness:
                 payload = {
-                    'model': 'secret-token-marker',
+                    'model': 'claude-sonnet-4-6',
                     'secret-token-marker': 'x',
                     'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
                 }
@@ -290,10 +290,10 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 'messages': [{'role': 'user', 'content': 'hello'}],
                 'max_tokens': 32,
                 'tools': [
-                    {'name': 'tool-1'},
-                    {'name': 'tool-2'},
-                    {'name': 'tool-3'},
-                    {'name': 'tool-4'},
+                    {'name': 'tool-1', 'input_schema': {'type': 'object'}},
+                    {'name': 'tool-2', 'input_schema': {'type': 'object'}},
+                    {'name': 'tool-3', 'input_schema': {'type': 'object'}},
+                    {'name': 'tool-4', 'input_schema': {'type': 'object'}},
                 ],
             },
             reason='tools_limit_exceeded',

@@ -34,6 +34,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -182,6 +183,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	if len(body) == 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
+		return
+	}
+
+	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages && service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		h.handleClaudeCodeBridgeMessagesSkeleton(c, body)
 		return
 	}
 
@@ -2008,6 +2014,35 @@ func (h *GatewayHandler) applyClaudeCodeNativeMessagesAttestation(c *gin.Context
 	return true
 }
 
+func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, body []byte) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	clientType := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeClientTypeHeader))
+	route := strings.TrimSpace(c.GetHeader("x-sub2api-route"))
+	catalogVersion := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeCatalogVersionHeader))
+	if clientType != decision.ClientType || route != decision.Route || catalogVersion == "" || catalogVersion != decision.CatalogVersion {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	result, err := service.BuildClaudeCodeBridgeSkeletonSSE(decision.BridgeRouteDecision(), body)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	_, _ = c.Writer.Write(result.Body)
+}
+
 // CountTokens handles token counting endpoint
 // POST /v1/messages/count_tokens
 // 特点：校验订阅/余额，但不计算并发、不记录使用量
@@ -2047,6 +2082,18 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	if len(body) == 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
+	}
+
+	if service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+		return
+	}
+	countTokensModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if countTokensModel != "" {
+		if decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), countTokensModel); err == nil && decision.Route != service.ClaudeCodeNativeRoute {
+			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+			return
+		}
 	}
 
 	if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {

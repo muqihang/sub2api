@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -29,24 +30,39 @@ const (
 	anthropicCompatUnsupportedMessage         = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
 )
 
+var anthropicCompatSafeToolNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 var anthropicCompatOpenAIOnlyTopLevelFields = []string{
 	"audio",
 	"frequency_penalty",
+	"background",
+	"conversation",
 	"function_call",
 	"functions",
+	"include",
 	"input",
 	"instructions",
 	"logit_bias",
 	"logprobs",
 	"max_completion_tokens",
+	"max_output_tokens",
 	"modalities",
+	"n",
 	"parallel_tool_calls",
 	"presence_penalty",
+	"previous_response_id",
 	"prompt",
+	"prompt_cache_key",
+	"reasoning",
 	"response_format",
 	"seed",
+	"stop",
 	"store",
+	"stream_options",
+	"text",
 	"top_logprobs",
+	"truncation",
+	"user",
 }
 
 type AnthropicCompatAuditSummary struct {
@@ -256,22 +272,55 @@ func validateAnthropicCompatMessagesBody(body []byte) error {
 	if badMessageRole {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
+	if !validateAnthropicCompatToolShapes(body) {
+		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+	}
+	return nil
+}
+
+func validateAnthropicCompatToolShapes(body []byte) bool {
+	toolNames := map[string]struct{}{}
 	tools := gjson.GetBytes(body, "tools")
 	if tools.Exists() {
 		if !tools.IsArray() {
-			return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+			return false
 		}
-		openAIShape := false
+		valid := true
 		tools.ForEach(func(_, tool gjson.Result) bool {
-			if tool.Get("function").Exists() {
-				openAIShape = true
+			if !tool.IsObject() || tool.Get("function").Exists() || tool.Get("type").String() == "function" {
+				valid = false
 				return false
 			}
+			name := strings.TrimSpace(tool.Get("name").String())
+			if !anthropicCompatSafeToolNameRE.MatchString(name) || !tool.Get("input_schema").IsObject() {
+				valid = false
+				return false
+			}
+			toolNames[name] = struct{}{}
 			return true
 		})
-		if openAIShape {
-			return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+		if !valid {
+			return false
 		}
 	}
-	return nil
+	choice := gjson.GetBytes(body, "tool_choice")
+	if !choice.Exists() {
+		return true
+	}
+	if !choice.IsObject() || choice.Get("function").Exists() || choice.Get("type").String() == "function" {
+		return false
+	}
+	switch choice.Get("type").String() {
+	case "tool":
+		name := strings.TrimSpace(choice.Get("name").String())
+		if !anthropicCompatSafeToolNameRE.MatchString(name) {
+			return false
+		}
+		_, ok := toolNames[name]
+		return ok
+	case "auto", "any", "none":
+		return true
+	default:
+		return false
+	}
 }
