@@ -44,7 +44,7 @@
 1. 用户通过逐梦 Agent 安装并启动托管 Claude Code Runtime。
 2. 用户可在 Claude Code CLI 内部 `/model` 模型选择里看到混合模型列表：Claude、GPT、DeepSeek、后续国产 OpenAI-compatible / Anthropic-compatible 模型。
 3. Claude 模型请求保持真实 Claude Code native body，经 guard attestation 进入 Sub2API / CC Gateway / formal pool。
-4. GPT、DeepSeek、AGNES 等非 Claude 模型请求走独立 bridge path，不冒充 `claude_code_native`，不污染 Claude 订阅账号池。
+4. GPT、DeepSeek、AGNES 等非 Claude 模型请求走独立 bridge path，不冒充 `claude_code_native`，不污染 Claude 订阅账号池。外部上游接入的 Claude-like / Anthropic-compatible 模型也不得默认冒充 formal-pool native，除非满足逐梦 formal pool 的 owner/scope/persona/attestation 全套条件。
 5. Subagents / Agent model options / Workflow 默认模型选择要跟当前 provider profile 一致。
 6. 在 Claude、DeepSeek、GPT 等模型切换时维护 provider transcript boundary：同 provider 内保真，跨 provider 只传安全可重放的文本/工具结果/摘要。
 7. ToolSearch / `tool_reference` / `defer_loading` 在 custom Base URL 下由逐梦 Agent 显式开启和验证，而不是依赖 Claude Code 默认 first-party host gate。
@@ -241,6 +241,10 @@ User / terminal
        |     -> Anthropic Messages facade
        |     -> DeepSeek OpenAI-compatible upstream
        |
+       |-- claude_code_bridge_anthropic_compat
+       |     -> Anthropic Messages passthrough/max-capability bridge
+       |     -> external Claude-like / Kiro / Anthropic-compatible upstream
+       |
        |-- claude_code_bridge_agnes
              -> AGNES adapter
 ```
@@ -347,6 +351,7 @@ Guard 和 backend 都必须校验签名、有效期、nonce/anti-replay、reques
 | catalog-authorized Claude display ids | Claude native | `claude_code_native` | 是 |
 | `gpt-*` | OpenAI bridge | `claude_code_bridge_openai` | 否 |
 | `deepseek-*` | DeepSeek bridge | `claude_code_bridge_deepseek` | 否 |
+| external Claude-like / Kiro / Anthropic-compatible | Anthropic-compatible bridge | `claude_code_bridge_anthropic_compat` | 否 |
 | `agnes-*` | AGNES bridge | `claude_code_bridge_agnes` | 否 |
 
 硬规则：
@@ -358,7 +363,7 @@ Guard 和 backend 都必须校验签名、有效期、nonce/anti-replay、reques
 - route decision、runtime hash、overlay hash、catalog version 应进入 native/bridge safe audit summary，便于排查混路由。
 - Stage 1 中，Sub2API cloud catalog 是 ProviderRegistry 背后的 route source of truth；它不是永久唯一实现，也不得推动 CP5 提前实现本地 BYOK/OAuth provider registry。
 - Catalog trust 必须包含 pinned trust root、签名校验、过期时间、撤销机制、单调版本或 anti-rollback 检查；离线 catalog 只能用于非正式 degraded/diagnostic，不能让 formal-pool eligibility 放行。
-- Claude formal pool admission 必须同时满足：`provider_owner=zhumeng_managed`、`credential_scope=formal_pool`、`gateway_location=cloud` 或 approved gateway、服务端 catalog 推导出的 `route=claude_code_native`、native attestation 有效、runtime/overlay/catalog hash 有效。用户自有 Anthropic-compatible/OAuth provider 即使指向 Anthropic API，也必须走 distinct non-formal route。
+- Claude formal pool admission 必须同时满足：`provider_owner=zhumeng_managed`、`credential_scope=formal_pool`、`gateway_location=cloud` 或 approved gateway、服务端 catalog 推导出的 `route=claude_code_native`、native attestation 有效、runtime/overlay/catalog hash 有效。用户自有 Anthropic-compatible/OAuth provider、逐梦云端接入的外部 Claude-like/Kiro/反代 Claude 上游，即使协议和模型名都像 Claude，也必须走 distinct non-formal route，除非明确纳入 formal pool 画像和账号安全体系。
 
 Per-request routing trust contract：
 
@@ -743,6 +748,7 @@ foreign_tool_internal_history
 | DeepSeek/GPT -> Claude | 严格清洗或摘要 | 不回放非 Claude thinking/reasoning/signature/tool internals |
 | Claude 主控 -> DeepSeek 子代理 -> Claude 主控 | 子代理结果边界 | DeepSeek 子代理返回 final answer/tool_result，Claude 不接收 DeepSeek 内部 assistant replay |
 | DeepSeek 主控 -> Claude 子代理 | 显式消耗 Claude 号池 | UI/审计需标记调用 Claude formal pool，并应用 Claude 账号预算 |
+| Claude 主控 -> external Claude-compatible 子代理 | bridge 协作 | 若不是 formal pool Claude，按外部 Anthropic-compatible bridge 处理，只返回 safe final answer/tool_result，不共享 formal pool identity |
 
 ### 10.4 历史清洗规则
 
@@ -876,7 +882,19 @@ Anthropic Messages
 - reasoning/thinking 显示策略；
 - 失败时保留 session isolation，避免 thought signature 污染。
 
-### 11.5 AGNES bridge
+### 11.5 External Claude-like / Anthropic-compatible bridge
+
+逐梦云端或后续本地 BYOK 可能接入外部 Claude-like 上游，例如 Kiro/反代 Claude、第三方 Anthropic-compatible API、企业自建 Anthropic-compatible provider。这类模型的目标是能力最大化和协议保真，但安全身份必须与 formal pool native 分开：
+
+- route 使用 `claude_code_bridge_anthropic_compat` 或更具体的 provider bridge，不使用 `claude_code_native`；
+- `provider_owner` 可为 `zhumeng_managed_external`、`user_local` 或 `enterprise_managed`，但 `credential_scope` 不得是 `formal_pool`；
+- 优先 passthrough Anthropic Messages 原生能力：tool_use、tool_result、thinking、image、cache-control、extended context、stream event shape；
+- capability truthfulness 由 provider probe/catalog 标注，不能因为模型名是 Claude 就假定支持 official Anthropic 全能力；
+- 不进入 CC Gateway formal subscription account pool，不使用 CCH/persona/account identity；
+- 可以与 Claude 主控/子代理协作，但跨入 formal-pool Claude native 时仍走 safe final answer / safe tool_result / evidence summary boundary；
+- 若后续某外部 Claude-like 上游被纳入 formal pool，必须另走 formal onboarding、capture、shape/persona、budget、account-safety 审核，不能只改 catalog route。
+
+### 11.6 AGNES bridge
 
 AGNES 目前稳定性较弱，首发可标 beta：
 
@@ -888,20 +906,23 @@ AGNES 目前稳定性较弱，首发可标 beta：
 
 ### 12.1 Subagent model options
 
-Patch `getAgentModelOptions()` 或等价入口，使 subagent 可选：
+Patch `getAgentModelOptions()` 或等价入口，使 subagent 可选。具体列表来自 ProviderRegistry/catalog，不硬编码；示例：
 
 ```text
 Inherit from parent
 Claude Sonnet
 Claude Opus
 Claude Haiku
+External Claude-compatible
 GPT Fast
 GPT Main
 DeepSeek Flash
 DeepSeek Pro
+GLM Fast
+GLM Pro
 ```
 
-默认必须是 `inherit`，避免跨 provider 意外走 Claude 号池。若用户显式选择跨 provider 子代理，必须走 transcript boundary：子代理内部历史留在子 provider，只把 final answer / safe tool_result 返回给父代理。
+默认必须是 `inherit`，避免跨 provider 意外走 Claude 号池。若用户显式选择跨 provider 子代理，必须走 transcript boundary：子代理内部历史留在子 provider，只把 final answer / safe tool_result / evidence summary 返回给父代理。Claude Opus 主控 + DeepSeek/GLM/GPT 子代理执行任务是首要产品场景，要求高质量支持，但不得把子代理内部 reasoning、provider-private history 或 raw tool runner state 原样 replay 给父代理。
 
 ### 12.2 Subagent model resolution
 
@@ -1060,7 +1081,7 @@ PolicyEngine
 | Provider type | 用户输入 | 本地能力 |
 |---|---|---|
 | OpenAI-compatible | Base URL + API Key + models/probe | Responses/Chat bridge、Codex Gateway 本地能力复用 |
-| Anthropic-compatible | Base URL + API Key + models/probe | Anthropic Messages bridge、Claude Code bridge 复用 |
+| Anthropic-compatible | Base URL + API Key + models/probe | Anthropic Messages bridge、Claude Code bridge 复用；默认 external/non-formal，不进入 formal pool |
 
 本地添加 provider 时必须：
 
@@ -1395,17 +1416,20 @@ CP5 exit gate：
 32. Bridge tool-use SSE golden diff 覆盖 `input_json_delta`、content_block index 与 `stop_reason=tool_use`。
 33. In-flight history stripping 不回写 Claude Code 持久化 transcript；mid-tool-loop provider switch 有 fail-closed 或摘要收尾 fixture。
 34. Bridge ToolSearch、local transcript privacy、rolling known-good candidate 晋级均有 fixture 或 release checklist 覆盖。
-35. 相关 Python/Go/bridge tests PASS。
+35. 外部 Claude-like / Anthropic-compatible 上游作为 bridge 时不进入 formal pool，但能最大化保留 Anthropic Messages 能力，并有 capability truthfulness/probe 测试。
+36. 相关 Python/Go/bridge tests PASS。
 
 ### 17.2 Stage 2 forward-compat constraints, not 47 runtime launch blockers
 
-以下是后续本地 BYOK/OAuth/自定义供应商阶段的架构约束。47 号必须预留接口和 metadata，不得把云端 Sub2API 写死为永久唯一实现；但除非另开任务，不在当前 runtime launch 中实现本地 provider UI、本地 OAuth 登录或本地 credential vault。
+以下是后续本地 BYOK/OAuth/自定义供应商阶段的架构约束。47 号必须预留接口和 metadata，不得把云端 Sub2API 写死为永久唯一实现；但除非另开任务，不在当前 runtime launch 中实现本地 provider UI、本地 OAuth 登录或本地 credential vault。未来新增 GLM 5.x、Qwen、Moonshot、MiniMax、更多 DeepSeek 或其它国产 OpenAI-compatible/Anthropic-compatible 模型时，必须通过 ProviderRegistry/capability profile/route policy 接入，而不是新增一套散落的硬编码模型逻辑。
 
 1. 用户自有 provider catalog 必须标注 provider_owner / credential_scope / gateway_location，并与逐梦托管模型分账、分 audit。
 2. 用户 OpenAI/Anthropic OAuth token 默认只存本地 encrypted vault/keychain，不进入云端日志或 capture。
 3. 用户自有 Anthropic OAuth 与逐梦 formal pool 完全隔离，不能共享 CCH/persona/account identity。
 4. ProviderCredentialStore 应优先暴露 opaque token/key refs，而不是 raw token material。
 5. Cloud/local/hybrid mode 的 route decision 必须能携带 runtime_mode、provider_owner、credential_scope、gateway_location。
+6. 外部 Claude-like / Anthropic-compatible provider 默认是 `claude_code_bridge_anthropic_compat`，不是 `claude_code_native`；只有通过 formal onboarding 才能进入 formal pool。
+7. 新增 GLM/其它国产模型时必须声明 provider family、protocol family、capabilities、cache policy、tool policy、transcript replay policy、formal-pool eligibility。
 
 ## 18. 结论
 
