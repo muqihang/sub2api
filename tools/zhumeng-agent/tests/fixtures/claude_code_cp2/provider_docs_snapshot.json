@@ -1,0 +1,77 @@
+{
+  "captured_at": "2026-06-16",
+  "observations": {
+    "agnes": {
+      "catalog_strategy": "internal_display_placeholder",
+      "runtime_verified": false
+    },
+    "deepseek": {
+      "anthropic_base_url": "https://api.deepseek.com/anthropic",
+      "cache_key_strategy": "provider_automatic_prefix_cache_best_effort",
+      "cache_usage_fields": [
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens"
+      ],
+      "deprecated_aliases": [
+        "deepseek-chat",
+        "deepseek-reasoner"
+      ],
+      "models": [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash"
+      ],
+      "openai_base_url": "https://api.deepseek.com",
+      "runtime_verified": false
+    },
+    "kimi": {
+      "anthropic_base_url": "https://api.moonshot.ai/anthropic",
+      "cache_key_strategy": "provider_cache_metadata_unverified_probe_required",
+      "deprecated_aliases": [
+        "kimi-latest",
+        "kimi-thinking-preview",
+        "kimi-k2-0905-preview",
+        "kimi-k2-0711-preview",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-thinking",
+        "kimi-k2-thinking-turbo"
+      ],
+      "models": [
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
+        "kimi-k2.5"
+      ],
+      "openai_base_url": "https://api.moonshot.ai/v1",
+      "runtime_verified": false
+    },
+    "openai": {
+      "catalog_strategy": "signed_dynamic_catalog_placeholder_only_in_cp2",
+      "runtime_verified": false
+    },
+    "zai_glm": {
+      "anthropic_base_url": "https://api.z.ai/api/anthropic",
+      "cache_key_strategy": "unknown_probe_required",
+      "coding_openai_compatible_base_url": "https://api.z.ai/api/coding/paas/v4",
+      "models": [
+        "glm-5.2",
+        "glm-5.2[1m]",
+        "glm-5-turbo",
+        "glm-4.7",
+        "glm-4.5-air"
+      ],
+      "runtime_verified": false
+    }
+  },
+  "purpose": "CP2 docs-observed provider metadata only; not authoritative and not runtime-verified.",
+  "sources": {
+    "deepseek_anthropic_api": "https://api-docs.deepseek.com/guides/anthropic_api",
+    "deepseek_kv_cache": "https://api-docs.deepseek.com/guides/kv_cache",
+    "deepseek_models_pricing": "https://api-docs.deepseek.com/quick_start/pricing",
+    "kimi_claude_code": "https://platform.kimi.ai/docs/guide/claude-code",
+    "kimi_models": "https://platform.kimi.ai/docs/models",
+    "openai_models": "https://platform.openai.com/docs/models",
+    "zai_latest_model": "https://docs.z.ai/devpack/latest-model",
+    "zai_other_tools": "https://docs.z.ai/devpack/tool/others",
+    "zai_overview": "https://docs.z.ai/devpack/overview"
+  }
+}
