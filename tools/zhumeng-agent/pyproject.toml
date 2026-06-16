@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 zhumeng-agent = "zhumeng_agent.cli:main"
+zhumeng-claude = "zhumeng_agent.cli:zhumeng_claude_main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

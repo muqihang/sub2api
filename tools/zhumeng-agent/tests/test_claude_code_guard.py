@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import subprocess
@@ -110,12 +111,19 @@ def test_native_guard_plan_scrubs_proxy_recursion_and_keeps_secrets_out_of_comma
     assert "sub2api-entry-secret" not in command_text
     assert "intent-secret" not in command_text
     assert "attestation-secret" not in command_text
+    assert "--native-attestation" in plan.command
     assert "--allow-nonloopback-upstream" not in plan.command
     assert "--control-plane-intent-auth" not in plan.command
     assert plan.env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] == "sub2api-entry-secret"
     assert plan.env["SUB2API_CONTROL_PLANE_INTENT_TOKEN"] == "intent-secret"
     assert plan.env["SUB2API_CONTROL_PLANE_ATTESTATION_SECRET"] == "attestation-secret"
     assert plan.env["SUB2API_CONTROL_PLANE_HMAC_KEY"] == "hmac-secret"
+    expected_runtime_hash = "sha256:" + hashlib.sha256((REPO_ROOT / "tools" / "cli_control_plane_guard.py").read_bytes()).hexdigest()
+    assert plan.env["ZHUMENG_CLAUDE_RUNTIME_HASH"] == expected_runtime_hash
+    assert plan.env["ZHUMENG_CLAUDE_OVERLAY_HASH"].startswith("sha256:")
+    assert plan.env["ZHUMENG_CLAUDE_CATALOG_HASH"].startswith("sha256:")
+    assert plan.env["ZHUMENG_CLAUDE_OVERLAY_HASH"] != "sha256:" + ("0" * 64)
+    assert plan.env["ZHUMENG_CLAUDE_CATALOG_HASH"] != "sha256:" + ("0" * 64)
     assert "HTTP_PROXY" not in plan.env
     assert "HTTPS_PROXY" not in plan.env
     assert "ALL_PROXY" not in plan.env
@@ -256,9 +264,69 @@ def test_native_guard_forwards_attested_native_markers_without_prompt_leak(tmp_p
     assert headers["x-sub2api-netwatch-required"] == "true"
     assert headers["x-sub2api-native-attestation"]
     assert headers["x-sub2api-native-signature"]
+    attestation_payload = json.loads(_b64url_decode(headers["x-sub2api-native-attestation"]).decode("utf-8"))
+    assert attestation_payload["client_type"] == "claude_code_native"
+    assert attestation_payload["route"] == "claude_code_native"
+    assert attestation_payload["model_id"] == "claude-sonnet-4-6"
+    assert attestation_payload["provider_owner"] == "zhumeng_managed"
+    assert attestation_payload["credential_scope"] == "formal_pool"
+    assert attestation_payload["gateway_location"] == "cloud"
+    assert attestation_payload["runtime_hash"]
+    assert attestation_payload["overlay_hash"]
+    assert attestation_payload["catalog_hash"]
+    assert attestation_payload["session_ref"] == attestation_payload["local_session_ref"]
+    assert attestation_payload["body_shape_hash"].startswith("sha256:")
+    assert attestation_payload["nonce"]
+    assert attestation_payload["issued_at"] > 0
     summary = summary_path.read_text(encoding="utf-8")
     assert "claude_code_native" in summary
     assert "native-prompt-marker" not in summary
+
+
+def test_native_guard_without_native_attestation_flag_fails_closed(tmp_path: Path):
+    CaptureHandler.requests = []
+    upstream = _start_server(CaptureHandler)
+    listen_port = _free_port()
+    summary_path = tmp_path / "guard-summary.jsonl"
+    cfg = NativeGuardConfig(
+        mode=NativeGuardMode.STAGING,
+        listen_port=listen_port,
+        upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+        sub2api_auth="sub2api-entry",
+        summary_path=summary_path,
+        repo_root=REPO_ROOT,
+        attestation_secret="attestation-secret",
+    )
+    plan = build_native_guard_plan(cfg, python_executable=Path(sys.executable))
+    no_attestation_plan = plan.__class__(
+        command=[part for part in plan.command if part != "--native-attestation"],
+        env=plan.env,
+        cwd=plan.cwd,
+        config=plan.config,
+        will_start_process=plan.will_start_process,
+    )
+
+    with start_native_guard(no_attestation_plan):
+        payload = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "native-prompt-marker"}],
+            "max_tokens": 32,
+        }
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{listen_port}/v1/messages?beta=true",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"content-type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+
+    upstream.shutdown()
+    assert exc_info.value.code == 403
+    assert CaptureHandler.requests == []
+    summary = summary_path.read_text(encoding="utf-8")
+    assert "native_attestation_unavailable" in summary
+    assert "attestation-secret" not in summary
 
 
 def test_native_guard_control_plane_intent_attestation_and_connect_block(tmp_path: Path):
@@ -317,3 +385,11 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+
+def _b64url_decode(value: str) -> bytes:
+    padded = value + ("=" * ((4 - len(value) % 4) % 4))
+    import base64
+
+    return base64.urlsafe_b64decode(padded.encode("ascii"))

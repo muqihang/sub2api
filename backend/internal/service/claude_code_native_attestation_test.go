@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestClaudeCodeNativeAttestationAcceptsGuardSignedMessagesWithoutServerShape(t *testing.T) {
@@ -38,6 +39,77 @@ func TestClaudeCodeNativeAttestationAcceptsGuardSignedMessagesWithoutServerShape
 	require.True(t, summary.ToolReferencePresent)
 	require.Equal(t, "hmac-sha256:"+stringOf('a', 64), summary.LocalSessionRef)
 	require.NotContains(t, string(mustNativeJSON(t, summary)), "prompt must not be audited")
+}
+
+func TestClaudeCodeNativeAttestationRequiresRuntimeRouteCatalogAndBodyBindings(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", "sha256:"+stringOf('1', 64))
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES", "sha256:"+stringOf('2', 64))
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_CATALOG_HASHES", "sha256:"+stringOf('3', 64))
+	now := time.Unix(2100, 0)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	headers := signedNativeHeadersForTest(t, body, "/v1/messages?beta=true", now, map[string]any{
+		"route":            "claude_code_native",
+		"model_id":         "claude-sonnet-4-6",
+		"provider_owner":   "zhumeng_managed",
+		"credential_scope": "formal_pool",
+		"gateway_location": "cloud",
+		"runtime_hash":     "sha256:" + stringOf('1', 64),
+		"overlay_hash":     "sha256:" + stringOf('2', 64),
+		"catalog_hash":     "sha256:" + stringOf('3', 64),
+		"session_ref":      "hmac-sha256:" + stringOf('a', 64),
+		"body_shape_hash":  claudeCodeNativeBodyShapeHash(body),
+	})
+
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+	)
+	summary, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages?beta=true", headers, body)
+	require.NoError(t, err)
+	require.Equal(t, ClaudeCodeNativeClientType, summary.ClientType)
+}
+
+func TestClaudeCodeNativeAttestationRejectsUnknownRuntimeCatalogHashAndBridgeModels(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", "sha256:"+stringOf('1', 64))
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES", "sha256:"+stringOf('2', 64))
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_CATALOG_HASHES", "sha256:"+stringOf('3', 64))
+	now := time.Unix(2150, 0)
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+	)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	headers := signedNativeHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"runtime_hash": "sha256:" + stringOf('9', 64),
+		"nonce":        "unknown-runtime-hash",
+	})
+	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "runtime hash")
+
+	bridgeBody := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}`)
+	bridgeHeaders := signedNativeHeadersForTest(t, bridgeBody, "/v1/messages", now, map[string]any{"nonce": "bridge-model"})
+	_, err = svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", bridgeHeaders, bridgeBody)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "formal-pool")
+}
+
+func TestClaudeCodeNativeAttestationRejectsInvalidConfiguredHashAllowlist(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", "sha256:"+stringOf('0', 64))
+	now := time.Unix(2160, 0)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	headers := signedNativeHeadersForTest(t, body, "/v1/messages", now, map[string]any{"nonce": "invalid-runtime-allowlist"})
+
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+	)
+	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "runtime hash allowlist")
 }
 
 func TestClaudeCodeNativeAttestationAcceptsCountTokensRoute(t *testing.T) {
@@ -242,6 +314,16 @@ func signedNativeHeadersForTestWithSecret(t *testing.T, body []byte, requestURI 
 		"local_session_ref":         "hmac-sha256:" + stringOf('a', 64),
 		"netwatch_required":         true,
 		"shape_healthcheck_profile": "real_claude_code_native_takeover_v1",
+		"route":                     ClaudeCodeNativeRoute,
+		"model_id":                  gjson.GetBytes(body, "model").String(),
+		"provider_owner":            ClaudeCodeNativeProviderOwner,
+		"credential_scope":          ClaudeCodeNativeCredentialScope,
+		"gateway_location":          ClaudeCodeNativeGatewayLocation,
+		"runtime_hash":              "sha256:" + stringOf('1', 64),
+		"overlay_hash":              "sha256:" + stringOf('2', 64),
+		"catalog_hash":              "sha256:" + stringOf('3', 64),
+		"session_ref":               "hmac-sha256:" + stringOf('a', 64),
+		"body_shape_hash":           claudeCodeNativeBodyShapeHash(body),
 	}
 	for key, value := range overrides {
 		payload[key] = value

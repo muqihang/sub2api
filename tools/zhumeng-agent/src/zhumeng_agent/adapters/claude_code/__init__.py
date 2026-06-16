@@ -1,4 +1,4 @@
-from .launcher import ClaudeCodeLaunchPlan, ClaudeCodeVersion, build_claude_code_launch_plan, detect_claude_code_version
+from .launcher import ClaudeCodeLaunchPlan, ClaudeCodeVersion, ManagedClaudeCodeRunResult, build_claude_code_launch_plan, detect_claude_code_version, run_managed_claude_code
 from .status import ClaudeCodeOperatorStatus, derive_claude_code_operator_status
 from .profile import (
     CaptureMode,
@@ -19,6 +19,7 @@ __all__ = [
     "ClaudeCodeOperatorStatus",
     "ClaudeCodeProfile",
     "ClaudeCodeVersion",
+    "ManagedClaudeCodeRunResult",
     "FgtsMode",
     "ToolSearchMode",
     "apply_capability_profile",
@@ -27,5 +28,6 @@ __all__ = [
     "build_safe_env",
     "derive_claude_code_operator_status",
     "detect_claude_code_version",
+    "run_managed_claude_code",
     "validate_loopback_guard_base_url",
 ]

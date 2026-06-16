@@ -36,6 +36,7 @@ from .adapters.codex.model_picker import inspect_plugin_mention_marketplace_app,
 from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup, restore_latest_plugin_mention_marketplace_backup
 from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
+from .adapters.claude_code.launcher import run_managed_claude_code
 from .adapters.claude_code.status import derive_claude_code_operator_status
 from .doctor import codex_doctor_report
 from .desktop import run_desktop_command
@@ -89,6 +90,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     codex_parser = subparsers.add_parser("codex")
     codex_parser.add_argument("args", nargs=argparse.REMAINDER)
+
+    claude_code_parser = subparsers.add_parser("claude-code")
+    claude_code_subparsers = claude_code_parser.add_subparsers(dest="claude_code_command", required=True)
+    claude_code_start = claude_code_subparsers.add_parser("start")
+    claude_code_start.add_argument("--executable", default="claude")
+    claude_code_start.add_argument("--state-root", type=Path, default=state_dir())
+    claude_code_start.add_argument("--project-cwd", type=Path, default=Path.cwd())
+    claude_code_start.add_argument("--guard-port", type=int)
+    claude_code_start.add_argument("args", nargs=argparse.REMAINDER)
 
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--json", action="store_true")
@@ -463,12 +473,34 @@ def codex_restart_required_after_config_change(config_hash_before: str | None, c
     return bool(app_path is not None and codex_app_is_running(app_path))
 
 
+def server_native_attestation_secret(exchanged: dict[str, object], *, existing_state: dict[str, object] | None = None) -> str:
+    secret = str(exchanged.get("claude_code_native_attestation_secret") or "").strip()
+    if secret:
+        return secret
+    current = existing_state or {}
+    if (
+        str(current.get("claude_code_native_attestation_secret_source") or "").strip().lower() == "server"
+        and str(current.get("claude_code_native_attestation_secret") or "").strip()
+    ):
+        return str(current["claude_code_native_attestation_secret"])
+    raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_native_attestation_secret")
+
+
+def require_server_native_attestation_secret(state: dict[str, object]) -> str:
+    secret = str(state.get("claude_code_native_attestation_secret") or "").strip()
+    source = str(state.get("claude_code_native_attestation_secret_source") or "").strip().lower()
+    if secret and source == "server":
+        return secret
+    raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_native_attestation_secret")
+
+
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
     client = default_http_client(server)
     exchanged = client.exchange_setup_grant(code=code, server_origin=server, client=client_name)
     loopback_secret = generate_loopback_secret()
+    claude_code_native_attestation_secret = server_native_attestation_secret(exchanged)
     proxy_port = choose_local_proxy_port()
     config_manager = default_config_manager()
     prior_auth_json = config_manager.auth_path.read_text(encoding="utf-8") if config_manager.auth_path.exists() else None
@@ -508,6 +540,8 @@ def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, 
         "config_profile": exchanged["config_profile"],
         "proxy_port": proxy_port,
         "loopback_secret": loopback_secret,
+        "claude_code_native_attestation_secret": claude_code_native_attestation_secret,
+        "claude_code_native_attestation_secret_source": "server",
         "backup_paths": [str(path) for path in plan.backup_paths],
         "prior_auth_json": prior_auth_json,
         "prior_catalog_json": prior_catalog_json,
@@ -621,6 +655,7 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
     model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, setup_state)
     proxy_port = int(current.get("proxy_port", choose_local_proxy_port()))
     loopback_secret = str(current.get("loopback_secret") or generate_loopback_secret())
+    claude_code_native_attestation_secret = server_native_attestation_secret(exchanged, existing_state=current)
     config_hash_before = file_sha256(config_manager.config_path)
     config_manager.repair(profile, proxy_port, loopback_secret, model_catalog, trusted_project_paths=current_trusted_project_paths())
     config_hash_after = file_sha256(config_manager.config_path)
@@ -635,6 +670,8 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
         "config_profile": profile,
         "proxy_port": proxy_port,
         "loopback_secret": loopback_secret,
+        "claude_code_native_attestation_secret": claude_code_native_attestation_secret,
+        "claude_code_native_attestation_secret_source": "server",
         "model_catalog_meta": model_catalog_meta,
         "config_hash_after": config_hash_after,
         "auth_hash_after": file_sha256(config_manager.auth_path),
@@ -670,6 +707,14 @@ def desktop_diagnose_data() -> dict[str, object]:
 
 
 def desktop_open_app(app: str) -> dict[str, object]:
+    if app in {"claude-code", "zhumeng-claude"}:
+        return build_claude_code_start_payload(
+            executable="claude",
+            state_root=state_dir(),
+            project_cwd=Path.cwd(),
+            guard_port=None,
+            argv=[],
+        )
     if app != "codex":
         raise ValueError(f"unsupported app: {app}")
     app_path = default_codex_app_path()
@@ -878,7 +923,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         })
 
     if args.command == "setup":
-        result = setup_managed_client(args.client, args.code, args.server)
+        try:
+            result = setup_managed_client(args.client, args.code, args.server)
+        except ValueError as err:
+            return emit_failed({
+                "command": "setup",
+                "client": args.client,
+                "server": args.server,
+                "status": "not_configured",
+                "message": str(err),
+            })
         return emit({
             "command": "setup",
             **result,
@@ -954,6 +1008,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "command": "launch",
             **result.to_dict(),
         })
+
+    if args.command == "claude-code":
+        if args.claude_code_command == "start":
+            return handle_claude_code_start(args)
+        parser.error("unknown claude-code command")
 
     if args.command == "codex":
         if args.args and args.args[0] == "model-picker":
@@ -1136,6 +1195,74 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.error("unknown command")
     return 2
 
+
+def handle_claude_code_start(args: argparse.Namespace) -> int:
+    try:
+        payload = build_claude_code_start_payload(
+            executable=args.executable,
+            state_root=args.state_root,
+            project_cwd=args.project_cwd,
+            guard_port=args.guard_port,
+            argv=normalize_passthrough(args.args),
+        )
+    except ValueError as err:
+        return emit_failed({
+            "command": "claude-code start",
+            "status": "not_configured",
+            "message": str(err),
+        })
+    return emit(payload)
+
+
+def build_claude_code_start_payload(
+    *,
+    executable: Path | str,
+    state_root: Path,
+    project_cwd: Path,
+    guard_port: int | None,
+    argv: list[str],
+) -> dict[str, object]:
+    store = default_state_store()
+    state = store.read()
+    missing = [key for key in ("gateway_base_url", "access_token", "managed_session_id", "device_id") if not state.get(key)]
+    if missing:
+        raise ValueError(f"managed setup is incomplete: missing {', '.join(missing)}")
+    selected_guard_port = int(guard_port or choose_local_proxy_port())
+    attestation_secret = require_server_native_attestation_secret(state)
+    result = run_managed_claude_code(
+        executable=executable,
+        repo_root=Path(__file__).resolve().parents[4],
+        upstream_base=str(state["gateway_base_url"]),
+        sub2api_auth=str(state["access_token"]),
+        attestation_secret=attestation_secret,
+        managed_session_id=str(state.get("managed_session_id") or "") or None,
+        device_id=int(state["device_id"]) if state.get("device_id") is not None else None,
+        config_root=state_root,
+        project_cwd=project_cwd,
+        guard_listen_port=selected_guard_port,
+        argv=argv,
+        inherited_env=dict(os.environ),
+    )
+    guard_listen = str(result.guard_ready.get("listen", ""))
+    return {
+        "command": "claude-code start",
+        "status": "exited",
+        "returncode": result.returncode,
+        "guard": {
+            "listen": guard_listen,
+            "attested": "--native-attestation" in result.guard_plan.command,
+            "summary_path": str(result.guard_plan.config.summary_path),
+        },
+        "claude_base_url": result.launch_plan.env.get("ANTHROPIC_BASE_URL"),
+        "claude_code_api_base_url": result.launch_plan.env.get("CLAUDE_CODE_API_BASE_URL"),
+    }
+
+
+def zhumeng_claude_main(argv: Sequence[str] | None = None) -> int:
+    passthrough = list(argv) if argv is not None else list(sys.argv[1:])
+    if passthrough and passthrough[0] == "start":
+        return main(["claude-code", "start", *passthrough[1:]])
+    return main(["claude-code", "start", "--", *passthrough])
 
 def handle_codex_capture(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="zhumeng-agent codex capture")

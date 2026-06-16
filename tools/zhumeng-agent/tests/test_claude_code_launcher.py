@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import json
+import socket
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import zhumeng_agent.adapters.claude_code.launcher as launcher
 from zhumeng_agent.adapters.claude_code.launcher import (
     build_claude_code_launch_plan,
     detect_claude_code_version,
+    run_managed_claude_code,
 )
 from zhumeng_agent.adapters.claude_code.profile import CaptureMode, ClaudeCodeProfile
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class RecordingRunner:
@@ -106,3 +116,228 @@ def test_launch_plan_repr_does_not_expose_env_api_key(tmp_path: Path):
     )
 
     assert "secret-entry-key" not in repr(plan)
+
+
+
+def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base_url(tmp_path: Path):
+    events: list[tuple[str, object]] = []
+    executable = tmp_path / "claude"
+    project_cwd = tmp_path / "workspace"
+    project_cwd.mkdir()
+
+    @contextmanager
+    def fake_start_guard(plan, *, ready_timeout_seconds: float = 10.0):
+        events.append(("guard", plan))
+        assert "--native-attestation" in plan.command
+        assert plan.env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] == "sub2api-entry"
+        yield SimpleNamespace(process=SimpleNamespace(pid=12345), ready={"listen": "http://127.0.0.1:43117"})
+
+    def fake_process_runner(command, *, env, cwd):
+        events.append(("claude", {"command": command, "env": env, "cwd": cwd}))
+        return 17
+
+    result = launcher.run_managed_claude_code(
+        executable=executable,
+        repo_root=REPO_ROOT,
+        upstream_base="http://127.0.0.1:18080",
+        sub2api_auth="sub2api-entry",
+        attestation_secret="attestation-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=project_cwd,
+        guard_listen_port=43117,
+        argv=["--print"],
+        inherited_env={"ANTHROPIC_API_KEY": "local-user-key", "PATH": "/usr/bin"},
+        start_guard=fake_start_guard,
+        process_runner=fake_process_runner,
+    )
+
+    assert result.returncode == 17
+    assert result.guard_ready["listen"] == "http://127.0.0.1:43117"
+    assert events[0][0] == "guard"
+    assert events[1][0] == "claude"
+    launch = events[1][1]
+    assert launch["command"] == [str(executable), "--print"]
+    assert launch["cwd"] == str(project_cwd)
+    assert launch["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:43117"
+    assert launch["env"]["CLAUDE_CODE_API_BASE_URL"] == "http://127.0.0.1:43117"
+    assert launch["env"]["ANTHROPIC_API_KEY"] == "sub2api-entry"
+    assert "local-user-key" not in "\n".join(launch["env"].values())
+
+
+def test_managed_launch_allows_non_anthropic_cloud_gateway_with_explicit_guard_flag(tmp_path: Path):
+    events: list[object] = []
+
+    @contextmanager
+    def fake_start_guard(plan, *, ready_timeout_seconds: float = 10.0):
+        events.append(plan)
+        assert "--allow-nonloopback-upstream" in plan.command
+        assert plan.config.upstream_base == "https://gateway.zhumeng.example"
+        yield SimpleNamespace(process=SimpleNamespace(pid=12345), ready={"listen": "http://127.0.0.1:43117"})
+
+    result = launcher.run_managed_claude_code(
+        executable=tmp_path / "claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="sub2api-entry",
+        attestation_secret="attestation-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=tmp_path,
+        guard_listen_port=43117,
+        argv=[],
+        inherited_env={"PATH": "/usr/bin"},
+        start_guard=fake_start_guard,
+        process_runner=lambda command, *, env, cwd: 0,
+    )
+
+    assert result.returncode == 0
+    assert events
+
+
+def test_managed_launch_still_rejects_official_anthropic_upstream(tmp_path: Path):
+    with pytest.raises(ValueError, match="official Claude/Anthropic hosts"):
+        launcher.run_managed_claude_code(
+            executable=tmp_path / "claude",
+            repo_root=REPO_ROOT,
+            upstream_base="https://api.anthropic.com",
+            sub2api_auth="sub2api-entry",
+            attestation_secret="attestation-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=43117,
+            argv=[],
+            inherited_env={"PATH": "/usr/bin"},
+            start_guard=lambda *args, **kwargs: None,
+            process_runner=lambda command, *, env, cwd: 0,
+        )
+
+
+class ManagedLaunchCaptureHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0") or 0)
+        body = self.rfile.read(length) if length else b""
+        type(self).requests.append({
+            "path": self.path,
+            "headers": {key.lower(): value for key, value in self.headers.items()},
+            "body": body,
+        })
+        data = b'{"ok":true}'
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def test_managed_launch_real_guard_routes_base_url_with_native_headers(tmp_path: Path):
+    ManagedLaunchCaptureHandler.requests = []
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+
+    def fake_claude_process(command, *, env, cwd):
+        assert env["ANTHROPIC_BASE_URL"] == f"http://127.0.0.1:{guard_port}"
+        assert env["CLAUDE_CODE_API_BASE_URL"] == f"http://127.0.0.1:{guard_port}"
+        req = urllib.request.Request(
+            env["ANTHROPIC_BASE_URL"] + "/v1/messages?beta=true",
+            data=json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "walking-skeleton-prompt"}],
+                "max_tokens": 8,
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            assert response.status == 200
+        return 0
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=tmp_path / "claude",
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            attestation_secret="attestation-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[],
+            inherited_env={"PATH": "/usr/bin"},
+            process_runner=fake_claude_process,
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+    assert result.guard_ready["listen"] == f"http://127.0.0.1:{guard_port}"
+    assert "--native-attestation" in result.guard_plan.command
+    assert len(ManagedLaunchCaptureHandler.requests) == 1
+    headers = ManagedLaunchCaptureHandler.requests[0]["headers"]
+    assert headers["x-sub2api-client-type"] == "claude_code_native"
+    assert headers["x-sub2api-guard-attested"] == "true"
+    assert headers["x-sub2api-native-attestation"]
+    assert headers["x-sub2api-native-signature"]
+    summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "walking-skeleton-prompt" not in summary
+
+
+def _start_server(handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+def test_managed_launch_passes_managed_device_headers_to_guard(tmp_path: Path):
+    captured = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        captured["guard_plan"] = plan
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        return 0
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        managed_session_id="managed-session",
+        device_id=9,
+        attestation_secret="native-secret",
+        config_root=tmp_path,
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+    )
+
+    command = captured["guard_plan"].command
+    assert "--managed-session" in command
+    assert command[command.index("--managed-session") + 1] == "managed-session"
+    assert "--device-id" in command
+    assert command[command.index("--device-id") + 1] == "9"
+    assert result.returncode == 0

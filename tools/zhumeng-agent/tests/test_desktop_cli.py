@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from pathlib import Path
@@ -28,6 +29,7 @@ def restore_cli_defaults():
             "resolve_codex_home",
             "codex_doctor_report",
             "codex_app_is_running",
+            "run_managed_claude_code",
         )
         if hasattr(cli, name)
     }
@@ -99,6 +101,7 @@ def test_desktop_setup_returns_json_envelope_without_tokens(capsys, tmp_path: Pa
                 "server_base_url": "https://example.com",
                 "gateway_base_url": "https://example.com",
                 "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
             }
 
         def list_codex_models(self, **kwargs):
@@ -145,6 +148,7 @@ def test_desktop_setup_marks_restart_required_when_codex_is_running(capsys, tmp_
                 "server_base_url": "https://example.com",
                 "gateway_base_url": "https://example.com",
                 "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
             }
 
         def list_codex_models(self, **kwargs):
@@ -211,6 +215,57 @@ def test_desktop_open_codex_uses_adapter_launch(capsys):
     assert launched["command"] == ["open", "/Applications/Codex.app"]
 
 
+def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, monkeypatch):
+    store = MemoryStore({
+        "status": "configured",
+        "client": "claude_code_native",
+        "gateway_base_url": "http://127.0.0.1:18080",
+        "access_token": "sub2api-entry-secret",
+        "managed_session_id": "managed-session",
+        "device_id": 9,
+        "loopback_secret": "loopback-secret",
+        "claude_code_native_attestation_secret": "server-native-attestation-secret",
+        "claude_code_native_attestation_secret_source": "server",
+    })
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(env={
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+            }),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl"),
+            ),
+        )
+
+    cli.default_state_store = lambda: store
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code)
+
+    exit_code = main(["desktop", "open", "--app", "claude-code", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["command"] == "desktop open"
+    assert payload["status"] == "exited"
+    assert payload["data"]["guard"]["listen"] == "http://127.0.0.1:43117"
+    assert payload["data"]["claude_base_url"] == "http://127.0.0.1:43117"
+    assert calls[0]["upstream_base"] == "http://127.0.0.1:18080"
+    assert calls[0]["sub2api_auth"] == "sub2api-entry-secret"
+    assert calls[0]["managed_session_id"] == "managed-session"
+    assert calls[0]["device_id"] == 9
+    assert calls[0]["guard_listen_port"] == 43117
+    dumped = json.dumps(payload)
+    assert "sub2api-entry-secret" not in dumped
+    assert "loopback-secret" not in dumped
+
+
 def test_desktop_codex_enhancements_status_envelope(capsys, tmp_path: Path):
     app = tmp_path / "Codex.app"
     cli.inspect_codex_enhancements = lambda app_path: {
@@ -257,6 +312,7 @@ def test_desktop_reauth_preserves_restore_baseline_and_proxy(capsys, tmp_path: P
                 "server_base_url": "https://example.com",
                 "gateway_base_url": "https://example.com",
                 "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
             }
         def list_codex_models(self, **kwargs):
             return {"models": []}
@@ -270,6 +326,8 @@ def test_desktop_reauth_preserves_restore_baseline_and_proxy(capsys, tmp_path: P
         "prior_catalog_json": "original-catalog",
         "catalog_preexisting": True,
         "config_profile": {"model_provider": "zhumeng-codex"},
+        "claude_code_native_attestation_secret": "existing-native-secret",
+        "claude_code_native_attestation_secret_source": "server",
     })
     cli.default_state_store = lambda: store
     cli.default_http_client = lambda server: FakeClient()
@@ -298,6 +356,7 @@ def test_desktop_reauth_marks_restart_required_when_codex_is_running(capsys, tmp
                 "server_base_url": "https://example.com",
                 "gateway_base_url": "https://example.com",
                 "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
             }
 
         def list_codex_models(self, **kwargs):
@@ -312,6 +371,8 @@ def test_desktop_reauth_marks_restart_required_when_codex_is_running(capsys, tmp
         "proxy_port": 18081,
         "loopback_secret": "existing-loopback-secret",
         "config_profile": {"model_provider": "zhumeng-codex"},
+        "claude_code_native_attestation_secret": "existing-native-secret",
+        "claude_code_native_attestation_secret_source": "server",
     })
     cli.default_state_store = lambda: store
     cli.default_http_client = lambda server: FakeClient()
@@ -410,6 +471,8 @@ def test_desktop_repair_enhancement_failure_is_not_ok(capsys):
         "proxy_port": 18081,
         "loopback_secret": "loopback-secret",
         "config_profile": {"model_provider": "zhumeng-codex"},
+        "claude_code_native_attestation_secret": "existing-native-secret",
+        "claude_code_native_attestation_secret_source": "server",
     })
     cli.default_state_store = lambda: store
     cli.default_config_manager = lambda: FakeManager()

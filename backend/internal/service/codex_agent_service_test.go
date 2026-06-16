@@ -225,6 +225,9 @@ func TestCodexAgentServiceExchangeSetupGrantRejectsOriginMismatch(t *testing.T) 
 }
 
 func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "server-native-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_KEYS_JSON", "")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID", "guard_v1")
 	var createdToken CreateCodexDeviceTokenParams
 	var createdDevice CreateCodexManagedDeviceParams
 	svc := newTestCodexAgentService(
@@ -284,6 +287,7 @@ func TestCodexAgentServiceExchangeSetupGrantReturnsConfigProfileAndCredentials(t
 	require.Equal(t, "responses", resp.ConfigProfile.WireAPI)
 	require.True(t, resp.ConfigProfile.RequiresOpenAIAuth)
 	require.False(t, resp.ConfigProfile.SupportsWebsockets)
+	require.Equal(t, "server-native-secret", resp.ClaudeCodeNativeAttestationSecret)
 	require.Equal(t, hashManagedSecret(resp.RefreshToken), createdToken.RefreshTokenHash)
 	require.NotNil(t, createdDevice.LastSeenAt)
 	require.False(t, createdDevice.LastSeenAt.Before(before))

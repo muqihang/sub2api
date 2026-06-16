@@ -11,6 +11,8 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +52,11 @@ const (
 	ClaudeCodeNativeToolSearchHealthProfile   = "real_claude_code_native_toolsearch_v1"
 	ClaudeCodeNativeControlPlaneHealthProfile = "real_claude_code_native_control_plane_shadow_v1"
 	ClaudeCodeNativeNetwatchHealthProfile     = "real_claude_code_native_netwatch_v1"
+
+	ClaudeCodeNativeRoute           = "claude_code_native"
+	ClaudeCodeNativeProviderOwner   = "zhumeng_managed"
+	ClaudeCodeNativeCredentialScope = "formal_pool"
+	ClaudeCodeNativeGatewayLocation = "cloud"
 )
 
 type ClaudeCodeNativeAuditSummary struct {
@@ -86,15 +93,28 @@ type ClaudeCodeNativeAttestationPayload struct {
 	LocalSessionRef         string `json:"local_session_ref"`
 	NetwatchRequired        bool   `json:"netwatch_required"`
 	ShapeHealthcheckProfile string `json:"shape_healthcheck_profile"`
+	Route                   string `json:"route"`
+	ModelID                 string `json:"model_id"`
+	ProviderOwner           string `json:"provider_owner"`
+	CredentialScope         string `json:"credential_scope"`
+	GatewayLocation         string `json:"gateway_location"`
+	RuntimeHash             string `json:"runtime_hash"`
+	OverlayHash             string `json:"overlay_hash"`
+	CatalogHash             string `json:"catalog_hash"`
+	SessionRef              string `json:"session_ref"`
+	BodyShapeHash           string `json:"body_shape_hash"`
 }
 
 type ClaudeCodeNativeAttestationConfig struct {
-	CurrentKeyID string
-	Keys         map[string]string
-	Scope        string
-	Version      int
-	NonceTTL     time.Duration
-	ClockSkew    time.Duration
+	CurrentKeyID  string
+	Keys          map[string]string
+	Scope         string
+	Version       int
+	NonceTTL      time.Duration
+	ClockSkew     time.Duration
+	RuntimeHashes map[string]struct{}
+	OverlayHashes map[string]struct{}
+	CatalogHashes map[string]struct{}
 }
 
 type ClaudeCodeNativeNonceReplayCache struct {
@@ -126,9 +146,21 @@ var claudeCodeNativeAttestationPayloadAllowedFields = map[string]struct{}{
 	"local_session_ref":         {},
 	"netwatch_required":         {},
 	"shape_healthcheck_profile": {},
+	"route":                     {},
+	"model_id":                  {},
+	"provider_owner":            {},
+	"credential_scope":          {},
+	"gateway_location":          {},
+	"runtime_hash":              {},
+	"overlay_hash":              {},
+	"catalog_hash":              {},
+	"session_ref":               {},
+	"body_shape_hash":           {},
 }
 
 var (
+	claudeCodeNativeSafeHashRe     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	claudeCodeNativeUnknownHash    = "sha256:" + strings.Repeat("0", 64)
 	claudeCodeNativeReplayCacheMu  sync.Mutex
 	claudeCodeNativeReplayCacheTTL time.Duration
 	claudeCodeNativeReplayCache    *ClaudeCodeNativeNonceReplayCache
@@ -283,7 +315,13 @@ func (s *ClaudeCodeNativeAttestationService) VerifyMessagesRequest(method, rawRo
 	if err := compareClaudeCodeNativeRequest(method, rawRoute, payload); err != nil {
 		return ClaudeCodeNativeAuditSummary{}, err
 	}
+	if err := validateClaudeCodeNativeTrustedBindings(payload, cfg); err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
 	if err := validateClaudeCodeNativeSafeRefs(payload, headers); err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
+	if err := validateClaudeCodeNativeBodyBinding(payload, body); err != nil {
 		return ClaudeCodeNativeAuditSummary{}, err
 	}
 	return buildClaudeCodeNativeAuditSummary(payload, body), nil
@@ -396,13 +434,28 @@ func loadClaudeCodeNativeAttestationConfigFromEnv() (*ClaudeCodeNativeAttestatio
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("claude code native attestation key set is empty")
 	}
+	runtimeHashes, err := parseClaudeCodeNativeHashAllowlistEnv("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES")
+	if err != nil {
+		return nil, err
+	}
+	overlayHashes, err := parseClaudeCodeNativeHashAllowlistEnv("SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES")
+	if err != nil {
+		return nil, err
+	}
+	catalogHashes, err := parseClaudeCodeNativeHashAllowlistEnv("SUB2API_CLAUDE_CODE_NATIVE_CATALOG_HASHES")
+	if err != nil {
+		return nil, err
+	}
 	return &ClaudeCodeNativeAttestationConfig{
-		CurrentKeyID: currentKeyID,
-		Keys:         keys,
-		Scope:        controlPlaneAttestationFirstNonEmpty(strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE")), ClaudeCodeNativeDefaultScope),
-		Version:      controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", 1),
-		NonceTTL:     time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_NONCE_TTL_SECONDS", 120)) * time.Second,
-		ClockSkew:    time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CLOCK_SKEW_SECONDS", 30)) * time.Second,
+		CurrentKeyID:  currentKeyID,
+		Keys:          keys,
+		Scope:         controlPlaneAttestationFirstNonEmpty(strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE")), ClaudeCodeNativeDefaultScope),
+		Version:       controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", 1),
+		NonceTTL:      time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_NONCE_TTL_SECONDS", 120)) * time.Second,
+		ClockSkew:     time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CLOCK_SKEW_SECONDS", 30)) * time.Second,
+		RuntimeHashes: runtimeHashes,
+		OverlayHashes: overlayHashes,
+		CatalogHashes: catalogHashes,
 	}, nil
 }
 
@@ -430,6 +483,48 @@ func decodeClaudeCodeNativeAttestationPayload(encoded string) (*ClaudeCodeNative
 	return &payload, nil
 }
 
+func parseClaudeCodeNativeHashAllowlistEnv(name string) (map[string]struct{}, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, nil
+	}
+	result := map[string]struct{}{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' || r == '\t' || r == ' ' }) {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if claudeCodeNativeSafeHashRe.MatchString(value) && value != claudeCodeNativeUnknownHash {
+			result[value] = struct{}{}
+		}
+	}
+	if len(result) == 0 {
+		label := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(name, "SUB2API_CLAUDE_CODE_NATIVE_"), "_HASHES"))
+		return nil, fmt.Errorf("claude code native %s hash allowlist is invalid", label)
+	}
+	return result, nil
+}
+
+func claudeCodeNativeHashAllowed(value string, allowlist map[string]struct{}) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if !claudeCodeNativeSafeHashRe.MatchString(trimmed) || trimmed == claudeCodeNativeUnknownHash {
+		return false
+	}
+	if len(allowlist) == 0 {
+		return true
+	}
+	_, ok := allowlist[trimmed]
+	return ok
+}
+
+func isClaudeCodeNativeFormalPoolModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if normalized == "" || looksSensitiveText(normalized) {
+		return false
+	}
+	if strings.Contains(normalized, "deepseek") || strings.Contains(normalized, "gpt") || strings.Contains(normalized, "agnes") || strings.Contains(normalized, "glm") || strings.Contains(normalized, "kimi") {
+		return false
+	}
+	return strings.HasPrefix(normalized, "claude-")
+}
+
 func validateClaudeCodeNativeAttestationPayloadShape(payload *ClaudeCodeNativeAttestationPayload) error {
 	if payload == nil {
 		return fmt.Errorf("claude code native attestation payload is required")
@@ -442,6 +537,18 @@ func validateClaudeCodeNativeAttestationPayloadShape(payload *ClaudeCodeNativeAt
 	}
 	if !isKnownClaudeCodeNativeHealthProfile(payload.ShapeHealthcheckProfile) {
 		return fmt.Errorf("claude code native healthcheck profile is invalid")
+	}
+	if payload.Route != ClaudeCodeNativeRoute || payload.ProviderOwner != ClaudeCodeNativeProviderOwner || payload.CredentialScope != ClaudeCodeNativeCredentialScope || payload.GatewayLocation != ClaudeCodeNativeGatewayLocation {
+		return fmt.Errorf("claude code native attestation route binding is invalid")
+	}
+	if strings.TrimSpace(payload.ModelID) == "" || looksSensitiveText(payload.ModelID) {
+		return fmt.Errorf("claude code native attestation model binding is invalid")
+	}
+	for _, value := range []string{payload.RuntimeHash, payload.OverlayHash, payload.CatalogHash, payload.BodyShapeHash} {
+		trimmed := strings.TrimSpace(value)
+		if !claudeCodeNativeSafeHashRe.MatchString(trimmed) || trimmed == claudeCodeNativeUnknownHash {
+			return fmt.Errorf("claude code native attestation hash binding is invalid")
+		}
 	}
 	return nil
 }
@@ -469,6 +576,9 @@ func validateClaudeCodeNativeSafeRefs(payload *ClaudeCodeNativeAttestationPayloa
 	if !isSafeLedgerRef(payload.LocalSessionRef) {
 		return fmt.Errorf("claude code native local session ref must be opaque")
 	}
+	if payload.SessionRef != payload.LocalSessionRef || !isSafeLedgerRef(payload.SessionRef) {
+		return fmt.Errorf("claude code native session binding mismatch")
+	}
 	if strings.TrimSpace(headers.Get(ClaudeCodeNativeLocalSessionRefHeader)) != "" && headers.Get(ClaudeCodeNativeLocalSessionRefHeader) != payload.LocalSessionRef {
 		return fmt.Errorf("claude code native session ref header mismatch")
 	}
@@ -476,6 +586,107 @@ func validateClaudeCodeNativeSafeRefs(payload *ClaudeCodeNativeAttestationPayloa
 		return fmt.Errorf("claude code native netwatch is required")
 	}
 	return nil
+}
+
+func validateClaudeCodeNativeTrustedBindings(payload *ClaudeCodeNativeAttestationPayload, cfg *ClaudeCodeNativeAttestationConfig) error {
+	if payload == nil {
+		return fmt.Errorf("claude code native attestation payload is required")
+	}
+	if !isClaudeCodeNativeFormalPoolModel(payload.ModelID) {
+		return fmt.Errorf("claude code native formal-pool model binding is invalid")
+	}
+	if !claudeCodeNativeHashAllowed(payload.RuntimeHash, cfg.RuntimeHashes) {
+		return fmt.Errorf("claude code native runtime hash binding is invalid")
+	}
+	if !claudeCodeNativeHashAllowed(payload.OverlayHash, cfg.OverlayHashes) {
+		return fmt.Errorf("claude code native overlay hash binding is invalid")
+	}
+	if !claudeCodeNativeHashAllowed(payload.CatalogHash, cfg.CatalogHashes) {
+		return fmt.Errorf("claude code native catalog hash binding is invalid")
+	}
+	return nil
+}
+
+func validateClaudeCodeNativeBodyBinding(payload *ClaudeCodeNativeAttestationPayload, body []byte) error {
+	if payload == nil {
+		return fmt.Errorf("claude code native attestation payload is required")
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" || looksSensitiveText(model) || payload.ModelID != model {
+		return fmt.Errorf("claude code native attestation model binding mismatch")
+	}
+	if !isClaudeCodeNativeFormalPoolModel(model) {
+		return fmt.Errorf("claude code native formal-pool model binding is invalid")
+	}
+	if payload.BodyShapeHash != claudeCodeNativeBodyShapeHash(body) {
+		return fmt.Errorf("claude code native attestation body shape binding mismatch")
+	}
+	return nil
+}
+
+func claudeCodeNativeBodyShapeHash(body []byte) string {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		decoded = map[string]any{"body_size": len(body), "type": "invalid_json"}
+	}
+	shape := claudeCodeNativeShapeValue(decoded)
+	raw, _ := json.Marshal(shape)
+	digest := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func claudeCodeNativeShapeValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		children := map[string]any{}
+		keys := make([]string, 0, len(v))
+		for key, child := range v {
+			safeKey := sanitizeClaudeCodeNativeShapeKey(key)
+			if safeKey == "" {
+				safeKey = "redacted-key"
+			}
+			if _, exists := children[safeKey]; !exists {
+				keys = append(keys, safeKey)
+			}
+			children[safeKey] = claudeCodeNativeShapeValue(child)
+		}
+		sort.Strings(keys)
+		return map[string]any{"children": children, "keys": keys, "type": "object"}
+	case []any:
+		items := make([]any, 0, len(v))
+		limit := len(v)
+		if limit > 32 {
+			limit = 32
+		}
+		for i := 0; i < limit; i++ {
+			items = append(items, claudeCodeNativeShapeValue(v[i]))
+		}
+		return map[string]any{"items": items, "len": len(v), "truncated": len(v) > 32, "type": "array"}
+	case string:
+		return map[string]any{"type": "string"}
+	case bool:
+		return map[string]any{"type": "bool"}
+	case float64, float32, int, int64, int32, json.Number:
+		return map[string]any{"type": "number"}
+	case nil:
+		return map[string]any{"type": "null"}
+	default:
+		return map[string]any{"type": "unknown"}
+	}
+}
+
+func sanitizeClaudeCodeNativeShapeKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" || looksSensitiveText(key) || len(key) > 128 {
+		return "redacted-key"
+	}
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return "redacted-key"
+	}
+	return key
 }
 
 func buildClaudeCodeNativeAuditSummary(payload *ClaudeCodeNativeAttestationPayload, body []byte) ClaudeCodeNativeAuditSummary {

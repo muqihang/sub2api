@@ -40,6 +40,182 @@ class CliControlPlaneGuardTest(unittest.TestCase):
     def tearDown(self):
         self._native_secret_patch.stop()
 
+
+    def test_forward_messages_adds_managed_device_headers(self):
+        seen = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                _ = self.rfile.read(int(self.headers.get('content-length', '0')))
+                seen['authorization'] = self.headers.get('Authorization')
+                seen['managed_session'] = self.headers.get('X-Zhumeng-Managed-Session')
+                seen['device_id'] = self.headers.get('X-Zhumeng-Device-ID')
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='managed-access-token',
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+            ))
+            forwarder.start_background()
+            try:
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                    data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                    method='POST',
+                    headers={'content-type': 'application/json', 'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)'},
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+        self.assertEqual(seen['authorization'], 'Bearer managed-access-token')
+        self.assertEqual(seen['managed_session'], 'managed-session')
+        self.assertEqual(seen['device_id'], '9')
+
+    def test_forward_messages_uses_strict_header_allowlist(self):
+        seen = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                _ = self.rfile.read(int(self.headers.get('content-length', '0')))
+                seen['headers'] = {key.lower(): value for key, value in self.headers.items()}
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='managed-access-token',
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+            ))
+            forwarder.start_background()
+            try:
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                    data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)',
+                        'anthropic-version': '2023-06-01',
+                        'x-stainless-lang': 'js',
+                        'x-access-token': 'local-token-leak',
+                        'x-prompt': 'local-prompt-leak',
+                        'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                        'x-random-local-debug': 'debug-leak',
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+        headers = seen['headers']
+        self.assertEqual(headers['authorization'], 'Bearer managed-access-token')
+        self.assertEqual(headers['user-agent'], 'claude-cli/2.1.150 (external, sdk-cli)')
+        self.assertEqual(headers['anthropic-version'], '2023-06-01')
+        self.assertEqual(headers['x-stainless-lang'], 'js')
+        self.assertNotIn('x-access-token', headers)
+        self.assertNotIn('x-prompt', headers)
+        self.assertNotIn('x-claude-code-session-id', headers)
+        self.assertNotIn('x-random-local-debug', headers)
+
+    def test_extra_forward_headers_are_also_allowlisted(self):
+        seen = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                _ = self.rfile.read(int(self.headers.get('content-length', '0')))
+                seen['headers'] = {key.lower(): value for key, value in self.headers.items()}
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='managed-access-token',
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                extra_forward_headers={
+                    'anthropic-version': '2023-06-01',
+                    'x-prompt': 'extra-prompt-leak',
+                    'x-access-token': 'extra-token-leak',
+                    'x-random-local-debug': 'extra-debug-leak',
+                },
+            ))
+            forwarder.start_background()
+            try:
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                    data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                    method='POST',
+                    headers={'content-type': 'application/json', 'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)'},
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+        headers = seen['headers']
+        self.assertEqual(headers['anthropic-version'], '2023-06-01')
+        self.assertNotIn('x-prompt', headers)
+        self.assertNotIn('x-access-token', headers)
+        self.assertNotIn('x-random-local-debug', headers)
+
     def test_cli_main_does_not_enforce_session_budget_by_default(self):
         args = argparse.Namespace(
             enforce_session_budget=False,
@@ -382,7 +558,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     try:
                         req = urllib.request.Request(
                             f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                            data=b'{"model":"claude-sonnet-4-6","messages":[]}',
+                            data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
                             method='POST',
                             headers={'content-type': 'application/json'},
                         )
@@ -628,7 +804,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 try:
                     req = urllib.request.Request(
                         f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                        data=b'{"model":"claude-sonnet-4-6","messages":[]}',
+                        data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
                         method='POST',
                         headers={'content-type': 'application/json'},
                     )

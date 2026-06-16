@@ -6,7 +6,7 @@
 前置依赖：46 号 Claude Code native takeover、CC Gateway formal pool、Sub2API Codex/Claude/DeepSeek/AGNES 网关调优
 说明：本文继承 46 号文档中预留的“47 号多模型混合注入”方向；若历史材料中出现旧文件名 `47-zhumeng-agent-multi-provider-in-claude-code-plan.md`，以本文为准。
 范围说明：本文只定义 Claude Code CLI takeover 的 47 号多模型方案；Codex Desktop takeover 是独立主线，但两者共享云端 gateway/catalog/provider abstraction，47 号不得降低既有 Codex Gateway 能力。
-当前代码事实：截至本文修订时，`build_native_guard_plan()` 仍缺 `--native-attestation`、`start_native_guard()` 只有测试调用者、`cli_control_plane_guard.py` 对 `/v1/messages` 尚无 native/bridge route 分支、后端也未出现 `claude_code_bridge_*` route。因此 47 号实施不是在现成 bridge 地基上加功能，而是要先补 native guard 接入和 per-request routing trust contract。
+当前代码事实：本文初稿指出 `build_native_guard_plan()` 缺 `--native-attestation`、`start_native_guard()` 只有测试调用者、`cli_control_plane_guard.py` 对 `/v1/messages` 尚无 native/bridge route 分支、后端也未出现 `claude_code_bridge_*` route。因此 47 号实施不是在现成 bridge 地基上加功能，而是要先补 native guard 接入和 per-request routing trust contract。CP0 落地后，native guard 已接入 `zhumeng-claude start` / launcher / desktop 启动流，后续 checkpoint 仍不得在 CP4 routing trust contract 绿之前开启 bridge live path。
 
 ## 0. 执行结论
 

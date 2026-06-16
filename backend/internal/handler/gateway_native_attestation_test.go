@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,7 @@ func TestGatewayHandlerNativeCountTokensForgedMarkersFailClosed(t *testing.T) {
 
 func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI string, now time.Time) http.Header {
 	t.Helper()
+	localSessionRef := "hmac-sha256:" + strings.Repeat("a", 64)
 	payload := map[string]any{
 		"key_id":                    "guard_v1",
 		"scope":                     "claude_code_native_takeover",
@@ -66,9 +68,19 @@ func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI str
 		"guard_attested":            true,
 		"guard_version":             "guard_v1",
 		"claude_code_version":       "2.1.175",
-		"local_session_ref":         "hmac-sha256:" + strings.Repeat("a", 64),
+		"local_session_ref":         localSessionRef,
 		"netwatch_required":         true,
 		"shape_healthcheck_profile": service.ClaudeCodeNativeTakeoverHealthProfile,
+		"route":                     service.ClaudeCodeNativeRoute,
+		"model_id":                  "claude-sonnet-4-6",
+		"provider_owner":            service.ClaudeCodeNativeProviderOwner,
+		"credential_scope":          service.ClaudeCodeNativeCredentialScope,
+		"gateway_location":          service.ClaudeCodeNativeGatewayLocation,
+		"runtime_hash":              "sha256:" + strings.Repeat("1", 64),
+		"overlay_hash":              "sha256:" + strings.Repeat("2", 64),
+		"catalog_hash":              "sha256:" + strings.Repeat("3", 64),
+		"session_ref":               localSessionRef,
+		"body_shape_hash":           handlerTestNativeBodyShapeHash(body),
 	}
 	raw, err := json.Marshal(payload)
 	require.NoError(t, err)
@@ -86,9 +98,73 @@ func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI str
 	headers := http.Header{}
 	headers.Set(service.ClaudeCodeNativeClientTypeHeader, service.ClaudeCodeNativeClientType)
 	headers.Set(service.ClaudeCodeNativeGuardAttestedHeader, "true")
-	headers.Set(service.ClaudeCodeNativeLocalSessionRefHeader, "hmac-sha256:"+strings.Repeat("a", 64))
+	headers.Set(service.ClaudeCodeNativeLocalSessionRefHeader, localSessionRef)
 	headers.Set(service.ClaudeCodeNativeNetwatchRequiredHeader, "true")
 	headers.Set(service.ClaudeCodeNativeAttestationHeader, encoded)
 	headers.Set(service.ClaudeCodeNativeSignatureHeader, base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
 	return headers
+}
+func handlerTestNativeBodyShapeHash(body []byte) string {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		decoded = map[string]any{"body_size": len(body), "type": "invalid_json"}
+	}
+	shape := handlerTestNativeShapeValue(decoded)
+	raw, _ := json.Marshal(shape)
+	digest := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func handlerTestNativeShapeValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		children := map[string]any{}
+		keys := make([]string, 0, len(v))
+		for key, child := range v {
+			safeKey := handlerTestNativeShapeKey(key)
+			if safeKey == "" {
+				safeKey = "redacted-key"
+			}
+			if _, exists := children[safeKey]; !exists {
+				keys = append(keys, safeKey)
+			}
+			children[safeKey] = handlerTestNativeShapeValue(child)
+		}
+		sort.Strings(keys)
+		return map[string]any{"children": children, "keys": keys, "type": "object"}
+	case []any:
+		items := make([]any, 0, len(v))
+		limit := len(v)
+		if limit > 32 {
+			limit = 32
+		}
+		for i := 0; i < limit; i++ {
+			items = append(items, handlerTestNativeShapeValue(v[i]))
+		}
+		return map[string]any{"items": items, "len": len(v), "truncated": len(v) > 32, "type": "array"}
+	case string:
+		return map[string]any{"type": "string"}
+	case bool:
+		return map[string]any{"type": "bool"}
+	case float64, float32, int, int64, int32, json.Number:
+		return map[string]any{"type": "number"}
+	case nil:
+		return map[string]any{"type": "null"}
+	default:
+		return map[string]any{"type": "unknown"}
+	}
+}
+
+func handlerTestNativeShapeKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > 128 {
+		return "redacted-key"
+	}
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return "redacted-key"
+	}
+	return key
 }

@@ -356,6 +356,170 @@ func TestGatewayRoutesManagedHeadersDoNotBypassOrdinaryGatewayAuth(t *testing.T)
 	require.Equal(t, 3, rawAuthCalls)
 }
 
+func TestGatewayRoutesClaudeCodeNativeMarkersUseManagedAuthOnlyForMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	rawAuthCalls := 0
+	nativeAuthCalls := 0
+	observedNativeAuthorization := ""
+	observedNativeSession := ""
+
+	RegisterGatewayRoutesWithClaudeCodeNativeAuth(
+		router,
+		&handler.Handlers{
+			Auth: handler.NewAuthHandler(
+				&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				service.NewAugmentPluginService(nil, nil, nil, nil, nil, nil),
+			),
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			rawAuthCalls++
+			c.AbortWithStatus(http.StatusUnauthorized)
+		}),
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			nativeAuthCalls++
+			observedNativeAuthorization = c.GetHeader("Authorization")
+			observedNativeSession = c.GetHeader("X-Zhumeng-Managed-Session")
+			c.AbortWithStatus(http.StatusNoContent)
+		}),
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages?beta=true", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer managed-token")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "managed-session")
+	req.Header.Set("x-sub2api-client-type", service.ClaudeCodeNativeClientType)
+	req.Header.Set("x-sub2api-guard-attested", "true")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+	require.Equal(t, 0, rawAuthCalls)
+	require.Equal(t, 1, nativeAuthCalls)
+	require.Equal(t, "Bearer managed-token", observedNativeAuthorization)
+	require.Equal(t, "managed-session", observedNativeSession)
+}
+
+func TestGatewayRoutesManagedHeadersStillUseRawAuthWithoutNativeMarkers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	rawAuthCalls := 0
+	nativeAuthCalls := 0
+	observedAuthorization := ""
+
+	RegisterGatewayRoutesWithClaudeCodeNativeAuth(
+		router,
+		&handler.Handlers{
+			Auth: handler.NewAuthHandler(
+				&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				service.NewAugmentPluginService(nil, nil, nil, nil, nil, nil),
+			),
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			rawAuthCalls++
+			observedAuthorization = c.GetHeader("Authorization")
+			c.AbortWithStatus(http.StatusNoContent)
+		}),
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			nativeAuthCalls++
+			c.AbortWithStatus(http.StatusUnauthorized)
+		}),
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer normal-key")
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "managed-session")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+	require.Equal(t, 1, rawAuthCalls)
+	require.Equal(t, 0, nativeAuthCalls)
+	require.Equal(t, "Bearer normal-key", observedAuthorization)
+}
+
+func TestGatewayRoutesClaudeCodeNativeMarkersRequireManagedHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	rawAuthCalls := 0
+	nativeAuthCalls := 0
+
+	RegisterGatewayRoutesWithClaudeCodeNativeAuth(
+		router,
+		&handler.Handlers{
+			Auth: handler.NewAuthHandler(
+				&config.Config{Server: config.ServerConfig{FrontendURL: "http://127.0.0.1:18082"}},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				service.NewAugmentPluginService(nil, nil, nil, nil, nil, nil),
+			),
+			Gateway:       &handler.GatewayHandler{},
+			OpenAIGateway: &handler.OpenAIGatewayHandler{},
+		},
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			rawAuthCalls++
+			c.AbortWithStatus(http.StatusNoContent)
+		}),
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			nativeAuthCalls++
+			c.AbortWithStatus(http.StatusNoContent)
+		}),
+		nil,
+		nil,
+		nil,
+		nil,
+		&config.Config{},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer normal-key")
+	req.Header.Set("x-sub2api-client-type", service.ClaudeCodeNativeClientType)
+	req.Header.Set("x-sub2api-guard-attested", "true")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Equal(t, 0, rawAuthCalls)
+	require.Equal(t, 0, nativeAuthCalls)
+}
+
 func TestAugmentOfficialRoutePolicyGatewayRoutesFailClosedWhenPolicyEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

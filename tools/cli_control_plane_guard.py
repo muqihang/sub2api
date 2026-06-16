@@ -42,23 +42,29 @@ from tools.cli_control_plane_policy import (
 from tools.cli_session_budget import SessionBudgetLedger, SessionBudgetPolicy, session_key_from_headers
 
 SENSITIVE_HEADERS = {"authorization", "x-api-key", "proxy-authorization", "cookie", "set-cookie"}
-SELECTED_HEADERS = {
+CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST = {
     "accept",
+    "accept-encoding",
     "content-type",
     "user-agent",
     "anthropic-beta",
     "anthropic-version",
     "x-app",
-    "x-claude-code-session-id",
     "x-stainless-lang",
     "x-stainless-runtime",
     "x-stainless-package-version",
     "x-stainless-runtime-version",
 }
+SELECTED_HEADERS = CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST | {"x-claude-code-session-id"}
 SENSITIVE_BODY_KEYS = {"messages", "prompt", "body", "cch"}
 NATIVE_CLIENT_TYPE = "claude_code_native"
 NATIVE_ATTESTATION_SCOPE = "claude_code_native_takeover"
 NATIVE_HEALTHCHECK_PROFILE = "real_claude_code_native_takeover_v1"
+NATIVE_ROUTE = "claude_code_native"
+NATIVE_PROVIDER_OWNER = "zhumeng_managed"
+NATIVE_CREDENTIAL_SCOPE = "formal_pool"
+NATIVE_GATEWAY_LOCATION = "cloud"
+NATIVE_UNKNOWN_HASH = "sha256:" + ("0" * 64)
 CAPTURE_LEVELS = {"summary", "deep", "local-raw"}
 SAFE_VALUE_KEYS = {
     "event_name",
@@ -171,6 +177,9 @@ class GuardConfig:
     local_raw_dir: Path | None = None
     allow_nonloopback_upstream: bool = False
     native_attestation_secret: str | None = None
+    managed_session_id: str | None = None
+    device_id: str | None = None
+    agent_version: str | None = None
 
     def __post_init__(self) -> None:
         policy = self.policy or default_policy()
@@ -659,6 +668,16 @@ class RedactingForwarder:
             self._message_count += 1
             return True
 
+    def _managed_forward_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.config.managed_session_id:
+            headers["X-Zhumeng-Managed-Session"] = self.config.managed_session_id
+        if self.config.device_id:
+            headers["X-Zhumeng-Device-ID"] = self.config.device_id
+        if self.config.agent_version:
+            headers["X-Zhumeng-Agent-Version"] = self.config.agent_version
+        return headers
+
     def _record(self, obj: Mapping[str, Any]) -> None:
         self.config.summary_path.parent.mkdir(parents=True, exist_ok=True)
         with self.config.summary_path.open("a", encoding="utf-8") as handle:
@@ -981,7 +1000,7 @@ class RedactingForwarder:
                 headers = {
                     key: value
                     for key, value in self.headers.items()
-                    if key.lower() not in (SENSITIVE_HEADERS | {"host", "content-length"})
+                    if key.lower() in CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST
                 }
                 headers["Authorization"] = f"Bearer {parent.config.sub2api_auth}"
                 try:
@@ -1004,9 +1023,11 @@ class RedactingForwarder:
                     self.send_header("content-length", "0")
                     self.end_headers()
                     return
+                for key, value in parent._managed_forward_headers().items():
+                    headers[key] = value
                 if parent.config.extra_forward_headers:
                     for key, value in parent.config.extra_forward_headers.items():
-                        if key.lower() not in SENSITIVE_HEADERS:
+                        if key.lower() in CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST:
                             headers[key] = value
                 request = urllib.request.Request(url, data=body, method="POST", headers=headers)
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -1613,11 +1634,14 @@ def build_native_messages_attestation_headers(body: bytes, request_path: str, so
     now = int(time.time())
     key_id = os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID", "guard_v1")
     version = int(os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", "1"))
-    secret = secret or os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "")
+    if secret is None:
+        secret = os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "")
     if not secret:
         raise RuntimeError("explicit Claude Code native attestation secret is required")
     local_session_ref = session_key_from_headers(source_headers)
     local_session_value = str(local_session_ref.get("value", ""))
+    model_id = _native_attestation_model_id(body)
+    body_shape_hash = _native_body_shape_hash(body)
     payload = {
         "key_id": key_id,
         "scope": os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE", NATIVE_ATTESTATION_SCOPE),
@@ -1633,6 +1657,16 @@ def build_native_messages_attestation_headers(body: bytes, request_path: str, so
         "local_session_ref": local_session_value,
         "netwatch_required": True,
         "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE,
+        "route": NATIVE_ROUTE,
+        "model_id": model_id,
+        "provider_owner": NATIVE_PROVIDER_OWNER,
+        "credential_scope": NATIVE_CREDENTIAL_SCOPE,
+        "gateway_location": NATIVE_GATEWAY_LOCATION,
+        "runtime_hash": _native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
+        "overlay_hash": _native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
+        "catalog_hash": _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH"),
+        "session_ref": local_session_value,
+        "body_shape_hash": body_shape_hash,
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
     signature = _sign_native_messages_attestation(encoded, "POST", request_path, body, secret)
@@ -1646,6 +1680,67 @@ def build_native_messages_attestation_headers(body: bytes, request_path: str, so
         "x-sub2api-native-attestation": encoded,
         "x-sub2api-native-signature": signature,
     }
+
+
+def _native_attestation_model_id(body: bytes) -> str:
+    try:
+        obj = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        return "unknown"
+    if not isinstance(obj, dict):
+        return "unknown"
+    model = _sanitize_model_value(obj.get("model"))
+    return model if isinstance(model, str) and model else "unknown"
+
+
+def _native_body_shape_hash(body: bytes) -> str:
+    try:
+        decoded = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        decoded = {"body_size": len(body), "type": "invalid_json"}
+    shape = _native_shape_value(decoded)
+    digest = sha256(json.dumps(shape, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return "sha256:" + digest
+
+
+def _native_shape_value(value: object) -> object:
+    if isinstance(value, dict):
+        children: dict[str, object] = {}
+        for key, child in value.items():
+            safe_key = _native_shape_key(str(key))
+            children[safe_key] = _native_shape_value(child)
+        return {"children": children, "keys": sorted(children), "type": "object"}
+    if isinstance(value, list):
+        limit = min(len(value), 32)
+        return {
+            "items": [_native_shape_value(value[index]) for index in range(limit)],
+            "len": len(value),
+            "truncated": len(value) > 32,
+            "type": "array",
+        }
+    if isinstance(value, str):
+        return {"type": "string"}
+    if isinstance(value, bool):
+        return {"type": "bool"}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return {"type": "number"}
+    if value is None:
+        return {"type": "null"}
+    return {"type": "unknown"}
+
+
+def _native_shape_key(key: str) -> str:
+    key = key.strip()
+    if not key or len(key) > 128 or _looks_sensitive_text(key):
+        return "redacted-key"
+    return key if re.fullmatch(r"[A-Za-z0-9_.-]+", key) else "redacted-key"
+
+
+def _native_env_hash(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", value):
+        return "sha256:" + value.split(":", 1)[1].lower()
+    return NATIVE_UNKNOWN_HASH
 
 
 def native_messages_summary_markers(source_headers: Mapping[str, str]) -> dict[str, Any]:
@@ -1712,6 +1807,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream-base", required=True)
     parser.add_argument("--sub2api-auth")
     parser.add_argument("--sub2api-auth-env", default="ZHUMENG_API_KEY")
+    parser.add_argument("--native-attestation", action="store_true", help="Enable request-bound Claude Code native attestation for /v1/messages.")
     parser.add_argument("--summary-path", type=Path, required=True)
     parser.add_argument("--control-plane-intent-url")
     parser.add_argument("--control-plane-intent-auth")
@@ -1747,6 +1843,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Allow forwarding /v1/messages to a non-loopback Zhumeng/Sub2API upstream. Claude/Anthropic hosts remain forbidden.",
     )
+    parser.add_argument("--managed-session")
+    parser.add_argument("--device-id")
+    parser.add_argument("--agent-version", default="0.1.0")
     args = parser.parse_args(argv)
     sub2api_auth = args.sub2api_auth or os.environ.get(args.sub2api_auth_env or "")
     if not sub2api_auth:
@@ -1782,7 +1881,10 @@ def main(argv: list[str] | None = None) -> int:
                 capture_level=args.capture_level,
                 local_raw_dir=args.local_raw_dir,
                 allow_nonloopback_upstream=args.allow_nonloopback_upstream,
-                native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"),
+                native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") if args.native_attestation else "",
+                managed_session_id=args.managed_session,
+                device_id=args.device_id,
+                agent_version=args.agent_version,
             )
         )
     except ValueError as exc:
