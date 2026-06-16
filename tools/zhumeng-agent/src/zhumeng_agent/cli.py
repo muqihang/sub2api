@@ -494,6 +494,14 @@ def require_server_native_attestation_secret(state: dict[str, object]) -> str:
     raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_native_attestation_secret")
 
 
+def server_route_hint_secret(state: dict[str, object]) -> str | None:
+    secret = str(state.get("claude_code_route_hint_secret") or "").strip()
+    source = str(state.get("claude_code_route_hint_secret_source") or "").strip().lower()
+    if secret and source == "server":
+        return secret
+    return None
+
+
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
@@ -542,6 +550,8 @@ def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, 
         "loopback_secret": loopback_secret,
         "claude_code_native_attestation_secret": claude_code_native_attestation_secret,
         "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": str(exchanged.get("claude_code_route_hint_secret") or "").strip(),
+        "claude_code_route_hint_secret_source": "server" if str(exchanged.get("claude_code_route_hint_secret") or "").strip() else "",
         "backup_paths": [str(path) for path in plan.backup_paths],
         "prior_auth_json": prior_auth_json,
         "prior_catalog_json": prior_catalog_json,
@@ -659,6 +669,10 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
     config_hash_before = file_sha256(config_manager.config_path)
     config_manager.repair(profile, proxy_port, loopback_secret, model_catalog, trusted_project_paths=current_trusted_project_paths())
     config_hash_after = file_sha256(config_manager.config_path)
+    route_hint_secret = str(exchanged.get("claude_code_route_hint_secret") or "").strip()
+    if not route_hint_secret:
+        route_hint_secret = server_route_hint_secret(current) or ""
+    route_hint_secret_source = "server" if route_hint_secret else ""
     patch = {
         "client": client_name,
         "server_base_url": exchanged["server_base_url"],
@@ -672,6 +686,8 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
         "loopback_secret": loopback_secret,
         "claude_code_native_attestation_secret": claude_code_native_attestation_secret,
         "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": route_hint_secret,
+        "claude_code_route_hint_secret_source": route_hint_secret_source,
         "model_catalog_meta": model_catalog_meta,
         "config_hash_after": config_hash_after,
         "auth_hash_after": file_sha256(config_manager.auth_path),
@@ -1229,12 +1245,14 @@ def build_claude_code_start_payload(
         raise ValueError(f"managed setup is incomplete: missing {', '.join(missing)}")
     selected_guard_port = int(guard_port or choose_local_proxy_port())
     attestation_secret = require_server_native_attestation_secret(state)
+    route_hint_secret = server_route_hint_secret(state)
     result = run_managed_claude_code(
         executable=executable,
         repo_root=Path(__file__).resolve().parents[4],
         upstream_base=str(state["gateway_base_url"]),
         sub2api_auth=str(state["access_token"]),
         attestation_secret=attestation_secret,
+        route_hint_secret=route_hint_secret,
         managed_session_id=str(state.get("managed_session_id") or "") or None,
         device_id=int(state["device_id"]) if state.get("device_id") is not None else None,
         config_root=state_root,
@@ -1251,6 +1269,7 @@ def build_claude_code_start_payload(
         "guard": {
             "listen": guard_listen,
             "attested": "--native-attestation" in result.guard_plan.command,
+            "route_hint_contract": "--route-hint-secret-env" in result.guard_plan.command,
             "summary_path": str(result.guard_plan.config.summary_path),
         },
         "claude_base_url": result.launch_plan.env.get("ANTHROPIC_BASE_URL"),

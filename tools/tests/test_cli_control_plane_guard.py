@@ -25,6 +25,12 @@ from tools.cli_control_plane_guard import (
     deep_body_summary,
     redact_headers,
 )
+from tools.claude_code_route_trust import (
+    RouteHintReplayCache,
+    build_signed_route_hint_headers,
+    cp4_fixture_route_catalog,
+    verify_signed_route_hint_headers,
+)
 from tools.cli_control_plane_policy import load_default_policy
 
 
@@ -40,6 +46,9 @@ class CliControlPlaneGuardTest(unittest.TestCase):
     def tearDown(self):
         self._native_secret_patch.stop()
 
+
+    def test_root_dir_is_current_repo_root(self):
+        self.assertEqual(Path(root_dir()).resolve(), Path(__file__).resolve().parents[2])
 
     def test_forward_messages_adds_managed_device_headers(self):
         seen = {}
@@ -257,6 +266,441 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, 'explicit'):
                 build_native_messages_attestation_headers(b'{"messages":[]}', '/v1/messages', {})
+
+    def test_cp4_signed_route_hint_binds_model_route_hashes_session_and_nonce(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+        body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            model_id='deepseek-v4-pro',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-a',
+        )
+
+        decision = verify_signed_route_hint_headers(
+            source_headers=headers,
+            body=body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+
+        self.assertEqual(decision.route, 'deepseek_bridge')
+        self.assertEqual(decision.client_type, 'claude_code_bridge_deepseek')
+        self.assertFalse(decision.native_attestation_allowed)
+        self.assertFalse(decision.formal_pool_allowed)
+
+    def test_cp4_route_hint_fails_closed_for_model_mismatch_stale_and_replay(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+        body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
+        headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            model_id='deepseek-v4-pro',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-a',
+        )
+        mismatched_body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}'
+        with self.assertRaisesRegex(RuntimeError, 'model binding'):
+            verify_signed_route_hint_headers(
+                source_headers=headers,
+                body=mismatched_body,
+                request_path='/v1/messages?beta=true',
+                catalog=catalog,
+                session_ref='session-a',
+                secret='route-hint-secret',
+                now=1000,
+                replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            )
+        with self.assertRaisesRegex(RuntimeError, 'stale'):
+            verify_signed_route_hint_headers(
+                source_headers=headers,
+                body=body,
+                request_path='/v1/messages?beta=true',
+                catalog=catalog,
+                session_ref='session-a',
+                secret='route-hint-secret',
+                now=1200,
+                replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            )
+        cache = RouteHintReplayCache(ttl_seconds=60)
+        verify_signed_route_hint_headers(
+            source_headers=headers,
+            body=body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=cache,
+        )
+        with self.assertRaisesRegex(RuntimeError, 'replayed'):
+            verify_signed_route_hint_headers(
+                source_headers=headers,
+                body=body,
+                request_path='/v1/messages?beta=true',
+                catalog=catalog,
+                session_ref='session-a',
+                secret='route-hint-secret',
+                now=1000,
+                replay_cache=cache,
+            )
+        with self.assertRaisesRegex(RuntimeError, 'unknown route hint model'):
+            build_signed_route_hint_headers(
+                body=b'{"model":"glm-4.6","messages":[]}',
+                request_path='/v1/messages?beta=true',
+                catalog=catalog,
+                model_id='glm-4.6',
+                session_ref='session-a',
+                secret='route-hint-secret',
+                now=1000,
+                nonce='nonce-unknown',
+                route='claude_code_native',
+                client_type='claude_code_native',
+                provider='claude',
+                native_attestation_allowed=True,
+                formal_pool_allowed=True,
+            )
+
+    def test_cp4_route_hint_fails_closed_when_body_claude_claims_bridge_route(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+        body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}'
+        headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            model_id='claude-sonnet-4-6',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-claude-claims-bridge',
+            route='deepseek_bridge',
+            client_type='claude_code_bridge_deepseek',
+            native_attestation_allowed=False,
+            formal_pool_allowed=False,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, 'catalog route binding'):
+            verify_signed_route_hint_headers(
+                source_headers=headers,
+                body=body,
+                request_path='/v1/messages?beta=true',
+                catalog=catalog,
+                session_ref='session-a',
+                secret='route-hint-secret',
+                now=1000,
+                replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            )
+
+
+    def test_cp4_bridge_route_hint_returns_internal_stub_anthropic_sse_without_upstream_or_native_attestation(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({
+                    'path': self.path,
+                    'headers': {key.lower(): value for key, value in self.headers.items()},
+                })
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16,"stream":true}'
+                path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='deepseek-v4-pro',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-bridge-forward',
+                )
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        data = resp.read()
+                        self.assertEqual(resp.status, 200)
+                        self.assertEqual(resp.headers.get('content-type'), 'text/event-stream')
+                    self.assertIn(b'event: message_start', data)
+                    self.assertIn(b'bridge stub', data)
+                    self.assertEqual(len(CaptureHandler.requests), 0)
+                    replay_req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as replay_ctx:
+                        urllib.request.urlopen(replay_req, timeout=5)
+                    self.assertEqual(replay_ctx.exception.code, 403)
+                    self.assertEqual(len(CaptureHandler.requests), 0)
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('"client_type": "claude_code_bridge_deepseek"', dumped)
+                    self.assertIn('"native_attested": false', dumped)
+                    self.assertIn('"event": "messages_bridge_stub_response"', dumped)
+                    self.assertIn('"decision": "bridge_stub_cp4"', dumped)
+                    self.assertNotIn('route-hint-secret', dumped)
+                    self.assertNotIn('native-attestation-test-secret', dumped)
+                    self.assertNotIn('hello', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp4_route_hint_missing_or_spoofed_native_blocks_before_upstream(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            count = 0
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.__class__.count += 1
+                self.send_response(200)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    missing_req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                        method='POST',
+                        headers={'content-type': 'application/json', 'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555'},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as missing_ctx:
+                        urllib.request.urlopen(missing_req, timeout=5)
+                    self.assertEqual(missing_ctx.exception.code, 403)
+
+                    spoof_body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                    spoof_headers = build_signed_route_hint_headers(
+                        body=spoof_body,
+                        request_path='/v1/messages?beta=true',
+                        catalog=catalog,
+                        model_id='deepseek-v4-pro',
+                        session_ref='11111111-2222-4333-8444-555555555555',
+                        secret='route-hint-secret',
+                        now=None,
+                        nonce='nonce-spoof-native',
+                        route='claude_code_native',
+                        client_type='claude_code_native',
+                        native_attestation_allowed=True,
+                        formal_pool_allowed=True,
+                    )
+                    spoof_req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=spoof_body,
+                        method='POST',
+                        headers={'content-type': 'application/json', 'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555', **spoof_headers},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as spoof_ctx:
+                        urllib.request.urlopen(spoof_req, timeout=5)
+                    self.assertEqual(spoof_ctx.exception.code, 403)
+                    mismatch_body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                    mismatch_headers = build_signed_route_hint_headers(
+                        body=spoof_body,
+                        request_path='/v1/messages?beta=true',
+                        catalog=catalog,
+                        model_id='deepseek-v4-pro',
+                        session_ref='11111111-2222-4333-8444-555555555555',
+                        secret='route-hint-secret',
+                        now=None,
+                        nonce='nonce-model-mismatch',
+                    )
+                    mismatch_req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=mismatch_body,
+                        method='POST',
+                        headers={'content-type': 'application/json', 'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555', **mismatch_headers},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as mismatch_ctx:
+                        urllib.request.urlopen(mismatch_req, timeout=5)
+                    self.assertEqual(mismatch_ctx.exception.code, 403)
+                    self.assertEqual(CaptureHandler.count, 0)
+                    dumped = summary.read_text(encoding='utf-8')
+                    self.assertIn('route_hint_unavailable', dumped)
+                    self.assertIn('route_hint_invalid', dumped)
+                    self.assertNotIn('route-hint-secret', dumped)
+                    self.assertNotIn('hello', dumped)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp4_native_route_hint_adds_native_attestation_only_for_native(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({key.lower(): value for key, value in self.headers.items()})
+                data = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.send_header('content-length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=path,
+                    catalog=catalog,
+                    model_id='claude-sonnet-4-6',
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    now=None,
+                    nonce='nonce-native-forward',
+                )
+                listen_port = _free_port()
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=Path(td) / 'summary.jsonl',
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={'content-type': 'application/json', 'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555', **route_headers},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        self.assertEqual(resp.status, 200)
+                    self.assertEqual(len(CaptureHandler.requests), 1)
+                    forwarded = CaptureHandler.requests[0]
+                    self.assertEqual(forwarded['x-sub2api-client-type'], 'claude_code_native')
+                    self.assertEqual(forwarded['x-sub2api-route'], 'claude_code_native')
+                    self.assertIn('x-sub2api-native-attestation', forwarded)
+                    self.assertIn('x-sub2api-native-signature', forwarded)
+                    self.assertEqual(forwarded['x-sub2api-guard-attested'], 'true')
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
 
     def test_classify_request_uses_default_policy_and_quarantines_unknown_routes(self):
         self.assertEqual(classify_request('POST', '/v1/messages?beta=true').action, 'forward_messages')
@@ -836,7 +1280,7 @@ def _free_port():
 
 
 def root_dir() -> str:
-    return '/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation'
+    return str(Path(__file__).resolve().parents[2])
 
 
 if __name__ == '__main__':

@@ -49,6 +49,8 @@ class NativeGuardConfig:
     managed_session_id: str | None = field(default=None, repr=False)
     device_id: int | None = None
     agent_version: str = "0.1.0"
+    route_hint_secret: str | None = field(default=None, repr=False)
+    route_hint_catalog_version: str = "cp4-cli-fixture-v1"
 
     def __post_init__(self) -> None:
         if self.mode not in set(NativeGuardMode):
@@ -154,6 +156,9 @@ def build_native_guard_plan(
         command.extend(["--agent-version", config.agent_version])
     if config.control_plane_intent_url is not None:
         command.extend(["--control-plane-intent-url", config.control_plane_intent_url])
+    if config.route_hint_secret:
+        command.extend(["--route-hint-secret-env", "ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"])
+        command.extend(["--route-hint-catalog-version", config.route_hint_catalog_version])
     return NativeGuardPlan(command=command, env=env, cwd=config.repo_root, config=config)
 
 
@@ -201,6 +206,8 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
         env["SUB2API_CONTROL_PLANE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
         env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"] = config.attestation_secret
         env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
+    if config.route_hint_secret is not None:
+        env["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] = config.route_hint_secret
     if config.hmac_key is not None:
         env["SUB2API_CONTROL_PLANE_HMAC_KEY"] = config.hmac_key
         env["SUB2API_CONTROL_PLANE_HMAC_KEY_ID"] = config.hmac_key_id

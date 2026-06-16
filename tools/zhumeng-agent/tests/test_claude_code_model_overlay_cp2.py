@@ -194,6 +194,9 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert "api-docs.deepseek.com" in deepseek.provider_docs_url
 
     glm = proof.models_by_id["glm-5.2"]
+    assert glm.provider == "zai_glm"
+    assert glm.route == "zai_glm_bridge"
+    assert glm.client_type == "claude_code_bridge_zai_glm"
     assert glm.catalog_authoritative is False
     assert glm.api_formats == ("anthropic_messages", "openai_compatible_chat")
     assert glm.model_id in docs_snapshot["observations"]["zai_glm"]["models"]

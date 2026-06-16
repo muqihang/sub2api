@@ -125,11 +125,27 @@ type ClaudeCodeNativeNonceReplayCache struct {
 }
 
 type ClaudeCodeNativeAttestationService struct {
-	nowFn       func() time.Time
-	replayCache *ClaudeCodeNativeNonceReplayCache
+	nowFn                    func() time.Time
+	replayCache              *ClaudeCodeNativeNonceReplayCache
+	catalogAdmissionResolver claudeCodeNativeCatalogAdmissionResolver
 }
 
 type ClaudeCodeNativeAttestationOption func(*ClaudeCodeNativeAttestationService)
+
+type claudeCodeNativeCatalogAdmissionDecision struct {
+	ModelID         string `json:"model_id"`
+	Route           string `json:"route"`
+	ProviderOwner   string `json:"provider_owner"`
+	CredentialScope string `json:"credential_scope"`
+	GatewayLocation string `json:"gateway_location"`
+	CatalogFresh    bool   `json:"catalog_fresh"`
+}
+
+type claudeCodeNativeCatalogAdmissionResolver interface {
+	ResolveClaudeCodeNativeCatalogAdmission(model string) (claudeCodeNativeCatalogAdmissionDecision, error)
+}
+
+type claudeCodeNativeEnvCatalogAdmissionResolver struct{}
 
 var claudeCodeNativeAttestationPayloadAllowedFields = map[string]struct{}{
 	"key_id":                    {},
@@ -188,6 +204,14 @@ func WithClaudeCodeNativeAttestationReplayCache(cache *ClaudeCodeNativeNonceRepl
 	return func(svc *ClaudeCodeNativeAttestationService) {
 		if cache != nil {
 			svc.replayCache = cache
+		}
+	}
+}
+
+func withClaudeCodeNativeCatalogAdmissionResolver(resolver claudeCodeNativeCatalogAdmissionResolver) ClaudeCodeNativeAttestationOption {
+	return func(svc *ClaudeCodeNativeAttestationService) {
+		if resolver != nil {
+			svc.catalogAdmissionResolver = resolver
 		}
 	}
 }
@@ -322,6 +346,13 @@ func (s *ClaudeCodeNativeAttestationService) VerifyMessagesRequest(method, rawRo
 		return ClaudeCodeNativeAuditSummary{}, err
 	}
 	if err := validateClaudeCodeNativeBodyBinding(payload, body); err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
+	catalogAdmission, err := s.resolveClaudeCodeNativeCatalogAdmission(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+	if err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
+	if err := validateClaudeCodeNativeCatalogAdmission(payload.ModelID, catalogAdmission); err != nil {
 		return ClaudeCodeNativeAuditSummary{}, err
 	}
 	return buildClaudeCodeNativeAuditSummary(payload, body), nil
@@ -514,15 +545,115 @@ func claudeCodeNativeHashAllowed(value string, allowlist map[string]struct{}) bo
 	return ok
 }
 
-func isClaudeCodeNativeFormalPoolModel(model string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(model))
-	if normalized == "" || looksSensitiveText(normalized) {
-		return false
+func (claudeCodeNativeEnvCatalogAdmissionResolver) ResolveClaudeCodeNativeCatalogAdmission(model string) (claudeCodeNativeCatalogAdmissionDecision, error) {
+	model = strings.TrimSpace(model)
+	if model == "" || looksSensitiveText(model) {
+		return claudeCodeNativeCatalogAdmissionDecision{}, nil
 	}
-	if strings.Contains(normalized, "deepseek") || strings.Contains(normalized, "gpt") || strings.Contains(normalized, "agnes") || strings.Contains(normalized, "glm") || strings.Contains(normalized, "kimi") {
-		return false
+	decisions, err := loadClaudeCodeNativeCatalogAdmissionDecisionsFromEnv()
+	if err != nil {
+		return claudeCodeNativeCatalogAdmissionDecision{}, err
 	}
-	return strings.HasPrefix(normalized, "claude-")
+	decision, ok := decisions[model]
+	if !ok {
+		return claudeCodeNativeCatalogAdmissionDecision{}, nil
+	}
+	return decision, nil
+}
+
+func loadClaudeCodeNativeCatalogAdmissionDecisionsFromEnv() (map[string]claudeCodeNativeCatalogAdmissionDecision, error) {
+	decisions := map[string]claudeCodeNativeCatalogAdmissionDecision{}
+	if raw := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_ROUTE_CATALOG_JSON")); raw != "" {
+		parsed, err := parseClaudeCodeNativeCatalogAdmissionJSON(raw)
+		if err != nil {
+			return nil, err
+		}
+		for model, decision := range parsed {
+			decisions[model] = decision
+		}
+	}
+	for _, model := range splitClaudeCodeNativeCatalogModels(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS")) {
+		if _, exists := decisions[model]; exists {
+			continue
+		}
+		decisions[model] = claudeCodeNativeCatalogAdmissionDecision{
+			ModelID:         model,
+			Route:           ClaudeCodeNativeRoute,
+			ProviderOwner:   ClaudeCodeNativeProviderOwner,
+			CredentialScope: ClaudeCodeNativeCredentialScope,
+			GatewayLocation: ClaudeCodeNativeGatewayLocation,
+			CatalogFresh:    true,
+		}
+	}
+	if len(decisions) == 0 {
+		return nil, fmt.Errorf("claude code native catalog admission is not configured")
+	}
+	return decisions, nil
+}
+
+func parseClaudeCodeNativeCatalogAdmissionJSON(raw string) (map[string]claudeCodeNativeCatalogAdmissionDecision, error) {
+	var entries []claudeCodeNativeCatalogAdmissionDecision
+	if err := json.Unmarshal([]byte(raw), &entries); err == nil {
+		return normalizeClaudeCodeNativeCatalogAdmissionEntries(entries)
+	}
+	var byModel map[string]claudeCodeNativeCatalogAdmissionDecision
+	if err := json.Unmarshal([]byte(raw), &byModel); err != nil {
+		return nil, fmt.Errorf("claude code native catalog admission JSON is invalid")
+	}
+	entries = make([]claudeCodeNativeCatalogAdmissionDecision, 0, len(byModel))
+	for model, decision := range byModel {
+		if strings.TrimSpace(decision.ModelID) == "" {
+			decision.ModelID = model
+		}
+		entries = append(entries, decision)
+	}
+	return normalizeClaudeCodeNativeCatalogAdmissionEntries(entries)
+}
+
+func normalizeClaudeCodeNativeCatalogAdmissionEntries(entries []claudeCodeNativeCatalogAdmissionDecision) (map[string]claudeCodeNativeCatalogAdmissionDecision, error) {
+	decisions := make(map[string]claudeCodeNativeCatalogAdmissionDecision, len(entries))
+	for _, decision := range entries {
+		decision.ModelID = strings.TrimSpace(decision.ModelID)
+		decision.Route = strings.TrimSpace(decision.Route)
+		decision.ProviderOwner = strings.TrimSpace(decision.ProviderOwner)
+		decision.CredentialScope = strings.TrimSpace(decision.CredentialScope)
+		decision.GatewayLocation = strings.TrimSpace(decision.GatewayLocation)
+		if decision.ModelID == "" || looksSensitiveText(decision.ModelID) {
+			return nil, fmt.Errorf("claude code native catalog admission model is invalid")
+		}
+		decisions[decision.ModelID] = decision
+	}
+	return decisions, nil
+}
+
+func splitClaudeCodeNativeCatalogModels(raw string) []string {
+	models := []string{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' || r == '\t' || r == ' ' }) {
+		model := strings.TrimSpace(part)
+		if model != "" && !looksSensitiveText(model) {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+func (s *ClaudeCodeNativeAttestationService) resolveClaudeCodeNativeCatalogAdmission(model string) (claudeCodeNativeCatalogAdmissionDecision, error) {
+	resolver := s.catalogAdmissionResolver
+	if resolver == nil {
+		resolver = claudeCodeNativeEnvCatalogAdmissionResolver{}
+	}
+	return resolver.ResolveClaudeCodeNativeCatalogAdmission(model)
+}
+
+func validateClaudeCodeNativeCatalogAdmission(model string, decision claudeCodeNativeCatalogAdmissionDecision) error {
+	model = strings.TrimSpace(model)
+	if model == "" || looksSensitiveText(model) || strings.TrimSpace(decision.ModelID) != model || !decision.CatalogFresh {
+		return fmt.Errorf("claude code native catalog admission is invalid")
+	}
+	if decision.Route != ClaudeCodeNativeRoute || decision.ProviderOwner != ClaudeCodeNativeProviderOwner || decision.CredentialScope != ClaudeCodeNativeCredentialScope || decision.GatewayLocation != ClaudeCodeNativeGatewayLocation {
+		return fmt.Errorf("claude code native catalog admission is invalid")
+	}
+	return nil
 }
 
 func validateClaudeCodeNativeAttestationPayloadShape(payload *ClaudeCodeNativeAttestationPayload) error {
@@ -592,9 +723,6 @@ func validateClaudeCodeNativeTrustedBindings(payload *ClaudeCodeNativeAttestatio
 	if payload == nil {
 		return fmt.Errorf("claude code native attestation payload is required")
 	}
-	if !isClaudeCodeNativeFormalPoolModel(payload.ModelID) {
-		return fmt.Errorf("claude code native formal-pool model binding is invalid")
-	}
 	if !claudeCodeNativeHashAllowed(payload.RuntimeHash, cfg.RuntimeHashes) {
 		return fmt.Errorf("claude code native runtime hash binding is invalid")
 	}
@@ -614,9 +742,6 @@ func validateClaudeCodeNativeBodyBinding(payload *ClaudeCodeNativeAttestationPay
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	if model == "" || looksSensitiveText(model) || payload.ModelID != model {
 		return fmt.Errorf("claude code native attestation model binding mismatch")
-	}
-	if !isClaudeCodeNativeFormalPoolModel(model) {
-		return fmt.Errorf("claude code native formal-pool model binding is invalid")
 	}
 	if payload.BodyShapeHash != claudeCodeNativeBodyShapeHash(body) {
 		return fmt.Errorf("claude code native attestation body shape binding mismatch")

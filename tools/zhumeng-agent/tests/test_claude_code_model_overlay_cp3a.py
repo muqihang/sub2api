@@ -64,6 +64,17 @@ def test_cp3a_uses_official_docs_snapshot_but_keeps_provider_capabilities_unveri
         assert provider["runtime_verified"] is False
 
 
+def test_cp3a_zai_glm_provider_profile_uses_zai_glm_route_family(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    profile = contract.provider_profiles_by_provider["zai_glm"]
+
+    assert profile.profile_id == "zai_glm"
+    assert profile.provider == "zai_glm"
+    assert profile.main_model_id == "glm-5.2"
+    assert profile.fast_model_id == "glm-5-turbo"
+
+
 def test_cp3a_agent_model_options_default_to_inherit(tmp_path: Path):
     contract = _contract(tmp_path)
 

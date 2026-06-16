@@ -71,6 +71,7 @@ def test_setup_parses_codex_setup_args(capsys, tmp_path: Path):
                     "supports_websockets": True,
                 },
                 "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
             }
 
         def list_codex_models(self, **kwargs):
@@ -391,6 +392,7 @@ def test_setup_prefers_server_provisioned_claude_code_native_attestation_secret(
                 "gateway_base_url": "https://gateway.zhumeng.example",
                 "config_profile": {"model_provider": "zhumeng-codex"},
                 "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
             }
 
         def list_codex_models(self, **kwargs):
@@ -411,6 +413,8 @@ def test_setup_prefers_server_provisioned_claude_code_native_attestation_secret(
     parse_output(capsys)
     assert store.payload["loopback_secret"] == "loopback-secret"
     assert store.payload["claude_code_native_attestation_secret"] == "server-native-attestation-secret"
+    assert store.payload["claude_code_route_hint_secret"] == "server-route-hint-secret"
+    assert store.payload["claude_code_route_hint_secret_source"] == "server"
 
 
 def test_setup_fails_closed_when_server_omits_claude_code_native_attestation_secret(capsys, tmp_path: Path):
@@ -533,6 +537,53 @@ def test_reauth_preserves_existing_claude_code_native_attestation_secret(capsys,
     parse_output(capsys)
     assert store.payload["claude_code_native_attestation_secret"] == "existing-native-secret"
 
+def test_reauth_does_not_promote_non_server_route_hint_secret(capsys, tmp_path: Path):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            return {
+                "access_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "managed_session_id": "sess-2",
+                "device_id": 10,
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "https://gateway.zhumeng.example",
+                "config_profile": {"model_provider": "zhumeng-codex"},
+            }
+
+        def list_codex_models(self, **kwargs):
+            return {"models": []}
+
+    store = CP0MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "gateway_base_url": "https://old-gateway.example",
+        "access_token": "old-access",
+        "managed_session_id": "sess-1",
+        "device_id": 9,
+        "refresh_token": "old-refresh",
+        "config_profile": {"model_provider": "zhumeng-codex"},
+        "proxy_port": 18081,
+        "loopback_secret": "loopback-secret",
+        "claude_code_native_attestation_secret": "existing-native-secret",
+        "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": "local-route-hint-secret",
+        "claude_code_route_hint_secret_source": "local",
+    })
+    cli.default_http_client = lambda server: FakeClient()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: cli.CodexConfigManager(tmp_path / ".codex")
+    cli.generate_loopback_secret = lambda: "new-secret-should-not-be-used"
+    cli.ensure_proxy_running = lambda store: 123
+    cli.default_codex_app_path = lambda: None
+
+    exit_code = main(["desktop", "reauth", "--client", "codex", "--code", "one-time-code", "--server", "https://example.com", "--json"])
+
+    assert exit_code == 0
+    parse_output(capsys)
+    assert cli.server_route_hint_secret(store.payload) is None
+    assert store.payload.get("claude_code_route_hint_secret", "") == ""
+    assert store.payload.get("claude_code_route_hint_secret_source", "") == ""
+
 def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):
@@ -549,6 +600,8 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
                 "loopback_secret": "loopback-secret",
                 "claude_code_native_attestation_secret": "server-native-attestation-secret",
                 "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
             }
 
         def update(self, patch):
@@ -571,7 +624,7 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
                 cwd=kwargs["project_cwd"],
             ),
             guard_plan=SimpleNamespace(
-                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation"],
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
                 config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117),
             ),
         )
@@ -599,12 +652,14 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert data["command"] == "claude-code start"
     assert data["status"] == "exited"
     assert data["guard"]["listen"] == "http://127.0.0.1:43117"
+    assert data["guard"]["route_hint_contract"] is True
     assert data["claude_base_url"] == "http://127.0.0.1:43117"
     assert calls[0]["upstream_base"] == "http://127.0.0.1:18080"
     assert calls[0]["sub2api_auth"] == "sub2api-entry-secret"
     assert calls[0]["managed_session_id"] == "managed-session"
     assert calls[0]["device_id"] == 9
     assert calls[0]["attestation_secret"] == "server-native-attestation-secret"
+    assert calls[0]["route_hint_secret"] == "server-route-hint-secret"
     assert calls[0]["argv"] == ["--print"]
     assert calls[0]["guard_listen_port"] == 43117
     dumped = json.dumps(data)

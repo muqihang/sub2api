@@ -129,7 +129,9 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     def fake_start_guard(plan, *, ready_timeout_seconds: float = 10.0):
         events.append(("guard", plan))
         assert "--native-attestation" in plan.command
+        assert "--route-hint-secret-env" in plan.command
         assert plan.env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] == "sub2api-entry"
+        assert plan.env["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "route-hint-secret"
         yield SimpleNamespace(process=SimpleNamespace(pid=12345), ready={"listen": "http://127.0.0.1:43117"})
 
     def fake_process_runner(command, *, env, cwd):
@@ -142,6 +144,8 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
         upstream_base="http://127.0.0.1:18080",
         sub2api_auth="sub2api-entry",
         attestation_secret="attestation-secret",
+        route_hint_secret="route-hint-secret",
+        route_hint_catalog_version="cp4-test-v1",
         config_root=tmp_path / "zhumeng-state",
         project_cwd=project_cwd,
         guard_listen_port=43117,

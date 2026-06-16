@@ -20,6 +20,7 @@ import (
 
 func TestGatewayHandlerNativeCountTokensAttestationValidatesAndSetsContext(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS", "claude-sonnet-4-6")
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

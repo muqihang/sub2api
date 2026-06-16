@@ -112,6 +112,7 @@ def test_native_guard_plan_scrubs_proxy_recursion_and_keeps_secrets_out_of_comma
     assert "intent-secret" not in command_text
     assert "attestation-secret" not in command_text
     assert "--native-attestation" in plan.command
+    assert "--route-hint-secret-env" not in plan.command
     assert "--allow-nonloopback-upstream" not in plan.command
     assert "--control-plane-intent-auth" not in plan.command
     assert plan.env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] == "sub2api-entry-secret"
@@ -132,6 +133,32 @@ def test_native_guard_plan_scrubs_proxy_recursion_and_keeps_secrets_out_of_comma
     assert plan.cwd == REPO_ROOT
     assert plan.will_start_process is False
     assert "sub2api-entry-secret" not in repr(plan)
+
+
+def test_cp4_native_guard_plan_can_enable_route_hint_without_leaking_secret(tmp_path: Path):
+    cfg = NativeGuardConfig(
+        mode=NativeGuardMode.PRODUCTION,
+        listen_port=43117,
+        upstream_base="http://127.0.0.1:18080",
+        sub2api_auth="sub2api-entry-secret",
+        summary_path=tmp_path / "guard-summary.jsonl",
+        repo_root=REPO_ROOT,
+        attestation_secret="attestation-secret",
+        route_hint_secret="cp4-route-key",
+        route_hint_catalog_version="cp4-test-v1",
+    )
+
+    plan = build_native_guard_plan(cfg, python_executable=Path("/opt/homebrew/bin/python3"))
+
+    command_text = " ".join(plan.command)
+    assert "--native-attestation" in plan.command
+    assert "--route-hint-secret-env" in plan.command
+    assert "ZHUMENG_CLAUDE_ROUTE_HINT_SECRET" in plan.command
+    assert "--route-hint-catalog-version" in plan.command
+    assert "cp4-test-v1" in plan.command
+    assert "cp4-route-key" not in command_text
+    assert plan.env["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "cp4-route-key"
+    assert "cp4-route-key" not in repr(plan)
 
 
 def test_native_guard_plan_requires_explicit_attestation_secret(tmp_path: Path):

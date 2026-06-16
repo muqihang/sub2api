@@ -33,6 +33,13 @@ from tools.cli_guard_attestation import (
     build_guard_attestation,
     guard_attestation_config_from_env,
 )
+from tools.claude_code_route_trust import (
+    RouteCatalog,
+    RouteDecision,
+    RouteHintReplayCache,
+    cp4_fixture_route_catalog,
+    verify_signed_route_hint_headers,
+)
 from tools.cli_control_plane_policy import (
     ControlPlanePolicy,
     PolicyConfigError,
@@ -177,6 +184,9 @@ class GuardConfig:
     local_raw_dir: Path | None = None
     allow_nonloopback_upstream: bool = False
     native_attestation_secret: str | None = None
+    route_hint_secret: str | None = None
+    route_hint_catalog: RouteCatalog | None = None
+    route_hint_replay_cache: RouteHintReplayCache | None = None
     managed_session_id: str | None = None
     device_id: str | None = None
     agent_version: str | None = None
@@ -207,6 +217,10 @@ class GuardConfig:
                 object.__setattr__(self, "control_plane_intent_auth", default_intent_auth or None)
         if self.max_messages is None:
             object.__setattr__(self, "max_messages", _policy_messages_config(policy).get("max_messages", 0))
+        if bool(self.route_hint_secret) != bool(self.route_hint_catalog):
+            raise ValueError("route_hint_secret and route_hint_catalog must be configured together")
+        if self.route_hint_secret and self.route_hint_catalog is not None and self.route_hint_replay_cache is None:
+            object.__setattr__(self, "route_hint_replay_cache", RouteHintReplayCache())
 
 
 @dataclass(frozen=True)
@@ -683,6 +697,48 @@ class RedactingForwarder:
         with self.config.summary_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(dict(obj), ensure_ascii=False, sort_keys=True) + "\n")
 
+    def _messages_route_decision(self, body: bytes, request_path: str, headers: Mapping[str, str]) -> RouteDecision | None:
+        if self.config.route_hint_secret and self.config.route_hint_catalog is not None:
+            try:
+                return verify_signed_route_hint_headers(
+                    source_headers=headers,
+                    body=body,
+                    request_path=request_path,
+                    catalog=self.config.route_hint_catalog,
+                    session_ref=_route_hint_session_ref(headers),
+                    secret=self.config.route_hint_secret,
+                    replay_cache=self.config.route_hint_replay_cache,
+                )
+            except RuntimeError as exc:
+                self._record({
+                    "ts": time.time(),
+                    "event": "messages_gate_block",
+                    "decision": "block_403",
+                    "reason": "route_hint_invalid" if _has_route_hint_headers(headers) else "route_hint_unavailable",
+                    "path": request_path,
+                    "error_type": type(exc).__name__,
+                })
+                return None
+        model_id = _native_attestation_model_id(body)
+        return RouteDecision(
+            model_id=model_id,
+            provider="claude",
+            route=NATIVE_ROUTE,
+            client_type=NATIVE_CLIENT_TYPE,
+            live_request_allowed=True,
+            formal_pool_allowed=True,
+            native_attestation_allowed=True,
+            provider_owner=NATIVE_PROVIDER_OWNER,
+            credential_scope=NATIVE_CREDENTIAL_SCOPE,
+            gateway_location=NATIVE_GATEWAY_LOCATION,
+            runtime_hash=_native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
+            overlay_hash=_native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
+            catalog_hash=_native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH"),
+            catalog_version="legacy-native",
+            session_ref=_route_hint_session_ref(headers),
+            nonce="legacy-native",
+        )
+
     def _capture_record(
         self,
         *,
@@ -886,6 +942,12 @@ class RedactingForwarder:
                 length = int(self.headers.get("content-length", "0") or 0)
                 body = self.rfile.read(length) if length else b""
                 if decision.action == "forward_messages":
+                    route_decision = parent._messages_route_decision(body, request_path, dict(self.headers))
+                    if route_decision is None:
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
                     envelope = evaluate_cost_envelope(body, parent.config)
                     request_record = {
                         "ts": time.time(),
@@ -894,7 +956,7 @@ class RedactingForwarder:
                         "path": request_path,
                         "decision": decision.action,
                         "reason": decision.reason,
-                        **native_messages_summary_markers(dict(self.headers)),
+                        **messages_route_summary_markers(route_decision, dict(self.headers)),
                         **redact_headers(dict(self.headers)),
                         **body_summary(body),
                     }
@@ -949,7 +1011,7 @@ class RedactingForwarder:
                         self.send_header("content-length", "0")
                         self.end_headers()
                         return
-                    self._forward_messages(body, request_path)
+                    self._forward_messages(body, request_path, route_decision)
                     return
                 record, effective_decision = parent._evaluate_control_plane(
                     event="request",
@@ -995,7 +1057,10 @@ class RedactingForwarder:
                 self.send_header("content-length", "0")
                 self.end_headers()
 
-            def _forward_messages(self, body: bytes, request_path: str) -> None:
+            def _forward_messages(self, body: bytes, request_path: str, route_decision: RouteDecision) -> None:
+                if not route_decision.native_attestation_allowed and not route_decision.live_request_allowed:
+                    self._respond_cp4_bridge_stub(request_path, route_decision)
+                    return
                 url = parent.config.upstream_base.rstrip("/") + request_path
                 headers = {
                     key: value
@@ -1003,26 +1068,33 @@ class RedactingForwarder:
                     if key.lower() in CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST
                 }
                 headers["Authorization"] = f"Bearer {parent.config.sub2api_auth}"
-                try:
-                    headers.update(build_native_messages_attestation_headers(
-                        body,
-                        request_path,
-                        dict(self.headers),
-                        secret=parent.config.native_attestation_secret,
-                    ))
-                except RuntimeError as exc:
-                    parent._record({
-                        "ts": time.time(),
-                        "event": "messages_gate_block",
-                        "decision": "block_403",
-                        "reason": "native_attestation_unavailable",
-                        "path": request_path,
-                        "error_type": type(exc).__name__,
-                    })
-                    self.send_response(403)
-                    self.send_header("content-length", "0")
-                    self.end_headers()
-                    return
+                if route_decision.native_attestation_allowed:
+                    try:
+                        headers.update(build_native_messages_attestation_headers(
+                            body,
+                            request_path,
+                            dict(self.headers),
+                            secret=parent.config.native_attestation_secret,
+                        ))
+                    except RuntimeError as exc:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "native_attestation_unavailable",
+                            "path": request_path,
+                            "error_type": type(exc).__name__,
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    headers["x-sub2api-route"] = route_decision.route
+                    headers["x-sub2api-route-catalog-version"] = route_decision.catalog_version
+                else:
+                    headers["x-sub2api-client-type"] = route_decision.client_type
+                    headers["x-sub2api-route"] = route_decision.route
+                    headers["x-sub2api-route-catalog-version"] = route_decision.catalog_version
                 for key, value in parent._managed_forward_headers().items():
                     headers[key] = value
                 if parent.config.extra_forward_headers:
@@ -1109,6 +1181,31 @@ class RedactingForwarder:
                     stop_event = parent.execution_controller.on_message_completed()
                     if stop_event is not None:
                         parent._record({"ts": time.time(), **stop_event})
+
+            def _respond_cp4_bridge_stub(self, request_path: str, route_decision: RouteDecision) -> None:
+                data = cp4_bridge_stub_sse_body(route_decision)
+                parent._record({
+                    "ts": time.time(),
+                    "event": "messages_bridge_stub_response",
+                    "decision": "bridge_stub_cp4",
+                    "path": request_path,
+                    "status": 200,
+                    "route": route_decision.route,
+                    "client_type": route_decision.client_type,
+                    "provider": route_decision.provider,
+                    "live_request_allowed": False,
+                    "native_attested": False,
+                    "response_content_type": "text/event-stream",
+                    "response_body_size": len(data),
+                })
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+                self.send_header("content-length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                stop_event = parent.execution_controller.on_message_completed()
+                if stop_event is not None:
+                    parent._record({"ts": time.time(), **stop_event})
 
         return Handler
 
@@ -1756,6 +1853,56 @@ def native_messages_summary_markers(source_headers: Mapping[str, str]) -> dict[s
     }
 
 
+def messages_route_summary_markers(route_decision: RouteDecision, source_headers: Mapping[str, str]) -> dict[str, Any]:
+    local_session = session_key_from_headers(source_headers)
+    return {
+        "client_type": route_decision.client_type,
+        "route": route_decision.route,
+        "provider": route_decision.provider,
+        "live_request_allowed": bool(route_decision.live_request_allowed),
+        "native_attested": bool(route_decision.native_attestation_allowed),
+        "formal_pool_allowed": bool(route_decision.formal_pool_allowed),
+        "netwatch_required": bool(route_decision.native_attestation_allowed),
+        "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE if route_decision.native_attestation_allowed else "bridge_stub_cp4",
+        "local_session_ref": local_session.get("value", ""),
+        "raw_body_persisted": False,
+        "raw_attestation_persisted": False,
+    }
+
+
+def cp4_bridge_stub_sse_body(route_decision: RouteDecision) -> bytes:
+    model = json.dumps(route_decision.model_id, separators=(",", ":"))
+    content = "bridge stub"
+    return (
+        "event: message_start\n"
+        f"data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_bridge_stub_cp4\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":{model},\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\n"
+        "event: content_block_start\n"
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+        "event: content_block_delta\n"
+        f"data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{json.dumps(content)}}}}}\n\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n\n"
+    ).encode("utf-8")
+
+
+def _route_hint_session_ref(headers: Mapping[str, str]) -> str:
+    for key, value in headers.items():
+        if key.lower() == "x-claude-code-session-id" and isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(session_key_from_headers(headers).get("value", ""))
+
+
+def _has_route_hint_headers(headers: Mapping[str, str]) -> bool:
+    return any(key.lower() in {
+        "x-zhumeng-claude-code-route-hint",
+        "x-zhumeng-claude-code-route-signature",
+    } for key in headers)
+
+
 def _sign_native_messages_attestation(encoded: str, method: str, request_path: str, body: bytes, secret: str) -> str:
     material = b"\n".join(
         [
@@ -1808,6 +1955,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sub2api-auth")
     parser.add_argument("--sub2api-auth-env", default="ZHUMENG_API_KEY")
     parser.add_argument("--native-attestation", action="store_true", help="Enable request-bound Claude Code native attestation for /v1/messages.")
+    parser.add_argument("--route-hint-secret-env", help="Enable CP4 signed per-request route hints with the secret from this env var.")
+    parser.add_argument("--route-hint-catalog-version", default="cp4-cli-fixture-v1")
     parser.add_argument("--summary-path", type=Path, required=True)
     parser.add_argument("--control-plane-intent-url")
     parser.add_argument("--control-plane-intent-auth")
@@ -1860,6 +2009,15 @@ def main(argv: list[str] | None = None) -> int:
 
     cost_limits = _cli_cost_envelope_limits(args)
     session_budget_ledger = _cli_session_budget_ledger(args)
+    route_hint_secret = os.environ.get(args.route_hint_secret_env or "") if args.route_hint_secret_env else None
+    route_hint_catalog = None
+    if route_hint_secret:
+        route_hint_catalog = cp4_fixture_route_catalog(
+            runtime_hash=_native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
+            overlay_hash=_native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
+            catalog_hash=_native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH"),
+            catalog_version=args.route_hint_catalog_version,
+        )
 
     try:
         forwarder = RedactingForwarder(
@@ -1882,6 +2040,8 @@ def main(argv: list[str] | None = None) -> int:
                 local_raw_dir=args.local_raw_dir,
                 allow_nonloopback_upstream=args.allow_nonloopback_upstream,
                 native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") if args.native_attestation else "",
+                route_hint_secret=route_hint_secret,
+                route_hint_catalog=route_hint_catalog,
                 managed_session_id=args.managed_session,
                 device_id=args.device_id,
                 agent_version=args.agent_version,

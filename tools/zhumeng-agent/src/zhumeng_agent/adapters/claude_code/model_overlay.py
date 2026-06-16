@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
+import re
+import secrets
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -522,6 +527,354 @@ def build_cp3a_model_overlay_contract(
     return RuntimeModelOverlayContract(proof=proof, provider_profiles=profiles, bridge_live_feature_flag=False)
 
 
+
+@dataclass(frozen=True, slots=True)
+class RouteHintReplayCache:
+    ttl_seconds: int = 60
+    _entries: dict[str, int] = field(default_factory=dict, init=False, repr=False, compare=False)
+
+    def check_and_record(self, *, key_id: str, scope: str, nonce: str, now: int) -> None:
+        expired = [key for key, expiry in self._entries.items() if expiry <= now]
+        for key in expired:
+            self._entries.pop(key, None)
+        replay_key = f"{scope}:{key_id}:{nonce}"
+        expiry = self._entries.get(replay_key)
+        if expiry is not None and expiry > now:
+            raise RuntimeOverlayError("route hint nonce replayed")
+        self._entries[replay_key] = now + self.ttl_seconds
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeRouteHintContract:
+    overlay_contract: RuntimeModelOverlayContract
+    catalog_hash: str
+    catalog_version: str
+    scope: str = "claude_code_route_hint_cp4"
+    version: int = 1
+    bridge_live_feature_flag: bool = False
+    nonce_ttl_seconds: int = 60
+    replay_cache: RouteHintReplayCache = field(default_factory=RouteHintReplayCache, compare=False)
+
+    @property
+    def models_by_id(self) -> Mapping[str, RuntimeModelOverlayEntry]:
+        return self.overlay_contract.models_by_id
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSignedRouteHint:
+    headers: Mapping[str, str]
+    attestation: str
+    signature: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeRouteHintVerification:
+    model_id: str
+    provider: str
+    route: str
+    client_type: str
+    live_request_allowed: bool
+    formal_pool_allowed: bool
+    native_attestation_allowed: bool
+    runtime_hash: str
+    overlay_hash: str
+    catalog_hash: str
+    catalog_version: str
+    session_ref: str
+    nonce: str
+
+
+ROUTE_HINT_HEADER = "x-zhumeng-claude-code-route-hint"
+ROUTE_HINT_SIGNATURE_HEADER = "x-zhumeng-claude-code-route-signature"
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def build_cp4_route_hint_contract(
+    overlay_contract: RuntimeModelOverlayContract,
+    *,
+    catalog_hash: str,
+    catalog_version: str,
+) -> RuntimeRouteHintContract:
+    assert_bridge_models_are_offline_only(overlay_contract.proof)
+    if overlay_contract.bridge_live_feature_flag:
+        raise RuntimeOverlayError("bridge live routing remains disabled until CP4 routing trust contract is green")
+    normalized_hash = _normalize_cp4_hash(catalog_hash, "catalog_hash")
+    return RuntimeRouteHintContract(
+        overlay_contract=overlay_contract,
+        catalog_hash=normalized_hash,
+        catalog_version=str(catalog_version),
+        bridge_live_feature_flag=False,
+    )
+
+
+def build_cp4_route_hint_headers(
+    contract: RuntimeRouteHintContract,
+    *,
+    body: bytes,
+    request_path: str,
+    model_id: str,
+    session_ref: str,
+    secret: str,
+    now: int | None = None,
+    nonce: str | None = None,
+    route: str | None = None,
+    client_type: str | None = None,
+    live_request_allowed: bool | None = None,
+    formal_pool_allowed: bool | None = None,
+    native_attestation_allowed: bool | None = None,
+) -> Mapping[str, str]:
+    signed = sign_cp4_route_hint(
+        contract,
+        body=body,
+        request_path=request_path,
+        model_id=model_id,
+        session_ref=session_ref,
+        secret=secret,
+        now=now,
+        nonce=nonce,
+        route=route,
+        client_type=client_type,
+        live_request_allowed=live_request_allowed,
+        formal_pool_allowed=formal_pool_allowed,
+        native_attestation_allowed=native_attestation_allowed,
+    )
+    return signed.headers
+
+
+def sign_cp4_route_hint(
+    contract: RuntimeRouteHintContract,
+    *,
+    body: bytes,
+    request_path: str,
+    model_id: str,
+    session_ref: str,
+    secret: str,
+    now: int | None = None,
+    nonce: str | None = None,
+    route: str | None = None,
+    client_type: str | None = None,
+    live_request_allowed: bool | None = None,
+    formal_pool_allowed: bool | None = None,
+    native_attestation_allowed: bool | None = None,
+) -> RuntimeSignedRouteHint:
+    if not secret:
+        raise RuntimeOverlayError("route hint secret is required")
+    entry = contract.models_by_id.get(model_id)
+    if entry is None:
+        raise RuntimeOverlayError(f"unknown overlay model: {model_id}")
+    issued_at = int(time.time() if now is None else now)
+    route_default = _cp4_entry_route(entry)
+    is_native = route_default == "claude_code_native"
+    provider_owner, credential_scope, gateway_location = _cp4_entry_account_binding(entry)
+    payload = {
+        "key_id": "route_hint_v1",
+        "scope": contract.scope,
+        "version": contract.version,
+        "issued_at": issued_at,
+        "expires_at": issued_at + contract.nonce_ttl_seconds,
+        "nonce": nonce or secrets.token_hex(16),
+        "method": "POST",
+        "request_uri": request_path,
+        "model_id": model_id,
+        "body_model": _cp4_body_model(body),
+        "body_sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+        "runtime_hash": contract.overlay_contract.proof.runtime_hash,
+        "overlay_hash": contract.overlay_contract.proof.overlay_hash,
+        "catalog_hash": contract.catalog_hash,
+        "catalog_version": contract.catalog_version,
+        "session_ref": str(session_ref),
+        "provider": entry.provider,
+        "route": route if route is not None else route_default,
+        "client_type": client_type if client_type is not None else entry.client_type,
+        "live_request_allowed": bool(entry.live_enabled if live_request_allowed is None else live_request_allowed),
+        "formal_pool_allowed": bool(entry.formal_pool_eligible if formal_pool_allowed is None else formal_pool_allowed),
+        "native_attestation_allowed": bool(is_native if native_attestation_allowed is None else native_attestation_allowed),
+        "provider_owner": provider_owner,
+        "credential_scope": credential_scope,
+        "gateway_location": gateway_location,
+    }
+    encoded = _encode_cp4_route_hint(payload)
+    signature = _sign_cp4_route_hint(encoded, request_path, body, secret)
+    return RuntimeSignedRouteHint(
+        headers={ROUTE_HINT_HEADER: encoded, ROUTE_HINT_SIGNATURE_HEADER: signature},
+        attestation=encoded,
+        signature=signature,
+    )
+
+
+def verify_cp4_route_hint_headers(
+    contract: RuntimeRouteHintContract,
+    *,
+    source_headers: Mapping[str, str],
+    body: bytes,
+    request_path: str,
+    session_ref: str,
+    secret: str,
+    now: int | None = None,
+) -> RuntimeRouteHintVerification:
+    if not secret:
+        raise RuntimeOverlayError("route hint secret is required")
+    encoded = _get_header(source_headers, ROUTE_HINT_HEADER)
+    signature = _get_header(source_headers, ROUTE_HINT_SIGNATURE_HEADER)
+    if not encoded or not signature:
+        raise RuntimeOverlayError("route hint is required")
+    payload = _decode_cp4_route_hint(encoded)
+    _validate_cp4_route_hint_shape(payload, contract)
+    if _cp4_body_model(body) != payload["body_model"] or payload["body_model"] != payload["model_id"]:
+        raise RuntimeOverlayError("route hint model binding mismatch")
+    expected_signature = _sign_cp4_route_hint(encoded, request_path, body, secret)
+    if not hmac.compare_digest(expected_signature, signature):
+        raise RuntimeOverlayError("route hint signature mismatch")
+    current = int(time.time() if now is None else now)
+    if current > int(payload["expires_at"]) or int(payload["issued_at"]) > current + 30:
+        raise RuntimeOverlayError("route hint stale")
+    if payload["request_uri"] != request_path or payload["method"] != "POST":
+        raise RuntimeOverlayError("route hint request binding mismatch")
+    if payload["body_sha256"] != "sha256:" + hashlib.sha256(body).hexdigest():
+        raise RuntimeOverlayError("route hint body binding mismatch")
+    if payload["session_ref"] != str(session_ref):
+        raise RuntimeOverlayError("route hint session binding mismatch")
+    if payload["runtime_hash"] != contract.overlay_contract.proof.runtime_hash or payload["overlay_hash"] != contract.overlay_contract.proof.overlay_hash:
+        raise RuntimeOverlayError("route hint runtime/overlay binding mismatch")
+    if payload["catalog_hash"] != contract.catalog_hash or payload["catalog_version"] != contract.catalog_version:
+        raise RuntimeOverlayError("route hint catalog binding mismatch")
+    entry = contract.models_by_id.get(payload["model_id"])
+    if entry is None:
+        raise RuntimeOverlayError("route hint unknown model")
+    is_native = entry.route == "claude_native"
+    provider_owner, credential_scope, gateway_location = _cp4_entry_account_binding(entry)
+    expected = {
+        "provider": entry.provider,
+        "route": _cp4_entry_route(entry),
+        "client_type": entry.client_type,
+        "live_request_allowed": bool(entry.live_enabled),
+        "formal_pool_allowed": bool(entry.formal_pool_eligible),
+        "native_attestation_allowed": bool(is_native),
+        "provider_owner": provider_owner,
+        "credential_scope": credential_scope,
+        "gateway_location": gateway_location,
+    }
+    for key, value in expected.items():
+        if payload[key] != value:
+            raise RuntimeOverlayError(f"route hint catalog route binding mismatch for {key}")
+    if not is_native and (payload["client_type"] == "claude_code_native" or payload["formal_pool_allowed"] or payload["native_attestation_allowed"]):
+        raise RuntimeOverlayError("route hint bridge cannot claim native")
+    contract.replay_cache.check_and_record(
+        key_id=str(payload["key_id"]),
+        scope=str(payload["scope"]),
+        nonce=str(payload["nonce"]),
+        now=current,
+    )
+    return RuntimeRouteHintVerification(
+        model_id=payload["model_id"],
+        provider=payload["provider"],
+        route=payload["route"],
+        client_type=payload["client_type"],
+        live_request_allowed=bool(payload["live_request_allowed"]),
+        formal_pool_allowed=bool(payload["formal_pool_allowed"]),
+        native_attestation_allowed=bool(payload["native_attestation_allowed"]),
+        runtime_hash=payload["runtime_hash"],
+        overlay_hash=payload["overlay_hash"],
+        catalog_hash=payload["catalog_hash"],
+        catalog_version=payload["catalog_version"],
+        session_ref=payload["session_ref"],
+        nonce=payload["nonce"],
+    )
+
+
+def _normalize_cp4_hash(value: str, field: str) -> str:
+    normalized = str(value).strip().lower()
+    if _SHA256_RE.fullmatch(normalized) is None:
+        raise RuntimeOverlayError(f"{field} must be sha256:<64hex>")
+    return normalized
+
+
+def _cp4_body_model(body: bytes) -> str:
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeOverlayError("route hint body must be valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise RuntimeOverlayError("route hint body must be an object")
+    model = payload.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise RuntimeOverlayError("route hint body model is required")
+    return model.strip()
+
+
+def _encode_cp4_route_hint(payload: Mapping[str, object]) -> str:
+    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_cp4_route_hint(encoded: str) -> dict[str, object]:
+    try:
+        raw = base64.urlsafe_b64decode(encoded + ("=" * (-len(encoded) % 4)))
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeOverlayError("route hint payload decode failed") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeOverlayError("route hint payload must be an object")
+    return payload
+
+
+def _sign_cp4_route_hint(encoded: str, request_path: str, body: bytes, secret: str) -> str:
+    material = b"\n".join((
+        encoded.encode("ascii"),
+        b"POST",
+        request_path.encode("utf-8"),
+        hashlib.sha256(body).hexdigest().encode("ascii"),
+    ))
+    digest = hmac.new(secret.encode("utf-8"), material, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _get_header(headers: Mapping[str, str], name: str) -> str | None:
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value
+    return None
+
+
+def _validate_cp4_route_hint_shape(payload: Mapping[str, object], contract: RuntimeRouteHintContract) -> None:
+    expected = {
+        "key_id", "scope", "version", "issued_at", "expires_at", "nonce", "method",
+        "request_uri", "model_id", "body_model", "body_sha256", "runtime_hash",
+        "overlay_hash", "catalog_hash", "catalog_version", "session_ref", "provider",
+        "route", "client_type", "live_request_allowed", "formal_pool_allowed",
+        "native_attestation_allowed", "provider_owner", "credential_scope", "gateway_location",
+    }
+    if set(payload) != expected:
+        raise RuntimeOverlayError("route hint payload shape mismatch")
+    if payload["scope"] != contract.scope or payload["version"] != contract.version:
+        raise RuntimeOverlayError("route hint scope/version mismatch")
+    for key in ("issued_at", "expires_at"):
+        if not isinstance(payload[key], int):
+            raise RuntimeOverlayError(f"route hint {key} is invalid")
+    for key in ("live_request_allowed", "formal_pool_allowed", "native_attestation_allowed"):
+        if not isinstance(payload[key], bool):
+            raise RuntimeOverlayError(f"route hint {key} is invalid")
+    for key in ("body_sha256", "runtime_hash", "overlay_hash", "catalog_hash"):
+        value = payload[key]
+        if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+            raise RuntimeOverlayError(f"route hint {key} is invalid")
+    for key in expected - {"version", "issued_at", "expires_at", "live_request_allowed", "formal_pool_allowed", "native_attestation_allowed"}:
+        if not isinstance(payload[key], str) or not str(payload[key]):
+            raise RuntimeOverlayError(f"route hint {key} is invalid")
+
+
+def _cp4_entry_route(entry: RuntimeModelOverlayEntry) -> str:
+    if entry.route == "claude_native":
+        return "claude_code_native"
+    return entry.route
+
+
+def _cp4_entry_account_binding(entry: RuntimeModelOverlayEntry) -> tuple[str, str, str]:
+    if entry.route == "claude_native":
+        return ("zhumeng_managed", "formal_pool", "cloud")
+    return ("zhumeng_managed", "bridge_pool", "cloud")
+
+
 def build_agent_model_options(contract: RuntimeModelOverlayContract) -> tuple[RuntimeAgentModelOption, ...]:
     options = [
         RuntimeAgentModelOption(
@@ -731,8 +1084,8 @@ def _default_cp3a_provider_profiles(proof: RuntimeModelOverlayProof) -> tuple[Ru
     if has("glm-5.2") and has("glm-5-turbo"):
         profiles.append(
             RuntimeProviderProfile(
-                profile_id="glm",
-                provider="glm",
+                profile_id="zai_glm",
+                provider="zai_glm",
                 main_model_id="glm-5.2",
                 fast_model_id="glm-5-turbo",
                 family_aliases={alias: "glm-5-turbo" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
@@ -914,9 +1267,9 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
         RuntimeModelOverlayEntry(
             model_id="glm-5.2",
             display_label="GLM 5.2",
-            provider="glm",
-            route="glm_bridge",
-            client_type="claude_code_bridge_glm",
+            provider="zai_glm",
+            route="zai_glm_bridge",
+            client_type="claude_code_bridge_zai_glm",
             live_enabled=False,
             formal_pool_eligible=False,
             api_formats=("anthropic_messages", "openai_compatible_chat"),
@@ -934,9 +1287,9 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
         RuntimeModelOverlayEntry(
             model_id="glm-5.2[1m]",
             display_label="GLM 5.2 1M",
-            provider="glm",
-            route="glm_bridge",
-            client_type="claude_code_bridge_glm",
+            provider="zai_glm",
+            route="zai_glm_bridge",
+            client_type="claude_code_bridge_zai_glm",
             live_enabled=False,
             formal_pool_eligible=False,
             api_formats=("anthropic_messages", "openai_compatible_chat"),
@@ -955,9 +1308,9 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
         RuntimeModelOverlayEntry(
             model_id="glm-5-turbo",
             display_label="GLM 5 Turbo",
-            provider="glm",
-            route="glm_bridge",
-            client_type="claude_code_bridge_glm",
+            provider="zai_glm",
+            route="zai_glm_bridge",
+            client_type="claude_code_bridge_zai_glm",
             live_enabled=False,
             formal_pool_eligible=False,
             api_formats=("anthropic_messages", "openai_compatible_chat"),
@@ -975,9 +1328,9 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
         RuntimeModelOverlayEntry(
             model_id="glm-4.7",
             display_label="GLM 4.7",
-            provider="glm",
-            route="glm_bridge",
-            client_type="claude_code_bridge_glm",
+            provider="zai_glm",
+            route="zai_glm_bridge",
+            client_type="claude_code_bridge_zai_glm",
             live_enabled=False,
             formal_pool_eligible=False,
             api_formats=("anthropic_messages", "openai_compatible_chat"),
@@ -995,9 +1348,9 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
         RuntimeModelOverlayEntry(
             model_id="glm-4.5-air",
             display_label="GLM 4.5 Air",
-            provider="glm",
-            route="glm_bridge",
-            client_type="claude_code_bridge_glm",
+            provider="zai_glm",
+            route="zai_glm_bridge",
+            client_type="claude_code_bridge_zai_glm",
             live_enabled=False,
             formal_pool_eligible=False,
             api_formats=("anthropic_messages", "openai_compatible_chat"),

@@ -16,6 +16,48 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+type staticClaudeCodeNativeCatalogAdmissionResolver struct {
+	decisions map[string]claudeCodeNativeCatalogAdmissionDecision
+}
+
+func (r staticClaudeCodeNativeCatalogAdmissionResolver) ResolveClaudeCodeNativeCatalogAdmission(model string) (claudeCodeNativeCatalogAdmissionDecision, error) {
+	if decision, ok := r.decisions[model]; ok {
+		return decision, nil
+	}
+	return claudeCodeNativeCatalogAdmissionDecision{}, nil
+}
+
+func testClaudeCodeNativeFormalPoolResolver(models ...string) claudeCodeNativeCatalogAdmissionResolver {
+	decisions := make(map[string]claudeCodeNativeCatalogAdmissionDecision, len(models))
+	for _, model := range models {
+		decisions[model] = claudeCodeNativeCatalogAdmissionDecision{
+			ModelID:         model,
+			Route:           ClaudeCodeNativeRoute,
+			ProviderOwner:   ClaudeCodeNativeProviderOwner,
+			CredentialScope: ClaudeCodeNativeCredentialScope,
+			GatewayLocation: ClaudeCodeNativeGatewayLocation,
+			CatalogFresh:    true,
+		}
+	}
+	return staticClaudeCodeNativeCatalogAdmissionResolver{decisions: decisions}
+}
+
+func TestClaudeCodeNativeAttestationDefaultCatalogAdmissionFailsClosed(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	now := time.Unix(1990, 0)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	headers := signedNativeHeadersForTest(t, body, "/v1/messages", now, map[string]any{"nonce": "default-catalog-fail-closed"})
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+	)
+
+	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "catalog admission")
+}
+
 func TestClaudeCodeNativeAttestationAcceptsGuardSignedMessagesWithoutServerShape(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
 	now := time.Unix(2000, 0)
@@ -25,6 +67,7 @@ func TestClaudeCodeNativeAttestationAcceptsGuardSignedMessagesWithoutServerShape
 	svc := NewClaudeCodeNativeAttestationService(
 		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
 		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
 	)
 	summary, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages?beta=true", headers, body)
 	require.NoError(t, err)
@@ -64,6 +107,7 @@ func TestClaudeCodeNativeAttestationRequiresRuntimeRouteCatalogAndBodyBindings(t
 	svc := NewClaudeCodeNativeAttestationService(
 		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
 		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
 	)
 	summary, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages?beta=true", headers, body)
 	require.NoError(t, err)
@@ -93,7 +137,7 @@ func TestClaudeCodeNativeAttestationRejectsUnknownRuntimeCatalogHashAndBridgeMod
 	bridgeHeaders := signedNativeHeadersForTest(t, bridgeBody, "/v1/messages", now, map[string]any{"nonce": "bridge-model"})
 	_, err = svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", bridgeHeaders, bridgeBody)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "formal-pool")
+	require.Contains(t, err.Error(), "catalog admission")
 }
 
 func TestClaudeCodeNativeAttestationRejectsInvalidConfiguredHashAllowlist(t *testing.T) {
@@ -121,6 +165,7 @@ func TestClaudeCodeNativeAttestationAcceptsCountTokensRoute(t *testing.T) {
 	svc := NewClaudeCodeNativeAttestationService(
 		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
 		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
 	)
 	summary, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages/count_tokens", headers, body)
 	require.NoError(t, err)
@@ -196,6 +241,7 @@ func TestClaudeCodeNativeAttestationFreshnessAndReplayFailClosed(t *testing.T) {
 	svc := NewClaudeCodeNativeAttestationService(
 		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }),
 		WithClaudeCodeNativeAttestationReplayCache(cache),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
 	)
 	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
 	require.NoError(t, err)
@@ -219,11 +265,17 @@ func TestClaudeCodeNativeAttestationDefaultReplayCacheIsShared(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
 	headers := signedNativeHeadersForTest(t, body, "/v1/messages", issued, map[string]any{"nonce": "shared-replay-nonce"})
 
-	first := NewClaudeCodeNativeAttestationService(WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }))
+	first := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
 	_, err := first.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
 	require.NoError(t, err)
 
-	second := NewClaudeCodeNativeAttestationService(WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }))
+	second := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
 	_, err = second.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "replayed")
