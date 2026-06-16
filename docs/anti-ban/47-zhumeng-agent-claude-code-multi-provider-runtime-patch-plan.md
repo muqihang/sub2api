@@ -1294,18 +1294,21 @@ gateway_location
 - 注入 model allowlist；
 - 确认 `/model` 展示混合列表；
 - 探测并实现 per-request route hint 注入 patch 点；若无法安全注入，则记录 degraded 模式并 fail closed。
+- CP2 阶段的混合 `/model` 列表只允许用于 overlay proof、`--print`、静态探测和 model list capture。CP4 routing trust contract 绿之前，bridge 模型必须在 live catalog 中 feature-flag off，不能连接到 live formal-pool native path。
 
 测试：
 
 - static patch test；
 - runtime smoke with `--print` where possible；
 - model list capture；
+- live catalog bridge models disabled assertion：CP2 期间 DeepSeek/GPT/AGNES display 可被捕获，但真实 runtime 选择 bridge 模型不得发出 live formal-pool 请求；
 - rollback test。
 
 CP2 exit gate：
 
 - 进入 CP3 前，patched managed runtime 必须与未改 2.1.175 的代表性 Claude native request 通过 shape equality。
 - verifier 与 CC Gateway signing pipeline 必须通过；失败时禁用 Claude formal pool path，不进入 mixed-provider runtime integration。
+- CP4 fail-closed 对抗测试通过前，不得把 mixed `/model` bridge selections 连接到 live Sub2API formal-pool path；若要做 smoke，只能使用 mock/stub upstream 或 native-only degraded 模式。
 
 ### CP3：Subagent / Workflow model overlay + transcript boundary
 
@@ -1481,6 +1484,7 @@ CP5 exit gate：
 | raw sensitive 泄漏 | P0 | summary-only capture + sensitive scan |
 | attestation secret 被本机提取 | P0 | 把 attestation 降级为过滤器；服务端预算、shape/persona verifier、route/account policy 和吊销为最终防线 |
 | 单进程内请求被错误路由 | P0 | per-request signed route hint + body.model 交叉校验；backend 以服务端 catalog 自行裁决，hint 不授权 |
+| CP2 混合模型列表早于 CP4 路由合同 | P0 | CP4 绿之前 bridge 模型 live feature-flag off，只做 overlay proof/mock/stub；禁止连接 formal-pool native path |
 | Workflow/subagent/后台快模型静默扣 Claude 号池 | P0 | 按 active profile 动态解析，不只靠静态 env；启动 Claude 后切 DeepSeek 的标题/compact/summary/probe fixture 要求 native egress=0 |
 | 本地 provider state 形成新隐私面 | P1 | 加密/仅内存、session scope、退出清理、禁止进入 audit/safe deliverable |
 | 本地 provider 与云端托管 provider 混路由 | P0 | provider_owner / credential_scope / gateway_location 进入 route decision 与 audit |
@@ -1521,6 +1525,7 @@ CP5 exit gate：
 26. 47 号至少定义或保留 ProviderRegistry / PolicyEngine / GatewayRuntime seams；Stage 1 cloud Sub2API catalog 是 source of truth behind the interface，但不是永久唯一实现。
 27. Bridge parity 不降级既有 Codex Gateway DeepSeek/OpenAI Responses/AGNES/Computer Use/usage-cache-accounting 调优，并有 no-regression tests。
 28. 单进程 routing trust contract 通过对抗测试：body/model 与 route hint 不一致、bridge 伪造 native、unknown/stale/replayed hint 均 fail closed；backend 必须用服务端 catalog 自行推导 route。
+28a. CP4 绿之前，CP2 注入的 mixed `/model` bridge selections 不得连接 live formal-pool native path；bridge 模型在 live catalog 中必须 feature-flag off 或只连 mock/stub upstream。
 29. Attestation secret 按本地可提取建模，服务端 budget/persona/shape/account policy/吊销为 formal pool 最终安全依赖。
 30. Bridge 入口维护 `ReplaySafeAnthropicTranscript` 不变式，出口 verifier 只做兜底；真实 Claude-origin turn 不被改写。
 31. 非 Claude profile 下 workflow/subagent/标题/compact/summary/probe 等硬编码或隐式 Claude model 不得静默消耗 formal pool；pure DeepSeek profile fixture 中 native egress 计数为 0。
