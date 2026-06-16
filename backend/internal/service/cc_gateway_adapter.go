@@ -26,6 +26,7 @@ const (
 	ccGatewayPolicyVersionHeader      = "x-cc-policy-version"
 	ccGatewayTrustedPersonaHeader     = "x-sub2api-persona-trusted"
 	ccGatewayHealthcheckPersonaHeader = "x-sub2api-healthcheck-persona"
+	ccGatewayContext1MHeader          = "x-sub2api-context-1m"
 	ccGatewayHealthcheckNon1MProfile  = "claude_code_2_1_175_api_key_non_1m"
 	ccGatewayErrorKindHeader          = "x-cc-gateway-error-kind"
 	ccGatewayErrorCodeHeader          = "x-cc-gateway-error-code"
@@ -363,6 +364,28 @@ func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, accou
 	// server-owned x-cc-account-id ref and CC Gateway account_identities config.
 	setHeaderRaw(req.Header, ccGatewayEgressBucketHeader, resolveCCGatewayEgressBucket(account))
 	applyCCGatewayClaudeCodeSessionMapping(req, account)
+}
+
+func applyCCGatewayContext1MSelection(req *http.Request, clientHeaders http.Header, body []byte, modelID string) {
+	if req == nil {
+		return
+	}
+	if ccGatewayClientSelectedContext1M(clientHeaders, body, modelID) {
+		setHeaderRaw(req.Header, ccGatewayContext1MHeader, "true")
+	}
+}
+
+func ccGatewayClientSelectedContext1M(clientHeaders http.Header, body []byte, modelID string) bool {
+	if anthropicBetaTokensContains(getHeaderRaw(clientHeaders, "anthropic-beta"), "context-1m-2025-08-07") {
+		return true
+	}
+	if strings.Contains(strings.ToLower(strings.TrimSpace(modelID)), "[1m]") {
+		return true
+	}
+	if len(body) > 0 && strings.Contains(strings.ToLower(gjson.GetBytes(body, "model").String()), "[1m]") {
+		return true
+	}
+	return false
 }
 
 func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request, account *Account) {

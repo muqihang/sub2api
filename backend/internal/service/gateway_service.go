@@ -5748,6 +5748,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	setHeaderRaw(req.Header, "x-api-key", token)
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
+		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, gjson.GetBytes(body, "model").String())
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
@@ -6521,6 +6522,13 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 	return usage, nil
 }
 
+func clientHeadersForCCGatewayContext1M(c *gin.Context) http.Header {
+	if c == nil || c.Request == nil {
+		return nil
+	}
+	return c.Request.Header
+}
+
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, reqStream bool, mimicClaudeCode bool, strictPassthrough bool) (*http.Request, []byte, error) {
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
 		req, err := s.buildUpstreamRequestAnthropicVertex(ctx, c, account, body, token, modelID, reqStream)
@@ -6698,6 +6706,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, modelID)
 		preserveClaudeCodeNativeWireBody(ctx, req, body)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
@@ -10458,6 +10467,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	req.Header.Set("x-api-key", token)
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
+		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, gjson.GetBytes(body, "model").String())
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 	}
 
@@ -10621,6 +10631,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	if useCCGateway {
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
+		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, modelID)
 		preserveClaudeCodeNativeWireBody(ctx, req, body)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {

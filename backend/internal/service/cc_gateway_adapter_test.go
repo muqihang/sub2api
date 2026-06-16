@@ -332,6 +332,53 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsTransparentRequest(t *testi
 	require.NotContains(t, readRequestBody(t, req), "rewritten-device-id")
 }
 
+func TestGatewayService_CCGatewayAnthropicSetupTokenContext1MHeaderFollowsClientBeta(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`)
+	account := &Account{
+		ID:       43,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Extra: map[string]any{
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	c := ccGatewayTestContext("/v1/messages")
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14")
+	req, _, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
+		buildUpstreamRequest(context.Background(), c, account, body, "setup-token", "oauth", "claude-sonnet-4-6", true, false, false)
+	require.NoError(t, err)
+
+	require.Equal(t, "true", getHeaderRaw(req.Header, ccGatewayContext1MHeader))
+}
+
+func TestGatewayService_CCGatewayAnthropicSetupTokenPlainRequestOmitsContext1MHeader(t *testing.T) {
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"hi"}]}`)
+	account := &Account{
+		ID:       43,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Extra: map[string]any{
+			"cc_gateway_enabled":               "true",
+			"cc_gateway_canary_only":           "false",
+			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                "native_messages,native_count_tokens,chat_completions,responses",
+			"cc_gateway_egress_bucket_enabled": "true",
+			"cc_gateway_egress_bucket":         "bucket-a",
+		},
+	}
+	c := ccGatewayTestContext("/v1/messages")
+	req, _, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).
+		buildUpstreamRequest(context.Background(), c, account, body, "setup-token", "oauth", "claude-haiku-4-5-20251001", true, false, false)
+	require.NoError(t, err)
+
+	require.Empty(t, getHeaderRaw(req.Header, ccGatewayContext1MHeader))
+}
+
 func TestGatewayService_CCGatewayAnthropicSetupTokenCountTokensBuildsTransparentRequest(t *testing.T) {
 	account := &Account{
 		ID:       43,
