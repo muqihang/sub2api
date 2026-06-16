@@ -19,6 +19,7 @@ class ClaudeCodeVersion:
     executable: Path
     version: str | None
     raw_output: str
+    returncode: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,16 +44,19 @@ def detect_claude_code_version(
     executable: Path | str = "claude",
     runner: Runner | None = None,
     timeout_seconds: float = 3.0,
+    env: Mapping[str, str] | None = None,
 ) -> ClaudeCodeVersion:
     executable_path = Path(executable)
     runner = runner or subprocess.run
-    result = runner(
-        [str(executable_path), "--version"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout_seconds,
-    )
+    kwargs: dict[str, object] = {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+        "timeout": timeout_seconds,
+    }
+    if env is not None:
+        kwargs["env"] = dict(env)
+    result = runner([str(executable_path), "--version"], **kwargs)
     stdout = str(getattr(result, "stdout", "") or "")
     stderr = str(getattr(result, "stderr", "") or "")
     raw_output = (stdout or stderr).strip()
@@ -60,6 +64,7 @@ def detect_claude_code_version(
         executable=executable_path,
         version=_parse_claude_code_version(raw_output),
         raw_output=raw_output,
+        returncode=int(getattr(result, "returncode", 0) or 0),
     )
 
 
