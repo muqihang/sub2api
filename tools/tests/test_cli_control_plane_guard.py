@@ -28,6 +28,8 @@ from tools.cli_control_plane_guard import (
     validate_cp5_bridge_body,
 )
 from tools.claude_code_route_trust import (
+    RouteCatalog,
+    RouteCatalogEntry,
     RouteHintReplayCache,
     build_signed_route_hint_headers,
     cp4_fixture_route_catalog,
@@ -526,6 +528,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     route_hint_secret='route-hint-secret',
                     route_hint_catalog=catalog,
                     route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                    max_messages=0,
                 ))
                 forwarder.start_background()
                 try:
@@ -643,6 +646,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     route_hint_secret='route-hint-secret',
                     route_hint_catalog=catalog,
                     route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                    max_messages=0,
                 ))
                 forwarder.start_background()
                 try:
@@ -2162,6 +2166,328 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     if sleeper.poll() is None:
                         sleeper.kill()
                         sleeper.wait(timeout=5)
+        finally:
+            upstream.shutdown()
+
+
+    def test_cp6_deepseek_background_live_bridge_forward_has_zero_native_egress(self):
+        native = RouteCatalogEntry(
+            model_id='claude-sonnet-4-6',
+            provider='claude',
+            route='claude_code_native',
+            client_type='claude_code_native',
+            live_enabled=True,
+            formal_pool_allowed=True,
+            native_attestation_allowed=True,
+            provider_owner='zhumeng_managed',
+            credential_scope='formal_pool',
+            gateway_location='cloud',
+        )
+        bridge = RouteCatalogEntry(
+            model_id='deepseek-v4-flash',
+            provider='deepseek',
+            route='deepseek_bridge',
+            client_type='claude_code_bridge_deepseek',
+            live_enabled=True,
+            formal_pool_allowed=False,
+            native_attestation_allowed=False,
+            provider_owner='zhumeng_managed',
+            credential_scope='bridge_pool',
+            gateway_location='cloud',
+        )
+        catalog = RouteCatalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp6-live-bridge-loopback-v1',
+            entries={'claude-sonnet-4-6': native, 'deepseek-v4-flash': bridge},
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                body = self.rfile.read(n) if n else b''
+                self.__class__.requests.append({
+                    'path': self.path,
+                    'headers': {key.lower(): value for key, value in self.headers.items()},
+                    'body': body,
+                })
+                data = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.send_header('content-length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                    max_messages=0,
+                ))
+                forwarder.start_background()
+                try:
+                    for index, task in enumerate(['title', 'compact', 'summary', 'probe', 'fast', 'simple', 'haiku']):
+                        body = json.dumps({
+                            'model': 'deepseek-v4-flash',
+                            'messages': [{'role': 'user', 'content': f'background {task}'}],
+                            'metadata': {'zhumeng_background_task': task},
+                            'max_tokens': 16,
+                            'stream': True,
+                        }, separators=(',', ':')).encode('utf-8')
+                        path = '/v1/messages?beta=true'
+                        route_headers = build_signed_route_hint_headers(
+                            body=body,
+                            request_path=path,
+                            catalog=catalog,
+                            model_id='deepseek-v4-flash',
+                            session_ref='11111111-2222-4333-8444-555555555555',
+                            secret='route-hint-secret',
+                            nonce=f'nonce-cp6-live-background-{index}',
+                        )
+                        req = urllib.request.Request(
+                            f'http://127.0.0.1:{listen_port}{path}',
+                            data=body,
+                            method='POST',
+                            headers={
+                                'content-type': 'application/json',
+                                'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                                **route_headers,
+                            },
+                        )
+                        with urllib.request.urlopen(req, timeout=5) as resp:
+                            self.assertEqual(resp.status, 200)
+                    self.assertEqual(len(CaptureHandler.requests), 7)
+                    for captured in CaptureHandler.requests:
+                        headers = captured['headers']
+                        self.assertEqual(headers.get('x-sub2api-client-type'), 'claude_code_bridge_deepseek')
+                        self.assertEqual(headers.get('x-sub2api-route'), 'deepseek_bridge')
+                        self.assertNotIn('x-sub2api-native-attestation', headers)
+                        self.assertNotIn('x-sub2api-native-signature', headers)
+                    rows = [json.loads(line) for line in summary.read_text(encoding='utf-8').splitlines() if line.strip()]
+                    native_egress = [row for row in rows if row.get('client_type') == 'claude_code_native' or row.get('native_attested') is True or row.get('formal_pool_allowed') is True]
+                    self.assertEqual(native_egress, [])
+                    forwarded = [row for row in rows if row.get('event') == 'messages_upstream_response']
+                    self.assertEqual(len(forwarded), 7)
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+
+    def test_cp6_deepseek_background_tasks_have_zero_native_egress(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp6-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({'path': self.path})
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                    max_messages=0,
+                ))
+                forwarder.start_background()
+                try:
+                    for index, task in enumerate(['title', 'compact', 'summary', 'probe', 'fast', 'simple', 'haiku']):
+                        body = json.dumps({
+                            'model': 'deepseek-v4-flash',
+                            'messages': [{'role': 'user', 'content': f'background {task}'}],
+                            'metadata': {'zhumeng_background_task': task},
+                            'max_tokens': 16,
+                            'stream': True,
+                        }, separators=(',', ':')).encode('utf-8')
+                        path = '/v1/messages?beta=true'
+                        route_headers = build_signed_route_hint_headers(
+                            body=body,
+                            request_path=path,
+                            catalog=catalog,
+                            model_id='deepseek-v4-flash',
+                            session_ref='11111111-2222-4333-8444-555555555555',
+                            secret='route-hint-secret',
+                            nonce=f'nonce-cp6-background-{index}',
+                        )
+                        req = urllib.request.Request(
+                            f'http://127.0.0.1:{listen_port}{path}',
+                            data=body,
+                            method='POST',
+                            headers={
+                                'content-type': 'application/json',
+                                'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                                **route_headers,
+                            },
+                        )
+                        with urllib.request.urlopen(req, timeout=5) as resp:
+                            self.assertEqual(resp.status, 200)
+                            self.assertEqual(resp.headers.get('content-type'), 'text/event-stream')
+                    self.assertEqual(len(CaptureHandler.requests), 0)
+                    rows = [json.loads(line) for line in summary.read_text(encoding='utf-8').splitlines() if line.strip()]
+                    native_egress = [row for row in rows if row.get('client_type') == 'claude_code_native' or row.get('native_attested') is True or row.get('formal_pool_allowed') is True]
+                    self.assertEqual(native_egress, [])
+                    audit_rows = [row for row in rows if row.get('event') in {'request', 'messages_bridge_skeleton_response'}]
+                    self.assertGreaterEqual(len(audit_rows), 14)
+                    self.assertTrue(all(row.get('client_type') == 'claude_code_bridge_deepseek' for row in audit_rows))
+                    self.assertTrue(all(row.get('credential_scope') == 'bridge_pool' for row in audit_rows))
+                finally:
+                    forwarder.stop()
+        finally:
+            upstream.shutdown()
+
+    def test_cp6_claude_profile_then_deepseek_background_switch_has_zero_native_egress(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp6-test-v1',
+        )
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                if n:
+                    self.rfile.read(n)
+                self.__class__.requests.append({'path': self.path})
+                self.send_response(599)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    path = '/v1/messages?beta=true'
+                    mismatch_body = json.dumps({
+                        'model': 'claude-sonnet-4-6',
+                        'messages': [{'role': 'user', 'content': 'stale hardcoded haiku'}],
+                        'max_tokens': 16,
+                        'stream': True,
+                    }, separators=(',', ':')).encode('utf-8')
+                    mismatch_headers = build_signed_route_hint_headers(
+                        body=mismatch_body,
+                        request_path=path,
+                        catalog=catalog,
+                        model_id='deepseek-v4-flash',
+                        session_ref='11111111-2222-4333-8444-555555555555',
+                        secret='route-hint-secret',
+                        nonce='nonce-cp6-switch-mismatch',
+                    )
+                    mismatch_req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=mismatch_body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **mismatch_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as mismatch_ctx:
+                        urllib.request.urlopen(mismatch_req, timeout=5)
+                    self.assertEqual(mismatch_ctx.exception.code, 403)
+                    body = json.dumps({
+                        'model': 'deepseek-v4-flash',
+                        'messages': [{'role': 'user', 'content': 'title after switch'}],
+                        'metadata': {'zhumeng_active_profile': 'deepseek', 'zhumeng_background_task': 'title'},
+                        'max_tokens': 16,
+                        'stream': True,
+                    }, separators=(',', ':')).encode('utf-8')
+                    route_headers = build_signed_route_hint_headers(
+                        body=body,
+                        request_path=path,
+                        catalog=catalog,
+                        model_id='deepseek-v4-flash',
+                        session_ref='11111111-2222-4333-8444-555555555555',
+                        secret='route-hint-secret',
+                        nonce='nonce-cp6-switch-deepseek',
+                    )
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        self.assertEqual(resp.status, 200)
+                    self.assertEqual(len(CaptureHandler.requests), 0)
+                    rows = [json.loads(line) for line in summary.read_text(encoding='utf-8').splitlines() if line.strip()]
+                    native_egress = [row for row in rows if row.get('client_type') == 'claude_code_native' or row.get('native_attested') is True or row.get('formal_pool_allowed') is True]
+                    self.assertEqual(native_egress, [])
+                    self.assertIn('"provider": "deepseek"', summary.read_text(encoding='utf-8'))
+                finally:
+                    forwarder.stop()
         finally:
             upstream.shutdown()
 

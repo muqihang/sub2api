@@ -327,8 +327,31 @@ def _provenance_by_message_index(provenance: tuple[TranscriptProvenance, ...]) -
 
 
 def _frozen_safe_summary_provenance_matches(message: Mapping[str, object], item: TranscriptProvenance) -> bool:
+    if item.replay_class != ReplayClass.SUMMARY_ONLY or not _valid_frozen_safe_summary_block(message):
+        return False
+    summary = message["zhumeng_safe_summary"]
+    if not isinstance(summary, Mapping):
+        return False
+    source_hash = str(summary.get("source_hash") or "")
+    stable_id = str(summary.get("stable_id") or "")
+    if item.source_hash != source_hash or item.stable_id != stable_id:
+        return False
+    source_provider = str(summary.get("source_provider") or "")
+    if source_provider != item.source_provider:
+        return False
+    turn_range = summary.get("source_turn_range")
+    if not isinstance(turn_range, Sequence) or isinstance(turn_range, (str, bytes)) or len(turn_range) != 2:
+        return False
+    try:
+        normalized_turn_range = tuple(int(value) for value in turn_range)
+    except (TypeError, ValueError):
+        return False
+    return normalized_turn_range == item.source_turn_range
+
+
+def _valid_frozen_safe_summary_block(message: Mapping[str, object]) -> bool:
     summary = message.get("zhumeng_safe_summary")
-    if item.replay_class != ReplayClass.SUMMARY_ONLY or not isinstance(summary, Mapping):
+    if not isinstance(summary, Mapping):
         return False
     if set(str(key) for key in message) != {"role", "zhumeng_safe_summary"} or message.get("role") != "assistant":
         return False
@@ -345,19 +368,13 @@ def _frozen_safe_summary_provenance_matches(message: Mapping[str, object], item:
     stable_id = str(summary.get("stable_id") or "")
     if not source_hash.startswith("sha256:") or stable_id != f"safe-summary:{source_hash}":
         return False
-    if item.source_hash != source_hash or item.stable_id != stable_id:
-        return False
     source_provider = str(summary.get("source_provider") or "")
-    if source_provider != item.source_provider:
-        return False
     turn_range = summary.get("source_turn_range")
-    if not isinstance(turn_range, Sequence) or isinstance(turn_range, (str, bytes)) or len(turn_range) != 2:
+    if not source_provider or not isinstance(turn_range, Sequence) or isinstance(turn_range, (str, bytes)) or len(turn_range) != 2:
         return False
     try:
         normalized_turn_range = tuple(int(value) for value in turn_range)
     except (TypeError, ValueError):
-        return False
-    if normalized_turn_range != item.source_turn_range:
         return False
     evidence = summary.get("evidence")
     if not isinstance(evidence, Mapping):
@@ -383,6 +400,50 @@ def _sanitize_into_claude(
     blocked: list[str] = []
     for index, message in enumerate(source_messages):
         blocked.extend(_find_forbidden_paths(message, prefix=f"messages[{index}]"))
+    raw_tool_use_paths = tuple(path for path in blocked if path.endswith(".type"))
+    if raw_tool_use_paths:
+        return BoundaryResult(
+            transcript=None,
+            blocked_paths=raw_tool_use_paths,
+            evidence_summary={
+                "mode": "fail_closed",
+                "source_provider": source_profile.provider,
+                "target_provider": "claude",
+            },
+            fail_closed_reason="raw_tool_use_block_requires_safe_summary",
+        )
+    raw_tool_result_paths = tuple(
+        path for path in blocked
+        if ".tool_use_id" in path or (path.endswith(".content") and "safe_tool_result" not in path)
+    )
+    if raw_tool_result_paths:
+        return BoundaryResult(
+            transcript=None,
+            blocked_paths=raw_tool_result_paths,
+            evidence_summary={
+                "mode": "fail_closed",
+                "source_provider": source_profile.provider,
+                "target_provider": "claude",
+            },
+            fail_closed_reason="raw_tool_result_requires_safe_tool_result",
+        )
+    invalid_summary_paths = tuple(
+        f"messages[{index}].zhumeng_safe_summary"
+        for index, message in enumerate(source_messages)
+        if "zhumeng_safe_summary" in message and not _valid_frozen_safe_summary_block(message)
+    )
+    if invalid_summary_paths:
+        return BoundaryResult(
+            transcript=None,
+            blocked_paths=invalid_summary_paths,
+            evidence_summary={
+                "mode": "fail_closed",
+                "source_provider": source_profile.provider,
+                "target_provider": "claude",
+            },
+            fail_closed_reason="invalid_frozen_safe_summary",
+        )
+    for index, message in enumerate(source_messages):
         safe_block, replay_class = _safe_claude_block(message)
         if safe_block is None:
             continue
@@ -444,6 +505,8 @@ def _sanitize_out_of_claude(
 
 def _safe_claude_block(message: Mapping[str, object]) -> tuple[Mapping[str, object] | None, ReplayClass]:
     if "zhumeng_safe_summary" in message and isinstance(message["zhumeng_safe_summary"], Mapping):
+        if not _valid_frozen_safe_summary_block(message):
+            return None, ReplayClass.BRIDGE_LOCAL_ONLY
         return {"role": "assistant", "zhumeng_safe_summary": _canonicalize_evidence(message["zhumeng_safe_summary"])}, ReplayClass.SUMMARY_ONLY
     if "safe_tool_result" in message and isinstance(message["safe_tool_result"], Mapping):
         tool_result = message["safe_tool_result"]
@@ -487,6 +550,8 @@ def _visible_text(value: object) -> str:
 def _find_forbidden_paths(value: object, *, prefix: str) -> list[str]:
     paths: list[str] = []
     if isinstance(value, Mapping):
+        if value.get("type") == "tool_use":
+            paths.append(f"{prefix}.type")
         for key, nested in value.items():
             key_text = str(key)
             path = f"{prefix}.{key_text}"
@@ -560,6 +625,26 @@ def _provenance_for_block(
     source_turn_range: tuple[int, int],
     replay_class: ReplayClass,
 ) -> TranscriptProvenance:
+    if replay_class == ReplayClass.SUMMARY_ONLY:
+        summary = block.get("zhumeng_safe_summary")
+        if isinstance(summary, Mapping):
+            stable_id = str(summary.get("stable_id") or "")
+            source_hash = str(summary.get("source_hash") or "")
+            source_provider = str(summary.get("source_provider") or profile.provider)
+            turn_range = summary.get("source_turn_range")
+            if stable_id.startswith("safe-summary:sha256:") and source_hash.startswith("sha256:") and isinstance(turn_range, Sequence) and not isinstance(turn_range, (str, bytes)) and len(turn_range) == 2:
+                try:
+                    normalized_turn_range = tuple(int(value) for value in turn_range)
+                except (TypeError, ValueError):
+                    normalized_turn_range = source_turn_range
+                return TranscriptProvenance(
+                    stable_id=stable_id,
+                    source_provider=source_provider,
+                    source_route=f"{source_provider}_bridge" if source_provider != "claude" else "claude_native",
+                    source_turn_range=normalized_turn_range,
+                    source_hash=source_hash,
+                    replay_class=replay_class,
+                )
     source_hash = _safe_hash(block)
     return TranscriptProvenance(
         stable_id=f"{replay_class.value}:{source_hash}",

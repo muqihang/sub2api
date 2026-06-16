@@ -39,6 +39,14 @@ from .model_overlay import (
     write_model_overlay_proof_artifacts,
 )
 from .runtime_installer import RuntimeInstallerError, build_managed_runtime_install_plan, write_managed_runtime_artifacts
+from .provider_probe import (
+    BridgeTransportDecision,
+    ProviderProbeCatalog,
+    ProviderProtocolProbe,
+    ProviderProtocolProbeError,
+    build_cp6_provider_probe_catalog,
+    select_cp6_bridge_transport,
+)
 from .status import ClaudeCodeOperatorStatus, derive_claude_code_operator_status
 from .profile import (
     CaptureMode,
@@ -63,6 +71,12 @@ from .transcript_boundary import (
 )
 
 __all__ = [
+    "select_cp6_bridge_transport",
+    "build_cp6_provider_probe_catalog",
+    "ProviderProtocolProbeError",
+    "ProviderProtocolProbe",
+    "ProviderProbeCatalog",
+    "BridgeTransportDecision",
     "CaptureMode",
     "ClaudeCodeCapabilityProfile",
     "ClaudeCodeLaunchPlan",

@@ -1,0 +1,38 @@
+{
+  "mode": "fixture_only_no_live_network",
+  "providers": {
+    "deepseek": {
+      "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+      "preferred_protocol": "anthropic_messages",
+      "fallback_protocol": "openai_chat_completions",
+      "anthropic_messages": {
+        "base_url": "https://api.deepseek.com/anthropic",
+        "capabilities_verified": true,
+        "live_runtime_verified": false,
+        "capabilities": {
+          "text": true,
+          "tools": true,
+          "sse": true,
+          "reasoning": true,
+          "usage": true,
+          "cache": true,
+          "error_passthrough": true
+        }
+      },
+      "openai_chat_completions": {
+        "base_url": "https://api.deepseek.com",
+        "capabilities_verified": true,
+        "live_runtime_verified": false,
+        "capabilities": {
+          "text": true,
+          "tools": true,
+          "sse": true,
+          "reasoning": true,
+          "usage": true,
+          "cache": true,
+          "error_passthrough": true
+        }
+      }
+    }
+  }
+}

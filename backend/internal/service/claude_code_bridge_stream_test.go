@@ -226,3 +226,101 @@ func assertSSEOrder(t *testing.T, body string, markers []string) {
 		last = idx
 	}
 }
+
+func TestCP6BridgeStreamMapsProviderFixtureReasoningUsageCacheAndErrors(t *testing.T) {
+	request := map[string]any{
+		"model":         "deepseek-v4-pro",
+		"messages":      []any{map[string]any{"role": "user", "content": "think safely"}},
+		"stream":        true,
+		"max_tokens":    32,
+		"thinking":      map[string]any{"type": "enabled"},
+		"output_config": map[string]any{"effort": "max"},
+	}
+	body, err := json.Marshal(request)
+	require.NoError(t, err)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		CatalogVersion:           "cp6-test-v1",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "anthropic_messages",
+		FallbackProtocol:         "openai_chat_completions",
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsCacheAudit:       true,
+		SupportsReasoningMapping: true,
+		SupportsErrorPassthrough: true,
+		ReasoningEffortLevels:    []string{"high", "max"},
+		CachePolicy:              "provider_prefix_kv_cache_automatic_full_prefix_unit_match",
+	}
+	fixture := ClaudeCodeBridgeProviderFixture{
+		TextDeltas:       []string{"safe final"},
+		ReasoningDeltas:  []string{"hidden chain"},
+		InputTokens:      11,
+		OutputTokens:     7,
+		CacheReadTokens:  5,
+		CacheWriteTokens: 3,
+		StopReason:       "end_turn",
+	}
+
+	result, err := BuildClaudeCodeBridgeFixtureSSE(decision, body, fixture)
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	assertSSEOrder(t, stream, []string{
+		"event: message_start",
+		"event: content_block_start",
+		"event: content_block_delta",
+		"event: content_block_stop",
+		"event: message_delta",
+		"event: message_stop",
+	})
+	require.Contains(t, stream, `"text":"safe final"`)
+	require.NotContains(t, stream, "hidden chain")
+	require.NotContains(t, stream, "reasoning_content")
+	require.NotContains(t, stream, "signature")
+	require.Equal(t, "anthropic_messages", result.Audit.PreferredProtocol)
+	require.Equal(t, "openai_chat_completions", result.Audit.FallbackProtocol)
+	require.Equal(t, "provider_prefix_kv_cache_automatic_full_prefix_unit_match", result.Audit.CachePolicy)
+	require.Equal(t, 5, result.Audit.CacheReadTokens)
+	require.Equal(t, 3, result.Audit.CacheWriteTokens)
+	require.True(t, result.Audit.CapabilitiesVerified)
+	require.True(t, result.Audit.SupportsReasoningMapping)
+}
+
+func TestCP6BridgeStreamErrorPassthroughIsSafeAnthropicError(t *testing.T) {
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "gpt-5.5",
+		Provider:                 "openai",
+		Route:                    "openai_bridge",
+		ClientType:               "claude_code_bridge_openai",
+		CatalogVersion:           "cp6-test-v1",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "responses",
+		CapabilitiesVerified:     true,
+		SupportsErrorPassthrough: true,
+	}
+	fixture := ClaudeCodeBridgeProviderFixture{ErrorType: "rate_limit_error", ErrorMessage: "provider throttled request id req_secret req_123456789 api key sk-live-secret at https://api.openai.com/v1/responses"}
+
+	result, err := BuildClaudeCodeBridgeFixtureSSE(decision, []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`), fixture)
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: error")
+	require.Contains(t, stream, `"type":"rate_limit_error"`)
+	require.Contains(t, stream, "provider throttled")
+	require.NotContains(t, stream, "req_secret")
+	require.NotContains(t, stream, "req_123456789")
+	require.NotContains(t, stream, "sk-live-secret")
+	require.NotContains(t, stream, "api.openai.com")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+}

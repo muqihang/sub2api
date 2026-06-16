@@ -243,7 +243,7 @@ def test_cp3b_raw_foreign_tool_result_without_safe_envelope_fails_closed():
     )
 
     assert result.transcript is None
-    assert result.fail_closed_reason == "no_replay_safe_content"
+    assert result.fail_closed_reason == "raw_tool_result_requires_safe_tool_result"
     assert "messages[0].tool_use_id" in result.blocked_paths
 
 

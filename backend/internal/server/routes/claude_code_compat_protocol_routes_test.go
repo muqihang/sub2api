@@ -56,6 +56,14 @@ func newAnthropicCompatProtocolRouteRouter() *gin.Engine {
 	return router
 }
 
+func cp6OpenAIBridgeRouteCatalogJSON() string {
+	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"responses","openai_base_url":"https://api.openai.com/v1","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
+}
+
+func cp6DeepSeekBridgeRouteCatalogJSON() string {
+	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"deepseek-v4-pro","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"https://api.deepseek.com/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
+}
+
 func TestClaudeCodeCompatRoutesRejectOpenAICompatibleProtocolsForAnthropicGroups(t *testing.T) {
 	router := newAnthropicCompatProtocolRouteRouter()
 
@@ -98,7 +106,7 @@ func TestClaudeCodeCompatMessagesRejectOpenAIShapedBodyBeforeForwarding(t *testi
 }
 
 func TestClaudeCodeBridgeMessagesRouteReturnsSkeletonWithoutAnthropicCompatOrFormalPool(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"should-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"get_weather"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -122,7 +130,7 @@ func TestClaudeCodeBridgeMessagesRouteReturnsSkeletonWithoutAnthropicCompatOrFor
 }
 
 func TestClaudeCodeBridgeMessagesRouteRejectsSpoofedNativeOrCatalogMismatch(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"deepseek-v4-pro","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"should-not-leak"}],"stream":true}`
 	cases := []struct {
@@ -155,7 +163,7 @@ func TestClaudeCodeBridgeMessagesRouteRejectsSpoofedNativeOrCatalogMismatch(t *t
 }
 
 func TestClaudeCodeBridgeCountTokensFailsClosedBeforeFormalPool(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"gpt-5.5","messages":[{"role":"user","content":"count-token-prompt-must-not-leak"}]}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -172,7 +180,7 @@ func TestClaudeCodeBridgeCountTokensFailsClosedBeforeFormalPool(t *testing.T) {
 }
 
 func TestClaudeCodeBridgeCountTokensCatalogBridgeModelFailsClosedWithoutBridgeMarker(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"gpt-5.5","messages":[{"role":"user","content":"catalog-bridge-count-token-prompt-must-not-leak"}]}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -186,7 +194,7 @@ func TestClaudeCodeBridgeCountTokensCatalogBridgeModelFailsClosedWithoutBridgeMa
 }
 
 func TestClaudeCodeBridgeMessagesAllowsAnthropicValidMetadataStopSequencesAndTopK(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"anthropic-valid-fields-must-not-leak"}],"stream":true,"metadata":{"user_id":"safe-user"},"stop_sequences":["DONE"],"top_k":5,"thinking":{"type":"enabled","budget_tokens":1024}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -204,7 +212,7 @@ func TestClaudeCodeBridgeMessagesAllowsAnthropicValidMetadataStopSequencesAndTop
 }
 
 func TestClaudeCodeBridgeMessagesRejectOpenAIShapedBody(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"gpt-5.5","input":"bridge-openai-shape-must-not-leak","messages":[{"role":"user","content":"hello"}],"stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -221,7 +229,7 @@ func TestClaudeCodeBridgeMessagesRejectOpenAIShapedBody(t *testing.T) {
 }
 
 func TestClaudeCodeBridgeMessagesRejectOpenAIFunctionToolShape(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"function-tool-shape-must-not-leak"}],"stream":true,"tools":[{"type":"function","function":{"name":"leak","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"leak"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -239,7 +247,7 @@ func TestClaudeCodeBridgeMessagesRejectOpenAIFunctionToolShape(t *testing.T) {
 }
 
 func TestClaudeCodeBridgeMessagesRejectOpenAIFunctionToolTypeWithoutFunctionProperty(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"function-tool-type-must-not-leak"}],"stream":true,"tools":[{"type":"function","name":"leak","parameters":{"type":"object"}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -257,7 +265,7 @@ func TestClaudeCodeBridgeMessagesRejectOpenAIFunctionToolTypeWithoutFunctionProp
 }
 
 func TestClaudeCodeBridgeMessagesRejectInvalidAnthropicToolShapes(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	cases := []struct {
 		name string
@@ -292,7 +300,7 @@ func TestClaudeCodeBridgeMessagesRejectInvalidAnthropicToolShapes(t *testing.T) 
 }
 
 func TestClaudeCodeBridgeMessagesRejectOpenAIResponsesTopLevelFields(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"responses-fields-must-not-leak"}],"stream":true,"reasoning":{"effort":"low"},"text":{"format":{"type":"text"}},"include":["message.output_text.logprobs"],"previous_response_id":"resp_leak","truncation":"auto","prompt_cache_key":"cache-leak","max_output_tokens":128,"conversation":"conv_leak","background":false}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -311,7 +319,7 @@ func TestClaudeCodeBridgeMessagesRejectOpenAIResponsesTopLevelFields(t *testing.
 }
 
 func TestClaudeCodeBridgeMessagesRejectOpenAIChatTopLevelFields(t *testing.T) {
-	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true}]}`)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"chat-fields-must-not-leak"}],"stream":true,"n":2,"stop":["secret-stop"],"stream_options":{"include_usage":true},"user":"user-leak"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
