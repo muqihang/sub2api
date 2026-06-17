@@ -134,15 +134,7 @@ func (s *FormalPoolRuntimeRegistrationReplayService) Replay(ctx context.Context)
 			continue
 		}
 		stamp := formalPoolTimestamp(s.now())
-		_, err = s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, account.Schedulable, StatusActive, map[string]any{
-			FormalPoolExtraRuntimeRegistered:        "true",
-			FormalPoolExtraRuntimeRegisteredAt:      stamp,
-			FormalPoolExtraLastFailureOrigin:        "",
-			FormalPoolExtraLastFailureCode:          "",
-			FormalPoolExtraLastFailureSource:        "",
-			FormalPoolExtraLastCCGatewayErrorCode:   "",
-			FormalPoolExtraOnboardingStageUpdatedAt: stamp,
-		})
+		_, err = s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, account.Schedulable, StatusActive, formalPoolRuntimeReplaySuccessExtra(account, stamp))
 		if err != nil {
 			out.Failed++
 			continue
@@ -161,11 +153,49 @@ func formalPoolRuntimeReplayEligible(account *Account) bool {
 		return false
 	}
 	switch FormalPoolAccountStage(account) {
-	case FormalPoolStageHealthcheckPassed, FormalPoolStageWarming, FormalPoolStageProduction:
+	case FormalPoolStageRuntimeRegistered, FormalPoolStageHealthcheckPassed, FormalPoolStageWarming, FormalPoolStageProduction:
 		return true
 	default:
 		return false
 	}
+}
+
+func formalPoolRuntimeReplaySuccessExtra(account *Account, stamp string) map[string]any {
+	extra := map[string]any{
+		FormalPoolExtraRuntimeRegistered:        "true",
+		FormalPoolExtraRuntimeRegisteredAt:      stamp,
+		FormalPoolExtraLastFailureOrigin:        "",
+		FormalPoolExtraLastFailureCode:          "",
+		FormalPoolExtraLastFailureSource:        "",
+		FormalPoolExtraLastCCGatewayErrorCode:   "",
+		FormalPoolExtraOnboardingStageUpdatedAt: stamp,
+	}
+	if formalPoolRuntimeReplayStaleIdentityFailure(account) {
+		extra[FormalPoolExtraHealthcheckSafeErrorCode] = ""
+		extra[FormalPoolExtraHealthcheckSafeErrorBucket] = ""
+		extra[FormalPoolExtraOnboardingLastErrorCode] = ""
+		extra[FormalPoolExtraOnboardingLastErrorBucket] = ""
+	}
+	return extra
+}
+
+func formalPoolRuntimeReplayStaleIdentityFailure(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	for _, key := range []string{
+		FormalPoolExtraLastFailureCode,
+		FormalPoolExtraLastCCGatewayErrorCode,
+		FormalPoolExtraHealthcheckSafeErrorCode,
+		FormalPoolExtraOnboardingLastErrorCode,
+		FormalPoolExtraOnboardingLastErrorBucket,
+	} {
+		value := strings.ToLower(strings.TrimSpace(account.GetExtraString(key)))
+		if value == "missing_account_identity" || value == "missing_identity" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *FormalPoolRuntimeRegistrationReplayService) ensureRuntimeIdentityEvidence(ctx context.Context, account *Account) (*Account, error) {
