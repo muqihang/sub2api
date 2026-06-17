@@ -719,34 +719,14 @@ class RedactingForwarder:
                     "error_type": type(exc).__name__,
                 })
                 return None
-        model_id = _native_attestation_model_id(body)
-        if not model_id.startswith("claude-"):
-            self._record({
-                "ts": time.time(),
-                "event": "messages_gate_block",
-                "decision": "block_403",
-                "reason": "non_claude_without_route_catalog",
-                "path": request_path,
-            })
-            return None
-        return RouteDecision(
-            model_id=model_id,
-            provider="claude",
-            route=NATIVE_ROUTE,
-            client_type=NATIVE_CLIENT_TYPE,
-            live_request_allowed=True,
-            formal_pool_allowed=True,
-            native_attestation_allowed=True,
-            provider_owner=NATIVE_PROVIDER_OWNER,
-            credential_scope=NATIVE_CREDENTIAL_SCOPE,
-            gateway_location=NATIVE_GATEWAY_LOCATION,
-            runtime_hash=_native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
-            overlay_hash=_native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
-            catalog_hash=_native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH"),
-            catalog_version="legacy-native",
-            session_ref=_route_hint_session_ref(headers),
-            nonce="legacy-native",
-        )
+        self._record({
+            "ts": time.time(),
+            "event": "messages_gate_block",
+            "decision": "block_403",
+            "reason": "route_hint_required",
+            "path": request_path,
+        })
+        return None
 
     def _capture_record(
         self,

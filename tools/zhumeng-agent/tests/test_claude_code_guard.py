@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import socket
 import subprocess
@@ -23,6 +24,30 @@ from zhumeng_agent.adapters.claude_code.guard import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+_ROUTE_TRUST_SPEC = importlib.util.spec_from_file_location("claude_code_route_trust", REPO_ROOT / "tools" / "claude_code_route_trust.py")
+assert _ROUTE_TRUST_SPEC is not None and _ROUTE_TRUST_SPEC.loader is not None
+_ROUTE_TRUST = importlib.util.module_from_spec(_ROUTE_TRUST_SPEC)
+sys.modules[_ROUTE_TRUST_SPEC.name] = _ROUTE_TRUST
+_ROUTE_TRUST_SPEC.loader.exec_module(_ROUTE_TRUST)
+build_signed_route_hint_headers = _ROUTE_TRUST.build_signed_route_hint_headers
+cp4_fixture_route_catalog = _ROUTE_TRUST.cp4_fixture_route_catalog
+
+
+def _cp0_route_hint_headers(*, body: bytes, request_path: str, session_ref: str, secret: str = "route-hint-secret", nonce: str = "route-hint-nonce") -> dict[str, str]:
+    return build_signed_route_hint_headers(
+        body=body,
+        request_path=request_path,
+        catalog=cp4_fixture_route_catalog(
+            runtime_hash="sha256:" + hashlib.sha256((REPO_ROOT / "tools" / "cli_control_plane_guard.py").read_bytes()).hexdigest(),
+            overlay_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-overlay:cp0-native-only").hexdigest(),
+            catalog_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-catalog:cp0-claude-native-only").hexdigest(),
+            catalog_version="cp4-cli-fixture-v1",
+        ),
+        model_id="claude-sonnet-4-6",
+        session_ref=session_ref,
+        secret=secret,
+        nonce=nonce,
+    )
 
 
 class CaptureHandler(BaseHTTPRequestHandler):
@@ -210,6 +235,7 @@ def test_native_guard_forwards_messages_with_replacement_auth_and_redacted_summa
         summary_path=summary_path,
         repo_root=REPO_ROOT,
         attestation_secret="attestation-secret",
+        route_hint_secret="route-hint-secret",
     )
 
     with start_native_guard(build_native_guard_plan(cfg, python_executable=Path(sys.executable))) as guard:
@@ -219,9 +245,12 @@ def test_native_guard_forwards_messages_with_replacement_auth_and_redacted_summa
             "messages": [{"role": "user", "content": "raw-prompt-marker"}],
             "max_tokens": 32,
         }
+        body = json.dumps(payload).encode("utf-8")
+        request_path = "/v1/messages?beta=true"
+        session_ref = "11111111-2222-4333-8444-555555555555"
         req = urllib.request.Request(
-            f"http://127.0.0.1:{listen_port}/v1/messages?beta=true",
-            data=json.dumps(payload).encode("utf-8"),
+            f"http://127.0.0.1:{listen_port}{request_path}",
+            data=body,
             method="POST",
             headers={
                 "content-type": "application/json",
@@ -229,6 +258,8 @@ def test_native_guard_forwards_messages_with_replacement_auth_and_redacted_summa
                 "x-api-key": "local-api-key-marker",
                 "Cookie": "session=cookie-marker",
                 "Proxy-Authorization": "Basic proxy-credential-marker",
+                "x-claude-code-session-id": session_ref,
+                **_cp0_route_hint_headers(body=body, request_path=request_path, session_ref=session_ref, nonce="replacement-auth-nonce"),
             },
         )
         with urllib.request.urlopen(req, timeout=5) as response:
@@ -263,6 +294,7 @@ def test_native_guard_forwards_attested_native_markers_without_prompt_leak(tmp_p
         summary_path=summary_path,
         repo_root=REPO_ROOT,
         attestation_secret="attestation-secret",
+        route_hint_secret="route-hint-secret",
     )
 
     with start_native_guard(build_native_guard_plan(cfg, python_executable=Path(sys.executable))):
@@ -271,13 +303,17 @@ def test_native_guard_forwards_attested_native_markers_without_prompt_leak(tmp_p
             "messages": [{"role": "user", "content": "native-prompt-marker"}],
             "max_tokens": 32,
         }
+        body = json.dumps(payload).encode("utf-8")
+        request_path = "/v1/messages?beta=true"
+        session_ref = "11111111-2222-4333-8444-555555555555"
         req = urllib.request.Request(
-            f"http://127.0.0.1:{listen_port}/v1/messages?beta=true",
-            data=json.dumps(payload).encode("utf-8"),
+            f"http://127.0.0.1:{listen_port}{request_path}",
+            data=body,
             method="POST",
             headers={
                 "content-type": "application/json",
-                "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+                "x-claude-code-session-id": session_ref,
+                **_cp0_route_hint_headers(body=body, request_path=request_path, session_ref=session_ref, nonce="attested-native-nonce"),
             },
         )
         with urllib.request.urlopen(req, timeout=5) as response:
@@ -323,6 +359,7 @@ def test_native_guard_without_native_attestation_flag_fails_closed(tmp_path: Pat
         summary_path=summary_path,
         repo_root=REPO_ROOT,
         attestation_secret="attestation-secret",
+        route_hint_secret="route-hint-secret",
     )
     plan = build_native_guard_plan(cfg, python_executable=Path(sys.executable))
     no_attestation_plan = plan.__class__(
@@ -339,11 +376,18 @@ def test_native_guard_without_native_attestation_flag_fails_closed(tmp_path: Pat
             "messages": [{"role": "user", "content": "native-prompt-marker"}],
             "max_tokens": 32,
         }
+        body = json.dumps(payload).encode("utf-8")
+        request_path = "/v1/messages?beta=true"
+        session_ref = "11111111-2222-4333-8444-555555555555"
         req = urllib.request.Request(
-            f"http://127.0.0.1:{listen_port}/v1/messages?beta=true",
-            data=json.dumps(payload).encode("utf-8"),
+            f"http://127.0.0.1:{listen_port}{request_path}",
+            data=body,
             method="POST",
-            headers={"content-type": "application/json"},
+            headers={
+                "content-type": "application/json",
+                "x-claude-code-session-id": session_ref,
+                **_cp0_route_hint_headers(body=body, request_path=request_path, session_ref=session_ref, nonce="no-attestation-nonce"),
+            },
         )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)

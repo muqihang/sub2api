@@ -46,8 +46,8 @@
           "kimi-k2.7-code",
           "kimi-k2.7-code-highspeed"
         ],
-        "anthropic_base_url": "https://api.moonshot.cn/anthropic",
-        "openai_base_url": "https://api.moonshot.cn/v1"
+        "anthropic_base_url": "https://api.moonshot.ai/anthropic",
+        "openai_base_url": "https://api.moonshot.ai/v1"
       },
       "openai": {
         "recommended_model": "gpt-5.5",

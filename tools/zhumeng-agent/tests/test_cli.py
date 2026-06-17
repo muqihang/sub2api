@@ -668,6 +668,47 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert "attestation-secret" not in dumped
 
 
+def test_claude_code_start_fails_closed_without_server_route_hint_secret(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "http://127.0.0.1:18080",
+                "access_token": "sub2api-entry-secret",
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+            }
+
+    calls = []
+    cli.default_state_store = lambda: FakeStore()
+    monkeypatch.setattr(cli, "run_managed_claude_code", lambda **kwargs: calls.append(kwargs), raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--executable",
+        str(tmp_path / "claude"),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "not_configured"
+    assert "claude_code_route_hint_secret" in data["message"]
+    assert calls == []
+
+
+
 def test_claude_code_start_fails_closed_without_server_native_attestation_secret(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):

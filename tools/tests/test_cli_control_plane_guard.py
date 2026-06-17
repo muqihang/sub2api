@@ -38,6 +38,23 @@ from tools.claude_code_route_trust import (
 from tools.cli_control_plane_policy import load_default_policy
 
 
+_ROUTE_HINT_SECRET = 'route-hint-secret'
+_ROUTE_HINT_CATALOG = cp4_fixture_route_catalog(catalog_version='cp4-cli-fixture-v1')
+_DEFAULT_SESSION_REF = '11111111-2222-4333-8444-555555555555'
+
+
+def _native_route_headers(body: bytes, path: str = '/v1/messages?beta=true', *, session_ref: str = _DEFAULT_SESSION_REF, nonce: str | None = None) -> dict[str, str]:
+    return build_signed_route_hint_headers(
+        body=body,
+        request_path=path,
+        catalog=_ROUTE_HINT_CATALOG,
+        model_id='claude-sonnet-4-6',
+        session_ref=session_ref,
+        secret=_ROUTE_HINT_SECRET,
+        nonce=nonce or f'unit-{time.time_ns()}',
+    )
+
+
 class CliControlPlaneGuardTest(unittest.TestCase):
     def setUp(self):
         self._native_secret_patch = unittest.mock.patch.dict(
@@ -84,17 +101,27 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 sub2api_auth='managed-access-token',
                 summary_path=Path(td) / 'summary.jsonl',
                 native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
                 managed_session_id='managed-session',
                 device_id='9',
                 agent_version='0.1.0',
             ))
             forwarder.start_background()
             try:
+                body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                path = '/v1/messages?beta=true'
                 request = urllib.request.Request(
-                    f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                    data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
                     method='POST',
-                    headers={'content-type': 'application/json', 'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)'},
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='managed-device-headers'),
+                    },
                 )
                 with urllib.request.urlopen(request, timeout=5) as resp:
                     self.assertEqual(resp.status, 200)
@@ -135,15 +162,20 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 sub2api_auth='managed-access-token',
                 summary_path=Path(td) / 'summary.jsonl',
                 native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
                 managed_session_id='managed-session',
                 device_id='9',
                 agent_version='0.1.0',
             ))
             forwarder.start_background()
             try:
+                body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                path = '/v1/messages?beta=true'
                 request = urllib.request.Request(
-                    f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                    data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
                     method='POST',
                     headers={
                         'content-type': 'application/json',
@@ -152,8 +184,9 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         'x-stainless-lang': 'js',
                         'x-access-token': 'local-token-leak',
                         'x-prompt': 'local-prompt-leak',
-                        'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
                         'x-random-local-debug': 'debug-leak',
+                        **_native_route_headers(body, path, nonce='strict-header-allowlist'),
                     },
                 )
                 with urllib.request.urlopen(request, timeout=5) as resp:
@@ -201,6 +234,9 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 sub2api_auth='managed-access-token',
                 summary_path=Path(td) / 'summary.jsonl',
                 native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
                 extra_forward_headers={
                     'anthropic-version': '2023-06-01',
                     'x-prompt': 'extra-prompt-leak',
@@ -210,11 +246,18 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             ))
             forwarder.start_background()
             try:
+                body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                path = '/v1/messages?beta=true'
                 request = urllib.request.Request(
-                    f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                    data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
                     method='POST',
-                    headers={'content-type': 'application/json', 'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)'},
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='extra-forward-headers'),
+                    },
                 )
                 with urllib.request.urlopen(request, timeout=5) as resp:
                     self.assertEqual(resp.status, 200)
@@ -270,6 +313,28 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, 'explicit'):
                 build_native_messages_attestation_headers(b'{"messages":[]}', '/v1/messages', {})
+
+    def test_cp4_messages_route_decision_requires_route_hint_catalog_even_for_claude_native(self):
+        summary_path = tempfile.NamedTemporaryFile(delete=True)
+        summary_path.close()
+        forwarder = RedactingForwarder(GuardConfig(
+            listen_host='127.0.0.1',
+            listen_port=0,
+            upstream_base='http://127.0.0.1:9',
+            sub2api_auth='entry',
+            summary_path=Path(summary_path.name),
+            native_attestation_secret='native-attestation-test-secret',
+        ))
+
+        decision = forwarder._messages_route_decision(
+            b'{"model":"claude-sonnet-4-6","messages":[]}',
+            '/v1/messages',
+            {'x-claude-code-session-id': 'session-a'},
+        )
+
+        self.assertIsNone(decision)
+        summary = Path(summary_path.name).read_text(encoding='utf-8')
+        self.assertIn('route_hint_required', summary)
 
     def test_cp4_signed_route_hint_binds_model_route_hashes_session_and_nonce(self):
         catalog = cp4_fixture_route_catalog(
@@ -969,7 +1034,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     self.assertEqual(ctx.exception.code, 403)
                     self.assertEqual(CaptureHandler.requests, [])
                     dumped = summary.read_text(encoding='utf-8')
-                    self.assertIn('"reason": "non_claude_without_route_catalog"', dumped)
+                    self.assertIn('"reason": "route_hint_required"', dumped)
                     self.assertNotIn('no-catalog-gpt-must-not-leak', dumped)
                     self.assertNotIn('native-attestation-test-secret', dumped)
                 finally:
@@ -1891,14 +1956,23 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         sub2api_auth='sub2api-entry-key',
                         summary_path=summary,
                         native_attestation_secret=None,
+                        route_hint_secret=_ROUTE_HINT_SECRET,
+                        route_hint_catalog=_ROUTE_HINT_CATALOG,
+                        route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
                     ))
                     forwarder.start_background()
                     try:
+                        body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                        path = '/v1/messages?beta=true'
                         req = urllib.request.Request(
-                            f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                            data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                            f'http://127.0.0.1:{listen_port}{path}',
+                            data=body,
                             method='POST',
-                            headers={'content-type': 'application/json'},
+                            headers={
+                                'content-type': 'application/json',
+                                'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                                **_native_route_headers(body, path, nonce='missing-native-attestation'),
+                            },
                         )
                         with self.assertRaises(urllib.error.HTTPError) as ctx:
                             urllib.request.urlopen(req, timeout=5)
@@ -1948,18 +2022,24 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     sub2api_auth='sub2api-entry-key',
                     summary_path=summary,
                     capture_level='deep',
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret=_ROUTE_HINT_SECRET,
+                    route_hint_catalog=_ROUTE_HINT_CATALOG,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
                 ))
                 forwarder.start_background()
                 try:
+                    body = json.dumps({
+                        'model': 'claude-sonnet-4-6',
+                        'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
+                        'max_tokens': 64,
+                        'tools': [{'name': 'calculator', 'input_schema': {'type': 'object'}}],
+                        'output_config': {'format': 'json'},
+                    }).encode('utf-8')
+                    path = '/v1/messages?beta=true'
                     req = urllib.request.Request(
-                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                        data=json.dumps({
-                            'model': 'claude-sonnet-4-6',
-                            'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
-                            'max_tokens': 64,
-                            'tools': [{'name': 'calculator', 'input_schema': {'type': 'object'}}],
-                            'output_config': {'format': 'json'},
-                        }).encode('utf-8'),
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
                         method='POST',
                         headers={
                             'Authorization': 'Bearer secret-token-marker',
@@ -1967,6 +2047,8 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                             'Cookie': 'session=cookie-marker',
                             'Proxy-Authorization': 'Basic proxy-credential-marker',
                             'content-type': 'application/json',
+                            'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                            **_native_route_headers(body, path, nonce='deep-summary-forward'),
                         },
                     )
                     with urllib.request.urlopen(req, timeout=5) as resp:
@@ -2137,14 +2219,24 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     sub2api_auth='entry',
                     summary_path=Path(td) / 'summary.jsonl',
                     max_messages=1,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret=_ROUTE_HINT_SECRET,
+                    route_hint_catalog=_ROUTE_HINT_CATALOG,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
                 ), execution_controller=controller)
                 forwarder.start_background()
                 try:
+                    body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                    path = '/v1/messages?beta=true'
                     req = urllib.request.Request(
-                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                        data=b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
                         method='POST',
-                        headers={'content-type': 'application/json'},
+                        headers={
+                            'content-type': 'application/json',
+                            'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                            **_native_route_headers(body, path, nonce='canary-http-error'),
+                        },
                     )
                     with self.assertRaises(urllib.error.HTTPError) as ctx:
                         urllib.request.urlopen(req, timeout=5)

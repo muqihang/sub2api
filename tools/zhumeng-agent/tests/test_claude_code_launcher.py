@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
+import importlib.util
 import json
+import sys
 import socket
 import threading
 import urllib.request
@@ -20,6 +23,13 @@ from zhumeng_agent.adapters.claude_code.launcher import (
 from zhumeng_agent.adapters.claude_code.profile import CaptureMode, ClaudeCodeProfile
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+_ROUTE_TRUST_SPEC = importlib.util.spec_from_file_location("claude_code_route_trust", REPO_ROOT / "tools" / "claude_code_route_trust.py")
+assert _ROUTE_TRUST_SPEC is not None and _ROUTE_TRUST_SPEC.loader is not None
+_ROUTE_TRUST = importlib.util.module_from_spec(_ROUTE_TRUST_SPEC)
+sys.modules[_ROUTE_TRUST_SPEC.name] = _ROUTE_TRUST
+_ROUTE_TRUST_SPEC.loader.exec_module(_ROUTE_TRUST)
+build_signed_route_hint_headers = _ROUTE_TRUST.build_signed_route_hint_headers
+cp4_fixture_route_catalog = _ROUTE_TRUST.cp4_fixture_route_catalog
 
 
 class RecordingRunner:
@@ -168,6 +178,25 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert "local-user-key" not in "\n".join(launch["env"].values())
 
 
+def test_managed_launch_requires_route_hint_secret_for_real_runtime(tmp_path: Path):
+    with pytest.raises(ValueError, match="route_hint_secret"):
+        launcher.run_managed_claude_code(
+            executable=tmp_path / "claude",
+            repo_root=REPO_ROOT,
+            upstream_base="http://127.0.0.1:18080",
+            sub2api_auth="sub2api-entry",
+            attestation_secret="attestation-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=43117,
+            argv=[],
+            inherited_env={"PATH": "/usr/bin"},
+            start_guard=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("guard must not start")),
+            process_runner=lambda command, *, env, cwd: 0,
+        )
+
+
+
 def test_managed_launch_allows_non_anthropic_cloud_gateway_with_explicit_guard_flag(tmp_path: Path):
     events: list[object] = []
 
@@ -184,6 +213,7 @@ def test_managed_launch_allows_non_anthropic_cloud_gateway_with_explicit_guard_f
         upstream_base="https://gateway.zhumeng.example",
         sub2api_auth="sub2api-entry",
         attestation_secret="attestation-secret",
+        route_hint_secret="route-hint-secret",
         config_root=tmp_path / "zhumeng-state",
         project_cwd=tmp_path,
         guard_listen_port=43117,
@@ -205,6 +235,7 @@ def test_managed_launch_still_rejects_official_anthropic_upstream(tmp_path: Path
             upstream_base="https://api.anthropic.com",
             sub2api_auth="sub2api-entry",
             attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
             config_root=tmp_path / "zhumeng-state",
             project_cwd=tmp_path,
             guard_listen_port=43117,
@@ -245,17 +276,34 @@ def test_managed_launch_real_guard_routes_base_url_with_native_headers(tmp_path:
     def fake_claude_process(command, *, env, cwd):
         assert env["ANTHROPIC_BASE_URL"] == f"http://127.0.0.1:{guard_port}"
         assert env["CLAUDE_CODE_API_BASE_URL"] == f"http://127.0.0.1:{guard_port}"
+        body = json.dumps({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "walking-skeleton-prompt"}],
+            "max_tokens": 8,
+        }).encode("utf-8")
+        request_path = "/v1/messages?beta=true"
+        route_headers = build_signed_route_hint_headers(
+            body=body,
+            request_path=request_path,
+            catalog=cp4_fixture_route_catalog(
+                runtime_hash="sha256:" + hashlib.sha256((REPO_ROOT / "tools" / "cli_control_plane_guard.py").read_bytes()).hexdigest(),
+                overlay_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-overlay:cp0-native-only").hexdigest(),
+                catalog_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-catalog:cp0-claude-native-only").hexdigest(),
+                catalog_version="cp4-cli-fixture-v1",
+            ),
+            model_id="claude-sonnet-4-6",
+            session_ref="11111111-2222-4333-8444-555555555555",
+            secret="route-hint-secret",
+            nonce="walking-skeleton-nonce",
+        )
         req = urllib.request.Request(
-            env["ANTHROPIC_BASE_URL"] + "/v1/messages?beta=true",
-            data=json.dumps({
-                "model": "claude-sonnet-4-6",
-                "messages": [{"role": "user", "content": "walking-skeleton-prompt"}],
-                "max_tokens": 8,
-            }).encode("utf-8"),
+            env["ANTHROPIC_BASE_URL"] + request_path,
+            data=body,
             method="POST",
             headers={
                 "content-type": "application/json",
                 "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+                **route_headers,
             },
         )
         with urllib.request.urlopen(req, timeout=5) as response:
@@ -269,6 +317,7 @@ def test_managed_launch_real_guard_routes_base_url_with_native_headers(tmp_path:
             upstream_base=f"http://127.0.0.1:{upstream.server_port}",
             sub2api_auth="sub2api-entry",
             attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
             config_root=tmp_path / "zhumeng-state",
             project_cwd=tmp_path,
             guard_listen_port=guard_port,
@@ -332,6 +381,7 @@ def test_managed_launch_passes_managed_device_headers_to_guard(tmp_path: Path):
         managed_session_id="managed-session",
         device_id=9,
         attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
         config_root=tmp_path,
         project_cwd=tmp_path,
         guard_listen_port=18181,

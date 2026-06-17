@@ -83,6 +83,22 @@ def test_cp8_official_docs_snapshot_rejects_stale_glm46_or_unprobed_anthropic_cl
 
 
 
+def test_cp8_official_docs_snapshot_rejects_kimi_endpoint_drift():
+    payload = _fixture("live_matrix_pass.json")
+    docs = payload["official_docs_snapshot"]
+    assert docs["observations"]["kimi"]["anthropic_base_url"] == "https://api.moonshot.ai/anthropic"
+    assert docs["observations"]["kimi"]["openai_base_url"] == "https://api.moonshot.ai/v1"
+
+    docs["observations"]["kimi"]["anthropic_base_url"] = "https://api.moonshot.cn/anthropic"
+    docs["observations"]["kimi"]["openai_base_url"] = "https://api.moonshot.cn/v1"
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "official_docs" in result.failed
+
+
+
 def test_cp8_live_matrix_requires_artifact_hashes_and_rejects_sensitive_artifacts():
     payload = _fixture("live_matrix_pass.json")
     payload["scenarios"]["gpt_bridge"]["artifact_refs"][0]["sha256"] = "sha256:" + "0" * 64

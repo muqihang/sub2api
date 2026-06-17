@@ -389,6 +389,8 @@ def _official_docs_issues(value: object) -> tuple[str, ...]:
         issues.append("GLM official docs snapshot is stale")
     if not any(model.startswith("kimi-k2.7-code") for model in _str_list(kimi.get("coding_models"))):
         issues.append("Kimi official docs snapshot is stale")
+    if kimi.get("anthropic_base_url") != "https://api.moonshot.ai/anthropic" or kimi.get("openai_base_url") != "https://api.moonshot.ai/v1":
+        issues.append("Kimi official docs endpoint snapshot is stale")
     if not str(openai.get("recommended_model") or "").startswith("gpt-") or openai.get("preferred_api") != "responses":
         issues.append("OpenAI official docs snapshot is stale")
     return tuple(issues)

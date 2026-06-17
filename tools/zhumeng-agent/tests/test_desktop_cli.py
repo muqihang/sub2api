@@ -227,6 +227,8 @@ def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, m
         "loopback_secret": "loopback-secret",
         "claude_code_native_attestation_secret": "server-native-attestation-secret",
         "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": "server-route-hint-secret",
+        "claude_code_route_hint_secret_source": "server",
     })
     calls = []
 
@@ -240,7 +242,7 @@ def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, m
                 "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
             }),
             guard_plan=SimpleNamespace(
-                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation"],
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
                 config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl"),
             ),
         )
@@ -261,6 +263,7 @@ def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, m
     assert calls[0]["sub2api_auth"] == "sub2api-entry-secret"
     assert calls[0]["managed_session_id"] == "managed-session"
     assert calls[0]["device_id"] == 9
+    assert calls[0]["route_hint_secret"] == "server-route-hint-secret"
     assert calls[0]["guard_listen_port"] == 43117
     dumped = json.dumps(payload)
     assert "sub2api-entry-secret" not in dumped

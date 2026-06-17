@@ -553,6 +553,13 @@ def server_route_hint_secret(state: dict[str, object]) -> str | None:
     return None
 
 
+def require_server_route_hint_secret(state: dict[str, object]) -> str:
+    secret = server_route_hint_secret(state)
+    if secret:
+        return secret
+    raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_route_hint_secret")
+
+
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
@@ -1391,7 +1398,7 @@ def build_claude_code_start_payload(
         raise ValueError(f"managed setup is incomplete: missing {', '.join(missing)}")
     selected_guard_port = int(guard_port or choose_local_proxy_port())
     attestation_secret = require_server_native_attestation_secret(state)
-    route_hint_secret = server_route_hint_secret(state)
+    route_hint_secret = require_server_route_hint_secret(state)
     result = run_managed_claude_code(
         executable=executable,
         repo_root=Path(__file__).resolve().parents[4],
