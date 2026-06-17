@@ -1,0 +1,2 @@
+{"event":"messages_bridge_response","client_type":"claude_code_bridge_deepseek","route":"deepseek_bridge","formal_pool_allowed":false,"native_attested":false,"model":"deepseek-v4-pro","preferred_claude_code_protocol":"anthropic_messages","raw_sensitive_stored":false}
+{"event":"messages_bridge_response","client_type":"claude_code_bridge_deepseek","route":"deepseek_bridge","formal_pool_allowed":false,"native_attested":false,"model":"deepseek-v4-flash","preferred_claude_code_protocol":"anthropic_messages","raw_sensitive_stored":false}

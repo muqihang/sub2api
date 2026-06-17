@@ -55,6 +55,13 @@ from .provider_probe import (
     build_cp6_provider_probe_catalog,
     select_cp6_bridge_transport,
 )
+from .live_matrix import (
+    CP8LiveMatrixError,
+    CP8LiveMatrixResult,
+    CP8ScenarioResult,
+    REQUIRED_CP8_SCENARIOS,
+    verify_cp8_live_matrix,
+)
 from .status import ClaudeCodeOperatorStatus, derive_claude_code_operator_status
 from .profile import (
     CaptureMode,
@@ -85,6 +92,10 @@ __all__ = [
     "ProviderProtocolProbe",
     "ProviderProbeCatalog",
     "BridgeTransportDecision",
+    "CP8LiveMatrixError",
+    "CP8LiveMatrixResult",
+    "CP8ScenarioResult",
+    "REQUIRED_CP8_SCENARIOS",
     "CaptureMode",
     "ClaudeCodeCapabilityProfile",
     "ClaudeCodeLaunchPlan",
@@ -152,6 +163,7 @@ __all__ = [
     "sign_cp4_route_hint",
     "validate_loopback_guard_base_url",
     "verify_cp4_route_hint_headers",
+    "verify_cp8_live_matrix",
     "write_managed_runtime_artifacts",
     "write_model_overlay_proof_artifacts",
 ]

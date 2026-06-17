@@ -1,0 +1,2 @@
+{"event":"messages_bridge_response","client_type":"claude_code_bridge_openai","route":"openai_bridge","formal_pool_allowed":false,"native_attested":false,"model":"gpt-5.5","raw_sensitive_stored":false}
+{"event":"messages_bridge_response","client_type":"claude_code_bridge_openai","route":"openai_bridge","formal_pool_allowed":false,"native_attested":false,"model":"gpt-5.4-mini","raw_sensitive_stored":false}

@@ -46,6 +46,7 @@ from .adapters.claude_code.runtime_installer import (
     read_managed_runtime_status,
     write_managed_runtime_artifacts,
 )
+from .adapters.claude_code.live_matrix import CP8LiveMatrixError, verify_cp8_live_matrix
 from .adapters.claude_code.status import derive_claude_code_operator_status
 from .doctor import codex_doctor_report
 from .desktop import run_desktop_command
@@ -126,6 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
     for action in ("enable", "disable", "status"):
         alias_parser = claude_code_alias_subparsers.add_parser(action)
         alias_parser.add_argument("--shell-rc", required=True, type=Path)
+    claude_code_live_matrix = claude_code_subparsers.add_parser("live-matrix")
+    claude_code_live_matrix.add_argument("--evidence", required=True, type=Path)
+    claude_code_live_matrix.add_argument("--strict-live", action="store_true")
 
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--json", action="store_true")
@@ -1092,7 +1096,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "claude-code":
         if args.claude_code_command == "start":
             return handle_claude_code_start(args)
-        if args.claude_code_command in {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias"}:
+        if args.claude_code_command in {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix"}:
             return handle_claude_code_runtime_command(args)
         parser.error("unknown claude-code command")
 
@@ -1355,7 +1359,12 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 "command": f"claude-code alias {args.alias_action}",
                 **result,
             })
-    except RuntimeInstallerError as err:
+        if args.claude_code_command == "live-matrix":
+            payload = json.loads(args.evidence.read_text(encoding="utf-8"))
+            result = verify_cp8_live_matrix(payload, strict_live=args.strict_live, evidence_root=args.evidence.parent)
+            body = {"command": "claude-code live-matrix", **result.to_dict()}
+            return emit(body) if result.status == "pass" else emit_failed(body)
+    except (RuntimeInstallerError, CP8LiveMatrixError, OSError, json.JSONDecodeError) as err:
         return emit_failed({
             "command": f"claude-code {args.claude_code_command}",
             "status": "not_configured",
@@ -1416,10 +1425,10 @@ def build_claude_code_start_payload(
 
 def zhumeng_claude_main(argv: Sequence[str] | None = None) -> int:
     passthrough = list(argv) if argv is not None else list(sys.argv[1:])
-    cp7_runtime_commands = {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias"}
+    claude_runtime_commands = {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix"}
     if passthrough and passthrough[0] == "start":
         return main(["claude-code", "start", *passthrough[1:]])
-    if passthrough and passthrough[0] in cp7_runtime_commands:
+    if passthrough and passthrough[0] in claude_runtime_commands:
         return main(["claude-code", *passthrough])
     return main(["claude-code", "start", "--", *passthrough])
 

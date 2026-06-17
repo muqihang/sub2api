@@ -743,6 +743,7 @@ def test_zhumeng_claude_entrypoint_maps_to_claude_code_start(monkeypatch):
     assert cli.zhumeng_claude_main(["status", "--runtime-root", "/tmp/runtime"]) == 0
     assert cli.zhumeng_claude_main(["restart", "--runtime-root", "/tmp/runtime"]) == 0
     assert cli.zhumeng_claude_main(["alias", "enable", "--shell-rc", "/tmp/rc"]) == 0
+    assert cli.zhumeng_claude_main(["live-matrix", "--evidence", "/tmp/cp8.json"]) == 0
 
     assert calls == [
         ["claude-code", "start", "--", "--print"],
@@ -750,7 +751,45 @@ def test_zhumeng_claude_entrypoint_maps_to_claude_code_start(monkeypatch):
         ["claude-code", "status", "--runtime-root", "/tmp/runtime"],
         ["claude-code", "restart", "--runtime-root", "/tmp/runtime"],
         ["claude-code", "alias", "enable", "--shell-rc", "/tmp/rc"],
+        ["claude-code", "live-matrix", "--evidence", "/tmp/cp8.json"],
     ]
+
+
+def test_claude_code_live_matrix_cli_fails_closed_for_invalid_evidence(capsys, tmp_path: Path):
+    evidence = tmp_path / "bad-live-matrix.json"
+    evidence.write_text(json.dumps({"checkpoint": "CP8", "schema_version": "stale"}), encoding="utf-8")
+
+    assert main(["claude-code", "live-matrix", "--evidence", str(evidence)]) == 1
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix"
+    assert data["status"] == "not_configured"
+    assert "schema_version" in data["message"]
+
+    evidence.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    assert main(["claude-code", "live-matrix", "--evidence", str(evidence)]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix"
+    assert data["status"] == "not_configured"
+    assert "JSON object" in data["message"]
+
+
+def test_claude_code_live_matrix_cli_reports_cp8_release_gate(capsys):
+    fixture = Path(__file__).parent / "fixtures" / "claude_code_cp8" / "live_matrix_pass.json"
+
+    assert main(["claude-code", "live-matrix", "--evidence", str(fixture)]) == 0
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix"
+    assert data["status"] == "pass"
+    assert data["checkpoint"] == "CP8"
+    assert data["release_gate"] == "manual_external_live_required"
+    assert data["summary"]["required_scenarios_passed"] is True
+
+    assert main(["claude-code", "live-matrix", "--evidence", str(fixture), "--strict-live"]) == 1
+    strict = parse_output(capsys)
+    assert strict["status"] == "fail"
+    assert strict["release_gate"] == "blocked_missing_external_live"
 
 
 def test_claude_code_runtime_install_status_rollback_and_alias_commands(capsys, tmp_path: Path, monkeypatch):
