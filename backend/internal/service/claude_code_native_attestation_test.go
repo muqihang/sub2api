@@ -405,6 +405,63 @@ func TestClaudeCodeRouteHintReplayCacheDoesNotResetNativeReplayCache(t *testing.
 	require.Contains(t, err.Error(), "replayed")
 }
 
+func TestCP6RouteHintAllowsClaudeCodeBetaMessagesRouteButRejectsOtherQuery(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	now := time.Unix(2690, 0)
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"bridge beta route"}],"stream":true}`)
+	decision := ClaudeCodeProviderRouteDecision{
+		ModelID:                  "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          "bridge_pool",
+		GatewayLocation:          "cloud",
+		CatalogFresh:             true,
+		CatalogVersion:           "cp5-route-catalog",
+		RuntimeHash:              "sha256:" + stringOf('1', 64),
+		OverlayHash:              "sha256:" + stringOf('2', 64),
+		CatalogHash:              "sha256:" + stringOf('3', 64),
+		PreferredProtocol:        "anthropic_messages",
+		AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsErrorPassthrough: true,
+	}
+	betaHeaders := signedRouteHintHeadersForTest(t, body, "/v1/messages?beta=true", now, map[string]any{
+		"nonce":                "cp6-beta-route-ok",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": false,
+	})
+	_, err := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages?beta=true", betaHeaders, body, decision)
+	require.NoError(t, err)
+
+	otherQueryHeaders := signedRouteHintHeadersForTest(t, body, "/v1/messages?foo=bar", now, map[string]any{
+		"nonce":                "cp6-other-query-reject",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": false,
+	})
+	_, err = NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages?foo=bar", otherQueryHeaders, body, decision)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "route unsupported")
+}
+
 func TestCP6RouteHintLiveRequestAllowedRequiresServerBridgeLiveGate(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
 	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")

@@ -456,6 +456,40 @@ func TestClaudeCodeBridgeDeepSeekLiveRejectsNativeAttestationHeadersBeforeProvid
 	require.NotContains(t, rec.Body.String(), "event: message_start")
 }
 
+func TestClaudeCodeBridgeDeepSeekBetaRouteLiveHintWhenDisabledFailsClosedBeforeProvider(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"beta-live-disabled-must-not-leak"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages?beta=true", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-beta-live-disabled-fail-closed",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, int64(0), upstreamHits.Load())
+	require.NotContains(t, rec.Body.String(), "beta-live-disabled-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
+}
+
 func TestClaudeCodeBridgeDeepSeekLiveHintWhenDisabledFailsClosedBeforeProvider(t *testing.T) {
 	var upstreamHits atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1004,7 +1004,7 @@ func validateClaudeCodeRouteHintBinding(method, rawRoute string, body []byte, pa
 	if payload.RequestURI != rawRoute {
 		return fmt.Errorf("claude code route hint route mismatch")
 	}
-	if path, query := splitCompatRoute(rawRoute); path != ClaudeCodeNativeInboundMessages || query != "" {
+	if path, query := splitCompatRoute(rawRoute); path != ClaudeCodeNativeInboundMessages || (query != "" && query != "beta=true") {
 		return fmt.Errorf("claude code route hint route unsupported")
 	}
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())

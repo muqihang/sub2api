@@ -560,6 +560,137 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             )
 
 
+    def test_cp5_bridge_live_hint_forwards_only_bridge_markers_to_loopback_backend_when_backend_live_gate_is_closed(self):
+        base_catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+        live_entries = dict(base_catalog.entries)
+        live_entries['deepseek-v4-pro'] = RouteCatalogEntry(
+            model_id='deepseek-v4-pro',
+            provider='deepseek',
+            route='deepseek_bridge',
+            client_type='claude_code_bridge_deepseek',
+            live_enabled=True,
+            formal_pool_allowed=False,
+            native_attestation_allowed=False,
+            provider_owner='zhumeng_managed',
+            credential_scope='bridge_pool',
+            gateway_location='cloud',
+        )
+        catalog = RouteCatalog(
+            runtime_hash=base_catalog.runtime_hash,
+            overlay_hash=base_catalog.overlay_hash,
+            catalog_hash=base_catalog.catalog_hash,
+            catalog_version=base_catalog.catalog_version,
+            entries=live_entries,
+        )
+        body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"must-reach-backend-not-provider"}],"max_tokens":16,"stream":true}'
+        path = '/v1/messages?beta=true'
+        captured: dict[str, object] = {}
+
+        class BackendLikeHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get('content-length', '0') or 0)
+                request_body = self.rfile.read(n) if n else b''
+                captured['path'] = self.path
+                captured['body'] = request_body
+                captured['headers'] = {key.lower(): value for key, value in self.headers.items()}
+                route_decision = verify_signed_route_hint_headers(
+                    source_headers={key.lower(): value for key, value in self.headers.items()},
+                    body=request_body,
+                    request_path=self.path,
+                    catalog=catalog,
+                    session_ref='11111111-2222-4333-8444-555555555555',
+                    secret='route-hint-secret',
+                    replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                )
+                if route_decision.live_request_allowed:
+                    # Backend live gate is intentionally closed in this loopback proof.
+                    self.send_response(403)
+                    self.send_header('content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(b'{"type":"error","error":{"type":"invalid_request_error","message":"Invalid Claude Code bridge route"}}')
+                    return
+                self.send_response(500)
+                self.end_headers()
+
+        backend_port = _free_port()
+        backend = ThreadingHTTPServer(('127.0.0.1', backend_port), BackendLikeHandler)
+        threading.Thread(target=backend.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{backend_port}',
+                    sub2api_auth='sub2api-entry-key',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret='route-hint-secret',
+                    route_hint_catalog=catalog,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                    max_messages=0,
+                ))
+                forwarder.start_background()
+                try:
+                    route_headers = build_signed_route_hint_headers(
+                        body=body,
+                        request_path=path,
+                        catalog=catalog,
+                        model_id='deepseek-v4-pro',
+                        session_ref='11111111-2222-4333-8444-555555555555',
+                        secret='route-hint-secret',
+                        nonce='nonce-bridge-loopback-backend',
+                    )
+                    req = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}{path}',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'Authorization': 'Bearer user-token-must-be-replaced',
+                            'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555',
+                            **route_headers,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=5)
+                    self.assertEqual(ctx.exception.code, 403)
+                finally:
+                    forwarder.stop()
+
+                if 'path' not in captured:
+                    self.fail(summary.read_text(encoding='utf-8'))
+                self.assertEqual(captured['path'], path)
+                self.assertEqual(captured['body'], body)
+                headers = captured['headers']
+                self.assertEqual(headers['authorization'], 'Bearer sub2api-entry-key')
+                self.assertEqual(headers['x-sub2api-client-type'], 'claude_code_bridge_deepseek')
+                self.assertEqual(headers['x-sub2api-route'], 'deepseek_bridge')
+                self.assertEqual(headers['x-sub2api-route-catalog-version'], 'cp4-test-v1')
+                self.assertIn('x-zhumeng-claude-code-route-hint', headers)
+                self.assertIn('x-zhumeng-claude-code-route-signature', headers)
+                self.assertNotIn('x-sub2api-native-attestation', headers)
+                self.assertNotIn('x-sub2api-native-signature', headers)
+                self.assertNotIn('x-sub2api-cc-gateway-route', headers)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('"decision": "forward_messages"', dumped)
+                self.assertIn('"status": 403', dumped)
+                self.assertNotIn('user-token-must-be-replaced', dumped)
+                self.assertNotIn('native-attestation-test-secret', dumped)
+                self.assertNotIn('must-reach-backend-not-provider', dumped)
+        finally:
+            backend.shutdown()
+            backend.server_close()
+
     def test_cp5_bridge_route_hint_returns_internal_skeleton_anthropic_sse_without_upstream_or_native_attestation(self):
         catalog = cp4_fixture_route_catalog(
             runtime_hash='sha256:' + '1' * 64,
