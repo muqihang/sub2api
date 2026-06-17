@@ -2051,6 +2051,20 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 		}
 		return
 	}
+	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeOpenAILiveEligible(bridgeDecision) {
+		if _, err := service.StreamClaudeCodeBridgeOpenAILive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeOpenAIAPIKeyFromEnv(), c.Writer); err != nil {
+			if c.Writer.Written() {
+				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
+				return
+			}
+			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
+			return
+		}
+		if !c.Writer.Written() {
+			c.Status(http.StatusOK)
+		}
+		return
+	}
 	result, err := service.BuildClaudeCodeBridgeSkeletonSSE(bridgeDecision, body)
 	if err != nil {
 		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")

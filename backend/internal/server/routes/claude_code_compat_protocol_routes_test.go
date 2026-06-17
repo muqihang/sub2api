@@ -555,6 +555,117 @@ func TestClaudeCodeBridgeDeepSeekLiveHintWhenDisabledFailsClosedBeforeProvider(t
 	require.NotContains(t, rec.Body.String(), "event: message_start")
 }
 
+func TestClaudeCodeBridgeOpenAIResponsesLiveForwardsViaResponsesFallbackWhenExplicitlyEnabled(t *testing.T) {
+	var upstreamHits atomic.Int64
+	var upstreamPath string
+	var upstreamBody string
+	var upstreamAuth string
+	var upstreamAuthorization string
+	var upstreamClientType string
+	var upstreamNativeAttestation string
+	var upstreamRouteHint string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		upstreamPath = r.URL.Path
+		upstreamAuth = r.Header.Get("Authorization")
+		upstreamAuthorization = r.Header.Get("x-api-key")
+		upstreamClientType = r.Header.Get("x-sub2api-client-type")
+		upstreamNativeAttestation = r.Header.Get(service.ClaudeCodeNativeAttestationHeader)
+		upstreamRouteHint = r.Header.Get(service.ClaudeCodeRouteHintHeader)
+		bodyBytes, _ := io.ReadAll(r.Body)
+		upstreamBody = string(bodyBytes)
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Request-Id", "req_openai_bridge_live")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_openai_bridge","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_openai_bridge","role":"assistant","status":"in_progress"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"openai bridge answer","item_id":"msg_openai_bridge"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_openai_bridge","model":"gpt-5.5","status":"completed","usage":{"input_tokens":13,"output_tokens":5,"input_tokens_details":{"cached_tokens":7}}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	raw, err := json.Marshal(map[string]any{
+		"catalog_version": "cp5-route-catalog",
+		"runtime_hash":    "sha256:" + strings.Repeat("1", 64),
+		"overlay_hash":    "sha256:" + strings.Repeat("2", 64),
+		"catalog_hash":    "sha256:" + strings.Repeat("3", 64),
+		"models": []map[string]any{{
+			"model_id":                   "gpt-5.5",
+			"provider":                   "openai",
+			"route":                      "openai_bridge",
+			"client_type":                "claude_code_bridge_openai",
+			"provider_owner":             "zhumeng_managed",
+			"credential_scope":           "bridge_pool",
+			"gateway_location":           "cloud",
+			"catalog_fresh":              true,
+			"preferred_protocol":         "responses",
+			"openai_base_url":            upstream.URL + "/v1",
+			"capabilities_verified":      true,
+			"supports_text":              true,
+			"supports_tools":             true,
+			"supports_streaming":         true,
+			"supports_usage":             true,
+			"supports_cache_audit":       true,
+			"supports_reasoning_mapping": true,
+			"supports_error_passthrough": true,
+			"cache_policy":               "prompt_cache_key_required_or_recommended_for_coding_agents",
+		}},
+	})
+	require.NoError(t, err)
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", string(raw))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-bridge-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"raw anthropic body must become responses input"}],"stream":true,"max_tokens":32,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"thinking":{"type":"enabled"},"output_config":{"effort":"high"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer user-facing-sub2api-key-must-not-forward")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
+	req.Header.Set("x-sub2api-route", "openai_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "gpt-5.5",
+		"provider":             "openai",
+		"route":                "openai_bridge",
+		"client_type":          "claude_code_bridge_openai",
+		"nonce":                "cp6-openai-responses-live-enabled",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(1), upstreamHits.Load())
+	require.Equal(t, "/v1/responses", upstreamPath)
+	require.Equal(t, "Bearer sk-openai-bridge-test-key", upstreamAuth)
+	require.Empty(t, upstreamAuthorization)
+	require.Empty(t, upstreamClientType)
+	require.Empty(t, upstreamNativeAttestation)
+	require.Empty(t, upstreamRouteHint)
+	require.Contains(t, upstreamBody, `"model":"gpt-5.5"`)
+	require.Contains(t, upstreamBody, `"input"`)
+	require.Contains(t, upstreamBody, `"tools"`)
+	require.Contains(t, upstreamBody, `"reasoning"`)
+	require.NotContains(t, upstreamBody, `"messages"`)
+	require.Equal(t, "req_openai_bridge_live", rec.Header().Get("X-Request-Id"))
+	stream := rec.Body.String()
+	require.Contains(t, stream, "event: message_start")
+	require.Contains(t, stream, "event: content_block_delta")
+	require.Contains(t, stream, `"text":"openai bridge answer"`)
+	require.Contains(t, stream, `"cache_read_input_tokens":7`)
+	require.NotContains(t, stream, "response.output_text.delta")
+	require.NotContains(t, stream, "bridge skeleton")
+	require.NotContains(t, stream, "raw anthropic body must become responses input")
+}
+
 func TestClaudeCodeBridgeLiveFlagDoesNotEnableOpenAIBridge(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")

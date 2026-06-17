@@ -105,11 +105,15 @@ func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRoute
 	if !claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED") {
 		return false
 	}
-	if ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() == "" {
+	bridgeDecision := decision.BridgeRouteDecision()
+	switch strings.TrimSpace(bridgeDecision.Provider) {
+	case "deepseek":
+		return ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)
+	case "openai":
+		return ClaudeCodeBridgeOpenAIAPIKeyFromEnv() != "" && ClaudeCodeBridgeOpenAILiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeOpenAILiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeOpenAIUnsafeLabBaseURLAllowed(bridgeDecision)
+	default:
 		return false
 	}
-	bridgeDecision := decision.BridgeRouteDecision()
-	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)
 }
 
 func ClaudeCodeBridgeAnthropicLiveEligible(decision ClaudeCodeBridgeRouteDecision) bool {
