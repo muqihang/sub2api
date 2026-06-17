@@ -405,6 +405,190 @@ func TestClaudeCodeRouteHintReplayCacheDoesNotResetNativeReplayCache(t *testing.
 	require.Contains(t, err.Error(), "replayed")
 }
 
+func TestCP6RouteHintLiveRequestAllowedRequiresServerBridgeLiveGate(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "")
+	now := time.Unix(2700, 0)
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"bridge live gate"}],"stream":true}`)
+	decision := ClaudeCodeProviderRouteDecision{
+		ModelID:                  "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          "bridge_pool",
+		GatewayLocation:          "cloud",
+		CatalogFresh:             true,
+		CatalogVersion:           "cp5-route-catalog",
+		RuntimeHash:              "sha256:" + stringOf('1', 64),
+		OverlayHash:              "sha256:" + stringOf('2', 64),
+		CatalogHash:              "sha256:" + stringOf('3', 64),
+		PreferredProtocol:        "anthropic_messages",
+		AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsErrorPassthrough: true,
+	}
+
+	offlineHeaders := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                "cp6-live-gate-offline-skeleton",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": false,
+	})
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	)
+	_, err := svc.VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", offlineHeaders, body, decision)
+	require.NoError(t, err)
+
+	liveHeadersGateOff := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                "cp6-live-gate-disabled",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": true,
+	})
+	_, err = svc.VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", liveHeadersGateOff, body, decision)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "live request")
+
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	liveHeadersMissingKey := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                "cp6-live-gate-missing-key",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": true,
+	})
+	_, err = NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", liveHeadersMissingKey, body, decision)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "live request")
+
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	liveHeadersMissingBillingGuard := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                "cp6-live-gate-missing-billing-guard",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": true,
+	})
+	_, err = NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", liveHeadersMissingBillingGuard, body, decision)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "live request")
+
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	liveHeadersGateOn := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                "cp6-live-gate-enabled",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": true,
+	})
+	_, err = NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", liveHeadersGateOn, body, decision)
+	require.NoError(t, err)
+
+	nativeSpoofHeaders := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                      "cp6-live-gate-native-spoof",
+		"model_id":                   "deepseek-v4-pro",
+		"body_model":                 "deepseek-v4-pro",
+		"route":                      ClaudeCodeNativeRoute,
+		"client_type":                ClaudeCodeNativeClientType,
+		"provider":                   "claude",
+		"live_request_allowed":       true,
+		"formal_pool_allowed":        true,
+		"native_attestation_allowed": true,
+		"provider_owner":             ClaudeCodeNativeProviderOwner,
+		"credential_scope":           ClaudeCodeNativeCredentialScope,
+		"gateway_location":           ClaudeCodeNativeGatewayLocation,
+	})
+	nativeDecision := decision
+	nativeDecision.Provider = "claude"
+	nativeDecision.Route = ClaudeCodeNativeRoute
+	nativeDecision.ClientType = ClaudeCodeNativeClientType
+	nativeDecision.FormalPoolAllowed = true
+	nativeDecision.NativeAttestationAllowed = true
+	nativeDecision.CredentialScope = ClaudeCodeNativeCredentialScope
+	_, err = NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", nativeSpoofHeaders, body, nativeDecision)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot claim native")
+}
+
+func TestCP6RouteHintRejectsBridgeRequestWithNativeAttestationHeaders(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	now := time.Unix(2710, 0)
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"native header spoof"}],"stream":true}`)
+	decision := ClaudeCodeProviderRouteDecision{
+		ModelID:                  "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          "bridge_pool",
+		GatewayLocation:          "cloud",
+		CatalogFresh:             true,
+		CatalogVersion:           "cp5-route-catalog",
+		RuntimeHash:              "sha256:" + stringOf('1', 64),
+		OverlayHash:              "sha256:" + stringOf('2', 64),
+		CatalogHash:              "sha256:" + stringOf('3', 64),
+		PreferredProtocol:        "anthropic_messages",
+		AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsErrorPassthrough: true,
+	}
+	headers := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                "cp6-native-header-spoof",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": false,
+	})
+	headers.Set(ClaudeCodeNativeClientTypeHeader, "claude_code_bridge_deepseek")
+	headers.Set(ClaudeCodeNativeGuardAttestedHeader, "true")
+	headers.Set(ClaudeCodeNativeAttestationHeader, "forged-native-attestation")
+	headers.Set(ClaudeCodeNativeSignatureHeader, "forged-native-signature")
+	headers.Set(ClaudeCodeNativeInboundRouteHeader, "/v1/messages")
+	headers.Set(ClaudeCodeNativeRuntimeHashHeader, "sha256:"+stringOf('9', 64))
+
+	_, err := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", headers, body, decision)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "native attestation")
+}
+
 func TestClaudeCodeNativeAuditHeadersAreMutuallyExclusiveWithCompat(t *testing.T) {
 	native := ClaudeCodeNativeAuditSummary{
 		ClientType:                 ClaudeCodeNativeClientType,

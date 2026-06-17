@@ -452,6 +452,9 @@ func (s *ClaudeCodeNativeAttestationService) VerifyBridgeRouteHintRequest(method
 	if s == nil {
 		s = NewClaudeCodeNativeAttestationService()
 	}
+	if bridgeRequestHasNativeAttestationHeaders(headers) {
+		return nil, fmt.Errorf("claude code route hint bridge request cannot carry native attestation")
+	}
 	encoded := strings.TrimSpace(headers.Get(ClaudeCodeRouteHintHeader))
 	signature := strings.TrimSpace(headers.Get(ClaudeCodeRouteHintSignatureHeader))
 	if encoded == "" || signature == "" {
@@ -500,6 +503,37 @@ func (s *ClaudeCodeNativeAttestationService) VerifyBridgeRouteHintRequest(method
 		return nil, err
 	}
 	return payload, nil
+}
+
+func bridgeRequestHasNativeAttestationHeaders(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	for _, key := range []string{
+		ClaudeCodeNativeGuardAttestedHeader,
+		ClaudeCodeNativeGuardVersionHeader,
+		ClaudeCodeNativeClaudeCodeVersionHeader,
+		ClaudeCodeNativeLocalSessionRefHeader,
+		ClaudeCodeNativeNetwatchRequiredHeader,
+		ClaudeCodeNativeAttestationHeader,
+		ClaudeCodeNativeSignatureHeader,
+		ClaudeCodeNativeInboundRouteHeader,
+		ClaudeCodeNativeCCGatewayRouteHeader,
+		ClaudeCodeNativeServerFilledShapeHeader,
+		ClaudeCodeNativeHealthcheckProfileHeader,
+		ClaudeCodeNativeToolSearchModeHeader,
+		ClaudeCodeNativeToolReferenceHeader,
+		ClaudeCodeNativeDeferLoadingHeader,
+		ClaudeCodeNativeEagerInputHeader,
+		ClaudeCodeNativeRuntimeHashHeader,
+		ClaudeCodeNativeOverlayHashHeader,
+		ClaudeCodeNativeCatalogHashHeader,
+	} {
+		if strings.TrimSpace(headers.Get(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func ApplyClaudeCodeNativeAuditHeaders(headers http.Header, audit ClaudeCodeNativeAuditSummary) error {
@@ -993,7 +1027,7 @@ func validateClaudeCodeRouteHintBinding(method, rawRoute string, body []byte, pa
 	if payload.FormalPoolAllowed || payload.NativeAttestationAllowed || payload.ClientType == ClaudeCodeNativeClientType || payload.Route == ClaudeCodeNativeRoute {
 		return fmt.Errorf("claude code route hint bridge cannot claim native")
 	}
-	if payload.LiveRequestAllowed {
+	if payload.LiveRequestAllowed && !ClaudeCodeProviderBridgeLiveRequestAllowed(decision) {
 		return fmt.Errorf("claude code route hint bridge live request is not enabled")
 	}
 	return nil

@@ -2,8 +2,12 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -80,6 +84,123 @@ type ClaudeCodeBridgeAuditSummary struct {
 type ClaudeCodeBridgeStreamResult struct {
 	Body  []byte
 	Audit ClaudeCodeBridgeAuditSummary
+}
+
+type ClaudeCodeBridgeAnthropicLiveResult struct {
+	StatusCode int
+	Body       []byte
+	Header     http.Header
+	Audit      ClaudeCodeBridgeAuditSummary
+}
+
+type ClaudeCodeBridgeAnthropicLiveStreamResult struct {
+	StatusCode int
+	Header     http.Header
+	Audit      ClaudeCodeBridgeAuditSummary
+}
+
+func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRouteDecision) bool {
+	if !claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED") {
+		return false
+	}
+	if ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() == "" {
+		return false
+	}
+	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(decision.BridgeRouteDecision()) == nil
+}
+
+func ClaudeCodeBridgeAnthropicLiveEligible(decision ClaudeCodeBridgeRouteDecision) bool {
+	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveDecisionValid(decision) == nil
+}
+
+func ClaudeCodeBridgeAnthropicLiveDecisionValid(decision ClaudeCodeBridgeRouteDecision) error {
+	if strings.TrimSpace(decision.Provider) != "deepseek" || strings.TrimSpace(decision.Route) != "deepseek_bridge" || strings.TrimSpace(decision.ClientType) != "claude_code_bridge_deepseek" {
+		return fmt.Errorf("claude code bridge live only supports deepseek anthropic messages")
+	}
+	if strings.TrimSpace(decision.PreferredProtocol) != "anthropic_messages" || strings.TrimSpace(decision.AnthropicBaseURL) == "" {
+		return fmt.Errorf("claude code bridge live requires anthropic messages")
+	}
+	if !decision.CapabilitiesVerified || !decision.SupportsText || !decision.SupportsTools || !decision.SupportsStreaming || !decision.SupportsUsage || !decision.SupportsErrorPassthrough {
+		return fmt.Errorf("claude code bridge live capabilities are not verified")
+	}
+	return validateClaudeCodeBridgeDecision(decision)
+}
+
+func ExecuteClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.Client, decision ClaudeCodeBridgeRouteDecision, body []byte, apiKey string) (ClaudeCodeBridgeAnthropicLiveResult, error) {
+	var out bytes.Buffer
+	result, err := StreamClaudeCodeBridgeAnthropicLive(ctx, httpClient, decision, body, apiKey, &out)
+	if err != nil {
+		return ClaudeCodeBridgeAnthropicLiveResult{}, err
+	}
+	return ClaudeCodeBridgeAnthropicLiveResult{
+		StatusCode: result.StatusCode,
+		Body:       out.Bytes(),
+		Header:     result.Header,
+		Audit:      result.Audit,
+	}, nil
+}
+
+func StreamClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.Client, decision ClaudeCodeBridgeRouteDecision, body []byte, apiKey string, dst io.Writer) (ClaudeCodeBridgeAnthropicLiveStreamResult, error) {
+	if !ClaudeCodeBridgeAnthropicLiveConfigured() {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge live request is not enabled")
+	}
+	if !ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge live requires billing/concurrency guard")
+	}
+	if err := ClaudeCodeBridgeAnthropicLiveDecisionValid(decision); err != nil {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge live api key is required")
+	}
+	if err := validateClaudeCodeBridgeBodyBinding(decision, body); err != nil {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
+	}
+	if dst == nil {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge live stream writer is required")
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildAnthropicMessagesURL(decision.AnthropicBaseURL), bytes.NewReader(body))
+	if err != nil {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
+	}
+	setCodexGatewayAnthropicHeaders(req, apiKey, true)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
+	}
+	defer resp.Body.Close()
+	header := claudeCodeBridgeCloneHTTPHeader(resp.Header)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		limited, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge upstream status %d: %s", resp.StatusCode, sanitizeClaudeCodeBridgeErrorMessage(string(limited)))
+	}
+	applyClaudeCodeBridgeLiveResponseHeaders(dst, header)
+	if err := copyClaudeCodeBridgeSSE(dst, resp.Body); err != nil {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
+	}
+	return ClaudeCodeBridgeAnthropicLiveStreamResult{
+		StatusCode: resp.StatusCode,
+		Header:     header,
+		Audit:      buildClaudeCodeBridgeAuditSummary(decision, ClaudeCodeBridgeProviderFixture{}),
+	}, nil
+}
+
+func ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() string {
+	return strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY"))
+}
+
+func ClaudeCodeBridgeAnthropicLiveConfigured() bool {
+	return claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED") && claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED")
+}
+
+func ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() bool {
+	return claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB")
 }
 
 func BuildClaudeCodeBridgeSkeletonSSE(decision ClaudeCodeBridgeRouteDecision, body []byte) (ClaudeCodeBridgeStreamResult, error) {
@@ -344,4 +465,73 @@ func writeClaudeCodeBridgeSSE(buf *bytes.Buffer, event string, payload map[strin
 	buf.WriteString("data: ")
 	buf.Write(raw)
 	buf.WriteString("\n\n")
+}
+
+func claudeCodeBridgeEnvEnabled(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func claudeCodeBridgeCloneHTTPHeader(headers http.Header) http.Header {
+	clone := http.Header{}
+	for key, values := range headers {
+		for _, value := range values {
+			clone.Add(key, value)
+		}
+	}
+	return clone
+}
+
+func applyClaudeCodeBridgeLiveResponseHeaders(dst io.Writer, headers http.Header) {
+	headerWriter, ok := dst.(interface{ Header() http.Header })
+	if !ok || headerWriter.Header() == nil {
+		return
+	}
+	out := headerWriter.Header()
+	out.Set("Content-Type", "text/event-stream")
+	out.Set("Cache-Control", "no-cache")
+	out.Set("X-Accel-Buffering", "no")
+	for _, key := range []string{
+		"Content-Type",
+		"Cache-Control",
+		"X-Request-Id",
+		"X-Deepseek-Request-Id",
+		"Request-Id",
+	} {
+		for _, value := range headers.Values(key) {
+			if strings.TrimSpace(value) != "" {
+				if key == "Content-Type" || key == "Cache-Control" {
+					out.Set(key, value)
+				} else {
+					out.Add(key, value)
+				}
+			}
+		}
+	}
+}
+
+func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) error {
+	buf := make([]byte, 32*1024)
+	flusher, _ := dst.(interface{ Flush() })
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }

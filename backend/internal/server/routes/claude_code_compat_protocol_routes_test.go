@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,6 +70,37 @@ func cp6OpenAIBridgeRouteCatalogJSON() string {
 
 func cp6DeepSeekBridgeRouteCatalogJSON() string {
 	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"deepseek-v4-pro","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"https://api.deepseek.com/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
+}
+
+func cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(baseURL string) string {
+	raw, err := json.Marshal(map[string]any{
+		"catalog_version": "cp5-route-catalog",
+		"runtime_hash":    "sha256:" + strings.Repeat("1", 64),
+		"overlay_hash":    "sha256:" + strings.Repeat("2", 64),
+		"catalog_hash":    "sha256:" + strings.Repeat("3", 64),
+		"models": []map[string]any{{
+			"model_id":                   "deepseek-v4-pro",
+			"provider":                   "deepseek",
+			"route":                      "deepseek_bridge",
+			"client_type":                "claude_code_bridge_deepseek",
+			"provider_owner":             "zhumeng_managed",
+			"credential_scope":           "bridge_pool",
+			"gateway_location":           "cloud",
+			"catalog_fresh":              true,
+			"preferred_protocol":         "anthropic_messages",
+			"anthropic_base_url":         baseURL,
+			"capabilities_verified":      true,
+			"supports_text":              true,
+			"supports_tools":             true,
+			"supports_streaming":         true,
+			"supports_usage":             true,
+			"supports_error_passthrough": true,
+		}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
 
 func configureCP6RouteHintEnv(t *testing.T) {
@@ -194,6 +227,298 @@ func TestClaudeCodeBridgeMessagesRouteReturnsSkeletonWithoutAnthropicCompatOrFor
 	require.Contains(t, stream, `"stop_reason":"tool_use"`)
 	require.NotContains(t, stream, "unsupported_body_shape")
 	require.NotContains(t, stream, "should-not-leak")
+}
+
+func TestClaudeCodeBridgeDeepSeekLiveFlagOffKeepsSkeletonAndDoesNotCallProvider(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"flag-off-must-not-hit-provider"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":    "deepseek-v4-pro",
+		"provider":    "deepseek",
+		"route":       "deepseek_bridge",
+		"client_type": "claude_code_bridge_deepseek",
+		"nonce":       "cp6-deepseek-live-flag-off",
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(0), upstreamHits.Load())
+	require.Contains(t, rec.Body.String(), "bridge skeleton")
+	require.NotContains(t, rec.Body.String(), "flag-off-must-not-hit-provider")
+}
+
+func TestClaudeCodeBridgeDeepSeekLiveRequiresSignedLiveHintEvenWhenFlagEnabled(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hint-false-must-stay-skeleton"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-live-hint-false",
+		"live_request_allowed": false,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(0), upstreamHits.Load())
+	require.Contains(t, rec.Body.String(), "bridge skeleton")
+	require.NotContains(t, rec.Body.String(), "hint-false-must-stay-skeleton")
+}
+
+func TestClaudeCodeBridgeDeepSeekLiveRequiresBillingGuardBeforeProvider(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"billing-guard-must-not-leak"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-live-missing-billing-guard",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, int64(0), upstreamHits.Load())
+	require.NotContains(t, rec.Body.String(), "billing-guard-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
+}
+
+func TestClaudeCodeBridgeDeepSeekLiveAnthropicMessagesForwardsToV1MessagesOnlyWhenFlagEnabled(t *testing.T) {
+	var upstreamHits atomic.Int64
+	var upstreamBody string
+	var upstreamPath string
+	var upstreamAuth string
+	var upstreamAuthorization string
+	var upstreamClientType string
+	var upstreamNativeAttestation string
+	var upstreamRouteHint string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		upstreamPath = r.URL.Path
+		upstreamAuth = r.Header.Get("x-api-key")
+		upstreamAuthorization = r.Header.Get("Authorization")
+		upstreamClientType = r.Header.Get("x-sub2api-client-type")
+		upstreamNativeAttestation = r.Header.Get(service.ClaudeCodeNativeAttestationHeader)
+		upstreamRouteHint = r.Header.Get(service.ClaudeCodeRouteHintHeader)
+		bodyBytes, _ := io.ReadAll(r.Body)
+		upstreamBody = string(bodyBytes)
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		require.Equal(t, "2023-06-01", r.Header.Get("Anthropic-Version"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Deepseek-Request-Id", "req_provider_live")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_provider","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":0}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"provider live answer"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_stop","index":0}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body must reach provider"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer user-facing-sub2api-key-must-not-forward")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-live-enabled",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(1), upstreamHits.Load())
+	require.Equal(t, "/anthropic/v1/messages", upstreamPath)
+	require.Equal(t, body, upstreamBody)
+	require.Equal(t, "sk-deepseek-test-key", upstreamAuth)
+	require.Empty(t, upstreamAuthorization)
+	require.Empty(t, upstreamClientType)
+	require.Empty(t, upstreamNativeAttestation)
+	require.Empty(t, upstreamRouteHint)
+	require.Equal(t, "req_provider_live", rec.Header().Get("X-Deepseek-Request-Id"))
+	require.Contains(t, rec.Body.String(), "provider live answer")
+	require.NotContains(t, rec.Body.String(), "bridge skeleton")
+	require.NotContains(t, rec.Body.String(), "msg_bridge_skeleton_cp5")
+}
+
+func TestClaudeCodeBridgeDeepSeekLiveRejectsNativeAttestationHeadersBeforeProvider(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"native-header-must-not-leak"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	req.Header.Set(service.ClaudeCodeNativeGuardAttestedHeader, "true")
+	req.Header.Set(service.ClaudeCodeNativeAttestationHeader, "forged-native-attestation")
+	req.Header.Set(service.ClaudeCodeNativeSignatureHeader, "forged-native-signature")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-live-native-header",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, int64(0), upstreamHits.Load())
+	require.NotContains(t, rec.Body.String(), "native-header-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
+}
+
+func TestClaudeCodeBridgeDeepSeekLiveHintWhenDisabledFailsClosedBeforeProvider(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"live-disabled-must-not-leak"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-live-disabled-fail-closed",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, int64(0), upstreamHits.Load())
+	require.NotContains(t, rec.Body.String(), "live-disabled-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
+}
+
+func TestClaudeCodeBridgeLiveFlagDoesNotEnableOpenAIBridge(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"openai-live-must-not-leak"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
+	req.Header.Set("x-sub2api-route", "openai_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "gpt-5.5",
+		"provider":             "openai",
+		"route":                "openai_bridge",
+		"client_type":          "claude_code_bridge_openai",
+		"nonce":                "cp6-openai-live-not-enabled",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.NotContains(t, rec.Body.String(), "openai-live-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
 }
 
 func TestClaudeCodeBridgeMessagesRejectsUnsignedSpoofedBridgeHeadersBeforeSkeleton(t *testing.T) {
