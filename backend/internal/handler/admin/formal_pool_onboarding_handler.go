@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,7 @@ func (h *FormalPoolOnboardingHandler) CreateSession(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -72,6 +74,7 @@ func (h *FormalPoolOnboardingHandler) GetSession(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -85,6 +88,7 @@ func (h *FormalPoolOnboardingHandler) TestProxy(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -103,6 +107,7 @@ func (h *FormalPoolOnboardingHandler) BrowserEgressAttestation(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -200,7 +205,62 @@ func (h *FormalPoolOnboardingHandler) GenerateAuthURL(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
+}
+
+func (h *FormalPoolOnboardingHandler) withAbsoluteBrowserEgressURL(c *gin.Context, res *service.FormalPoolOnboardingSession) {
+	if res == nil || strings.TrimSpace(res.BrowserEgressCheckURL) == "" {
+		return
+	}
+	if parsed, err := url.Parse(res.BrowserEgressCheckURL); err == nil && parsed.IsAbs() {
+		return
+	}
+	base := formalPoolRequestPublicBaseURL(c)
+	if base == "" {
+		return
+	}
+	path := "/" + strings.TrimLeft(res.BrowserEgressCheckURL, "/")
+	res.BrowserEgressCheckURL = base + path
+}
+
+func formalPoolRequestPublicBaseURL(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	scheme := firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Proto"))
+	if scheme == "" {
+		scheme = firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Scheme"))
+	}
+	if scheme == "" && strings.EqualFold(c.GetHeader("X-Forwarded-Ssl"), "on") {
+		scheme = "https"
+	}
+	if scheme == "" {
+		if c.Request.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	if scheme != "https" && scheme != "http" {
+		return ""
+	}
+	host := firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(c.Request.Host)
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func firstForwardedHeaderValue(value string) string {
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
 }
 
 func (h *FormalPoolOnboardingHandler) ExchangeCodeAndCreate(c *gin.Context) {
@@ -218,6 +278,7 @@ func (h *FormalPoolOnboardingHandler) ExchangeCodeAndCreate(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -236,6 +297,7 @@ func (h *FormalPoolOnboardingHandler) SetupTokenCookieAuthAndCreate(c *gin.Conte
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -262,6 +324,7 @@ func (h *FormalPoolOnboardingHandler) Activate(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -275,6 +338,7 @@ func (h *FormalPoolOnboardingHandler) Abort(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -288,6 +352,7 @@ func (h *FormalPoolOnboardingHandler) RefreshOnly(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -301,6 +366,7 @@ func (h *FormalPoolOnboardingHandler) RuntimeRegister(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -345,6 +411,7 @@ func (h *FormalPoolOnboardingHandler) StartWarming(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 
@@ -358,6 +425,7 @@ func (h *FormalPoolOnboardingHandler) PromoteProduction(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	h.withAbsoluteBrowserEgressURL(c, res)
 	response.Success(c, res)
 }
 

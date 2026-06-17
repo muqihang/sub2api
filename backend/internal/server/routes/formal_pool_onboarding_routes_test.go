@@ -18,6 +18,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFormalPoolOnboardingAdminRoutesDeriveAbsoluteBrowserEgressURLFromForwardedHost(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
+	router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
+
+	body := bytes.NewBufferString(`{"proxy_mode":"existing","proxy_id":7,"group_id":42,"account_name":"acct"}`)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions", body)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+	require.Equal(t, http.StatusOK, createRec.Code, createRec.Body.String())
+	sessionID := extractFormalPoolOnboardingSessionID(t, createRec.Body.String())
+
+	testReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/"+sessionID+"/test-proxy", nil)
+	testReq.Header.Set("X-Forwarded-Proto", "https")
+	testReq.Header.Set("X-Forwarded-Host", "admin.example.test")
+	testRec := httptest.NewRecorder()
+	router.ServeHTTP(testRec, testReq)
+
+	require.Equal(t, http.StatusOK, testRec.Code, testRec.Body.String())
+	require.Contains(t, testRec.Body.String(), `"browser_egress_check_url":"https://admin.example.test/api/v1/claude-onboarding/browser-egress-check/`)
+}
+
+func extractFormalPoolOnboardingSessionID(t *testing.T, body string) string {
+	t.Helper()
+	marker := `"id":"`
+	idx := strings.Index(body, marker)
+	require.NotEqual(t, -1, idx, body)
+	start := idx + len(marker)
+	end := strings.Index(body[start:], `"`)
+	require.NotEqual(t, -1, end, body)
+	return body[start : start+end]
+}
+
 func TestFormalPoolOnboardingRoutes_AdminAndPublicBrowserEgress(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
