@@ -25,6 +25,21 @@
       "role": "tool",
       "safe_tool_result": {
         "content": "safe grep summary",
+        "evidence": {
+          "files": [
+            "src/a.py"
+          ],
+          "tools": [
+            "ToolSearch"
+          ]
+        },
+        "source_hash": "sha256:9948c64a8ac88d6cdec3197a6e26dc6f0d686eb2a8b544e0704aeab63b55d959",
+        "source_provider": "deepseek",
+        "source_turn_range": [
+          1,
+          1
+        ],
+        "stable_id": "safe-tool-result:sha256:9948c64a8ac88d6cdec3197a6e26dc6f0d686eb2a8b544e0704aeab63b55d959",
         "tool_use_id": "toolu_1"
       }
     },
@@ -43,7 +58,7 @@
   "name": "claude_deepseek_claude_boundary",
   "provenance_snapshot": {
     "conversation_ref": "cp3b-fixture",
-    "source_hash": "sha256:230a772e90dcb82710ba421b72050446f7eaed8c90e1c2e271f1f5e15f91f58a",
+    "source_hash": "sha256:909d456ff00dc8299eda69c685885cdcdf91716871f6ffdefb3a0486166433e7",
     "source_message_count": 3,
     "turns": [
       {

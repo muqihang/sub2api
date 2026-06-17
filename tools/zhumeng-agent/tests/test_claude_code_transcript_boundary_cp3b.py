@@ -419,7 +419,7 @@ def test_cp3b_malformed_safe_tool_result_fails_closed():
     )
 
     assert result.transcript is None
-    assert result.fail_closed_reason == "no_replay_safe_content"
+    assert result.fail_closed_reason == "safe_tool_result_requires_frozen_envelope"
     assert "messages[0].safe_tool_result" in result.blocked_paths
 
 

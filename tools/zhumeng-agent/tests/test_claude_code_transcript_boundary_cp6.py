@@ -7,6 +7,7 @@ from zhumeng_agent.adapters.claude_code.transcript_boundary import (
     ReplayClass,
     assert_claude_native_replay_safe,
     freeze_safe_summary,
+    freeze_safe_tool_result,
     sanitize_for_target_provider,
 )
 
@@ -88,6 +89,125 @@ def test_cp6_mid_tool_loop_switch_allows_once_frozen_safe_summary_only():
     assert result.transcript.messages == tuple(source_messages)
     assert result.transcript.provenance[0].stable_id == frozen.provenance.stable_id
     assert_claude_native_replay_safe(result.transcript)
+
+
+def test_cp6_safe_tool_result_freezes_stable_hash_and_reuses_idempotently():
+    first = freeze_safe_tool_result(
+        source_provider="deepseek",
+        source_turn_range=(3, 4),
+        tool_use_id="toolu_cp6",
+        content="Read-only ToolSearch result summary.",
+        evidence={"files": ["b.py", "a.py"], "tools": ["ToolSearch"]},
+    )
+    second = freeze_safe_tool_result(
+        source_provider="deepseek",
+        source_turn_range=(3, 4),
+        tool_use_id="toolu_cp6",
+        content="Read-only ToolSearch result summary.",
+        evidence={"tools": ["ToolSearch"], "files": ["a.py", "b.py"]},
+    )
+
+    assert first.block == second.block
+    assert first.provenance == second.provenance
+    assert first.provenance.replay_class == ReplayClass.SAFE_TOOL_RESULT
+    assert first.block["safe_tool_result"]["stable_id"] == first.provenance.stable_id
+    assert first.block["safe_tool_result"]["source_hash"] == first.provenance.source_hash
+
+    result = sanitize_for_target_provider(
+        source_messages=[dict(first.block)],
+        source_profile=_profile("deepseek"),
+        target_profile=_profile("claude", native_replay_allowed=True),
+        replay_context="history_replay",
+        provenance_snapshot=_snapshot("deepseek", [dict(first.block)]),
+    )
+
+    assert result.fail_closed_reason is None
+    assert result.transcript is not None
+    assert result.transcript.messages == (first.block,)
+    assert result.transcript.provenance[0].stable_id == first.provenance.stable_id
+    assert_claude_native_replay_safe(result.transcript)
+
+
+def test_cp6_frozen_safe_tool_result_rejects_whitespace_tamper():
+    frozen = freeze_safe_tool_result(
+        source_provider="deepseek",
+        source_turn_range=(3, 4),
+        tool_use_id="toolu_cp6",
+        content="Read-only ToolSearch result summary.",
+        evidence={"tools": ["ToolSearch"]},
+    )
+    tampered = dict(frozen.block)
+    tool_result = dict(tampered["safe_tool_result"])
+    tool_result["content"] = tool_result["content"] + " "
+    tampered["safe_tool_result"] = tool_result
+
+    result = sanitize_for_target_provider(
+        source_messages=[tampered],
+        source_profile=_profile("deepseek"),
+        target_profile=_profile("claude", native_replay_allowed=True),
+        replay_context="history_replay",
+        provenance_snapshot=_snapshot("deepseek", [tampered]),
+    )
+
+    assert result.transcript is None
+    assert result.fail_closed_reason == "invalid_frozen_safe_tool_result"
+    assert result.blocked_paths == ("messages[0].safe_tool_result",)
+
+
+def test_cp6_cross_provider_to_claude_requires_frozen_safe_tool_result():
+    source_messages = [
+        {
+            "role": "tool",
+            "safe_tool_result": {
+                "tool_use_id": "toolu_legacy",
+                "content": "legacy non-frozen summary",
+            },
+        }
+    ]
+
+    result = sanitize_for_target_provider(
+        source_messages=source_messages,
+        source_profile=_profile("deepseek"),
+        target_profile=_profile("claude", native_replay_allowed=True),
+        replay_context="normal",
+        provenance_snapshot=_snapshot("deepseek", source_messages),
+    )
+
+    assert result.transcript is None
+    assert result.fail_closed_reason == "safe_tool_result_requires_frozen_envelope"
+    assert result.blocked_paths == ("messages[0].safe_tool_result",)
+
+
+def test_cp6_safe_tool_result_evidence_strips_raw_tool_internals():
+    frozen = freeze_safe_tool_result(
+        source_provider="deepseek",
+        source_turn_range=(3, 4),
+        tool_use_id="toolu_cp6",
+        content="Read-only ToolSearch result summary.",
+        evidence={
+            "files": ["a.py"],
+            "tool_call": {"name": "ToolSearch", "input": {"query": "secret"}},
+            "metadata": {"provider_private": "secret"},
+            "raw_tool_runner_state": {"stdout": "secret"},
+        },
+    )
+
+    result = sanitize_for_target_provider(
+        source_messages=[dict(frozen.block)],
+        source_profile=_profile("deepseek"),
+        target_profile=_profile("claude", native_replay_allowed=True),
+        replay_context="history_replay",
+        provenance_snapshot=_snapshot("deepseek", [dict(frozen.block)]),
+    )
+
+    assert result.transcript is not None
+    serialized = json.dumps(result.transcript.to_dict(), ensure_ascii=True, sort_keys=True)
+    assert "a.py" in serialized
+    assert "tool_call" not in serialized
+    assert "input" not in serialized
+    assert "metadata" not in serialized
+    assert "raw_tool_runner_state" not in serialized
+    assert "secret" not in serialized
 
 
 def test_cp6_deepseek_anthropic_looking_thinking_signature_never_replays_to_claude_native():

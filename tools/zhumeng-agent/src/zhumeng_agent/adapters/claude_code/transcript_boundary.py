@@ -79,6 +79,12 @@ class FrozenSafeSummary:
     provenance: TranscriptProvenance
 
 
+@dataclass(frozen=True, slots=True)
+class FrozenSafeToolResult:
+    block: Mapping[str, object]
+    provenance: TranscriptProvenance
+
+
 _FORBIDDEN_FOREIGN_KEYS = frozenset(
     {
         "thinking",
@@ -102,6 +108,48 @@ _CLAUDE_SAFE_REPLAY_CLASSES = frozenset(
         ReplayClass.SAFE_FINAL_ANSWER,
         ReplayClass.SAFE_TOOL_RESULT,
         ReplayClass.EVIDENCE_SUMMARY,
+    }
+)
+_SAFE_TOOL_EVIDENCE_TOP_LEVEL_KEYS = frozenset(
+    {
+        "artifacts",
+        "checks",
+        "citations",
+        "commands",
+        "evidence",
+        "exit_code",
+        "files",
+        "notes",
+        "observations",
+        "sources",
+        "stderr_summary",
+        "stdout_summary",
+        "summary",
+        "tools",
+    }
+)
+_RAW_TOOL_EVIDENCE_KEYS = frozenset(
+    {
+        "arguments",
+        "argv",
+        "id",
+        "input",
+        "is_error",
+        "metadata",
+        "name",
+        "raw_input",
+        "raw_output",
+        "raw_tool_input",
+        "raw_tool_output",
+        "stderr",
+        "stdout",
+        "tool_call",
+        "tool_calls",
+        "tool_result",
+        "tool_results",
+        "tool_use",
+        "tool_use_id",
+        "tool_uses",
     }
 )
 
@@ -221,15 +269,15 @@ def build_cross_provider_subagent_result(
         summary = str(tool_result.get("summary") or tool_result.get("content") or "").strip()
         if not summary:
             continue
-        block = {
-            "role": "tool",
-            "safe_tool_result": {
-                "tool_use_id": str(tool_result.get("tool_use_id") or f"subagent_tool_{index}"),
-                "content": summary,
-            },
-        }
-        messages.append(block)
-        provenance.append(_provenance_for_block(block, child_profile, (index + 1, index + 1), ReplayClass.SAFE_TOOL_RESULT))
+        frozen_tool_result = freeze_safe_tool_result(
+            source_provider=child_profile.provider,
+            source_turn_range=(index + 1, index + 1),
+            tool_use_id=str(tool_result.get("tool_use_id") or f"subagent_tool_{index}"),
+            content=summary,
+            evidence=tool_result,
+        )
+        messages.append(frozen_tool_result.block)
+        provenance.append(frozen_tool_result.provenance)
 
     evidence_block = _canonicalize_evidence(child_evidence)
     if evidence_block:
@@ -290,6 +338,47 @@ def freeze_safe_summary(
     return FrozenSafeSummary(block=block, provenance=provenance)
 
 
+def freeze_safe_tool_result(
+    *,
+    source_provider: str,
+    source_turn_range: tuple[int, int],
+    tool_use_id: str,
+    content: str,
+    evidence: Mapping[str, object],
+) -> FrozenSafeToolResult:
+    canonical_evidence = _canonicalize_safe_tool_evidence(evidence)
+    body = {
+        "content": content,
+        "evidence": canonical_evidence,
+        "source_provider": source_provider,
+        "source_turn_range": list(source_turn_range),
+        "tool_use_id": tool_use_id,
+    }
+    source_hash = _safe_hash(body)
+    stable_id = "safe-tool-result:" + source_hash
+    block = {
+        "role": "tool",
+        "safe_tool_result": {
+            "stable_id": stable_id,
+            "source_provider": source_provider,
+            "source_turn_range": list(source_turn_range),
+            "source_hash": source_hash,
+            "tool_use_id": tool_use_id,
+            "content": content,
+            "evidence": canonical_evidence,
+        },
+    }
+    provenance = TranscriptProvenance(
+        stable_id=stable_id,
+        source_provider=source_provider,
+        source_route=f"{source_provider}_bridge" if source_provider != "claude" else "claude_native",
+        source_turn_range=source_turn_range,
+        source_hash=source_hash,
+        replay_class=ReplayClass.SAFE_TOOL_RESULT,
+    )
+    return FrozenSafeToolResult(block=block, provenance=provenance)
+
+
 def assert_claude_native_replay_safe(transcript: ReplaySafeAnthropicTranscript) -> None:
     if len(transcript.messages) != len(transcript.provenance):
         raise TranscriptBoundaryError("message/provenance cardinality mismatch")
@@ -305,6 +394,8 @@ def assert_claude_native_replay_safe(transcript: ReplaySafeAnthropicTranscript) 
         message = transcript.messages[index]
         if item.replay_class != ReplayClass.CLAUDE_NATIVE_REPLAYABLE:
             if _frozen_safe_summary_provenance_matches(message, item):
+                continue
+            if _frozen_safe_tool_result_provenance_matches(message, item):
                 continue
             expected_source_hash = _safe_hash(message)
             expected_stable_id = f"{item.replay_class.value}:{expected_source_hash}"
@@ -388,6 +479,105 @@ def _valid_frozen_safe_summary_block(message: Mapping[str, object]) -> bool:
     return source_hash == _safe_hash(body)
 
 
+def _frozen_safe_tool_result_provenance_matches(message: Mapping[str, object], item: TranscriptProvenance) -> bool:
+    if item.replay_class != ReplayClass.SAFE_TOOL_RESULT or not _valid_frozen_safe_tool_result_block(message):
+        return False
+    tool_result = message["safe_tool_result"]
+    if not isinstance(tool_result, Mapping):
+        return False
+    source_hash = str(tool_result.get("source_hash") or "")
+    stable_id = str(tool_result.get("stable_id") or "")
+    if item.source_hash != source_hash or item.stable_id != stable_id:
+        return False
+    source_provider = str(tool_result.get("source_provider") or "")
+    if source_provider != item.source_provider:
+        return False
+    turn_range = tool_result.get("source_turn_range")
+    if not isinstance(turn_range, Sequence) or isinstance(turn_range, (str, bytes)) or len(turn_range) != 2:
+        return False
+    try:
+        normalized_turn_range = tuple(int(value) for value in turn_range)
+    except (TypeError, ValueError):
+        return False
+    return normalized_turn_range == item.source_turn_range
+
+
+def _valid_frozen_safe_tool_result_block(message: Mapping[str, object]) -> bool:
+    tool_result = message.get("safe_tool_result")
+    if not isinstance(tool_result, Mapping):
+        return False
+    if message.get("role") != "tool":
+        return False
+    if set(str(key) for key in tool_result) != {
+        "stable_id",
+        "source_provider",
+        "source_turn_range",
+        "source_hash",
+        "tool_use_id",
+        "content",
+        "evidence",
+    }:
+        return False
+    source_hash = str(tool_result.get("source_hash") or "")
+    stable_id = str(tool_result.get("stable_id") or "")
+    if not source_hash.startswith("sha256:") or stable_id != f"safe-tool-result:{source_hash}":
+        return False
+    source_provider = str(tool_result.get("source_provider") or "")
+    turn_range = tool_result.get("source_turn_range")
+    tool_use_id_raw = tool_result.get("tool_use_id")
+    content_raw = tool_result.get("content")
+    if (
+        not source_provider
+        or not isinstance(tool_use_id_raw, str)
+        or not isinstance(content_raw, str)
+        or not tool_use_id_raw.strip()
+        or not content_raw.strip()
+        or not isinstance(turn_range, Sequence)
+        or isinstance(turn_range, (str, bytes))
+        or len(turn_range) != 2
+    ):
+        return False
+    try:
+        normalized_turn_range = tuple(int(value) for value in turn_range)
+    except (TypeError, ValueError):
+        return False
+    evidence = tool_result.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return False
+    canonical_evidence = _canonicalize_safe_tool_evidence(evidence)
+    if evidence != canonical_evidence:
+        return False
+    body = {
+        "content": content_raw,
+        "evidence": evidence,
+        "source_provider": source_provider,
+        "source_turn_range": list(normalized_turn_range),
+        "tool_use_id": tool_use_id_raw,
+    }
+    return source_hash == _safe_hash(body)
+
+
+def _canonicalize_safe_tool_evidence(value: object, *, _top_level: bool = True) -> object:
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for key, nested in sorted(value.items(), key=lambda item: str(item[0])):
+            key_text = str(key)
+            if key_text in _FORBIDDEN_FOREIGN_KEYS or key_text in _RAW_TOOL_EVIDENCE_KEYS:
+                continue
+            if _top_level and key_text not in _SAFE_TOOL_EVIDENCE_TOP_LEVEL_KEYS:
+                continue
+            normalized[key_text] = _canonicalize_safe_tool_evidence(nested, _top_level=False)
+        return normalized
+    if isinstance(value, list):
+        normalized = [_canonicalize_safe_tool_evidence(item, _top_level=False) for item in value]
+        if all(isinstance(item, (str, int, float, bool, type(None))) for item in normalized):
+            return sorted(normalized, key=lambda item: json.dumps(item, ensure_ascii=True, sort_keys=True))
+        return normalized
+    if isinstance(value, tuple):
+        return _canonicalize_safe_tool_evidence(list(value), _top_level=False)
+    return value
+
+
 def _sanitize_into_claude(
     *,
     source_messages: Sequence[Mapping[str, object]],
@@ -442,6 +632,41 @@ def _sanitize_into_claude(
                 "target_provider": "claude",
             },
             fail_closed_reason="invalid_frozen_safe_summary",
+        )
+    invalid_frozen_safe_tool_result_paths = tuple(
+        f"messages[{index}].safe_tool_result"
+        for index, message in enumerate(source_messages)
+        if isinstance(message.get("safe_tool_result"), Mapping)
+        and ("stable_id" in message["safe_tool_result"] or "source_hash" in message["safe_tool_result"])
+        and not _valid_frozen_safe_tool_result_block(message)
+    )
+    if invalid_frozen_safe_tool_result_paths:
+        return BoundaryResult(
+            transcript=None,
+            blocked_paths=invalid_frozen_safe_tool_result_paths,
+            evidence_summary={
+                "mode": "fail_closed",
+                "source_provider": source_profile.provider,
+                "target_provider": "claude",
+            },
+            fail_closed_reason="invalid_frozen_safe_tool_result",
+        )
+    unfrozen_safe_tool_result_paths = tuple(
+        f"messages[{index}].safe_tool_result"
+        for index, message in enumerate(source_messages)
+        if isinstance(message.get("safe_tool_result"), Mapping)
+        and not _valid_frozen_safe_tool_result_block(message)
+    )
+    if unfrozen_safe_tool_result_paths:
+        return BoundaryResult(
+            transcript=None,
+            blocked_paths=unfrozen_safe_tool_result_paths,
+            evidence_summary={
+                "mode": "fail_closed",
+                "source_provider": source_profile.provider,
+                "target_provider": "claude",
+            },
+            fail_closed_reason="safe_tool_result_requires_frozen_envelope",
         )
     for index, message in enumerate(source_messages):
         safe_block, replay_class = _safe_claude_block(message)
@@ -509,18 +734,9 @@ def _safe_claude_block(message: Mapping[str, object]) -> tuple[Mapping[str, obje
             return None, ReplayClass.BRIDGE_LOCAL_ONLY
         return {"role": "assistant", "zhumeng_safe_summary": _canonicalize_evidence(message["zhumeng_safe_summary"])}, ReplayClass.SUMMARY_ONLY
     if "safe_tool_result" in message and isinstance(message["safe_tool_result"], Mapping):
-        tool_result = message["safe_tool_result"]
-        tool_use_id = str(tool_result.get("tool_use_id") or "").strip()
-        content = str(tool_result.get("content") or tool_result.get("summary") or "").strip()
-        if not tool_use_id or not content:
-            return None, ReplayClass.BRIDGE_LOCAL_ONLY
-        return {
-            "role": "tool",
-            "safe_tool_result": {
-                "tool_use_id": tool_use_id,
-                "content": content,
-            },
-        }, ReplayClass.SAFE_TOOL_RESULT
+        if _valid_frozen_safe_tool_result_block(message):
+            return {"role": "tool", "safe_tool_result": _canonicalize_evidence(message["safe_tool_result"])}, ReplayClass.SAFE_TOOL_RESULT
+        return None, ReplayClass.BRIDGE_LOCAL_ONLY
     if str(message.get("role") or "") == "tool":
         return None, ReplayClass.BRIDGE_LOCAL_ONLY
     if "evidence_summary" in message and isinstance(message["evidence_summary"], Mapping):
@@ -633,6 +849,26 @@ def _provenance_for_block(
             source_provider = str(summary.get("source_provider") or profile.provider)
             turn_range = summary.get("source_turn_range")
             if stable_id.startswith("safe-summary:sha256:") and source_hash.startswith("sha256:") and isinstance(turn_range, Sequence) and not isinstance(turn_range, (str, bytes)) and len(turn_range) == 2:
+                try:
+                    normalized_turn_range = tuple(int(value) for value in turn_range)
+                except (TypeError, ValueError):
+                    normalized_turn_range = source_turn_range
+                return TranscriptProvenance(
+                    stable_id=stable_id,
+                    source_provider=source_provider,
+                    source_route=f"{source_provider}_bridge" if source_provider != "claude" else "claude_native",
+                    source_turn_range=normalized_turn_range,
+                    source_hash=source_hash,
+                    replay_class=replay_class,
+                )
+    if replay_class == ReplayClass.SAFE_TOOL_RESULT:
+        tool_result = block.get("safe_tool_result")
+        if isinstance(tool_result, Mapping):
+            stable_id = str(tool_result.get("stable_id") or "")
+            source_hash = str(tool_result.get("source_hash") or "")
+            source_provider = str(tool_result.get("source_provider") or profile.provider)
+            turn_range = tool_result.get("source_turn_range")
+            if stable_id.startswith("safe-tool-result:sha256:") and source_hash.startswith("sha256:") and isinstance(turn_range, Sequence) and not isinstance(turn_range, (str, bytes)) and len(turn_range) == 2:
                 try:
                     normalized_turn_range = tuple(int(value) for value in turn_range)
                 except (TypeError, ValueError):

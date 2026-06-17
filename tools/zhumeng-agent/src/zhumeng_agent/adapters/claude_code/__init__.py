@@ -82,6 +82,7 @@ from .transcript_boundary import (
     assert_claude_native_replay_safe,
     build_cross_provider_subagent_result,
     freeze_safe_summary,
+    freeze_safe_tool_result,
     sanitize_for_target_provider,
 )
 
@@ -150,6 +151,7 @@ __all__ = [
     "derive_claude_code_operator_status",
     "detect_claude_code_version",
     "freeze_safe_summary",
+    "freeze_safe_tool_result",
     "probe_cp2_patch_points",
     "probe_cp3a_patch_points",
     "read_managed_runtime_status",
