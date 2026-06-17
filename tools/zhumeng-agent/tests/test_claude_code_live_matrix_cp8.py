@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -453,6 +454,86 @@ def test_cp8_live_matrix_public_api_is_exported():
     assert exported_collect is collect_cp8_live_provider_provenance
     assert exported_write_scenario is write_cp8_live_scenario_evidence
 
+
+def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monkeypatch, tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+
+    calls: list[dict[str, object]] = []
+
+    class FakeHTTPResponse:
+        status = 200
+        headers = {"x-request-id": "req_live_default_transport"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args, **_kwargs):
+            return b"{}"
+
+    def fake_urlopen(request, timeout=0):
+        body = json.loads((request.data or b"{}").decode("utf-8"))
+        calls.append({
+            "url": request.full_url,
+            "headers": {str(k).lower(): str(v) for k, v in request.header_items()},
+            "body": body,
+            "timeout": timeout,
+        })
+        return FakeHTTPResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("SUB2API_CLAUDE_CODE_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "gpt-5.4-mini")
+    monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_MODEL", "deepseek-v4-pro")
+
+    provenance = collect_cp8_live_provider_provenance(
+        run_id="cp8-default-transport",
+        output_root=tmp_path,
+        credentials={
+            "claude": "anthropic-live-key",
+            "openai": "openai-live-key",
+            "deepseek": "deepseek-live-key",
+        },
+    )
+
+    assert provenance["credential_backed"] is True
+    assert {call["url"] for call in calls} == {
+        "https://api.anthropic.com/v1/messages",
+        "https://api.openai.com/v1/responses",
+        "https://api.deepseek.com/anthropic/v1/messages",
+    }
+    by_url = {call["url"]: call for call in calls}
+
+    claude = by_url["https://api.anthropic.com/v1/messages"]
+    assert claude["headers"]["x-api-key"] == "anthropic-live-key"
+    assert claude["headers"]["anthropic-version"] == "2023-06-01"
+    assert claude["body"] == {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "CP8 live provenance probe."}],
+    }
+
+    openai = by_url["https://api.openai.com/v1/responses"]
+    assert openai["headers"]["authorization"] == "Bearer openai-live-key"
+    assert openai["body"] == {
+        "model": "gpt-5.4-mini",
+        "input": "CP8 live provenance probe.",
+        "max_output_tokens": 1,
+        "stream": False,
+    }
+
+    deepseek = by_url["https://api.deepseek.com/anthropic/v1/messages"]
+    assert deepseek["headers"]["x-api-key"] == "deepseek-live-key"
+    assert deepseek["headers"]["anthropic-version"] == "2023-06-01"
+    assert deepseek["body"]["model"] == "deepseek-v4-pro"
+
+    for provider in ("claude", "openai", "deepseek"):
+        ref = provenance["providers"][provider]["artifact_refs"][0]
+        artifact_text = (tmp_path / ref["path"]).read_text(encoding="utf-8")
+        assert "live-key" not in artifact_text
+        assert "Authorization" not in artifact_text
 
 def test_cp8_live_evidence_collector_requires_all_provider_credentials(tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415

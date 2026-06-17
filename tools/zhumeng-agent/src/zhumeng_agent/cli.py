@@ -46,7 +46,11 @@ from .adapters.claude_code.runtime_installer import (
     read_managed_runtime_status,
     write_managed_runtime_artifacts,
 )
-from .adapters.claude_code.live_matrix import CP8LiveMatrixError, verify_cp8_live_matrix
+from .adapters.claude_code.live_matrix import (
+    CP8LiveMatrixError,
+    collect_cp8_live_provider_provenance,
+    verify_cp8_live_matrix,
+)
 from .adapters.claude_code.status import derive_claude_code_operator_status
 from .doctor import codex_doctor_report
 from .desktop import run_desktop_command
@@ -128,8 +132,15 @@ def build_parser() -> argparse.ArgumentParser:
         alias_parser = claude_code_alias_subparsers.add_parser(action)
         alias_parser.add_argument("--shell-rc", required=True, type=Path)
     claude_code_live_matrix = claude_code_subparsers.add_parser("live-matrix")
-    claude_code_live_matrix.add_argument("--evidence", required=True, type=Path)
+    claude_code_live_matrix.add_argument("--evidence", type=Path)
     claude_code_live_matrix.add_argument("--strict-live", action="store_true")
+    claude_code_live_matrix.add_argument("--collect-provider-provenance", action="store_true")
+    claude_code_live_matrix.add_argument("--run-id")
+    claude_code_live_matrix.add_argument(
+        "--output-root",
+        type=Path,
+        help="Dedicated CP8 evidence output directory; do not point this at a source worktree.",
+    )
 
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--json", action="store_true")
@@ -1367,6 +1378,25 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 **result,
             })
         if args.claude_code_command == "live-matrix":
+            if args.collect_provider_provenance:
+                if not args.run_id or args.output_root is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-provider-provenance",
+                        "status": "not_configured",
+                        "message": "provider provenance collection requires --run-id and --output-root",
+                    })
+                provenance = collect_cp8_live_provider_provenance(run_id=args.run_id, output_root=args.output_root)
+                return emit({
+                    "command": "claude-code live-matrix collect-provider-provenance",
+                    "status": "collected",
+                    "live_provenance": provenance,
+                })
+            if args.evidence is None:
+                return emit_failed({
+                    "command": "claude-code live-matrix",
+                    "status": "not_configured",
+                    "message": "live matrix verification requires --evidence",
+                })
             payload = json.loads(args.evidence.read_text(encoding="utf-8"))
             result = verify_cp8_live_matrix(payload, strict_live=args.strict_live, evidence_root=args.evidence.parent)
             body = {"command": "claude-code live-matrix", **result.to_dict()}

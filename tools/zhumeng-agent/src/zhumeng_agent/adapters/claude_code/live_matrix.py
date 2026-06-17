@@ -5,6 +5,8 @@ import ipaddress
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -678,11 +680,74 @@ def _cp8_live_credentials_from_env() -> dict[str, str]:
 
 
 def _default_cp8_live_transport(provider: str, endpoint: str, credential: str) -> dict[str, object]:
-    _ = credential
-    raise CP8LiveMatrixError(
-        f"CP8 external live probe for {provider} is not implemented in offline verifier; "
-        "provide an explicit transport or run the managed live matrix harness"
+    body, headers = _cp8_live_probe_request(provider, credential)
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body, ensure_ascii=True, sort_keys=True).encode("utf-8"),
+        headers=headers,
+        method="POST",
     )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - explicit CP8 live opt-in path.
+            response.read(4096)
+            return {
+                "status": int(getattr(response, "status", 0) or 0),
+                "response_headers": _headers_to_dict(getattr(response, "headers", {})),
+            }
+    except urllib.error.HTTPError as err:
+        err.read(4096)
+        return {
+            "status": int(getattr(err, "code", 0) or 0),
+            "response_headers": _headers_to_dict(getattr(err, "headers", {})),
+        }
+    except urllib.error.URLError as err:
+        raise CP8LiveMatrixError(f"CP8 external live probe for {provider} failed: {err.reason}") from err
+
+
+def _cp8_live_probe_request(provider: str, credential: str) -> tuple[dict[str, object], dict[str, str]]:
+    if provider == "openai":
+        model = os.getenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "gpt-5.4-mini")
+        return (
+            {
+                "model": model,
+                "input": "CP8 live provenance probe.",
+                "max_output_tokens": 1,
+                "stream": False,
+            },
+            {
+                "Authorization": "Bearer " + credential.strip(),
+                "Content-Type": "application/json",
+            },
+        )
+    if provider in {"claude", "deepseek"}:
+        model_env = (
+            "SUB2API_CLAUDE_CODE_LIVE_CLAUDE_MODEL"
+            if provider == "claude"
+            else "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_MODEL"
+        )
+        default_model = "claude-sonnet-4-6" if provider == "claude" else "deepseek-v4-pro"
+        return (
+            {
+                "model": os.getenv(model_env, default_model),
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "CP8 live provenance probe."}],
+            },
+            {
+                "X-Api-Key": credential.strip(),
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+        )
+    raise CP8LiveMatrixError(f"CP8 external live probe provider is unsupported: {provider}")
+
+
+def _headers_to_dict(headers: object) -> dict[str, str]:
+    if isinstance(headers, Mapping):
+        return {str(key): str(value) for key, value in headers.items()}
+    items = getattr(headers, "items", None)
+    if callable(items):
+        return {str(key): str(value) for key, value in items()}
+    return {}
 
 
 def _safe_live_request_id(result: Mapping[str, object]) -> str:

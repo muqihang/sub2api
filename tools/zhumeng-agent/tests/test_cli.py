@@ -833,6 +833,41 @@ def test_claude_code_live_matrix_cli_reports_cp8_release_gate(capsys):
     assert strict["release_gate"] == "blocked_missing_external_live"
 
 
+def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    def fake_collect_cp8_live_provider_provenance(**kwargs):
+        calls.append(kwargs)
+        return {
+            "credential_backed": True,
+            "loopback_only": False,
+            "run_id": kwargs["run_id"],
+            "providers": {
+                "claude": {"credential_scope": "formal_pool", "live_provider_verified": True},
+                "openai": {"credential_scope": "bridge_pool", "live_provider_verified": True},
+                "deepseek": {"credential_scope": "bridge_pool", "live_provider_verified": True},
+            },
+        }
+
+    monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-provider-provenance",
+        "--run-id",
+        "cp8-cli-live",
+        "--output-root",
+        str(tmp_path),
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix collect-provider-provenance"
+    assert data["status"] == "collected"
+    assert data["live_provenance"]["credential_backed"] is True
+    assert calls == [{"run_id": "cp8-cli-live", "output_root": tmp_path}]
+
+
 def test_claude_code_runtime_install_status_rollback_and_alias_commands(capsys, tmp_path: Path, monkeypatch):
     runtime_root = tmp_path / "runtime"
     shell_rc = tmp_path / ".zshrc"
