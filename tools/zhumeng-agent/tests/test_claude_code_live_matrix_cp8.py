@@ -10,6 +10,7 @@ import pytest
 from zhumeng_agent.adapters.claude_code.live_matrix import (
     CP8LiveMatrixError,
     REQUIRED_CP8_SCENARIOS,
+    assemble_cp8_external_live_matrix_evidence,
     verify_cp8_live_matrix,
 )
 
@@ -442,6 +443,7 @@ def test_cp8_live_matrix_public_api_is_exported():
         CP8LiveMatrixError as ExportedError,
         REQUIRED_CP8_SCENARIOS as ExportedScenarios,
         collect_cp8_live_provider_provenance as exported_collect,
+        assemble_cp8_external_live_matrix_evidence as exported_assemble,
         verify_cp8_live_matrix as exported_verify,
         write_cp8_live_scenario_evidence as exported_write_scenario,
     )
@@ -452,6 +454,7 @@ def test_cp8_live_matrix_public_api_is_exported():
     assert ExportedScenarios is REQUIRED_CP8_SCENARIOS
     assert exported_verify is verify_cp8_live_matrix
     assert exported_collect is collect_cp8_live_provider_provenance
+    assert exported_assemble is assemble_cp8_external_live_matrix_evidence
     assert exported_write_scenario is write_cp8_live_scenario_evidence
 
 
@@ -534,6 +537,100 @@ def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monk
         artifact_text = (tmp_path / ref["path"]).read_text(encoding="utf-8")
         assert "live-key" not in artifact_text
         assert "Authorization" not in artifact_text
+
+
+def test_cp8_assemble_external_live_matrix_binds_provider_provenance_without_promoting_loopback(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+
+    provenance = collect_cp8_live_provider_provenance(
+        run_id="cp8-assemble-live",
+        output_root=tmp_path,
+        credentials={"claude": "sk-claude", "openai": "sk-openai", "deepseek": "sk-deepseek"},
+        transport=lambda provider, endpoint, credential: {"status": 200, "request_id": f"req_{provider}_assemble"},
+    )
+
+    loopback = _fixture("live_matrix_pass.json")
+    assembled_loopback = assemble_cp8_external_live_matrix_evidence(loopback, provenance)
+    loopback_result = verify_cp8_live_matrix(assembled_loopback, strict_live=True, evidence_root=tmp_path)
+    assert loopback_result.status == "fail"
+    assert loopback_result.release_gate == "blocked_missing_external_live"
+    assert all(scenario.get("live_provider_verified") is False for scenario in loopback["scenarios"].values())
+
+    external = _fixture("live_matrix_pass.json")
+    external["live_provenance"] = {"must": "be replaced"}
+    for scenario in external["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(external, tmp_path, "cp8-assemble-live")
+
+    assembled_external = assemble_cp8_external_live_matrix_evidence(external, provenance)
+    assert assembled_external["mode"] == "external_provider_live_matrix"
+    assert assembled_external["live_provenance"] == provenance
+    assert assembled_external is not external
+
+    result = verify_cp8_live_matrix(assembled_external, strict_live=True, evidence_root=tmp_path)
+    assert result.status == "pass"
+    assert result.release_gate == "external_live_passed"
+
+
+def test_cp8_assemble_external_live_matrix_rejects_inline_sensitive_or_raw_fields():
+    payload = _fixture("live_matrix_pass.json")
+    provenance = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": "cp8-sensitive-inline",
+        "providers": {
+            "claude": {
+                "credential_scope": "formal_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.anthropic.com/v1/messages",
+                "headers": {"authorization": "Bearer sk-must-not-persist"},
+            },
+        },
+    }
+
+    with pytest.raises(CP8LiveMatrixError, match="sensitive inline"):
+        assemble_cp8_external_live_matrix_evidence(payload, provenance)
+
+    payload = _fixture("live_matrix_pass.json")
+    payload["raw_body"] = {"messages": [{"role": "user", "content": "must not persist"}]}
+    with pytest.raises(CP8LiveMatrixError, match="sensitive inline"):
+        assemble_cp8_external_live_matrix_evidence(payload, {"credential_backed": True})
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "token",
+        "access_token",
+        "refresh_token",
+        "secret",
+        "client_secret",
+        "raw",
+        "payload",
+        "raw_payload",
+        "request_payload",
+        "response_payload",
+        "auth_token",
+        "session_token",
+        "accessToken",
+        "refreshToken",
+        "clientSecret",
+        "secret_key",
+        "secretKey",
+        "secret_access_key",
+        "secrets",
+        "rawRequest",
+        "requestPayload",
+        "responseHeaders",
+    ],
+)
+def test_cp8_assemble_external_live_matrix_rejects_common_secret_and_payload_keys(key: str):
+    payload = _fixture("live_matrix_pass.json")
+    provenance = {"credential_backed": True, "providers": {"claude": {key: "opaque-secret-value"}}}
+
+    with pytest.raises(CP8LiveMatrixError, match="sensitive inline"):
+        assemble_cp8_external_live_matrix_evidence(payload, provenance)
+
 
 def test_cp8_live_evidence_collector_requires_all_provider_credentials(tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415

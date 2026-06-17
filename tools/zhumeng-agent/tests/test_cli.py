@@ -868,6 +868,141 @@ def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_pa
     assert calls == [{"run_id": "cp8-cli-live", "output_root": tmp_path}]
 
 
+def test_claude_code_live_matrix_cli_assembles_external_matrix_without_promoting_loopback(capsys, tmp_path: Path):
+    fixture = Path(__file__).parent / "fixtures" / "claude_code_cp8" / "live_matrix_pass.json"
+    provenance = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": "cp8-cli-assemble",
+        "providers": {
+            "claude": {
+                "credential_scope": "formal_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.anthropic.com/v1/messages",
+            },
+            "openai": {
+                "credential_scope": "bridge_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.openai.com/v1/responses",
+            },
+            "deepseek": {
+                "credential_scope": "bridge_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+            },
+        },
+    }
+    provenance_file = tmp_path / "live_provenance.json"
+    provenance_file.write_text(json.dumps(provenance), encoding="utf-8")
+    out = tmp_path / "external_matrix.json"
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--assemble-external",
+        "--evidence",
+        str(fixture),
+        "--provenance",
+        str(provenance_file),
+        "--out",
+        str(out),
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix assemble-external"
+    assert data["status"] == "assembled"
+    assembled = json.loads(out.read_text(encoding="utf-8"))
+    assert assembled["mode"] == "external_provider_live_matrix"
+    assert assembled["live_provenance"] == provenance
+    assert all(scenario.get("live_provider_verified") is False for scenario in assembled["scenarios"].values())
+
+    assert main(["claude-code", "live-matrix", "--evidence", str(out), "--strict-live"]) == 1
+    strict = parse_output(capsys)
+    assert strict["release_gate"] == "blocked_missing_external_live"
+
+
+def test_claude_code_live_matrix_cli_rejects_conflicting_modes(capsys, tmp_path: Path):
+    evidence = tmp_path / "matrix.json"
+    provenance = tmp_path / "provenance.json"
+    out = tmp_path / "out.json"
+    evidence.write_text(json.dumps({"checkpoint": "CP8", "schema_version": "cp8-live-matrix-v1", "scenarios": {}}), encoding="utf-8")
+    provenance.write_text(json.dumps({"credential_backed": True}), encoding="utf-8")
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-provider-provenance",
+        "--assemble-external",
+        "--run-id",
+        "cp8-conflict",
+        "--output-root",
+        str(tmp_path),
+        "--evidence",
+        str(evidence),
+        "--provenance",
+        str(provenance),
+        "--out",
+        str(out),
+    ]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix"
+    assert data["status"] == "not_configured"
+    assert "conflicting" in data["message"]
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--assemble-external",
+        "--strict-live",
+        "--evidence",
+        str(evidence),
+        "--provenance",
+        str(provenance),
+        "--out",
+        str(out),
+    ]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix"
+    assert "conflicting" in data["message"]
+
+
+def test_claude_code_live_matrix_cli_rejects_sensitive_inline_provenance_without_writing(capsys, tmp_path: Path):
+    fixture = Path(__file__).parent / "fixtures" / "claude_code_cp8" / "live_matrix_pass.json"
+    provenance = tmp_path / "provenance.json"
+    provenance.write_text(json.dumps({
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": "cp8-sensitive-cli",
+        "providers": {
+            "claude": {
+                "credential_scope": "formal_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.anthropic.com/v1/messages",
+                "response_headers": {"authorization": "Bearer sk-must-not-persist"},
+            },
+        },
+    }), encoding="utf-8")
+    out = tmp_path / "external_matrix.json"
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--assemble-external",
+        "--evidence",
+        str(fixture),
+        "--provenance",
+        str(provenance),
+        "--out",
+        str(out),
+    ]) == 1
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix"
+    assert data["status"] == "not_configured"
+    assert "sensitive inline" in data["message"]
+    assert not out.exists()
+
+
 def test_claude_code_runtime_install_status_rollback_and_alias_commands(capsys, tmp_path: Path, monkeypatch):
     runtime_root = tmp_path / "runtime"
     shell_rc = tmp_path / ".zshrc"

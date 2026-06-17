@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import ipaddress
 import json
@@ -37,6 +38,42 @@ _SENSITIVE_ARTIFACT_RE = re.compile(
     r"(Bearer(?:\s+|_+)|sk-[A-Za-z0-9][A-Za-z0-9_.:-]{6,}|raw-token|api[_-]?key|cookie|setup[_-]?token|CCH|oauth|Authorization)",
     re.IGNORECASE,
 )
+_SENSITIVE_INLINE_KEYS = frozenset({
+    "api_key",
+    "apikey",
+    "access_token",
+    "authorization",
+    "auth_token",
+    "body",
+    "client_secret",
+    "cookie",
+    "cookies",
+    "headers",
+    "input",
+    "messages",
+    "output",
+    "payload",
+    "prompt",
+    "raw",
+    "raw_body",
+    "raw_payload",
+    "raw_prompt",
+    "raw_request",
+    "raw_response",
+    "refresh_token",
+    "request",
+    "request_body",
+    "request_headers",
+    "request_payload",
+    "response",
+    "response_body",
+    "response_headers",
+    "response_payload",
+    "secret",
+    "session_token",
+    "token",
+    "x_api_key",
+})
 
 _DOC_SOURCES = frozenset({
     "deepseek_anthropic_api",
@@ -204,6 +241,58 @@ def verify_cp8_live_matrix(
         official_docs_checked=not docs_issues,
         artifact_evidence_verified=artifact_evidence_verified,
     )
+
+
+def assemble_cp8_external_live_matrix_evidence(
+    payload: Mapping[str, object],
+    provenance: Mapping[str, object],
+) -> dict[str, object]:
+    """Bind separately collected provider provenance without promoting scenario evidence."""
+    if not isinstance(payload, Mapping):
+        raise CP8LiveMatrixError("CP8 live matrix evidence must be a JSON object")
+    if not isinstance(provenance, Mapping):
+        raise CP8LiveMatrixError("CP8 live provider provenance must be a JSON object")
+    issue = _sensitive_inline_evidence_issue(payload, path="matrix") or _sensitive_inline_evidence_issue(provenance, path="provenance")
+    if issue:
+        raise CP8LiveMatrixError("sensitive inline CP8 live matrix evidence is not allowed: " + issue)
+    assembled = copy.deepcopy(dict(payload))
+    assembled["mode"] = "external_provider_live_matrix"
+    assembled["live_provenance"] = copy.deepcopy(dict(provenance))
+    return assembled
+
+
+def _sensitive_inline_evidence_issue(value: object, *, path: str) -> str:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_text = str(key)
+            normalized = _normalize_inline_evidence_key(key_text)
+            if _sensitive_inline_key(normalized) or _SENSITIVE_ARTIFACT_RE.search(key_text):
+                return path + "." + key_text
+            child_issue = _sensitive_inline_evidence_issue(child, path=path + "." + key_text)
+            if child_issue:
+                return child_issue
+        return ""
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            child_issue = _sensitive_inline_evidence_issue(child, path=f"{path}[{index}]")
+            if child_issue:
+                return child_issue
+        return ""
+    if isinstance(value, str) and _SENSITIVE_ARTIFACT_RE.search(value):
+        return path
+    return ""
+
+
+def _normalize_inline_evidence_key(key: str) -> str:
+    key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+    return re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+
+
+def _sensitive_inline_key(normalized: str) -> bool:
+    if normalized in _SENSITIVE_INLINE_KEYS:
+        return True
+    parts = normalized.split("_")
+    return bool({"secret", "secrets"} & set(parts)) or normalized.endswith("_token")
 
 
 def _verify_scenario(

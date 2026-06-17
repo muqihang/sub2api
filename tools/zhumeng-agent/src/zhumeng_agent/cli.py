@@ -48,6 +48,7 @@ from .adapters.claude_code.runtime_installer import (
 )
 from .adapters.claude_code.live_matrix import (
     CP8LiveMatrixError,
+    assemble_cp8_external_live_matrix_evidence,
     collect_cp8_live_provider_provenance,
     verify_cp8_live_matrix,
 )
@@ -135,6 +136,9 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_live_matrix.add_argument("--evidence", type=Path)
     claude_code_live_matrix.add_argument("--strict-live", action="store_true")
     claude_code_live_matrix.add_argument("--collect-provider-provenance", action="store_true")
+    claude_code_live_matrix.add_argument("--assemble-external", action="store_true")
+    claude_code_live_matrix.add_argument("--provenance", type=Path)
+    claude_code_live_matrix.add_argument("--out", type=Path)
     claude_code_live_matrix.add_argument("--run-id")
     claude_code_live_matrix.add_argument(
         "--output-root",
@@ -1378,6 +1382,17 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 **result,
             })
         if args.claude_code_command == "live-matrix":
+            live_matrix_modes = [
+                bool(args.collect_provider_provenance),
+                bool(args.assemble_external),
+                bool(args.strict_live),
+            ]
+            if sum(1 for enabled in live_matrix_modes if enabled) > 1:
+                return emit_failed({
+                    "command": "claude-code live-matrix",
+                    "status": "not_configured",
+                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --assemble-external, or --strict-live",
+                })
             if args.collect_provider_provenance:
                 if not args.run_id or args.output_root is None:
                     return emit_failed({
@@ -1390,6 +1405,26 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                     "command": "claude-code live-matrix collect-provider-provenance",
                     "status": "collected",
                     "live_provenance": provenance,
+                })
+            if args.assemble_external:
+                if args.evidence is None or args.provenance is None or args.out is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix assemble-external",
+                        "status": "not_configured",
+                        "message": "external live matrix assembly requires --evidence, --provenance, and --out",
+                    })
+                payload = json.loads(args.evidence.read_text(encoding="utf-8"))
+                provenance = json.loads(args.provenance.read_text(encoding="utf-8"))
+                assembled = assemble_cp8_external_live_matrix_evidence(payload, provenance)
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(json.dumps(assembled, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+                return emit({
+                    "command": "claude-code live-matrix assemble-external",
+                    "status": "assembled",
+                    "evidence": str(args.evidence),
+                    "provenance": str(args.provenance),
+                    "out": str(args.out),
+                    "promotes_scenario_live_flags": False,
                 })
             if args.evidence is None:
                 return emit_failed({

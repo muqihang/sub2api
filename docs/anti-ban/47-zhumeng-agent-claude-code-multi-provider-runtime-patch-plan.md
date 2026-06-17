@@ -1464,6 +1464,18 @@ CP5 exit gate：
 - 测试和审查通过后再 commit；
 - 清理不再使用的后台代理/进程。
 
+CP8 外部 live 证据组装流程：
+
+1. 使用专用证据目录收集 provider provenance，不能指向源码 worktree：
+   `zhumeng-agent claude-code live-matrix --collect-provider-provenance --run-id <run-id> --output-root <evidence-root>`。
+2. 将上一步输出的 `live_provenance` 保存为 JSON，并与已完成的 live matrix scenario 证据组装：
+   `zhumeng-agent claude-code live-matrix --assemble-external --evidence <matrix.json> --provenance <provenance.json> --out <external-matrix.json>`。
+3. 组装器只绑定 provider provenance 并设置 `mode=external_provider_live_matrix`；它不得把 loopback/mock fixture 提升为 `live_provider_verified=true`，不得生成 scenario artifact。
+4. `--collect-provider-provenance`、`--assemble-external`、`--strict-live` 是互斥模式；组装输入若包含 inline headers/body/prompt/token/secret/payload 等敏感或 raw 字段必须 fail closed，不能写出外部矩阵。
+5. 严格验收必须再次运行：
+   `zhumeng-agent claude-code live-matrix --evidence <external-matrix.json> --strict-live`。
+   只有当 Claude/GPT/DeepSeek provider provenance 与全部 CP8 scenario live artifacts 均为同一 `run_id`、hash 校验通过且无敏感内容时，才能进入 `external_live_passed`。
+
 ## 16. 风险与缓解
 
 | 风险 | 级别 | 缓解 |
