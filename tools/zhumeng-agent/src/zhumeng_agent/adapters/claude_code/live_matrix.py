@@ -91,6 +91,25 @@ _STRICT_LIVE_PROVIDER_HOSTS = {
     "openai": frozenset({"api.openai.com"}),
     "deepseek": frozenset({"api.deepseek.com"}),
 }
+_STRICT_LIVE_PROVIDER_ENDPOINTS = {
+    "claude": frozenset({"https://api.anthropic.com/v1/messages"}),
+    "openai": frozenset({"https://api.openai.com/v1/responses"}),
+    "deepseek": frozenset({"https://api.deepseek.com/anthropic/v1/messages"}),
+}
+_STRICT_LIVE_SCENARIO_PROVIDERS: dict[str, tuple[str, ...]] = {
+    "claude_native": ("claude",),
+    "gpt_bridge": ("openai",),
+    "deepseek_bridge": ("deepseek",),
+    "subagent": ("openai", "deepseek"),
+    "claude_deepseek_subagent_claude": ("claude", "deepseek"),
+    "manual_provider_switch": ("claude", "openai", "deepseek"),
+    "toolsearch_mcp": ("openai", "deepseek"),
+    "workflow": ("openai", "deepseek"),
+    "long_context": ("deepseek",),
+    "interruption": ("claude", "openai", "deepseek"),
+    "cache_account_audit": ("claude", "openai", "deepseek"),
+    "netwatch_bypass": ("claude", "openai", "deepseek"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +209,7 @@ def verify_cp8_live_matrix(
                     client_type="",
                 )
             continue
-        result = _verify_scenario(name, raw, strict_live=strict_live, evidence_root=root, run_id=_strict_live_run_id(payload) if strict_live else "")
+        result = _verify_scenario(name, raw, strict_live=strict_live, evidence_root=root, payload=payload, run_id=_strict_live_run_id(payload) if strict_live else "")
         results[name] = result
         if name == "claude_native" and result.status == "pass":
             _add_count(native_egress, "claude_code_native", _int(raw.get("native_egress_count")))
@@ -301,6 +320,7 @@ def _verify_scenario(
     *,
     strict_live: bool,
     evidence_root: Path | None,
+    payload: Mapping[str, object],
     run_id: str = "",
 ) -> CP8ScenarioResult:
     issues: list[str] = []
@@ -322,6 +342,7 @@ def _verify_scenario(
         run_id=run_id,
         route=route,
         client_type=client_type,
+        provider_proofs=_strict_live_provider_proof_index(payload, evidence_root=evidence_root),
     ):
         issues.append("external live scenario artifact missing or invalid")
     native_count = _int(raw.get("native_egress_count"))
@@ -434,10 +455,14 @@ def _strict_live_scenario_artifact_verified(
     run_id: str,
     route: str,
     client_type: str,
+    provider_proofs: Mapping[str, tuple[Mapping[str, object], ...]],
 ) -> bool:
     if evidence_root is None or not isinstance(value, list) or not run_id:
         return False
     root = evidence_root.resolve(strict=False)
+    required_providers = _STRICT_LIVE_SCENARIO_PROVIDERS.get(scenario, ())
+    if not required_providers:
+        return False
     for raw in value:
         if not isinstance(raw, Mapping):
             continue
@@ -453,7 +478,11 @@ def _strict_live_scenario_artifact_verified(
             continue
         if not isinstance(payload, Mapping):
             continue
-        if (
+        provider_refs = tuple(str(item).strip() for item in payload.get("provider_provenance_refs") or () if str(item).strip())
+        provider = str(payload.get("provider") or "").strip()
+        endpoint = str(payload.get("endpoint") or "").strip()
+        upstream_request_id = str(payload.get("upstream_request_id") or "").strip()
+        if not (
             payload.get("schema_version") == "cp8-live-scenario-evidence-v1"
             and payload.get("checkpoint") == "CP8"
             and str(payload.get("run_id") or "") == run_id
@@ -461,11 +490,48 @@ def _strict_live_scenario_artifact_verified(
             and payload.get("status") == "pass"
             and payload.get("live_provider_verified") is True
             and payload.get("raw_sensitive_stored") is False
+            and payload.get("loopback") is False
             and str(payload.get("route") or "") == route
             and str(payload.get("client_type") or "") == client_type
+            and provider in required_providers
+            and upstream_request_id
+            and provider_refs
+            and _external_live_endpoint(provider, endpoint)
         ):
-            return True
+            continue
+        for proof in provider_proofs.get(provider, ()):
+            proof_request_id = str(proof.get("upstream_request_id") or "").strip()
+            proof_endpoint = str(proof.get("endpoint") or "").strip()
+            proof_refs = tuple(str(item).strip() for item in proof.get("artifact_paths") or () if str(item).strip())
+            if proof_request_id == upstream_request_id and proof_endpoint == endpoint and bool(set(provider_refs).intersection(proof_refs)):
+                return True
     return False
+
+
+def _strict_live_provider_proof_index(payload: Mapping[str, object], *, evidence_root: Path | None) -> dict[str, tuple[Mapping[str, object], ...]]:
+    provenance = payload.get("live_provenance")
+    if evidence_root is None or not isinstance(provenance, Mapping):
+        return {}
+    run_id = str(provenance.get("run_id") or "").strip()
+    providers = provenance.get("providers")
+    if not run_id or not isinstance(providers, Mapping):
+        return {}
+    out: dict[str, list[Mapping[str, object]]] = {}
+    for provider, raw in providers.items():
+        if not isinstance(raw, Mapping):
+            continue
+        proofs = _strict_live_provider_artifact_payloads(
+            raw.get("artifact_refs"),
+            evidence_root=evidence_root,
+            provider=str(provider),
+            credential_scope=str(raw.get("credential_scope") or ""),
+            endpoint=str(raw.get("endpoint") or ""),
+            run_id=run_id,
+        )
+        if proofs:
+            out[str(provider)] = list(proofs)
+    return {key: tuple(value) for key, value in out.items()}
+
 
 def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_root: Path | None) -> bool:
     if payload.get("mode") != "external_provider_live_matrix":
@@ -510,6 +576,10 @@ def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_
 
 
 def _external_live_endpoint(provider: str, endpoint: str) -> bool:
+    endpoint = str(endpoint or "").strip()
+    allowed_endpoints = _STRICT_LIVE_PROVIDER_ENDPOINTS.get(provider)
+    if not allowed_endpoints or endpoint not in allowed_endpoints:
+        return False
     parsed = urlparse(endpoint)
     if parsed.scheme != "https":
         return False
@@ -535,9 +605,29 @@ def _strict_live_provider_artifacts_verified(
     endpoint: str,
     run_id: str,
 ) -> bool:
+    return bool(_strict_live_provider_artifact_payloads(
+        value,
+        evidence_root=evidence_root,
+        provider=provider,
+        credential_scope=credential_scope,
+        endpoint=endpoint,
+        run_id=run_id,
+    ))
+
+
+def _strict_live_provider_artifact_payloads(
+    value: object,
+    *,
+    evidence_root: Path | None,
+    provider: str,
+    credential_scope: str,
+    endpoint: str,
+    run_id: str,
+) -> tuple[Mapping[str, object], ...]:
     if evidence_root is None or not isinstance(value, list):
-        return False
+        return ()
     root = evidence_root.resolve(strict=False)
+    verified: list[Mapping[str, object]] = []
     for raw in value:
         if not isinstance(raw, Mapping):
             continue
@@ -553,8 +643,9 @@ def _strict_live_provider_artifacts_verified(
             continue
         if not isinstance(payload, Mapping):
             continue
-        host = (urlparse(endpoint).hostname or "").lower()
-        artifact_endpoint = str(payload.get("endpoint") or "")
+        expected_endpoint = str(endpoint or "").strip()
+        host = (urlparse(expected_endpoint).hostname or "").lower()
+        artifact_endpoint = str(payload.get("endpoint") or "").strip()
         artifact_host = str(payload.get("host") or urlparse(artifact_endpoint).hostname or "").lower()
         if (
             payload.get("schema_version") == "cp8-live-provider-provenance-v1"
@@ -565,12 +656,16 @@ def _strict_live_provider_artifacts_verified(
             and payload.get("external_live_verified") is True
             and payload.get("loopback") is False
             and artifact_host == host
-            and _external_live_endpoint(provider, artifact_endpoint or endpoint)
+            and artifact_endpoint == expected_endpoint
+            and _external_live_endpoint(provider, artifact_endpoint)
             and _success_status(_int(payload.get("response_status")))
             and bool(str(payload.get("upstream_request_id") or "").strip())
         ):
-            return True
-    return False
+            enriched = dict(payload)
+            enriched["artifact_paths"] = (rel,)
+            verified.append(enriched)
+    return tuple(verified)
+
 
 def _artifact_ref_issues(value: object, *, evidence_root: Path | None) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
@@ -670,9 +765,17 @@ def write_cp8_live_scenario_evidence(
         "status": "pass" if raw.get("status") == "pass" else "fail",
         "live_provider_verified": raw.get("live_provider_verified") is True,
         "raw_sensitive_stored": False,
+        "loopback": raw.get("loopback") is True if "loopback" in raw else False,
         "route": str(route or ""),
         "client_type": str(client_type or ""),
     }
+    for key in ("provider", "endpoint", "upstream_request_id"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):
+            artifact_payload[key] = value.strip()
+    refs = raw.get("provider_provenance_refs")
+    if isinstance(refs, list) and all(isinstance(item, str) and item.strip() and ".." not in Path(item).parts and not item.startswith("/") for item in refs):
+        artifact_payload["provider_provenance_refs"] = sorted({item.strip() for item in refs})
     for key in ("summary", "notes", "artifact_summary", "safe_evidence_summary"):
         value = raw.get(key)
         if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):

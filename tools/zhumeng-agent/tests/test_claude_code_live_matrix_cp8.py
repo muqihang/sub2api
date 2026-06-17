@@ -23,10 +23,56 @@ def _fixture(name: str) -> dict[str, object]:
 
 
 
+def _scenario_provider(name: str) -> str:
+    return {
+        "claude_native": "claude",
+        "gpt_bridge": "openai",
+        "deepseek_bridge": "deepseek",
+        "subagent": "openai",
+        "claude_deepseek_subagent_claude": "deepseek",
+        "manual_provider_switch": "deepseek",
+        "toolsearch_mcp": "deepseek",
+        "workflow": "deepseek",
+        "long_context": "deepseek",
+        "interruption": "openai",
+        "cache_account_audit": "deepseek",
+        "netwatch_bypass": "claude",
+    }[name]
+
+
+def _provider_endpoint(provider: str) -> str:
+    return {
+        "claude": "https://api.anthropic.com/v1/messages",
+        "openai": "https://api.openai.com/v1/responses",
+        "deepseek": "https://api.deepseek.com/anthropic/v1/messages",
+    }[provider]
+
+
+def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
+    candidates = [
+        root / "artifacts" / f"{provider}_live_provenance.json",
+        root / "artifacts" / f"{provider}_live.json",
+        root / "artifacts" / f"provider_{provider}.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("provider") == provider and payload.get("schema_version") == "cp8-live-provider-provenance-v1":
+            return (
+                "artifacts/" + path.name,
+                str(payload.get("endpoint") or _provider_endpoint(provider)),
+                str(payload.get("upstream_request_id") or f"req_{provider}_live"),
+            )
+    return (f"artifacts/{provider}_live.json", _provider_endpoint(provider), f"req_{provider}_live")
+
+
 def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
+        provider = _scenario_provider(name)
+        provider_ref, endpoint, request_id = _provider_live_artifact(root, provider)
         artifact = artifacts_dir / f"scenario_{name}.json"
         artifact.write_text(
             json.dumps(
@@ -38,8 +84,13 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
                     "status": "pass",
                     "live_provider_verified": True,
                     "raw_sensitive_stored": False,
+                    "loopback": False,
                     "route": scenario.get("route", ""),
                     "client_type": scenario.get("client_type", ""),
+                    "provider": provider,
+                    "endpoint": endpoint,
+                    "upstream_request_id": request_id,
+                    "provider_provenance_refs": [provider_ref],
                 },
                 ensure_ascii=True,
                 sort_keys=True,
@@ -53,6 +104,7 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
                 "sensitive_scan_clean": True,
             }
         ]
+
 
 
 def test_cp8_live_matrix_fixture_covers_all_required_scenarios_without_native_contamination():
@@ -393,6 +445,168 @@ def test_cp8_strict_live_accepts_provider_bound_external_artifacts(tmp_path: Pat
     assert result.strict_live_ready is True
     assert result.release_gate == "external_live_passed"
 
+
+def test_cp8_strict_live_rejects_wrong_endpoint_even_when_provider_and_scenario_match(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-live-wrong-openai-path"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/chat/completions"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
+    assert "gpt_bridge" in result.failed
+
+
+def test_cp8_strict_live_rejects_minimal_or_mismatched_scenario_artifacts(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-live-run-forgery"
+    payload["live_provenance"] = {"credential_backed": True, "loopback_only": False, "run_id": run_id, "providers": {}}
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "artifact_refs": [{"path": f"artifacts/{provider}_live.json", "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(), "sensitive_scan_clean": True}],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+
+    claude_ref = payload["scenarios"]["claude_native"]["artifact_refs"][0]
+    claude_artifact = tmp_path / claude_ref["path"]
+    body = json.loads(claude_artifact.read_text(encoding="utf-8"))
+    body.pop("endpoint")
+    claude_artifact.write_text(json.dumps(body, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    claude_ref["sha256"] = "sha256:" + hashlib.sha256(claude_artifact.read_bytes()).hexdigest()
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+    assert result.status == "fail"
+    assert "claude_native" in result.failed
+
+    body["endpoint"] = "https://api.anthropic.com/v1/messages"
+    body["upstream_request_id"] = "req_not_in_provider_proof"
+    claude_artifact.write_text(json.dumps(body, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    claude_ref["sha256"] = "sha256:" + hashlib.sha256(claude_artifact.read_bytes()).hexdigest()
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+    assert result.status == "fail"
+    assert "claude_native" in result.failed
+
+
+
+def test_cp8_strict_live_rejects_provider_artifact_endpoint_path_drift(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-live-endpoint-drift"
+    payload["live_provenance"] = {"credential_backed": True, "loopback_only": False, "run_id": run_id, "providers": {}}
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        artifact_endpoint = "https://api.openai.com/v1/chat/completions" if provider == "openai" else endpoint
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "credential_scope": scope,
+            "endpoint": artifact_endpoint,
+            "host": artifact_endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "artifact_refs": [{"path": f"artifacts/{provider}_live.json", "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(), "sensitive_scan_clean": True}],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
+    assert "gpt_bridge" in result.failed
+    assert any("external live scenario artifact" in issue for issue in result.scenario_results["gpt_bridge"].issues)
 
 def test_cp8_live_matrix_fails_closed_for_non_object_scenarios():
     payload = _fixture("live_matrix_pass.json")
@@ -740,6 +954,11 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
             "status": "pass",
             "live_provider_verified": True,
             "raw_sensitive_stored": False,
+            "loopback": False,
+            "provider": "deepseek",
+            "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+            "upstream_request_id": "req_deepseek",
+            "provider_provenance_refs": ["artifacts/provider_deepseek.json"],
             "notes": "safe summary only",
             "authorization": "Bearer must-not-be-written",
         },

@@ -142,6 +142,8 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
         assert "--route-hint-secret-env" in plan.command
         assert plan.env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] == "sub2api-entry"
         assert plan.env["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "route-hint-secret"
+        assert plan.env["ZHUMENG_CLAUDE_RUNTIME_HASH"] == "sha256:" + "1" * 64
+        assert plan.env["ZHUMENG_CLAUDE_OVERLAY_HASH"] == "sha256:" + "2" * 64
         yield SimpleNamespace(process=SimpleNamespace(pid=12345), ready={"listen": "http://127.0.0.1:43117"})
 
     def fake_process_runner(command, *, env, cwd):
@@ -156,6 +158,8 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
         attestation_secret="attestation-secret",
         route_hint_secret="route-hint-secret",
         route_hint_catalog_version="cp4-test-v1",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
         config_root=tmp_path / "zhumeng-state",
         project_cwd=project_cwd,
         guard_listen_port=43117,
@@ -190,6 +194,52 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert catalog["entries"]["claude-sonnet-4-6"]["client_type"] == "claude_code_native"
     assert catalog["entries"]["claude-sonnet-4-6"]["formal_pool_allowed"] is True
     assert "local-user-key" not in "\n".join(launch["env"].values())
+
+
+def test_managed_launch_can_explicitly_enable_bridge_live_models_without_formal_pool_pollution(tmp_path: Path):
+    captured = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        captured["guard_plan"] = plan
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        return 0
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        bridge_live_models=("gpt-5.5", "deepseek-v4-pro", "agnes-1"),
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+        inherited_env={"PATH": "/usr/bin"},
+    )
+
+    assert result.returncode == 0
+    catalog = json.loads(Path(captured["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH"]).read_text(encoding="utf-8"))
+    assert catalog["entries"]["gpt-5.5"]["live_enabled"] is True
+    assert catalog["entries"]["gpt-5.5"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["deepseek-v4-pro"]["live_enabled"] is True
+    assert catalog["entries"]["deepseek-v4-pro"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["agnes-1"]["live_enabled"] is False
+    assert catalog["entries"]["agnes-1"]["formal_pool_allowed"] is False
 
 
 def test_managed_launch_preload_node_options_loads_from_paths_with_spaces(tmp_path: Path):

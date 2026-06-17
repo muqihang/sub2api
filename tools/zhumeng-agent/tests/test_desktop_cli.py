@@ -1,3 +1,4 @@
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -31,6 +32,7 @@ def restore_cli_defaults():
             "codex_doctor_report",
             "codex_app_is_running",
             "run_managed_claude_code",
+            "state_dir",
         )
         if hasattr(cli, name)
     }
@@ -44,6 +46,47 @@ def parse_output(capsys):
     assert out
     return json.loads(out)
 
+
+
+def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: bytes = b"managed-claude-code") -> tuple[Path, str, str]:
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(payload)
+    runtime_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
+    overlay_hash = "sha256:" + "2" * 64
+    manifest_dir = runtime_root / "claude-code" / "2.1.175"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / "manifest.json"
+    manifest = {
+        "runtime": "claude-code",
+        "upstream_version": "2.1.175",
+        "zhumeng_runtime_version": "0.1.0",
+        "source": "npm:@anthropic-ai/claude-code@2.1.175",
+        "upstream_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"],
+        "cch_profile": "claude_code_2_1_175",
+        "status": "ready",
+        "executable_path": str(executable.resolve(strict=False)),
+    }
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    patches_path = manifest_dir / "patches.json"
+    patches_path.write_text(json.dumps({"runtime": "claude-code", "upstream_version": "2.1.175", "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"], "live_bridge_models_enabled": False}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    manifest_hash = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    patches_hash = "sha256:" + hashlib.sha256(patches_path.read_bytes()).hexdigest()
+    (manifest_dir / "hash.lock").write_text(
+        json.dumps({
+            "runtime": "claude-code",
+            "upstream_version": "2.1.175",
+            "manifest_hash": manifest_hash,
+            "locked_files": {"manifest.json": manifest_hash, "patches.json": patches_hash},
+        }, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    (runtime_root / "claude-code" / "active").write_text(
+        json.dumps({"runtime": "claude-code", "status": "enabled", "active_version": "2.1.175", "manifest_path": str(manifest_path)}, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    return executable.resolve(strict=False), runtime_hash, overlay_hash
 
 class MemoryStore:
     def __init__(self, payload=None):
@@ -247,7 +290,13 @@ def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, m
             ),
         )
 
+    state_root = tmp_path / "zhumeng-state"
+    managed_executable, runtime_hash, overlay_hash = write_fake_claude_runtime(
+        state_root / "runtimes",
+        tmp_path / "managed-runtime" / "claude",
+    )
     cli.default_state_store = lambda: store
+    cli.state_dir = lambda: state_root
     cli.choose_local_proxy_port = lambda preferred=None: 43117
     monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code)
 
@@ -259,6 +308,11 @@ def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, m
     assert payload["status"] == "exited"
     assert payload["data"]["guard"]["listen"] == "http://127.0.0.1:43117"
     assert payload["data"]["claude_base_url"] == "http://127.0.0.1:43117"
+    assert calls[0]["executable"] == managed_executable
+    assert calls[0]["runtime_hash"] == runtime_hash
+    assert calls[0]["overlay_hash"] == overlay_hash
+    assert payload["data"]["runtime"]["executable"] == str(managed_executable)
+    assert payload["data"]["runtime"]["runtime_hash"] == runtime_hash
     assert calls[0]["upstream_base"] == "http://127.0.0.1:18080"
     assert calls[0]["sub2api_auth"] == "sub2api-entry-secret"
     assert calls[0]["managed_session_id"] == "managed-session"

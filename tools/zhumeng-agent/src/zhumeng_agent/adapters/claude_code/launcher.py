@@ -108,6 +108,9 @@ def run_managed_claude_code(
     route_hint_catalog_version: str = "cp4-cli-fixture-v1",
     managed_session_id: str | None = None,
     device_id: int | None = None,
+    runtime_hash: str | None = None,
+    overlay_hash: str | None = None,
+    bridge_live_models: tuple[str, ...] = (),
     config_root: Path,
     project_cwd: Path | None = None,
     guard_listen_port: int,
@@ -138,6 +141,9 @@ def run_managed_claude_code(
         allow_nonloopback_upstream=True,
         managed_session_id=managed_session_id,
         device_id=device_id,
+        runtime_hash=runtime_hash,
+        overlay_hash=overlay_hash,
+        bridge_live_models=tuple(bridge_live_models),
     )
     guard_plan = build_native_guard_plan(guard_config, inherited_env=inherited_env)
     with start_guard(guard_plan, ready_timeout_seconds=ready_timeout_seconds) as guard:
@@ -218,6 +224,7 @@ def _route_hint_catalog_payload(guard_plan: NativeGuardPlan) -> dict[str, object
         overlay_hash=guard_plan.env["ZHUMENG_CLAUDE_OVERLAY_HASH"],
         catalog_hash=guard_plan.env["ZHUMENG_CLAUDE_CATALOG_HASH"],
         catalog_version=guard_plan.config.route_hint_catalog_version,
+        bridge_live_models=tuple(guard_plan.config.bridge_live_models),
     )
     expected_catalog_hash = route_trust.route_catalog_content_hash(catalog)
     if catalog.catalog_hash != expected_catalog_hash:

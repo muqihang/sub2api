@@ -51,6 +51,9 @@ class NativeGuardConfig:
     agent_version: str = "0.1.0"
     route_hint_secret: str | None = field(default=None, repr=False)
     route_hint_catalog_version: str = "cp4-cli-fixture-v1"
+    runtime_hash: str | None = None
+    overlay_hash: str | None = None
+    bridge_live_models: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in set(NativeGuardMode):
@@ -196,9 +199,11 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
     env["NO_PROXY"] = _MANAGED_NO_PROXY
     env["no_proxy"] = _MANAGED_NO_PROXY
     env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] = config.sub2api_auth
-    env["ZHUMENG_CLAUDE_RUNTIME_HASH"] = _sha256_file(config.repo_root / "tools" / "cli_control_plane_guard.py")
-    env["ZHUMENG_CLAUDE_OVERLAY_HASH"] = _CP0_OVERLAY_HASH
-    env["ZHUMENG_CLAUDE_CATALOG_HASH"] = _route_catalog_content_hash(config.repo_root, config.route_hint_catalog_version)
+    env["ZHUMENG_CLAUDE_RUNTIME_HASH"] = config.runtime_hash or _sha256_file(config.repo_root / "tools" / "cli_control_plane_guard.py")
+    env["ZHUMENG_CLAUDE_OVERLAY_HASH"] = config.overlay_hash or _CP0_OVERLAY_HASH
+    env["ZHUMENG_CLAUDE_CATALOG_HASH"] = _route_catalog_content_hash(config.repo_root, config.route_hint_catalog_version, config.bridge_live_models)
+    if config.bridge_live_models:
+        env["ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS"] = ",".join(config.bridge_live_models)
     if config.control_plane_intent_auth is not None:
         env["SUB2API_CONTROL_PLANE_INTENT_TOKEN"] = config.control_plane_intent_auth
     if config.attestation_secret is not None:
@@ -293,13 +298,14 @@ def _sha256_file(path: Path) -> str:
     return "sha256:" + digest
 
 
-def _route_catalog_content_hash(repo_root: Path, catalog_version: str) -> str:
+def _route_catalog_content_hash(repo_root: Path, catalog_version: str, bridge_live_models: tuple[str, ...] = ()) -> str:
     route_trust = _load_route_trust_module(repo_root)
     catalog = route_trust.cp4_fixture_route_catalog(
         runtime_hash=_UNKNOWN_HASH,
         overlay_hash=_UNKNOWN_HASH,
         catalog_hash=_UNKNOWN_HASH,
         catalog_version=catalog_version,
+        bridge_live_models=bridge_live_models,
     )
     return str(route_trust.route_catalog_content_hash(catalog))
 

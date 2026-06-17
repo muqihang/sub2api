@@ -97,10 +97,12 @@ def cp4_fixture_route_catalog(
     overlay_hash: str = _UNKNOWN_HASH,
     catalog_hash: str = _UNKNOWN_HASH,
     catalog_version: str = "cp4-fixture-v1",
+    bridge_live_models: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
 ) -> RouteCatalog:
     runtime_hash = _normalize_hash(runtime_hash, "runtime_hash")
     overlay_hash = _normalize_hash(overlay_hash, "overlay_hash")
     catalog_hash = _normalize_hash(catalog_hash, "catalog_hash")
+    bridge_live_model_set = {str(model).strip() for model in bridge_live_models if str(model).strip()}
     def native(model_id: str) -> RouteCatalogEntry:
         return RouteCatalogEntry(
             model_id=model_id,
@@ -116,12 +118,13 @@ def cp4_fixture_route_catalog(
         )
 
     def bridge(model_id: str, provider: str, route: str, client_type: str) -> RouteCatalogEntry:
+        live_enabled = model_id in bridge_live_model_set and provider in {"openai", "deepseek"}
         return RouteCatalogEntry(
             model_id=model_id,
             provider=provider,
             route=route,
             client_type=client_type,
-            live_enabled=False,
+            live_enabled=live_enabled,
             formal_pool_allowed=False,
             native_attestation_allowed=False,
             provider_owner="zhumeng_managed",

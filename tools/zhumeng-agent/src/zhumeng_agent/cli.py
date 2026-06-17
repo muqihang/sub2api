@@ -14,7 +14,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .adapters.codex.config_manager import CodexConfigManager, choose_local_proxy_port, discover_git_project_path
 from .adapters.codex.capture_baseline import generate_capture_baseline
@@ -44,6 +44,7 @@ from .adapters.claude_code.runtime_installer import (
     build_shell_alias_plan,
     disable_managed_runtime,
     read_managed_runtime_status,
+    resolve_active_managed_runtime,
     write_managed_runtime_artifacts,
 )
 from .adapters.claude_code.live_matrix import (
@@ -109,7 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_parser = subparsers.add_parser("claude-code")
     claude_code_subparsers = claude_code_parser.add_subparsers(dest="claude_code_command", required=True)
     claude_code_start = claude_code_subparsers.add_parser("start")
-    claude_code_start.add_argument("--executable", default="claude")
+    claude_code_start.add_argument("--executable", default=None, help="Override only for tests; production start resolves the active managed runtime manifest.")
+    claude_code_start.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
     claude_code_start.add_argument("--state-root", type=Path, default=state_dir())
     claude_code_start.add_argument("--project-cwd", type=Path, default=Path.cwd())
     claude_code_start.add_argument("--guard-port", type=int)
@@ -814,11 +816,13 @@ def desktop_open_app(app: str) -> dict[str, object]:
             "official_claude_unaffected": True,
         }
     if app == "claude-code":
+        runtime_state_root = state_dir()
         return build_claude_code_start_payload(
-            executable="claude",
-            state_root=state_dir(),
+            executable=None,
+            state_root=runtime_state_root,
             project_cwd=Path.cwd(),
             guard_port=None,
+            runtime_root=runtime_state_root / "runtimes",
             argv=[],
         )
     if app != "codex":
@@ -1311,9 +1315,10 @@ def handle_claude_code_start(args: argparse.Namespace) -> int:
             state_root=args.state_root,
             project_cwd=args.project_cwd,
             guard_port=args.guard_port,
+            runtime_root=args.runtime_root,
             argv=normalize_passthrough(args.args),
         )
-    except ValueError as err:
+    except (ValueError, RuntimeInstallerError) as err:
         return emit_failed({
             "command": "claude-code start",
             "status": "not_configured",
@@ -1454,6 +1459,7 @@ def build_claude_code_start_payload(
     state_root: Path,
     project_cwd: Path,
     guard_port: int | None,
+    runtime_root: Path,
     argv: list[str],
 ) -> dict[str, object]:
     store = default_state_store()
@@ -1462,10 +1468,14 @@ def build_claude_code_start_payload(
     if missing:
         raise ValueError(f"managed setup is incomplete: missing {', '.join(missing)}")
     selected_guard_port = int(guard_port or choose_local_proxy_port())
+    active_runtime = resolve_active_managed_runtime(runtime_root)
+    if executable is not None and str(Path(executable).expanduser()) != str(active_runtime.executable.expanduser()):
+        raise ValueError("zhumeng-claude start refuses executable drift outside the active managed runtime")
+    bridge_live_models = tuple(_active_runtime_bridge_live_models(active_runtime.patches))
     attestation_secret = require_server_native_attestation_secret(state)
     route_hint_secret = require_server_route_hint_secret(state)
     result = run_managed_claude_code(
-        executable=executable,
+        executable=active_runtime.executable,
         repo_root=Path(__file__).resolve().parents[4],
         upstream_base=str(state["gateway_base_url"]),
         sub2api_auth=str(state["access_token"]),
@@ -1473,6 +1483,9 @@ def build_claude_code_start_payload(
         route_hint_secret=route_hint_secret,
         managed_session_id=str(state.get("managed_session_id") or "") or None,
         device_id=int(state["device_id"]) if state.get("device_id") is not None else None,
+        runtime_hash=active_runtime.runtime_hash,
+        overlay_hash=active_runtime.overlay_hash,
+        bridge_live_models=bridge_live_models,
         config_root=state_root,
         project_cwd=project_cwd,
         guard_listen_port=selected_guard_port,
@@ -1492,7 +1505,29 @@ def build_claude_code_start_payload(
         },
         "claude_base_url": result.launch_plan.env.get("ANTHROPIC_BASE_URL"),
         "claude_code_api_base_url": result.launch_plan.env.get("CLAUDE_CODE_API_BASE_URL"),
+        "runtime": {
+            "version": active_runtime.upstream_version,
+            "manifest_path": str(active_runtime.manifest_path),
+            "runtime_hash": active_runtime.runtime_hash,
+            "overlay_hash": active_runtime.overlay_hash,
+            "executable": str(active_runtime.executable),
+            "bridge_live_models": list(bridge_live_models),
+        },
     }
+
+
+def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[str, ...]:
+    if patches.get("live_bridge_models_enabled") is not True:
+        return ()
+    raw = patches.get("live_bridge_model_allowlist")
+    if not isinstance(raw, list):
+        return ()
+    allowed = []
+    for item in raw:
+        model = str(item).strip()
+        if model in {"gpt-5.5", "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"}:
+            allowed.append(model)
+    return tuple(dict.fromkeys(allowed))
 
 
 def zhumeng_claude_main(argv: Sequence[str] | None = None) -> int:

@@ -1,6 +1,7 @@
 import argparse
 import base64
 import copy
+import io
 import json
 import socket
 import subprocess
@@ -26,6 +27,7 @@ from tools.cli_control_plane_guard import (
     deep_body_summary,
     redact_headers,
     validate_cp5_bridge_body,
+    main as guard_main,
 )
 from tools.claude_code_route_trust import (
     RouteCatalog,
@@ -33,6 +35,7 @@ from tools.claude_code_route_trust import (
     RouteHintReplayCache,
     build_signed_route_hint_headers,
     cp4_fixture_route_catalog,
+    route_catalog_content_hash,
     verify_signed_route_hint_headers,
 )
 from tools.cli_control_plane_policy import load_default_policy
@@ -67,6 +70,79 @@ class CliControlPlaneGuardTest(unittest.TestCase):
     def tearDown(self):
         self._native_secret_patch.stop()
 
+
+
+    def test_main_accepts_bridge_live_catalog_hash_from_env(self):
+        runtime_hash = 'sha256:' + '1' * 64
+        overlay_hash = 'sha256:' + '2' * 64
+        bridge_live_models = ('gpt-5.5', 'deepseek-v4-pro')
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash=runtime_hash,
+            overlay_hash=overlay_hash,
+            catalog_hash='sha256:' + '0' * 64,
+            catalog_version='cp4-cli-fixture-v1',
+            bridge_live_models=bridge_live_models,
+        )
+        catalog_hash = route_catalog_content_hash(catalog)
+        env = {
+            'ROUTE_HINT_SECRET': 'route-hint-secret',
+            'ZHUMENG_CLAUDE_RUNTIME_HASH': runtime_hash,
+            'ZHUMENG_CLAUDE_OVERLAY_HASH': overlay_hash,
+            'ZHUMENG_CLAUDE_CATALOG_HASH': catalog_hash,
+            'ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS': ','.join(bridge_live_models),
+        }
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as td, \
+             unittest.mock.patch.dict('os.environ', env, clear=False), \
+             unittest.mock.patch('sys.stdout', stdout), \
+             unittest.mock.patch('sys.stderr', stderr), \
+             unittest.mock.patch('tools.cli_control_plane_guard.time.sleep', side_effect=KeyboardInterrupt):
+            code = guard_main([
+                '--listen-port', str(_free_port()),
+                '--upstream-base', 'http://127.0.0.1:18080',
+                '--sub2api-auth', 'managed-access-token',
+                '--native-attestation',
+                '--route-hint-secret-env', 'ROUTE_HINT_SECRET',
+                '--summary-path', str(Path(td) / 'summary.jsonl'),
+            ])
+
+        self.assertEqual(code, 0)
+        self.assertIn('"listen": "http://127.0.0.1:', stdout.getvalue())
+        self.assertNotIn('route hint catalog hash mismatch', stderr.getvalue())
+
+    def test_main_rejects_bridge_live_catalog_hash_without_matching_env(self):
+        runtime_hash = 'sha256:' + '1' * 64
+        overlay_hash = 'sha256:' + '2' * 64
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash=runtime_hash,
+            overlay_hash=overlay_hash,
+            catalog_hash='sha256:' + '0' * 64,
+            catalog_version='cp4-cli-fixture-v1',
+            bridge_live_models=('gpt-5.5', 'deepseek-v4-pro'),
+        )
+        env = {
+            'ROUTE_HINT_SECRET': 'route-hint-secret',
+            'ZHUMENG_CLAUDE_RUNTIME_HASH': runtime_hash,
+            'ZHUMENG_CLAUDE_OVERLAY_HASH': overlay_hash,
+            'ZHUMENG_CLAUDE_CATALOG_HASH': route_catalog_content_hash(catalog),
+            'ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS': '',
+        }
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as td, \
+             unittest.mock.patch.dict('os.environ', env, clear=False), \
+             unittest.mock.patch('sys.stderr', stderr):
+            code = guard_main([
+                '--listen-port', str(_free_port()),
+                '--upstream-base', 'http://127.0.0.1:18080',
+                '--sub2api-auth', 'managed-access-token',
+                '--route-hint-secret-env', 'ROUTE_HINT_SECRET',
+                '--summary-path', str(Path(td) / 'summary.jsonl'),
+            ])
+
+        self.assertEqual(code, 2)
+        self.assertIn('route hint catalog hash mismatch', stderr.getvalue())
 
     def test_root_dir_is_current_repo_root(self):
         self.assertEqual(Path(root_dir()).resolve(), Path(__file__).resolve().parents[2])

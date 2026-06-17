@@ -1284,14 +1284,14 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
         ),
         RuntimeModelOverlayEntry(
             model_id="agnes-1",
-            display_label="AGNES 1",
+            display_label="AGNES 1 (Experimental)",
             provider="agnes",
             route="agnes_bridge",
             client_type="claude_code_bridge_agnes",
             live_enabled=False,
             formal_pool_eligible=False,
             catalog_source="internal_display_placeholder",
-            compatibility_status="internal_placeholder_not_runtime_verified",
+            compatibility_status="experimental_hidden_not_runtime_verified",
         ),
         RuntimeModelOverlayEntry(
             model_id="glm-5.2",

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -585,6 +586,83 @@ def test_reauth_does_not_promote_non_server_route_hint_secret(capsys, tmp_path: 
     assert store.payload.get("claude_code_route_hint_secret", "") == ""
     assert store.payload.get("claude_code_route_hint_secret_source", "") == ""
 
+def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: bytes = b"managed-claude-code", patches: dict[str, object] | None = None) -> tuple[Path, str, str]:
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(payload)
+    runtime_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
+    overlay_hash = "sha256:" + "2" * 64
+    manifest_dir = runtime_root / "claude-code" / "2.1.175"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / "manifest.json"
+    manifest = {
+        "runtime": "claude-code",
+        "upstream_version": "2.1.175",
+        "zhumeng_runtime_version": "0.1.0",
+        "source": "npm:@anthropic-ai/claude-code@2.1.175",
+        "upstream_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"],
+        "cch_profile": "claude_code_2_1_175",
+        "status": "ready",
+        "executable_path": str(executable.resolve(strict=False)),
+    }
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    patch_payload = {"runtime": "claude-code", "upstream_version": "2.1.175", "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"], "live_bridge_models_enabled": False}
+    if patches:
+        patch_payload.update(patches)
+    patches_path = manifest_dir / "patches.json"
+    patches_path.write_text(json.dumps(patch_payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    manifest_hash = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    patches_hash = "sha256:" + hashlib.sha256(patches_path.read_bytes()).hexdigest()
+    (manifest_dir / "hash.lock").write_text(
+        json.dumps({
+            "runtime": "claude-code",
+            "upstream_version": "2.1.175",
+            "manifest_hash": manifest_hash,
+            "locked_files": {"manifest.json": manifest_hash, "patches.json": patches_hash},
+        }, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    active_pointer = runtime_root / "claude-code" / "active"
+    active_pointer.write_text(
+        json.dumps({"runtime": "claude-code", "status": "enabled", "active_version": "2.1.175", "manifest_path": str(manifest_path)}, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    return executable.resolve(strict=False), runtime_hash, overlay_hash
+
+
+def test_active_runtime_bridge_live_models_fail_closed_on_missing_or_malformed_allowlist():
+    assert cli._active_runtime_bridge_live_models({"live_bridge_models_enabled": True}) == ()
+    assert cli._active_runtime_bridge_live_models({
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": "gpt-5.5",
+    }) == ()
+
+
+def test_active_runtime_bridge_live_models_only_allows_cp4_catalog_verified_bridge_models():
+    assert cli._active_runtime_bridge_live_models({
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "deepseek-v4-pro",
+            "deepseek-v4-pro[1m]",
+            "deepseek-v4-flash",
+            "agnes-1",
+            "glm-5.1",
+            "kimi-k2",
+            "claude-opus-4-8",
+            "gpt-5.5",
+        ],
+    }) == (
+        "gpt-5.5",
+        "deepseek-v4-pro",
+        "deepseek-v4-pro[1m]",
+        "deepseek-v4-flash",
+    )
+
+
 def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):
@@ -608,6 +686,13 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
         def update(self, patch):
             self.patch = patch
             return {**self.read(), **patch}
+
+    runtime_root = tmp_path / "runtimes"
+    managed_executable, runtime_hash, overlay_hash = write_fake_claude_runtime(
+        runtime_root,
+        tmp_path / "managed-runtime" / "claude",
+        patches={"live_bridge_models_enabled": True, "live_bridge_model_allowlist": ["gpt-5.5", "deepseek-v4-pro", "agnes-1"]},
+    )
 
     calls = []
 
@@ -638,8 +723,8 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     exit_code = main([
         "claude-code",
         "start",
-        "--executable",
-        str(tmp_path / "claude"),
+        "--runtime-root",
+        str(runtime_root),
         "--state-root",
         str(tmp_path / "zhumeng-state"),
         "--project-cwd",
@@ -655,6 +740,13 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert data["guard"]["listen"] == "http://127.0.0.1:43117"
     assert data["guard"]["route_hint_contract"] is True
     assert data["claude_base_url"] == "http://127.0.0.1:43117"
+    assert calls[0]["executable"] == managed_executable
+    assert calls[0]["runtime_hash"] == runtime_hash
+    assert calls[0]["overlay_hash"] == overlay_hash
+    assert data["runtime"]["version"] == "2.1.175"
+    assert data["runtime"]["runtime_hash"] == runtime_hash
+    assert calls[0]["bridge_live_models"] == ("gpt-5.5", "deepseek-v4-pro")
+    assert data["runtime"]["bridge_live_models"] == ["gpt-5.5", "deepseek-v4-pro"]
     assert calls[0]["upstream_base"] == "http://127.0.0.1:18080"
     assert calls[0]["sub2api_auth"] == "sub2api-entry-secret"
     assert calls[0]["managed_session_id"] == "managed-session"
@@ -666,6 +758,52 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     dumped = json.dumps(data)
     assert "sub2api-entry-secret" not in dumped
     assert "attestation-secret" not in dumped
+
+
+def test_claude_code_start_rejects_explicit_executable_drift(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "http://127.0.0.1:18080",
+                "access_token": "sub2api-entry-secret",
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    calls = []
+    cli.default_state_store = lambda: FakeStore()
+    monkeypatch.setattr(cli, "run_managed_claude_code", lambda **kwargs: calls.append(kwargs), raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--executable",
+        str(tmp_path / "other-runtime" / "claude"),
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "not_configured"
+    assert "executable drift" in data["message"]
+    assert calls == []
 
 
 def test_claude_code_start_fails_closed_without_server_route_hint_secret(capsys, tmp_path: Path, monkeypatch):
@@ -686,6 +824,8 @@ def test_claude_code_start_fails_closed_without_server_route_hint_secret(capsys,
                 "claude_code_native_attestation_secret_source": "server",
             }
 
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
     calls = []
     cli.default_state_store = lambda: FakeStore()
     monkeypatch.setattr(cli, "run_managed_claude_code", lambda **kwargs: calls.append(kwargs), raising=False)
@@ -693,8 +833,8 @@ def test_claude_code_start_fails_closed_without_server_route_hint_secret(capsys,
     exit_code = main([
         "claude-code",
         "start",
-        "--executable",
-        str(tmp_path / "claude"),
+        "--runtime-root",
+        str(runtime_root),
         "--state-root",
         str(tmp_path / "zhumeng-state"),
         "--project-cwd",
@@ -725,6 +865,8 @@ def test_claude_code_start_fails_closed_without_server_native_attestation_secret
                 "loopback_secret": "loopback-secret",
             }
 
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
     calls = []
     cli.default_state_store = lambda: FakeStore()
     cli.generate_loopback_secret = lambda: "must-not-be-used"
@@ -733,8 +875,8 @@ def test_claude_code_start_fails_closed_without_server_native_attestation_secret
     exit_code = main([
         "claude-code",
         "start",
-        "--executable",
-        str(tmp_path / "claude"),
+        "--runtime-root",
+        str(runtime_root),
         "--state-root",
         str(tmp_path / "zhumeng-state"),
         "--project-cwd",

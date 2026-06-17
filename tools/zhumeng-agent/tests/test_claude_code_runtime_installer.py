@@ -16,6 +16,7 @@ from zhumeng_agent.adapters.claude_code.runtime_installer import (
     disable_managed_runtime,
     ensure_managed_runtime_write_path,
     read_managed_runtime_status,
+    resolve_active_managed_runtime,
     write_managed_runtime_artifacts,
 )
 
@@ -34,6 +35,13 @@ class VersionRunner:
 class ExplodingVersionRunner:
     def __call__(self, command: list[str], **kwargs: object) -> SimpleNamespace:
         raise FileNotFoundError("claude executable missing")
+
+
+def write_locked_patches(plan, patches: dict[str, object]) -> None:
+    plan.patches_path.write_text(json.dumps(patches, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    hash_lock = json.loads(plan.hash_lock_path.read_text(encoding="utf-8"))
+    hash_lock["locked_files"]["patches.json"] = "sha256:" + hashlib.sha256(plan.patches_path.read_bytes()).hexdigest()
+    plan.hash_lock_path.write_text(json.dumps(hash_lock, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 def test_runtime_installer_materializes_manifest_hash_lock_and_rollback_metadata(tmp_path: Path):
@@ -104,6 +112,123 @@ def test_runtime_installer_materializes_manifest_hash_lock_and_rollback_metadata
     assert status["active_version"] == "2.1.175"
     assert status["official_claude_unaffected"] is True
     assert status["integrity"]["status"] == "pass"
+
+
+def test_runtime_installer_active_manifest_binds_executable_hash(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed-claude-code-2.1.175")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    active = resolve_active_managed_runtime(runtime_root)
+
+    assert active.executable == executable.resolve(strict=False)
+    assert active.upstream_version == "2.1.175"
+    assert active.runtime_hash == "sha256:" + hashlib.sha256(b"managed-claude-code-2.1.175").hexdigest()
+    assert active.runtime_hash == plan.manifest.upstream_hash
+    assert active.overlay_hash == plan.manifest.overlay_hash
+    assert active.patches["live_bridge_models_enabled"] is False
+
+
+def test_runtime_installer_active_manifest_loads_bridge_live_patch_metadata(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed-claude-code-2.1.175")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+    patches = json.loads(plan.patches_path.read_text(encoding="utf-8"))
+    patches["live_bridge_models_enabled"] = True
+    patches["live_bridge_model_allowlist"] = ["gpt-5.5", "deepseek-v4-pro", "agnes-1"]
+    write_locked_patches(plan, patches)
+
+    active = resolve_active_managed_runtime(runtime_root)
+
+    assert active.patches["live_bridge_models_enabled"] is True
+    assert active.patches["live_bridge_model_allowlist"] == ["gpt-5.5", "deepseek-v4-pro", "agnes-1"]
+
+
+def test_runtime_installer_active_manifest_fails_closed_on_unlocked_patch_drift(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed-claude-code-2.1.175")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+    patches = json.loads(plan.patches_path.read_text(encoding="utf-8"))
+    patches["live_bridge_models_enabled"] = True
+    patches["live_bridge_model_allowlist"] = ["gpt-5.5", "deepseek-v4-pro"]
+    plan.patches_path.write_text(json.dumps(patches, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    status = read_managed_runtime_status(runtime_root)
+    assert status["status"] == "integrity_failed"
+    assert status["integrity"]["locked_files_match"] is False
+    assert status["integrity"]["locked_files"]["patches.json"]["matches"] is False
+    with pytest.raises(RuntimeInstallerError, match="not enabled"):
+        resolve_active_managed_runtime(runtime_root)
+
+
+def test_runtime_installer_active_manifest_fails_closed_on_executable_hash_drift(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed-claude-code-before")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+    executable.write_bytes(b"managed-claude-code-after")
+
+    with pytest.raises(RuntimeInstallerError, match="executable hash mismatch"):
+        resolve_active_managed_runtime(runtime_root)
+
+
+def test_runtime_installer_active_manifest_rejects_relative_executable_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed-claude-code-2.1.175")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+    manifest = json.loads(plan.manifest_path.read_text(encoding="utf-8"))
+    manifest["executable_path"] = "claude"
+    plan.manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    hash_lock = json.loads(plan.hash_lock_path.read_text(encoding="utf-8"))
+    manifest_hash = "sha256:" + hashlib.sha256(plan.manifest_path.read_bytes()).hexdigest()
+    hash_lock["manifest_hash"] = manifest_hash
+    hash_lock["locked_files"]["manifest.json"] = manifest_hash
+    plan.hash_lock_path.write_text(json.dumps(hash_lock, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    (tmp_path / "claude").write_bytes(b"managed-claude-code-2.1.175")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(RuntimeInstallerError, match="absolute executable path"):
+        resolve_active_managed_runtime(runtime_root)
+
+
+def test_runtime_installer_start_requires_enabled_active_runtime(tmp_path: Path):
+    with pytest.raises(RuntimeInstallerError, match="not enabled"):
+        resolve_active_managed_runtime(tmp_path / ".zhumeng" / "runtimes")
+
 
 
 def test_runtime_installer_never_targets_global_claude_binary(tmp_path: Path):
@@ -341,3 +466,25 @@ def test_runtime_status_fails_closed_on_manifest_hash_mismatch(tmp_path: Path):
     assert status["status"] == "integrity_failed"
     assert status["integrity"]["status"] == "hash_mismatch"
     assert status["integrity"]["manifest_hash_matches"] is False
+    assert status["integrity"]["locked_files_match"] is False
+
+
+def test_runtime_status_fails_closed_when_hash_lock_omits_patches_json(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    plan = build_managed_runtime_install_plan(
+        executable=tmp_path / "claude",
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.175"),
+    )
+    write_managed_runtime_artifacts(plan)
+    hash_lock = json.loads(plan.hash_lock_path.read_text(encoding="utf-8"))
+    hash_lock["locked_files"].pop("patches.json")
+    plan.hash_lock_path.write_text(json.dumps(hash_lock, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    status = read_managed_runtime_status(runtime_root)
+
+    assert status["status"] == "integrity_failed"
+    assert status["integrity"]["locked_files_match"] is False
+    assert status["integrity"]["locked_files"]["patches.json"]["status"] == "missing_required_lock"
+    with pytest.raises(RuntimeInstallerError, match="not enabled"):
+        resolve_active_managed_runtime(runtime_root)

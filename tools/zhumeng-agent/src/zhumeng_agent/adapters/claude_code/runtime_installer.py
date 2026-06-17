@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -22,6 +23,7 @@ GLOBAL_CLAUDE_BINARY_PATHS = frozenset({
     Path("/opt/homebrew/bin/claude"),
     Path("/usr/local/bin/claude"),
 })
+MANDATORY_HASH_LOCK_FILES = frozenset({"manifest.json", "patches.json"})
 
 
 class RuntimeInstallerError(RuntimeError):
@@ -39,11 +41,25 @@ class ManagedRuntimeManifest:
     patch_points: tuple[str, ...]
     cch_profile: str
     status: str
+    executable_path: str = ""
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["patch_points"] = list(self.patch_points)
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveManagedRuntime:
+    executable: Path
+    runtime_root: Path
+    upstream_version: str
+    manifest_path: Path
+    manifest: Mapping[str, object]
+    patches: Mapping[str, object]
+    runtime_hash: str
+    overlay_hash: str
+    cch_profile: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +100,7 @@ def build_managed_runtime_install_plan(
     supported_versions: frozenset[str] = SUPPORTED_UPSTREAM_VERSIONS,
 ) -> ManagedRuntimeInstallPlan:
     runtime_root = runtime_root.expanduser()
-    executable_path = Path(executable)
+    executable_path = _resolve_runtime_executable(Path(executable))
     version_probe_root = runtime_root / RUNTIME_NAME / "cache" / "version-probe"
     version_probe_config = version_probe_root / "config"
     version_probe_home = version_probe_root / "home"
@@ -123,9 +139,10 @@ def build_managed_runtime_install_plan(
     active_pointer = runtime_dir / "active"
     cch_profile = "claude_code_" + upstream_version.replace(".", "_")
     source = f"npm:@anthropic-ai/claude-code@{upstream_version}"
-    upstream_hash = _hash_existing_file(executable_path) or _stable_sha256(
+    executable_resolved = executable_path.expanduser().resolve(strict=False)
+    upstream_hash = _hash_existing_file(executable_resolved) or _stable_sha256(
         {
-            "executable": str(executable_path),
+            "executable": str(executable_resolved),
             "raw_version": detected.raw_output,
             "source": source,
         }
@@ -147,6 +164,7 @@ def build_managed_runtime_install_plan(
         patch_points=DEFAULT_PATCH_POINTS,
         cch_profile=cch_profile,
         status="ready",
+        executable_path=str(executable_resolved),
     )
     patches: dict[str, object] = {
         "runtime": RUNTIME_NAME,
@@ -276,6 +294,66 @@ def read_managed_runtime_status(runtime_root: Path) -> dict[str, object]:
     }
 
 
+
+def resolve_active_managed_runtime(runtime_root: Path) -> ActiveManagedRuntime:
+    """Resolve the active managed Claude Code runtime and fail closed on drift."""
+    runtime_root = runtime_root.expanduser()
+    status = read_managed_runtime_status(runtime_root)
+    if status.get("status") != "enabled":
+        raise RuntimeInstallerError("managed Claude Code runtime is not enabled; run zhumeng-claude install first")
+    manifest_path_value = status.get("manifest_path")
+    if not manifest_path_value:
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is missing")
+    manifest_path = ensure_managed_runtime_write_path(Path(str(manifest_path_value)), runtime_root=runtime_root)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is unreadable") from exc
+    if not isinstance(manifest, dict):
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is invalid")
+    if manifest.get("runtime") != RUNTIME_NAME or manifest.get("status") != "ready":
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is invalid")
+    upstream_version = str(manifest.get("upstream_version") or "")
+    if upstream_version not in SUPPORTED_UPSTREAM_VERSIONS:
+        raise RuntimeInstallerError("managed Claude Code runtime version is unsupported")
+    executable_value = str(manifest.get("executable_path") or "").strip()
+    if not executable_value:
+        raise RuntimeInstallerError("managed Claude Code runtime executable is missing from manifest")
+    raw_executable = Path(executable_value).expanduser()
+    if not raw_executable.is_absolute():
+        raise RuntimeInstallerError("managed Claude Code runtime manifest must contain an absolute executable path")
+    executable = raw_executable.resolve(strict=False)
+    if raw_executable in GLOBAL_CLAUDE_BINARY_PATHS or executable in GLOBAL_CLAUDE_BINARY_PATHS:
+        raise RuntimeInstallerError("managed Claude Code runtime refuses to use global Claude Code binary")
+    runtime_hash = _hash_existing_file(executable)
+    if not runtime_hash:
+        raise RuntimeInstallerError("managed Claude Code runtime executable is missing")
+    if runtime_hash != str(manifest.get("upstream_hash") or ""):
+        raise RuntimeInstallerError("managed Claude Code runtime executable hash mismatch")
+    overlay_hash = str(manifest.get("overlay_hash") or "")
+    if not overlay_hash.startswith("sha256:"):
+        raise RuntimeInstallerError("managed Claude Code runtime overlay hash is invalid")
+    patches_path = manifest_path.parent / "patches.json"
+    patches: Mapping[str, object] = {}
+    try:
+        loaded_patches = json.loads(patches_path.read_text(encoding="utf-8")) if patches_path.exists() else {}
+        if isinstance(loaded_patches, dict):
+            patches = loaded_patches
+    except (OSError, json.JSONDecodeError):
+        raise RuntimeInstallerError("managed Claude Code runtime patches are unreadable")
+    return ActiveManagedRuntime(
+        executable=executable,
+        runtime_root=runtime_root,
+        upstream_version=upstream_version,
+        manifest_path=manifest_path,
+        manifest=manifest,
+        patches=patches,
+        runtime_hash=runtime_hash,
+        overlay_hash=overlay_hash,
+        cch_profile=str(manifest.get("cch_profile") or ""),
+    )
+
+
 def disable_managed_runtime(runtime_root: Path) -> dict[str, object]:
     runtime_root = runtime_root.expanduser()
     active_pointer = ensure_managed_runtime_write_path(runtime_root / RUNTIME_NAME / "active", runtime_root=runtime_root)
@@ -376,26 +454,66 @@ def _replace_managed_block(content: str, plan: ShellAliasPlan, block: str) -> st
 
 def _runtime_integrity(manifest_path_value: object) -> dict[str, object]:
     if not manifest_path_value:
-        return {"status": "missing_manifest", "manifest_hash_matches": False}
+        return {"status": "missing_manifest", "manifest_hash_matches": False, "locked_files_match": False}
     manifest_path = Path(str(manifest_path_value))
     hash_lock_path = manifest_path.parent / "hash.lock"
     if not manifest_path.exists() or not hash_lock_path.exists():
-        return {"status": "missing_manifest", "manifest_hash_matches": False}
+        return {"status": "missing_manifest", "manifest_hash_matches": False, "locked_files_match": False}
     try:
         hash_lock = json.loads(hash_lock_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"status": "invalid_hash_lock", "manifest_hash_matches": False}
+        return {"status": "invalid_hash_lock", "manifest_hash_matches": False, "locked_files_match": False}
     expected = ""
+    locked_files: Mapping[str, object] = {}
     if isinstance(hash_lock, dict):
         expected = str(hash_lock.get("manifest_hash") or "")
+        raw_locked_files = hash_lock.get("locked_files")
+        if isinstance(raw_locked_files, dict):
+            locked_files = raw_locked_files
     actual = _hash_existing_file(manifest_path)
-    matches = bool(actual and expected and actual == expected)
+    manifest_matches = bool(actual and expected and actual == expected)
+    locked_file_status: dict[str, dict[str, object]] = {}
+    missing_required_locks = MANDATORY_HASH_LOCK_FILES - set(str(name) for name in locked_files)
+    locked_files_match = bool(locked_files) and not missing_required_locks
+    for name in sorted(missing_required_locks):
+        locked_file_status[name] = {"status": "missing_required_lock", "matches": False}
+    for relative_name, expected_hash in locked_files.items():
+        name = str(relative_name or "").strip()
+        if not name or "/" in name or "\\" in name or name in {".", ".."}:
+            locked_files_match = False
+            locked_file_status[name or "<empty>"] = {"status": "invalid_name", "matches": False}
+            continue
+        actual_hash = _hash_existing_file(manifest_path.parent / name)
+        expected_hash_text = str(expected_hash or "")
+        matches = bool(actual_hash and expected_hash_text and actual_hash == expected_hash_text)
+        locked_files_match = locked_files_match and matches
+        locked_file_status[name] = {
+            "status": "pass" if matches else "hash_mismatch",
+            "matches": matches,
+            "hash": actual_hash or "",
+            "expected_hash": expected_hash_text,
+        }
+    matches = manifest_matches and locked_files_match
     return {
         "status": "pass" if matches else "hash_mismatch",
-        "manifest_hash_matches": matches,
+        "manifest_hash_matches": manifest_matches,
+        "locked_files_match": locked_files_match,
         "manifest_hash": actual or "",
         "expected_manifest_hash": expected,
+        "locked_files": locked_file_status,
     }
+
+
+def _resolve_runtime_executable(executable: Path) -> Path:
+    expanded = executable.expanduser()
+    if not expanded.is_absolute() and len(expanded.parts) == 1:
+        resolved = shutil.which(str(expanded))
+        if resolved:
+            expanded = Path(resolved)
+    resolved_path = expanded.resolve(strict=False)
+    if expanded in GLOBAL_CLAUDE_BINARY_PATHS or resolved_path in GLOBAL_CLAUDE_BINARY_PATHS:
+        raise RuntimeInstallerError("refuses to use global Claude Code binary as managed runtime")
+    return resolved_path
 
 
 def ensure_managed_runtime_write_path(path: Path, *, runtime_root: Path) -> Path:

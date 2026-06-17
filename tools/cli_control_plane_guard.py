@@ -1888,6 +1888,12 @@ def _native_env_hash(name: str) -> str:
     return NATIVE_UNKNOWN_HASH
 
 
+def _native_bridge_live_models_from_env() -> tuple[str, ...]:
+    raw = os.environ.get("ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS", "")
+    models = [item.strip() for item in raw.split(",") if item.strip()]
+    return tuple(dict.fromkeys(models))
+
+
 def native_messages_summary_markers(source_headers: Mapping[str, str]) -> dict[str, Any]:
     local_session = session_key_from_headers(source_headers)
     return {
@@ -2229,17 +2235,20 @@ def main(argv: list[str] | None = None) -> int:
     route_hint_catalog = None
     if route_hint_secret:
         catalog_version = args.route_hint_catalog_version
+        bridge_live_models = _native_bridge_live_models_from_env()
         route_hint_catalog = cp4_fixture_route_catalog(
             runtime_hash=_native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
             overlay_hash=_native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
             catalog_hash=NATIVE_UNKNOWN_HASH,
             catalog_version=catalog_version,
+            bridge_live_models=bridge_live_models,
         )
         route_hint_catalog = cp4_fixture_route_catalog(
             runtime_hash=route_hint_catalog.runtime_hash,
             overlay_hash=route_hint_catalog.overlay_hash,
             catalog_hash=route_catalog_content_hash(route_hint_catalog),
             catalog_version=catalog_version,
+            bridge_live_models=bridge_live_models,
         )
         if _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH") != route_hint_catalog.catalog_hash:
             print("invalid guard config: route hint catalog hash mismatch", file=os.sys.stderr)

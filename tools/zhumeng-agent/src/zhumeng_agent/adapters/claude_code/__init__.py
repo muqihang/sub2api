@@ -45,6 +45,7 @@ from .runtime_installer import (
     build_shell_alias_plan,
     disable_managed_runtime,
     read_managed_runtime_status,
+    resolve_active_managed_runtime,
     write_managed_runtime_artifacts,
 )
 from .provider_probe import (
@@ -160,6 +161,7 @@ __all__ = [
     "probe_cp2_patch_points",
     "probe_cp3a_patch_points",
     "read_managed_runtime_status",
+    "resolve_active_managed_runtime",
     "resolve_background_model",
     "resolve_subagent_model",
     "resolve_workflow_model_alias",
