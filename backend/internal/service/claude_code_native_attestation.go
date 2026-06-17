@@ -114,6 +114,34 @@ type ClaudeCodeNativeAttestationPayload struct {
 	BodyShapeHash           string `json:"body_shape_hash"`
 }
 
+type ClaudeCodeRouteHintPayload struct {
+	KeyID                    string `json:"key_id"`
+	Scope                    string `json:"scope"`
+	Version                  int    `json:"version"`
+	IssuedAt                 int64  `json:"issued_at"`
+	ExpiresAt                int64  `json:"expires_at"`
+	Nonce                    string `json:"nonce"`
+	Method                   string `json:"method"`
+	RequestURI               string `json:"request_uri"`
+	ModelID                  string `json:"model_id"`
+	BodyModel                string `json:"body_model"`
+	BodySHA256               string `json:"body_sha256"`
+	RuntimeHash              string `json:"runtime_hash"`
+	OverlayHash              string `json:"overlay_hash"`
+	CatalogHash              string `json:"catalog_hash"`
+	CatalogVersion           string `json:"catalog_version"`
+	SessionRef               string `json:"session_ref"`
+	Route                    string `json:"route"`
+	ClientType               string `json:"client_type"`
+	Provider                 string `json:"provider"`
+	LiveRequestAllowed       bool   `json:"live_request_allowed"`
+	FormalPoolAllowed        bool   `json:"formal_pool_allowed"`
+	NativeAttestationAllowed bool   `json:"native_attestation_allowed"`
+	ProviderOwner            string `json:"provider_owner"`
+	CredentialScope          string `json:"credential_scope"`
+	GatewayLocation          string `json:"gateway_location"`
+}
+
 type ClaudeCodeNativeAttestationConfig struct {
 	CurrentKeyID  string
 	Keys          map[string]string
@@ -126,6 +154,13 @@ type ClaudeCodeNativeAttestationConfig struct {
 	CatalogHashes map[string]struct{}
 }
 
+type ClaudeCodeRouteHintConfig struct {
+	CurrentKeyID string
+	Keys         map[string]string
+	NonceTTL     time.Duration
+	ClockSkew    time.Duration
+}
+
 type ClaudeCodeNativeNonceReplayCache struct {
 	ttl   time.Duration
 	nowFn func() time.Time
@@ -136,6 +171,7 @@ type ClaudeCodeNativeNonceReplayCache struct {
 type ClaudeCodeNativeAttestationService struct {
 	nowFn                    func() time.Time
 	replayCache              *ClaudeCodeNativeNonceReplayCache
+	routeHintReplayCache     *ClaudeCodeNativeNonceReplayCache
 	catalogAdmissionResolver claudeCodeNativeCatalogAdmissionResolver
 }
 
@@ -188,12 +224,43 @@ var claudeCodeNativeAttestationPayloadAllowedFields = map[string]struct{}{
 	"body_shape_hash":           {},
 }
 
+var claudeCodeRouteHintPayloadAllowedFields = map[string]struct{}{
+	"key_id":                     {},
+	"scope":                      {},
+	"version":                    {},
+	"issued_at":                  {},
+	"expires_at":                 {},
+	"nonce":                      {},
+	"method":                     {},
+	"request_uri":                {},
+	"model_id":                   {},
+	"body_model":                 {},
+	"body_sha256":                {},
+	"runtime_hash":               {},
+	"overlay_hash":               {},
+	"catalog_hash":               {},
+	"catalog_version":            {},
+	"session_ref":                {},
+	"route":                      {},
+	"client_type":                {},
+	"provider":                   {},
+	"live_request_allowed":       {},
+	"formal_pool_allowed":        {},
+	"native_attestation_allowed": {},
+	"provider_owner":             {},
+	"credential_scope":           {},
+	"gateway_location":           {},
+}
+
 var (
-	claudeCodeNativeSafeHashRe     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	claudeCodeNativeUnknownHash    = "sha256:" + strings.Repeat("0", 64)
-	claudeCodeNativeReplayCacheMu  sync.Mutex
-	claudeCodeNativeReplayCacheTTL time.Duration
-	claudeCodeNativeReplayCache    *ClaudeCodeNativeNonceReplayCache
+	claudeCodeNativeSafeHashRe        = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	claudeCodeNativeUnknownHash       = "sha256:" + strings.Repeat("0", 64)
+	claudeCodeNativeReplayCacheMu     sync.Mutex
+	claudeCodeNativeReplayCacheTTL    time.Duration
+	claudeCodeNativeReplayCache       *ClaudeCodeNativeNonceReplayCache
+	claudeCodeRouteHintReplayCacheMu  sync.Mutex
+	claudeCodeRouteHintReplayCacheTTL time.Duration
+	claudeCodeRouteHintReplayCache    *ClaudeCodeNativeNonceReplayCache
 )
 
 func NewClaudeCodeNativeAttestationService(opts ...ClaudeCodeNativeAttestationOption) *ClaudeCodeNativeAttestationService {
@@ -381,6 +448,60 @@ func (s *ClaudeCodeNativeAttestationService) VerifyMessagesRequest(method, rawRo
 	return buildClaudeCodeNativeAuditSummaryWithHeaders(payload, headers, body), nil
 }
 
+func (s *ClaudeCodeNativeAttestationService) VerifyBridgeRouteHintRequest(method, rawRoute string, headers http.Header, body []byte, decision ClaudeCodeProviderRouteDecision) (*ClaudeCodeRouteHintPayload, error) {
+	if s == nil {
+		s = NewClaudeCodeNativeAttestationService()
+	}
+	encoded := strings.TrimSpace(headers.Get(ClaudeCodeRouteHintHeader))
+	signature := strings.TrimSpace(headers.Get(ClaudeCodeRouteHintSignatureHeader))
+	if encoded == "" || signature == "" {
+		return nil, fmt.Errorf("claude code route hint is required")
+	}
+	cfg, err := loadClaudeCodeRouteHintConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if s.routeHintReplayCache == nil {
+		s.routeHintReplayCache = sharedClaudeCodeRouteHintNonceReplayCache(cfg.NonceTTL, s.nowFn)
+	}
+	payload, err := decodeClaudeCodeRouteHintPayload(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateClaudeCodeRouteHintPayloadShape(payload); err != nil {
+		return nil, err
+	}
+	if payload.Scope != ClaudeCodeRouteHintScope || payload.Version != ClaudeCodeRouteHintVersion {
+		return nil, fmt.Errorf("claude code route hint scope/version mismatch")
+	}
+	secret, ok := cfg.Keys[payload.KeyID]
+	if !ok {
+		return nil, fmt.Errorf("claude code route hint key id is not configured")
+	}
+	if !hmac.Equal([]byte(signClaudeCodeRouteHint(encoded, method, rawRoute, body, secret)), []byte(signature)) {
+		return nil, fmt.Errorf("claude code route hint signature mismatch")
+	}
+	current := s.nowFn()
+	if current.IsZero() {
+		current = time.Now()
+	}
+	issuedAt := time.Unix(payload.IssuedAt, 0)
+	expiresAt := time.Unix(payload.ExpiresAt, 0)
+	if payload.ExpiresAt <= current.Unix() ||
+		payload.IssuedAt > current.Add(cfg.ClockSkew).Unix() ||
+		issuedAt.Before(current.Add(-cfg.NonceTTL)) ||
+		expiresAt.After(issuedAt.Add(cfg.NonceTTL)) {
+		return nil, fmt.Errorf("claude code route hint stale")
+	}
+	if err := s.routeHintReplayCache.CheckAndRecord(payload.KeyID, payload.Scope, payload.Nonce, current); err != nil {
+		return nil, err
+	}
+	if err := validateClaudeCodeRouteHintBinding(method, rawRoute, body, payload, decision); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 func ApplyClaudeCodeNativeAuditHeaders(headers http.Header, audit ClaudeCodeNativeAuditSummary) error {
 	if headers == nil {
 		return fmt.Errorf("headers are required")
@@ -517,6 +638,34 @@ func loadClaudeCodeNativeAttestationConfigFromEnv() (*ClaudeCodeNativeAttestatio
 	}, nil
 }
 
+func loadClaudeCodeRouteHintConfigFromEnv() (*ClaudeCodeRouteHintConfig, error) {
+	currentKeyID := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID"))
+	if currentKeyID == "" {
+		currentKeyID = "route_hint_v1"
+	}
+	keys := map[string]string{}
+	if raw := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_KEYS_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+			return nil, fmt.Errorf("claude code route hint key set is invalid")
+		}
+	} else {
+		secret := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET"))
+		if secret == "" {
+			return nil, fmt.Errorf("claude code route hint explicit secret is required")
+		}
+		keys[currentKeyID] = secret
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("claude code route hint key set is empty")
+	}
+	return &ClaudeCodeRouteHintConfig{
+		CurrentKeyID: currentKeyID,
+		Keys:         keys,
+		NonceTTL:     time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_ROUTE_HINT_NONCE_TTL_SECONDS", 60)) * time.Second,
+		ClockSkew:    time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_ROUTE_HINT_CLOCK_SKEW_SECONDS", 30)) * time.Second,
+	}, nil
+}
+
 func decodeClaudeCodeNativeAttestationPayload(encoded string) (*ClaudeCodeNativeAttestationPayload, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
@@ -537,6 +686,30 @@ func decodeClaudeCodeNativeAttestationPayload(encoded string) (*ClaudeCodeNative
 	var payload ClaudeCodeNativeAttestationPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, fmt.Errorf("claude code native attestation payload is malformed")
+	}
+	return &payload, nil
+}
+
+func decodeClaudeCodeRouteHintPayload(encoded string) (*ClaudeCodeRouteHintPayload, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("claude code route hint payload is malformed")
+	}
+	var fieldSet map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fieldSet); err != nil {
+		return nil, fmt.Errorf("claude code route hint payload is malformed")
+	}
+	for field := range fieldSet {
+		if _, ok := claudeCodeRouteHintPayloadAllowedFields[field]; !ok {
+			return nil, fmt.Errorf("claude code route hint payload must match the strict allowlist schema")
+		}
+	}
+	if len(fieldSet) != len(claudeCodeRouteHintPayloadAllowedFields) {
+		return nil, fmt.Errorf("claude code route hint payload must match the strict allowlist schema")
+	}
+	var payload ClaudeCodeRouteHintPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("claude code route hint payload is malformed")
 	}
 	return &payload, nil
 }
@@ -737,6 +910,40 @@ func validateClaudeCodeNativeAttestationPayloadShape(payload *ClaudeCodeNativeAt
 	return nil
 }
 
+func validateClaudeCodeRouteHintPayloadShape(payload *ClaudeCodeRouteHintPayload) error {
+	if payload == nil {
+		return fmt.Errorf("claude code route hint payload is required")
+	}
+	if strings.TrimSpace(payload.KeyID) == "" || strings.TrimSpace(payload.Nonce) == "" || payload.IssuedAt <= 0 || payload.ExpiresAt <= payload.IssuedAt || payload.Version <= 0 {
+		return fmt.Errorf("claude code route hint payload shape is invalid")
+	}
+	for _, value := range []string{payload.BodySHA256, payload.RuntimeHash, payload.OverlayHash, payload.CatalogHash} {
+		trimmed := strings.TrimSpace(value)
+		if !claudeCodeNativeSafeHashRe.MatchString(trimmed) || trimmed == claudeCodeNativeUnknownHash {
+			return fmt.Errorf("claude code route hint hash binding is invalid")
+		}
+	}
+	for _, value := range []string{
+		payload.Method,
+		payload.RequestURI,
+		payload.ModelID,
+		payload.BodyModel,
+		payload.CatalogVersion,
+		payload.SessionRef,
+		payload.Route,
+		payload.ClientType,
+		payload.Provider,
+		payload.ProviderOwner,
+		payload.CredentialScope,
+		payload.GatewayLocation,
+	} {
+		if strings.TrimSpace(value) == "" || looksSensitiveText(value) {
+			return fmt.Errorf("claude code route hint payload shape is invalid")
+		}
+	}
+	return nil
+}
+
 func compareClaudeCodeNativeRequest(method, rawRoute string, payload *ClaudeCodeNativeAttestationPayload) error {
 	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodPost || strings.ToUpper(payload.Method) != http.MethodPost {
 		return fmt.Errorf("claude code native attestation method mismatch")
@@ -752,6 +959,42 @@ func compareClaudeCodeNativeRequest(method, rawRoute string, payload *ClaudeCode
 	}
 	if query != "" && query != "beta=true" {
 		return fmt.Errorf("claude code native attestation route unsupported")
+	}
+	return nil
+}
+
+func validateClaudeCodeRouteHintBinding(method, rawRoute string, body []byte, payload *ClaudeCodeRouteHintPayload, decision ClaudeCodeProviderRouteDecision) error {
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodPost || strings.ToUpper(strings.TrimSpace(payload.Method)) != http.MethodPost {
+		return fmt.Errorf("claude code route hint method mismatch")
+	}
+	if payload.RequestURI != rawRoute {
+		return fmt.Errorf("claude code route hint route mismatch")
+	}
+	if path, query := splitCompatRoute(rawRoute); path != ClaudeCodeNativeInboundMessages || query != "" {
+		return fmt.Errorf("claude code route hint route unsupported")
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" || looksSensitiveText(model) || payload.ModelID != model || payload.BodyModel != model || decision.ModelID != model {
+		return fmt.Errorf("claude code route hint model binding mismatch")
+	}
+	digest := sha256.Sum256(body)
+	if payload.BodySHA256 != "sha256:"+hex.EncodeToString(digest[:]) {
+		return fmt.Errorf("claude code route hint body binding mismatch")
+	}
+	if payload.Provider != decision.Provider || payload.Route != decision.Route || payload.ClientType != decision.ClientType {
+		return fmt.Errorf("claude code route hint catalog route binding mismatch")
+	}
+	if payload.ProviderOwner != decision.ProviderOwner || payload.CredentialScope != decision.CredentialScope || payload.GatewayLocation != decision.GatewayLocation {
+		return fmt.Errorf("claude code route hint catalog account binding mismatch")
+	}
+	if payload.RuntimeHash != decision.RuntimeHash || payload.OverlayHash != decision.OverlayHash || payload.CatalogHash != decision.CatalogHash || payload.CatalogVersion != decision.CatalogVersion {
+		return fmt.Errorf("claude code route hint catalog hash binding mismatch")
+	}
+	if payload.FormalPoolAllowed || payload.NativeAttestationAllowed || payload.ClientType == ClaudeCodeNativeClientType || payload.Route == ClaudeCodeNativeRoute {
+		return fmt.Errorf("claude code route hint bridge cannot claim native")
+	}
+	if payload.LiveRequestAllowed {
+		return fmt.Errorf("claude code route hint bridge live request is not enabled")
 	}
 	return nil
 }
@@ -912,6 +1155,19 @@ func signClaudeCodeNativeAttestation(encoded, method, rawRoute string, body []by
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func signClaudeCodeRouteHint(encoded, method, rawRoute string, body []byte, secret string) string {
+	digest := sha256.Sum256(body)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(encoded))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.ToUpper(strings.TrimSpace(method))))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(rawRoute))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(hex.EncodeToString(digest[:])))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 func isKnownClaudeCodeNativeHealthProfile(profile string) bool {
 	switch strings.TrimSpace(profile) {
 	case ClaudeCodeNativeTakeoverHealthProfile, ClaudeCodeNativeToolSearchHealthProfile, ClaudeCodeNativeControlPlaneHealthProfile, ClaudeCodeNativeNetwatchHealthProfile:
@@ -962,4 +1218,14 @@ func sharedClaudeCodeNativeNonceReplayCache(ttl time.Duration, nowFn func() time
 		claudeCodeNativeReplayCacheTTL = ttl
 	}
 	return claudeCodeNativeReplayCache
+}
+
+func sharedClaudeCodeRouteHintNonceReplayCache(ttl time.Duration, nowFn func() time.Time) *ClaudeCodeNativeNonceReplayCache {
+	claudeCodeRouteHintReplayCacheMu.Lock()
+	defer claudeCodeRouteHintReplayCacheMu.Unlock()
+	if claudeCodeRouteHintReplayCache == nil || claudeCodeRouteHintReplayCacheTTL != ttl {
+		claudeCodeRouteHintReplayCache = NewClaudeCodeNativeNonceReplayCache(ttl, nowFn)
+		claudeCodeRouteHintReplayCacheTTL = ttl
+	}
+	return claudeCodeRouteHintReplayCache
 }

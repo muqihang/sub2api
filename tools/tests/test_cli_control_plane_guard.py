@@ -463,6 +463,28 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 now=1200,
                 replay_cache=RouteHintReplayCache(ttl_seconds=60),
             )
+        overlong_headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            model_id='deepseek-v4-pro',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-overlong',
+            ttl_seconds=600,
+        )
+        with self.assertRaisesRegex(RuntimeError, 'stale'):
+            verify_signed_route_hint_headers(
+                source_headers=overlong_headers,
+                body=body,
+                request_path='/v1/messages?beta=true',
+                catalog=catalog,
+                session_ref='session-a',
+                secret='route-hint-secret',
+                now=1000,
+                replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            )
         cache = RouteHintReplayCache(ttl_seconds=60)
         verify_signed_route_hint_headers(
             source_headers=headers,

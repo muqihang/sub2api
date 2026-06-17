@@ -140,6 +140,7 @@ type ExchangeCodexSetupGrantResponse struct {
 	GatewayBaseURL                    string             `json:"gateway_base_url"`
 	ConfigProfile                     CodexConfigProfile `json:"config_profile"`
 	ClaudeCodeNativeAttestationSecret string             `json:"claude_code_native_attestation_secret,omitempty"`
+	ClaudeCodeRouteHintSecret         string             `json:"claude_code_route_hint_secret,omitempty"`
 }
 
 type RefreshCodexDeviceTokenRequest struct {
@@ -330,6 +331,7 @@ func (s *CodexAgentService) ExchangeSetupGrant(ctx context.Context, req Exchange
 		GatewayBaseURL:                    grant.GatewayOrigin,
 		ConfigProfile:                     s.DefaultCodexConfigProfile(),
 		ClaudeCodeNativeAttestationSecret: claudeCodeNativeAttestationSecretForManagedSetup(),
+		ClaudeCodeRouteHintSecret:         claudeCodeRouteHintSecretForManagedSetup(),
 	}, nil
 }
 
@@ -612,6 +614,17 @@ func hashManagedSecret(raw string) string {
 
 func claudeCodeNativeAttestationSecretForManagedSetup() string {
 	cfg, err := loadClaudeCodeNativeAttestationConfigFromEnv()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	if secret := strings.TrimSpace(cfg.Keys[cfg.CurrentKeyID]); secret != "" {
+		return secret
+	}
+	return ""
+}
+
+func claudeCodeRouteHintSecretForManagedSetup() string {
+	cfg, err := loadClaudeCodeRouteHintConfigFromEnv()
 	if err != nil || cfg == nil {
 		return ""
 	}

@@ -352,6 +352,59 @@ func TestClaudeCodeNativeAttestationDefaultReplayCacheIsShared(t *testing.T) {
 	require.Contains(t, err.Error(), "replayed")
 }
 
+func TestClaudeCodeRouteHintReplayCacheDoesNotResetNativeReplayCache(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_NONCE_TTL_SECONDS", "120")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_NONCE_TTL_SECONDS", "60")
+	issued := time.Unix(2600, 0)
+	nativeBody := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	nativeHeaders := signedNativeHeadersForTest(t, nativeBody, "/v1/messages", issued, map[string]any{"nonce": "native-replay-isolated"})
+
+	firstNative := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
+	_, err := firstNative.VerifyMessagesRequest(http.MethodPost, "/v1/messages", nativeHeaders, nativeBody)
+	require.NoError(t, err)
+
+	bridgeBody := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"bridge"}],"stream":true}`)
+	bridgeHeaders := signedRouteHintHeadersForTest(t, bridgeBody, "/v1/messages", issued, map[string]any{"nonce": "route-hint-cache-isolated"})
+	bridgeDecision := ClaudeCodeProviderRouteDecision{
+		ModelID:                  "gpt-5.5",
+		Provider:                 "openai",
+		Route:                    "openai_bridge",
+		ClientType:               "claude_code_bridge_openai",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          "bridge_pool",
+		GatewayLocation:          "cloud",
+		CatalogFresh:             true,
+		CatalogVersion:           "cp5-route-catalog",
+		RuntimeHash:              "sha256:" + stringOf('1', 64),
+		OverlayHash:              "sha256:" + stringOf('2', 64),
+		CatalogHash:              "sha256:" + stringOf('3', 64),
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsErrorPassthrough: true,
+		PreferredProtocol:        "responses",
+		OpenAIBaseURL:            "https://api.openai.com/v1",
+	}
+	routeHint := NewClaudeCodeNativeAttestationService(WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }))
+	_, err = routeHint.VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", bridgeHeaders, bridgeBody, bridgeDecision)
+	require.NoError(t, err)
+
+	secondNative := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return issued }),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
+	_, err = secondNative.VerifyMessagesRequest(http.MethodPost, "/v1/messages", nativeHeaders, nativeBody)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "replayed")
+}
+
 func TestClaudeCodeNativeAuditHeadersAreMutuallyExclusiveWithCompat(t *testing.T) {
 	native := ClaudeCodeNativeAuditSummary{
 		ClientType:                 ClaudeCodeNativeClientType,
@@ -477,6 +530,48 @@ func signedNativeHeadersForTestWithSecret(t *testing.T, body []byte, requestURI 
 	if catalogVersion, _ := payload["catalog_version"].(string); catalogVersion != "" {
 		headers.Set(ClaudeCodeNativeCatalogVersionHeader, catalogVersion)
 	}
+	return headers
+}
+
+func signedRouteHintHeadersForTest(t *testing.T, body []byte, requestURI string, now time.Time, overrides map[string]any) http.Header {
+	t.Helper()
+	digest := sha256.Sum256(body)
+	payload := map[string]any{
+		"key_id":                     "route_hint_v1",
+		"scope":                      ClaudeCodeRouteHintScope,
+		"version":                    ClaudeCodeRouteHintVersion,
+		"issued_at":                  now.Unix(),
+		"expires_at":                 now.Add(time.Minute).Unix(),
+		"nonce":                      "route-hint-nonce-001",
+		"method":                     http.MethodPost,
+		"request_uri":                requestURI,
+		"model_id":                   gjson.GetBytes(body, "model").String(),
+		"body_model":                 gjson.GetBytes(body, "model").String(),
+		"body_sha256":                "sha256:" + hex.EncodeToString(digest[:]),
+		"runtime_hash":               "sha256:" + stringOf('1', 64),
+		"overlay_hash":               "sha256:" + stringOf('2', 64),
+		"catalog_hash":               "sha256:" + stringOf('3', 64),
+		"catalog_version":            "cp5-route-catalog",
+		"session_ref":                "sess-route-hint",
+		"route":                      "openai_bridge",
+		"client_type":                "claude_code_bridge_openai",
+		"provider":                   "openai",
+		"live_request_allowed":       false,
+		"formal_pool_allowed":        false,
+		"native_attestation_allowed": false,
+		"provider_owner":             "zhumeng_managed",
+		"credential_scope":           "bridge_pool",
+		"gateway_location":           "cloud",
+	}
+	for key, value := range overrides {
+		payload[key] = value
+	}
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	headers := http.Header{}
+	headers.Set(ClaudeCodeRouteHintHeader, encoded)
+	headers.Set(ClaudeCodeRouteHintSignatureHeader, signClaudeCodeRouteHint(encoded, http.MethodPost, requestURI, body, "route-hint-key"))
 	return headers
 }
 

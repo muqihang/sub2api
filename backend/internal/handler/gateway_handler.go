@@ -2031,6 +2031,10 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
 		return
 	}
+	if _, err := service.NewClaudeCodeNativeAttestationService().VerifyBridgeRouteHintRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body, decision); err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
 	result, err := service.BuildClaudeCodeBridgeSkeletonSSE(decision.BridgeRouteDecision(), body)
 	if err != nil {
 		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")

@@ -1113,6 +1113,8 @@ class RedactingForwarder:
                     headers["x-sub2api-client-type"] = route_decision.client_type
                     headers["x-sub2api-route"] = route_decision.route
                     headers["x-sub2api-route-catalog-version"] = route_decision.catalog_version
+                    headers["x-zhumeng-claude-code-route-hint"] = self.headers.get("x-zhumeng-claude-code-route-hint", "")
+                    headers["x-zhumeng-claude-code-route-signature"] = self.headers.get("x-zhumeng-claude-code-route-signature", "")
                 for key, value in parent._managed_forward_headers().items():
                     headers[key] = value
                 if parent.config.extra_forward_headers:

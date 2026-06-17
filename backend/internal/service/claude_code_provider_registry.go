@@ -8,6 +8,13 @@ import (
 	"strings"
 )
 
+const (
+	ClaudeCodeRouteHintHeader          = "x-zhumeng-claude-code-route-hint"
+	ClaudeCodeRouteHintSignatureHeader = "x-zhumeng-claude-code-route-signature"
+	ClaudeCodeRouteHintScope           = "claude_code_route_hint_cp4"
+	ClaudeCodeRouteHintVersion         = 1
+)
+
 type ClaudeCodeProviderCatalog struct {
 	CatalogVersion string                           `json:"catalog_version"`
 	RuntimeHash    string                           `json:"runtime_hash"`

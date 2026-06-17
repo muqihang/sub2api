@@ -251,7 +251,8 @@ def verify_signed_route_hint_headers(
     current = int(time.time() if now is None else now)
     issued_at = int(payload["issued_at"])
     expires_at = int(payload["expires_at"])
-    if current > expires_at or issued_at > current + 30:
+    max_ttl = replay_cache.ttl_seconds if replay_cache is not None else 60
+    if current > expires_at or issued_at > current + 30 or issued_at < current - max_ttl or expires_at > issued_at + max_ttl:
         raise RuntimeError("route hint stale")
     if payload["method"] != "POST" or payload["request_uri"] != request_path:
         raise RuntimeError("route hint request binding mismatch")

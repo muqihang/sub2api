@@ -1,10 +1,16 @@
 package routes
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
@@ -64,6 +70,60 @@ func cp6DeepSeekBridgeRouteCatalogJSON() string {
 	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"deepseek-v4-pro","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"https://api.deepseek.com/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
 }
 
+func configureCP6RouteHintEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_KEYS_JSON", "")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+}
+
+func signCP6BridgeRouteHintHeaders(t *testing.T, req *http.Request, body string, fields map[string]any) {
+	t.Helper()
+	now := time.Now().Unix()
+	digest := sha256.Sum256([]byte(body))
+	payload := map[string]any{
+		"key_id":                     "route_hint_v1",
+		"scope":                      service.ClaudeCodeRouteHintScope,
+		"version":                    service.ClaudeCodeRouteHintVersion,
+		"issued_at":                  now,
+		"expires_at":                 now + 60,
+		"nonce":                      "route-hint-test-" + fields["model_id"].(string) + "-" + hex.EncodeToString(digest[:4]),
+		"method":                     "POST",
+		"request_uri":                req.URL.RequestURI(),
+		"model_id":                   fields["model_id"],
+		"body_model":                 fields["model_id"],
+		"body_sha256":                "sha256:" + hex.EncodeToString(digest[:]),
+		"runtime_hash":               "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		"overlay_hash":               "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		"catalog_hash":               "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+		"catalog_version":            "cp5-route-catalog",
+		"session_ref":                "sess-route-hint",
+		"route":                      fields["route"],
+		"client_type":                fields["client_type"],
+		"provider":                   fields["provider"],
+		"live_request_allowed":       false,
+		"formal_pool_allowed":        false,
+		"native_attestation_allowed": false,
+		"provider_owner":             "zhumeng_managed",
+		"credential_scope":           "bridge_pool",
+		"gateway_location":           "cloud",
+	}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	mac := hmac.New(sha256.New, []byte("route-hint-key"))
+	_, _ = mac.Write([]byte(encoded))
+	_, _ = mac.Write([]byte("\nPOST\n"))
+	_, _ = mac.Write([]byte(req.URL.RequestURI()))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(hex.EncodeToString(digest[:])))
+	req.Header.Set(service.ClaudeCodeRouteHintHeader, encoded)
+	req.Header.Set(service.ClaudeCodeRouteHintSignatureHeader, base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
+}
+
 func TestClaudeCodeCompatRoutesRejectOpenAICompatibleProtocolsForAnthropicGroups(t *testing.T) {
 	router := newAnthropicCompatProtocolRouteRouter()
 
@@ -107,6 +167,7 @@ func TestClaudeCodeCompatMessagesRejectOpenAIShapedBodyBeforeForwarding(t *testi
 
 func TestClaudeCodeBridgeMessagesRouteReturnsSkeletonWithoutAnthropicCompatOrFormalPool(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
+	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"should-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"get_weather"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -114,6 +175,12 @@ func TestClaudeCodeBridgeMessagesRouteReturnsSkeletonWithoutAnthropicCompatOrFor
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
 	req.Header.Set("x-sub2api-route", "openai_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":    "gpt-5.5",
+		"provider":    "openai",
+		"route":       "openai_bridge",
+		"client_type": "claude_code_bridge_openai",
+	})
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -127,6 +194,146 @@ func TestClaudeCodeBridgeMessagesRouteReturnsSkeletonWithoutAnthropicCompatOrFor
 	require.Contains(t, stream, `"stop_reason":"tool_use"`)
 	require.NotContains(t, stream, "unsupported_body_shape")
 	require.NotContains(t, stream, "should-not-leak")
+}
+
+func TestClaudeCodeBridgeMessagesRejectsUnsignedSpoofedBridgeHeadersBeforeSkeleton(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"unsigned-bridge-must-not-leak"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
+	req.Header.Set("x-sub2api-route", "openai_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.NotContains(t, rec.Body.String(), "event: message_start")
+	require.NotContains(t, rec.Body.String(), "unsigned-bridge-must-not-leak")
+}
+
+func TestClaudeCodeBridgeMessagesRejectsSignedRouteHintMismatchesBeforeSkeleton(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+
+	cases := []struct {
+		name      string
+		body      string
+		overrides map[string]any
+	}{
+		{
+			name: "body model mismatch",
+			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"model-mismatch-must-not-leak"}],"stream":true}`,
+			overrides: map[string]any{
+				"model_id":   "deepseek-v4-pro",
+				"body_model": "deepseek-v4-pro",
+			},
+		},
+		{
+			name: "bridge claims native route",
+			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"native-spoof-must-not-leak"}],"stream":true}`,
+			overrides: map[string]any{
+				"route":                      service.ClaudeCodeNativeRoute,
+				"client_type":                service.ClaudeCodeNativeClientType,
+				"formal_pool_allowed":        true,
+				"native_attestation_allowed": true,
+				"credential_scope":           "formal_pool",
+			},
+		},
+		{
+			name: "stale hint",
+			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"stale-hint-must-not-leak"}],"stream":true}`,
+			overrides: map[string]any{
+				"issued_at":  time.Now().Add(-2 * time.Minute).Unix(),
+				"expires_at": time.Now().Add(-1 * time.Minute).Unix(),
+			},
+		},
+		{
+			name: "overlong ttl",
+			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"overlong-ttl-must-not-leak"}],"stream":true}`,
+			overrides: map[string]any{
+				"expires_at": time.Now().Add(10 * time.Minute).Unix(),
+			},
+		},
+		{
+			name: "signed stale catalog payload",
+			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"signed-stale-catalog-must-not-leak"}],"stream":true}`,
+			overrides: map[string]any{
+				"catalog_version": "stale-route-catalog",
+			},
+		},
+		{
+			name: "unknown key id",
+			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"unknown-key-must-not-leak"}],"stream":true}`,
+			overrides: map[string]any{
+				"key_id": "unknown_route_hint_key",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
+			req.Header.Set("x-sub2api-route", "openai_bridge")
+			req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+			fields := map[string]any{
+				"model_id":    "gpt-5.5",
+				"provider":    "openai",
+				"route":       "openai_bridge",
+				"client_type": "claude_code_bridge_openai",
+				"nonce":       "route-hint-mismatch-" + strings.ReplaceAll(tc.name, " ", "-"),
+			}
+			for key, value := range tc.overrides {
+				fields[key] = value
+			}
+			signCP6BridgeRouteHintHeaders(t, req, tc.body, fields)
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusForbidden, rec.Code)
+			require.NotContains(t, rec.Body.String(), "event: message_start")
+			require.NotContains(t, rec.Body.String(), "must-not-leak")
+		})
+	}
+}
+
+func TestClaudeCodeBridgeMessagesRejectsReplayedRouteHintBeforeSkeleton(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"replay-must-not-leak"}],"stream":true}`
+
+	newSignedRequest := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
+		req.Header.Set("x-sub2api-route", "openai_bridge")
+		req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+		signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+			"model_id":    "gpt-5.5",
+			"provider":    "openai",
+			"route":       "openai_bridge",
+			"client_type": "claude_code_bridge_openai",
+			"nonce":       "route-hint-replay-backend-test",
+		})
+		return req
+	}
+
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, newSignedRequest())
+	require.Equal(t, http.StatusOK, first.Code)
+
+	second := httptest.NewRecorder()
+	router.ServeHTTP(second, newSignedRequest())
+	require.Equal(t, http.StatusForbidden, second.Code)
+	require.NotContains(t, second.Body.String(), "event: message_start")
+	require.NotContains(t, second.Body.String(), "replay-must-not-leak")
 }
 
 func TestClaudeCodeBridgeMessagesRouteRejectsSpoofedNativeOrCatalogMismatch(t *testing.T) {
@@ -195,6 +402,7 @@ func TestClaudeCodeBridgeCountTokensCatalogBridgeModelFailsClosedWithoutBridgeMa
 
 func TestClaudeCodeBridgeMessagesAllowsAnthropicValidMetadataStopSequencesAndTopK(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
+	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
 	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"anthropic-valid-fields-must-not-leak"}],"stream":true,"metadata":{"user_id":"safe-user"},"stop_sequences":["DONE"],"top_k":5,"thinking":{"type":"enabled","budget_tokens":1024}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -202,6 +410,12 @@ func TestClaudeCodeBridgeMessagesAllowsAnthropicValidMetadataStopSequencesAndTop
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
 	req.Header.Set("x-sub2api-route", "openai_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":    "gpt-5.5",
+		"provider":    "openai",
+		"route":       "openai_bridge",
+		"client_type": "claude_code_bridge_openai",
+	})
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
