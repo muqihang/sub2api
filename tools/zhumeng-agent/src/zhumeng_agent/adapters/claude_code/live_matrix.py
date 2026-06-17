@@ -237,7 +237,8 @@ def _verify_scenario(
         if name == "deepseek_bridge":
             if route != "deepseek_bridge" or client_type != "claude_code_bridge_deepseek":
                 issues.append("DeepSeek bridge scenario must use DeepSeek bridge route/client_type")
-            if "deepseek-v4-pro" not in models or "deepseek-v4-flash" not in models:
+            has_deepseek_pro = "deepseek-v4-pro" in models or "deepseek-v4-pro[1m]" in models
+            if not has_deepseek_pro or "deepseek-v4-flash" not in models:
                 issues.append("DeepSeek bridge scenario must cover Pro and Flash models")
             if raw.get("preferred_claude_code_protocol") != "anthropic_messages" or raw.get("fallback_reason"):
                 issues.append("DeepSeek must default to anthropic_messages unless a fixture-backed fallback_reason is present")
@@ -384,6 +385,11 @@ def _official_docs_issues(value: object) -> tuple[str, ...]:
     openai = observations.get("openai") if isinstance(observations.get("openai"), Mapping) else {}
     if "deepseek-v4-pro" not in _str_list(deepseek.get("models")) or deepseek.get("preferred_claude_code_protocol") != "anthropic_messages":
         issues.append("DeepSeek official docs snapshot is stale or not Anthropic-first")
+    deepseek_context_windows = deepseek.get("context_windows") if isinstance(deepseek.get("context_windows"), Mapping) else {}
+    if "deepseek-v4-pro[1m]" not in _str_list(deepseek.get("models")) or _int(deepseek_context_windows.get("deepseek-v4-pro[1m]")) < 1_000_000:
+        issues.append("DeepSeek official docs snapshot is missing 1M Claude Code model metadata")
+    if deepseek.get("cache_observability") != "prompt_cache_hit_tokens/prompt_cache_miss_tokens":
+        issues.append("DeepSeek official docs cache observability snapshot is stale")
     latest_glm = str(zai.get("latest_coding_model") or "")
     if not latest_glm.startswith("glm-5.") or latest_glm == "glm-4.6":
         issues.append("GLM official docs snapshot is stale")
@@ -391,8 +397,12 @@ def _official_docs_issues(value: object) -> tuple[str, ...]:
         issues.append("Kimi official docs snapshot is stale")
     if kimi.get("anthropic_base_url") != "https://api.moonshot.ai/anthropic" or kimi.get("openai_base_url") != "https://api.moonshot.ai/v1":
         issues.append("Kimi official docs endpoint snapshot is stale")
+    if kimi.get("prompt_cache_key") is not True or kimi.get("cache_usage_field") != "usage.cached_tokens":
+        issues.append("Kimi official docs cache snapshot is stale")
     if not str(openai.get("recommended_model") or "").startswith("gpt-") or openai.get("preferred_api") != "responses":
         issues.append("OpenAI official docs snapshot is stale")
+    if openai.get("cache_observability") != "usage.prompt_tokens_details.cached_tokens":
+        issues.append("OpenAI official docs cache observability snapshot is stale")
     return tuple(issues)
 
 

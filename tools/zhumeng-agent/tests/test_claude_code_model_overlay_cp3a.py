@@ -44,7 +44,8 @@ def test_cp3a_uses_official_docs_snapshot_but_keeps_provider_capabilities_unveri
 
     assert snapshot["captured_at"] == "2026-06-16"
     assert snapshot["purpose"].startswith("CP3 official-docs snapshot")
-    assert snapshot["observations"]["deepseek"]["models"] == ["deepseek-v4-pro", "deepseek-v4-flash"]
+    assert snapshot["observations"]["deepseek"]["models"] == ["deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"]
+    assert snapshot["observations"]["deepseek"]["context_windows"]["deepseek-v4-pro[1m]"] == 1_000_000
     assert snapshot["observations"]["deepseek"]["thinking_effort_mapping"] == {
         "low": "high",
         "medium": "high",
@@ -59,6 +60,8 @@ def test_cp3a_uses_official_docs_snapshot_but_keeps_provider_capabilities_unveri
     assert "glm-4.6" not in snapshot["observations"]["zai_glm"]["claude_code_display_models"]
     assert "glm-5.1" in snapshot["observations"]["zai_glm"]["docs_observed_language_models"]
     assert "glm-5.2" in snapshot["observations"]["zai_glm"]["claude_code_display_models"]
+    assert snapshot["observations"]["kimi"]["prompt_cache_key"] is True
+    assert snapshot["observations"]["kimi"]["cache_usage_field"] == "usage.cached_tokens"
     assert snapshot["observations"]["openai"]["catalog_strategy"] == "signed_dynamic_catalog_required_no_static_gpt_defaults"
     for provider in snapshot["observations"].values():
         assert provider["runtime_verified"] is False
@@ -71,7 +74,7 @@ def test_cp3a_zai_glm_provider_profile_uses_zai_glm_route_family(tmp_path: Path)
 
     assert profile.profile_id == "zai_glm"
     assert profile.provider == "zai_glm"
-    assert profile.main_model_id == "glm-5.2"
+    assert profile.main_model_id == "glm-5.2[1m]"
     assert profile.fast_model_id == "glm-5-turbo"
 
 

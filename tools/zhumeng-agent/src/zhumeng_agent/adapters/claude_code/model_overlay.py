@@ -1070,23 +1070,25 @@ def _default_cp3a_provider_profiles(proof: RuntimeModelOverlayProof) -> tuple[Ru
                 native_formal_pool=True,
             )
         )
-    if has("deepseek-v4-pro") and has("deepseek-v4-flash"):
+    deepseek_main_model = "deepseek-v4-pro[1m]" if has("deepseek-v4-pro[1m]") else "deepseek-v4-pro"
+    if has(deepseek_main_model) and has("deepseek-v4-flash"):
         profiles.append(
             RuntimeProviderProfile(
                 profile_id="deepseek",
                 provider="deepseek",
-                main_model_id="deepseek-v4-pro",
+                main_model_id=deepseek_main_model,
                 fast_model_id="deepseek-v4-flash",
                 family_aliases={alias: "deepseek-v4-flash" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
                 native_formal_pool=False,
             )
         )
-    if has("glm-5.2") and has("glm-5-turbo"):
+    glm_main_model = "glm-5.2[1m]" if has("glm-5.2[1m]") else "glm-5.2"
+    if has(glm_main_model) and has("glm-5-turbo"):
         profiles.append(
             RuntimeProviderProfile(
                 profile_id="zai_glm",
                 provider="zai_glm",
-                main_model_id="glm-5.2",
+                main_model_id=glm_main_model,
                 fast_model_id="glm-5-turbo",
                 family_aliases={alias: "glm-5-turbo" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
                 native_formal_pool=False,
@@ -1229,6 +1231,32 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             ),
         ),
         RuntimeModelOverlayEntry(
+            model_id="deepseek-v4-pro[1m]",
+            display_label="DeepSeek V4 Pro 1M",
+            provider="deepseek",
+            route="deepseek_bridge",
+            client_type="claude_code_bridge_deepseek",
+            live_enabled=False,
+            formal_pool_eligible=False,
+            api_formats=("anthropic_messages", "openai_chat_completions"),
+            anthropic_base_url="https://api.deepseek.com/anthropic",
+            openai_base_url="https://api.deepseek.com",
+            reasoning_effort_levels=("high", "max"),
+            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max"},
+            cache_policy="provider_prefix_kv_cache_automatic_best_effort",
+            cache_usage_fields=("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"),
+            cache_key_strategy="provider_automatic_prefix_cache_best_effort",
+            context_window=1_000_000,
+            deprecated_aliases=("deepseek-chat", "deepseek-reasoner"),
+            provider_docs_url="https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code",
+            provider_docs_urls=(
+                "https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code",
+                "https://api-docs.deepseek.com/guides/anthropic_api",
+                "https://api-docs.deepseek.com/guides/kv_cache",
+                "https://api-docs.deepseek.com/quick_start/pricing",
+            ),
+        ),
+        RuntimeModelOverlayEntry(
             model_id="deepseek-v4-flash",
             display_label="DeepSeek V4 Flash",
             provider="deepseek",
@@ -1244,6 +1272,7 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             cache_policy="provider_prefix_kv_cache_automatic_best_effort",
             cache_usage_fields=("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"),
             cache_key_strategy="provider_automatic_prefix_cache_best_effort",
+            context_window=1_000_000,
             deprecated_aliases=("deepseek-chat", "deepseek-reasoner"),
             provider_docs_url="https://api-docs.deepseek.com/news/news260424",
             provider_docs_urls=(
@@ -1377,7 +1406,8 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             anthropic_base_url="https://api.moonshot.ai/anthropic",
             openai_base_url="https://api.moonshot.ai/v1",
             reasoning_policy="always_thinks_preserve_reasoning_content",
-            cache_key_strategy="provider_cache_metadata_unverified_probe_required",
+            cache_usage_fields=("usage.cached_tokens",),
+            cache_key_strategy="prompt_cache_key_required_or_recommended_for_coding_agents",
             deprecated_aliases=(
                 "kimi-latest",
                 "kimi-thinking-preview",
@@ -1387,10 +1417,10 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
                 "kimi-k2-thinking",
                 "kimi-k2-thinking-turbo",
             ),
-            provider_docs_url="https://platform.kimi.ai/",
+            provider_docs_url="https://platform.kimi.ai/docs/guide/agent-support",
             provider_docs_urls=(
                 "https://platform.kimi.ai/docs/models",
-                "https://platform.kimi.ai/docs/guide/claude-code",
+                "https://platform.kimi.ai/docs/guide/agent-support",
                 "https://platform.kimi.ai/docs/api/chat",
             ),
         ),
@@ -1406,7 +1436,8 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             anthropic_base_url="https://api.moonshot.ai/anthropic",
             openai_base_url="https://api.moonshot.ai/v1",
             reasoning_policy="always_thinks_preserve_reasoning_content",
-            cache_key_strategy="provider_cache_metadata_unverified_probe_required",
+            cache_usage_fields=("usage.cached_tokens",),
+            cache_key_strategy="prompt_cache_key_required_or_recommended_for_coding_agents",
             deprecated_aliases=(
                 "kimi-latest",
                 "kimi-thinking-preview",
@@ -1419,7 +1450,7 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             provider_docs_url="https://platform.kimi.ai/docs/models",
             provider_docs_urls=(
                 "https://platform.kimi.ai/docs/models",
-                "https://platform.kimi.ai/docs/guide/claude-code",
+                "https://platform.kimi.ai/docs/guide/agent-support",
                 "https://platform.kimi.ai/docs/api/chat",
             ),
         ),
@@ -1435,7 +1466,8 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             anthropic_base_url="https://api.moonshot.ai/anthropic",
             openai_base_url="https://api.moonshot.ai/v1",
             reasoning_policy="thinking_keep_all_supported",
-            cache_key_strategy="provider_cache_metadata_unverified_probe_required",
+            cache_usage_fields=("usage.cached_tokens",),
+            cache_key_strategy="prompt_cache_key_required_or_recommended_for_coding_agents",
             deprecated_aliases=(
                 "kimi-latest",
                 "kimi-thinking-preview",
@@ -1448,7 +1480,7 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             provider_docs_url="https://platform.kimi.ai/docs/models",
             provider_docs_urls=(
                 "https://platform.kimi.ai/docs/models",
-                "https://platform.kimi.ai/docs/guide/claude-code",
+                "https://platform.kimi.ai/docs/guide/agent-support",
                 "https://platform.kimi.ai/docs/api/chat",
             ),
         ),
@@ -1464,7 +1496,8 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             anthropic_base_url="https://api.moonshot.ai/anthropic",
             openai_base_url="https://api.moonshot.ai/v1",
             reasoning_policy="no_preserved_thinking",
-            cache_key_strategy="provider_cache_metadata_unverified_probe_required",
+            cache_usage_fields=("usage.cached_tokens",),
+            cache_key_strategy="prompt_cache_key_required_or_recommended_for_coding_agents",
             deprecated_aliases=(
                 "kimi-latest",
                 "kimi-thinking-preview",
@@ -1477,7 +1510,7 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             provider_docs_url="https://platform.kimi.ai/docs/models",
             provider_docs_urls=(
                 "https://platform.kimi.ai/docs/models",
-                "https://platform.kimi.ai/docs/guide/claude-code",
+                "https://platform.kimi.ai/docs/guide/agent-support",
                 "https://platform.kimi.ai/docs/api/chat",
             ),
         ),

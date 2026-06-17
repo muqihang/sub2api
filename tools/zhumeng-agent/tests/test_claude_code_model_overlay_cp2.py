@@ -110,6 +110,7 @@ def test_cp2_static_patch_points_and_mixed_model_overlay_are_proof_only(tmp_path
         "claude-sonnet-4-6",
         "openai-catalog-placeholder",
         "deepseek-v4-pro",
+        "deepseek-v4-pro[1m]",
         "agnes-1",
         "glm-5.2",
         "glm-5.2[1m]",
@@ -125,6 +126,9 @@ def test_cp2_static_patch_points_and_mixed_model_overlay_are_proof_only(tmp_path
     assert proof.models_by_id["claude-sonnet-4-6"].client_type == "claude_code_native"
     assert proof.models_by_id["openai-catalog-placeholder"].client_type == "claude_code_bridge_openai"
     assert proof.models_by_id["deepseek-v4-pro"].client_type == "claude_code_bridge_deepseek"
+    assert proof.models_by_id["deepseek-v4-pro[1m]"].client_type == "claude_code_bridge_deepseek"
+    assert proof.models_by_id["deepseek-v4-pro[1m]"].context_window == 1_000_000
+    assert proof.models_by_id["deepseek-v4-flash"].context_window == 1_000_000
 
 
 def test_cp2_model_list_capture_shows_mixed_models_but_marks_bridges_disabled(tmp_path: Path):
@@ -183,6 +187,11 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert deepseek.catalog_authoritative is False
     assert deepseek.api_formats == ("anthropic_messages", "openai_chat_completions")
     assert deepseek.model_id in docs_snapshot["observations"]["deepseek"]["models"]
+    deepseek_1m = proof.models_by_id["deepseek-v4-pro[1m]"]
+    assert deepseek_1m.model_id in docs_snapshot["observations"]["deepseek"]["models"]
+    assert deepseek_1m.context_window == 1_000_000
+    assert deepseek_1m.anthropic_base_url == docs_snapshot["observations"]["deepseek"]["anthropic_base_url"]
+    assert deepseek_1m.cache_usage_fields == deepseek.cache_usage_fields
     assert deepseek.anthropic_base_url == docs_snapshot["observations"]["deepseek"]["anthropic_base_url"]
     assert deepseek.openai_base_url == docs_snapshot["observations"]["deepseek"]["openai_base_url"]
     assert deepseek.reasoning_effort_levels == ("high", "max")
@@ -216,6 +225,8 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert kimi.anthropic_base_url == docs_snapshot["observations"]["kimi"]["anthropic_base_url"]
     assert kimi.openai_base_url == docs_snapshot["observations"]["kimi"]["openai_base_url"]
     assert kimi.cache_key_strategy == docs_snapshot["observations"]["kimi"]["cache_key_strategy"]
+    assert docs_snapshot["observations"]["kimi"]["prompt_cache_key"] is True
+    assert docs_snapshot["observations"]["kimi"]["cache_usage_field"] == "usage.cached_tokens"
     assert kimi.reasoning_policy == "always_thinks_preserve_reasoning_content"
     assert set(docs_snapshot["observations"]["kimi"]["deprecated_aliases"]).issubset(set(kimi.deprecated_aliases))
     assert "platform.kimi" in kimi.provider_docs_url
@@ -230,6 +241,7 @@ def test_cp2_route_hint_stub_for_bridge_fails_closed_before_cp4(tmp_path: Path):
     proof = build_cp2_model_overlay_proof(_runtime_plan(tmp_path))
 
     hint = build_route_hint_stub(proof, "deepseek-v4-pro")
+    hint_1m = build_route_hint_stub(proof, "deepseek-v4-pro[1m]")
 
     assert hint["model_id"] == "deepseek-v4-pro"
     assert hint["client_type"] == "claude_code_bridge_deepseek"
@@ -239,6 +251,14 @@ def test_cp2_route_hint_stub_for_bridge_fails_closed_before_cp4(tmp_path: Path):
     assert hint["native_attestation_allowed"] is False
     assert hint["requires_cp4_routing_trust_contract"] is True
     assert hint["fail_closed_reason"] == "cp4_routing_trust_contract_not_green"
+    assert hint_1m["model_id"] == "deepseek-v4-pro[1m]"
+    assert hint_1m["client_type"] == "claude_code_bridge_deepseek"
+    assert hint_1m["route"] == "deepseek_bridge"
+    assert hint_1m["live_request_allowed"] is False
+    assert hint_1m["formal_pool_allowed"] is False
+    assert hint_1m["native_attestation_allowed"] is False
+    assert hint_1m["requires_cp4_routing_trust_contract"] is True
+    assert hint_1m["fail_closed_reason"] == "cp4_routing_trust_contract_not_green"
 
 
 def test_cp2_native_route_hint_stub_is_proof_only_until_native_exit_gate_evidence(tmp_path: Path):
@@ -270,9 +290,14 @@ def test_cp2_writes_overlay_proof_artifacts_and_rollback_metadata_under_runtime_
     assert proof_payload["bridge_live_feature_flag"] is False
     assert proof_payload["route_hint_mode"] == "stub_only_cp4_required"
     assert proof_payload["models"]["deepseek-v4-pro"]["live_enabled"] is False
+    assert proof_payload["models"]["deepseek-v4-pro[1m]"]["live_enabled"] is False
+    assert proof_payload["models"]["deepseek-v4-pro[1m]"]["formal_pool_eligible"] is False
 
     route_hint_payload = json.loads(artifacts["route_hint_stub"].read_text(encoding="utf-8"))
     assert route_hint_payload["deepseek-v4-pro"]["live_request_allowed"] is False
+    assert route_hint_payload["deepseek-v4-pro[1m]"]["live_request_allowed"] is False
+    assert route_hint_payload["deepseek-v4-pro[1m]"]["formal_pool_allowed"] is False
+    assert route_hint_payload["deepseek-v4-pro[1m]"]["native_attestation_allowed"] is False
     assert route_hint_payload["openai-catalog-placeholder"]["formal_pool_allowed"] is False
     assert route_hint_payload["claude-sonnet-4-6"]["live_request_allowed"] is False
     assert route_hint_payload["claude-sonnet-4-6"]["native_attestation_allowed"] is False

@@ -99,6 +99,21 @@ def test_cp8_official_docs_snapshot_rejects_kimi_endpoint_drift():
 
 
 
+
+def test_cp8_official_docs_snapshot_requires_deepseek_1m_and_kimi_cache_fields():
+    payload = _fixture("live_matrix_pass.json")
+    docs = payload["official_docs_snapshot"]
+    assert "deepseek-v4-pro[1m]" in docs["observations"]["deepseek"]["models"]
+    assert docs["observations"]["deepseek"]["context_windows"]["deepseek-v4-pro[1m]"] == 1_000_000
+    assert docs["observations"]["kimi"]["prompt_cache_key"] is True
+    assert docs["observations"]["kimi"]["cache_usage_field"] == "usage.cached_tokens"
+
+    docs["observations"]["deepseek"]["models"].remove("deepseek-v4-pro[1m]")
+    docs["observations"]["kimi"].pop("prompt_cache_key")
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+    assert result.status == "fail"
+    assert "official_docs" in result.failed
+
 def test_cp8_live_matrix_requires_artifact_hashes_and_rejects_sensitive_artifacts():
     payload = _fixture("live_matrix_pass.json")
     payload["scenarios"]["gpt_bridge"]["artifact_refs"][0]["sha256"] = "sha256:" + "0" * 64
@@ -148,6 +163,16 @@ def test_cp8_live_matrix_fails_closed_for_non_object_scenarios():
     assert result.release_gate == "blocked_missing_external_live"
 
 
+
+def test_cp8_deepseek_bridge_accepts_claude_code_1m_pro_as_pro_coverage():
+    payload = _fixture("live_matrix_pass.json")
+    payload["scenarios"]["deepseek_bridge"]["models"] = ["deepseek-v4-pro[1m]", "deepseek-v4-flash"]
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "pass"
+    assert "deepseek_bridge" not in result.failed
+
 def test_cp8_live_matrix_rejects_model_family_semantic_drift():
     payload = _fixture("live_matrix_pass.json")
     payload["scenarios"]["claude_native"]["models"] = ["claude-sonnet-4-6"]
@@ -164,7 +189,7 @@ def test_cp8_live_matrix_rejects_model_family_semantic_drift():
     assert any("GPT" in issue for issue in result.scenario_results["gpt_bridge"].issues)
 
     payload = _fixture("live_matrix_pass.json")
-    payload["scenarios"]["deepseek_bridge"]["models"] = ["deepseek-v4-pro"]
+    payload["scenarios"]["deepseek_bridge"]["models"] = ["deepseek-v4-pro[1m]"]
     result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
     assert result.status == "fail"
     assert "deepseek_bridge" in result.failed

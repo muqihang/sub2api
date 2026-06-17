@@ -22,13 +22,16 @@ def test_cp6_provider_docs_snapshot_uses_current_official_model_facts_without_gl
     snapshot = _fixture("provider_docs_snapshot.json")
 
     assert snapshot["captured_at"] == "2026-06-16"
-    assert snapshot["observations"]["deepseek"]["models"] == ["deepseek-v4-flash", "deepseek-v4-pro"]
+    assert snapshot["observations"]["deepseek"]["models"] == ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-pro[1m]"]
+    assert snapshot["observations"]["deepseek"]["context_windows"]["deepseek-v4-pro[1m]"] == 1_000_000
     assert snapshot["observations"]["deepseek"]["anthropic_base_url"] == "https://api.deepseek.com/anthropic"
     assert snapshot["observations"]["deepseek"]["openai_base_url"] == "https://api.deepseek.com"
     assert snapshot["observations"]["deepseek"]["kv_cache"]["hit_rule"] == "full_prefix_cache_unit_match"
     assert snapshot["observations"]["zai_glm"]["latest_coding_model"] == "glm-5.2"
     assert "glm-4.6" not in snapshot["observations"]["zai_glm"]["claude_code_display_models"]
     assert snapshot["observations"]["kimi"]["coding_models"] == ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"]
+    assert snapshot["observations"]["kimi"]["prompt_cache_key"] is True
+    assert snapshot["observations"]["kimi"]["cache_usage_field"] == "usage.cached_tokens"
     assert snapshot["observations"]["openai"]["recommended_model"] == "gpt-5.5"
     for provider in snapshot["observations"].values():
         assert provider["live_runtime_verified"] is False
@@ -37,10 +40,10 @@ def test_cp6_provider_docs_snapshot_uses_current_official_model_facts_without_gl
 def test_cp6_deepseek_defaults_to_anthropic_messages_when_all_fixtures_pass():
     catalog = build_cp6_provider_probe_catalog(_fixture("provider_probe_matrix_pass.json"))
 
-    decision = select_cp6_bridge_transport(catalog, provider="deepseek", model_id="deepseek-v4-pro")
+    decision = select_cp6_bridge_transport(catalog, provider="deepseek", model_id="deepseek-v4-pro[1m]")
 
     assert decision.provider == "deepseek"
-    assert decision.model_id == "deepseek-v4-pro"
+    assert decision.model_id == "deepseek-v4-pro[1m]"
     assert decision.selected_protocol == "anthropic_messages"
     assert decision.base_url == "https://api.deepseek.com/anthropic"
     assert decision.fallback_protocol == "openai_chat_completions"
