@@ -186,21 +186,20 @@ func (r *FormalPoolGatewayHealthcheckRunner) ccGatewayMessagesURL() (string, err
 	return base + "/v1/messages?beta=true", nil
 }
 
+const formalPoolHealthcheckModel = "claude-haiku-4-5-20251001"
+
 func formalPoolHealthcheckBody() ([]byte, error) {
 	return json.Marshal(map[string]any{
-		"model":      "claude-sonnet-4-6",
-		"max_tokens": 1024,
+		"model":      formalPoolHealthcheckModel,
+		"max_tokens": 64,
 		"metadata":   map[string]any{"user_id": `{"session_id":"formal-pool-healthcheck"}`},
 		"stream":     false,
 		"system": []map[string]any{
 			{"type": "text", "text": "<env>\nPlatform: darwin\nShell: zsh\nOS Version: Darwin 24.4.0\nWorking directory: /tmp/formal-pool-healthcheck\n</env>"},
-			{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for software engineering tasks. This is a formal-pool directed healthcheck. Keep the response minimal and do not inspect files or call tools."},
+			{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for software engineering tasks. This is a formal-pool directed healthcheck using the lowest-cost Claude Code model. Keep the response minimal and do not inspect files or call tools."},
 		},
 		"messages": []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "Return a compact healthcheck JSON object with ok true."}}}},
 		"tools":    []map[string]any{},
-		"output_config": map[string]any{
-			"effort": "low",
-		},
 	})
 }
 
