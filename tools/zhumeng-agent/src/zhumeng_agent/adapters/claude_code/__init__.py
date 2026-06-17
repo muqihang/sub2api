@@ -60,7 +60,9 @@ from .live_matrix import (
     CP8LiveMatrixResult,
     CP8ScenarioResult,
     REQUIRED_CP8_SCENARIOS,
+    collect_cp8_live_provider_provenance,
     verify_cp8_live_matrix,
+    write_cp8_live_scenario_evidence,
 )
 from .status import ClaudeCodeOperatorStatus, derive_claude_code_operator_status
 from .profile import (
@@ -141,6 +143,7 @@ __all__ = [
     "build_cp4_route_hint_contract",
     "build_cp4_route_hint_headers",
     "build_cross_provider_subagent_result",
+    "collect_cp8_live_provider_provenance",
     "build_route_hint_stub",
     "build_managed_runtime_install_plan",
     "build_shell_alias_plan",
@@ -166,6 +169,7 @@ __all__ = [
     "validate_loopback_guard_base_url",
     "verify_cp4_route_hint_headers",
     "verify_cp8_live_matrix",
+    "write_cp8_live_scenario_evidence",
     "write_managed_runtime_artifacts",
     "write_model_overlay_proof_artifacts",
 ]

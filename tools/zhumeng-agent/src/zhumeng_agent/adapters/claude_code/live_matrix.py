@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +31,10 @@ REQUIRED_CP8_SCENARIOS = (
 )
 
 _BRIDGE_SCENARIOS = frozenset({"gpt_bridge", "deepseek_bridge"})
-_SENSITIVE_ARTIFACT_RE = re.compile(r"(Bearer\s+|raw-token|api[_-]?key|cookie|setup[_-]?token|CCH|oauth|Authorization)", re.IGNORECASE)
+_SENSITIVE_ARTIFACT_RE = re.compile(
+    r"(Bearer(?:\s+|_+)|sk-[A-Za-z0-9][A-Za-z0-9_.:-]{6,}|raw-token|api[_-]?key|cookie|setup[_-]?token|CCH|oauth|Authorization)",
+    re.IGNORECASE,
+)
 
 _DOC_SOURCES = frozenset({
     "deepseek_anthropic_api",
@@ -147,7 +151,7 @@ def verify_cp8_live_matrix(
                     client_type="",
                 )
             continue
-        result = _verify_scenario(name, raw, strict_live=strict_live, evidence_root=root)
+        result = _verify_scenario(name, raw, strict_live=strict_live, evidence_root=root, run_id=_strict_live_run_id(payload) if strict_live else "")
         results[name] = result
         if name == "claude_native" and result.status == "pass":
             _add_count(native_egress, "claude_code_native", _int(raw.get("native_egress_count")))
@@ -206,6 +210,7 @@ def _verify_scenario(
     *,
     strict_live: bool,
     evidence_root: Path | None,
+    run_id: str = "",
 ) -> CP8ScenarioResult:
     issues: list[str] = []
     live = bool(raw.get("live_provider_verified"))
@@ -219,6 +224,15 @@ def _verify_scenario(
 
     route = str(raw.get("route") or "")
     client_type = str(raw.get("client_type") or "")
+    if strict_live and not _strict_live_scenario_artifact_verified(
+        raw.get("artifact_refs"),
+        evidence_root=evidence_root,
+        scenario=name,
+        run_id=run_id,
+        route=route,
+        client_type=client_type,
+    ):
+        issues.append("external live scenario artifact missing or invalid")
     native_count = _int(raw.get("native_egress_count"))
     formal = bool(raw.get("formal_pool_allowed"))
     native_attestation = bool(raw.get("native_attestation"))
@@ -312,6 +326,55 @@ def _verify_scenario(
 
 
 
+
+
+def _strict_live_run_id(payload: Mapping[str, object]) -> str:
+    provenance = payload.get("live_provenance")
+    if not isinstance(provenance, Mapping):
+        return ""
+    return str(provenance.get("run_id") or "").strip()
+
+
+def _strict_live_scenario_artifact_verified(
+    value: object,
+    *,
+    evidence_root: Path | None,
+    scenario: str,
+    run_id: str,
+    route: str,
+    client_type: str,
+) -> bool:
+    if evidence_root is None or not isinstance(value, list) or not run_id:
+        return False
+    root = evidence_root.resolve(strict=False)
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            continue
+        rel = raw.get("path")
+        if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts:
+            continue
+        path = (root / rel).resolve(strict=False)
+        if root not in (path, *path.parents) or not path.exists() or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        if (
+            payload.get("schema_version") == "cp8-live-scenario-evidence-v1"
+            and payload.get("checkpoint") == "CP8"
+            and str(payload.get("run_id") or "") == run_id
+            and str(payload.get("scenario") or "") == scenario
+            and payload.get("status") == "pass"
+            and payload.get("live_provider_verified") is True
+            and payload.get("raw_sensitive_stored") is False
+            and str(payload.get("route") or "") == route
+            and str(payload.get("client_type") or "") == client_type
+        ):
+            return True
+    return False
 
 def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_root: Path | None) -> bool:
     if payload.get("mode") != "external_provider_live_matrix":
@@ -412,7 +475,8 @@ def _strict_live_provider_artifacts_verified(
             and payload.get("loopback") is False
             and artifact_host == host
             and _external_live_endpoint(provider, artifact_endpoint or endpoint)
-            and (str(payload.get("upstream_request_id") or "").strip() or _int(payload.get("response_status")) > 0)
+            and _success_status(_int(payload.get("response_status")))
+            and bool(str(payload.get("upstream_request_id") or "").strip())
         ):
             return True
     return False
@@ -486,6 +550,165 @@ def _official_docs_issues(value: object) -> tuple[str, ...]:
         issues.append("OpenAI official docs cache observability snapshot is stale")
     return tuple(issues)
 
+
+
+
+
+def write_cp8_live_scenario_evidence(
+    *,
+    output_root: Path | str,
+    run_id: str,
+    scenario: str,
+    route: str,
+    client_type: str,
+    evidence: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    run_id = str(run_id or "").strip()
+    scenario = str(scenario or "").strip()
+    if not run_id or scenario not in REQUIRED_CP8_SCENARIOS:
+        raise CP8LiveMatrixError("CP8 live scenario evidence requires valid run_id and scenario")
+    root = Path(output_root).expanduser()
+    artifacts_dir = root / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    raw = evidence or {}
+    artifact_payload = {
+        "schema_version": "cp8-live-scenario-evidence-v1",
+        "checkpoint": "CP8",
+        "run_id": run_id,
+        "scenario": scenario,
+        "status": "pass" if raw.get("status") == "pass" else "fail",
+        "live_provider_verified": raw.get("live_provider_verified") is True,
+        "raw_sensitive_stored": False,
+        "route": str(route or ""),
+        "client_type": str(client_type or ""),
+    }
+    for key in ("summary", "notes", "artifact_summary", "safe_evidence_summary"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):
+            artifact_payload[key] = value[:4000]
+    artifact = artifacts_dir / f"scenario_{scenario}.json"
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+    return {
+        "path": f"artifacts/{artifact.name}",
+        "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    }
+
+
+def collect_cp8_live_provider_provenance(
+    *,
+    run_id: str,
+    output_root: Path | str,
+    credentials: Mapping[str, str] | None = None,
+    transport: object | None = None,
+) -> dict[str, object]:
+    """Collect CP8 external-live provider provenance without persisting secrets.
+
+    The transport is injectable so tests can prove the artifact contract without
+    making network calls. Production callers must pass real credentials through
+    env/config and explicitly opt into external live collection.
+    """
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        raise CP8LiveMatrixError("CP8 live provider provenance requires run_id")
+    root = Path(output_root).expanduser()
+    artifacts_dir = root / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    credential_source = credentials if credentials is not None else _cp8_live_credentials_from_env()
+    credential_map = {str(k): str(v) for k, v in dict(credential_source).items()}
+    provider_specs = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    missing = [provider for provider in provider_specs if not credential_map.get(provider)]
+    if missing:
+        raise CP8LiveMatrixError("missing live credential for provider(s): " + ", ".join(missing))
+    probe = transport or _default_cp8_live_transport
+    providers: dict[str, object] = {}
+    for provider, (scope, endpoint) in provider_specs.items():
+        result = probe(provider, endpoint, credential_map[provider])  # type: ignore[misc]
+        if not isinstance(result, Mapping):
+            raise CP8LiveMatrixError(f"CP8 live provider probe for {provider} did not return evidence")
+        status = _int(result.get("status"))
+        request_id = _safe_live_request_id(result)
+        if not _success_status(status) or not request_id:
+            raise CP8LiveMatrixError(f"CP8 live provider probe for {provider} did not return a sanitized 2xx live request id")
+        artifact_payload = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": urlparse(endpoint).hostname or "",
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": status,
+            "upstream_request_id": request_id,
+        }
+        artifact = artifacts_dir / f"{provider}_live_provenance.json"
+        artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+        providers[provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{artifact.name}",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    return {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": providers,
+    }
+
+
+def _cp8_live_credentials_from_env() -> dict[str, str]:
+    return {
+        "claude": os.getenv("ANTHROPIC_API_KEY") or os.getenv("SUB2API_CLAUDE_CODE_LIVE_ANTHROPIC_API_KEY") or "",
+        "openai": os.getenv("OPENAI_API_KEY") or os.getenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY") or "",
+        "deepseek": os.getenv("DEEPSEEK_API_KEY") or os.getenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY") or "",
+    }
+
+
+def _default_cp8_live_transport(provider: str, endpoint: str, credential: str) -> dict[str, object]:
+    _ = credential
+    raise CP8LiveMatrixError(
+        f"CP8 external live probe for {provider} is not implemented in offline verifier; "
+        "provide an explicit transport or run the managed live matrix harness"
+    )
+
+
+def _safe_live_request_id(result: Mapping[str, object]) -> str:
+    request_id = str(result.get("request_id") or "").strip()
+    if request_id:
+        return _safe_live_label(request_id)
+    headers = result.get("response_headers")
+    if isinstance(headers, Mapping):
+        for key in ("x-request-id", "request-id", "openai-request-id", "anthropic-request-id"):
+            value = headers.get(key) or headers.get(key.title()) or headers.get(key.upper())
+            if isinstance(value, str) and value.strip():
+                return _safe_live_label(value)
+    return ""
+
+
+def _safe_live_label(value: str) -> str:
+    if _SENSITIVE_ARTIFACT_RE.search(value):
+        return ""
+    value = re.sub(r"[^A-Za-z0-9_.:-]", "_", value.strip())
+    if _SENSITIVE_ARTIFACT_RE.search(value):
+        return ""
+    return value[:160]
+
+
+def _success_status(value: int) -> bool:
+    return 200 <= value < 300
 
 def _str_list(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
