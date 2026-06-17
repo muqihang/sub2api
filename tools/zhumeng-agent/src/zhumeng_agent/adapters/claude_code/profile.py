@@ -68,10 +68,14 @@ _MANAGED_NO_PROXY = "127.0.0.1,localhost,::1"
 
 
 def build_isolated_config_dir(root: Path, *, profile_id: str) -> Path:
-    safe_profile_id = _SAFE_PROFILE_SEGMENT_RE.sub("-", profile_id).strip(".-_") or "default"
+    safe_profile_id = safe_profile_segment(profile_id)
     config_dir = root.expanduser() / "claude-code" / safe_profile_id / "config"
     _validate_isolated_config_dir(config_dir)
     return config_dir
+
+
+def safe_profile_segment(profile_id: str) -> str:
+    return _SAFE_PROFILE_SEGMENT_RE.sub("-", profile_id).strip(".-_") or "default"
 
 
 def validate_loopback_guard_base_url(base_url: str) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -17,7 +18,6 @@ _MANAGED_NO_PROXY = "127.0.0.1,localhost,::1"
 _OFFICIAL_HOST_MARKERS = ("anthropic.com", "claude.ai", "claude.com")
 _SENSITIVE_ENV_MARKERS = ("TOKEN", "API_KEY", "COOKIE", "SESSION", "PROXY", "BASE_URL")
 _CP0_OVERLAY_HASH = "sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-overlay:cp0-native-only").hexdigest()
-_CP0_CATALOG_HASH = "sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-catalog:cp0-claude-native-only").hexdigest()
 _UNKNOWN_HASH = "sha256:" + ("0" * 64)
 
 
@@ -198,7 +198,7 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
     env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] = config.sub2api_auth
     env["ZHUMENG_CLAUDE_RUNTIME_HASH"] = _sha256_file(config.repo_root / "tools" / "cli_control_plane_guard.py")
     env["ZHUMENG_CLAUDE_OVERLAY_HASH"] = _CP0_OVERLAY_HASH
-    env["ZHUMENG_CLAUDE_CATALOG_HASH"] = _CP0_CATALOG_HASH
+    env["ZHUMENG_CLAUDE_CATALOG_HASH"] = _route_catalog_content_hash(config.repo_root, config.route_hint_catalog_version)
     if config.control_plane_intent_auth is not None:
         env["SUB2API_CONTROL_PLANE_INTENT_TOKEN"] = config.control_plane_intent_auth
     if config.attestation_secret is not None:
@@ -291,3 +291,25 @@ def _sha256_file(path: Path) -> str:
     except OSError:
         return _UNKNOWN_HASH
     return "sha256:" + digest
+
+
+def _route_catalog_content_hash(repo_root: Path, catalog_version: str) -> str:
+    route_trust = _load_route_trust_module(repo_root)
+    catalog = route_trust.cp4_fixture_route_catalog(
+        runtime_hash=_UNKNOWN_HASH,
+        overlay_hash=_UNKNOWN_HASH,
+        catalog_hash=_UNKNOWN_HASH,
+        catalog_version=catalog_version,
+    )
+    return str(route_trust.route_catalog_content_hash(catalog))
+
+
+def _load_route_trust_module(repo_root: Path):
+    module_path = repo_root / "tools" / "claude_code_route_trust.py"
+    spec = importlib.util.spec_from_file_location("zhumeng_claude_code_route_trust", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load Claude Code route trust module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module

@@ -135,6 +135,7 @@ def cp4_fixture_route_catalog(
         "openai-catalog-placeholder": bridge("openai-catalog-placeholder", "openai", "openai_bridge", "claude_code_bridge_openai"),
         "gpt-5.5": bridge("gpt-5.5", "openai", "openai_bridge", "claude_code_bridge_openai"),
         "deepseek-v4-pro": bridge("deepseek-v4-pro", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
+        "deepseek-v4-pro[1m]": bridge("deepseek-v4-pro[1m]", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
         "deepseek-v4-flash": bridge("deepseek-v4-flash", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
         "agnes-1": bridge("agnes-1", "agnes", "agnes_bridge", "claude_code_bridge_agnes"),
         "glm-5.2": bridge("glm-5.2", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm"),
@@ -154,6 +155,33 @@ def cp4_fixture_route_catalog(
         catalog_version=str(catalog_version),
         entries=entries,
     )
+
+
+def route_catalog_content_hash(catalog: RouteCatalog) -> str:
+    raw = json.dumps(_canonical_route_catalog_content(catalog), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + sha256(raw).hexdigest()
+
+
+def _canonical_route_catalog_content(catalog: RouteCatalog) -> dict[str, Any]:
+    return {
+        "schema_version": "cp4-route-hint-catalog-v1",
+        "catalog_version": catalog.catalog_version,
+        "models": [
+            {
+                "model_id": entry.model_id,
+                "provider": entry.provider,
+                "route": entry.route,
+                "client_type": entry.client_type,
+                "live_enabled": entry.live_enabled,
+                "formal_pool_allowed": entry.formal_pool_allowed,
+                "native_attestation_allowed": entry.native_attestation_allowed,
+                "provider_owner": entry.provider_owner,
+                "credential_scope": entry.credential_scope,
+                "gateway_location": entry.gateway_location,
+            }
+            for entry in sorted(catalog.entries.values(), key=lambda item: item.model_id)
+        ],
+    }
 
 
 def build_signed_route_hint_headers(
@@ -410,5 +438,6 @@ __all__ = [
     "body_model_id",
     "build_signed_route_hint_headers",
     "cp4_fixture_route_catalog",
+    "route_catalog_content_hash",
     "verify_signed_route_hint_headers",
 ]

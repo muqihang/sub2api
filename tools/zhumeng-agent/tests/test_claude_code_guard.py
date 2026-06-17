@@ -31,18 +31,26 @@ sys.modules[_ROUTE_TRUST_SPEC.name] = _ROUTE_TRUST
 _ROUTE_TRUST_SPEC.loader.exec_module(_ROUTE_TRUST)
 build_signed_route_hint_headers = _ROUTE_TRUST.build_signed_route_hint_headers
 cp4_fixture_route_catalog = _ROUTE_TRUST.cp4_fixture_route_catalog
+route_catalog_content_hash = _ROUTE_TRUST.route_catalog_content_hash
 
 
 def _cp0_route_hint_headers(*, body: bytes, request_path: str, session_ref: str, secret: str = "route-hint-secret", nonce: str = "route-hint-nonce") -> dict[str, str]:
+    catalog = cp4_fixture_route_catalog(
+        runtime_hash="sha256:" + hashlib.sha256((REPO_ROOT / "tools" / "cli_control_plane_guard.py").read_bytes()).hexdigest(),
+        overlay_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-overlay:cp0-native-only").hexdigest(),
+        catalog_hash="sha256:" + ("0" * 64),
+        catalog_version="cp4-cli-fixture-v1",
+    )
+    catalog = cp4_fixture_route_catalog(
+        runtime_hash=catalog.runtime_hash,
+        overlay_hash=catalog.overlay_hash,
+        catalog_hash=route_catalog_content_hash(catalog),
+        catalog_version=catalog.catalog_version,
+    )
     return build_signed_route_hint_headers(
         body=body,
         request_path=request_path,
-        catalog=cp4_fixture_route_catalog(
-            runtime_hash="sha256:" + hashlib.sha256((REPO_ROOT / "tools" / "cli_control_plane_guard.py").read_bytes()).hexdigest(),
-            overlay_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-overlay:cp0-native-only").hexdigest(),
-            catalog_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-catalog:cp0-claude-native-only").hexdigest(),
-            catalog_version="cp4-cli-fixture-v1",
-        ),
+        catalog=catalog,
         model_id="claude-sonnet-4-6",
         session_ref=session_ref,
         secret=secret,

@@ -38,6 +38,7 @@ from tools.claude_code_route_trust import (
     RouteDecision,
     RouteHintReplayCache,
     cp4_fixture_route_catalog,
+    route_catalog_content_hash,
     verify_signed_route_hint_headers,
 )
 from tools.cli_control_plane_policy import (
@@ -2227,12 +2228,22 @@ def main(argv: list[str] | None = None) -> int:
     route_hint_secret = os.environ.get(args.route_hint_secret_env or "") if args.route_hint_secret_env else None
     route_hint_catalog = None
     if route_hint_secret:
+        catalog_version = args.route_hint_catalog_version
         route_hint_catalog = cp4_fixture_route_catalog(
             runtime_hash=_native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
             overlay_hash=_native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
-            catalog_hash=_native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH"),
-            catalog_version=args.route_hint_catalog_version,
+            catalog_hash=NATIVE_UNKNOWN_HASH,
+            catalog_version=catalog_version,
         )
+        route_hint_catalog = cp4_fixture_route_catalog(
+            runtime_hash=route_hint_catalog.runtime_hash,
+            overlay_hash=route_hint_catalog.overlay_hash,
+            catalog_hash=route_catalog_content_hash(route_hint_catalog),
+            catalog_version=catalog_version,
+        )
+        if _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH") != route_hint_catalog.catalog_hash:
+            print("invalid guard config: route hint catalog hash mismatch", file=os.sys.stderr)
+            return 2
 
     try:
         forwarder = RedactingForwarder(

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
 import importlib.util
 import json
-import sys
+import shutil
 import socket
+import subprocess
+import sys
 import threading
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,8 +28,8 @@ assert _ROUTE_TRUST_SPEC is not None and _ROUTE_TRUST_SPEC.loader is not None
 _ROUTE_TRUST = importlib.util.module_from_spec(_ROUTE_TRUST_SPEC)
 sys.modules[_ROUTE_TRUST_SPEC.name] = _ROUTE_TRUST
 _ROUTE_TRUST_SPEC.loader.exec_module(_ROUTE_TRUST)
-build_signed_route_hint_headers = _ROUTE_TRUST.build_signed_route_hint_headers
 cp4_fixture_route_catalog = _ROUTE_TRUST.cp4_fixture_route_catalog
+route_catalog_content_hash = _ROUTE_TRUST.route_catalog_content_hash
 
 
 class RecordingRunner:
@@ -175,7 +175,121 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert launch["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:43117"
     assert launch["env"]["CLAUDE_CODE_API_BASE_URL"] == "http://127.0.0.1:43117"
     assert launch["env"]["ANTHROPIC_API_KEY"] == "sub2api-entry"
+    assert "route-hint-preload.cjs" in launch["env"]["NODE_OPTIONS"]
+    assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD"] == "enabled"
+    assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "route-hint-secret"
+    catalog = json.loads(Path(launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH"]).read_text(encoding="utf-8"))
+    expected_catalog = cp4_fixture_route_catalog(catalog_version="cp4-test-v1")
+    assert catalog["catalog_version"] == "cp4-test-v1"
+    assert catalog["catalog_hash"] == route_catalog_content_hash(expected_catalog)
+    assert set(catalog["entries"]) == set(expected_catalog.entries)
+    assert catalog["entries"]["deepseek-v4-pro"]["client_type"] == "claude_code_bridge_deepseek"
+    assert catalog["entries"]["deepseek-v4-pro"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["deepseek-v4-pro[1m]"]["client_type"] == "claude_code_bridge_deepseek"
+    assert catalog["entries"]["deepseek-v4-pro[1m]"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["claude-sonnet-4-6"]["client_type"] == "claude_code_native"
+    assert catalog["entries"]["claude-sonnet-4-6"]["formal_pool_allowed"] is True
     assert "local-user-key" not in "\n".join(launch["env"].values())
+
+
+def test_managed_launch_preload_node_options_loads_from_paths_with_spaces(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    captured = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        captured["guard_plan"] = plan
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        check = tmp_path / "check-preload.js"
+        check.write_text("console.log('loaded');\n", encoding="utf-8")
+        completed = subprocess.run(
+            [node, str(check)],
+            env=dict(env),
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert "loaded" in completed.stdout
+        return 0
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=tmp_path / "zhumeng state with spaces",
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+        inherited_env={"PATH": "/usr/bin"},
+    )
+
+    assert result.returncode == 0
+    assert "route-hint-preload.cjs" in captured["env"]["NODE_OPTIONS"]
+
+
+def test_managed_launch_sanitizes_profile_id_for_summary_config_and_overlay_paths(tmp_path: Path):
+    captured = {}
+    config_root = tmp_path / "zhumeng-state"
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        captured["guard_plan"] = plan
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        return 0
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=config_root,
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+        profile_id="../../outside profile",
+    )
+
+    claude_code_root = (config_root / "claude-code").resolve()
+    assert result.returncode == 0
+    assert result.guard_plan.config.summary_path.resolve().is_relative_to(claude_code_root)
+    assert Path(captured["env"]["CLAUDE_CONFIG_DIR"]).resolve().is_relative_to(claude_code_root)
+    assert Path(captured["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH"]).resolve().is_relative_to(claude_code_root)
+    assert ".." not in Path(captured["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH"]).parts
+
 
 
 def test_managed_launch_requires_route_hint_secret_for_real_runtime(tmp_path: Path):
@@ -269,45 +383,50 @@ class ManagedLaunchCaptureHandler(BaseHTTPRequestHandler):
 
 
 def test_managed_launch_real_guard_routes_base_url_with_native_headers(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
     ManagedLaunchCaptureHandler.requests = []
     upstream = _start_server(ManagedLaunchCaptureHandler)
     guard_port = _free_port()
+    fake_claude = tmp_path / "fake-claude.js"
+    fake_claude.write_text(
+        """
+const body = JSON.stringify({
+  model: "claude-sonnet-4-6",
+  messages: [{role: "user", content: "walking-skeleton-prompt"}],
+  max_tokens: 8
+});
+const response = await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555"
+  },
+  body
+});
+if (response.status !== 200) {
+  throw new Error("unexpected guard response " + response.status);
+}
+""",
+        encoding="utf-8",
+    )
 
     def fake_claude_process(command, *, env, cwd):
         assert env["ANTHROPIC_BASE_URL"] == f"http://127.0.0.1:{guard_port}"
         assert env["CLAUDE_CODE_API_BASE_URL"] == f"http://127.0.0.1:{guard_port}"
-        body = json.dumps({
-            "model": "claude-sonnet-4-6",
-            "messages": [{"role": "user", "content": "walking-skeleton-prompt"}],
-            "max_tokens": 8,
-        }).encode("utf-8")
-        request_path = "/v1/messages?beta=true"
-        route_headers = build_signed_route_hint_headers(
-            body=body,
-            request_path=request_path,
-            catalog=cp4_fixture_route_catalog(
-                runtime_hash="sha256:" + hashlib.sha256((REPO_ROOT / "tools" / "cli_control_plane_guard.py").read_bytes()).hexdigest(),
-                overlay_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-overlay:cp0-native-only").hexdigest(),
-                catalog_hash="sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-catalog:cp0-claude-native-only").hexdigest(),
-                catalog_version="cp4-cli-fixture-v1",
-            ),
-            model_id="claude-sonnet-4-6",
-            session_ref="11111111-2222-4333-8444-555555555555",
-            secret="route-hint-secret",
-            nonce="walking-skeleton-nonce",
+        assert "--require=" in env["NODE_OPTIONS"]
+        assert "route-hint-preload.cjs" in env["NODE_OPTIONS"]
+        completed = subprocess.run(
+            [node, str(fake_claude)],
+            env=dict(env),
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
         )
-        req = urllib.request.Request(
-            env["ANTHROPIC_BASE_URL"] + request_path,
-            data=body,
-            method="POST",
-            headers={
-                "content-type": "application/json",
-                "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
-                **route_headers,
-            },
-        )
-        with urllib.request.urlopen(req, timeout=5) as response:
-            assert response.status == 200
+        assert completed.returncode == 0, completed.stderr
         return 0
 
     try:
@@ -340,6 +459,209 @@ def test_managed_launch_real_guard_routes_base_url_with_native_headers(tmp_path:
     assert headers["x-sub2api-native-signature"]
     summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
     assert "walking-skeleton-prompt" not in summary
+
+
+def test_managed_launch_executes_command_path_with_preload_injected(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    ManagedLaunchCaptureHandler.requests = []
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+    fake_claude = tmp_path / "command-faithful-claude.js"
+    fake_claude.write_text(
+        """
+const body = JSON.stringify({
+  model: "claude-sonnet-4-6",
+  messages: [{role: "user", content: "command-faithful-prompt"}],
+  max_tokens: 8
+});
+const response = await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555"
+  },
+  body
+});
+if (response.status !== 200) {
+  throw new Error("unexpected guard response " + response.status);
+}
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=node,
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[str(fake_claude)],
+            inherited_env={"PATH": "/usr/bin"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+    assert result.launch_plan.command == [node, str(fake_claude)]
+    assert len(ManagedLaunchCaptureHandler.requests) == 1
+    headers = ManagedLaunchCaptureHandler.requests[0]["headers"]
+    assert headers["x-sub2api-client-type"] == "claude_code_native"
+    assert headers["x-sub2api-guard-attested"] == "true"
+    summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "command-faithful-prompt" not in summary
+
+
+def test_managed_launch_non_fetch_http_client_fails_closed_without_native_egress(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    ManagedLaunchCaptureHandler.requests = []
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+    fake_claude = tmp_path / "http-client-claude.js"
+    fake_claude.write_text(
+        f"""
+const http = require('node:http');
+const body = JSON.stringify({{
+  model: "claude-sonnet-4-6",
+  messages: [{{role: "user", content: "unhooked-http-prompt"}}],
+  max_tokens: 8
+}});
+async function main() {{
+const status = await new Promise((resolve, reject) => {{
+  const req = http.request({{
+    hostname: '127.0.0.1',
+    port: {guard_port},
+    path: '/v1/messages',
+    method: 'POST',
+    headers: {{
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(body),
+      'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555'
+    }}
+  }}, (res) => {{
+    res.resume();
+    res.on('end', () => resolve(res.statusCode));
+  }});
+  req.on('error', reject);
+  req.end(body);
+}});
+if (status !== 403) {{
+  throw new Error('expected guard fail-closed 403, got ' + status);
+}}
+}}
+main().catch((err) => {{
+  console.error(err);
+  process.exit(1);
+}});
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=node,
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[str(fake_claude)],
+            inherited_env={"PATH": "/usr/bin"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+    assert ManagedLaunchCaptureHandler.requests == []
+    summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "quarantine_block" in summary or "route_hint_unavailable" in summary or "route_hint_required" in summary
+    assert "unhooked-http-prompt" not in summary
+
+
+def test_managed_launch_preload_routes_bridge_model_to_internal_skeleton_without_native_egress(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    ManagedLaunchCaptureHandler.requests = []
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+    fake_claude = tmp_path / "fake-claude-bridge.js"
+    fake_claude.write_text(
+        """
+const body = JSON.stringify({
+  model: "deepseek-v4-pro[1m]",
+  messages: [{role: "user", content: "bridge walking skeleton"}],
+  max_tokens: 8
+});
+const response = await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555"
+  },
+  body
+});
+const text = await response.text();
+if (response.status !== 200 || !text.includes("message_start") || !text.includes("deepseek-v4-pro[1m]")) {
+  throw new Error("unexpected bridge skeleton " + response.status + " " + text);
+}
+""",
+        encoding="utf-8",
+    )
+
+    def fake_claude_process(command, *, env, cwd):
+        completed = subprocess.run(
+            [node, str(fake_claude)],
+            env=dict(env),
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return 0
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=tmp_path / "claude",
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[],
+            inherited_env={"PATH": "/usr/bin"},
+            process_runner=fake_claude_process,
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+    assert ManagedLaunchCaptureHandler.requests == []
+    summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "claude_code_bridge_deepseek" in summary
+    assert "deepseek-v4-pro[1m]" in summary
+    assert '"native_attested": false' in summary
+    assert '"formal_pool_allowed": false' in summary
+    assert "bridge walking skeleton" not in summary
 
 
 def _start_server(handler: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServer:
