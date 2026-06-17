@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlparse
 
 
 class CP8LiveMatrixError(RuntimeError):
@@ -40,6 +43,11 @@ _DOC_SOURCES = frozenset({
     "openai_prompt_caching",
     "anthropic_messages",
 })
+_STRICT_LIVE_PROVIDER_HOSTS = {
+    "claude": frozenset({"api.anthropic.com"}),
+    "openai": frozenset({"api.openai.com"}),
+    "deepseek": frozenset({"api.deepseek.com"}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +157,7 @@ def verify_cp8_live_matrix(
             _add_count(bridge_egress_by_client_type, result.client_type, bridge_count)
 
     failed = [name for name, result in results.items() if result.status != "pass"]
-    if strict_live and not _strict_live_provenance_verified(payload):
+    if strict_live and not _strict_live_provenance_verified(payload, evidence_root=root):
         failed.append("live_provenance")
     artifact_evidence_verified = all(
         isinstance(scenarios_raw.get(name), Mapping) and bool(scenarios_raw[name].get("artifact_refs"))
@@ -165,7 +173,7 @@ def verify_cp8_live_matrix(
     strict_live_ready = (
         len(results) == len(REQUIRED_CP8_SCENARIOS)
         and all(result.live_provider_verified for result in results.values())
-        and _strict_live_provenance_verified(payload)
+        and _strict_live_provenance_verified(payload, evidence_root=root)
         and not missing
         and not failed
     )
@@ -305,13 +313,16 @@ def _verify_scenario(
 
 
 
-def _strict_live_provenance_verified(payload: Mapping[str, object]) -> bool:
+def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_root: Path | None) -> bool:
     if payload.get("mode") != "external_provider_live_matrix":
         return False
     provenance = payload.get("live_provenance")
     if not isinstance(provenance, Mapping):
         return False
     if provenance.get("credential_backed") is not True or provenance.get("loopback_only") is not False:
+        return False
+    run_id = str(provenance.get("run_id") or "").strip()
+    if not run_id:
         return False
     providers = provenance.get("providers")
     if not isinstance(providers, Mapping):
@@ -328,13 +339,83 @@ def _strict_live_provenance_verified(payload: Mapping[str, object]) -> bool:
         if raw.get("credential_scope") != scope or raw.get("live_provider_verified") is not True:
             return False
         endpoint = str(raw.get("endpoint") or "")
-        if provider == "claude" and "anthropic" not in endpoint and "claude" not in endpoint:
+        if not _external_live_endpoint(provider, endpoint):
             return False
-        if provider == "openai" and "openai" not in endpoint:
+        if _artifact_ref_issues(raw.get("artifact_refs"), evidence_root=evidence_root):
             return False
-        if provider == "deepseek" and "deepseek" not in endpoint:
+        if not _strict_live_provider_artifacts_verified(
+            raw.get("artifact_refs"),
+            evidence_root=evidence_root,
+            provider=provider,
+            credential_scope=scope,
+            endpoint=endpoint,
+            run_id=run_id,
+        ):
             return False
     return True
+
+
+def _external_live_endpoint(provider: str, endpoint: str) -> bool:
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host or host == "localhost" or host.endswith(".localhost"):
+        return False
+    allowed_hosts = _STRICT_LIVE_PROVIDER_HOSTS.get(provider)
+    if not allowed_hosts or host not in allowed_hosts:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
+
+
+def _strict_live_provider_artifacts_verified(
+    value: object,
+    *,
+    evidence_root: Path | None,
+    provider: str,
+    credential_scope: str,
+    endpoint: str,
+    run_id: str,
+) -> bool:
+    if evidence_root is None or not isinstance(value, list):
+        return False
+    root = evidence_root.resolve(strict=False)
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            continue
+        rel = raw.get("path")
+        if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts:
+            continue
+        path = (root / rel).resolve(strict=False)
+        if root not in (path, *path.parents) or not path.exists() or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        host = (urlparse(endpoint).hostname or "").lower()
+        artifact_endpoint = str(payload.get("endpoint") or "")
+        artifact_host = str(payload.get("host") or urlparse(artifact_endpoint).hostname or "").lower()
+        if (
+            payload.get("schema_version") == "cp8-live-provider-provenance-v1"
+            and payload.get("checkpoint") == "CP8"
+            and str(payload.get("run_id") or "") == run_id
+            and str(payload.get("provider") or "") == provider
+            and str(payload.get("credential_scope") or "") == credential_scope
+            and payload.get("external_live_verified") is True
+            and payload.get("loopback") is False
+            and artifact_host == host
+            and _external_live_endpoint(provider, artifact_endpoint or endpoint)
+            and (str(payload.get("upstream_request_id") or "").strip() or _int(payload.get("response_status")) > 0)
+        ):
+            return True
+    return False
 
 def _artifact_ref_issues(value: object, *, evidence_root: Path | None) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:

@@ -151,6 +151,159 @@ def test_cp8_strict_live_cannot_be_forged_by_flipping_fixture_live_flags():
     assert "live_provenance" in result.failed
 
 
+def test_cp8_strict_live_requires_external_provenance_artifacts_and_non_loopback_endpoints():
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "providers": {
+            "claude": {
+                "credential_scope": "formal_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.anthropic.com/v1/messages",
+            },
+            "openai": {
+                "credential_scope": "bridge_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.openai.com/v1/responses",
+            },
+            "deepseek": {
+                "credential_scope": "bridge_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+            },
+        },
+    }
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
+    assert result.release_gate == "blocked_missing_external_live"
+
+    for provider in payload["live_provenance"]["providers"].values():
+        provider["artifact_refs"] = [
+            {
+                "path": "artifacts/netwatch_summary.json",
+                "sha256": "sha256:" + hashlib.sha256((FIXTURE_DIR / "artifacts" / "netwatch_summary.json").read_bytes()).hexdigest(),
+                "sensitive_scan_clean": True,
+            }
+        ]
+    payload["live_provenance"]["providers"]["deepseek"]["endpoint"] = "http://127.0.0.1/deepseek/anthropic/v1/messages"
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
+
+
+def test_cp8_strict_live_rejects_reused_fixture_artifact_as_provider_live_proof():
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    reused_artifact = {
+        "path": "artifacts/netwatch_summary.json",
+        "sha256": "sha256:" + hashlib.sha256((FIXTURE_DIR / "artifacts" / "netwatch_summary.json").read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    }
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": "cp8-forgery-attempt",
+        "providers": {
+            "claude": {
+                "credential_scope": "formal_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.anthropic.com/v1/messages",
+                "artifact_refs": [dict(reused_artifact)],
+            },
+            "openai": {
+                "credential_scope": "bridge_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.openai.com/v1/responses",
+                "artifact_refs": [dict(reused_artifact)],
+            },
+            "deepseek": {
+                "credential_scope": "bridge_pool",
+                "live_provider_verified": True,
+                "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+                "artifact_refs": [dict(reused_artifact)],
+            },
+        },
+    }
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert result.release_gate == "blocked_missing_external_live"
+    assert "live_provenance" in result.failed
+
+
+def test_cp8_strict_live_accepts_provider_bound_external_artifacts(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-live-run-001"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+        scenario["artifact_refs"] = [
+            {
+                "path": "artifacts/claude_live.json",
+                "sha256": payload["live_provenance"]["providers"]["claude"]["artifact_refs"][0]["sha256"],
+                "sensitive_scan_clean": True,
+            }
+        ]
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "pass"
+    assert result.strict_live_ready is True
+    assert result.release_gate == "external_live_passed"
+
+
 def test_cp8_live_matrix_fails_closed_for_non_object_scenarios():
     payload = _fixture("live_matrix_pass.json")
     payload["scenarios"] = {name: "pass" for name in REQUIRED_CP8_SCENARIOS}
