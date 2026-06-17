@@ -605,9 +605,16 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
 	}
+	cachedTokens := 0
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
+		cachedTokens = usage.PromptTokensDetails.CachedTokens
+	}
+	if usage.PromptCacheHitTokens > 0 {
+		cachedTokens = usage.PromptCacheHitTokens
+	}
+	if cachedTokens > 0 {
 		out.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens: usage.PromptTokensDetails.CachedTokens,
+			CachedTokens: cachedTokens,
 		}
 	}
 	return out

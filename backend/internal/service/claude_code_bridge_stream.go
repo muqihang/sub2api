@@ -108,7 +108,8 @@ func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRoute
 	bridgeDecision := decision.BridgeRouteDecision()
 	switch strings.TrimSpace(bridgeDecision.Provider) {
 	case "deepseek":
-		return ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)
+		return (ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)) ||
+			ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(bridgeDecision)
 	case "openai":
 		return ClaudeCodeBridgeOpenAIAPIKeyFromEnv() != "" && ClaudeCodeBridgeOpenAILiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeOpenAILiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeOpenAIUnsafeLabBaseURLAllowed(bridgeDecision)
 	default:

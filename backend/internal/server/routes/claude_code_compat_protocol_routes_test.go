@@ -103,6 +103,41 @@ func cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(baseURL string) string {
 	return string(raw)
 }
 
+func cp6DeepSeekBridgeFallbackRouteCatalogJSONWithOpenAIBaseURL(baseURL string) string {
+	raw, err := json.Marshal(map[string]any{
+		"catalog_version": "cp5-route-catalog",
+		"runtime_hash":    "sha256:" + strings.Repeat("1", 64),
+		"overlay_hash":    "sha256:" + strings.Repeat("2", 64),
+		"catalog_hash":    "sha256:" + strings.Repeat("3", 64),
+		"models": []map[string]any{{
+			"model_id":                   "deepseek-v4-pro",
+			"provider":                   "deepseek",
+			"route":                      "deepseek_bridge",
+			"client_type":                "claude_code_bridge_deepseek",
+			"provider_owner":             "zhumeng_managed",
+			"credential_scope":           "bridge_pool",
+			"gateway_location":           "cloud",
+			"catalog_fresh":              true,
+			"preferred_protocol":         "openai_chat_completions",
+			"openai_base_url":            baseURL,
+			"fallback_protocol":          "openai_chat_completions",
+			"fallback_reason":            "anthropic_cache_fixture_failed",
+			"capabilities_verified":      true,
+			"supports_text":              true,
+			"supports_tools":             true,
+			"supports_streaming":         true,
+			"supports_usage":             true,
+			"supports_cache_audit":       true,
+			"supports_reasoning_mapping": true,
+			"supports_error_passthrough": true,
+		}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
 func configureCP6RouteHintEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
@@ -413,6 +448,71 @@ func TestClaudeCodeBridgeDeepSeekLiveAnthropicMessagesForwardsToV1MessagesOnlyWh
 	require.Contains(t, rec.Body.String(), "provider live answer")
 	require.NotContains(t, rec.Body.String(), "bridge skeleton")
 	require.NotContains(t, rec.Body.String(), "msg_bridge_skeleton_cp5")
+}
+
+func TestCP6DeepSeekLiveOpenAICompatibleFallbackForwardsToChatCompletionsWhenFixtureReasonPresent(t *testing.T) {
+	var upstreamHits atomic.Int64
+	var upstreamBody string
+	var upstreamPath string
+	var upstreamAuthorization string
+	var upstreamClientType string
+	var upstreamNativeAttestation string
+	var upstreamRouteHint string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		upstreamPath = r.URL.Path
+		upstreamAuthorization = r.Header.Get("Authorization")
+		upstreamClientType = r.Header.Get("x-sub2api-client-type")
+		upstreamNativeAttestation = r.Header.Get(service.ClaudeCodeNativeAttestationHeader)
+		upstreamRouteHint = r.Header.Get(service.ClaudeCodeRouteHintHeader)
+		bodyBytes, _ := io.ReadAll(r.Body)
+		upstreamBody = string(bodyBytes)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_route\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"fallback route answer\"}}],\"usage\":{\"prompt_cache_hit_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_route\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2,\"prompt_cache_hit_tokens\":5,\"prompt_cache_miss_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":2}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeFallbackRouteCatalogJSONWithOpenAIBaseURL(upstream.URL))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"fallback route must reach provider"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer user-facing-sub2api-key-must-not-forward")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-openai-fallback-live",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(1), upstreamHits.Load())
+	require.Equal(t, "/v1/chat/completions", upstreamPath)
+	require.Equal(t, "Bearer sk-deepseek-test-key", upstreamAuthorization)
+	require.Empty(t, upstreamClientType)
+	require.Empty(t, upstreamNativeAttestation)
+	require.Empty(t, upstreamRouteHint)
+	require.Contains(t, upstreamBody, `"messages"`)
+	require.NotContains(t, upstreamBody, `"input"`)
+	require.NotContains(t, upstreamBody, "claude_code_native")
+	require.Contains(t, rec.Body.String(), "fallback route answer")
+	require.Contains(t, rec.Body.String(), `"cache_read_input_tokens":5`)
+	require.NotContains(t, rec.Body.String(), "bridge skeleton")
+	require.NotContains(t, rec.Body.String(), "fallback route must reach provider")
 }
 
 func TestClaudeCodeBridgeDeepSeekLiveRejectsNativeAttestationHeadersBeforeProvider(t *testing.T) {
