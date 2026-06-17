@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -106,11 +108,12 @@ func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRoute
 	if ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() == "" {
 		return false
 	}
-	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(decision.BridgeRouteDecision()) == nil
+	bridgeDecision := decision.BridgeRouteDecision()
+	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)
 }
 
 func ClaudeCodeBridgeAnthropicLiveEligible(decision ClaudeCodeBridgeRouteDecision) bool {
-	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveDecisionValid(decision) == nil
+	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveDecisionValid(decision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(decision)
 }
 
 func ClaudeCodeBridgeAnthropicLiveDecisionValid(decision ClaudeCodeBridgeRouteDecision) error {
@@ -149,6 +152,9 @@ func StreamClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.C
 	}
 	if err := ClaudeCodeBridgeAnthropicLiveDecisionValid(decision); err != nil {
 		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
+	}
+	if !claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(decision) {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge unsafe lab bypass requires loopback upstream; external providers require production billing/concurrency guard")
 	}
 	if strings.TrimSpace(apiKey) == "" {
 		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge live api key is required")
@@ -201,6 +207,26 @@ func ClaudeCodeBridgeAnthropicLiveConfigured() bool {
 
 func ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() bool {
 	return claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB")
+}
+
+func claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(decision ClaudeCodeBridgeRouteDecision) bool {
+	baseURL := strings.TrimSpace(decision.AnthropicBaseURL)
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed == nil {
+		return false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	hostname := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if hostname == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func BuildClaudeCodeBridgeSkeletonSSE(decision ClaudeCodeBridgeRouteDecision, body []byte) (ClaudeCodeBridgeStreamResult, error) {

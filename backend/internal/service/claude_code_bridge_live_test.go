@@ -49,12 +49,42 @@ func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing
 	require.Equal(t, "claude_code_bridge_deepseek", result.Audit.ClientType)
 }
 
+func TestClaudeCodeBridgeAnthropicLiveLabBypassRejectsExternalProviderBaseURL(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	decision := cp6LiveDeepSeekDecision("https://api.deepseek.com/anthropic")
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
+
+	require.False(t, ClaudeCodeBridgeAnthropicLiveEligible(decision))
+	_, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), http.DefaultClient, decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "external providers require production billing/concurrency guard")
+}
+
+func TestClaudeCodeBridgeAnthropicLiveLabBypassLoopbackHostParsing(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+
+	allowed := cp6LiveDeepSeekDecision("http://127.42.0.1:9/anthropic")
+	rejected := cp6LiveDeepSeekDecision("http://127.0.0.1.evil.example/anthropic")
+	badScheme := cp6LiveDeepSeekDecision("file://127.0.0.1/anthropic")
+
+	require.True(t, ClaudeCodeBridgeAnthropicLiveEligible(allowed))
+	require.False(t, ClaudeCodeBridgeAnthropicLiveEligible(rejected))
+	require.False(t, ClaudeCodeBridgeAnthropicLiveEligible(badScheme))
+}
+
 func TestClaudeCodeBridgeAnthropicLiveRejectsFormalPoolNativeAndOpenAI(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
-	base := cp6LiveDeepSeekDecision("https://api.deepseek.com/anthropic")
+	base := cp6LiveDeepSeekDecision("http://127.0.0.1:9/anthropic")
 	tests := []struct {
 		name   string
 		mutate func(*ClaudeCodeBridgeRouteDecision)

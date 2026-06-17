@@ -490,6 +490,37 @@ func TestClaudeCodeBridgeDeepSeekBetaRouteLiveHintWhenDisabledFailsClosedBeforeP
 	require.NotContains(t, rec.Body.String(), "event: message_start")
 }
 
+func TestClaudeCodeBridgeDeepSeekLiveExternalBaseURLRequiresProductionBillingGuard(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSON())
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"external-live-must-not-leak-before-billing-guard"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-external-live-requires-production-billing",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.NotContains(t, rec.Body.String(), "external-live-must-not-leak-before-billing-guard")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
+}
+
 func TestClaudeCodeBridgeDeepSeekLiveHintWhenDisabledFailsClosedBeforeProvider(t *testing.T) {
 	var upstreamHits atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

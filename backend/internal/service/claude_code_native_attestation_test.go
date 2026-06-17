@@ -482,7 +482,7 @@ func TestCP6RouteHintLiveRequestAllowedRequiresServerBridgeLiveGate(t *testing.T
 		OverlayHash:              "sha256:" + stringOf('2', 64),
 		CatalogHash:              "sha256:" + stringOf('3', 64),
 		PreferredProtocol:        "anthropic_messages",
-		AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+		AnthropicBaseURL:         "http://127.0.0.1:9/anthropic",
 		CapabilitiesVerified:     true,
 		SupportsText:             true,
 		SupportsTools:            true,
@@ -566,6 +566,23 @@ func TestCP6RouteHintLiveRequestAllowedRequiresServerBridgeLiveGate(t *testing.T
 		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
 	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", liveHeadersGateOn, body, decision)
 	require.NoError(t, err)
+
+	externalDecision := decision
+	externalDecision.AnthropicBaseURL = "https://api.deepseek.com/anthropic"
+	liveHeadersExternalBase := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                "cp6-live-gate-external-base-requires-production-billing",
+		"model_id":             "deepseek-v4-pro",
+		"body_model":           "deepseek-v4-pro",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": true,
+	})
+	_, err = NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", liveHeadersExternalBase, body, externalDecision)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "live request")
 
 	nativeSpoofHeaders := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
 		"nonce":                      "cp6-live-gate-native-spoof",
