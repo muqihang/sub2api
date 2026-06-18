@@ -12,7 +12,7 @@ from .launcher import Runner, detect_claude_code_version
 
 RUNTIME_NAME = "claude-code"
 ZHUMENG_RUNTIME_VERSION = "0.1.0"
-SUPPORTED_UPSTREAM_VERSIONS = frozenset({"2.1.175"})
+SUPPORTED_UPSTREAM_VERSIONS = frozenset({"2.1.175", "2.1.177"})
 DEFAULT_PATCH_POINTS = (
     "runtime_manifest",
     "hash_lock",

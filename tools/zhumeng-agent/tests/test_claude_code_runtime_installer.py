@@ -114,6 +114,23 @@ def test_runtime_installer_materializes_manifest_hash_lock_and_rollback_metadata
     assert status["integrity"]["status"] == "pass"
 
 
+def test_runtime_installer_accepts_current_claude_code_2_1_177(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed-claude-code-2.1.177")
+
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("2.1.177 (Claude Code)\n"),
+    )
+
+    assert plan.upstream_version == "2.1.177"
+    assert plan.version_dir == runtime_root / "claude-code" / "2.1.177"
+    assert plan.manifest.source == "npm:@anthropic-ai/claude-code@2.1.177"
+
+
 def test_runtime_installer_active_manifest_binds_executable_hash(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
     executable = tmp_path / "managed-bin" / "claude"
