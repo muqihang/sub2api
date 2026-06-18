@@ -104,6 +104,7 @@ def run_managed_claude_code(
     upstream_base: str,
     sub2api_auth: str,
     attestation_secret: str,
+    native_managed_access_token: str | None = None,
     route_hint_secret: str | None = None,
     route_hint_catalog_version: str = "cp4-cli-fixture-v1",
     managed_session_id: str | None = None,
@@ -134,6 +135,7 @@ def run_managed_claude_code(
         listen_port=guard_listen_port,
         upstream_base=upstream_base,
         sub2api_auth=sub2api_auth,
+        native_managed_access_token=native_managed_access_token,
         summary_path=summary_path,
         repo_root=repo_root,
         connect_mode="stub",
@@ -349,6 +351,8 @@ def _quote_node_options_value(value: str) -> str:
 _ROUTE_HINT_PRELOAD_JS = r"""'use strict';
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const http = require('node:http');
+const https = require('node:https');
 
 const HINT_HEADER = 'x-zhumeng-claude-code-route-hint';
 const SIGNATURE_HEADER = 'x-zhumeng-claude-code-route-signature';
@@ -358,6 +362,8 @@ const secret = process.env.ZHUMENG_CLAUDE_ROUTE_HINT_SECRET || '';
 const catalogPath = process.env.ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH || '';
 const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
 const originalFetch = globalThis.fetch;
+const originalHttpRequest = http.request;
+const originalHttpsRequest = https.request;
 
 if (!secret) {
   throw new Error('ZHUMENG Claude route hint secret is required');
@@ -492,4 +498,139 @@ globalThis.fetch = async function zhumengRouteHintFetch(input, init) {
   }
   return originalFetch.call(this, input, {...(init || {}), method: 'POST', headers, body: bodyBytes});
 };
+
+function requestOptionsToUrl(input, options, defaultProtocol) {
+  if (typeof input === 'string' || input instanceof URL) {
+    return new URL(String(input));
+  }
+  const merged = {...(input || {}), ...(options || {})};
+  const protocol = merged.protocol || defaultProtocol || 'http:';
+  const host = merged.hostname || merged.host || '127.0.0.1';
+  const port = merged.port ? ':' + String(merged.port) : '';
+  const path = merged.path || merged.pathname || '/';
+  return new URL(protocol + '//' + host + port + path);
+}
+
+function normalizeHeadersObject(value) {
+  const headers = new Headers();
+  if (!value) return headers;
+  if (Array.isArray(value)) {
+    for (const pair of value) {
+      if (Array.isArray(pair) && pair.length >= 2) headers.set(String(pair[0]), String(pair[1]));
+    }
+    return headers;
+  }
+  if (typeof value[Symbol.iterator] === 'function' && typeof value !== 'string') {
+    for (const pair of value) {
+      if (Array.isArray(pair) && pair.length >= 2) headers.set(String(pair[0]), String(pair[1]));
+    }
+    return headers;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (Array.isArray(item)) headers.set(key, item.join(', '));
+    else if (item !== undefined) headers.set(key, String(item));
+  }
+  return headers;
+}
+
+function headersToPlainObject(headers) {
+  const result = {};
+  headers.forEach((value, key) => { result[key] = value; });
+  return result;
+}
+
+function splitRequestArgs(args) {
+  let input = args[0];
+  let options = {};
+  let callback;
+  if (typeof args[1] === 'function') {
+    callback = args[1];
+  } else {
+    options = args[1] || {};
+    callback = typeof args[2] === 'function' ? args[2] : undefined;
+  }
+  if (input === undefined || typeof input === 'function') {
+    input = {};
+    options = {};
+    callback = typeof args[0] === 'function' ? args[0] : undefined;
+  }
+  return {input, options, callback};
+}
+
+function patchedRequest(originalRequest, protocol) {
+  return function zhumengRouteHintRequest(...args) {
+    const {input, options, callback} = splitRequestArgs(args);
+    const url = requestOptionsToUrl(input, options, protocol);
+    if (!url.protocol) url.protocol = protocol;
+    const requestPath = url.pathname + url.search;
+    const method = String((options && options.method) || (input && input.method) || 'GET').toUpperCase();
+    const shouldPatch = shouldSign(method, requestPath);
+    if (!shouldPatch) {
+      return originalRequest.apply(this, args);
+    }
+    const existingHeaders = normalizeHeadersObject((input && input.headers) || undefined);
+    normalizeHeadersObject((options && options.headers) || undefined).forEach((value, key) => existingHeaders.set(key, value));
+    let chunks = [];
+    let finalized = false;
+    const baseOptions = {
+      ...(typeof input === 'object' && !(input instanceof URL) ? input : {}),
+      ...(options || {}),
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port,
+      path: requestPath,
+      method: 'POST',
+      headers: headersToPlainObject(existingHeaders)
+    };
+    const req = originalRequest.call(this, baseOptions, callback);
+    const originalWrite = req.write.bind(req);
+    const originalEnd = req.end.bind(req);
+    function appendChunk(chunk, encoding) {
+      if (chunk === undefined || chunk === null) return;
+      if (typeof chunk === 'string') chunks.push(Buffer.from(chunk, encoding));
+      else if (Buffer.isBuffer(chunk)) chunks.push(Buffer.from(chunk));
+      else if (chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk));
+      else chunks.push(Buffer.from(String(chunk), encoding));
+    }
+    req.write = function zhumengRouteHintWrite(chunk, encoding, cb) {
+      appendChunk(chunk, typeof encoding === 'string' ? encoding : undefined);
+      if (typeof encoding === 'function') encoding();
+      if (typeof cb === 'function') cb();
+      return true;
+    };
+    function normalizeEndArgs(chunk, encoding, cb) {
+      if (typeof chunk === 'function') {
+        return {chunk: undefined, encoding: undefined, callback: chunk};
+      }
+      if (typeof encoding === 'function') {
+        return {chunk, encoding: undefined, callback: encoding};
+      }
+      return {chunk, encoding, callback: cb};
+    }
+    req.end = function zhumengRouteHintEnd(chunk, encoding, cb) {
+      const endArgs = normalizeEndArgs(chunk, encoding, cb);
+      if (finalized) return originalEnd(endArgs.chunk, endArgs.encoding, endArgs.callback);
+      finalized = true;
+      appendChunk(endArgs.chunk, typeof endArgs.encoding === 'string' ? endArgs.encoding : undefined);
+      try {
+        const body = Buffer.concat(chunks);
+        const headers = normalizeHeadersObject(baseOptions.headers);
+        signedHeaders(headers, body, requestPath);
+        headers.set('content-length', String(body.length));
+        for (const [key, value] of Object.entries(headersToPlainObject(headers))) {
+          req.setHeader(key, value);
+        }
+        originalEnd(body, endArgs.callback);
+      } catch (err) {
+        process.nextTick(() => req.emit('error', err));
+        originalEnd();
+      }
+      return req;
+    };
+    return req;
+  };
+}
+
+http.request = patchedRequest(originalHttpRequest, 'http:');
+https.request = patchedRequest(originalHttpsRequest, 'https:');
 """

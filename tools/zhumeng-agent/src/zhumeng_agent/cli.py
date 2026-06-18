@@ -645,6 +645,37 @@ def _catalog_version_from_state(state: Mapping[str, object]) -> str:
     return "cp4-cli-fixture-v1"
 
 
+def resolve_claude_code_native_managed_credentials(state: Mapping[str, object]) -> tuple[str, str, int]:
+    access_token = (
+        _managed_state_str(state, "claude_code_native_access_token")
+        or _managed_state_str(state, "claude_code_native_managed_access_token")
+        or _managed_state_str(state, "access_token")
+    )
+    managed_session_id = (
+        _managed_state_str(state, "claude_code_native_managed_session_id")
+        or _managed_state_str(state, "managed_session_id")
+    )
+    raw_device_id = state.get("claude_code_native_device_id")
+    if raw_device_id is None or str(raw_device_id).strip() == "":
+        raw_device_id = state.get("device_id")
+    missing = []
+    if not access_token:
+        missing.append("claude_code_native_access_token")
+    if not managed_session_id:
+        missing.append("claude_code_native_managed_session_id")
+    if raw_device_id is None or str(raw_device_id).strip() == "":
+        missing.append("claude_code_native_device_id")
+    if missing:
+        raise ValueError(f"managed Claude Code native setup is incomplete: missing {', '.join(missing)}")
+    try:
+        device_id = int(raw_device_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("managed Claude Code native setup is incomplete: claude_code_native_device_id is invalid") from exc
+    if device_id <= 0:
+        raise ValueError("managed Claude Code native setup is incomplete: claude_code_native_device_id is invalid")
+    return access_token, managed_session_id, device_id
+
+
 def route_catalog_content_hash_for_cp8_live(catalog_version: str, *, bridge_live_models: tuple[str, ...] = ()) -> str:
     from .adapters.claude_code.guard import _route_catalog_content_hash  # noqa: PLC0415
 
@@ -1602,15 +1633,17 @@ def build_claude_code_start_payload(
     attestation_secret = require_server_native_attestation_secret(state)
     route_hint_secret = require_server_route_hint_secret(state)
     claude_code_sub2api_auth = resolve_claude_code_sub2api_auth(state, state_root=state_root)
+    native_access_token, native_managed_session_id, native_device_id = resolve_claude_code_native_managed_credentials(state)
     result = run_managed_claude_code(
         executable=active_runtime.executable,
         repo_root=Path(__file__).resolve().parents[4],
         upstream_base=str(state["gateway_base_url"]),
         sub2api_auth=claude_code_sub2api_auth,
         attestation_secret=attestation_secret,
+        native_managed_access_token=native_access_token,
         route_hint_secret=route_hint_secret,
-        managed_session_id=str(state.get("managed_session_id") or "") or None,
-        device_id=int(state["device_id"]) if state.get("device_id") is not None else None,
+        managed_session_id=native_managed_session_id,
+        device_id=native_device_id,
         runtime_hash=active_runtime.runtime_hash,
         overlay_hash=active_runtime.overlay_hash,
         bridge_live_models=bridge_live_models,

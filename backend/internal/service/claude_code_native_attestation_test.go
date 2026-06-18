@@ -245,6 +245,23 @@ func TestClaudeCodeNativeAttestationAcceptsCountTokensRoute(t *testing.T) {
 	require.False(t, summary.ServerFilledShape)
 }
 
+func TestClaudeCodeNativeAttestationAcceptsCountTokensBetaRoute(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	now := time.Unix(2160, 0)
+	body := []byte(`{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"probe"}],"tools":[{"name":"Read","input_schema":{"type":"object","properties":{}}}]}`)
+	headers := signedNativeHeadersForTest(t, body, "/v1/messages/count_tokens?beta=true", now, map[string]any{"nonce": "count-tokens-beta-route"})
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-haiku-4-5-20251001")),
+	)
+
+	summary, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages/count_tokens?beta=true", headers, body)
+	require.NoError(t, err)
+	require.Equal(t, "/v1/messages/count_tokens", summary.InboundRoute)
+	require.Equal(t, "/v1/messages/count_tokens?beta=true", summary.CCGatewayRoute)
+}
+
 func TestClaudeCodeNativeAttestationRejectsExtraPayloadFields(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
 	now := time.Unix(2500, 0)

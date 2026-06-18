@@ -100,7 +100,7 @@ class CliControlPlanePolicyTest(unittest.TestCase):
 
         self.assertEqual(policy.decide("POST", "/v1/messages?beta=true").action, "forward_messages")
         self.assertEqual(policy.decide("POST", "/v1/messages/count_tokens").action, "forward_messages")
-        self.assertEqual(policy.decide("POST", "/v1/messages/count_tokens?beta=true").action, "quarantine_block")
+        self.assertEqual(policy.decide("POST", "/v1/messages/count_tokens?beta=true").action, "forward_messages")
         self.assertEqual(policy.decide("POST", "/api/event_logging/v2/batch").action, "suppress_204")
         self.assertEqual(policy.decide("POST", "/api/eval/redacted").action, "suppress_204")
         self.assertEqual(policy.decide("POST", "/api/eval/other").action, "suppress_204")
@@ -112,14 +112,18 @@ class CliControlPlanePolicyTest(unittest.TestCase):
         self.assertEqual(mcp.body, {"data": [], "servers": []})
         self.assertTrue(mcp.reason)
 
-        self.assertEqual(policy.decide("GET", "/mcp-registry/v0/servers?version=latest").action, "quarantine_block")
+        registry = policy.decide("GET", "/mcp-registry/v0/servers?version=latest")
+        self.assertEqual(registry.action, "stub_json")
+        self.assertEqual(registry.body, {"data": [], "servers": []})
         self.assertEqual(policy.decide("GET", "/mcp-registry/anything").action, "quarantine_block")
         self.assertEqual(policy.decide("GET", "/api/hello").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/v1/oauth/hello").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/claude_cli/bootstrap?entrypoint=sdk-cli").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/oauth/account/settings").action, "quarantine_block")
         self.assertEqual(policy.decide("GET", "/api/claude_code_grove").action, "quarantine_block")
-        self.assertEqual(policy.decide("GET", "/api/claude_code_penguin_mode").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/claude_code_penguin_mode").action, "stub_json")
+        self.assertEqual(policy.decide("GET", "/api/claude_code/organizations/metrics_enabled").action, "stub_json")
+        self.assertEqual(policy.decide("GET", "/api/claude_code_unknown").action, "quarantine_block")
         self.assertEqual(
             policy.decide("GET", "/api/oauth/organizations/local-org/referral/eligibility").action,
             "quarantine_block",

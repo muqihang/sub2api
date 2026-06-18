@@ -44,6 +44,7 @@ class NativeGuardConfig:
     key_path: Path | None = None
     max_messages: int = 0
     attestation_secret: str | None = field(default=None, repr=False)
+    native_managed_access_token: str | None = field(default=None, repr=False)
     attestation_key_id: str = "guard_v1"
     hmac_key: str | None = field(default=None, repr=False)
     hmac_key_id: str = "local_guard_v1"
@@ -163,6 +164,8 @@ def build_native_guard_plan(
         command.extend(["--device-id", str(config.device_id)])
     if config.agent_version:
         command.extend(["--agent-version", config.agent_version])
+    if config.native_managed_access_token:
+        command.extend(["--native-managed-access-token-env", "ZHUMENG_CLAUDE_NATIVE_MANAGED_ACCESS_TOKEN"])
     if config.control_plane_intent_url is not None:
         command.extend(["--control-plane-intent-url", config.control_plane_intent_url])
     if config.route_hint_secret:
@@ -217,6 +220,8 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
         env["SUB2API_CONTROL_PLANE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
         env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"] = config.attestation_secret
         env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
+    if config.native_managed_access_token is not None:
+        env["ZHUMENG_CLAUDE_NATIVE_MANAGED_ACCESS_TOKEN"] = config.native_managed_access_token
     if config.route_hint_secret is not None:
         env["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] = config.route_hint_secret
     if config.hmac_key is not None:

@@ -43,6 +43,10 @@ from tools.cli_control_plane_policy import load_default_policy
 
 _ROUTE_HINT_SECRET = 'route-hint-secret'
 _ROUTE_HINT_CATALOG = cp4_fixture_route_catalog(catalog_version='cp4-cli-fixture-v1')
+_ROUTE_HINT_CATALOG_WITH_BRIDGE_LIVE = cp4_fixture_route_catalog(
+    catalog_version='cp4-cli-fixture-v1',
+    bridge_live_models=('gpt-5.5',),
+)
 _DEFAULT_SESSION_REF = '11111111-2222-4333-8444-555555555555'
 
 
@@ -52,6 +56,18 @@ def _native_route_headers(body: bytes, path: str = '/v1/messages?beta=true', *, 
         request_path=path,
         catalog=_ROUTE_HINT_CATALOG,
         model_id='claude-sonnet-4-6',
+        session_ref=session_ref,
+        secret=_ROUTE_HINT_SECRET,
+        nonce=nonce or f'unit-{time.time_ns()}',
+    )
+
+
+def _bridge_route_headers(body: bytes, path: str, catalog, *, session_ref: str = _DEFAULT_SESSION_REF, nonce: str | None = None) -> dict[str, str]:
+    return build_signed_route_hint_headers(
+        body=body,
+        request_path=path,
+        catalog=catalog,
+        model_id='gpt-5.5',
         session_ref=session_ref,
         secret=_ROUTE_HINT_SECRET,
         nonce=nonce or f'unit-{time.time_ns()}',
@@ -147,7 +163,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
     def test_root_dir_is_current_repo_root(self):
         self.assertEqual(Path(root_dir()).resolve(), Path(__file__).resolve().parents[2])
 
-    def test_forward_messages_adds_managed_device_headers(self):
+    def test_bridge_live_messages_with_dedicated_sub2api_key_omits_managed_device_headers(self):
         seen = {}
 
         class Upstream(BaseHTTPRequestHandler):
@@ -174,7 +190,71 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 listen_host='127.0.0.1',
                 listen_port=listen_port,
                 upstream_base=f'http://127.0.0.1:{upstream_port}',
-                sub2api_auth='managed-access-token',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG_WITH_BRIDGE_LIVE,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+            ))
+            forwarder.start_background()
+            try:
+                body = b'{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_bridge_route_headers(body, path, _ROUTE_HINT_CATALOG_WITH_BRIDGE_LIVE, nonce='dedicated-bridge-no-managed-headers'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+        self.assertEqual(seen['authorization'], 'Bearer sk-sub2api-dedicated-claude-code-key')
+        self.assertIsNone(seen['managed_session'])
+        self.assertIsNone(seen['device_id'])
+
+    def test_native_messages_use_managed_access_token_and_add_managed_device_headers(self):
+        seen = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                _ = self.rfile.read(int(self.headers.get('content-length', '0')))
+                seen['authorization'] = self.headers.get('Authorization')
+                seen['managed_session'] = self.headers.get('X-Zhumeng-Managed-Session')
+                seen['device_id'] = self.headers.get('X-Zhumeng-Device-ID')
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token='eyJhbGciOiJIUzI1NiJ9.managed-access-token.signature',
                 summary_path=Path(td) / 'summary.jsonl',
                 native_attestation_secret='native-attestation-test-secret',
                 route_hint_secret=_ROUTE_HINT_SECRET,
@@ -196,7 +276,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         'content-type': 'application/json',
                         'User-Agent': 'claude-cli/2.1.150 (external, sdk-cli)',
                         'x-claude-code-session-id': _DEFAULT_SESSION_REF,
-                        **_native_route_headers(body, path, nonce='managed-device-headers'),
+                        **_native_route_headers(body, path, nonce='managed-access-token-headers'),
                     },
                 )
                 with urllib.request.urlopen(request, timeout=5) as resp:
@@ -206,7 +286,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 upstream.shutdown()
                 upstream.server_close()
 
-        self.assertEqual(seen['authorization'], 'Bearer managed-access-token')
+        self.assertEqual(seen['authorization'], 'Bearer eyJhbGciOiJIUzI1NiJ9.managed-access-token.signature')
         self.assertEqual(seen['managed_session'], 'managed-session')
         self.assertEqual(seen['device_id'], '9')
 
@@ -236,6 +316,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 listen_port=listen_port,
                 upstream_base=f'http://127.0.0.1:{upstream_port}',
                 sub2api_auth='managed-access-token',
+                native_managed_access_token='native-managed-access-token',
                 summary_path=Path(td) / 'summary.jsonl',
                 native_attestation_secret='native-attestation-test-secret',
                 route_hint_secret=_ROUTE_HINT_SECRET,
@@ -273,7 +354,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 upstream.server_close()
 
         headers = seen['headers']
-        self.assertEqual(headers['authorization'], 'Bearer managed-access-token')
+        self.assertEqual(headers['authorization'], 'Bearer native-managed-access-token')
         self.assertEqual(headers['user-agent'], 'claude-cli/2.1.150 (external, sdk-cli)')
         self.assertEqual(headers['anthropic-version'], '2023-06-01')
         self.assertEqual(headers['x-stainless-lang'], 'js')
@@ -308,6 +389,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 listen_port=listen_port,
                 upstream_base=f'http://127.0.0.1:{upstream_port}',
                 sub2api_auth='managed-access-token',
+                native_managed_access_token='native-managed-access-token',
                 summary_path=Path(td) / 'summary.jsonl',
                 native_attestation_secret='native-attestation-test-secret',
                 route_hint_secret=_ROUTE_HINT_SECRET,
@@ -411,6 +493,134 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertIsNone(decision)
         summary = Path(summary_path.name).read_text(encoding='utf-8')
         self.assertIn('route_hint_required', summary)
+
+
+    def test_managed_native_binary_claude_model_without_route_hint_uses_catalog_native_attestation(self):
+        seen = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get('content-length', '0')))
+                seen['body'] = body
+                seen['path'] = self.path
+                seen['headers'] = {key.lower(): value for key, value in self.headers.items()}
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='managed-access-token',
+                    native_managed_access_token='native-managed-access-token',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret=_ROUTE_HINT_SECRET,
+                    route_hint_catalog=_ROUTE_HINT_CATALOG,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    body = b'{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"binary-native-prompt"}],"max_tokens":16}'
+                    request = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'User-Agent': 'claude-cli/2.1.177 (external, cli)',
+                            'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        },
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as resp:
+                        self.assertEqual(resp.status, 200)
+                finally:
+                    forwarder.stop()
+
+                headers = seen['headers']
+                self.assertEqual(seen['path'], '/v1/messages?beta=true')
+                self.assertEqual(headers['authorization'], 'Bearer native-managed-access-token')
+                self.assertEqual(headers['x-sub2api-client-type'], 'claude_code_native')
+                self.assertEqual(headers['x-sub2api-guard-attested'], 'true')
+                self.assertIn('x-sub2api-native-attestation', headers)
+                self.assertIn('x-sub2api-native-signature', headers)
+                self.assertNotIn('x-zhumeng-claude-code-route-hint', headers)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('native_catalog_fallback', dumped)
+                self.assertNotIn('binary-native-prompt', dumped)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+
+    def test_managed_native_binary_non_claude_model_without_route_hint_fails_closed(self):
+        class Upstream(BaseHTTPRequestHandler):
+            count = 0
+
+            def do_POST(self):
+                self.__class__.count += 1
+                self.send_response(500)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='managed-access-token',
+                    summary_path=summary,
+                    native_attestation_secret='native-attestation-test-secret',
+                    route_hint_secret=_ROUTE_HINT_SECRET,
+                    route_hint_catalog=_ROUTE_HINT_CATALOG,
+                    route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ))
+                forwarder.start_background()
+                try:
+                    body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"bridge-must-not-native"}],"max_tokens":16}'
+                    request = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
+                        data=body,
+                        method='POST',
+                        headers={
+                            'content-type': 'application/json',
+                            'User-Agent': 'claude-cli/2.1.177 (external, cli)',
+                            'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        },
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as cm:
+                        urllib.request.urlopen(request, timeout=5)
+                    self.assertEqual(cm.exception.code, 403)
+                finally:
+                    forwarder.stop()
+
+                self.assertEqual(Upstream.count, 0)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('route_hint_unavailable', dumped)
+                self.assertNotIn('bridge-must-not-native', dumped)
+                self.assertNotIn('native-attestation-test-secret', dumped)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
 
     def test_cp4_signed_route_hint_binds_model_route_hashes_session_and_nonce(self):
         catalog = cp4_fixture_route_catalog(
@@ -1862,6 +2072,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     listen_port=listen_port,
                     upstream_base=f'http://127.0.0.1:{upstream_port}',
                     sub2api_auth='sub2api-entry-key',
+                    native_managed_access_token='native-managed-access-token',
                     summary_path=Path(td) / 'summary.jsonl',
                     native_attestation_secret='native-attestation-test-secret',
                     route_hint_secret='route-hint-secret',
@@ -2157,6 +2368,58 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         finally:
             upstream.shutdown()
 
+    def test_managed_control_plane_startup_reads_are_stubbed_even_with_api_key_header(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            count = 0
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.__class__.count += 1
+                self.send_response(500)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='unused',
+                    summary_path=summary,
+                ))
+                forwarder.start_background()
+                try:
+                    for path in (
+                        '/api/claude_cli/bootstrap',
+                        '/api/claude_code_penguin_mode',
+                        '/api/claude_code/organizations/metrics_enabled',
+                        '/mcp-registry/v0/servers?version=latest',
+                    ):
+                        req = urllib.request.Request(
+                            f'http://127.0.0.1:{listen_port}{path}',
+                            method='GET',
+                            headers={'x-api-key': 'sk-ant-control-plane-test-secret'},
+                        )
+                        with urllib.request.urlopen(req, timeout=5) as resp:
+                            self.assertEqual(resp.status, 200)
+                finally:
+                    forwarder.stop()
+
+                self.assertEqual(CaptureHandler.count, 0)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertNotIn('sk-ant-control-plane-test-secret', dumped)
+                self.assertNotIn('intent_validation_failed', dumped)
+        finally:
+            upstream.shutdown()
+
     def test_messages_forward_without_native_attestation_secret_fails_closed(self):
         class CaptureHandler(BaseHTTPRequestHandler):
             count = 0
@@ -2183,6 +2446,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         listen_port=listen_port,
                         upstream_base=f'http://127.0.0.1:{upstream_port}',
                         sub2api_auth='sub2api-entry-key',
+                        native_managed_access_token='native-managed-access-token',
                         summary_path=summary,
                         native_attestation_secret=None,
                         route_hint_secret=_ROUTE_HINT_SECRET,
@@ -2249,6 +2513,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     listen_port=listen_port,
                     upstream_base=f'http://127.0.0.1:{upstream_port}',
                     sub2api_auth='sub2api-entry-key',
+                    native_managed_access_token='native-managed-access-token',
                     summary_path=summary,
                     capture_level='deep',
                     native_attestation_secret='native-attestation-test-secret',
@@ -2284,7 +2549,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         self.assertEqual(resp.status, 200)
                     self.assertEqual(len(CaptureHandler.requests), 1)
                     forwarded = CaptureHandler.requests[0]
-                    self.assertEqual(forwarded['headers'].get('authorization'), 'Bearer sub2api-entry-key')
+                    self.assertEqual(forwarded['headers'].get('authorization'), 'Bearer native-managed-access-token')
                     self.assertNotIn('x-api-key', forwarded['headers'])
                     self.assertNotIn('cookie', forwarded['headers'])
                     self.assertNotIn('proxy-authorization', forwarded['headers'])
@@ -2446,6 +2711,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     listen_port=listen_port,
                     upstream_base=f'http://127.0.0.1:{upstream_port}',
                     sub2api_auth='entry',
+                    native_managed_access_token='native-managed-access-token',
                     summary_path=Path(td) / 'summary.jsonl',
                     max_messages=1,
                     native_attestation_secret='native-attestation-test-secret',

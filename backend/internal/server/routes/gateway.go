@@ -157,7 +157,7 @@ func registerGatewayRoutes(
 	{
 		// /v1/messages: auto-route based on group platform
 		gateway.POST("/messages", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldAutoRouteOpenAIGroupToOpenAI(c.Request.Header) {
 				h.OpenAIGateway.Messages(c)
 				return
 			}
@@ -165,7 +165,7 @@ func registerGatewayRoutes(
 		})
 		// /v1/messages/count_tokens: OpenAI groups get 404
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldRejectOpenAIGroupCountTokens(c.Request.Header) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
 					"type": "error",
@@ -408,6 +408,14 @@ func isClaudeCodeNativeMessagesPath(path string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldAutoRouteOpenAIGroupToOpenAI(headers http.Header) bool {
+	return !service.IsClaudeCodeNativeMarkerPresent(headers)
+}
+
+func shouldRejectOpenAIGroupCountTokens(headers http.Header) bool {
+	return !service.IsClaudeCodeNativeMarkerPresent(headers)
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.

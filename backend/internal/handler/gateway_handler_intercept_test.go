@@ -63,3 +63,18 @@ func TestSendMockInterceptResponse_MaxTokensOneHaiku(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, float64(1), usage["output_tokens"])
 }
+
+func TestSendNativeCountTokensProbeResponse_MaxTokensOneHaiku(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+
+	sendNativeCountTokensProbeResponse(ctx, "claude-haiku-4-5-20251001")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	require.Equal(t, float64(1), response["input_tokens"])
+	require.NotContains(t, response, "content")
+}

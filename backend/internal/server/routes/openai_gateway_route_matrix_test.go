@@ -196,3 +196,14 @@ func TestOpenAIGatewayRouteMatrix_CoreDisabledFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeCodeNativeRouteMatrix_BypassesOpenAIGroupAutoRoute(t *testing.T) {
+	headers := http.Header{}
+	headers.Set(service.ClaudeCodeNativeClientTypeHeader, service.ClaudeCodeNativeClientType)
+
+	require.False(t, shouldAutoRouteOpenAIGroupToOpenAI(headers))
+	require.False(t, shouldRejectOpenAIGroupCountTokens(headers))
+
+	require.True(t, shouldAutoRouteOpenAIGroupToOpenAI(http.Header{}))
+	require.True(t, shouldRejectOpenAIGroupCountTokens(http.Header{}))
+}

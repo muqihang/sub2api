@@ -37,6 +37,7 @@ from tools.claude_code_route_trust import (
     RouteCatalog,
     RouteDecision,
     RouteHintReplayCache,
+    body_model_id,
     cp4_fixture_route_catalog,
     route_catalog_content_hash,
     verify_signed_route_hint_headers,
@@ -185,6 +186,7 @@ class GuardConfig:
     local_raw_dir: Path | None = None
     allow_nonloopback_upstream: bool = False
     native_attestation_secret: str | None = None
+    native_managed_access_token: str | None = None
     route_hint_secret: str | None = None
     route_hint_catalog: RouteCatalog | None = None
     route_hint_replay_cache: RouteHintReplayCache | None = None
@@ -683,8 +685,10 @@ class RedactingForwarder:
             self._message_count += 1
             return True
 
-    def _managed_forward_headers(self) -> dict[str, str]:
+    def _managed_forward_headers(self, *, use_managed_access: bool) -> dict[str, str]:
         headers: dict[str, str] = {}
+        if not use_managed_access:
+            return headers
         if self.config.managed_session_id:
             headers["X-Zhumeng-Managed-Session"] = self.config.managed_session_id
         if self.config.device_id:
@@ -692,6 +696,12 @@ class RedactingForwarder:
         if self.config.agent_version:
             headers["X-Zhumeng-Agent-Version"] = self.config.agent_version
         return headers
+
+    def _auth_token_for_route(self, route_decision: RouteDecision) -> str | None:
+        if route_decision.native_attestation_allowed:
+            token = str(self.config.native_managed_access_token or "").strip()
+            return token or None
+        return self.config.sub2api_auth
 
     def _record(self, obj: Mapping[str, Any]) -> None:
         self.config.summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -711,6 +721,22 @@ class RedactingForwarder:
                     replay_cache=self.config.route_hint_replay_cache,
                 )
             except RuntimeError as exc:
+                if not _has_route_hint_headers(headers):
+                    fallback = _native_catalog_fallback_route_decision(
+                        body=body,
+                        catalog=self.config.route_hint_catalog,
+                        session_ref=_route_hint_session_ref(headers),
+                    )
+                    if fallback is not None:
+                        self._record({
+                            "ts": time.time(),
+                            "event": "messages_route_decision",
+                            "decision": "native_catalog_fallback",
+                            "reason": "route_hint_unavailable_but_catalog_native",
+                            "path": request_path,
+                            **messages_route_summary_markers(fallback, headers),
+                        })
+                        return fallback
                 self._record({
                     "ts": time.time(),
                     "event": "messages_gate_block",
@@ -1064,7 +1090,7 @@ class RedactingForwarder:
 
             def _forward_messages(self, body: bytes, request_path: str, route_decision: RouteDecision) -> None:
                 if not route_decision.native_attestation_allowed and not route_decision.live_request_allowed:
-                    if _request_target_path(request_path) == "/v1/messages/count_tokens":
+                    if urlsplit(_request_target_path(request_path)).path == "/v1/messages/count_tokens":
                         parent._record({
                             "ts": time.time(),
                             "event": "messages_gate_block",
@@ -1085,7 +1111,22 @@ class RedactingForwarder:
                     for key, value in self.headers.items()
                     if key.lower() in CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST
                 }
-                headers["Authorization"] = f"Bearer {parent.config.sub2api_auth}"
+                use_managed_access = route_decision.native_attestation_allowed
+                auth_token = parent._auth_token_for_route(route_decision)
+                if auth_token is None:
+                    parent._record({
+                        "ts": time.time(),
+                        "event": "messages_gate_block",
+                        "decision": "block_403",
+                        "reason": "native_managed_access_token_required",
+                        "path": request_path,
+                        **messages_route_summary_markers(route_decision, dict(self.headers)),
+                    })
+                    self.send_response(403)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
+                headers["Authorization"] = f"Bearer {auth_token}"
                 if route_decision.native_attestation_allowed:
                     try:
                         headers.update(build_native_messages_attestation_headers(
@@ -1116,7 +1157,7 @@ class RedactingForwarder:
                     headers["x-sub2api-route-catalog-version"] = route_decision.catalog_version
                     headers["x-zhumeng-claude-code-route-hint"] = self.headers.get("x-zhumeng-claude-code-route-hint", "")
                     headers["x-zhumeng-claude-code-route-signature"] = self.headers.get("x-zhumeng-claude-code-route-signature", "")
-                for key, value in parent._managed_forward_headers().items():
+                for key, value in parent._managed_forward_headers(use_managed_access=use_managed_access).items():
                     headers[key] = value
                 if parent.config.extra_forward_headers:
                     for key, value in parent.config.extra_forward_headers.items():
@@ -2111,6 +2152,38 @@ def _cp5_bridge_tool_use_sse_body(*, model: str, tool_name: str) -> bytes:
     ).encode("utf-8")
 
 
+
+def _native_catalog_fallback_route_decision(*, body: bytes, catalog: RouteCatalog, session_ref: str) -> RouteDecision | None:
+    try:
+        model_id = body_model_id(body)
+    except RuntimeError:
+        return None
+    entry = catalog.entry_for(model_id)
+    if entry is None:
+        return None
+    if entry.provider != "claude" or entry.route != NATIVE_ROUTE or entry.client_type != NATIVE_CLIENT_TYPE:
+        return None
+    if not (entry.live_enabled and entry.formal_pool_allowed and entry.native_attestation_allowed):
+        return None
+    return RouteDecision(
+        model_id=entry.model_id,
+        provider=entry.provider,
+        route=entry.route,
+        client_type=entry.client_type,
+        live_request_allowed=entry.live_enabled,
+        formal_pool_allowed=entry.formal_pool_allowed,
+        native_attestation_allowed=entry.native_attestation_allowed,
+        provider_owner=entry.provider_owner,
+        credential_scope=entry.credential_scope,
+        gateway_location=entry.gateway_location,
+        runtime_hash=catalog.runtime_hash,
+        overlay_hash=catalog.overlay_hash,
+        catalog_hash=catalog.catalog_hash,
+        catalog_version=catalog.catalog_version,
+        session_ref=str(session_ref),
+        nonce="native-catalog-fallback",
+    )
+
 def _route_hint_session_ref(headers: Mapping[str, str]) -> str:
     for key, value in headers.items():
         if key.lower() == "x-claude-code-session-id" and isinstance(value, str) and value.strip():
@@ -2217,6 +2290,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--managed-session")
     parser.add_argument("--device-id")
     parser.add_argument("--agent-version", default="0.1.0")
+    parser.add_argument("--native-managed-access-token-env", help="Env var holding zhumeng managed-device access token for Claude formal-pool native requests.")
     args = parser.parse_args(argv)
     sub2api_auth = args.sub2api_auth or os.environ.get(args.sub2api_auth_env or "")
     if not sub2api_auth:
@@ -2232,6 +2306,7 @@ def main(argv: list[str] | None = None) -> int:
     cost_limits = _cli_cost_envelope_limits(args)
     session_budget_ledger = _cli_session_budget_ledger(args)
     route_hint_secret = os.environ.get(args.route_hint_secret_env or "") if args.route_hint_secret_env else None
+    native_managed_access_token = os.environ.get(args.native_managed_access_token_env or "") if args.native_managed_access_token_env else None
     route_hint_catalog = None
     if route_hint_secret:
         catalog_version = args.route_hint_catalog_version
@@ -2275,6 +2350,7 @@ def main(argv: list[str] | None = None) -> int:
                 local_raw_dir=args.local_raw_dir,
                 allow_nonloopback_upstream=args.allow_nonloopback_upstream,
                 native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") if args.native_attestation else "",
+                native_managed_access_token=native_managed_access_token,
                 route_hint_secret=route_hint_secret,
                 route_hint_catalog=route_hint_catalog,
                 managed_session_id=args.managed_session,

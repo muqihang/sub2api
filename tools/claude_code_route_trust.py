@@ -135,6 +135,8 @@ def cp4_fixture_route_catalog(
     entries = {
         "claude-sonnet-4-6": native("claude-sonnet-4-6"),
         "claude-opus-4-7": native("claude-opus-4-7"),
+        "claude-haiku-4-5": native("claude-haiku-4-5"),
+        "claude-haiku-4-5-20251001": native("claude-haiku-4-5-20251001"),
         "openai-catalog-placeholder": bridge("openai-catalog-placeholder", "openai", "openai_bridge", "claude_code_bridge_openai"),
         "gpt-5.5": bridge("gpt-5.5", "openai", "openai_bridge", "claude_code_bridge_openai"),
         "gpt-5.4-mini": bridge("gpt-5.4-mini", "openai", "openai_bridge", "claude_code_bridge_openai"),

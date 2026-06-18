@@ -2144,10 +2144,12 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		}
 	}
 
+	nativeClaudeCodeAttested := false
 	if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
 		if !h.applyClaudeCodeNativeMessagesAttestation(c, body) {
 			return
 		}
+		nativeClaudeCodeAttested = true
 	}
 
 	setOpsRequestContext(c, "", false)
@@ -2167,6 +2169,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	// 验证 model 必填
 	if parsedReq.Model == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+
+	if nativeClaudeCodeAttested && isMaxTokensOneHaikuRequest(parsedReq.Model, parsedReq.MaxTokens, parsedReq.Stream) {
+		sendNativeCountTokensProbeResponse(c, parsedReq.Model)
 		return
 	}
 
@@ -2424,6 +2431,16 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+func sendNativeCountTokensProbeResponse(c *gin.Context, model string) {
+	// Claude Code performs a max_tokens=1 Haiku count_tokens probe during startup.
+	// Some managed Anthropic-compatible upstreams do not implement count_tokens, so
+	// answer this attested connectivity probe locally without touching the account.
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens": 1,
+		"model":        model,
+	})
 }
 
 // extractQuotaResetSeconds 从 quota 错误的 metadata 中提取 window_resets_at 并计算

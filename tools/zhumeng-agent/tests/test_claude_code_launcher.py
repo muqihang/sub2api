@@ -410,6 +410,7 @@ def test_managed_launch_still_rejects_official_anthropic_upstream(tmp_path: Path
             repo_root=REPO_ROOT,
             upstream_base="https://api.anthropic.com",
             sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
             attestation_secret="attestation-secret",
             route_hint_secret="route-hint-secret",
             config_root=tmp_path / "zhumeng-state",
@@ -497,6 +498,7 @@ if (response.status !== 200) {
             repo_root=REPO_ROOT,
             upstream_base=f"http://127.0.0.1:{upstream.server_port}",
             sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
             attestation_secret="attestation-secret",
             route_hint_secret="route-hint-secret",
             config_root=tmp_path / "zhumeng-state",
@@ -559,6 +561,7 @@ if (response.status !== 200) {
             repo_root=REPO_ROOT,
             upstream_base=f"http://127.0.0.1:{upstream.server_port}",
             sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
             attestation_secret="attestation-secret",
             route_hint_secret="route-hint-secret",
             config_root=tmp_path / "zhumeng-state",
@@ -581,7 +584,7 @@ if (response.status !== 200) {
     assert "command-faithful-prompt" not in summary
 
 
-def test_managed_launch_non_fetch_http_client_fails_closed_without_native_egress(tmp_path: Path):
+def test_managed_launch_preload_signs_node_http_client_with_native_headers(tmp_path: Path):
     node = shutil.which("node")
     if node is None:
         pytest.skip("managed Claude Code route-hint preload requires node")
@@ -593,8 +596,8 @@ def test_managed_launch_non_fetch_http_client_fails_closed_without_native_egress
         f"""
 const http = require('node:http');
 const body = JSON.stringify({{
-  model: "claude-sonnet-4-6",
-  messages: [{{role: "user", content: "unhooked-http-prompt"}}],
+  model: "claude-haiku-4-5-20251001",
+  messages: [{{role: "user", content: "http-sdk-prompt"}}],
   max_tokens: 8
 }});
 async function main() {{
@@ -602,7 +605,7 @@ const status = await new Promise((resolve, reject) => {{
   const req = http.request({{
     hostname: '127.0.0.1',
     port: {guard_port},
-    path: '/v1/messages',
+    path: '/v1/messages?beta=true',
     method: 'POST',
     headers: {{
       'content-type': 'application/json',
@@ -616,8 +619,8 @@ const status = await new Promise((resolve, reject) => {{
   req.on('error', reject);
   req.end(body);
 }});
-if (status !== 403) {{
-  throw new Error('expected guard fail-closed 403, got ' + status);
+if (status !== 200) {{
+  throw new Error('expected guard forward 200, got ' + status);
 }}
 }}
 main().catch((err) => {{
@@ -634,6 +637,7 @@ main().catch((err) => {{
             repo_root=REPO_ROOT,
             upstream_base=f"http://127.0.0.1:{upstream.server_port}",
             sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
             attestation_secret="attestation-secret",
             route_hint_secret="route-hint-secret",
             config_root=tmp_path / "zhumeng-state",
@@ -647,10 +651,245 @@ main().catch((err) => {{
         upstream.server_close()
 
     assert result.returncode == 0
-    assert ManagedLaunchCaptureHandler.requests == []
+    assert len(ManagedLaunchCaptureHandler.requests) == 1
+    headers = ManagedLaunchCaptureHandler.requests[0]["headers"]
+    assert headers["x-sub2api-client-type"] == "claude_code_native"
+    assert headers["x-sub2api-guard-attested"] == "true"
+    assert headers["x-sub2api-native-attestation"]
+    assert headers["x-sub2api-native-signature"]
     summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
-    assert "quarantine_block" in summary or "route_hint_unavailable" in summary or "route_hint_required" in summary
-    assert "unhooked-http-prompt" not in summary
+    assert "http-sdk-prompt" not in summary
+
+
+def test_managed_launch_preload_handles_http_request_end_callback_without_body_pollution(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    ManagedLaunchCaptureHandler.requests = []
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+    fake_claude = tmp_path / "http-end-callback-claude.js"
+    fake_claude.write_text(
+        f"""
+const http = require('node:http');
+const body = JSON.stringify({{
+  model: "claude-haiku-4-5-20251001",
+  messages: [{{role: "user", content: "http-end-callback-prompt"}}],
+  max_tokens: 8
+}});
+async function main() {{
+const status = await new Promise((resolve, reject) => {{
+  const req = http.request({{
+    hostname: '127.0.0.1',
+    port: {guard_port},
+    path: '/v1/messages?beta=true',
+    method: 'POST',
+    headers: {{
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(body),
+      'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555'
+    }}
+  }}, (res) => {{
+    res.resume();
+    res.on('end', () => resolve(res.statusCode));
+  }});
+  req.on('error', reject);
+  req.write(body);
+  req.end(() => {{}});
+}});
+if (status !== 200) {{
+  throw new Error('expected guard forward 200, got ' + status);
+}}
+}}
+main().catch((err) => {{
+  console.error(err);
+  process.exit(1);
+}});
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=node,
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
+            attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[str(fake_claude)],
+            inherited_env={"PATH": "/usr/bin"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+    assert len(ManagedLaunchCaptureHandler.requests) == 1
+    expected_body = (
+        b'{"model":"claude-haiku-4-5-20251001",'
+        b'"messages":[{"role":"user","content":"http-end-callback-prompt"}],'
+        b'"max_tokens":8}'
+    )
+    assert ManagedLaunchCaptureHandler.requests[0]["body"] == expected_body
+    summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "http-end-callback-prompt" not in summary
+
+
+def test_managed_launch_preload_https_request_options_default_to_https_protocol(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+    unused_https_port = _free_port()
+    fake_claude = tmp_path / "https-default-protocol-claude.js"
+    fake_claude.write_text(
+        f"""
+const https = require('node:https');
+const body = JSON.stringify({{
+  model: "claude-haiku-4-5-20251001",
+  messages: [{{role: "user", content: "https-default-protocol-prompt"}}],
+  max_tokens: 8
+}});
+async function main() {{
+  await new Promise((resolve, reject) => {{
+    let req;
+    try {{
+      req = https.request({{
+        hostname: '127.0.0.1',
+        port: {unused_https_port},
+        path: '/v1/messages?beta=true',
+        method: 'POST',
+        headers: {{
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body),
+          'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555'
+        }}
+      }}, (res) => {{
+        res.resume();
+        res.on('end', resolve);
+      }});
+    }} catch (err) {{
+      reject(err);
+      return;
+    }}
+    req.on('error', (err) => {{
+      if (err && err.code === 'ERR_INVALID_PROTOCOL') reject(err);
+      else resolve();
+    }});
+    req.end(body);
+  }});
+}}
+main().catch((err) => {{
+  console.error(err);
+  process.exit(1);
+}});
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=node,
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
+            attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[str(fake_claude)],
+            inherited_env={"PATH": "/usr/bin"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+
+
+def test_managed_launch_preload_signs_count_tokens_beta_http_client(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    ManagedLaunchCaptureHandler.requests = []
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+    fake_claude = tmp_path / "http-count-tokens-claude.js"
+    fake_claude.write_text(
+        f"""
+const http = require('node:http');
+const body = JSON.stringify({{
+  model: "claude-haiku-4-5-20251001",
+  messages: [{{role: "user", content: "count-tokens-http-sdk-prompt"}}],
+  tools: [{{name: "Read", input_schema: {{type: "object"}}}}]
+}});
+async function main() {{
+const status = await new Promise((resolve, reject) => {{
+  const req = http.request({{
+    hostname: '127.0.0.1',
+    port: {guard_port},
+    path: '/v1/messages/count_tokens?beta=true',
+    method: 'POST',
+    headers: {{
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(body),
+      'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555'
+    }}
+  }}, (res) => {{
+    res.resume();
+    res.on('end', () => resolve(res.statusCode));
+  }});
+  req.on('error', reject);
+  req.end(body);
+}});
+if (status !== 200) {{
+  throw new Error('expected native count_tokens forward 200, got ' + status);
+}}
+}}
+main().catch((err) => {{
+  console.error(err);
+  process.exit(1);
+}});
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=node,
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
+            attestation_secret="native-secret",
+            route_hint_secret="route-hint-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[str(fake_claude)],
+            inherited_env={"PATH": "/usr/bin"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+    assert len(ManagedLaunchCaptureHandler.requests) == 1
+    request = ManagedLaunchCaptureHandler.requests[0]
+    assert request["path"] == "/v1/messages/count_tokens?beta=true"
+    headers = request["headers"]
+    assert headers["x-sub2api-client-type"] == "claude_code_native"
+    assert headers["x-sub2api-guard-attested"] == "true"
+    summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "count-tokens-http-sdk-prompt" not in summary
 
 
 def test_managed_launch_preload_routes_bridge_model_to_internal_skeleton_without_native_egress(tmp_path: Path):
@@ -703,6 +942,7 @@ if (response.status !== 200 || !text.includes("message_start") || !text.includes
             repo_root=REPO_ROOT,
             upstream_base=f"http://127.0.0.1:{upstream.server_port}",
             sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
             attestation_secret="attestation-secret",
             route_hint_secret="route-hint-secret",
             config_root=tmp_path / "zhumeng-state",
@@ -755,13 +995,15 @@ def test_managed_launch_passes_managed_device_headers_to_guard(tmp_path: Path):
         return FakeGuard()
 
     def fake_runner(command, *, env, cwd):
+        captured["launch_env"] = dict(env)
         return 0
 
     result = run_managed_claude_code(
         executable="claude",
         repo_root=REPO_ROOT,
         upstream_base="https://gateway.zhumeng.example",
-        sub2api_auth="managed-access-token",
+        sub2api_auth="sk-sub2api-dedicated-claude-code-key",
+        native_managed_access_token="managed-access-token",
         managed_session_id="managed-session",
         device_id=9,
         attestation_secret="native-secret",
@@ -778,4 +1020,8 @@ def test_managed_launch_passes_managed_device_headers_to_guard(tmp_path: Path):
     assert command[command.index("--managed-session") + 1] == "managed-session"
     assert "--device-id" in command
     assert command[command.index("--device-id") + 1] == "9"
+    assert "--native-managed-access-token-env" in command
+    assert captured["guard_plan"].env["ZHUMENG_CLAUDE_NATIVE_MANAGED_ACCESS_TOKEN"] == "managed-access-token"
+    assert captured["launch_env"]["ANTHROPIC_API_KEY"] == "sk-sub2api-dedicated-claude-code-key"
+    assert "managed-access-token" not in captured["launch_env"].values()
     assert result.returncode == 0

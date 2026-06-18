@@ -56,6 +56,7 @@ _DEFAULT_POLICY_DICT = {
         "allowed_routes": [
             {"method": "POST", "path": "/v1/messages", "query": "beta=true"},
             {"method": "POST", "path": "/v1/messages/count_tokens", "query": ""},
+            {"method": "POST", "path": "/v1/messages/count_tokens", "query": "beta=true"},
         ],
         "max_messages": 1,
         "stop_cli_after_first_response": False,
@@ -88,6 +89,7 @@ _DEFAULT_POLICY_DICT = {
         "mcp": {
             "match": [
                 {"method": "GET", "path": "/v1/mcp_servers"},
+                {"method": "GET", "path_regex": r"/mcp-registry/v0/servers"},
             ],
             "action": "stub_json",
             "response": {
@@ -101,6 +103,8 @@ _DEFAULT_POLICY_DICT = {
                 {"method": "GET", "path": "/api/hello"},
                 {"method": "GET", "path": "/v1/oauth/hello"},
                 {"method": "GET", "path": "/api/claude_cli/bootstrap"},
+                {"method": "GET", "path_regex": r"/api/claude_code_penguin_mode"},
+                {"method": "GET", "path_regex": r"/api/claude_code/organizations/metrics_enabled"},
             ],
             "action": "stub_json",
             "response": {
