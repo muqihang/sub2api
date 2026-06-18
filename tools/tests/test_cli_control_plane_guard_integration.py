@@ -187,7 +187,7 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 self.assertEqual(result['status'], 200)
                 self.assertEqual(capture.count, 1)
                 request = capture.requests[0]
-                self.assertEqual(request['headers'].get('authorization'), 'Bearer sub2api-entry')
+                self.assertEqual(request['headers'].get('authorization'), 'Bearer native-managed-access-token')
                 self.assertNotIn('x-api-key', request['headers'])
                 self.assertNotIn('cookie', request['headers'])
                 self.assertNotIn('proxy-authorization', request['headers'])
@@ -279,6 +279,30 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 self.assertNotIn('secret-token-marker', summary)
                 self.assertNotIn('raw-prompt-marker', summary)
                 self.assertNotIn('x-secret-token-marker', summary)
+        finally:
+            capture.stop()
+
+    def test_native_messages_fail_closed_without_native_managed_access_token(self):
+        capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"ok":true}')])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url, native_managed_access_token=None) as harness:
+                payload = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
+                    'max_tokens': 32,
+                }
+                result = harness.request(
+                    'POST',
+                    '/v1/messages?beta=true',
+                    body=json.dumps(payload).encode('utf-8'),
+                    headers={'content-type': 'application/json'},
+                )
+                self.assertEqual(result['status'], 403)
+                self.assertEqual(capture.count, 0)
+                summary = harness.summary_text()
+                self.assertIn('native_managed_access_token_required', summary)
+                self.assertNotIn('raw-prompt-marker', summary)
         finally:
             capture.stop()
 
@@ -852,6 +876,7 @@ class GuardHarness:
         patch_ssl_failure=False,
         cost_envelope_limits=None,
         session_budget_ledger=None,
+        native_managed_access_token='native-managed-access-token',
     ):
         self._temp_dir_ctx = None
         if temp_dir is None:
@@ -876,6 +901,7 @@ class GuardHarness:
             cost_envelope_limits=cost_envelope_limits,
             session_budget_ledger=session_budget_ledger,
             native_attestation_secret='native-attestation-test-secret',
+            native_managed_access_token=native_managed_access_token,
             route_hint_secret=_ROUTE_HINT_SECRET,
             route_hint_catalog=_ROUTE_HINT_CATALOG,
             route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
