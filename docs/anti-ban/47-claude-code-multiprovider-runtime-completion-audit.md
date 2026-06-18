@@ -11,7 +11,7 @@ This audit records the current completion evidence for CP0-CP8. It is intentiona
 
 Local implementation for CP0-CP8 is present in the dedicated worktree branch. Local verifier, fixture, loopback, bridge, guard, routing, transcript-boundary, UX, and strict-live assembly tests pass.
 
-The only remaining evidence that cannot be produced without operator-owned external credentials and live scenario artifacts is the final CP8 external live matrix. The verifier and collector are implemented and fail closed for mock/loopback/forged evidence; the operator must run the commands in [External live matrix steps](#external-live-matrix-steps) with real Claude/OpenAI/DeepSeek credentials and the corresponding live scenario artifact directory.
+The only remaining evidence that cannot be produced without an operator-owned live Sub2API gateway and live scenario artifacts is the final CP8 external live matrix. The release path is Claude Code Runtime -> Sub2API Gateway (for example `http://127.0.0.1:3012`) -> provider routing; direct official provider credential collection is retained only as a lab/fallback collector, not as the primary product acceptance path. The verifier and Sub2API collector fail closed for mock-only loopback fixtures or forged evidence; a loopback Sub2API gateway origin such as `http://127.0.0.1:3012` is allowed only when it forwards to real upstream provider routing. The operator must run the commands in [External live matrix steps](#external-live-matrix-steps) against a real Sub2API gateway and the corresponding live scenario artifact directory.
 
 ## Checkpoint evidence
 
@@ -100,7 +100,7 @@ codegraph index
 
 ## External live matrix steps
 
-These steps require real credentials and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes.
+These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.
 
 1. Pick a fresh run id and evidence directory outside the source worktree:
 
@@ -110,24 +110,26 @@ export EVIDENCE_ROOT="$HOME/zhumeng-claude-code-cp8-evidence/$RUN_ID"
 mkdir -p "$EVIDENCE_ROOT"
 ```
 
-2. Provide real credentials only in the current shell/session:
+2. Ensure the managed Claude Code Runtime is configured and the Sub2API gateway is reachable. The CLI will prefer values from managed setup state (`gateway_base_url`, `access_token`, server-provisioned `claude_code_native_attestation_secret`, server-provisioned `claude_code_route_hint_secret`, active runtime `runtime_hash`/`overlay_hash`, and the route catalog content hash derived from the active runtime route catalog). Use env/flags only to override or to run from a separate shell:
 
 ```bash
-export ANTHROPIC_API_KEY='<real Anthropic/Claude credential for the CP8 Claude native provider probe>'
-export OPENAI_API_KEY='<real OpenAI bridge credential>'
-export DEEPSEEK_API_KEY='<real DeepSeek bridge credential>'
-# Equivalent fallback env names supported by the collector:
-#   SUB2API_CLAUDE_CODE_LIVE_ANTHROPIC_API_KEY
-#   SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY
-#   SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY
+export SUB2API_CP8_LIVE_BASE_URL="http://127.0.0.1:3012"
+export SUB2API_CP8_LIVE_GATEWAY_TOKEN="<Sub2API gateway/session token, not an official provider API key>"
+export SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET="<server-provisioned managed setup secret>"
+export SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET="<server-provisioned route hint secret>"
+export ZHUMENG_CLAUDE_RUNTIME_HASH="sha256:<active managed runtime hash>"
+export ZHUMENG_CLAUDE_OVERLAY_HASH="sha256:<active managed overlay hash>"
+# Optional override only; by default the CLI derives the route catalog hash from the active runtime.
+export ZHUMENG_CLAUDE_CATALOG_HASH="sha256:<active route/catalog hash>"
+export ZHUMENG_CLAUDE_CATALOG_VERSION="<active route/catalog version>"
 ```
 
-3. Collect provider provenance. This command is covered by the module-entrypoint regression test and must fail closed with a JSON error if any required credential is missing:
+3. Collect Sub2API gateway-backed provider provenance. All providers enter through the Claude Code Runtime `/v1/messages` shape at the Sub2API gateway; GPT/OpenAI and DeepSeek are selected by signed bridge route hints and must not connect to the Claude formal-pool native path:
 
 ```bash
 PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhumeng_agent.cli \
   claude-code live-matrix \
-  --collect-provider-provenance \
+  --collect-sub2api-provenance \
   --run-id "$RUN_ID" \
   --output-root "$EVIDENCE_ROOT"
 ```
@@ -165,7 +167,11 @@ PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhu
   --strict-live
 ```
 
-Success criteria: CLI output reports `release_gate=external_live_passed`. Any loopback/mock artifact, missing model binding, stale `run_id`, endpoint drift, artifact hash mismatch, or sensitive inline/raw evidence must fail closed.
+Success criteria: CLI output reports `release_gate=external_live_passed`. Any loopback/mock artifact, missing model binding, stale `run_id`, endpoint drift, route/client-type mismatch, artifact hash mismatch, direct official provider endpoint in Sub2API mode, or sensitive inline/raw evidence must fail closed.
+
+### Lab/fallback direct provider collector
+
+`claude-code live-matrix --collect-provider-provenance` still exists for isolated official-provider lab checks with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `DEEPSEEK_API_KEY`, but it is not the primary 47 号逐梦版 acceptance path and should not be used for product CP8 sign-off. The product CP8 path above must prove Claude/GPT/DeepSeek live behavior through the Sub2API gateway. Future user-owned provider URLs/API keys belong behind the 逐梦 Agent/Sub2API ProviderRegistry or local/hybrid gateway mode, not as direct Claude Code Runtime egress.
 
 ## Known limitation before external release
 

@@ -51,6 +51,7 @@ from .adapters.claude_code.live_matrix import (
     CP8LiveMatrixError,
     assemble_cp8_external_live_matrix_evidence,
     collect_cp8_live_provider_provenance,
+    collect_cp8_sub2api_gateway_live_provenance,
     verify_cp8_live_matrix,
 )
 from .adapters.claude_code.status import derive_claude_code_operator_status
@@ -138,10 +139,14 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_live_matrix.add_argument("--evidence", type=Path)
     claude_code_live_matrix.add_argument("--strict-live", action="store_true")
     claude_code_live_matrix.add_argument("--collect-provider-provenance", action="store_true")
+    claude_code_live_matrix.add_argument("--collect-sub2api-provenance", action="store_true")
     claude_code_live_matrix.add_argument("--assemble-external", action="store_true")
     claude_code_live_matrix.add_argument("--provenance", type=Path)
     claude_code_live_matrix.add_argument("--out", type=Path)
     claude_code_live_matrix.add_argument("--run-id")
+    claude_code_live_matrix.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_live_matrix.add_argument("--sub2api-base-url", help="Sub2API gateway base URL for CP8 live, e.g. http://127.0.0.1:3012")
+    claude_code_live_matrix.add_argument("--sub2api-token", help="Sub2API gateway/session token; prefer SUB2API_CP8_LIVE_GATEWAY_TOKEN env")
     claude_code_live_matrix.add_argument(
         "--output-root",
         type=Path,
@@ -575,6 +580,63 @@ def require_server_route_hint_secret(state: dict[str, object]) -> str:
     if secret:
         return secret
     raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_route_hint_secret")
+
+
+def _managed_state_str(state: Mapping[str, object], key: str) -> str:
+    value = state.get(key)
+    return str(value or "").strip()
+
+
+def _catalog_version_from_state(state: Mapping[str, object]) -> str:
+    explicit = _managed_state_str(state, "claude_code_route_hint_catalog_version")
+    if explicit:
+        return explicit
+    return "cp4-cli-fixture-v1"
+
+
+def route_catalog_content_hash_for_cp8_live(catalog_version: str, *, bridge_live_models: tuple[str, ...] = ()) -> str:
+    from .adapters.claude_code.guard import _route_catalog_content_hash  # noqa: PLC0415
+
+    return _route_catalog_content_hash(Path(__file__).resolve().parents[4], catalog_version, bridge_live_models)
+
+
+def _optional_server_native_attestation_secret(state: dict[str, object]) -> str:
+    try:
+        return require_server_native_attestation_secret(state)
+    except ValueError:
+        return ""
+
+
+def _optional_server_route_hint_secret(state: dict[str, object]) -> str:
+    try:
+        return require_server_route_hint_secret(state)
+    except ValueError:
+        return ""
+
+
+def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, object]:
+    state = default_state_store().read()
+    runtime_root = getattr(args, "runtime_root", state_dir() / "runtimes")
+    active_runtime = None
+    try:
+        active_runtime = resolve_active_managed_runtime(runtime_root)
+    except RuntimeInstallerError:
+        active_runtime = None
+    catalog_version = str(os.environ.get("SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION") or os.environ.get("ZHUMENG_CLAUDE_CATALOG_VERSION") or _catalog_version_from_state(state) or "")
+    bridge_live_models = _active_runtime_bridge_live_models(getattr(active_runtime, "patches", {})) if active_runtime is not None else ()
+    catalog_hash = str(os.environ.get("ZHUMENG_CLAUDE_CATALOG_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_CATALOG_HASH") or route_catalog_content_hash_for_cp8_live(catalog_version, bridge_live_models=bridge_live_models) or "")
+    return {
+        "run_id": args.run_id,
+        "output_root": args.output_root,
+        "base_url": str(args.sub2api_base_url or os.environ.get("SUB2API_CP8_LIVE_BASE_URL") or os.environ.get("SUB2API_BASE_URL") or _managed_state_str(state, "gateway_base_url") or ""),
+        "gateway_token": str(args.sub2api_token or os.environ.get("SUB2API_CP8_LIVE_GATEWAY_TOKEN") or os.environ.get("SUB2API_API_KEY") or os.environ.get("SUB2API_ACCESS_TOKEN") or _managed_state_str(state, "access_token") or ""),
+        "native_attestation_secret": str(os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") or _optional_server_native_attestation_secret(state) or ""),
+        "route_hint_secret": str(os.environ.get("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET") or _optional_server_route_hint_secret(state) or ""),
+        "runtime_hash": str(os.environ.get("ZHUMENG_CLAUDE_RUNTIME_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_RUNTIME_HASH") or (getattr(active_runtime, "runtime_hash", "") if active_runtime is not None else "") or ""),
+        "overlay_hash": str(os.environ.get("ZHUMENG_CLAUDE_OVERLAY_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_OVERLAY_HASH") or (getattr(active_runtime, "overlay_hash", "") if active_runtime is not None else "") or ""),
+        "catalog_hash": catalog_hash,
+        "catalog_version": catalog_version,
+    }
 
 
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
@@ -1389,6 +1451,7 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
         if args.claude_code_command == "live-matrix":
             live_matrix_modes = [
                 bool(args.collect_provider_provenance),
+                bool(getattr(args, "collect_sub2api_provenance", False)),
                 bool(args.assemble_external),
                 bool(args.strict_live),
             ]
@@ -1396,7 +1459,7 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 return emit_failed({
                     "command": "claude-code live-matrix",
                     "status": "not_configured",
-                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --assemble-external, or --strict-live",
+                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --collect-sub2api-provenance, --assemble-external, or --strict-live",
                 })
             if args.collect_provider_provenance:
                 if not args.run_id or args.output_root is None:
@@ -1408,6 +1471,19 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 provenance = collect_cp8_live_provider_provenance(run_id=args.run_id, output_root=args.output_root)
                 return emit({
                     "command": "claude-code live-matrix collect-provider-provenance",
+                    "status": "collected",
+                    "live_provenance": provenance,
+                })
+            if getattr(args, "collect_sub2api_provenance", False):
+                if not args.run_id or args.output_root is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-sub2api-provenance",
+                        "status": "not_configured",
+                        "message": "Sub2API provenance collection requires --run-id and --output-root",
+                    })
+                provenance = collect_cp8_sub2api_gateway_live_provenance(**cp8_sub2api_live_provenance_args(args))
+                return emit({
+                    "command": "claude-code live-matrix collect-sub2api-provenance",
                     "status": "collected",
                     "live_provenance": provenance,
                 })

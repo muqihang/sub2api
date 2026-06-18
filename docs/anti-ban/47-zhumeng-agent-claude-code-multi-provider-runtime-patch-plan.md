@@ -1466,15 +1466,18 @@ CP5 exit gate：
 
 CP8 外部 live 证据组装流程：
 
-1. 使用专用证据目录收集 provider provenance，不能指向源码 worktree：
-   `zhumeng-agent claude-code live-matrix --collect-provider-provenance --run-id <run-id> --output-root <evidence-root>`。
+0. 产品验收主路径必须是 Claude Code Runtime -> 逐梦/Sub2API Gateway（例如 `http://127.0.0.1:3012`）-> Sub2API 内部 provider routing。Claude/GPT/DeepSeek/后续模型的官方 API Key、订阅账号或自定义 provider URL 均配置在 Sub2API/逐梦 Agent 的 ProviderRegistry/账号池中，Claude Code Runtime 不直接要求操作者输入或直连 `api.anthropic.com`、`api.openai.com`、`api.deepseek.com` 等官网端点。
+1. 使用专用证据目录收集 Sub2API gateway-backed provider provenance，不能指向源码 worktree：
+   `zhumeng-agent claude-code live-matrix --collect-sub2api-provenance --run-id <run-id> --output-root <evidence-root>`。
+   该命令的 Claude/GPT/DeepSeek probe 均进入同一个 Sub2API `/v1/messages`；Claude 携带 native attestation，GPT/DeepSeek 携带签名 bridge route hint，不得进入 Claude formal-pool native path。
 2. 将上一步输出的 `live_provenance` 保存为 JSON，并与已完成的 live matrix scenario 证据组装：
    `zhumeng-agent claude-code live-matrix --assemble-external --evidence <matrix.json> --provenance <provenance.json> --out <external-matrix.json>`。
 3. 组装器只绑定 provider provenance 并设置 `mode=external_provider_live_matrix`；它不得把 loopback/mock fixture 提升为 `live_provider_verified=true`，不得生成 scenario artifact。
-4. `--collect-provider-provenance`、`--assemble-external`、`--strict-live` 是互斥模式；组装输入若包含 inline headers/body/prompt/token/secret/payload 等敏感或 raw 字段必须 fail closed，不能写出外部矩阵。
+4. `--collect-sub2api-provenance`、`--collect-provider-provenance`、`--assemble-external`、`--strict-live` 是互斥模式；组装输入若包含 inline headers/body/prompt/token/secret/payload 等敏感或 raw 字段必须 fail closed，不能写出外部矩阵。
 5. 严格验收必须再次运行：
    `zhumeng-agent claude-code live-matrix --evidence <external-matrix.json> --strict-live`。
-   只有当 Claude/GPT/DeepSeek provider provenance 与全部 CP8 scenario live artifacts 均为同一 `run_id`、hash 校验通过且无敏感内容时，才能进入 `external_live_passed`。
+   只有当 Claude/GPT/DeepSeek provider provenance 与全部 CP8 scenario live artifacts 均为同一 `run_id`、hash 校验通过且无敏感内容时，才能进入 `external_live_passed`。Sub2API 模式下若 evidence 出现官方 provider endpoint、route/client_type 不匹配或 bridge 伪造 native，必须 fail closed。
+6. `--collect-provider-provenance` 仅保留为隔离实验室/故障定位 fallback，用于官方直连对照；它不是 47 号逐梦版 CP8 产品验收路径。
 
 ## 16. 风险与缓解
 

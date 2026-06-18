@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import shutil
@@ -21,6 +22,15 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "claude_code_cp8"
 def _fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
+
+
+
+def _decode_cp8_runtime_header(value: str) -> dict[str, object]:
+    padded = value + "=" * (-len(value) % 4)
+    decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    payload = json.loads(decoded)
+    assert isinstance(payload, dict)
+    return payload
 
 
 
@@ -59,6 +69,7 @@ def _provider_model(provider: str) -> str:
 
 def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
     candidates = [
+        root / "artifacts" / f"{provider}_sub2api_live_provenance.json",
         root / "artifacts" / f"{provider}_live_provenance.json",
         root / "artifacts" / f"{provider}_live.json",
         root / "artifacts" / f"provider_{provider}.json",
@@ -75,6 +86,59 @@ def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
             )
     return (f"artifacts/{provider}_live.json", _provider_endpoint(provider), f"req_{provider}_live")
 
+
+
+def _sub2api_endpoint(provider: str) -> str:
+    return {
+        "claude": "http://127.0.0.1:3012/v1/messages",
+        "openai": "http://127.0.0.1:3012/v1/messages",
+        "deepseek": "http://127.0.0.1:3012/v1/messages",
+    }[provider]
+
+
+def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
+    artifacts_dir = root / "artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    for name, scenario in payload["scenarios"].items():
+        provider = _scenario_provider(name)
+        provider_ref, _endpoint, request_id = _provider_live_artifact(root, provider)
+        endpoint = _sub2api_endpoint(provider)
+        artifact = artifacts_dir / f"scenario_{name}.json"
+        artifact.write_text(
+            json.dumps(
+                {
+                    "schema_version": "cp8-live-scenario-evidence-v1",
+                    "checkpoint": "CP8",
+                    "run_id": run_id,
+                    "scenario": name,
+                    "status": "pass",
+                    "live_provider_verified": True,
+                    "raw_sensitive_stored": False,
+                    "loopback": False,
+                    "route": scenario.get("route", ""),
+                    "client_type": scenario.get("client_type", ""),
+                    "provider": provider,
+                    "model": _provider_model(provider),
+                    "endpoint": endpoint,
+                    "upstream_request_id": request_id,
+                    "provider_provenance_refs": [provider_ref],
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        refs = []
+        if name == "workflow":
+            refs.append(_workflow_background_ref(root))
+        refs.append(
+            {
+                "path": f"artifacts/{artifact.name}",
+                "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "sensitive_scan_clean": True,
+            }
+        )
+        scenario["artifact_refs"] = refs
 
 def _workflow_background_ref(root: Path) -> dict[str, object]:
     tasks = ("title", "compact", "summary", "probe", "fast", "simple", "haiku")
@@ -880,19 +944,316 @@ def test_cp8_live_matrix_public_api_is_exported():
         CP8LiveMatrixError as ExportedError,
         REQUIRED_CP8_SCENARIOS as ExportedScenarios,
         collect_cp8_live_provider_provenance as exported_collect,
+        collect_cp8_sub2api_gateway_live_provenance,
         assemble_cp8_external_live_matrix_evidence as exported_assemble,
         verify_cp8_live_matrix as exported_verify,
         write_cp8_live_scenario_evidence as exported_write_scenario,
     )
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
     from zhumeng_agent.adapters.claude_code.live_matrix import write_cp8_live_scenario_evidence  # noqa: PLC0415
 
     assert ExportedError is CP8LiveMatrixError
     assert ExportedScenarios is REQUIRED_CP8_SCENARIOS
     assert exported_verify is verify_cp8_live_matrix
     assert exported_collect is collect_cp8_live_provider_provenance
+    assert collect_cp8_sub2api_gateway_live_provenance is not None
     assert exported_assemble is assemble_cp8_external_live_matrix_evidence
     assert exported_write_scenario is write_cp8_live_scenario_evidence
+
+
+def test_cp8_sub2api_gateway_live_collector_uses_single_gateway_token_and_routes(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    calls: list[tuple[str, str, str]] = []
+
+    def transport(provider: str, endpoint: str, request: dict[str, object]) -> dict[str, object]:
+        headers = request["headers"]
+        assert isinstance(headers, dict)
+        calls.append((provider, endpoint, headers["Authorization"]))
+        return {
+            "status": 200,
+            "request_id": f"sub2api_{provider}_upstream_req",
+            "response_headers": {"x-sub2api-route": f"claude_code_{'native' if provider == 'claude' else 'bridge_' + provider}"},
+        }
+
+    provenance = collect_cp8_sub2api_gateway_live_provenance(
+        run_id="cp8-sub2api-live",
+        output_root=tmp_path,
+        base_url="http://127.0.0.1:3012",
+        gateway_token="sub2api-gateway-session-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        transport=transport,
+    )
+
+    assert provenance["credential_backed"] is True
+    assert provenance["loopback_only"] is False
+    assert provenance["mode"] == "sub2api_gateway_live_matrix"
+    assert provenance["gateway_base_url"] == "http://127.0.0.1:3012"
+    assert {call[2] for call in calls} == {"Bearer sub2api-gateway-session-token"}
+    assert {call[1] for call in calls} == {
+        "http://127.0.0.1:3012/v1/messages",
+    }
+    assert provenance["providers"]["claude"]["endpoint"] == "http://127.0.0.1:3012/v1/messages"
+    assert provenance["providers"]["claude"]["route"] == "claude_code_native"
+    assert provenance["providers"]["openai"]["route"] == "openai_bridge"
+    assert provenance["providers"]["openai"]["client_type"] == "claude_code_bridge_openai"
+    assert provenance["providers"]["deepseek"]["route"] == "deepseek_bridge"
+    assert provenance["providers"]["deepseek"]["client_type"] == "claude_code_bridge_deepseek"
+
+    for provider in ("claude", "openai", "deepseek"):
+        ref = provenance["providers"][provider]["artifact_refs"][0]
+        artifact_text = (tmp_path / ref["path"]).read_text(encoding="utf-8")
+        assert "sub2api-gateway-session-token" not in artifact_text
+        assert "api.openai.com" not in artifact_text
+        assert "api.deepseek.com" not in artifact_text
+        assert "api.anthropic.com" not in artifact_text
+
+
+def test_cp8_sub2api_gateway_live_collector_rejects_official_provider_hosts(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    for base_url in ("https://api.openai.com", "https://api.openai.com.", "https://api.anthropic.com./"):
+        with pytest.raises(CP8LiveMatrixError, match="Sub2API gateway base URL"):
+            collect_cp8_sub2api_gateway_live_provenance(
+                run_id="cp8-sub2api-official-host",
+                output_root=tmp_path,
+                base_url=base_url,
+                gateway_token="sub2api-token",
+                transport=lambda provider, endpoint, credential: {"status": 200, "request_id": f"req_{provider}"},
+            )
+
+
+def test_cp8_sub2api_gateway_live_collector_rejects_sensitive_or_non_origin_base_urls(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    for base_url in (
+        "http://user:pass@127.0.0.1:3012",
+        "http://127.0.0.1:3012?token=leak",
+        "http://127.0.0.1:3012#frag",
+    ):
+        with pytest.raises(CP8LiveMatrixError, match="Sub2API gateway base URL"):
+            collect_cp8_sub2api_gateway_live_provenance(
+                run_id="cp8-sub2api-sensitive-base",
+                output_root=tmp_path,
+                base_url=base_url,
+                gateway_token="sub2api-token",
+                native_attestation_secret="native-attestation-secret",
+                route_hint_secret="route-hint-secret",
+                runtime_hash="sha256:" + "1" * 64,
+                overlay_hash="sha256:" + "2" * 64,
+                catalog_hash="sha256:" + "3" * 64,
+                catalog_version="cp8-live-catalog",
+                transport=lambda provider, endpoint, request: {"status": 200, "request_id": f"req_{provider}"},
+            )
+
+
+def test_cp8_sub2api_gateway_live_collector_requires_runtime_trust_secrets(tmp_path: Path, monkeypatch):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    monkeypatch.delenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", raising=False)
+    monkeypatch.delenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", raising=False)
+
+    with pytest.raises(CP8LiveMatrixError, match="native attestation secret"):
+        collect_cp8_sub2api_gateway_live_provenance(
+            run_id="cp8-sub2api-missing-trust",
+            output_root=tmp_path,
+            base_url="http://127.0.0.1:3012",
+            gateway_token="sub2api-gateway-token",
+            transport=lambda provider, endpoint, request: {"status": 200, "request_id": f"req_{provider}"},
+        )
+
+
+def test_cp8_sub2api_gateway_live_collector_sends_gateway_auth_and_signed_runtime_headers(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    calls: list[tuple[str, str, dict[str, str], dict[str, object]]] = []
+
+    def transport(provider: str, endpoint: str, request: dict[str, object]) -> dict[str, object]:
+        headers = request["headers"]
+        body = request["body"]
+        assert isinstance(headers, dict)
+        assert isinstance(body, dict)
+        calls.append((provider, endpoint, headers, body))
+        return {"status": 200, "request_id": f"sub2api_{provider}_header_req"}
+
+    collect_cp8_sub2api_gateway_live_provenance(
+        run_id="cp8-sub2api-live-headers",
+        output_root=tmp_path,
+        base_url="http://127.0.0.1:3012",
+        gateway_token="sub2api-gateway-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        transport=transport,
+    )
+
+    by_provider = {provider: (endpoint, headers, body) for provider, endpoint, headers, body in calls}
+    assert by_provider["claude"][1]["Authorization"] == "Bearer sub2api-gateway-token"
+    assert by_provider["openai"][1]["Authorization"] == "Bearer sub2api-gateway-token"
+    assert by_provider["deepseek"][1]["Authorization"] == "Bearer sub2api-gateway-token"
+    assert by_provider["claude"][1]["x-sub2api-client-type"] == "claude_code_native"
+    assert by_provider["claude"][1]["x-sub2api-route"] == "claude_code_native"
+    assert by_provider["claude"][1]["x-sub2api-native-attestation"]
+    assert by_provider["claude"][1]["x-sub2api-native-signature"]
+    assert by_provider["openai"][1]["x-sub2api-client-type"] == "claude_code_bridge_openai"
+    assert by_provider["openai"][1]["x-sub2api-route"] == "openai_bridge"
+    assert by_provider["openai"][1]["x-zhumeng-claude-code-route-hint"]
+    assert by_provider["openai"][1]["x-zhumeng-claude-code-route-signature"]
+    assert by_provider["deepseek"][1]["x-sub2api-client-type"] == "claude_code_bridge_deepseek"
+    assert by_provider["deepseek"][1]["x-sub2api-route"] == "deepseek_bridge"
+    assert by_provider["deepseek"][1]["x-zhumeng-claude-code-route-hint"]
+    assert by_provider["deepseek"][1]["x-zhumeng-claude-code-route-signature"]
+    claude_session_ref = by_provider["claude"][1]["x-sub2api-local-session-ref"]
+    assert claude_session_ref.startswith("hmac-sha256:")
+    assert "cp8-sub2api-live-headers" not in claude_session_ref
+    native_payload = _decode_cp8_runtime_header(by_provider["claude"][1]["x-sub2api-native-attestation"])
+    assert native_payload["local_session_ref"] == claude_session_ref
+    assert native_payload["session_ref"] == claude_session_ref
+    assert "cp8-sub2api-live-headers" not in json.dumps(native_payload, sort_keys=True)
+    for provider in ("openai", "deepseek"):
+        route_payload = _decode_cp8_runtime_header(by_provider[provider][1]["x-zhumeng-claude-code-route-hint"])
+        assert route_payload["session_ref"] == claude_session_ref
+        assert route_payload["formal_pool_allowed"] is False
+        assert route_payload["native_attestation_allowed"] is False
+    assert by_provider["openai"][2]["model"] == "gpt-5.5"
+    assert by_provider["deepseek"][2]["model"] == "deepseek-v4-pro"
+    assert by_provider["claude"][2]["model"] == "claude-sonnet-4-6"
+
+
+def test_cp8_sub2api_gateway_live_collector_extracts_sub2api_and_provider_request_id_headers(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    def transport(provider: str, endpoint: str, request: dict[str, object]) -> dict[str, object]:
+        header_by_provider = {
+            "claude": {"x-sub2api-upstream-request-id": "sub2api_claude_upstream"},
+            "openai": {"x-sub2api-request-id": "sub2api_openai_gateway"},
+            "deepseek": {"x-deepseek-request-id": "deepseek_provider_req"},
+        }
+        return {"status": 200, "response_headers": header_by_provider[provider]}
+
+    provenance = collect_cp8_sub2api_gateway_live_provenance(
+        run_id="cp8-sub2api-live-request-id-headers",
+        output_root=tmp_path,
+        base_url="http://127.0.0.1:3012",
+        gateway_token="sub2api-gateway-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        transport=transport,
+    )
+
+    assert "sub2api_claude_upstream" in (tmp_path / provenance["providers"]["claude"]["artifact_refs"][0]["path"]).read_text(encoding="utf-8")
+    assert "sub2api_openai_gateway" in (tmp_path / provenance["providers"]["openai"]["artifact_refs"][0]["path"]).read_text(encoding="utf-8")
+    assert "deepseek_provider_req" in (tmp_path / provenance["providers"]["deepseek"]["artifact_refs"][0]["path"]).read_text(encoding="utf-8")
+
+
+
+def test_cp8_strict_live_accepts_sub2api_gateway_provenance_only_in_sub2api_mode(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    run_id = "cp8-sub2api-strict-live"
+    provenance = collect_cp8_sub2api_gateway_live_provenance(
+        run_id=run_id,
+        output_root=tmp_path,
+        base_url="http://127.0.0.1:3012",
+        gateway_token="sub2api-gateway-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        transport=lambda provider, endpoint, request: {"status": 200, "request_id": f"req_{provider}_sub2api"},
+    )
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    payload["live_provenance"] = provenance
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_sub2api_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+    assert result.status == "pass"
+    assert result.release_gate == "external_live_passed"
+
+    forged = json.loads(json.dumps(payload))
+    forged["live_provenance"].pop("mode")
+    forged_result = verify_cp8_live_matrix(forged, strict_live=True, evidence_root=tmp_path)
+    assert forged_result.status == "fail"
+    assert forged_result.release_gate == "blocked_missing_external_live"
+    assert "live_provenance" in forged_result.failed
+
+
+def test_cp8_strict_live_rejects_sub2api_mode_with_official_provider_endpoints(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-sub2api-official-forgery"
+    payload["live_provenance"] = {
+        "mode": "sub2api_gateway_live_matrix",
+        "credential_backed": True,
+        "loopback_only": False,
+        "gateway_base_url": "http://127.0.0.1:3012",
+        "run_id": run_id,
+        "providers": {},
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint, route, client_type) in {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages", "claude_code_native", "claude_code_native"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses", "openai_bridge", "claude_code_bridge_openai"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages", "deepseek_bridge", "claude_code_bridge_deepseek"),
+    }.items():
+        artifact = artifacts_dir / f"{provider}_sub2api_forged.json"
+        artifact.write_text(json.dumps({
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "route": route,
+            "client_type": client_type,
+            "sub2api_gateway_verified": True,
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_sub2api",
+        }, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "route": route,
+            "client_type": client_type,
+            "artifact_refs": [{
+                "path": f"artifacts/{artifact.name}",
+                "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "sensitive_scan_clean": True,
+            }],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
+
 
 
 def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monkeypatch, tmp_path: Path):

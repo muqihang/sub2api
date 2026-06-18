@@ -63,6 +63,7 @@ from .live_matrix import (
     REQUIRED_CP8_SCENARIOS,
     assemble_cp8_external_live_matrix_evidence,
     collect_cp8_live_provider_provenance,
+    collect_cp8_sub2api_gateway_live_provenance,
     verify_cp8_live_matrix,
     write_cp8_live_scenario_evidence,
 )
@@ -100,6 +101,7 @@ __all__ = [
     "CP8LiveMatrixError",
     "CP8LiveMatrixResult",
     "CP8ScenarioResult",
+    "collect_cp8_sub2api_gateway_live_provenance",
     "REQUIRED_CP8_SCENARIOS",
     "CaptureMode",
     "ClaudeCodeCapabilityProfile",

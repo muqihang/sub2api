@@ -46,6 +46,7 @@ def restore_cli_globals_after_test():
             "capture_installation_enabled",
             "inject_capture_hook_via_cdp",
             "run_managed_claude_code",
+            "resolve_active_managed_runtime",
         )
         if hasattr(cli, name)
     }
@@ -1109,6 +1110,306 @@ def test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_pr
     assert data["command"] == "claude-code live-matrix"
     assert data["status"] == "not_configured"
     assert "missing live credential" in data["message"]
+
+
+def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys, tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    def fake_collect_cp8_sub2api_gateway_live_provenance(**kwargs):
+        calls.append(kwargs)
+        return {
+            "mode": "sub2api_gateway_live_matrix",
+            "credential_backed": True,
+            "loopback_only": False,
+            "gateway_base_url": kwargs["base_url"],
+            "run_id": kwargs["run_id"],
+            "providers": {
+                "claude": {"credential_scope": "formal_pool", "live_provider_verified": True, "route": "claude_code_native"},
+                "openai": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "openai_bridge"},
+                "deepseek": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "deepseek_bridge"},
+            },
+        }
+
+    monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
+    monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(read=lambda: {}), raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): "sha256:" + "e" * 64, raising=False)
+    monkeypatch.setenv("SUB2API_CP8_LIVE_BASE_URL", "http://127.0.0.1:3012")
+    monkeypatch.setenv("SUB2API_CP8_LIVE_GATEWAY_TOKEN", "sub2api-env-token")
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-sub2api-cli",
+        "--output-root",
+        str(tmp_path),
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix collect-sub2api-provenance"
+    assert data["status"] == "collected"
+    assert data["live_provenance"]["mode"] == "sub2api_gateway_live_matrix"
+    assert calls == [{
+        "run_id": "cp8-sub2api-cli",
+        "output_root": tmp_path,
+        "base_url": "http://127.0.0.1:3012",
+        "gateway_token": "sub2api-env-token",
+        "native_attestation_secret": "",
+        "route_hint_secret": "",
+        "runtime_hash": "",
+        "overlay_hash": "",
+        "catalog_hash": "sha256:" + "e" * 64,
+        "catalog_version": "cp4-cli-fixture-v1",
+    }]
+
+
+def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys, tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    class FakeStateStore:
+        def read(self):
+            return {
+                "gateway_base_url": "http://127.0.0.1:3012",
+                "access_token": "managed-sub2api-token",
+                "claude_code_native_attestation_secret": "managed-native-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "managed-route-secret",
+                "claude_code_route_hint_secret_source": "server",
+                "catalog_hash_after": "sha256:" + "a" * 64,
+                "config_profile": {"id": "default"},
+            }
+
+    def fake_collect_cp8_sub2api_gateway_live_provenance(**kwargs):
+        calls.append(kwargs)
+        return {
+            "mode": "sub2api_gateway_live_matrix",
+            "credential_backed": True,
+            "loopback_only": False,
+            "gateway_base_url": kwargs["base_url"],
+            "run_id": kwargs["run_id"],
+            "providers": {
+                "claude": {"credential_scope": "formal_pool", "live_provider_verified": True, "route": "claude_code_native"},
+                "openai": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "openai_bridge"},
+                "deepseek": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "deepseek_bridge"},
+            },
+        }
+
+    monkeypatch.setattr(cli, "default_state_store", lambda: FakeStateStore(), raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: SimpleNamespace(
+        runtime_hash="sha256:" + "b" * 64,
+        overlay_hash="sha256:" + "c" * 64,
+    ), raising=False)
+    monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): "sha256:" + "e" * 64, raising=False)
+    for key in (
+        "SUB2API_CP8_LIVE_BASE_URL",
+        "SUB2API_BASE_URL",
+        "SUB2API_CP8_LIVE_GATEWAY_TOKEN",
+        "SUB2API_API_KEY",
+        "SUB2API_ACCESS_TOKEN",
+        "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET",
+        "SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET",
+        "ZHUMENG_CLAUDE_RUNTIME_HASH",
+        "SUB2API_CLAUDE_CODE_RUNTIME_HASH",
+        "ZHUMENG_CLAUDE_OVERLAY_HASH",
+        "SUB2API_CLAUDE_CODE_OVERLAY_HASH",
+        "ZHUMENG_CLAUDE_CATALOG_HASH",
+        "SUB2API_CLAUDE_CODE_CATALOG_HASH",
+        "SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION",
+        "ZHUMENG_CLAUDE_CATALOG_VERSION",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-sub2api-managed-cli",
+        "--output-root",
+        str(tmp_path),
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix collect-sub2api-provenance"
+    assert data["status"] == "collected"
+    assert calls == [{
+        "run_id": "cp8-sub2api-managed-cli",
+        "output_root": tmp_path,
+        "base_url": "http://127.0.0.1:3012",
+        "gateway_token": "managed-sub2api-token",
+        "native_attestation_secret": "managed-native-secret",
+        "route_hint_secret": "managed-route-secret",
+        "runtime_hash": "sha256:" + "b" * 64,
+        "overlay_hash": "sha256:" + "c" * 64,
+        "catalog_hash": "sha256:" + "e" * 64,
+        "catalog_version": "cp4-cli-fixture-v1",
+    }]
+
+
+def test_claude_code_live_matrix_cli_derives_route_catalog_hash_not_model_catalog_hash(capsys, tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+    model_catalog_hash = "d" * 64
+    expected_route_hash = "sha256:" + "e" * 64
+
+    class FakeStateStore:
+        def read(self):
+            return {
+                "gateway_base_url": "http://127.0.0.1:3012",
+                "access_token": "managed-sub2api-token",
+                "claude_code_native_attestation_secret": "managed-native-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "managed-route-secret",
+                "claude_code_route_hint_secret_source": "server",
+                "catalog_hash_after": model_catalog_hash,
+                "claude_code_route_hint_catalog_version": "cp4-cli-fixture-v1",
+                "config_profile": {"id": "default"},
+            }
+
+    def fake_collect_cp8_sub2api_gateway_live_provenance(**kwargs):
+        calls.append(kwargs)
+        return {
+            "mode": "sub2api_gateway_live_matrix",
+            "credential_backed": True,
+            "loopback_only": False,
+            "gateway_base_url": kwargs["base_url"],
+            "run_id": kwargs["run_id"],
+            "providers": {
+                "claude": {"credential_scope": "formal_pool", "live_provider_verified": True, "route": "claude_code_native"},
+                "openai": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "openai_bridge"},
+                "deepseek": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "deepseek_bridge"},
+            },
+        }
+
+    monkeypatch.setattr(cli, "default_state_store", lambda: FakeStateStore(), raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: SimpleNamespace(
+        runtime_hash="sha256:" + "b" * 64,
+        overlay_hash="sha256:" + "c" * 64,
+        patches={"live_bridge_models_enabled": True, "bridge_live_models": ["gpt-5.5", "deepseek-v4-pro"]},
+    ), raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): expected_route_hash, raising=False)
+    monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
+    for key in ("ZHUMENG_CLAUDE_CATALOG_HASH", "SUB2API_CLAUDE_CODE_CATALOG_HASH"):
+        monkeypatch.delenv(key, raising=False)
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-route-catalog-hash",
+        "--output-root",
+        str(tmp_path),
+    ]) == 0
+    parse_output(capsys)
+
+    assert calls[0]["catalog_hash"] == expected_route_hash
+    assert calls[0]["catalog_hash"] != model_catalog_hash
+    assert calls[0]["catalog_version"] == "cp4-cli-fixture-v1"
+
+
+def test_claude_code_live_matrix_cli_ignores_non_server_managed_runtime_secrets(capsys, tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    class FakeStateStore:
+        def read(self):
+            return {
+                "gateway_base_url": "http://127.0.0.1:3012",
+                "access_token": "managed-sub2api-token",
+                "claude_code_native_attestation_secret": "local-native-secret",
+                "claude_code_native_attestation_secret_source": "local",
+                "claude_code_route_hint_secret": "local-route-secret",
+                "claude_code_route_hint_secret_source": "local",
+                "catalog_hash_after": "sha256:" + "a" * 64,
+                "config_profile": {"id": "default"},
+            }
+
+    def fake_collect_cp8_sub2api_gateway_live_provenance(**kwargs):
+        calls.append(kwargs)
+        return {
+            "mode": "sub2api_gateway_live_matrix",
+            "credential_backed": True,
+            "loopback_only": False,
+            "gateway_base_url": kwargs["base_url"],
+            "run_id": kwargs["run_id"],
+            "providers": {
+                "claude": {"credential_scope": "formal_pool", "live_provider_verified": True, "route": "claude_code_native"},
+                "openai": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "openai_bridge"},
+                "deepseek": {"credential_scope": "bridge_pool", "live_provider_verified": True, "route": "deepseek_bridge"},
+            },
+        }
+
+    monkeypatch.setattr(cli, "default_state_store", lambda: FakeStateStore(), raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: SimpleNamespace(
+        runtime_hash="sha256:" + "b" * 64,
+        overlay_hash="sha256:" + "c" * 64,
+    ), raising=False)
+    monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
+    monkeypatch.delenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", raising=False)
+    monkeypatch.delenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", raising=False)
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-sub2api-managed-cli",
+        "--output-root",
+        str(tmp_path),
+    ]) == 0
+    parse_output(capsys)
+
+    assert calls[0]["native_attestation_secret"] == ""
+    assert calls[0]["route_hint_secret"] == ""
+
+
+def test_claude_code_live_matrix_cli_sub2api_collection_requires_run_id_output_and_token(capsys, tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("SUB2API_CP8_LIVE_BASE_URL", raising=False)
+    monkeypatch.delenv("SUB2API_BASE_URL", raising=False)
+    monkeypatch.delenv("SUB2API_CP8_LIVE_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("SUB2API_API_KEY", raising=False)
+    monkeypatch.delenv("SUB2API_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(read=lambda: {}), raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
+
+    assert main(["claude-code", "live-matrix", "--collect-sub2api-provenance"]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix collect-sub2api-provenance"
+    assert "requires --run-id and --output-root" in data["message"]
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-sub2api-missing-token",
+        "--output-root",
+        str(tmp_path),
+        "--sub2api-base-url",
+        "http://127.0.0.1:3012",
+    ]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix"
+    assert "gateway token" in data["message"]
+
+
+def test_claude_code_live_matrix_cli_rejects_provider_and_sub2api_collection_conflict(capsys, tmp_path: Path):
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-provider-provenance",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-conflict",
+        "--output-root",
+        str(tmp_path),
+    ]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix"
+    assert "conflicting" in data["message"]
+    assert "--collect-sub2api-provenance" in data["message"]
 
 
 def test_claude_code_live_matrix_cli_assembles_external_matrix_without_promoting_loopback(capsys, tmp_path: Path):

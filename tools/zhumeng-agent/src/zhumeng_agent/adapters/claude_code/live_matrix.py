@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
+import hmac
+import secrets
+import time
 import ipaddress
 import json
 import os
@@ -508,7 +512,7 @@ def _strict_live_scenario_artifact_verified(
             and _strict_live_model_allowed(provider, model)
             and upstream_request_id
             and provider_refs
-            and _external_live_endpoint(provider, endpoint)
+            and any(proof.get("endpoint") == endpoint for proof in provider_proofs.get(provider, ()))
         ):
             continue
         for proof in provider_proofs.get(provider, ()):
@@ -533,6 +537,8 @@ def _strict_live_provider_proof_index(payload: Mapping[str, object], *, evidence
     for provider, raw in providers.items():
         if not isinstance(raw, Mapping):
             continue
+        provenance_mode = str(provenance.get("mode") or "external_provider_live_matrix").strip()
+        gateway_base_url = str(provenance.get("gateway_base_url") or "").strip() if provenance_mode == "sub2api_gateway_live_matrix" else ""
         proofs = _strict_live_provider_artifact_payloads(
             raw.get("artifact_refs"),
             evidence_root=evidence_root,
@@ -541,6 +547,10 @@ def _strict_live_provider_proof_index(payload: Mapping[str, object], *, evidence
             endpoint=str(raw.get("endpoint") or ""),
             model=str(raw.get("model") or ""),
             run_id=run_id,
+            provenance_mode=provenance_mode,
+            gateway_base_url=gateway_base_url,
+            route=str(raw.get("route") or ""),
+            client_type=str(raw.get("client_type") or ""),
         )
         if proofs:
             out[str(provider)] = list(proofs)
@@ -566,17 +576,34 @@ def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_
         "openai": "bridge_pool",
         "deepseek": "bridge_pool",
     }
+    provenance_mode = str(provenance.get("mode") or "external_provider_live_matrix").strip()
+    if provenance_mode not in {"external_provider_live_matrix", "sub2api_gateway_live_matrix"}:
+        return False
+    if provenance_mode == "sub2api_gateway_live_matrix":
+        gateway_base_url = str(provenance.get("gateway_base_url") or "").strip()
+        if not gateway_base_url:
+            return False
+        try:
+            normalized_gateway_base_url = _validate_sub2api_gateway_base_url(gateway_base_url)
+        except CP8LiveMatrixError:
+            return False
+    else:
+        normalized_gateway_base_url = ""
     for provider, scope in required.items():
         raw = providers.get(provider)
         if not isinstance(raw, Mapping):
             return False
         if raw.get("credential_scope") != scope or raw.get("live_provider_verified") is not True:
             return False
-        endpoint = str(raw.get("endpoint") or "")
-        if not _external_live_endpoint(provider, endpoint):
+        endpoint = str(raw.get("endpoint") or "").strip().rstrip("/")
+        if not _strict_live_endpoint_allowed(provider, endpoint, provenance_mode=provenance_mode, gateway_base_url=normalized_gateway_base_url):
             return False
         model = str(raw.get("model") or "").strip()
         if not _strict_live_model_allowed(provider, model):
+            return False
+        route = str(raw.get("route") or "").strip()
+        client_type = str(raw.get("client_type") or "").strip()
+        if provenance_mode == "sub2api_gateway_live_matrix" and not _sub2api_gateway_provider_route(provider, route, client_type):
             return False
         if _artifact_ref_issues(raw.get("artifact_refs"), evidence_root=evidence_root):
             return False
@@ -588,13 +615,17 @@ def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_
             endpoint=endpoint,
             model=model,
             run_id=run_id,
+            provenance_mode=provenance_mode,
+            gateway_base_url=normalized_gateway_base_url,
+            route=route,
+            client_type=client_type,
         ):
             return False
     return True
 
 
 def _external_live_endpoint(provider: str, endpoint: str) -> bool:
-    endpoint = str(endpoint or "").strip()
+    endpoint = str(endpoint or "").strip().rstrip("/")
     allowed_endpoints = _STRICT_LIVE_PROVIDER_ENDPOINTS.get(provider)
     if not allowed_endpoints or endpoint not in allowed_endpoints:
         return False
@@ -614,6 +645,69 @@ def _external_live_endpoint(provider: str, endpoint: str) -> bool:
     return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
 
 
+def _strict_live_endpoint_allowed(provider: str, endpoint: str, *, provenance_mode: str, gateway_base_url: str) -> bool:
+    if provenance_mode == "sub2api_gateway_live_matrix":
+        return _sub2api_gateway_provider_endpoint(provider, endpoint, gateway_base_url=gateway_base_url)
+    return _external_live_endpoint(provider, endpoint)
+
+
+def _sub2api_gateway_provider_endpoint(provider: str, endpoint: str, *, gateway_base_url: str = "") -> bool:
+    endpoint = str(endpoint or "").strip().rstrip("/")
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+        return False
+    host = _normalized_url_host(parsed.hostname)
+    official_hosts = _official_provider_hosts()
+    if not host or host in official_hosts:
+        return False
+    if gateway_base_url:
+        base = _validate_sub2api_gateway_base_url(gateway_base_url)
+        if not endpoint.startswith(base + "/"):
+            return False
+    path = parsed.path.rstrip("/")
+    if provider in {"claude", "deepseek"}:
+        return path == "/v1/messages"
+    if provider == "openai":
+        return path == "/v1/messages"
+    return False
+
+
+def _sub2api_gateway_provider_route(provider: str, route: str, client_type: str) -> bool:
+    expected = {
+        "claude": ("claude_code_native", "claude_code_native"),
+        "openai": ("openai_bridge", "claude_code_bridge_openai"),
+        "deepseek": ("deepseek_bridge", "claude_code_bridge_deepseek"),
+    }.get(provider)
+    return bool(expected and (route, client_type) == expected)
+
+
+def _validate_sub2api_gateway_base_url(base_url: str) -> str:
+    base_url = str(base_url or "").strip().rstrip("/")
+    if not base_url:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway base URL is required")
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway base URL is invalid")
+    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway base URL must be an origin without credentials/query/fragment")
+    path = parsed.path.rstrip("/")
+    if path:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway base URL must be an origin without path/query")
+    host = _normalized_url_host(parsed.hostname)
+    if host in _official_provider_hosts():
+        raise CP8LiveMatrixError("CP8 Sub2API gateway base URL must not be an official provider host")
+    return base_url
+
+
+def _official_provider_hosts() -> set[str]:
+    return {_normalized_url_host(host) for hosts in _STRICT_LIVE_PROVIDER_HOSTS.values() for host in hosts}
+
+
+def _normalized_url_host(host: str | None) -> str:
+    return str(host or "").strip().lower().rstrip(".")
+
 def _strict_live_provider_artifacts_verified(
     value: object,
     *,
@@ -623,6 +717,10 @@ def _strict_live_provider_artifacts_verified(
     endpoint: str,
     model: str,
     run_id: str,
+    provenance_mode: str = "external_provider_live_matrix",
+    gateway_base_url: str = "",
+    route: str = "",
+    client_type: str = "",
 ) -> bool:
     return bool(_strict_live_provider_artifact_payloads(
         value,
@@ -632,6 +730,10 @@ def _strict_live_provider_artifacts_verified(
         endpoint=endpoint,
         model=model,
         run_id=run_id,
+        provenance_mode=provenance_mode,
+        gateway_base_url=gateway_base_url,
+        route=route,
+        client_type=client_type,
     ))
 
 
@@ -644,6 +746,10 @@ def _strict_live_provider_artifact_payloads(
     endpoint: str,
     model: str,
     run_id: str,
+    provenance_mode: str = "external_provider_live_matrix",
+    gateway_base_url: str = "",
+    route: str = "",
+    client_type: str = "",
 ) -> tuple[Mapping[str, object], ...]:
     if evidence_root is None or not isinstance(value, list):
         return ()
@@ -672,6 +778,14 @@ def _strict_live_provider_artifact_payloads(
         artifact_endpoint = str(payload.get("endpoint") or "").strip()
         artifact_host = str(payload.get("host") or urlparse(artifact_endpoint).hostname or "").lower()
         artifact_model = str(payload.get("model") or "").strip()
+        mode_ok = True
+        if provenance_mode == "sub2api_gateway_live_matrix":
+            mode_ok = (
+                payload.get("sub2api_gateway_verified") is True
+                and str(payload.get("route") or "").strip() == route
+                and str(payload.get("client_type") or "").strip() == client_type
+                and _sub2api_gateway_provider_route(provider, route, client_type)
+            )
         if (
             payload.get("schema_version") == "cp8-live-provider-provenance-v1"
             and payload.get("checkpoint") == "CP8"
@@ -680,10 +794,11 @@ def _strict_live_provider_artifact_payloads(
             and str(payload.get("credential_scope") or "") == credential_scope
             and payload.get("external_live_verified") is True
             and payload.get("loopback") is False
+            and mode_ok
             and artifact_host == host
             and artifact_endpoint == expected_endpoint
             and artifact_model == expected_model
-            and _external_live_endpoint(provider, artifact_endpoint)
+            and _strict_live_endpoint_allowed(provider, artifact_endpoint, provenance_mode=provenance_mode, gateway_base_url=gateway_base_url)
             and _success_status(_int(payload.get("response_status")))
             and bool(str(payload.get("upstream_request_id") or "").strip())
         ):
@@ -959,6 +1074,389 @@ def write_cp8_live_scenario_evidence(
     }
 
 
+def collect_cp8_sub2api_gateway_live_provenance(
+    *,
+    run_id: str,
+    output_root: Path | str,
+    base_url: str,
+    gateway_token: str,
+    native_attestation_secret: str | None = None,
+    route_hint_secret: str | None = None,
+    runtime_hash: str | None = None,
+    overlay_hash: str | None = None,
+    catalog_hash: str | None = None,
+    catalog_version: str | None = None,
+    transport: object | None = None,
+) -> dict[str, object]:
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway live provenance requires run_id")
+    base = _validate_sub2api_gateway_base_url(base_url)
+    token = str(gateway_token or "").strip()
+    if not token:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway live provenance requires gateway token")
+    native_secret = str(native_attestation_secret or os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") or "").strip()
+    if not native_secret:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway live provenance requires native attestation secret from managed setup")
+    route_secret = str(route_hint_secret or os.getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET") or "").strip()
+    if not route_secret:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway live provenance requires route hint secret from managed setup")
+    runtime_hash_value = _required_live_hash(runtime_hash or os.getenv("ZHUMENG_CLAUDE_RUNTIME_HASH") or os.getenv("SUB2API_CLAUDE_CODE_RUNTIME_HASH"), "runtime_hash")
+    overlay_hash_value = _required_live_hash(overlay_hash or os.getenv("ZHUMENG_CLAUDE_OVERLAY_HASH") or os.getenv("SUB2API_CLAUDE_CODE_OVERLAY_HASH"), "overlay_hash")
+    catalog_hash_value = _required_live_hash(catalog_hash or os.getenv("ZHUMENG_CLAUDE_CATALOG_HASH") or os.getenv("SUB2API_CLAUDE_CODE_CATALOG_HASH"), "catalog_hash")
+    catalog_version_value = str(catalog_version or os.getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION") or os.getenv("ZHUMENG_CLAUDE_CATALOG_VERSION") or "").strip()
+    if not catalog_version_value:
+        raise CP8LiveMatrixError("CP8 Sub2API gateway live provenance requires catalog_version from managed setup")
+    root = Path(output_root).expanduser()
+    artifacts_dir = root / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    provider_specs = {
+        "claude": ("formal_pool", f"{base}/v1/messages", _cp8_live_model("claude"), "claude_code_native", "claude_code_native"),
+        "openai": ("bridge_pool", f"{base}/v1/messages", _cp8_live_model("openai"), "openai_bridge", "claude_code_bridge_openai"),
+        "deepseek": ("bridge_pool", f"{base}/v1/messages", _cp8_live_model("deepseek"), "deepseek_bridge", "claude_code_bridge_deepseek"),
+    }
+    session_ref = _cp8_live_session_ref(run_id, native_secret=native_secret, route_secret=route_secret)
+    probe = transport or _sub2api_gateway_transport
+    providers: dict[str, object] = {}
+    for provider, (scope, endpoint, model, route, client_type) in provider_specs.items():
+        body, headers = _cp8_sub2api_gateway_probe_request(
+            provider,
+            model,
+            token,
+            route=route,
+            client_type=client_type,
+            native_attestation_secret=native_secret,
+            route_hint_secret=route_secret,
+            runtime_hash=runtime_hash_value,
+            overlay_hash=overlay_hash_value,
+            catalog_hash=catalog_hash_value,
+            catalog_version=catalog_version_value,
+            session_ref=session_ref,
+        )
+        result = probe(provider, endpoint, {"body": body, "headers": headers})  # type: ignore[misc]
+        if not isinstance(result, Mapping):
+            raise CP8LiveMatrixError(f"CP8 Sub2API gateway live probe for {provider} did not return evidence")
+        status = _int(result.get("status"))
+        request_id = _safe_live_request_id(result)
+        if not _success_status(status) or not request_id:
+            raise CP8LiveMatrixError(f"CP8 Sub2API gateway live probe for {provider} did not return a sanitized 2xx live request id")
+        artifact_payload = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": model,
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": urlparse(endpoint).hostname or "",
+            "route": route,
+            "client_type": client_type,
+            "sub2api_gateway_verified": True,
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": status,
+            "upstream_request_id": request_id,
+        }
+        artifact = artifacts_dir / f"{provider}_sub2api_live_provenance.json"
+        artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+        providers[provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": model,
+            "route": route,
+            "client_type": client_type,
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{artifact.name}",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    return {
+        "mode": "sub2api_gateway_live_matrix",
+        "credential_backed": True,
+        "loopback_only": False,
+        "gateway_base_url": base,
+        "run_id": run_id,
+        "providers": providers,
+    }
+
+
+
+def _cp8_sub2api_gateway_probe_request(
+    provider: str,
+    model: str,
+    gateway_token: str,
+    *,
+    route: str,
+    client_type: str,
+    native_attestation_secret: str,
+    route_hint_secret: str,
+    runtime_hash: str,
+    overlay_hash: str,
+    catalog_hash: str,
+    catalog_version: str,
+    session_ref: str,
+) -> tuple[dict[str, object], dict[str, str]]:
+    body = {
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "CP8 Sub2API gateway live provenance probe."}],
+        "stream": False,
+    }
+    headers = {
+        "Authorization": "Bearer " + gateway_token.strip(),
+        "Content-Type": "application/json",
+        "x-sub2api-client-type": client_type,
+        "x-sub2api-route": route,
+        "x-sub2api-route-catalog-version": catalog_version,
+    }
+    body_bytes = json.dumps(body, ensure_ascii=True, sort_keys=True).encode("utf-8")
+    if provider == "claude":
+        headers.update(_cp8_native_attestation_headers(
+            body_bytes,
+            "/v1/messages",
+            native_attestation_secret,
+            runtime_hash=runtime_hash,
+            overlay_hash=overlay_hash,
+            catalog_hash=catalog_hash,
+            catalog_version=catalog_version,
+            session_ref=session_ref,
+        ))
+    else:
+        headers.update(_cp8_bridge_route_hint_headers(
+            body_bytes,
+            "/v1/messages",
+            model,
+            route_hint_secret,
+            provider=provider,
+            route=route,
+            client_type=client_type,
+            runtime_hash=runtime_hash,
+            overlay_hash=overlay_hash,
+            catalog_hash=catalog_hash,
+            catalog_version=catalog_version,
+            session_ref=session_ref,
+        ))
+    return body, headers
+
+
+def _cp8_live_session_ref(run_id: str, *, native_secret: str, route_secret: str) -> str:
+    material = f"cp8-sub2api-live:{str(run_id).strip()}".encode("utf-8")
+    key = (native_secret + "\0" + route_secret).encode("utf-8")
+    return "hmac-sha256:" + hmac.new(key, material, hashlib.sha256).hexdigest()
+
+
+def _required_live_hash(value: object, field: str) -> str:
+    text = str(value or "").strip().lower()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", text) or text == "sha256:" + "0" * 64:
+        raise CP8LiveMatrixError(f"CP8 Sub2API gateway live provenance requires {field} from managed runtime")
+    return text
+
+
+def _cp8_body_shape_hash(body: bytes) -> str:
+    try:
+        decoded = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:  # noqa: BLE001 - shape hash must not preserve raw invalid body.
+        decoded = {"body_size": len(body), "type": "invalid_json"}
+    digest = hashlib.sha256(json.dumps(_cp8_shape_value(decoded), sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return "sha256:" + digest
+
+
+def _cp8_shape_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        children: dict[str, object] = {}
+        keys: list[str] = []
+        for key, child in value.items():
+            safe_key = _cp8_shape_key(str(key))
+            if safe_key not in children:
+                keys.append(safe_key)
+            children[safe_key] = _cp8_shape_value(child)
+        return {"children": children, "keys": sorted(keys), "type": "object"}
+    if isinstance(value, list):
+        return {
+            "items": [_cp8_shape_value(item) for item in value[:32]],
+            "len": len(value),
+            "truncated": len(value) > 32,
+            "type": "array",
+        }
+    if isinstance(value, str):
+        return {"type": "string"}
+    if isinstance(value, bool):
+        return {"type": "bool"}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return {"type": "number"}
+    if value is None:
+        return {"type": "null"}
+    return {"type": "unknown"}
+
+
+def _cp8_shape_key(key: str) -> str:
+    key = key.strip()
+    if not key or _SENSITIVE_ARTIFACT_RE.search(key) or len(key) > 128:
+        return "redacted-key"
+    for char in key:
+        if char.isascii() and (char.isalnum() or char in "_-." ):
+            continue
+        return "redacted-key"
+    return key
+
+
+def _cp8_native_attestation_headers(
+    body: bytes,
+    request_path: str,
+    secret: str,
+    *,
+    runtime_hash: str,
+    overlay_hash: str,
+    catalog_hash: str,
+    catalog_version: str,
+    session_ref: str,
+) -> dict[str, str]:
+    now = int(time.time())
+    key_id = os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID", "guard_v1")
+    payload = {
+        "key_id": key_id,
+        "scope": os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE", "claude_code_native_v1"),
+        "version": int(os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", "1")),
+        "issued_at": now,
+        "nonce": secrets.token_hex(16),
+        "method": "POST",
+        "request_uri": request_path,
+        "client_type": "claude_code_native",
+        "guard_attested": True,
+        "guard_version": key_id,
+        "claude_code_version": "cp8-live-matrix",
+        "local_session_ref": session_ref,
+        "netwatch_required": True,
+        "shape_healthcheck_profile": "real_claude_code_native_takeover_v1",
+        "route": "claude_code_native",
+        "model_id": _cp8_body_model(body),
+        "provider_owner": "zhumeng_managed",
+        "credential_scope": "formal_pool",
+        "gateway_location": "cloud",
+        "runtime_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "catalog_hash": catalog_hash,
+        "catalog_version": catalog_version,
+        "session_ref": session_ref,
+        "body_shape_hash": _cp8_body_shape_hash(body),
+    }
+    encoded = _b64url_json(payload)
+    signature = _sign_cp8_runtime_header(encoded, "POST", request_path, body, secret)
+    return {
+        "x-sub2api-client-type": "claude_code_native",
+        "x-sub2api-guard-attested": "true",
+        "x-sub2api-guard-version": key_id,
+        "x-sub2api-claude-code-version": "cp8-live-matrix",
+        "x-sub2api-local-session-ref": session_ref,
+        "x-sub2api-netwatch-required": "true",
+        "x-sub2api-native-attestation": encoded,
+        "x-sub2api-native-signature": signature,
+    }
+
+
+def _cp8_bridge_route_hint_headers(
+    body: bytes,
+    request_path: str,
+    model: str,
+    secret: str,
+    *,
+    provider: str,
+    route: str,
+    client_type: str,
+    runtime_hash: str,
+    overlay_hash: str,
+    catalog_hash: str,
+    catalog_version: str,
+    session_ref: str,
+) -> dict[str, str]:
+    now = int(time.time())
+    payload = {
+        "key_id": os.getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1"),
+        "scope": "claude_code_route_hint_cp4",
+        "version": 1,
+        "issued_at": now,
+        "expires_at": now + int(os.getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_NONCE_TTL_SECONDS", "60")),
+        "nonce": secrets.token_hex(16),
+        "method": "POST",
+        "request_uri": request_path,
+        "model_id": model,
+        "body_model": _cp8_body_model(body),
+        "body_sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+        "runtime_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "catalog_hash": catalog_hash,
+        "catalog_version": catalog_version,
+        "session_ref": session_ref,
+        "route": route,
+        "client_type": client_type,
+        "provider": provider,
+        "live_request_allowed": True,
+        "formal_pool_allowed": False,
+        "native_attestation_allowed": False,
+        "provider_owner": "zhumeng_managed",
+        "credential_scope": "bridge_pool",
+        "gateway_location": "cloud",
+    }
+    encoded = _b64url_json(payload)
+    return {
+        "x-zhumeng-claude-code-route-hint": encoded,
+        "x-zhumeng-claude-code-route-signature": _sign_cp8_runtime_header(encoded, "POST", request_path, body, secret),
+    }
+
+
+def _cp8_body_model(body: bytes) -> str:
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except Exception as exc:  # noqa: BLE001
+        raise CP8LiveMatrixError("CP8 runtime trust body must be valid JSON") from exc
+    model = payload.get("model") if isinstance(payload, Mapping) else None
+    if not isinstance(model, str) or not model.strip():
+        raise CP8LiveMatrixError("CP8 runtime trust body model is required")
+    return model.strip()
+
+
+def _b64url_json(payload: Mapping[str, object]) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _sign_cp8_runtime_header(encoded: str, method: str, request_path: str, body: bytes, secret: str) -> str:
+    material = "\n".join((encoded, str(method).upper().strip(), request_path, hashlib.sha256(body).hexdigest())).encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), material, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _sub2api_gateway_transport(provider: str, endpoint: str, request: Mapping[str, object]) -> dict[str, object]:
+    body = request.get("body")
+    headers = request.get("headers")
+    if not isinstance(body, Mapping) or not isinstance(headers, Mapping):
+        raise CP8LiveMatrixError(f"CP8 Sub2API gateway live probe for {provider} is missing request body or headers")
+    http_request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body, ensure_ascii=True, sort_keys=True).encode("utf-8"),
+        headers={str(key): str(value) for key, value in headers.items()},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(http_request, timeout=30) as response:  # noqa: S310 - explicit CP8 live opt-in path.
+            response.read(4096)
+            return {
+                "status": int(getattr(response, "status", 0) or 0),
+                "response_headers": _headers_to_dict(getattr(response, "headers", {})),
+            }
+    except urllib.error.HTTPError as err:
+        err.read(4096)
+        return {
+            "status": int(getattr(err, "code", 0) or 0),
+            "response_headers": _headers_to_dict(getattr(err, "headers", {})),
+        }
+    except urllib.error.URLError as err:
+        raise CP8LiveMatrixError(f"CP8 Sub2API gateway live probe for {provider} failed: {err.reason}") from err
+
+
 def collect_cp8_live_provider_provenance(
     *,
     run_id: str,
@@ -1142,7 +1640,15 @@ def _safe_live_request_id(result: Mapping[str, object]) -> str:
         return _safe_live_label(request_id)
     headers = result.get("response_headers")
     if isinstance(headers, Mapping):
-        for key in ("x-request-id", "request-id", "openai-request-id", "anthropic-request-id"):
+        for key in (
+            "x-request-id",
+            "request-id",
+            "openai-request-id",
+            "anthropic-request-id",
+            "x-deepseek-request-id",
+            "x-sub2api-request-id",
+            "x-sub2api-upstream-request-id",
+        ):
             value = headers.get(key) or headers.get(key.title()) or headers.get(key.upper())
             if isinstance(value, str) and value.strip():
                 return _safe_live_label(value)
