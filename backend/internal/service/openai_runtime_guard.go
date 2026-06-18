@@ -265,7 +265,7 @@ func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, 
 	if !shouldApplyOpenAIReasoningEffortGuard(account) {
 		return payload, nil, nil
 	}
-	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.create" {
+	if !openAIRuntimeGuardShouldTreatWSFrameAsResponseCreate(payload) {
 		return payload, nil, nil
 	}
 	decision := evaluateOpenAIReasoningEffortGuard(payload)
@@ -280,6 +280,36 @@ func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, 
 		return repaired, nil, nil
 	}
 	return payload, nil, nil
+}
+
+func openAIRuntimeGuardShouldTreatWSFrameAsResponseCreate(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	frameType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if frameType == "response.create" {
+		return true
+	}
+	if frameType != "" {
+		return false
+	}
+	for _, path := range []string{
+		"model",
+		"input",
+		"instructions",
+		"previous_response_id",
+		"prompt_cache_key",
+		"reasoning_effort",
+		"reasoning.effort",
+		"tools",
+		"tool_choice",
+		"stream",
+	} {
+		if gjson.GetBytes(payload, path).Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *OpenAIGatewayService) ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account *Account, payload []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {

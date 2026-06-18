@@ -787,8 +787,10 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteRuntimeGuardLocalBlockNotCap
 		CaptureTrace: trace,
 	})
 
-	require.NoError(t, err)
-	require.Equal(t, http.StatusBadRequest, result.ServiceResponse.StatusCode)
+	require.Error(t, err)
+	var localResp *codexGatewayLocalServiceResponseError
+	require.ErrorAs(t, err, &localResp)
+	require.Equal(t, http.StatusBadRequest, localResp.Response.StatusCode)
 	require.Empty(t, result.ProviderResult.UpstreamRequestID)
 	require.Zero(t, result.ProviderResult.Usage.TotalTokens)
 	require.Nil(t, upstream.lastRequest)
@@ -875,7 +877,7 @@ func TestOpenAIRuntimeGuard_WSIngressRepairsUnknownAliasBeforeUpstream(t *testin
 	cancelRead()
 	require.NoError(t, readErr)
 	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
-	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
 
 	select {
 	case serverErr := <-serverErrCh:
@@ -953,7 +955,7 @@ func TestOpenAIRuntimeGuard_WSPassthroughRepairsAndBlocksOAuthFrames(t *testing.
 	_, _, readErr := clientConn.Read(readCtx)
 	cancelRead()
 	require.NoError(t, readErr)
-	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
 
 	select {
 	case serverErr := <-serverErrCh:
@@ -1074,4 +1076,168 @@ func startOpenAIRuntimeGuardWSServer(t *testing.T, svc *OpenAIGatewayService, ac
 	cancelDial()
 	require.NoError(t, err)
 	return serverErrCh, clientConn, wsServer.Close
+}
+
+func TestCodexGatewayProviderExecutor_OpenAIRuntimeGuardLocalBlockDoesNotRecordProviderSuccessOrUsage(t *testing.T) {
+	baseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              filepath.Join(baseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer capture.Close()
+	trace := capture.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "executor_runtime_guard_local_block", Provider: "openai", Model: "gpt-5.5"})
+	require.NotNil(t, trace)
+
+	account := newCodexGatewayOpenAIOAuthAccountForTest()
+	usageRecorder := &codexGatewayUsageRecorderStub{}
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.usageRecorder = usageRecorder
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, _ map[int64]struct{}) (*Account, error) {
+			return account, nil
+		},
+	}
+	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: &httpUpstreamRecorder{},
+	}}
+
+	resp, err := executor.Complete(context.Background(), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			APIKey: validCodexGatewayAPIKeyForTest(),
+			Body:   []byte(`{"model":"gpt-5.5","reasoning_effort":"hyperdrive","input":"hi"}`),
+		},
+		Model:        CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+		Parsed:       CodexGatewayResponsesCreateRequest{Model: "gpt-5.5"},
+		CaptureTrace: trace,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Contains(t, string(resp.Body), "Unsupported reasoning_effort value")
+	require.Empty(t, usageRecorder.inputs, "local runtime guard block must not record provider usage")
+	capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "blocked", HTTPStatus: http.StatusBadRequest})
+	require.NoError(t, capture.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "executor_runtime_guard_local_block")
+	for _, name := range []string{"upstream_request.shape.json", "upstream_response.shape.json", "cache_usage.json"} {
+		_, statErr := os.Stat(filepath.Join(traceDir, name))
+		require.True(t, os.IsNotExist(statErr), "%s must not be written for local runtime guard blocks", name)
+	}
+}
+
+func TestCodexGatewayService_StreamOpenAIRuntimeGuardLocalBlockDoesNotWriteGenericErrorTwice(t *testing.T) {
+	account := newCodexGatewayOpenAIOAuthAccountForTest()
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, _ map[int64]struct{}) (*Account, error) {
+			return account, nil
+		},
+	}
+	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: &httpUpstreamRecorder{},
+	}}
+
+	registry := NewDefaultCodexGatewayModelRegistry()
+	svc := NewCodexGatewayService(registry, executor)
+	var writer bytes.Buffer
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey:       validCodexGatewayAPIKeyForTest(),
+		Headers:      http.Header{},
+		Body:         []byte(`{"model":"gpt-5.5","stream":true,"reasoning_effort":"hyperdrive","input":"hi"}`),
+		StreamWriter: &writer,
+		Flush:        func() {},
+	})
+
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	out := writer.String()
+	require.Equal(t, 1, strings.Count(out, "event: response.failed"), out)
+	require.Contains(t, out, "Unsupported reasoning_effort value")
+	require.NotContains(t, out, "upstream request failed", "service layer must not append a generic stream error after local block")
+}
+
+func TestOpenAIRuntimeGuard_WSHelperGuardsMissingTypeResponseCreateLikePayload(t *testing.T) {
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModeCtxPool)
+
+	_, blocked, err := (&OpenAIGatewayService{}).ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account, []byte(`{"model":"gpt-5.5","reasoning_effort":"hyperdrive","input":"hi"}`))
+	require.NoError(t, err)
+	require.NotNil(t, blocked)
+	require.Equal(t, http.StatusBadRequest, blocked.StatusCode)
+
+	repaired, blocked, err := (&OpenAIGatewayService{}).ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account, []byte(`{"model":"gpt-5.5","reasoning_effort":"max","input":"hi"}`))
+	require.NoError(t, err)
+	require.Nil(t, blocked)
+	require.Equal(t, "xhigh", gjson.GetBytes(repaired, "reasoning_effort").String())
+
+	sessionUpdate := []byte(`{"type":"session.update","session":{"model":"gpt-5.5"},"reasoning_effort":"hyperdrive"}`)
+	untouched, blocked, err := (&OpenAIGatewayService{}).ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account, sessionUpdate)
+	require.NoError(t, err)
+	require.Nil(t, blocked)
+	require.JSONEq(t, string(sessionUpdate), string(untouched))
+}
+
+func TestOpenAIRuntimeGuard_WSIngressMissingTypeRepairsAndBlocksBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{[]byte(`{"type":"response.completed","response":{"id":"resp_missing_type_guard","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":1}}}`)},
+	}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
+	svc := newOpenAIRuntimeGuardWSService(cfg, pool)
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModeCtxPool)
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"model":"gpt-5.5","stream":false,"reasoning_effort":"max","input":"hi"}`)))
+	cancelWrite()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
+	select {
+	case serverErr := <-serverErrCh:
+		require.NoError(t, serverErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for missing type repair ws server")
+	}
+	require.Len(t, captureConn.writes, 1)
+	require.Equal(t, "response.create", captureConn.writes[0]["type"])
+	require.Equal(t, "xhigh", captureConn.writes[0]["reasoning_effort"])
+
+	blockedConn := &openAIWSCaptureConn{}
+	pool = newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: blockedConn})
+	svc = newOpenAIRuntimeGuardWSService(cfg, pool)
+	serverErrCh2, clientConn2, closeServer2 := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer2()
+	defer func() { _ = clientConn2.CloseNow() }()
+	writeCtx2, cancelWrite2 := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn2.Write(writeCtx2, coderws.MessageText, []byte(`{"model":"gpt-5.5","stream":false,"reasoning_effort":"hyperdrive","input":"hi"}`)))
+	cancelWrite2()
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, event, readErr2 := clientConn2.Read(readCtx2)
+	cancelRead2()
+	require.NoError(t, readErr2)
+	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+	readCtx3, cancelRead3 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, closeErr := clientConn2.Read(readCtx3)
+	cancelRead3()
+	require.Error(t, closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(closeErr))
+	select {
+	case serverErr := <-serverErrCh2:
+		require.Error(t, serverErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for missing type block ws server")
+	}
+	require.Empty(t, blockedConn.writes)
 }

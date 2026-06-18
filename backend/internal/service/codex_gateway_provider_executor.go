@@ -134,6 +134,10 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 			codexGatewayRecordUsageBestEffort(ctx, e.usageRecorder, req, account, result.ProviderResult, false, startedAt)
 			return &result.ServiceResponse, nil
 		}
+		var localResp *codexGatewayLocalServiceResponseError
+		if errors.As(err, &localResp) && localResp != nil {
+			return &localResp.Response, nil
+		}
 		var failoverErr *UpstreamFailoverError
 		if errors.As(err, &failoverErr) {
 			codexGatewayCaptureProviderFailover(req, attempt, failoverErr)

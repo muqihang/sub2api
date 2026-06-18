@@ -77,6 +77,30 @@ func (e *codexGatewayStreamingHandledError) Error() string {
 	return "codex gateway streaming error already written"
 }
 
+var errCodexGatewayRuntimeGuardStreamHandled error = &codexGatewayStreamingHandledError{}
+
+type codexGatewayLocalServiceResponseError struct {
+	Response CodexGatewayServiceResponse
+	Err      error
+}
+
+func (e *codexGatewayLocalServiceResponseError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return "codex gateway local service response"
+}
+
+func (e *codexGatewayLocalServiceResponseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 type codexGatewayStreamingResponseController struct {
 	writer      io.Writer
 	header      http.Header

@@ -15,8 +15,6 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var errCodexGatewayRuntimeGuardStreamHandled = errors.New("codex gateway openai runtime guard stream error already written")
-
 type codexGatewayOpenAIResponsesAdapter struct {
 	gateway *OpenAIGatewayService
 }
@@ -29,18 +27,20 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
-	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, false)
 	if err != nil {
 		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
 		if errors.As(err, &runtimeBlocked) {
-			return CodexGatewayDeepSeekAdapterResult{
-				ServiceResponse: codexGatewayOpenAIRuntimeGuardServiceResponse(runtimeBlocked),
-			}, nil
+			return CodexGatewayDeepSeekAdapterResult{}, &codexGatewayLocalServiceResponseError{
+				Response: codexGatewayOpenAIRuntimeGuardServiceResponse(runtimeBlocked),
+				Err:      err,
+			}
 		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 		return CodexGatewayDeepSeekAdapterResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
+	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
@@ -103,7 +103,6 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	if err != nil {
 		return CodexGatewayProviderResult{}, err
 	}
-	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, true)
 	if err != nil {
 		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
@@ -123,9 +122,11 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 			}
 			return CodexGatewayProviderResult{}, errCodexGatewayRuntimeGuardStreamHandled
 		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 		return CodexGatewayProviderResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
+	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, nil)
 
 	if resp.StatusCode >= 400 {
