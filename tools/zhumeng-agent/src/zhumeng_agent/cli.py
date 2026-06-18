@@ -1525,7 +1525,7 @@ def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[s
     allowed = []
     for item in raw:
         model = str(item).strip()
-        if model in {"gpt-5.5", "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"}:
+        if model in {"gpt-5.5", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"}:
             allowed.append(model)
     return tuple(dict.fromkeys(allowed))
 

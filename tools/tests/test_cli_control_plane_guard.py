@@ -75,7 +75,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
     def test_main_accepts_bridge_live_catalog_hash_from_env(self):
         runtime_hash = 'sha256:' + '1' * 64
         overlay_hash = 'sha256:' + '2' * 64
-        bridge_live_models = ('gpt-5.5', 'deepseek-v4-pro')
+        bridge_live_models = ('gpt-5.5', 'gpt-5.4-mini', 'deepseek-v4-pro')
         catalog = cp4_fixture_route_catalog(
             runtime_hash=runtime_hash,
             overlay_hash=overlay_hash,

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -546,23 +547,202 @@ func applyClaudeCodeBridgeLiveResponseHeaders(dst io.Writer, headers http.Header
 }
 
 func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) error {
-	buf := make([]byte, 32*1024)
 	flusher, _ := dst.(interface{ Flush() })
+	state := claudeCodeBridgeSSESanitizerState{indexMap: map[int]int{}}
+	reader := bufio.NewReader(src)
+	block := make([]string, 0, 8)
 	for {
-		n, readErr := src.Read(buf)
-		if n > 0 {
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-			if flusher != nil {
-				flusher.Flush()
+		line, readErr := reader.ReadString('\n')
+		if line != "" {
+			block = append(block, line)
+			if strings.TrimRight(line, "\r\n") == "" {
+				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state); err != nil {
+					return err
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+				block = block[:0]
 			}
 		}
 		if readErr == io.EOF {
+			if len(block) > 0 {
+				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state); err != nil {
+					return err
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
 			return nil
 		}
 		if readErr != nil {
 			return readErr
 		}
+	}
+}
+
+type claudeCodeBridgeSSESanitizerState struct {
+	indexMap  map[int]int
+	nextIndex int
+}
+
+func writeClaudeCodeBridgeSafeSSEBlock(dst io.Writer, block []string, state *claudeCodeBridgeSSESanitizerState) error {
+	payload, hasData := claudeCodeBridgeSSEDataPayload(block)
+	if !hasData {
+		_, err := io.WriteString(dst, strings.Join(block, ""))
+		return err
+	}
+	if strings.TrimSpace(payload) == "[DONE]" {
+		_, err := io.WriteString(dst, strings.Join(block, ""))
+		return err
+	}
+	var data any
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return fmt.Errorf("claude code bridge upstream SSE data is not valid JSON: %w", err)
+	}
+	if claudeCodeBridgeContainsForeignPrivateReasoning(data, "") {
+		return nil
+	}
+	remapped, keep := remapClaudeCodeBridgeSSEIndex(data, state)
+	if !keep {
+		return nil
+	}
+	encoded, err := json.Marshal(remapped)
+	if err != nil {
+		return err
+	}
+	wroteData := false
+	for _, line := range block {
+		if strings.HasPrefix(line, "data:") {
+			if !wroteData {
+				if _, err := fmt.Fprintf(dst, "data: %s\n", encoded); err != nil {
+					return err
+				}
+				wroteData = true
+			}
+			continue
+		}
+		if _, err := io.WriteString(dst, line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func claudeCodeBridgeSSEDataPayload(block []string) (string, bool) {
+	parts := make([]string, 0, 1)
+	for _, line := range block {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		value := strings.TrimRight(strings.TrimPrefix(line, "data:"), "\r\n")
+		value = strings.TrimPrefix(value, " ")
+		parts = append(parts, value)
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+func claudeCodeBridgeContainsForeignPrivateReasoning(value any, path string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			normalizedKey := strings.ToLower(strings.TrimSpace(key))
+			childPath := claudeCodeBridgeSSEChildPath(path, normalizedKey)
+			if claudeCodeBridgeForeignPrivateFieldPath(childPath) {
+				return true
+			}
+			if normalizedKey == "type" && claudeCodeBridgeForeignPrivateTypePath(childPath) {
+				if text, ok := child.(string); ok && claudeCodeBridgeForeignPrivateType(text) {
+					return true
+				}
+			}
+			if claudeCodeBridgeContainsForeignPrivateReasoning(child, childPath) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if claudeCodeBridgeContainsForeignPrivateReasoning(child, path+"[]") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func claudeCodeBridgeSSEChildPath(parent string, key string) string {
+	if parent == "" {
+		return key
+	}
+	return parent + "." + key
+}
+
+func claudeCodeBridgeForeignPrivateFieldPath(path string) bool {
+	switch path {
+	case "content_block.thinking",
+		"content_block.signature",
+		"delta.thinking",
+		"delta.signature",
+		"delta.reasoning_content",
+		"reasoning_content":
+		return true
+	default:
+		return false
+	}
+}
+
+func claudeCodeBridgeForeignPrivateTypePath(path string) bool {
+	switch path {
+	case "content_block.type", "delta.type":
+		return true
+	default:
+		return false
+	}
+}
+
+func claudeCodeBridgeForeignPrivateType(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return normalized == "thinking" ||
+		normalized == "redacted_thinking" ||
+		strings.Contains(normalized, "thinking_delta") ||
+		strings.Contains(normalized, "signature_delta")
+}
+
+func remapClaudeCodeBridgeSSEIndex(value any, state *claudeCodeBridgeSSESanitizerState) (any, bool) {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return value, true
+	}
+	eventType, _ := obj["type"].(string)
+	rawIndex, hasIndex := claudeCodeBridgeSSEIndex(obj["index"])
+	if !hasIndex {
+		return value, true
+	}
+	mapped, found := state.indexMap[rawIndex]
+	if !found {
+		if eventType != "content_block_start" {
+			return nil, false
+		}
+		mapped = state.nextIndex
+		state.indexMap[rawIndex] = mapped
+		state.nextIndex++
+	}
+	obj["index"] = mapped
+	return obj, true
+}
+
+func claudeCodeBridgeSSEIndex(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		index := int(typed)
+		return index, typed == float64(index) && index >= 0
+	case int:
+		return typed, typed >= 0
+	default:
+		return 0, false
 	}
 }

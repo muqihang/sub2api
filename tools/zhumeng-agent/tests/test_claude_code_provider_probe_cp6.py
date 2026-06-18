@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,38 @@ def test_cp6_provider_probe_fails_closed_for_unverified_unknown_or_live_claims()
 
     with pytest.raises(ProviderProtocolProbeError, match="unknown provider"):
         select_cp6_bridge_transport(catalog, provider="unknown", model_id="x")
+
+
+def test_cp6_codex_gateway_no_regression_evidence_is_bound_to_existing_fixtures():
+    evidence = _fixture("codex_gateway_no_regression_cp6.json")
+    repo_root = Path(__file__).resolve().parents[3]
+
+    assert evidence["schema_version"] == "cp6-codex-gateway-no-regression-v1"
+    assert evidence["mode"] == "fixture_only_no_live_network"
+    assert evidence["codex_gateway_no_regression"] is True
+    for relpath in evidence["required_fixture_paths"]:
+        assert (repo_root / relpath).exists(), relpath
+        assert evidence["fixture_sha256"][relpath] == "sha256:" + hashlib.sha256((repo_root / relpath).read_bytes()).hexdigest()
+    for relpath, test_names in evidence["required_go_tests"].items():
+        source = (repo_root / relpath).read_text(encoding="utf-8")
+        for test_name in test_names:
+            assert f"func {test_name}(" in source
+
+    deepseek = evidence["providers"]["deepseek"]
+    assert deepseek["preferred_bridge_protocol"] == "anthropic_messages"
+    assert deepseek["cache_usage_fields"] == ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"]
+    assert deepseek["reasoning_cleaning"] == "foreign_reasoning_never_native_replay"
+    assert {"function_tool_call_stream", "tool_search_call_output_request"}.issubset(set(deepseek["golden_fixtures"]))
+
+    openai = evidence["providers"]["openai"]
+    assert openai["bridge_protocol"] == "responses"
+    assert openai["cache_usage_field"] == "usage.prompt_tokens_details.cached_tokens"
+    assert openai["native_formal_pool_egress"] == 0
+
+    agnes = evidence["providers"]["agnes"]
+    assert agnes["beta_path_preserved"] is True
+    assert agnes["computer_use_semantic_compression"] is True
+    assert agnes["native_formal_pool_egress"] == 0
 
 
 

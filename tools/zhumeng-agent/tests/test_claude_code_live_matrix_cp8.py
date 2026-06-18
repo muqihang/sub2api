@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import urllib.request
 from pathlib import Path
 
@@ -48,6 +49,14 @@ def _provider_endpoint(provider: str) -> str:
     }[provider]
 
 
+def _provider_model(provider: str) -> str:
+    return {
+        "claude": "claude-sonnet-4-6",
+        "openai": "gpt-5.5",
+        "deepseek": "deepseek-v4-pro",
+    }[provider]
+
+
 def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
     candidates = [
         root / "artifacts" / f"{provider}_live_provenance.json",
@@ -65,6 +74,59 @@ def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
                 str(payload.get("upstream_request_id") or f"req_{provider}_live"),
             )
     return (f"artifacts/{provider}_live.json", _provider_endpoint(provider), f"req_{provider}_live")
+
+
+def _workflow_background_ref(root: Path) -> dict[str, object]:
+    tasks = ("title", "compact", "summary", "probe", "fast", "simple", "haiku")
+    model_by_task = {
+        "title": "deepseek-v4-flash",
+        "compact": "deepseek-v4-pro",
+        "summary": "deepseek-v4-pro",
+        "probe": "deepseek-v4-flash",
+        "fast": "deepseek-v4-flash",
+        "simple": "deepseek-v4-flash",
+        "haiku": "deepseek-v4-flash",
+    }
+    artifact = root / "artifacts" / "workflow_background.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "schema_version": "cp8-workflow-background-v1",
+                "checkpoint": "CP8",
+                "scenario": "workflow",
+                "status": "pass",
+                "active_profile_dynamic_resolution": True,
+                "workflow_alias_resolved_provider_local": True,
+                "hardcoded_claude_model_consumed": False,
+                "non_claude_background_native_egress": 0,
+                "required_background_tasks": list(tasks),
+                "background_tasks": [
+                    {
+                        "task": task,
+                        "active_profile": "deepseek",
+                        "requested_alias": task,
+                        "resolved_provider": "deepseek",
+                        "resolved_model": model_by_task[task],
+                        "dynamic_resolution_at_request_time": True,
+                        "provider_local": True,
+                        "native_egress_count": 0,
+                        "formal_pool_egress_count": 0,
+                        "hardcoded_claude_model_consumed": False,
+                        "explicit_claude_opt_in": False,
+                    }
+                    for task in tasks
+                ],
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "path": "artifacts/workflow_background.json",
+        "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    }
 
 
 def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
@@ -88,6 +150,7 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
                     "route": scenario.get("route", ""),
                     "client_type": scenario.get("client_type", ""),
                     "provider": provider,
+                    "model": _provider_model(provider),
                     "endpoint": endpoint,
                     "upstream_request_id": request_id,
                     "provider_provenance_refs": [provider_ref],
@@ -97,13 +160,17 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
             ),
             encoding="utf-8",
         )
-        scenario["artifact_refs"] = [
+        refs = []
+        if name == "workflow":
+            refs.append(_workflow_background_ref(root))
+        refs.append(
             {
                 "path": f"artifacts/{artifact.name}",
                 "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
                 "sensitive_scan_clean": True,
             }
-        ]
+        )
+        scenario["artifact_refs"] = refs
 
 
 
@@ -151,6 +218,93 @@ def test_cp8_live_matrix_fails_closed_for_missing_scenario_or_bridge_native_poll
     assert result.status == "fail"
     assert "deepseek_bridge" in result.failed
     assert any("native contamination" in issue for issue in result.scenario_results["deepseek_bridge"].issues)
+
+
+def test_cp8_workflow_requires_all_dynamic_background_tasks_to_be_provider_local():
+    payload = _fixture("live_matrix_pass.json")
+    workflow = payload["scenarios"]["workflow"]
+    assert workflow["required_background_tasks"] == ["title", "compact", "summary", "probe", "fast", "simple", "haiku"]
+    workflow["required_background_tasks"] = ["title", "summary"]
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "workflow" in result.failed
+    assert any("workflow/background tasks" in issue for issue in result.scenario_results["workflow"].issues)
+
+
+
+def test_cp8_workflow_background_artifact_cross_checks_each_dynamic_task(tmp_path: Path):
+    root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, root)
+    payload = json.loads((root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    workflow = payload["scenarios"]["workflow"]
+    artifact_ref = workflow["artifact_refs"][0]
+    artifact = root / artifact_ref["path"]
+    body = json.loads(artifact.read_text(encoding="utf-8"))
+    body["background_tasks"] = [
+        {
+            "task": "title",
+            "active_profile": "deepseek",
+            "resolved_provider": "deepseek",
+            "resolved_model": "deepseek-v4-flash",
+            "provider_local": True,
+            "native_egress_count": 0,
+            "formal_pool_egress_count": 0,
+        }
+    ]
+    artifact.write_text(json.dumps(body, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    artifact_ref["sha256"] = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    result = verify_cp8_live_matrix(payload, evidence_root=root)
+
+    assert result.status == "fail"
+    assert "workflow" in result.failed
+    assert any("workflow/background artifact" in issue for issue in result.scenario_results["workflow"].issues)
+
+
+
+def test_cp8_workflow_background_artifact_rejects_cross_provider_task_remap(tmp_path: Path):
+    root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, root)
+    payload = json.loads((root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    workflow = payload["scenarios"]["workflow"]
+    artifact_ref = workflow["artifact_refs"][0]
+    artifact = root / artifact_ref["path"]
+    body = json.loads(artifact.read_text(encoding="utf-8"))
+    assert body["background_tasks"][0]["active_profile"] == "deepseek"
+    body["background_tasks"][0]["resolved_provider"] = "openai"
+    body["background_tasks"][0]["resolved_model"] = "gpt-5.5"
+    artifact.write_text(json.dumps(body, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    artifact_ref["sha256"] = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    result = verify_cp8_live_matrix(payload, evidence_root=root)
+
+    assert result.status == "fail"
+    assert "workflow" in result.failed
+    assert any("workflow/background artifact" in issue for issue in result.scenario_results["workflow"].issues)
+
+
+
+def test_cp8_workflow_background_artifact_rejects_provider_model_family_drift(tmp_path: Path):
+    root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, root)
+    payload = json.loads((root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    workflow = payload["scenarios"]["workflow"]
+    artifact_ref = workflow["artifact_refs"][0]
+    artifact = root / artifact_ref["path"]
+    body = json.loads(artifact.read_text(encoding="utf-8"))
+    assert body["background_tasks"][0]["active_profile"] == "deepseek"
+    assert body["background_tasks"][0]["resolved_provider"] == "deepseek"
+    body["background_tasks"][0]["resolved_model"] = "gpt-5.5"
+    artifact.write_text(json.dumps(body, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    artifact_ref["sha256"] = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    result = verify_cp8_live_matrix(payload, evidence_root=root)
+
+    assert result.status == "fail"
+    assert "workflow" in result.failed
+    assert any("workflow/background artifact" in issue for issue in result.scenario_results["workflow"].issues)
 
 
 def test_cp8_official_docs_snapshot_rejects_stale_glm46_or_unprobed_anthropic_claims():
@@ -356,6 +510,7 @@ def test_cp8_strict_live_rejects_provider_provenance_reused_as_scenario_evidence
             "checkpoint": "CP8",
             "run_id": run_id,
             "provider": provider,
+            "model": _provider_model(provider),
             "credential_scope": scope,
             "endpoint": endpoint,
             "host": endpoint.split("/")[2],
@@ -370,6 +525,7 @@ def test_cp8_strict_live_rejects_provider_provenance_reused_as_scenario_evidence
             "credential_scope": scope,
             "live_provider_verified": True,
             "endpoint": endpoint,
+            "model": _provider_model(provider),
             "artifact_refs": [
                 {
                     "path": f"artifacts/{provider}_live.json",
@@ -413,6 +569,7 @@ def test_cp8_strict_live_accepts_provider_bound_external_artifacts(tmp_path: Pat
             "checkpoint": "CP8",
             "run_id": run_id,
             "provider": provider,
+            "model": _provider_model(provider),
             "credential_scope": scope,
             "endpoint": endpoint,
             "host": endpoint.split("/")[2],
@@ -427,6 +584,7 @@ def test_cp8_strict_live_accepts_provider_bound_external_artifacts(tmp_path: Pat
             "credential_scope": scope,
             "live_provider_verified": True,
             "endpoint": endpoint,
+            "model": _provider_model(provider),
             "artifact_refs": [
                 {
                     "path": f"artifacts/{provider}_live.json",
@@ -444,6 +602,65 @@ def test_cp8_strict_live_accepts_provider_bound_external_artifacts(tmp_path: Pat
     assert result.status == "pass"
     assert result.strict_live_ready is True
     assert result.release_gate == "external_live_passed"
+
+
+def test_cp8_strict_live_rejects_unallowlisted_or_missing_provider_bound_models(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-live-model-binding"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        model = "gpt-5.4" if provider == "openai" else _provider_model(provider)
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": model,
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": model,
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
+    assert "gpt_bridge" in result.failed
 
 
 def test_cp8_strict_live_rejects_wrong_endpoint_even_when_provider_and_scenario_match(tmp_path: Path):
@@ -469,6 +686,7 @@ def test_cp8_strict_live_rejects_wrong_endpoint_even_when_provider_and_scenario_
             "checkpoint": "CP8",
             "run_id": run_id,
             "provider": provider,
+            "model": _provider_model(provider),
             "credential_scope": scope,
             "endpoint": endpoint,
             "host": endpoint.split("/")[2],
@@ -483,6 +701,7 @@ def test_cp8_strict_live_rejects_wrong_endpoint_even_when_provider_and_scenario_
             "credential_scope": scope,
             "live_provider_verified": True,
             "endpoint": endpoint,
+            "model": _provider_model(provider),
             "artifact_refs": [
                 {
                     "path": f"artifacts/{provider}_live.json",
@@ -520,6 +739,7 @@ def test_cp8_strict_live_rejects_minimal_or_mismatched_scenario_artifacts(tmp_pa
             "checkpoint": "CP8",
             "run_id": run_id,
             "provider": provider,
+            "model": _provider_model(provider),
             "credential_scope": scope,
             "endpoint": endpoint,
             "host": endpoint.split("/")[2],
@@ -534,6 +754,7 @@ def test_cp8_strict_live_rejects_minimal_or_mismatched_scenario_artifacts(tmp_pa
             "credential_scope": scope,
             "live_provider_verified": True,
             "endpoint": endpoint,
+            "model": _provider_model(provider),
             "artifact_refs": [{"path": f"artifacts/{provider}_live.json", "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(), "sensitive_scan_clean": True}],
         }
     for scenario in payload["scenarios"].values():
@@ -581,6 +802,7 @@ def test_cp8_strict_live_rejects_provider_artifact_endpoint_path_drift(tmp_path:
             "checkpoint": "CP8",
             "run_id": run_id,
             "provider": provider,
+            "model": _provider_model(provider),
             "credential_scope": scope,
             "endpoint": artifact_endpoint,
             "host": artifact_endpoint.split("/")[2],
@@ -595,6 +817,7 @@ def test_cp8_strict_live_rejects_provider_artifact_endpoint_path_drift(tmp_path:
             "credential_scope": scope,
             "live_provider_verified": True,
             "endpoint": endpoint,
+            "model": _provider_model(provider),
             "artifact_refs": [{"path": f"artifacts/{provider}_live.json", "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(), "sensitive_scan_clean": True}],
         }
     for scenario in payload["scenarios"].values():
@@ -702,7 +925,7 @@ def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monk
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setenv("SUB2API_CLAUDE_CODE_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-    monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "gpt-5.4-mini")
+    monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "gpt-5.5")
     monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_MODEL", "deepseek-v4-pro")
 
     provenance = collect_cp8_live_provider_provenance(
@@ -735,7 +958,7 @@ def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monk
     openai = by_url["https://api.openai.com/v1/responses"]
     assert openai["headers"]["authorization"] == "Bearer openai-live-key"
     assert openai["body"] == {
-        "model": "gpt-5.4-mini",
+        "model": "gpt-5.5",
         "input": "CP8 live provenance probe.",
         "max_output_tokens": 1,
         "stream": False,
@@ -751,6 +974,24 @@ def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monk
         artifact_text = (tmp_path / ref["path"]).read_text(encoding="utf-8")
         assert "live-key" not in artifact_text
         assert "Authorization" not in artifact_text
+
+
+def test_cp8_live_evidence_default_transport_rejects_unverified_openai_live_model(monkeypatch, tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+
+    monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "gpt-5.4")
+
+    with pytest.raises(CP8LiveMatrixError, match="not CP4 live-catalog verified"):
+        collect_cp8_live_provider_provenance(
+            run_id="cp8-openai-live-model-drift",
+            output_root=tmp_path,
+            credentials={
+                "claude": "anthropic-live-key",
+                "openai": "openai-live-key",
+                "deepseek": "deepseek-live-key",
+            },
+            transport=lambda provider, endpoint, credential: {"status": 200, "request_id": f"req_{provider}"},
+        )
 
 
 def test_cp8_assemble_external_live_matrix_binds_provider_provenance_without_promoting_loopback(tmp_path: Path):
@@ -956,6 +1197,7 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
             "raw_sensitive_stored": False,
             "loopback": False,
             "provider": "deepseek",
+            "model": "deepseek-v4-pro",
             "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
             "upstream_request_id": "req_deepseek",
             "provider_provenance_refs": ["artifacts/provider_deepseek.json"],
@@ -988,6 +1230,7 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
             "checkpoint": "CP8",
             "run_id": "cp8-scenario-writer",
             "provider": provider,
+            "model": _provider_model(provider),
             "credential_scope": scope,
             "endpoint": endpoint,
             "host": endpoint.split("/")[2],
@@ -1000,6 +1243,7 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
             "credential_scope": scope,
             "live_provider_verified": True,
             "endpoint": endpoint,
+            "model": _provider_model(provider),
             "artifact_refs": [{
                 "path": f"artifacts/provider_{provider}.json",
                 "sha256": "sha256:" + hashlib.sha256(provider_artifact.read_bytes()).hexdigest(),

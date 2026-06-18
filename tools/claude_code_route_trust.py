@@ -137,6 +137,7 @@ def cp4_fixture_route_catalog(
         "claude-opus-4-7": native("claude-opus-4-7"),
         "openai-catalog-placeholder": bridge("openai-catalog-placeholder", "openai", "openai_bridge", "claude_code_bridge_openai"),
         "gpt-5.5": bridge("gpt-5.5", "openai", "openai_bridge", "claude_code_bridge_openai"),
+        "gpt-5.4-mini": bridge("gpt-5.4-mini", "openai", "openai_bridge", "claude_code_bridge_openai"),
         "deepseek-v4-pro": bridge("deepseek-v4-pro", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
         "deepseek-v4-pro[1m]": bridge("deepseek-v4-pro[1m]", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
         "deepseek-v4-flash": bridge("deepseek-v4-flash", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),

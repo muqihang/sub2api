@@ -109,6 +109,8 @@ def test_cp2_static_patch_points_and_mixed_model_overlay_are_proof_only(tmp_path
     assert {entry.model_id for entry in proof.models} >= {
         "claude-sonnet-4-6",
         "openai-catalog-placeholder",
+        "gpt-5.5",
+        "gpt-5.4-mini",
         "deepseek-v4-pro",
         "deepseek-v4-pro[1m]",
         "agnes-1",
@@ -125,6 +127,8 @@ def test_cp2_static_patch_points_and_mixed_model_overlay_are_proof_only(tmp_path
     assert "openai-catalog-placeholder" in proof.model_allowlist
     assert proof.models_by_id["claude-sonnet-4-6"].client_type == "claude_code_native"
     assert proof.models_by_id["openai-catalog-placeholder"].client_type == "claude_code_bridge_openai"
+    assert proof.models_by_id["gpt-5.5"].client_type == "claude_code_bridge_openai"
+    assert proof.models_by_id["gpt-5.4-mini"].client_type == "claude_code_bridge_openai"
     assert proof.models_by_id["deepseek-v4-pro"].client_type == "claude_code_bridge_deepseek"
     assert proof.models_by_id["deepseek-v4-pro[1m]"].client_type == "claude_code_bridge_deepseek"
     assert proof.models_by_id["deepseek-v4-pro[1m]"].context_window == 1_000_000
@@ -144,6 +148,8 @@ def test_cp2_model_list_capture_shows_mixed_models_but_marks_bridges_disabled(tm
     assert "/model overlay proof" in capture
     assert "Claude Sonnet 4.6" in capture
     assert "OpenAI catalog placeholder" in capture
+    assert "GPT 5.5" in capture
+    assert "GPT 5.4 Mini" in capture
     assert "DeepSeek V4 Pro" in capture
     assert "AGNES 1 (Experimental)" in capture
     assert "GLM 5.2" in capture
@@ -732,7 +738,8 @@ def test_cp2_overlay_does_not_hardcode_stale_provider_model_aliases(tmp_path: Pa
     assert "glm-4.6" not in model_ids
     assert "kimi-k2" not in model_ids
     assert "gpt-5.4" not in model_ids
-    assert "gpt-5.5" not in model_ids
+    assert "gpt-5.5" in model_ids
+    assert "gpt-5.4-mini" in model_ids
     assert "openai-catalog-placeholder" in model_ids
     capture = render_model_list_capture(proof)
     route_hint_payload = {entry.model_id: build_route_hint_stub(proof, entry.model_id) for entry in proof.models}
@@ -741,4 +748,4 @@ def test_cp2_overlay_does_not_hardcode_stale_provider_model_aliases(tmp_path: Pa
         assert alias not in capture
         assert alias not in route_hint_payload
     openai_ids = [entry.model_id for entry in proof.models if entry.provider == "openai"]
-    assert openai_ids == ["openai-catalog-placeholder"]
+    assert openai_ids == ["openai-catalog-placeholder", "gpt-5.5", "gpt-5.4-mini"]

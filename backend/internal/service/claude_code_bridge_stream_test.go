@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -90,6 +92,45 @@ func TestClaudeCodeBridgeStreamToolUseProducesInputJSONDeltaAndToolUseStop(t *te
 	require.Equal(t, "bridge_pool", result.Audit.CredentialScope)
 }
 
+func TestCP6BridgeToolUseSSEMatchesGoldenFixture(t *testing.T) {
+	request := map[string]any{
+		"model":      "gpt-5.5",
+		"messages":   []any{map[string]any{"role": "user", "content": "weather"}},
+		"stream":     true,
+		"max_tokens": 16,
+		"tools": []any{map[string]any{
+			"name":         "get_weather",
+			"description":  "weather lookup",
+			"input_schema": map[string]any{"type": "object"},
+		}},
+		"tool_choice": map[string]any{"type": "tool", "name": "get_weather"},
+	}
+	body, err := json.Marshal(request)
+	require.NoError(t, err)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "gpt-5.5",
+		Provider:                 "openai",
+		Route:                    "openai_bridge",
+		ClientType:               "claude_code_bridge_openai",
+		CatalogVersion:           "cp6-tool-use-golden-v1",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+	}
+
+	result, err := BuildClaudeCodeBridgeSkeletonSSE(decision, body)
+
+	require.NoError(t, err)
+	goldenPath := filepath.Join("testdata", "claude_code_bridge", "cp6_tool_use_sse_golden.sse")
+	golden, err := os.ReadFile(goldenPath)
+	require.NoError(t, err)
+	require.Equal(t, normalizeBridgeSSEGolden(string(golden)), normalizeBridgeSSEGolden(string(result.Body)))
+	require.NotContains(t, string(result.Body), "reasoning_content")
+	require.NotContains(t, string(result.Body), "signature")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+}
+
 func TestClaudeCodeBridgeStreamRejectsOpenAIFunctionToolShape(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"foo","parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"foo"}}}`)
 	_, err := BuildClaudeCodeBridgeSkeletonSSE(ClaudeCodeBridgeRouteDecision{
@@ -104,6 +145,19 @@ func TestClaudeCodeBridgeStreamRejectsOpenAIFunctionToolShape(t *testing.T) {
 	}, body)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Anthropic messages")
+}
+
+func normalizeBridgeSSEGolden(stream string) string {
+	lines := make([]string, 0)
+	for _, line := range strings.Split(strings.TrimSpace(stream), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			lines = append(lines, "")
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func TestClaudeCodeBridgeStreamRejectsOpenAIFunctionToolTypeWithoutFunctionProperty(t *testing.T) {

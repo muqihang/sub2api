@@ -96,6 +96,11 @@ _STRICT_LIVE_PROVIDER_ENDPOINTS = {
     "openai": frozenset({"https://api.openai.com/v1/responses"}),
     "deepseek": frozenset({"https://api.deepseek.com/anthropic/v1/messages"}),
 }
+_STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST = {
+    "claude": frozenset({"claude-sonnet-4-6", "claude-opus-4-7"}),
+    "openai": frozenset({"gpt-5.5", "gpt-5.4-mini"}),
+    "deepseek": frozenset({"deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"}),
+}
 _STRICT_LIVE_SCENARIO_PROVIDERS: dict[str, tuple[str, ...]] = {
     "claude_native": ("claude",),
     "gpt_bridge": ("openai",),
@@ -110,6 +115,7 @@ _STRICT_LIVE_SCENARIO_PROVIDERS: dict[str, tuple[str, ...]] = {
     "cache_account_audit": ("claude", "openai", "deepseek"),
     "netwatch_bypass": ("claude", "openai", "deepseek"),
 }
+_WORKFLOW_BACKGROUND_TASKS = ("title", "compact", "summary", "probe", "fast", "simple", "haiku")
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +413,10 @@ def _verify_scenario(
             issues.append("workflow must dynamically resolve active provider profile")
         if _int(raw.get("non_claude_background_native_egress")) != 0 or raw.get("hardcoded_claude_model_consumed") is not False:
             issues.append("workflow/background tasks consumed Claude formal pool")
+        required_tasks = _WORKFLOW_BACKGROUND_TASKS
+        if tuple(_str_list(raw.get("required_background_tasks"))) != required_tasks:
+            issues.append("workflow/background tasks must prove provider-local remap for title/compact/summary/probe/fast/simple/haiku")
+        issues.extend(_workflow_background_artifact_issues(raw.get("artifact_refs"), evidence_root=evidence_root, scenario=raw, required_tasks=required_tasks))
     elif name == "long_context":
         if raw.get("long_context_exercised") is not True or raw.get("cache_prefix_stable") is not True or raw.get("stable_prefix_reordered") is not False:
             issues.append("long context/cache prefix evidence invalid")
@@ -480,6 +490,7 @@ def _strict_live_scenario_artifact_verified(
             continue
         provider_refs = tuple(str(item).strip() for item in payload.get("provider_provenance_refs") or () if str(item).strip())
         provider = str(payload.get("provider") or "").strip()
+        model = str(payload.get("model") or "").strip()
         endpoint = str(payload.get("endpoint") or "").strip()
         upstream_request_id = str(payload.get("upstream_request_id") or "").strip()
         if not (
@@ -494,6 +505,7 @@ def _strict_live_scenario_artifact_verified(
             and str(payload.get("route") or "") == route
             and str(payload.get("client_type") or "") == client_type
             and provider in required_providers
+            and _strict_live_model_allowed(provider, model)
             and upstream_request_id
             and provider_refs
             and _external_live_endpoint(provider, endpoint)
@@ -502,8 +514,9 @@ def _strict_live_scenario_artifact_verified(
         for proof in provider_proofs.get(provider, ()):
             proof_request_id = str(proof.get("upstream_request_id") or "").strip()
             proof_endpoint = str(proof.get("endpoint") or "").strip()
+            proof_model = str(proof.get("model") or "").strip()
             proof_refs = tuple(str(item).strip() for item in proof.get("artifact_paths") or () if str(item).strip())
-            if proof_request_id == upstream_request_id and proof_endpoint == endpoint and bool(set(provider_refs).intersection(proof_refs)):
+            if proof_request_id == upstream_request_id and proof_endpoint == endpoint and proof_model == model and bool(set(provider_refs).intersection(proof_refs)):
                 return True
     return False
 
@@ -526,6 +539,7 @@ def _strict_live_provider_proof_index(payload: Mapping[str, object], *, evidence
             provider=str(provider),
             credential_scope=str(raw.get("credential_scope") or ""),
             endpoint=str(raw.get("endpoint") or ""),
+            model=str(raw.get("model") or ""),
             run_id=run_id,
         )
         if proofs:
@@ -561,6 +575,9 @@ def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_
         endpoint = str(raw.get("endpoint") or "")
         if not _external_live_endpoint(provider, endpoint):
             return False
+        model = str(raw.get("model") or "").strip()
+        if not _strict_live_model_allowed(provider, model):
+            return False
         if _artifact_ref_issues(raw.get("artifact_refs"), evidence_root=evidence_root):
             return False
         if not _strict_live_provider_artifacts_verified(
@@ -569,6 +586,7 @@ def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_
             provider=provider,
             credential_scope=scope,
             endpoint=endpoint,
+            model=model,
             run_id=run_id,
         ):
             return False
@@ -603,6 +621,7 @@ def _strict_live_provider_artifacts_verified(
     provider: str,
     credential_scope: str,
     endpoint: str,
+    model: str,
     run_id: str,
 ) -> bool:
     return bool(_strict_live_provider_artifact_payloads(
@@ -611,6 +630,7 @@ def _strict_live_provider_artifacts_verified(
         provider=provider,
         credential_scope=credential_scope,
         endpoint=endpoint,
+        model=model,
         run_id=run_id,
     ))
 
@@ -622,9 +642,13 @@ def _strict_live_provider_artifact_payloads(
     provider: str,
     credential_scope: str,
     endpoint: str,
+    model: str,
     run_id: str,
 ) -> tuple[Mapping[str, object], ...]:
     if evidence_root is None or not isinstance(value, list):
+        return ()
+    expected_model = str(model or "").strip()
+    if not _strict_live_model_allowed(provider, expected_model):
         return ()
     root = evidence_root.resolve(strict=False)
     verified: list[Mapping[str, object]] = []
@@ -647,6 +671,7 @@ def _strict_live_provider_artifact_payloads(
         host = (urlparse(expected_endpoint).hostname or "").lower()
         artifact_endpoint = str(payload.get("endpoint") or "").strip()
         artifact_host = str(payload.get("host") or urlparse(artifact_endpoint).hostname or "").lower()
+        artifact_model = str(payload.get("model") or "").strip()
         if (
             payload.get("schema_version") == "cp8-live-provider-provenance-v1"
             and payload.get("checkpoint") == "CP8"
@@ -657,6 +682,7 @@ def _strict_live_provider_artifact_payloads(
             and payload.get("loopback") is False
             and artifact_host == host
             and artifact_endpoint == expected_endpoint
+            and artifact_model == expected_model
             and _external_live_endpoint(provider, artifact_endpoint)
             and _success_status(_int(payload.get("response_status")))
             and bool(str(payload.get("upstream_request_id") or "").strip())
@@ -665,6 +691,11 @@ def _strict_live_provider_artifact_payloads(
             enriched["artifact_paths"] = (rel,)
             verified.append(enriched)
     return tuple(verified)
+
+
+def _strict_live_model_allowed(provider: str, model: str) -> bool:
+    allowed = _STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST.get(str(provider or "").strip(), frozenset())
+    return str(model or "").strip() in allowed
 
 
 def _artifact_ref_issues(value: object, *, evidence_root: Path | None) -> tuple[str, ...]:
@@ -699,6 +730,141 @@ def _artifact_ref_issues(value: object, *, evidence_root: Path | None) -> tuple[
         if raw.get("sensitive_scan_clean") is not True:
             issues.append(f"artifact sensitive scan not clean: {rel}")
     return tuple(issues)
+
+
+def _workflow_background_artifact_issues(
+    value: object,
+    *,
+    evidence_root: Path | None,
+    scenario: Mapping[str, object],
+    required_tasks: tuple[str, ...],
+) -> tuple[str, ...]:
+    payloads = _artifact_payloads(value, evidence_root=evidence_root)
+    if not payloads:
+        return ("workflow/background artifact evidence missing",)
+    for payload in payloads:
+        if not isinstance(payload, Mapping):
+            continue
+        if _workflow_background_artifact_valid(payload, scenario=scenario, required_tasks=required_tasks):
+            return ()
+    return ("workflow/background artifact must prove provider-local dynamic remap for every background task",)
+
+
+def _workflow_background_artifact_valid(
+    payload: Mapping[str, object],
+    *,
+    scenario: Mapping[str, object],
+    required_tasks: tuple[str, ...],
+) -> bool:
+    if not (
+        payload.get("schema_version") == "cp8-workflow-background-v1"
+        and payload.get("checkpoint") == "CP8"
+        and payload.get("scenario") == "workflow"
+        and payload.get("status") == "pass"
+        and payload.get("active_profile_dynamic_resolution") is True
+        and payload.get("workflow_alias_resolved_provider_local") is True
+        and payload.get("hardcoded_claude_model_consumed") is False
+        and _int(payload.get("non_claude_background_native_egress")) == 0
+        and payload.get("active_profile_dynamic_resolution") == scenario.get("active_profile_dynamic_resolution")
+        and payload.get("workflow_alias_resolved_provider_local") == scenario.get("workflow_alias_resolved_provider_local")
+        and payload.get("hardcoded_claude_model_consumed") == scenario.get("hardcoded_claude_model_consumed")
+        and _int(payload.get("non_claude_background_native_egress")) == _int(scenario.get("non_claude_background_native_egress"))
+        and tuple(_str_list(payload.get("required_background_tasks"))) == required_tasks
+        and tuple(_str_list(scenario.get("required_background_tasks"))) == required_tasks
+    ):
+        return False
+    tasks = payload.get("background_tasks")
+    if not isinstance(tasks, list) or len(tasks) != len(required_tasks):
+        return False
+    seen: list[str] = []
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            return False
+        task_name = str(task.get("task") or "").strip()
+        seen.append(task_name)
+        active_profile = str(task.get("active_profile") or "").strip().lower()
+        resolved_provider = str(task.get("resolved_provider") or "").strip().lower()
+        resolved_model = str(task.get("resolved_model") or "").strip().lower()
+        if (
+            task_name not in required_tasks
+            or not active_profile
+            or not resolved_provider
+            or not resolved_model
+            or active_profile == "claude"
+            or resolved_provider == "claude"
+            or resolved_model.startswith("claude-")
+            or not _workflow_profile_matches_provider(active_profile, resolved_provider)
+            or not _workflow_provider_model_allowed(resolved_provider, resolved_model)
+            or task.get("dynamic_resolution_at_request_time") is not True
+            or task.get("provider_local") is not True
+            or task.get("hardcoded_claude_model_consumed") is not False
+            or task.get("explicit_claude_opt_in") is not False
+            or _int(task.get("native_egress_count")) != 0
+            or _int(task.get("formal_pool_egress_count")) != 0
+        ):
+            return False
+    return tuple(seen) == required_tasks
+
+
+def _workflow_profile_matches_provider(active_profile: str, resolved_provider: str) -> bool:
+    profile_provider = _workflow_provider_family(active_profile)
+    provider_family = _workflow_provider_family(resolved_provider)
+    if not profile_provider or not provider_family:
+        return False
+    return profile_provider == provider_family
+
+
+def _workflow_provider_model_allowed(provider: str, model: str) -> bool:
+    provider_family = _workflow_provider_family(provider)
+    model = str(model or "").strip()
+    if not provider_family or not model:
+        return False
+    if provider_family in _STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST:
+        return _strict_live_model_allowed(provider_family, model)
+    prefixes = {
+        "zai": ("glm-",),
+        "kimi": ("kimi-",),
+    }.get(provider_family)
+    return bool(prefixes and model.startswith(prefixes))
+
+
+def _workflow_provider_family(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+    aliases = {
+        "gpt": "openai",
+        "chatgpt": "openai",
+        "openai": "openai",
+        "deepseek": "deepseek",
+        "glm": "zai",
+        "zai_glm": "zai",
+        "zai": "zai",
+        "kimi": "kimi",
+        "moonshot": "kimi",
+    }
+    return aliases.get(normalized, normalized.split("_", 1)[0])
+
+
+def _artifact_payloads(value: object, *, evidence_root: Path | None) -> tuple[Mapping[str, object], ...]:
+    if evidence_root is None or not isinstance(value, list):
+        return ()
+    root = evidence_root.resolve(strict=False)
+    payloads: list[Mapping[str, object]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            continue
+        rel = raw.get("path")
+        if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts:
+            continue
+        path = (root / rel).resolve(strict=False)
+        if root not in (path, *path.parents) or not path.exists() or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(payload, Mapping):
+            payloads.append(payload)
+    return tuple(payloads)
 
 def _official_docs_issues(value: object) -> tuple[str, ...]:
     if not isinstance(value, Mapping):
@@ -773,6 +939,10 @@ def write_cp8_live_scenario_evidence(
         value = raw.get(key)
         if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):
             artifact_payload[key] = value.strip()
+    model = raw.get("model")
+    provider = str(artifact_payload.get("provider") or "")
+    if isinstance(model, str) and _strict_live_model_allowed(provider, model):
+        artifact_payload["model"] = model.strip()
     refs = raw.get("provider_provenance_refs")
     if isinstance(refs, list) and all(isinstance(item, str) and item.strip() and ".." not in Path(item).parts and not item.startswith("/") for item in refs):
         artifact_payload["provider_provenance_refs"] = sorted({item.strip() for item in refs})
@@ -811,16 +981,19 @@ def collect_cp8_live_provider_provenance(
     credential_source = credentials if credentials is not None else _cp8_live_credentials_from_env()
     credential_map = {str(k): str(v) for k, v in dict(credential_source).items()}
     provider_specs = {
-        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
-        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
-        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+        provider: (scope, endpoint, _cp8_live_model(provider))
+        for provider, (scope, endpoint) in {
+            "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+            "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+            "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+        }.items()
     }
     missing = [provider for provider in provider_specs if not credential_map.get(provider)]
     if missing:
         raise CP8LiveMatrixError("missing live credential for provider(s): " + ", ".join(missing))
     probe = transport or _default_cp8_live_transport
     providers: dict[str, object] = {}
-    for provider, (scope, endpoint) in provider_specs.items():
+    for provider, (scope, endpoint, model) in provider_specs.items():
         result = probe(provider, endpoint, credential_map[provider])  # type: ignore[misc]
         if not isinstance(result, Mapping):
             raise CP8LiveMatrixError(f"CP8 live provider probe for {provider} did not return evidence")
@@ -833,6 +1006,7 @@ def collect_cp8_live_provider_provenance(
             "checkpoint": "CP8",
             "run_id": run_id,
             "provider": provider,
+            "model": model,
             "credential_scope": scope,
             "endpoint": endpoint,
             "host": urlparse(endpoint).hostname or "",
@@ -847,6 +1021,7 @@ def collect_cp8_live_provider_provenance(
             "credential_scope": scope,
             "live_provider_verified": True,
             "endpoint": endpoint,
+            "model": model,
             "artifact_refs": [
                 {
                     "path": f"artifacts/{artifact.name}",
@@ -897,8 +1072,8 @@ def _default_cp8_live_transport(provider: str, endpoint: str, credential: str) -
 
 
 def _cp8_live_probe_request(provider: str, credential: str) -> tuple[dict[str, object], dict[str, str]]:
+    model = _cp8_live_model(provider)
     if provider == "openai":
-        model = os.getenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "gpt-5.4-mini")
         return (
             {
                 "model": model,
@@ -917,10 +1092,9 @@ def _cp8_live_probe_request(provider: str, credential: str) -> tuple[dict[str, o
             if provider == "claude"
             else "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_MODEL"
         )
-        default_model = "claude-sonnet-4-6" if provider == "claude" else "deepseek-v4-pro"
         return (
             {
-                "model": os.getenv(model_env, default_model),
+                "model": model,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "CP8 live provenance probe."}],
             },
@@ -931,6 +1105,26 @@ def _cp8_live_probe_request(provider: str, credential: str) -> tuple[dict[str, o
             },
         )
     raise CP8LiveMatrixError(f"CP8 external live probe provider is unsupported: {provider}")
+
+
+def _cp8_live_model(provider: str) -> str:
+    model_env = {
+        "claude": "SUB2API_CLAUDE_CODE_LIVE_CLAUDE_MODEL",
+        "openai": "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL",
+        "deepseek": "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_MODEL",
+    }.get(provider)
+    default_model = {
+        "claude": "claude-sonnet-4-6",
+        "openai": "gpt-5.5",
+        "deepseek": "deepseek-v4-pro",
+    }.get(provider)
+    if not model_env or not default_model:
+        raise CP8LiveMatrixError(f"CP8 external live probe provider is unsupported: {provider}")
+    model = (os.getenv(model_env) or default_model).strip()
+    allowed = _STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST.get(provider, frozenset())
+    if model not in allowed:
+        raise CP8LiveMatrixError(f"CP8 live probe model for {provider} is not CP4 live-catalog verified: {model}")
+    return model
 
 
 def _headers_to_dict(headers: object) -> dict[str, str]:

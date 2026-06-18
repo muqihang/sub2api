@@ -657,6 +657,7 @@ def test_active_runtime_bridge_live_models_only_allows_cp4_catalog_verified_brid
         ],
     }) == (
         "gpt-5.5",
+        "gpt-5.4-mini",
         "deepseek-v4-pro",
         "deepseek-v4-pro[1m]",
         "deepseek-v4-flash",
