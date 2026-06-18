@@ -66,6 +66,7 @@ def test_safe_env_scrubs_sensitive_inherited_values_and_uses_zhumeng_key(tmp_pat
     assert env["no_proxy"] == "127.0.0.1,localhost,::1"
     assert env["HTTP_PROXY"] == "http://127.0.0.1:43117"
     assert env["HTTPS_PROXY"] == "http://127.0.0.1:43117"
+    assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
     assert "ALL_PROXY" not in env
 
     joined = "\n".join(f"{key}={value}" for key, value in env.items())

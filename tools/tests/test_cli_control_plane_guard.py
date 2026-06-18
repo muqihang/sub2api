@@ -50,6 +50,12 @@ _ROUTE_HINT_CATALOG_WITH_BRIDGE_LIVE = cp4_fixture_route_catalog(
 _DEFAULT_SESSION_REF = '11111111-2222-4333-8444-555555555555'
 
 
+def _test_jwt_with_exp(exp: int) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode('ascii').rstrip('=')
+    payload = base64.urlsafe_b64encode(json.dumps({'exp': exp}).encode('utf-8')).decode('ascii').rstrip('=')
+    return f'{header}.{payload}.signature'
+
+
 def _native_route_headers(body: bytes, path: str = '/v1/messages?beta=true', *, session_ref: str = _DEFAULT_SESSION_REF, nonce: str | None = None) -> dict[str, str]:
     return build_signed_route_hint_headers(
         body=body,
@@ -159,6 +165,45 @@ class CliControlPlaneGuardTest(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn('route hint catalog hash mismatch', stderr.getvalue())
+
+    def test_model_discovery_returns_route_catalog_overlay_without_live_bridge_enablement(self):
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:18080',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            ))
+            forwarder.start_background()
+            try:
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}/v1/models?limit=1000',
+                    method='GET',
+                    headers={'Authorization': 'Bearer local-token-that-must-not-leak'},
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+                    payload = json.loads(resp.read().decode('utf-8'))
+                summary_dump = (Path(td) / 'summary.jsonl').read_text(encoding='utf-8')
+            finally:
+                forwarder.stop()
+
+        models = {item['id']: item for item in payload['data']}
+        self.assertIn('claude-sonnet-4-6', models)
+        self.assertIn('claude-opus-4-8', models)
+        self.assertIn('gpt-5.5', models)
+        self.assertIn('deepseek-v4-pro', models)
+        self.assertEqual(models['gpt-5.5']['x_zhumeng_route'], 'openai_bridge')
+        self.assertFalse(models['gpt-5.5']['x_zhumeng_live_enabled'])
+        self.assertFalse(models['gpt-5.5']['x_zhumeng_formal_pool_allowed'])
+        self.assertIn('model_discovery_overlay', summary_dump)
+        self.assertNotIn('local-token-that-must-not-leak', summary_dump)
 
     def test_root_dir_is_current_repo_root(self):
         self.assertEqual(Path(root_dir()).resolve(), Path(__file__).resolve().parents[2])
@@ -289,6 +334,174 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertEqual(seen['authorization'], 'Bearer eyJhbGciOiJIUzI1NiJ9.managed-access-token.signature')
         self.assertEqual(seen['managed_session'], 'managed-session')
         self.assertEqual(seen['device_id'], '9')
+
+    def test_native_messages_read_latest_native_managed_token_from_state_file(self):
+        seen = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                _ = self.rfile.read(int(self.headers.get('content-length', '0')))
+                seen['authorization'] = self.headers.get('Authorization')
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / 'state.json'
+            state_path.write_text(
+                json.dumps({'claude_code_native_access_token': 'latest-native-token-from-state'}),
+                encoding='utf-8',
+            )
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token='stale-native-token-from-env',
+                native_managed_state_path=state_path,
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+            ))
+            forwarder.start_background()
+            try:
+                body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.177 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='latest-state-native-token'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+        self.assertEqual(seen['authorization'], 'Bearer latest-native-token-from-state')
+
+    def test_native_messages_refresh_expiring_state_token_before_forwarding(self):
+        seen = {'refresh_calls': 0}
+        now = int(time.time())
+        stale_token = _test_jwt_with_exp(now + 10)
+        refreshed_token = _test_jwt_with_exp(now + 900)
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get('content-length', '0'))
+                body = self.rfile.read(length) if length else b''
+                if self.path == '/api/v1/codex/devices/refresh':
+                    seen['refresh_calls'] += 1
+                    seen['refresh_body'] = json.loads(body.decode('utf-8'))
+                    payload = {
+                        'data': {
+                            'access_token': refreshed_token,
+                            'refresh_token': 'next-refresh-token',
+                            'managed_session_id': 'next-managed-session',
+                            'expires_at': '2026-06-18T13:00:00Z',
+                        }
+                    }
+                    data = json.dumps(payload).encode('utf-8')
+                    self.send_response(200)
+                    self.send_header('content-type', 'application/json')
+                    self.send_header('content-length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                seen['authorization'] = self.headers.get('Authorization')
+                seen['managed_session'] = self.headers.get('X-Zhumeng-Managed-Session')
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / 'state.json'
+            state_path.write_text(
+                json.dumps({
+                    'claude_code_native_access_token': stale_token,
+                    'claude_code_native_refresh_token': 'old-refresh-token',
+                    'claude_code_native_managed_session_id': 'old-managed-session',
+                    'claude_code_native_device_id': 32,
+                    'claude_code_native_server_base_url': f'http://127.0.0.1:{upstream_port}',
+                }),
+                encoding='utf-8',
+            )
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token=stale_token,
+                native_managed_state_path=state_path,
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='old-managed-session',
+                device_id='32',
+                agent_version='0.1.0',
+            ))
+            forwarder.start_background()
+            try:
+                body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.177 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='refresh-expiring-native-token'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+            updated_state = json.loads(state_path.read_text(encoding='utf-8'))
+
+        self.assertEqual(seen['refresh_calls'], 1)
+        self.assertEqual(seen['refresh_body'], {'device_id': 32, 'refresh_token': 'old-refresh-token'})
+        self.assertEqual(seen['authorization'], f'Bearer {refreshed_token}')
+        self.assertEqual(seen['managed_session'], 'next-managed-session')
+        self.assertEqual(updated_state['claude_code_native_access_token'], refreshed_token)
+        self.assertEqual(updated_state['claude_code_native_refresh_token'], 'next-refresh-token')
 
     def test_forward_messages_uses_strict_header_allowlist(self):
         seen = {}

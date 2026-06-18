@@ -56,6 +56,9 @@ _ALLOWED_QUERY_RULES = {
     "/v1/mcp_servers": {
         "limit": "int:1:1000",
     },
+    "/v1/models": {
+        "limit": "int:1:1000",
+    },
     "/mcp-registry/v0/servers": {
         "version": "enum:latest",
     },

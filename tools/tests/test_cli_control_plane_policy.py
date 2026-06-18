@@ -118,6 +118,7 @@ class CliControlPlanePolicyTest(unittest.TestCase):
         self.assertEqual(policy.decide("GET", "/mcp-registry/anything").action, "quarantine_block")
         self.assertEqual(policy.decide("GET", "/api/hello").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/v1/oauth/hello").action, "stub_json")
+        self.assertEqual(policy.decide("GET", "/v1/models?limit=1000").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/claude_cli/bootstrap?entrypoint=sdk-cli").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/oauth/account/settings").action, "quarantine_block")
         self.assertEqual(policy.decide("GET", "/api/claude_code_grove").action, "quarantine_block")

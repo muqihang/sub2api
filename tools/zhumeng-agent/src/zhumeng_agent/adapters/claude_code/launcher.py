@@ -136,6 +136,7 @@ def run_managed_claude_code(
         upstream_base=upstream_base,
         sub2api_auth=sub2api_auth,
         native_managed_access_token=native_managed_access_token,
+        native_managed_state_path=config_root / "state.json",
         summary_path=summary_path,
         repo_root=repo_root,
         connect_mode="stub",

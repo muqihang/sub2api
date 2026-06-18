@@ -967,6 +967,112 @@ def test_claude_code_start_uses_native_managed_credentials_separate_from_codex_g
     assert "eyJ.claude-code-native-token" not in json.dumps(data)
 
 
+def test_claude_code_start_refreshes_expired_native_managed_credentials(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def __init__(self):
+            self.state = {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3017",
+                "gateway_base_url": "http://127.0.0.1:3017",
+                "access_token": "eyJ.codex-gateway-managed-token",
+                "refresh_token": "codex-refresh-token",
+                "managed_session_id": "codex-managed-session",
+                "device_id": 31,
+                "claude_code_native_access_token": "eyJ.expired-claude-code-native-token",
+                "claude_code_native_refresh_token": "claude-code-refresh-token",
+                "claude_code_native_managed_session_id": "expired-claude-code-session",
+                "claude_code_native_device_id": 32,
+                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key_configured": True,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+            self.patches = []
+
+        def read(self):
+            return dict(self.state)
+
+        def update(self, patch):
+            self.patches.append(dict(patch))
+            self.state.update(patch)
+            return dict(self.state)
+
+    class FakeClient:
+        def __init__(self):
+            self.refresh_calls = []
+
+        def refresh_device_token(self, **kwargs):
+            self.refresh_calls.append(kwargs)
+            return {
+                "access_token": "eyJ.refreshed-claude-code-native-token",
+                "refresh_token": "next-claude-code-refresh-token",
+                "managed_session_id": "refreshed-claude-code-session",
+                "expires_at": "2026-06-18T13:00:00Z",
+            }
+
+    store = FakeStore()
+    fake_client = FakeClient()
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(
+                env={
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                    "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+                    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+                },
+                cwd=kwargs["project_cwd"],
+            ),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117),
+            ),
+        )
+
+    cli.default_state_store = lambda: store
+    cli.default_http_client = lambda server: fake_client
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+    monkeypatch.setattr(cli, "_managed_jwt_seconds_until_expiry", lambda token: -30 if token == "eyJ.expired-claude-code-native-token" else 3600)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["status"] == "exited"
+    assert fake_client.refresh_calls == [{"device_id": 32, "refresh_token": "claude-code-refresh-token"}]
+    assert calls[0]["native_managed_access_token"] == "eyJ.refreshed-claude-code-native-token"
+    assert calls[0]["managed_session_id"] == "refreshed-claude-code-session"
+    assert calls[0]["device_id"] == 32
+    assert store.patches[-1]["claude_code_native_refresh_token"] == "next-claude-code-refresh-token"
+    dumped = json.dumps(data)
+    assert "eyJ.refreshed-claude-code-native-token" not in dumped
+    assert "next-claude-code-refresh-token" not in dumped
+
+
 def test_claude_code_start_reads_dedicated_sub2api_key_from_state_root_env_file(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):

@@ -134,6 +134,7 @@ def cp4_fixture_route_catalog(
 
     entries = {
         "claude-sonnet-4-6": native("claude-sonnet-4-6"),
+        "claude-opus-4-8": native("claude-opus-4-8"),
         "claude-opus-4-7": native("claude-opus-4-7"),
         "claude-haiku-4-5": native("claude-haiku-4-5"),
         "claude-haiku-4-5-20251001": native("claude-haiku-4-5-20251001"),

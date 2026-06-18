@@ -120,6 +120,7 @@ def build_safe_env(
             "ANTHROPIC_BASE_URL": guard_base_url,
             "CLAUDE_CODE_API_BASE_URL": guard_base_url,
             "ANTHROPIC_API_KEY": profile.zhumeng_entry_api_key,
+            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
             "HTTP_PROXY": guard_base_url,
             "HTTPS_PROXY": guard_base_url,
             "NO_PROXY": _MANAGED_NO_PROXY,

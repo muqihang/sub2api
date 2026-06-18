@@ -75,6 +75,28 @@ NATIVE_CREDENTIAL_SCOPE = "formal_pool"
 NATIVE_GATEWAY_LOCATION = "cloud"
 NATIVE_UNKNOWN_HASH = "sha256:" + ("0" * 64)
 CAPTURE_LEVELS = {"summary", "deep", "local-raw"}
+MODEL_DISPLAY_NAMES = {
+    "claude-sonnet-4-6": "Sonnet 4.6",
+    "claude-opus-4-8": "Opus 4.8",
+    "claude-opus-4-7": "Opus 4.7",
+    "claude-haiku-4-5": "Haiku 4.5",
+    "claude-haiku-4-5-20251001": "Haiku 4.5",
+    "gpt-5.5": "GPT 5.5",
+    "gpt-5.4-mini": "GPT 5.4 Mini",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
+    "deepseek-v4-pro[1m]": "DeepSeek V4 Pro (1M)",
+    "deepseek-v4-flash": "DeepSeek V4 Flash",
+    "agnes-1": "AGNES 1",
+    "glm-5.2": "GLM 5.2",
+    "glm-5.2[1m]": "GLM 5.2 (1M)",
+    "glm-5-turbo": "GLM 5 Turbo",
+    "glm-4.7": "GLM 4.7",
+    "glm-4.5-air": "GLM 4.5 Air",
+    "kimi-k2.7-code": "Kimi K2.7 Code",
+    "kimi-k2.7-code-highspeed": "Kimi K2.7 Code Highspeed",
+    "kimi-k2.6": "Kimi K2.6",
+    "kimi-k2.5": "Kimi K2.5",
+}
 SAFE_VALUE_KEYS = {
     "event_name",
     "event_type",
@@ -187,6 +209,7 @@ class GuardConfig:
     allow_nonloopback_upstream: bool = False
     native_attestation_secret: str | None = None
     native_managed_access_token: str | None = None
+    native_managed_state_path: Path | None = None
     route_hint_secret: str | None = None
     route_hint_catalog: RouteCatalog | None = None
     route_hint_replay_cache: RouteHintReplayCache | None = None
@@ -652,6 +675,42 @@ def _safe_artifact_name(value: str) -> str:
     return cleaned[:80] or "capture"
 
 
+def _managed_jwt_seconds_until_expiry(token: str) -> int | None:
+    parts = str(token or "").strip().split(".")
+    if len(parts) < 2:
+        return None
+    payload_segment = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_segment.encode("ascii")))
+        exp = int(payload["exp"])
+    except Exception:  # noqa: BLE001 - opaque legacy tokens cannot be decoded.
+        return None
+    return exp - int(time.time())
+
+
+def _managed_jwt_expiring_soon(token: str, *, refresh_window_seconds: int = 300) -> bool:
+    seconds = _managed_jwt_seconds_until_expiry(token)
+    return seconds is not None and seconds <= refresh_window_seconds
+
+
+def _managed_jwt_is_expired(token: str) -> bool:
+    seconds = _managed_jwt_seconds_until_expiry(token)
+    return seconds is not None and seconds <= 0
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        temp_path.write_text(json.dumps(dict(payload), ensure_ascii=True, indent=2), encoding="utf-8")
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 class RedactingForwarder:
     def __init__(self, config: GuardConfig, execution_controller: ExecutionController | None = None):
         self.config = config
@@ -664,6 +723,7 @@ class RedactingForwarder:
         self._message_lock = threading.Lock()
         self._artifact_count = 0
         self._artifact_lock = threading.Lock()
+        self._native_token_lock = threading.Lock()
 
     def start_background(self) -> None:
         handler = self._make_handler()
@@ -689,19 +749,124 @@ class RedactingForwarder:
         headers: dict[str, str] = {}
         if not use_managed_access:
             return headers
-        if self.config.managed_session_id:
-            headers["X-Zhumeng-Managed-Session"] = self.config.managed_session_id
-        if self.config.device_id:
-            headers["X-Zhumeng-Device-ID"] = self.config.device_id
+        state = self._read_native_managed_state() if self.config.native_managed_state_path is not None else None
+        managed_session_id = str((state or {}).get("claude_code_native_managed_session_id") or self.config.managed_session_id or "").strip()
+        device_id = str((state or {}).get("claude_code_native_device_id") or self.config.device_id or "").strip()
+        if managed_session_id:
+            headers["X-Zhumeng-Managed-Session"] = managed_session_id
+        if device_id:
+            headers["X-Zhumeng-Device-ID"] = device_id
         if self.config.agent_version:
             headers["X-Zhumeng-Agent-Version"] = self.config.agent_version
         return headers
 
     def _auth_token_for_route(self, route_decision: RouteDecision) -> str | None:
         if route_decision.native_attestation_allowed:
+            token = self._fresh_native_managed_access_token()
+            if token:
+                return token
             token = str(self.config.native_managed_access_token or "").strip()
             return token or None
         return self.config.sub2api_auth
+
+    def _fresh_native_managed_access_token(self) -> str | None:
+        state_path = self.config.native_managed_state_path
+        if state_path is None:
+            return None
+        with self._native_token_lock:
+            state = self._read_native_managed_state()
+            if state is None:
+                return None
+            token = str(state.get("claude_code_native_access_token") or "").strip()
+            if token and not _managed_jwt_expiring_soon(token):
+                return token
+            refreshed = self._refresh_native_managed_state(state)
+            if refreshed is None:
+                return token if token and not _managed_jwt_is_expired(token) else None
+            next_token = str(refreshed.get("claude_code_native_access_token") or "").strip()
+            return next_token or None
+
+    def _read_native_managed_state(self) -> dict[str, Any] | None:
+        state_path = self.config.native_managed_state_path
+        if state_path is None:
+            return None
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _refresh_native_managed_state(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        state_path = self.config.native_managed_state_path
+        if state_path is None:
+            return None
+        refresh_token = str(state.get("claude_code_native_refresh_token") or "").strip()
+        raw_device_id = state.get("claude_code_native_device_id")
+        server_base = str(
+            state.get("claude_code_native_server_base_url")
+            or state.get("server_base_url")
+            or state.get("gateway_base_url")
+            or self.config.upstream_base
+            or ""
+        ).strip()
+        if not refresh_token or raw_device_id in {None, ""} or not server_base:
+            return None
+        try:
+            device_id = int(raw_device_id)
+        except (TypeError, ValueError):
+            return None
+        url = server_base.rstrip("/") + "/api/v1/codex/devices/refresh"
+        body = json.dumps({"device_id": device_id, "refresh_token": refresh_token}).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"content-type": "application/json"},
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            self._record({
+                "ts": time.time(),
+                "event": "native_managed_token_refresh",
+                "decision": "refresh_failed",
+                "status": "error",
+            })
+            return None
+        refreshed = payload.get("data", payload) if isinstance(payload, dict) else {}
+        if not isinstance(refreshed, Mapping):
+            return None
+        next_access_token = str(refreshed.get("access_token") or "").strip()
+        next_refresh_token = str(refreshed.get("refresh_token") or "").strip()
+        next_session = str(refreshed.get("managed_session_id") or "").strip()
+        if not next_access_token or not next_refresh_token or not next_session:
+            return None
+        updated = dict(state)
+        updated.update({
+            "claude_code_native_access_token": next_access_token,
+            "claude_code_native_refresh_token": next_refresh_token,
+            "claude_code_native_managed_session_id": next_session,
+            "claude_code_native_device_id": device_id,
+            "claude_code_native_status": "configured",
+        })
+        expires_at = refreshed.get("expires_at")
+        if expires_at:
+            updated["claude_code_native_expires_at"] = str(expires_at)
+            updated["claude_code_native_token_expires_at"] = str(expires_at)
+        try:
+            _write_json_atomic(state_path, updated)
+        except OSError:
+            return None
+        self._record({
+            "ts": time.time(),
+            "event": "native_managed_token_refresh",
+            "decision": "refreshed",
+            "status": "ok",
+            "device_id": str(device_id),
+        })
+        return updated
 
     def _record(self, obj: Mapping[str, Any]) -> None:
         self.config.summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1292,6 +1457,34 @@ class RedactingForwarder:
         allowed = {value.lower() for value in self.config.policy.connect.get("allowed_stub_targets", [])}
         return target.lower() in allowed
 
+    def _model_discovery_decision(self) -> PolicyDecision:
+        catalog = self.config.route_hint_catalog
+        data = []
+        if catalog is not None:
+            for entry in sorted(catalog.entries.values(), key=lambda item: (item.provider != "claude", item.provider, item.model_id)):
+                if entry.model_id.endswith("-placeholder"):
+                    continue
+                data.append({
+                    "type": "model",
+                    "id": entry.model_id,
+                    "display_name": MODEL_DISPLAY_NAMES.get(entry.model_id, entry.model_id),
+                    "created_at": "2026-06-18T00:00:00Z",
+                    "x_zhumeng_provider": entry.provider,
+                    "x_zhumeng_route": entry.route,
+                    "x_zhumeng_client_type": entry.client_type,
+                    "x_zhumeng_live_enabled": bool(entry.live_enabled),
+                    "x_zhumeng_formal_pool_allowed": bool(entry.formal_pool_allowed),
+                    "x_zhumeng_native_attestation_allowed": bool(entry.native_attestation_allowed),
+                    "x_zhumeng_credential_scope": entry.credential_scope,
+                })
+        body = {
+            "object": "list",
+            "data": data,
+            "x_zhumeng_overlay_mode": "route_catalog_overlay_proof",
+            "x_zhumeng_bridge_live_feature_flag": False,
+        }
+        return PolicyDecision(action="stub_json", reason="model_discovery_overlay", status=200, content_type="application/json", body=body)
+
     def _evaluate_control_plane(
         self,
         *,
@@ -1304,6 +1497,8 @@ class RedactingForwarder:
         target: str | None = None,
         declared_content_length: int | None = None,
     ) -> tuple[dict[str, Any], PolicyDecision]:
+        if method.upper() == "GET" and urlsplit(path).path == "/v1/models":
+            decision = self._model_discovery_decision()
         defaults = self.config.policy.control_plane_defaults
         routing_intent = "local_stub_or_suppress" if decision.action in {"suppress_204", "stub_json"} else "local_block_403"
         if decision.reason == "direct_messages_route_blocked":
@@ -1569,6 +1764,8 @@ def _decision_classification(decision: PolicyDecision) -> str:
     if decision.action == "suppress_204":
         return "telemetry_or_eval_suppressed"
     if decision.action == "stub_json":
+        if decision.reason == "model_discovery_overlay":
+            return "model_discovery_overlay_stubbed"
         if "bootstrap_settings" in decision.reason:
             return "bootstrap_settings_or_feature_flag_stubbed"
         return "mcp_or_registry_stubbed"
@@ -2291,6 +2488,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device-id")
     parser.add_argument("--agent-version", default="0.1.0")
     parser.add_argument("--native-managed-access-token-env", help="Env var holding zhumeng managed-device access token for Claude formal-pool native requests.")
+    parser.add_argument("--native-managed-state-path", type=Path, help="Local zhumeng-agent state.json path for reading the latest Claude Code native token.")
     args = parser.parse_args(argv)
     sub2api_auth = args.sub2api_auth or os.environ.get(args.sub2api_auth_env or "")
     if not sub2api_auth:
@@ -2351,6 +2549,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_nonloopback_upstream=args.allow_nonloopback_upstream,
                 native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") if args.native_attestation else "",
                 native_managed_access_token=native_managed_access_token,
+                native_managed_state_path=args.native_managed_state_path,
                 route_hint_secret=route_hint_secret,
                 route_hint_catalog=route_hint_catalog,
                 managed_session_id=args.managed_session,

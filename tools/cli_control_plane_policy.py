@@ -102,6 +102,7 @@ _DEFAULT_POLICY_DICT = {
             "match": [
                 {"method": "GET", "path": "/api/hello"},
                 {"method": "GET", "path": "/v1/oauth/hello"},
+                {"method": "GET", "path": "/v1/models"},
                 {"method": "GET", "path": "/api/claude_cli/bootstrap"},
                 {"method": "GET", "path_regex": r"/api/claude_code_penguin_mode"},
                 {"method": "GET", "path_regex": r"/api/claude_code/organizations/metrics_enabled"},

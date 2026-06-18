@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -674,6 +675,69 @@ def resolve_claude_code_native_managed_credentials(state: Mapping[str, object]) 
     if device_id <= 0:
         raise ValueError("managed Claude Code native setup is incomplete: claude_code_native_device_id is invalid")
     return access_token, managed_session_id, device_id
+
+
+def _managed_jwt_seconds_until_expiry(token: str) -> int | None:
+    parts = str(token or "").strip().split(".")
+    if len(parts) < 2:
+        return None
+    payload_segment = parts[1]
+    try:
+        payload_segment += "=" * ((4 - len(payload_segment) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_segment.encode("ascii")))
+        exp = int(payload["exp"])
+    except Exception:  # noqa: BLE001 - non-JWT test tokens should not force refresh.
+        return None
+    return exp - int(datetime.now(UTC).timestamp())
+
+
+def refresh_claude_code_native_managed_credentials_if_needed(
+    state: dict[str, object],
+    *,
+    store,
+    refresh_window_seconds: int = 300,
+) -> dict[str, object]:
+    access_token = _managed_state_str(state, "claude_code_native_access_token")
+    if not access_token:
+        return state
+    seconds = _managed_jwt_seconds_until_expiry(access_token)
+    if seconds is None or seconds > refresh_window_seconds:
+        return state
+    refresh_token = _managed_state_str(state, "claude_code_native_refresh_token")
+    raw_device_id = state.get("claude_code_native_device_id")
+    if not refresh_token or raw_device_id is None or str(raw_device_id).strip() == "":
+        raise ValueError("managed Claude Code native setup is incomplete: native access token expired and refresh credentials are missing")
+    server_base = (
+        _managed_state_str(state, "claude_code_native_server_base_url")
+        or _managed_state_str(state, "server_base_url")
+        or _managed_state_str(state, "gateway_base_url")
+    )
+    if not server_base:
+        raise ValueError("managed Claude Code native setup is incomplete: missing server_base_url for native token refresh")
+    try:
+        device_id = int(raw_device_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("managed Claude Code native setup is incomplete: claude_code_native_device_id is invalid") from exc
+    refreshed = default_http_client(server_base).refresh_device_token(device_id=device_id, refresh_token=refresh_token)
+    next_access_token = str(refreshed.get("access_token") or "").strip()
+    next_refresh_token = str(refreshed.get("refresh_token") or "").strip()
+    next_session = str(refreshed.get("managed_session_id") or "").strip()
+    if not next_access_token or not next_refresh_token or not next_session:
+        raise ValueError("managed Claude Code native token refresh returned an incomplete response")
+    patch = {
+        "claude_code_native_access_token": next_access_token,
+        "claude_code_native_refresh_token": next_refresh_token,
+        "claude_code_native_managed_session_id": next_session,
+        "claude_code_native_device_id": device_id,
+        "claude_code_native_status": "configured",
+    }
+    expires_at = refreshed.get("expires_at")
+    if expires_at:
+        patch["claude_code_native_expires_at"] = str(expires_at)
+        patch["claude_code_native_token_expires_at"] = str(expires_at)
+    updated = store.update(patch) if hasattr(store, "update") else {**state, **patch}
+    state.update(patch)
+    return dict(updated or state)
 
 
 def route_catalog_content_hash_for_cp8_live(catalog_version: str, *, bridge_live_models: tuple[str, ...] = ()) -> str:
@@ -1625,6 +1689,7 @@ def build_claude_code_start_payload(
     missing = [key for key in ("gateway_base_url", "access_token", "managed_session_id", "device_id") if not state.get(key)]
     if missing:
         raise ValueError(f"managed setup is incomplete: missing {', '.join(missing)}")
+    state = refresh_claude_code_native_managed_credentials_if_needed(state, store=store)
     selected_guard_port = int(guard_port or choose_local_proxy_port())
     active_runtime = resolve_active_managed_runtime(runtime_root)
     if executable is not None and str(Path(executable).expanduser()) != str(active_runtime.executable.expanduser()):

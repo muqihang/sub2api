@@ -45,6 +45,7 @@ class NativeGuardConfig:
     max_messages: int = 0
     attestation_secret: str | None = field(default=None, repr=False)
     native_managed_access_token: str | None = field(default=None, repr=False)
+    native_managed_state_path: Path | None = None
     attestation_key_id: str = "guard_v1"
     hmac_key: str | None = field(default=None, repr=False)
     hmac_key_id: str = "local_guard_v1"
@@ -166,6 +167,8 @@ def build_native_guard_plan(
         command.extend(["--agent-version", config.agent_version])
     if config.native_managed_access_token:
         command.extend(["--native-managed-access-token-env", "ZHUMENG_CLAUDE_NATIVE_MANAGED_ACCESS_TOKEN"])
+    if config.native_managed_state_path is not None:
+        command.extend(["--native-managed-state-path", str(config.native_managed_state_path)])
     if config.control_plane_intent_url is not None:
         command.extend(["--control-plane-intent-url", config.control_plane_intent_url])
     if config.route_hint_secret:
