@@ -587,6 +587,57 @@ def _managed_state_str(state: Mapping[str, object], key: str) -> str:
     return str(value or "").strip()
 
 
+def _read_env_file_value(path: Path, key: str) -> str:
+    try:
+        lines = path.expanduser().read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        if name.strip() == key:
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
+def _looks_like_agent_jwt(value: str) -> bool:
+    return value.strip().startswith("eyJ")
+
+
+def _safe_claude_code_sub2api_key(value: str) -> str:
+    value = str(value or "").strip()
+    if not value or _looks_like_agent_jwt(value):
+        return ""
+    return value
+
+
+def resolve_claude_code_sub2api_auth(state: Mapping[str, object], *, state_root: Path) -> str:
+    for key in (
+        "claude_code_sub2api_api_key",
+        "claude_code_gateway_api_key",
+        "sub2api_api_key",
+    ):
+        value = _safe_claude_code_sub2api_key(_managed_state_str(state, key))
+        if value:
+            return value
+    env_value = _safe_claude_code_sub2api_key(_read_env_file_value(state_root / "claude-code-sub2api.env", "SUB2API_API_KEY"))
+    if env_value:
+        return env_value
+    for key in ("ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY", "SUB2API_CLAUDE_CODE_API_KEY"):
+        value = _safe_claude_code_sub2api_key(str(os.environ.get(key) or ""))
+        if value:
+            return value
+    legacy = _safe_claude_code_sub2api_key(_managed_state_str(state, "access_token"))
+    if legacy:
+        return legacy
+    value = _safe_claude_code_sub2api_key(str(os.environ.get("SUB2API_API_KEY") or ""))
+    if value:
+        return value
+    raise ValueError("managed Claude Code setup is incomplete: missing Claude Code dedicated Sub2API API key (state claude_code_sub2api_api_key, claude-code-sub2api.env SUB2API_API_KEY, or ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY)")
+
+
 def _catalog_version_from_state(state: Mapping[str, object]) -> str:
     explicit = _managed_state_str(state, "claude_code_route_hint_catalog_version")
     if explicit:
@@ -1550,11 +1601,12 @@ def build_claude_code_start_payload(
     bridge_live_models = tuple(_active_runtime_bridge_live_models(active_runtime.patches))
     attestation_secret = require_server_native_attestation_secret(state)
     route_hint_secret = require_server_route_hint_secret(state)
+    claude_code_sub2api_auth = resolve_claude_code_sub2api_auth(state, state_root=state_root)
     result = run_managed_claude_code(
         executable=active_runtime.executable,
         repo_root=Path(__file__).resolve().parents[4],
         upstream_base=str(state["gateway_base_url"]),
-        sub2api_auth=str(state["access_token"]),
+        sub2api_auth=claude_code_sub2api_auth,
         attestation_secret=attestation_secret,
         route_hint_secret=route_hint_secret,
         managed_session_id=str(state.get("managed_session_id") or "") or None,

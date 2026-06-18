@@ -819,6 +819,263 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert "attestation-secret" not in dumped
 
 
+def test_claude_code_start_prefers_dedicated_sub2api_key_over_agent_jwt(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3013",
+                "gateway_base_url": "http://127.0.0.1:3013",
+                "access_token": "eyJ.agent-login-jwt",
+                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key_configured": True,
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(
+                env={
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                    "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+                },
+                cwd=kwargs["project_cwd"],
+            ),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117),
+            ),
+        )
+
+    cli.default_state_store = lambda: FakeStore()
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["status"] == "exited"
+    assert calls[0]["sub2api_auth"] == "sk-zhumeng-claude-code-cli"
+    assert calls[0]["sub2api_auth"] != "eyJ.agent-login-jwt"
+    assert "sk-zhumeng-claude-code-cli" not in json.dumps(data)
+
+
+def test_claude_code_start_reads_dedicated_sub2api_key_from_state_root_env_file(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3013",
+                "gateway_base_url": "http://127.0.0.1:3013",
+                "access_token": "eyJ.agent-login-jwt",
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    runtime_root = tmp_path / "runtimes"
+    state_root = tmp_path / "zhumeng-state"
+    state_root.mkdir()
+    (state_root / "claude-code-sub2api.env").write_text("SUB2API_API_KEY=sk-env-claude-code-cli\n", encoding="utf-8")
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(
+                env={
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                    "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+                },
+                cwd=kwargs["project_cwd"],
+            ),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117),
+            ),
+        )
+
+    cli.default_state_store = lambda: FakeStore()
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setenv("SUB2API_API_KEY", "sk-global-should-not-win")
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(state_root),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["status"] == "exited"
+    assert calls[0]["sub2api_auth"] == "sk-env-claude-code-cli"
+    assert calls[0]["sub2api_auth"] != "eyJ.agent-login-jwt"
+    assert "sk-env-claude-code-cli" not in json.dumps(data)
+
+
+def test_claude_code_start_rejects_env_jwt_and_official_anthropic_fallback(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3013",
+                "gateway_base_url": "http://127.0.0.1:3013",
+                "access_token": "eyJ.agent-login-jwt",
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    calls = []
+    cli.default_state_store = lambda: FakeStore()
+    monkeypatch.setenv("SUB2API_API_KEY", "eyJ.env-jwt-should-not-be-used")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-official-should-not-be-used")
+    monkeypatch.setattr(cli, "run_managed_claude_code", lambda **kwargs: calls.append(kwargs), raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "not_configured"
+    assert "claude_code_sub2api_api_key" in data["message"]
+    assert calls == []
+    dumped = json.dumps(data)
+    assert "env-jwt" not in dumped
+    assert "official" not in dumped
+
+
+def test_claude_code_start_keeps_legacy_non_jwt_access_token_compat(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3013",
+                "gateway_base_url": "http://127.0.0.1:3013",
+                "access_token": "legacy-sub2api-entry-secret",
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(
+                env={
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                    "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+                },
+                cwd=kwargs["project_cwd"],
+            ),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117),
+            ),
+        )
+
+    cli.default_state_store = lambda: FakeStore()
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["status"] == "exited"
+    assert calls[0]["sub2api_auth"] == "legacy-sub2api-entry-secret"
+    assert "legacy-sub2api-entry-secret" not in json.dumps(data)
+
+
 def test_claude_code_start_rejects_explicit_executable_drift(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):
