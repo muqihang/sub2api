@@ -2339,3 +2339,7 @@ def managed_restore_conflict(config_manager: CodexConfigManager, state: dict[str
         if current_hash != expected_hash:
             conflicts.append({"target": name, "path": str(path), "expected_hash": expected_hash, "current_hash": current_hash})
     return conflicts
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

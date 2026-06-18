@@ -1,6 +1,9 @@
 import json
+import os
 from pathlib import Path
 import hashlib
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +12,8 @@ from aiohttp.test_utils import TestClient, TestServer
 import zhumeng_agent.cli as cli
 from zhumeng_agent.adapters.codex.model_picker import ModelPickerPatchError
 from zhumeng_agent.cli import main
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 ORIGINAL_DEFAULT_CAPTURE_CONFIG = cli.default_capture_config
 ORIGINAL_GENERATE_CAPTURE_REPORT = cli.generate_capture_report
@@ -1009,6 +1014,49 @@ def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_pa
     assert data["status"] == "collected"
     assert data["live_provenance"]["credential_backed"] is True
     assert calls == [{"run_id": "cp8-cli-live", "output_root": tmp_path}]
+
+
+def test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_provenance(tmp_path: Path):
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "ANTHROPIC_API_KEY",
+            "SUB2API_CLAUDE_CODE_LIVE_ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY",
+        }
+    }
+    env["PYTHONPATH"] = f"{REPO_ROOT}:{REPO_ROOT / 'tools' / 'zhumeng-agent' / 'src'}"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "zhumeng_agent.cli",
+            "claude-code",
+            "live-matrix",
+            "--collect-provider-provenance",
+            "--run-id",
+            "cp8-module-entrypoint",
+            "--output-root",
+            str(tmp_path),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    data = json.loads(result.stdout)
+    assert data["command"] == "claude-code live-matrix"
+    assert data["status"] == "not_configured"
+    assert "missing live credential" in data["message"]
 
 
 def test_claude_code_live_matrix_cli_assembles_external_matrix_without_promoting_loopback(capsys, tmp_path: Path):

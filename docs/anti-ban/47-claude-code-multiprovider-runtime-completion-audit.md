@@ -83,6 +83,11 @@ PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m pyt
   -q
 # 11 passed
 
+PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m pytest \
+  tools/zhumeng-agent/tests/test_cli.py::test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_provenance \
+  -q
+# 1 passed
+
 cd backend && go test -p 1 ./internal/service -run 'TestCP6DeepSeekAnthropicLivePreservesToolUseInputFieldsNamedThinking|TestCP6DeepSeekAnthropicLiveStripsForeignThinkingAndSignatureSSE|TestCP6BridgeToolUseSSEMatchesGoldenFixture|TestCP6OpenAIBridgeResponsesStreamMapsToolCallUsageCacheAndCleansReasoning' -count=1
 # pass
 
@@ -117,7 +122,7 @@ export DEEPSEEK_API_KEY='<real DeepSeek bridge credential>'
 #   SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY
 ```
 
-3. Collect provider provenance:
+3. Collect provider provenance. This command is covered by the module-entrypoint regression test and must fail closed with a JSON error if any required credential is missing:
 
 ```bash
 PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhumeng_agent.cli \
