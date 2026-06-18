@@ -140,6 +140,14 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
         events.append(("guard", plan))
         assert "--native-attestation" in plan.command
         assert "--route-hint-secret-env" in plan.command
+        connect_mode_index = plan.command.index("--connect-mode") + 1
+        assert plan.command[connect_mode_index] == "stub"
+        assert plan.config.connect_mode == "stub"
+        assert "--cert-path" in plan.command
+        assert "--key-path" in plan.command
+        assert plan.config.cert_path is not None
+        assert plan.config.key_path is not None
+        assert plan.config.cert_path.exists()
         assert plan.env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] == "sub2api-entry"
         assert plan.env["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "route-hint-secret"
         assert plan.env["ZHUMENG_CLAUDE_RUNTIME_HASH"] == "sha256:" + "1" * 64
@@ -179,6 +187,10 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert launch["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:43117"
     assert launch["env"]["CLAUDE_CODE_API_BASE_URL"] == "http://127.0.0.1:43117"
     assert launch["env"]["ANTHROPIC_API_KEY"] == "sub2api-entry"
+    assert launch["env"]["HTTPS_PROXY"] == "http://127.0.0.1:43117"
+    assert launch["env"]["NODE_EXTRA_CA_CERTS"].endswith("control-plane-stub-ca.pem")
+    assert Path(launch["env"]["NODE_EXTRA_CA_CERTS"]).exists()
+    assert launch["env"]["ENABLE_TOOL_SEARCH"] == "auto"
     assert "route-hint-preload.cjs" in launch["env"]["NODE_OPTIONS"]
     assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD"] == "enabled"
     assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "route-hint-secret"

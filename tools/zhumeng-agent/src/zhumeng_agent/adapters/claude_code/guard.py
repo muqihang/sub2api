@@ -40,6 +40,8 @@ class NativeGuardConfig:
     control_plane_intent_auth: str | None = field(default=None, repr=False)
     capture_level: str = "summary"
     connect_mode: str | None = None
+    cert_path: Path | None = None
+    key_path: Path | None = None
     max_messages: int = 0
     attestation_secret: str | None = field(default=None, repr=False)
     attestation_key_id: str = "guard_v1"
@@ -151,6 +153,10 @@ def build_native_guard_plan(
     ]
     if config.allow_nonloopback_upstream:
         command.append("--allow-nonloopback-upstream")
+    if config.cert_path is not None:
+        command.extend(["--cert-path", str(config.cert_path)])
+    if config.key_path is not None:
+        command.extend(["--key-path", str(config.key_path)])
     if config.managed_session_id:
         command.extend(["--managed-session", config.managed_session_id])
     if config.device_id is not None:

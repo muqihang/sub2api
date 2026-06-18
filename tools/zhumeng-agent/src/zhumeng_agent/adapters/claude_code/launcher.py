@@ -128,6 +128,7 @@ def run_managed_claude_code(
     safe_profile_id = safe_profile_segment(profile_id)
     summary_path = config_root / "claude-code" / safe_profile_id / "native-guard-summary.jsonl"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
+    cert_path, key_path = _ensure_control_plane_stub_cert(config_root, profile_id=safe_profile_id)
     guard_config = NativeGuardConfig(
         mode=mode,
         listen_port=guard_listen_port,
@@ -135,6 +136,9 @@ def run_managed_claude_code(
         sub2api_auth=sub2api_auth,
         summary_path=summary_path,
         repo_root=repo_root,
+        connect_mode="stub",
+        cert_path=cert_path,
+        key_path=key_path,
         attestation_secret=attestation_secret,
         route_hint_secret=route_hint_secret,
         route_hint_catalog_version=route_hint_catalog_version,
@@ -154,6 +158,7 @@ def run_managed_claude_code(
             zhumeng_entry_api_key=sub2api_auth,
             config_dir=build_isolated_config_dir(config_root, profile_id=safe_profile_id),
             capture_mode=CaptureMode.PRODUCTION,
+            node_extra_ca_certs=cert_path,
         )
         launch_plan = build_claude_code_launch_plan(
             executable=executable,
@@ -191,6 +196,71 @@ def run_managed_claude_code(
 
 def _default_process_runner(command: list[str], *, env: Mapping[str, str], cwd: str | None) -> int:
     return subprocess.call(command, env=dict(env), cwd=cwd)
+
+
+def _ensure_control_plane_stub_cert(config_root: Path, *, profile_id: str) -> tuple[Path, Path]:
+    cert_dir = config_root / "claude-code" / profile_id / "certs"
+    cert_path = cert_dir / "control-plane-stub-ca.pem"
+    key_path = cert_dir / "control-plane-stub-ca.key"
+    if cert_path.exists() and key_path.exists():
+        return cert_path, key_path
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    openssl_config = cert_dir / "control-plane-stub-openssl.cnf"
+    openssl_config.write_text(
+        """
+[req]
+default_bits = 2048
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = Zhumeng Claude Code Control Plane Guard
+
+[v3_req]
+subjectAltName = @alt_names
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, digitalSignature, keyEncipherment, keyCertSign, cRLSign
+extendedKeyUsage = serverAuth
+
+[alt_names]
+DNS.1 = api.anthropic.com
+DNS.2 = platform.claude.com
+DNS.3 = claude.ai
+DNS.4 = claude.com
+DNS.5 = mcp-proxy.anthropic.com
+""".lstrip(),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-sha256",
+            "-nodes",
+            "-days",
+            "7",
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-config",
+            str(openssl_config),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        key_path.chmod(0o600)
+        openssl_config.chmod(0o600)
+        cert_path.chmod(0o644)
+    except OSError:
+        pass
+    return cert_path, key_path
 
 
 def _write_route_hint_preload_artifacts(
