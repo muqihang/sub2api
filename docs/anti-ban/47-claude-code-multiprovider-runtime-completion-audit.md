@@ -50,6 +50,8 @@ uv run zhumeng-claude start --project-cwd /path/to/project
 
 This start path uses the managed state above and points the Claude Code Runtime at the local Sub2API gateway (`3012`) through the loopback guard. It does not ask the operator to paste official Anthropic/OpenAI/DeepSeek provider keys directly into Claude Code Runtime.
 
+Non-message startup smoke was run from this worktree with `uv run zhumeng-claude start -- --version`. It exited successfully with Claude Code `2.1.177`, `returncode=0`, `guard.attested=true`, `guard.route_hint_contract=true`, both `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_API_BASE_URL` pointed at the ephemeral loopback guard, and `runtime.bridge_live_models=[]`. This smoke verifies the managed launcher/guard/base-url wiring without sending a live `/v1/messages` prompt to the formal pool.
+
 ## Checkpoint evidence
 
 | CP | Evidence | Required tests / fixtures |
@@ -152,6 +154,11 @@ python3 -m unittest \
 
 python3 tools/claude_code_runtime_canary_config.py --dry-run --target http://127.0.0.1:3017
 # disabled bridge placeholders only; writes_enabled=false
+
+
+cd tools/zhumeng-agent
+uv run zhumeng-claude start -- --version
+# Claude Code 2.1.177; guard attested=true; route_hint_contract=true; base URLs point to loopback guard; bridge_live_models=[]
 
 cd backend
 go test ./internal/service -run 'AnthropicAPIKeyPassthrough|CCGatewayControlPlane|CCGatewayAnthropicAPIKeyPassthrough|ClaudeCodeNativeAttestationAcceptsCountTokensBetaRoute' -count=1
