@@ -644,29 +644,64 @@ def test_active_runtime_bridge_live_models_fail_closed_on_missing_or_malformed_a
     }) == ()
 
 
-def test_active_runtime_bridge_live_models_only_allows_cp4_catalog_verified_bridge_models():
+def test_active_runtime_bridge_live_models_requires_catalog_metadata_not_model_version_hardcoding():
+    assert cli._active_runtime_bridge_live_models({
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": ["gpt-5.5", "deepseek-v4-pro"],
+    }) == ()
+
+
+def test_active_runtime_bridge_live_models_allows_catalog_verified_bridge_models_from_any_provider():
     assert cli._active_runtime_bridge_live_models({
         "live_bridge_models_enabled": True,
         "live_bridge_model_allowlist": [
             "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
             "deepseek-v4-pro",
-            "deepseek-v4-pro[1m]",
-            "deepseek-v4-flash",
-            "agnes-1",
-            "glm-5.1",
+            "glm-5.2",
             "kimi-k2",
             "claude-opus-4-8",
+            "unsafe-bridge",
             "gpt-5.5",
         ],
-    }) == (
-        "gpt-5.5",
-        "gpt-5.4-mini",
-        "deepseek-v4-pro",
-        "deepseek-v4-pro[1m]",
-        "deepseek-v4-flash",
-    )
+        "live_bridge_model_catalog": {
+            "gpt-5.5": {
+                "route": "claude_code_bridge_openai",
+                "client_type": "claude_code_bridge_openai",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+            "deepseek-v4-pro": {
+                "route": "claude_code_bridge_deepseek",
+                "client_type": "claude_code_bridge_deepseek",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+            "glm-5.2": {
+                "route": "claude_code_bridge_zai",
+                "client_type": "claude_code_bridge_zai",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+            "kimi-k2": {
+                "route": "claude_code_bridge_kimi",
+                "client_type": "claude_code_bridge_kimi",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+            "claude-opus-4-8": {
+                "route": "claude_code_native",
+                "client_type": "claude_code_native",
+                "live_enabled": True,
+                "formal_pool_eligible": True,
+            },
+            "unsafe-bridge": {
+                "route": "claude_code_bridge_openai",
+                "client_type": "claude_code_native",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+        },
+    }) == ("gpt-5.5", "deepseek-v4-pro", "glm-5.2", "kimi-k2")
 
 
 def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Path, monkeypatch):
@@ -697,7 +732,24 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     managed_executable, runtime_hash, overlay_hash = write_fake_claude_runtime(
         runtime_root,
         tmp_path / "managed-runtime" / "claude",
-        patches={"live_bridge_models_enabled": True, "live_bridge_model_allowlist": ["gpt-5.5", "deepseek-v4-pro", "agnes-1"]},
+        patches={
+            "live_bridge_models_enabled": True,
+            "live_bridge_model_allowlist": ["gpt-5.5", "deepseek-v4-pro", "agnes-1"],
+            "live_bridge_model_catalog": {
+                "gpt-5.5": {
+                    "route": "claude_code_bridge_openai",
+                    "client_type": "claude_code_bridge_openai",
+                    "live_enabled": True,
+                    "formal_pool_eligible": False,
+                },
+                "deepseek-v4-pro": {
+                    "route": "claude_code_bridge_deepseek",
+                    "client_type": "claude_code_bridge_deepseek",
+                    "live_enabled": True,
+                    "formal_pool_eligible": False,
+                },
+            },
+        },
     )
 
     calls = []

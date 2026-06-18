@@ -1520,12 +1520,25 @@ def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[s
     if patches.get("live_bridge_models_enabled") is not True:
         return ()
     raw = patches.get("live_bridge_model_allowlist")
-    if not isinstance(raw, list):
+    catalog = patches.get("live_bridge_model_catalog")
+    if not isinstance(raw, list) or not isinstance(catalog, Mapping):
         return ()
     allowed = []
     for item in raw:
         model = str(item).strip()
-        if model in {"gpt-5.5", "gpt-5.4-mini", "deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"}:
+        if not model:
+            continue
+        metadata = catalog.get(model)
+        if not isinstance(metadata, Mapping):
+            continue
+        route = str(metadata.get("route") or "")
+        client_type = str(metadata.get("client_type") or "")
+        if (
+            route.startswith("claude_code_bridge_")
+            and client_type == route
+            and metadata.get("live_enabled") is True
+            and metadata.get("formal_pool_eligible") is False
+        ):
             allowed.append(model)
     return tuple(dict.fromkeys(allowed))
 
