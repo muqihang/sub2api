@@ -2966,6 +2966,29 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
 
+	reasoningDecision := evaluateOpenAIReasoningEffortGuard(body)
+	if reasoningDecision.Blocked {
+		setOpenAIRuntimeGuardReasoningMetadata(c, reasoningDecision)
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		writeOpenAIReasoningEffortGuardBlockedResponse(c, reasoningDecision)
+		return nil, fmt.Errorf("openai runtime guard blocked reasoning_effort: %s", reasoningDecision.From)
+	}
+	if reasoningDecision.Repaired {
+		repairedBody, repairErr := sjson.SetBytes(body, reasoningDecision.Path, reasoningDecision.To)
+		if repairErr != nil {
+			return nil, fmt.Errorf("repair openai reasoning_effort: %w", repairErr)
+		}
+		body = repairedBody
+		originalBody = repairedBody
+		requestView = newOpenAIRequestView(body)
+		reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
+		originalModel = reqModel
+		setOpenAIRuntimeGuardReasoningMetadata(c, reasoningDecision)
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Runtime guard normalized reasoning effort: %s -> %s (path: %s, account: %s)", reasoningDecision.From, reasoningDecision.To, reasoningDecision.Path, account.Name)
+	} else {
+		setOpenAIRuntimeGuardReasoningMetadata(c, reasoningDecision)
+	}
+
 	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
 		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
 	}
@@ -3139,11 +3162,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			markPatchSet("model", upstreamModel)
 		}
 	}
-	if strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()) == "minimal" {
-		markPatchSet("reasoning.effort", "none")
-		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized reasoning.effort: minimal -> none (account: %s)", account.Name)
-	}
-
 	imageIntent = imageIntent || IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, nil) || isOpenAIImageGenerationModel(upstreamModel)
 	if imageIntent && !imageGenerationAllowed {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
@@ -8091,11 +8109,13 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
 
 	switch value {
-	case "none", "minimal":
-		return ""
+	case "none":
+		return "none"
+	case "minimal":
+		return "none"
 	case "low", "medium", "high":
 		return value
-	case "xhigh", "extrahigh":
+	case "xhigh", "extrahigh", "max", "maximum":
 		return "xhigh"
 	default:
 		// Only store known effort levels for now to keep UI consistent.

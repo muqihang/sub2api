@@ -1,13 +1,21 @@
 package service
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type openAIRuntimeGuardFixtureCatalog struct {
@@ -293,4 +301,169 @@ func TestOpenAIRuntimeGuardMockUpstreamHarnessCountsCalls(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOpenAIRuntimeGuardReasoningEffortDecisionAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		path string
+		want string
+	}{
+		{name: "flat max", body: []byte(`{"reasoning_effort":"max"}`), path: "reasoning_effort", want: "xhigh"},
+		{name: "flat maximum", body: []byte(`{"reasoning_effort":"maximum"}`), path: "reasoning_effort", want: "xhigh"},
+		{name: "flat x-high", body: []byte(`{"reasoning_effort":"x-high"}`), path: "reasoning_effort", want: "xhigh"},
+		{name: "flat x_high", body: []byte(`{"reasoning_effort":"x_high"}`), path: "reasoning_effort", want: "xhigh"},
+		{name: "nested minimal", body: []byte(`{"reasoning":{"effort":"minimal"}}`), path: "reasoning.effort", want: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := evaluateOpenAIReasoningEffortGuard(tt.body)
+			require.True(t, decision.Repaired, "%#v", decision)
+			require.False(t, decision.Blocked, "%#v", decision)
+			require.Equal(t, tt.path, decision.Path)
+			require.Equal(t, tt.want, decision.To)
+			require.Equal(t, "reasoning.unsupported_effort_repaired", decision.Category)
+			require.Equal(t, "openai_runtime_guard.repaired.reasoning_effort", decision.Metric)
+		})
+	}
+}
+
+func TestOpenAIRuntimeGuardReasoningEffortDecisionValidValuesPass(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "none"} {
+		t.Run(effort, func(t *testing.T) {
+			body := []byte(`{"reasoning_effort":"` + effort + `"}`)
+			decision := evaluateOpenAIReasoningEffortGuard(body)
+			require.False(t, decision.Blocked, "%#v", decision)
+			require.False(t, decision.Repaired, "%#v", decision)
+		})
+	}
+}
+
+func TestOpenAIRuntimeGuardReasoningEffortDecisionBlocksUnknown(t *testing.T) {
+	decision := evaluateOpenAIReasoningEffortGuard([]byte(`{"reasoning_effort":"hyperdrive"}`))
+
+	require.True(t, decision.Blocked)
+	require.False(t, decision.Repaired)
+	require.Equal(t, http.StatusBadRequest, decision.Status)
+	require.Equal(t, "reasoning.unknown_effort", decision.Category)
+	require.Equal(t, "openai_runtime_guard.blocked.reasoning_effort", decision.Metric)
+	require.Equal(t, "reasoning_effort", decision.Path)
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardRepairsReasoningEffortBeforeUpstream(t *testing.T) {
+	for _, effort := range []string{"max", "maximum", "x-high", "x_high"} {
+		t.Run(effort, func(t *testing.T) {
+			upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+			body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","prompt_cache_key":"cache-a","reasoning_effort":"` + effort + `","input":"hi"}`)
+
+			result, err := svc.Forward(context.Background(), c, account, body)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, upstream.bodies, 1)
+			require.Equal(t, "xhigh", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+			require.Equal(t, "xhigh", derefString(result.ReasoningEffort))
+			require.Equal(t, "cache-a", gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+			requireOpenAIRuntimeGuardMetadata(t, c, "repair", "reasoning.unsupported_effort_repaired", "openai_runtime_guard.repaired.reasoning_effort")
+		})
+	}
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardRepairsNestedMinimalToNone(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning":{"effort":"minimal"},"input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "none", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+	require.Equal(t, "none", derefString(result.ReasoningEffort))
+	requireOpenAIRuntimeGuardMetadata(t, c, "repair", "reasoning.unsupported_effort_repaired", "openai_runtime_guard.repaired.reasoning_effort")
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksUnknownReasoningEffortBeforeUpstream(t *testing.T) {
+	upstream, rec, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning_effort":"hyperdrive","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 0)
+	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
+	require.JSONEq(t, `{"error":{"type":"invalid_request_error","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`, rec.Body.String())
+	requireOpenAIRuntimeGuardMetadata(t, c, "block", "reasoning.unknown_effort", "openai_runtime_guard.blocked.reasoning_effort")
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardLeavesValidEffortAndScopesPromptCacheKey(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	entityCtx := WithResolvedEntity(c.Request.Context(), &ResolvedEntity{Entity: Entity{EntityKey: "team-alpha"}})
+	c.Request = c.Request.WithContext(entityCtx)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","prompt_cache_key":"shared-cache","reasoning_effort":"high","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "high", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+	require.Equal(t, "high", derefString(result.ReasoningEffort))
+	require.Equal(t, EntityScopedSeed("team-alpha", "shared-cache"), gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String())
+	requireOpenAIRuntimeGuardMetadata(t, c, "pass", "reasoning.valid_effort", "openai_runtime_guard.passed.reasoning_effort")
+}
+
+func newOpenAIRuntimeGuardForwardHarness(t *testing.T) (*httpUpstreamRecorder, *httptest.ResponseRecorder, *gin.Context, *OpenAIGatewayService, *Account) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_runtime_guard"}},
+		Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":11,"output_tokens":7,"input_tokens_details":{"cached_tokens":3}}}`)),
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID:          6101,
+		Name:        "openai-apikey-runtime-guard",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://example.com",
+		},
+		Extra: map[string]any{"use_responses_api": true},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", bytes.NewReader(nil))
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	return upstream, rec, c, svc, account
+}
+
+func requireOpenAIRuntimeGuardMetadata(t *testing.T, c *gin.Context, action, category, metric string) {
+	t.Helper()
+	rawMeta, ok := c.Get(OpenAIRuntimeGuardMetadataKey)
+	require.True(t, ok)
+	metadata, ok := rawMeta.(OpenAIRuntimeGuardMetadata)
+	require.True(t, ok)
+	require.Equal(t, action, metadata.Action)
+	require.Equal(t, category, metadata.Category)
+	require.Equal(t, metric, metadata.Metric)
+	require.Equal(t, "reasoning_effort", metadata.Field)
+	raw, err := json.Marshal(metadata)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "input")
+}
+
+func derefString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
