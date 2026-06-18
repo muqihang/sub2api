@@ -15,6 +15,9 @@
 - Work only in `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime` for Sub2API changes.
 - Do not edit the main Sub2API worktree.
 - Do not stop, rebuild, or restart existing `3012`.
+- Treat `http://198.12.67.185:18080` as a production-side Sub2API main + CC Gateway main composite ingress that already has real Claude subscription formal-pool accounts. It is exposed for local development/testing because the server-side account DB cannot be migrated locally, but it is not a mock endpoint.
+- Local Claude Code control-plane work must complement, not bypass, server-side CC Gateway protection: local guard/Sub2API classifies and sanitizes requests into safe intent or approved native/auxiliary routes; server-side Sub2API + CC Gateway remains responsible for selected-pool-account identity, persona, egress bucket, upstream upload, synthetic telemetry gates, and final formal-pool safety.
+- Do not send prompts, raw bodies, raw telemetry/eval, raw CCH, local Authorization/cookies/API keys, or local `x-sub2api-*` trust headers to `http://198.12.67.185:18080` as ordinary passthrough. Any live control-plane upload/canary against this endpoint requires a matrix row, localhost/mock replay, and explicit approval if it can exercise real pool accounts.
 - Treat the current Postgres database as shared by `3012` and `3017` until proven otherwise.
 - Do **not** mutate existing production-visible records such as account `132` in place while the DB is shared.
 - Canary DB changes must use disabled placeholders, cloned canary-only records, or 3017-only feature gates. Anything that can affect `3012` requires explicit user confirmation.
@@ -23,6 +26,7 @@
 - Run tests/builds serially, not in parallel.
 - Do not delete files/directories, run `git reset`, `git clean`, `git rebase`, `git checkout --`, `git restore`, `sudo`, `chmod -R`, or `chown -R` without user confirmation.
 - If CC Gateway code must change, first create a CC Gateway worktree from `/Users/muqihang/chelingxi_workspace/cc-gateway` at `/Users/muqihang/chelingxi_workspace/cc-gateway/.worktrees/claude-code-runtime-formal-pool-bridge-repair` on branch `codex/claude-code-runtime-formal-pool-bridge-repair`, then index it with CodeGraph. Do not edit CC Gateway main.
+- If server-side Sub2API main needs changes beyond this local runtime worktree, do not edit or deploy the server-side main directly. Create a separate approved server-side worktree/branch plan first, with rollback and deployment approval.
 
 ---
 
@@ -31,10 +35,11 @@
 1. `3017` currently runs a canary Sub2API binary but appears to use the same Postgres/data volume as `3012`.
 2. DB has `zhumeng-claude-code-native` group, but no Claude Code bridge-specific groups yet.
 3. Account `132` (`zhumeng-claude-code-native-upstream`) is currently an ordinary Anthropic API-key passthrough to `http://198.12.67.185:18080`. Do not edit it in place while DB is shared.
-4. Local app-level `gateway.ccgateway.enabled/base_url/token/providers.anthropic` is not currently configured for 3017.
-5. Current `shouldForwardClientHeaderToAnthropic` forwards local Claude Code native attestation/signature/internal headers; this conflicts with docs 46/47.
-6. CC Gateway sub2api mode expects `x-cc-gateway-token`, selected account ref, provider, token type, policy version, egress bucket, and trusted persona/context headers. It should not trust local guard attestation headers.
-7. Lab captures show control-plane families beyond `/v1/messages`: `count_tokens`, event logging, eval, bootstrap, penguin mode, MCP registry, organizations, and web domain info.
+4. The `18080` endpoint is already the server-side production Sub2API + CC Gateway stack. The local gap is not cloud-side CC Gateway absence; the gap is local Claude Code control-plane classification and the trust contract between local Sub2API/guard and the server-side Sub2API + CC Gateway.
+5. Local app-level `gateway.ccgateway.enabled/base_url/token/providers.anthropic` is not currently configured for 3017.
+6. Current `shouldForwardClientHeaderToAnthropic` forwards local Claude Code native attestation/signature/internal headers; this conflicts with docs 46/47.
+7. CC Gateway sub2api mode expects `x-cc-gateway-token`, selected account ref, provider, token type, policy version, egress bucket, and trusted persona/context headers. It should not trust local guard attestation headers.
+8. Lab captures show control-plane families beyond `/v1/messages`: `count_tokens`, event logging, eval, bootstrap, penguin mode, MCP registry, organizations, and web domain info.
 
 ---
 
@@ -90,6 +95,9 @@
 
 ### Docs
 
+- Create/modify: `docs/anti-ban/47-claude-code-control-plane-classification-matrix.md`
+  - Mandatory design gate before control-plane code changes. It records path family, capture evidence, sensitive-risk class, launch action, future production action, safe-intent/upload policy, cache/TTL/isolation, CC Gateway cooperation point, fail-closed conditions, fixtures, and tests.
+
 - `docs/anti-ban/47-claude-code-multiprovider-runtime-completion-audit.md`
   - Record safe evidence, tests, and remaining risks.
 
@@ -99,6 +107,84 @@
 - Likely files if needed: `src/proxy.ts`, `src/policy.ts`, `src/rewriter.ts`, and corresponding tests.
 
 ---
+
+## Control-Plane Classification Design Baseline
+
+This baseline is part of the execution plan. Before any new control-plane code change, Task 5A must turn it into a committed matrix by comparing Claude Code CLI lab captures (2.1.150, 2.1.175, 2.1.177 where available), docs 30/35/38/45/46/47, the Python guard policy, the Go control-plane router, and CC Gateway main behavior.
+
+The design intent is not "never upload anything" and not "pass everything". The intent is a two-stage contract:
+
+```text
+Local Claude Code CLI request
+  -> local loopback guard classifies path/method/host
+  -> local guard strips local credentials and emits safe intent or approved native/auxiliary route
+  -> local Sub2API verifies local attestation and applies route contract
+  -> server-side Sub2API + CC Gateway binds selected formal-pool account/persona/egress bucket
+  -> only matrix-approved upstream fetch/upload/synthetic behavior can reach real formal-pool accounts
+```
+
+Required matrix columns:
+
+```text
+family
+method
+path_template
+host_bucket
+capture_evidence_versions
+capture_or_fixture_sources
+sensitive_risk
+launch_action_local_guard
+launch_action_sub2api
+server_side_cc_gateway_cooperation
+future_production_action
+upstream_identity
+raw_request_body_policy
+raw_response_policy
+safe_intent_fields
+cache_scope
+cache_ttl_seconds
+cache_partition_keys
+stale_policy
+schema_allowlist
+synthetic_or_shadow_eligibility
+fail_closed_conditions
+test_fixtures
+targeted_tests
+live_canary_gate
+formal_pool_impact
+bridge_pool_impact
+codex_gateway_impact
+```
+
+Initial classification table:
+
+| Family | Method / path template | Launch action | Future production target | Raw policy | Cache / isolation | CC Gateway cooperation | Fixture/test requirement |
+|---|---|---|---|---|---|---|---|
+| Native messages | `POST /v1/messages?beta=true`; `POST /v1/messages` with equivalent Anthropic beta header | Forward only through loopback guard -> local Sub2API -> server Sub2API/CC Gateway boundary; no direct official egress | CC Gateway sign-primary with selected formal-pool account | Messages body transient upstream only; never logged/persisted | No cache; session budget ledger | `x-cc-*`/selected account/persona/egress bucket; no local `x-sub2api-*` passthrough | native shape, ToolSearch/defer_loading preservation, no local marker leak |
+| Native count tokens | `POST /v1/messages/count_tokens` with/without `beta=true` | Stub/local safe response unless explicit native auxiliary route is approved | Selected formal-pool account via CC Gateway auxiliary/control-plane path if proven | Prompt-like body transient only if approved; no logs/digests | No shared cache unless prompt-free summary | Separate from messages CCH; native-only admission | startup probe, no prompt leak, bridge denied |
+| Telemetry event logging | `POST /api/event_logging/v2/batch`; legacy `/api/event_logging/batch` | Safe intent + local 204/suppress; discard raw body | Synthetic telemetry only after schema registry, localhost replay, and separate real-pool approval | Never raw upload; no raw digest/hash | No response cache; scoped safe counters only | CC Gateway synthetic adapter only when enabled by policy | telemetry intent fixture, scanner, unknown field quarantine |
+| Eval | `POST /api/eval/*` | Suppress 204 or quarantine | Default suppress; future upload requires separate design approval | Never raw upload | None | None by default | eval suppress and path-template sanitizer |
+| Bootstrap / hello | `GET /api/claude_cli/bootstrap`; `GET /api/hello`; `GET /v1/oauth/hello` | Stub safe JSON + safe intent | Account-scoped cached fetch after schema allowlist | No body; no local auth passthrough | session/user partition; short TTL; stale only if approved | selected account/persona if upstream fetch enabled | query variants, response private-field scanner |
+| Feature flags / Claude Code flags | `GET /api/claude_code_penguin_mode`; `GET /api/claude_code_feature_flags`; `GET /api/claude_code_grove`; reviewed `GET /api/claude_code_*` | Explicit path rows stub or block; wildcard quarantine | Account-scoped cached fetch per explicit schema | No body | user/session + persona/version/beta partition | selected account/persona; no wildcard pass | per-path fixture plus wildcard negative |
+| Organization / org metrics | `GET /api/claude_code/organizations/{org}` and metrics variants | Block/stub safe intent; do not trust client org id | Only if org/account id is rebuilt from selected pool account metadata | No body; no raw org id in logs/intent | account/session partition; no stale default | selected account metadata rebuild | org redaction fixture |
+| OAuth account/settings/org/referral | `GET /api/oauth/account/settings`; `/api/oauth/organizations/{org}/...` | Block unless matrix enables strict fixture | Account-scoped cached fetch after schema/private-field gates | No body; no raw account/org/user IDs | account/user/session partition; no stale default | selected account only | blocked fixture and future allowlist fixture |
+| MCP registry public | `GET /mcp-registry/v0/servers`; explicit public `/mcp-registry/*` | Public stub/cache; no auth forwarding | Public cached fetch with response allowlist | No body | public cache; reviewed TTL | public egress or no selected account | no-auth forwarding, private-field scanner |
+| MCP servers account list | `GET /v1/mcp_servers` | Empty stub + safe intent | Account/user/session isolated cached fetch after schema allowlist | No body | user/session partition; short TTL | selected account if enabled | empty stub and credential-deny fixtures |
+| Web/domain info | `GET /api/web/domain_info` | Stub/block safe intent until query/schema reviewed | Possible public/account fetch after review | No body; no raw queried domain in logs | TBD, default none | TBD by row | domain query redaction fixture |
+| Policy limits / remote settings / model capabilities / GrowthBook | exact paths from capture/source only | Block/quarantine until explicit row exists | Separate row per path with schema allowlist | No body by default | partition by account/user/session/persona as needed | selected account/persona if enabled | exact-path fixtures; unknown path negative |
+| Settings sync / team memory sync | explicit captured paths only | Block/quarantine | Separate design because user-private state | No raw private state | user/session partition if ever enabled; no stale default | selected account only after approval | unknown drift fixture |
+| Direct CONNECT / official host bypass | `CONNECT api.anthropic.com:443`, Claude hosts, MCP proxy hosts, non-Anthropic telemetry hosts | CONNECT stub only where needed; never raw tunnel for messages | no direct official egress from local CLI | Never via tunnel | None | all real egress via local/server Sub2API + CC Gateway | netwatch bypass and no-tunnel tests |
+| Unknown drift | any unlisted method/path/host/query | quarantine/block + safe drift summary | requires review before allow/stub/fetch | Never | None | none | fuzz unknown tests |
+
+Control-plane implementation must preserve these invariants:
+
+1. All control-plane requests become safe intent first unless they are a matrix-approved native auxiliary route.
+2. "Upload" means safe intent to Sub2API or matrix-approved sanitized upstream behavior; it never means raw local credential/body passthrough.
+3. Safe GET/public paths may later use selected formal-pool identity or public egress with schema allowlists and scoped cache.
+4. High-risk POST telemetry/eval never raw-upload; synthetic/shadow is a later gated module.
+5. Unknown drift is permanently fail-closed until classified.
+6. Control-plane never reuses messages CCH signing, never falls back into messages, and never causes bridge traffic to enter native formal-pool.
+7. Because `18080` has real pool accounts, live remote control-plane canaries require matrix row + localhost/mock replay + explicit approval.
 
 ## Task 0: Freeze Safe Evidence Before Edits
 
@@ -253,20 +339,21 @@ Expected: commit succeeds in Sub2API worktree only.
 
 ---
 
-## Task 2: Decide Remote Formal-Pool Ingress Type
+## Task 2: Confirm Server-Side Composite Ingress Contract
 
 **Files:** none unless docs are updated later.
 
-- [ ] **Step 2.1: Probe remote endpoint type safely**
+- [ ] **Step 2.1: Confirm remote contract from code/config evidence first**
 
-Use safe health-style probes only; do not send prompt/body/key values:
+Assume `http://198.12.67.185:18080` is the production-side Sub2API main + CC Gateway main composite ingress with real formal-pool accounts. Do not use live `/v1/messages`, `/v1/messages/count_tokens`, or control-plane paths as discovery probes. Confirm the expected contract from repository code, safe deployment notes, and redacted config shape:
 
-```bash
-curl -sS -i http://198.12.67.185:18080/_health | sed -n '1,20p'
-curl -sS -i http://198.12.67.185:18080/health | sed -n '1,20p'
+```text
+local guard trust material: local-only `x-sub2api-*`
+local Sub2API -> server Sub2API/CCGateway trust material: explicit gateway contract, not ordinary Anthropic passthrough
+server Sub2API/CC Gateway -> Anthropic formal-pool: selected account/persona/egress bucket/CCH or control-plane policy
 ```
 
-Expected: identify whether remote looks like CC Gateway or Sub2API.
+If an HTTP probe is unavoidable, use only no-auth/no-body health-style status/header-name checks with a short timeout. Do not send keys, prompts, request bodies, local attestation headers, or raw control-plane payloads.
 
 - [ ] **Step 2.2: Inspect 3017 container config shape without raw config lines**
 
@@ -294,13 +381,14 @@ PY
 
 Expected: know whether app-level CCGateway config is present without exposing secrets.
 
-- [ ] **Step 2.3: Choose one branch**
+- [ ] **Step 2.3: Choose local-to-server contract branch**
 
-Decision rules:
+Decision rules now assume the remote is the production-side Sub2API + CC Gateway composite stack:
 
-- If remote is CC Gateway-compatible and mandatory gateway token/config are available: use Task 3A with canary-only cloned records, not account `132`.
-- If remote is Sub2API and cannot accept CC Gateway headers: stop at Task 3B design gate; no implementation/deployment without user approval.
-- If remote requires CC Gateway code changes: perform Task 2.4 before any CC Gateway edit.
+- If existing local Sub2API can be configured to talk to server-side Sub2API+CCGateway through an explicit gateway contract (`x-cc-*` or reviewed gateway-to-gateway proof), use Task 3A with canary-only local records, not account `132`.
+- If local code currently only supports ordinary Anthropic API-key passthrough to `18080`, fix local code/tests first; ordinary passthrough must not be used for native formal-pool or control-plane trust material.
+- If the server-side main code lacks an ingress contract needed by the local runtime, stop at Task 3B design gate; do not change/deploy server-side code until the user approves a CC Gateway/Sub2API worktree plan.
+- If CC Gateway or server-side Sub2API code changes are needed, perform Task 2.4 before any edit.
 - If DB isolation from 3012 is not proven: DB writes must be disabled placeholders or cloned canary-only records gated away from 3012.
 
 - [ ] **Step 2.4: Create CC Gateway worktree only if code changes are needed**
@@ -320,9 +408,9 @@ Expected: clean CC Gateway worktree, no edits in CC Gateway main.
 
 ---
 
-## Task 3A: Wire Local Sub2API to Remote CC Gateway Boundary
+## Task 3A: Wire Local Sub2API to Server-Side Sub2API + CC Gateway Boundary
 
-Use only if Task 2 proves remote accepts CC Gateway-compatible ingress.
+Use only if Task 2 confirms an explicit local-to-server gateway contract is available or can be implemented locally without server-side deployment. Do not use ordinary Anthropic API-key passthrough as the native formal-pool trust boundary.
 
 **Files:**
 - Modify tests: `backend/internal/service/cc_gateway_adapter_test.go`
@@ -354,9 +442,9 @@ Expected before any needed implementation: fail if current behavior silently fal
 
 In `cc_gateway_adapter.go` / related path, preserve or tighten formal-pool fail-closed behavior. Formal-pool native accounts must never silently fall back to ordinary API-key passthrough when CC Gateway config is incomplete.
 
-- [ ] **Step 3A.3: Configure 3017 app-level CCGateway settings only in canary runtime**
+- [ ] **Step 3A.3: Configure 3017 app-level server-side gateway settings only in canary runtime**
 
-Do not edit shared raw config in a way that affects `3012`. Prefer canary container environment or a 3017-only config overlay.
+Do not edit shared raw config in a way that affects `3012`. Prefer canary container environment or a 3017-only config overlay. The setting names may remain `ccgateway` in local code, but semantically they point to the server-side Sub2API + CC Gateway composite ingress and must use a reviewed explicit gateway contract, not ordinary Anthropic passthrough.
 
 Required settings:
 
@@ -451,9 +539,9 @@ git commit -m "fix: route claude code native through cc gateway boundary"
 
 ---
 
-## Task 3B: Stop-and-Design Gate for Remote Sub2API Ingress
+## Task 3B: Stop-and-Design Gate for Missing Server-Side Ingress Contract
 
-Use only if Task 2 proves remote is Sub2API and cannot accept CC Gateway headers. This is not automatic implementation.
+Use only if Task 2 shows that server-side Sub2API + CC Gateway main lacks the explicit ingress contract required by the local Claude Code runtime. This is not automatic implementation or deployment.
 
 **Files:**
 - Design doc only until user approves remote-side changes.
@@ -481,7 +569,7 @@ Before code, specify:
 
 - [ ] **Step 3B.3: Stop for user approval**
 
-Do not implement/deploy server-to-server ingress until user approves the remote-side plan. If not approved, report that remote must expose a CC Gateway-compatible ingress for this local rollout.
+Do not implement/deploy server-side ingress until user approves the remote-side plan. If not approved, report that local runtime can only use local stub/mock or already-supported server-side contracts for this rollout.
 
 ---
 
@@ -559,61 +647,87 @@ git commit -m "feat: prepare disabled claude code bridge pool placeholders"
 
 ---
 
-## Task 5: Implement Control-Plane Classification
+## Task 5A: Control-Plane Classification Matrix Design Gate
+
+No control-plane code change may proceed until this task produces a reviewed, committed matrix. This is required because `18080` is the production-side Sub2API + CC Gateway stack with real formal-pool accounts, and because local Claude Code control-plane safety depends on a path-by-path contract with that server-side stack.
+
+**Files:**
+- Create/modify: `docs/anti-ban/47-claude-code-control-plane-classification-matrix.md`
+- Possible create: `tools/claude_code_control_plane_matrix.py` (safe scanner only; no raw output)
+- Possible tests: `tools/tests/test_claude_code_control_plane_matrix.py`
+
+- [ ] **Step 5A.1: Build a sanitized evidence index**
+
+Compare docs 30/35/38/45/46/47, safe capture deliverables/fragments for Claude Code CLI 2.1.150/2.1.175/2.1.177 where available, current Python guard policy, current Go control-plane router, and CC Gateway main policy. Output only source file, declared capture version, method, path template, host bucket, header names, query key names, body-size bucket, allowlisted schema key names, and expected action. Do not output raw body, raw query values, Authorization, `x-api-key`, cookies, CCH, prompt/messages, telemetry payloads, email, account/org/user UUIDs, proxy credentials, or deterministic body hashes.
+
+- [ ] **Step 5A.2: Write the matrix document**
+
+The matrix document must include:
+
+1. Scope and assumptions: `3012/3017` are local development/testing; `18080` is production-side Sub2API + CC Gateway with real formal-pool accounts.
+2. Evidence inventory for 2.1.150, 2.1.175, and 2.1.177 where available; missing evidence becomes `evidence_gap` and keeps that row blocked/stubbed.
+3. Every required matrix column from the baseline.
+4. Rows for: native messages, native count_tokens, event_logging v2/legacy, eval, bootstrap/hello/oauth hello, Claude Code feature flags, OAuth account settings, OAuth org/referral, Claude Code organizations, MCP public registry, MCP private servers, web/domain info, policy limits, remote managed settings, model capabilities, GrowthBook/feature gates, settings sync, team memory sync, official-domain CONNECT/non-Anthropic telemetry egress, unknown drift.
+5. A "server-side CC Gateway cooperation" section for each family: selected account, persona/profile, egress bucket, `x-cc-*`/gateway-to-gateway proof, response schema verification, synthetic telemetry status, and fail-closed behavior.
+6. A "not live yet" section for synthetic telemetry: schema registry, localhost replay, single-event real-pool approval, gray rollout, kill switch.
+7. A pool-isolation section for native formal-pool, Claude Code bridge pools, and Codex Gateway pools: allowed client type, route hint, account/group binding, model catalog visibility, audit namespace, and forbidden cross-use.
+8. Fixture list and targeted tests for every row.
+
+- [ ] **Step 5A.3: Review the matrix before code**
+
+Self-check:
+
+```text
+no row raw-uploads telemetry/eval
+no row forwards local user Authorization/cookie/x-api-key
+no row sends local x-sub2api-* headers upstream as ordinary passthrough
+safe GET rows have schema allowlist + cache scope + partition keys
+unknown paths fail closed
+18080 live canary requires matrix row + localhost/mock replay + explicit approval
+bridge rows cannot enter native formal-pool
+Codex Gateway groups are not reused for Claude Code bridge/native pools
+```
+
+Then dispatch one read-only quality review agent for the matrix only. Do not run tests/builds in parallel. Fix any P0/P1 review issues.
+
+- [ ] **Step 5A.4: Commit the design gate**
+
+```bash
+git add docs/anti-ban/47-claude-code-control-plane-classification-matrix.md tools/claude_code_control_plane_matrix.py tools/tests/test_claude_code_control_plane_matrix.py
+git commit -m "docs: define claude code control-plane classification matrix"
+```
+
+If no scanner/test file is created, add only the matrix doc.
+
+## Task 5B: Implement Control-Plane Classification From the Matrix
 
 **Files:**
 - Modify: `tools/cli_control_plane_policy.py`
 - Modify: `tools/cli_control_plane_guard.py`
-- Modify tests: `tools/tests/test_cli_control_plane_policy.py`, `tools/tests/test_cli_control_plane_guard.py`, `tools/tests/test_cli_control_plane_network_safety.py`
+- Modify tests: `tools/tests/test_cli_control_plane_policy.py`, `tools/tests/test_cli_control_plane_guard.py`, `tools/tests/test_cli_control_plane_network_safety.py`, `tools/tests/test_cli_control_plane_intent.py`
+- Modify: `backend/internal/service/control_plane_policy.go`
+- Modify: `backend/internal/service/control_plane_path_matrix_config.go` only if the matrix schema needs new fields.
+- Modify tests: `backend/internal/service/control_plane_policy_test.go`, `backend/internal/service/control_plane_path_matrix_config_test.go`, `backend/internal/service/control_plane_intent_test.go`, `backend/internal/service/control_plane_cache_test.go`, `backend/internal/service/control_plane_quarantine_test.go`
+- Modify: `backend/internal/service/gateway_cc_gateway_control_plane_test.go`
+- CC Gateway files only if a separate CC Gateway worktree has been created and Task 5A identifies a required CC Gateway change.
 
-- [ ] **Step 5.1: Write route policy tests**
+- [ ] **Step 5B.1: Write route policy tests from the matrix**
 
-Cover:
+Cover launch actions exactly for messages, count_tokens, telemetry, eval, bootstrap/hello/oauth hello, Claude Code feature flags, organizations/org/referral, account settings, MCP registry, MCP servers, web/domain info, policy limits, remote settings, model capabilities, GrowthBook/feature gates, settings sync, team memory, official-host CONNECT, and unknown drift. Also assert safe intent output contains no raw secret, raw body, raw telemetry, prompt/messages, CCH, email, account/org/user UUID, path dynamic identifiers, or deterministic raw-body digest.
 
-```text
-POST /v1/messages?beta=true -> forward_messages
-POST /v1/messages without beta query but with anthropic-beta header -> explicit decision tested
-POST /v1/messages/count_tokens -> local_probe_stub or safe_count_tokens
-POST /api/event_logging/v2/batch -> suppress_shadow
-POST /api/event_logging/batch -> suppress_shadow
-POST /api/eval/* -> suppress_shadow
-GET/POST /api/claude_cli/bootstrap -> stub_safe_intent
-GET /api/claude_code_penguin_mode -> stub_safe_intent
-GET /mcp-registry/v0/servers -> public_registry_stub_or_cache
-/api/claude_code/organizations/{org} -> stub_safe_intent
-/api/web/domain_info -> stub_safe_intent
-settings/team_memory/sync -> block_shadow
-unknown -> block_quarantine
-```
+- [ ] **Step 5B.2: Implement Python guard policy**
 
-Also assert safe intent output contains no raw secret, raw body, raw telemetry, or prompt text.
+In `cli_control_plane_policy.py` and `cli_control_plane_guard.py`: match method + host bucket + path template; generate safe intent with only matrix-approved fields; suppress/stub/block per matrix; strip local credentials; discard raw telemetry/eval bodies immediately after safe schema extraction; route count_tokens separately from messages if matrix requires a startup stub; keep live remote control-plane upload disabled until explicit approval.
 
-- [ ] **Step 5.2: Implement policy matrix**
+- [ ] **Step 5B.3: Implement/align Go server matrix**
 
-In `cli_control_plane_policy.py`, match method + host bucket + path template and return:
+In Go control-plane policy files: align default rows with the committed matrix; reject unsafe raw/dynamic query values; enforce cache scope, TTL, partition keys, stale policy, and response allowlist; quarantine schema drift and private fields; ensure control-plane cannot enter messages/CCH signer or native formal-pool routing by accident; ensure telemetry/eval safe intent cannot include raw body hash/digest.
 
-- action;
-- raw forbidden flag;
-- cache scope and TTL when applicable;
-- quarantine behavior for unknown.
+- [ ] **Step 5B.4: Add CC Gateway comparison tests or stop at CC Gateway worktree gate**
 
-- [ ] **Step 5.3: Ensure guard emits safe intent only**
+If Task 5A says CC Gateway must change for formal-pool control-plane fetch/synthetic telemetry, create the separate CC Gateway worktree first, add tests there for route policy/header/persona/no messages CCH reuse, keep synthetic telemetry off by default, and do not deploy or point `3017`/`18080` to changed CC Gateway without user approval. If no CC Gateway code change is required for launch, document that launch uses local stub/suppress/cache only for unsupported control-plane families.
 
-Safe fields only:
-
-```text
-route template
-method
-host bucket
-header names
-auth presence shape
-body size bucket
-schema summary
-event name enum if safely extractable
-action/status
-```
-
-- [ ] **Step 5.4: Run targeted Python tests**
+- [ ] **Step 5B.5: Run targeted Python tests**
 
 Run serially:
 
@@ -622,18 +736,28 @@ cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-co
 python3 -m pytest tools/tests/test_cli_control_plane_policy.py -q
 python3 -m pytest tools/tests/test_cli_control_plane_guard.py -q
 python3 -m pytest tools/tests/test_cli_control_plane_network_safety.py -q
+python3 -m pytest tools/tests/test_cli_control_plane_intent.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5.5: Commit**
+- [ ] **Step 5B.6: Run targeted Go tests**
+
+Run serially:
 
 ```bash
-git add tools/cli_control_plane_policy.py tools/cli_control_plane_guard.py tools/tests/test_cli_control_plane_policy.py tools/tests/test_cli_control_plane_guard.py tools/tests/test_cli_control_plane_network_safety.py
-git commit -m "feat: classify claude code control-plane safely"
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime/backend
+go test ./internal/service -run 'ControlPlanePolicy|ControlPlanePathMatrix|ControlPlaneIntent|ControlPlaneCache|ControlPlaneQuarantine|CCGatewayControlPlane' -count=1
 ```
 
----
+Expected: PASS.
+
+- [ ] **Step 5B.7: Commit**
+
+```bash
+git add tools/cli_control_plane_policy.py tools/cli_control_plane_guard.py tools/tests/test_cli_control_plane_policy.py tools/tests/test_cli_control_plane_guard.py tools/tests/test_cli_control_plane_network_safety.py tools/tests/test_cli_control_plane_intent.py backend/internal/service/control_plane_policy.go backend/internal/service/control_plane_path_matrix_config.go backend/internal/service/control_plane_policy_test.go backend/internal/service/control_plane_path_matrix_config_test.go backend/internal/service/control_plane_intent_test.go backend/internal/service/control_plane_cache_test.go backend/internal/service/control_plane_quarantine_test.go backend/internal/service/gateway_cc_gateway_control_plane_test.go
+git commit -m "feat: classify claude code control-plane from matrix"
+```
 
 ## Task 6: Route Contract Before Bridge Live Enablement
 
@@ -868,7 +992,11 @@ Bridge live remains disabled until route trust contract is green and user-approv
 - [ ] Existing production-visible account `132` was not edited in place while 3017 shares DB with 3012.
 - [ ] Bridge placeholders are disabled/non-live before route contract is green.
 - [ ] Bridge model selection cannot enter formal-pool native path.
+- [ ] Control-plane classification matrix is committed before control-plane code changes.
 - [ ] Control-plane unknown drift blocks/quarantines.
+- [ ] High-risk telemetry/eval raw bodies never leave local guard and never get plain/deterministic hashes.
+- [ ] Safe GET control-plane rows have schema allowlists, cache TTL, partition keys, and stale policy.
+- [ ] Any live control-plane canary against `18080` has matrix row + localhost/mock replay + explicit approval because it has real formal-pool accounts.
 - [ ] Startup count_tokens probe does not break native CLI startup.
 - [ ] No official `api.anthropic.com` direct messages egress from local CLI.
 - [ ] No raw secrets/prompt/body/telemetry/CCH appear in logs, docs, commits, or final report.
