@@ -445,7 +445,22 @@ func shouldForwardClientHeaderToAnthropic(lowerKey string) bool {
 	if lowerKey == "accept-encoding" {
 		return false
 	}
+	if isSub2APILocalInternalHeader(lowerKey) {
+		return false
+	}
 	return allowedHeaders[lowerKey]
+}
+
+func isSub2APILocalInternalHeader(lowerKey string) bool {
+	if strings.HasPrefix(lowerKey, "x-sub2api-") {
+		return true
+	}
+	switch lowerKey {
+	case ClaudeCodeRouteHintHeader, ClaudeCodeRouteHintSignatureHeader:
+		return true
+	default:
+		return false
+	}
 }
 
 // GatewayCache 定义网关服务的缓存操作接口。

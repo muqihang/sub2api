@@ -1423,3 +1423,74 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingUpstreamReadErrorAft
 	require.True(t, result.clientDisconnect)
 	require.Equal(t, 8, result.usage.InputTokens)
 }
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_StripsLocalClaudeCodeInternalHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("Anthropic-Version", "2023-06-01")
+	c.Request.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14")
+	c.Request.Header.Set("X-App", "cli")
+	c.Request.Header.Set("X-Stainless-Lang", "js")
+	c.Request.Header.Set(ClaudeCodeNativeClientTypeHeader, ClaudeCodeNativeClientType)
+	c.Request.Header.Set(ClaudeCodeNativeGuardAttestedHeader, "true")
+	c.Request.Header.Set(ClaudeCodeNativeAttestationHeader, "encoded-native-attestation")
+	c.Request.Header.Set(ClaudeCodeNativeSignatureHeader, "encoded-native-signature")
+	c.Request.Header.Set(ClaudeCodeNativeLocalSessionRefHeader, "hmac-sha256:"+strings.Repeat("a", 64))
+	c.Request.Header.Set(ClaudeCodeNativeInboundRouteHeader, ClaudeCodeNativeRoute)
+	c.Request.Header.Set(ClaudeCodeNativeHealthcheckProfileHeader, ClaudeCodeNativeTakeoverHealthProfile)
+	c.Request.Header.Set(ClaudeCodeNativeRuntimeHashHeader, "sha256:"+strings.Repeat("1", 64))
+	c.Request.Header.Set(ClaudeCodeNativeOverlayHashHeader, "sha256:"+strings.Repeat("2", 64))
+	c.Request.Header.Set(ClaudeCodeNativeCatalogHashHeader, "sha256:"+strings.Repeat("3", 64))
+	c.Request.Header.Set(ClaudeCodeNativeCatalogVersionHeader, "cp4-cli-fixture-v1")
+	c.Request.Header.Set("x-sub2api-route", "claude_code_native")
+	c.Request.Header.Set("x-sub2api-route-catalog-version", "cp4-cli-fixture-v1")
+	c.Request.Header.Set("x-sub2api-bridge-forged", "claude_code_native")
+	c.Request.Header.Set(ClaudeCodeRouteHintHeader, "signed-route-hint")
+	c.Request.Header.Set(ClaudeCodeRouteHintSignatureHeader, "signed-route-signature")
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}},
+		},
+	}
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "upstream-key",
+			"base_url": "https://upstream.example",
+		},
+	}
+
+	req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"claude-haiku-4-5-20251001"}`), "upstream-key")
+	require.NoError(t, err)
+
+	for _, header := range []string{
+		ClaudeCodeNativeClientTypeHeader,
+		ClaudeCodeNativeGuardAttestedHeader,
+		ClaudeCodeNativeAttestationHeader,
+		ClaudeCodeNativeSignatureHeader,
+		ClaudeCodeNativeLocalSessionRefHeader,
+		ClaudeCodeNativeInboundRouteHeader,
+		ClaudeCodeNativeHealthcheckProfileHeader,
+		ClaudeCodeNativeRuntimeHashHeader,
+		ClaudeCodeNativeOverlayHashHeader,
+		ClaudeCodeNativeCatalogHashHeader,
+		ClaudeCodeNativeCatalogVersionHeader,
+		"x-sub2api-route",
+		"x-sub2api-route-catalog-version",
+		"x-sub2api-bridge-forged",
+		ClaudeCodeRouteHintHeader,
+		ClaudeCodeRouteHintSignatureHeader,
+	} {
+		require.Empty(t, getHeaderRaw(req.Header, header), "ordinary Anthropic passthrough must not leak local internal header %s", header)
+	}
+	require.Equal(t, "2023-06-01", getHeaderRaw(req.Header, "anthropic-version"))
+	require.Equal(t, "interleaved-thinking-2025-05-14", getHeaderRaw(req.Header, "anthropic-beta"))
+	require.Equal(t, "cli", getHeaderRaw(req.Header, "x-app"))
+	require.Equal(t, "js", getHeaderRaw(req.Header, "x-stainless-lang"))
+	require.Equal(t, "upstream-key", getHeaderRaw(req.Header, "x-api-key"))
+	require.Empty(t, getHeaderRaw(req.Header, "authorization"))
+}
