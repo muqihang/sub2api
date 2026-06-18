@@ -1,14 +1,21 @@
 package service
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
-const OpenAIRuntimeGuardMetadataKey = "openai_runtime_guard.metadata"
+const (
+	OpenAIRuntimeGuardMetadataKey         = "openai_runtime_guard.metadata"
+	openAIRuntimeGuardMetadataValueMaxLen = 64
+)
 
 type OpenAIRuntimeGuardMetadata struct {
 	Action   string `json:"action"`
@@ -19,6 +26,12 @@ type OpenAIRuntimeGuardMetadata struct {
 	From     string `json:"from,omitempty"`
 	To       string `json:"to,omitempty"`
 	Status   int    `json:"status,omitempty"`
+}
+
+type openAIReasoningEffortGuardRepair struct {
+	Path string
+	From string
+	To   string
 }
 
 type openAIReasoningEffortGuardDecision struct {
@@ -32,108 +45,191 @@ type openAIReasoningEffortGuardDecision struct {
 	To       string
 	Category string
 	Metric   string
+	Repairs  []openAIReasoningEffortGuardRepair
+}
+
+type openAIReasoningEffortGuardInput struct {
+	Path string
+	Raw  string
+}
+
+func shouldApplyOpenAIReasoningEffortGuard(account *Account) bool {
+	return account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
 }
 
 func evaluateOpenAIReasoningEffortGuard(body []byte) openAIReasoningEffortGuardDecision {
-	path, raw, present := openAIReasoningEffortGuardInput(body)
-	if !present {
+	inputs := openAIReasoningEffortGuardInputs(body)
+	if len(inputs) == 0 {
 		return openAIReasoningEffortGuardDecision{}
 	}
 
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return openAIReasoningEffortGuardDecision{
-			Action:   "pass",
-			Present:  true,
-			Path:     path,
-			Category: "reasoning.valid_effort",
-			Metric:   "openai_runtime_guard.passed.reasoning_effort",
+	var repairs []openAIReasoningEffortGuardRepair
+	var firstPath, firstFrom, firstTo string
+	var normalizedSeen bool
+	var normalizedValue string
+
+	for _, input := range inputs {
+		value := strings.TrimSpace(input.Raw)
+		if firstPath == "" {
+			firstPath = input.Path
+			firstFrom = safeOpenAIRuntimeGuardMetadataValue(value)
 		}
-	}
-	normalized := normalizeOpenAIReasoningEffort(value)
-	if normalized == "" {
-		return openAIReasoningEffortGuardDecision{
-			Action:   "block",
-			Blocked:  true,
-			Present:  true,
-			Status:   http.StatusBadRequest,
-			Path:     path,
-			From:     value,
-			Category: "reasoning.unknown_effort",
-			Metric:   "openai_runtime_guard.blocked.reasoning_effort",
+		if value == "" {
+			continue
+		}
+		normalized, ok := normalizeOpenAIRuntimeGuardReasoningEffort(value)
+		if !ok {
+			return openAIReasoningEffortGuardDecision{
+				Action:   "block",
+				Blocked:  true,
+				Present:  true,
+				Status:   http.StatusBadRequest,
+				Path:     input.Path,
+				From:     safeOpenAIRuntimeGuardMetadataValue(value),
+				Category: "reasoning.unknown_effort",
+				Metric:   "openai_runtime_guard.blocked.reasoning_effort",
+			}
+		}
+		if normalizedSeen && normalized != normalizedValue {
+			return openAIReasoningEffortGuardDecision{
+				Action:   "block",
+				Blocked:  true,
+				Present:  true,
+				Status:   http.StatusBadRequest,
+				Path:     input.Path,
+				From:     safeOpenAIRuntimeGuardMetadataValue(value),
+				To:       normalized,
+				Category: "reasoning.conflicting_effort",
+				Metric:   "openai_runtime_guard.blocked.reasoning_effort",
+			}
+		}
+		normalizedSeen = true
+		normalizedValue = normalized
+		if firstTo == "" {
+			firstTo = normalized
+		}
+		if openAIReasoningEffortGuardNeedsRepair(value, normalized) {
+			repairs = append(repairs, openAIReasoningEffortGuardRepair{Path: input.Path, From: safeOpenAIRuntimeGuardMetadataValue(value), To: normalized})
 		}
 	}
 
-	if openAIReasoningEffortGuardNeedsRepair(path, value, normalized) {
+	if len(repairs) > 0 {
 		return openAIReasoningEffortGuardDecision{
 			Action:   "repair",
 			Repaired: true,
 			Present:  true,
-			Path:     path,
-			From:     value,
-			To:       normalized,
+			Path:     repairs[0].Path,
+			From:     repairs[0].From,
+			To:       repairs[0].To,
 			Category: "reasoning.unsupported_effort_repaired",
 			Metric:   "openai_runtime_guard.repaired.reasoning_effort",
+			Repairs:  repairs,
 		}
 	}
 
 	return openAIReasoningEffortGuardDecision{
 		Action:   "pass",
 		Present:  true,
-		Path:     path,
-		From:     value,
-		To:       normalized,
+		Path:     firstPath,
+		From:     firstFrom,
+		To:       firstTo,
 		Category: "reasoning.valid_effort",
 		Metric:   "openai_runtime_guard.passed.reasoning_effort",
 	}
 }
 
-func openAIReasoningEffortGuardInput(body []byte) (path string, raw string, present bool) {
+func openAIReasoningEffortGuardInputs(body []byte) []openAIReasoningEffortGuardInput {
 	if len(body) == 0 {
-		return "", "", false
+		return nil
 	}
+	inputs := make([]openAIReasoningEffortGuardInput, 0, 2)
 	if nested := gjson.GetBytes(body, "reasoning.effort"); nested.Exists() {
-		return "reasoning.effort", nested.String(), true
+		inputs = append(inputs, openAIReasoningEffortGuardInput{Path: "reasoning.effort", Raw: nested.String()})
 	}
 	if flat := gjson.GetBytes(body, "reasoning_effort"); flat.Exists() {
-		return "reasoning_effort", flat.String(), true
+		inputs = append(inputs, openAIReasoningEffortGuardInput{Path: "reasoning_effort", Raw: flat.String()})
 	}
-	return "", "", false
+	return inputs
 }
 
-func openAIReasoningEffortGuardNeedsRepair(path, raw, normalized string) bool {
-	value := normalizeOpenAIReasoningEffortToken(raw)
-	if value == "" {
-		return false
+func normalizeOpenAIRuntimeGuardReasoningEffort(raw string) (string, bool) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "low", "medium", "high", "xhigh", "none":
+		return value, true
+	case "minimal":
+		return "none", true
+	case "max", "maximum", "x-high", "x_high":
+		return "xhigh", true
+	default:
+		return "", false
 	}
-	if path == "reasoning.effort" && value == "minimal" && normalized == "none" {
-		return true
-	}
-	if value == "minimal" && normalized == "none" {
-		return false
-	}
+}
+
+func openAIReasoningEffortGuardNeedsRepair(raw, normalized string) bool {
 	return strings.ToLower(strings.TrimSpace(raw)) != normalized
+}
+
+func applyOpenAIReasoningEffortGuardRepairs(body []byte, decision openAIReasoningEffortGuardDecision) ([]byte, error) {
+	if !decision.Repaired {
+		return body, nil
+	}
+	updated := body
+	for _, repair := range decision.Repairs {
+		if strings.TrimSpace(repair.Path) == "" {
+			continue
+		}
+		next, err := sjson.SetBytes(updated, repair.Path, repair.To)
+		if err != nil {
+			return body, fmt.Errorf("repair openai reasoning_effort: %w", err)
+		}
+		updated = next
+	}
+	return updated, nil
 }
 
 func writeOpenAIReasoningEffortGuardBlockedResponse(c *gin.Context, decision openAIReasoningEffortGuardDecision) {
 	if c == nil {
 		return
 	}
-	status := decision.Status
-	if status == 0 {
-		status = http.StatusBadRequest
+	status := openAIReasoningEffortGuardBlockedStatus(decision)
+	c.Data(status, "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(decision))
+}
+
+func newOpenAIReasoningEffortGuardBlockedHTTPResponse(decision openAIReasoningEffortGuardDecision) *http.Response {
+	status := openAIReasoningEffortGuardBlockedStatus(decision)
+	payload := openAIReasoningEffortGuardBlockedPayload(decision)
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+		Body:       io.NopCloser(strings.NewReader(string(payload))),
 	}
+}
+
+func openAIReasoningEffortGuardBlockedStatus(decision openAIReasoningEffortGuardDecision) int {
+	if decision.Status != 0 {
+		return decision.Status
+	}
+	return http.StatusBadRequest
+}
+
+func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuardDecision) []byte {
 	param := decision.Path
-	if param == "reasoning.effort" {
-		param = "reasoning.effort"
+	if param == "" {
+		param = "reasoning_effort"
 	}
-	c.JSON(status, gin.H{
-		"error": gin.H{
+	payload, err := json.Marshal(map[string]any{
+		"error": map[string]any{
 			"type":    "invalid_request_error",
 			"message": "Unsupported reasoning_effort value",
 			"param":   param,
 		},
 	})
+	if err != nil {
+		return []byte(`{"error":{"type":"invalid_request_error","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`)
+	}
+	return payload
 }
 
 func setOpenAIRuntimeGuardReasoningMetadata(c *gin.Context, decision openAIReasoningEffortGuardDecision) {
@@ -146,16 +242,20 @@ func setOpenAIRuntimeGuardReasoningMetadata(c *gin.Context, decision openAIReaso
 		Metric:   decision.Metric,
 		Field:    "reasoning_effort",
 		Path:     decision.Path,
-		From:     decision.From,
-		To:       decision.To,
+		From:     safeOpenAIRuntimeGuardMetadataValue(decision.From),
+		To:       safeOpenAIRuntimeGuardMetadataValue(decision.To),
 		Status:   decision.Status,
 	})
 }
 
-func normalizeOpenAIReasoningEffortToken(raw string) string {
-	value := strings.ToLower(strings.TrimSpace(raw))
+func safeOpenAIRuntimeGuardMetadataValue(raw string) string {
+	value := sanitizeUpstreamErrorMessage(strings.TrimSpace(raw))
 	if value == "" {
 		return ""
 	}
-	return strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
+	runes := []rune(value)
+	if len(runes) > openAIRuntimeGuardMetadataValueMaxLen {
+		return string(runes[:openAIRuntimeGuardMetadataValueMaxLen])
+	}
+	return value
 }

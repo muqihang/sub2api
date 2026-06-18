@@ -352,6 +352,45 @@ func TestOpenAIRuntimeGuardReasoningEffortDecisionBlocksUnknown(t *testing.T) {
 	require.Equal(t, "reasoning_effort", decision.Path)
 }
 
+func TestOpenAIRuntimeGuardReasoningEffortDecisionFlatMinimalRepairs(t *testing.T) {
+	decision := evaluateOpenAIReasoningEffortGuard([]byte(`{"reasoning_effort":"minimal"}`))
+
+	require.True(t, decision.Repaired, "%#v", decision)
+	require.False(t, decision.Blocked, "%#v", decision)
+	require.Equal(t, "reasoning_effort", decision.Path)
+	require.Equal(t, "minimal", decision.From)
+	require.Equal(t, "none", decision.To)
+}
+
+func TestOpenAIRuntimeGuardReasoningEffortDecisionRejectsUnlistedAliases(t *testing.T) {
+	for _, effort := range []string{"extra-high", "extra_high", "extra high", "extrahigh"} {
+		t.Run(effort, func(t *testing.T) {
+			decision := evaluateOpenAIReasoningEffortGuard([]byte(`{"reasoning_effort":"` + effort + `"}`))
+
+			require.True(t, decision.Blocked, "%#v", decision)
+			require.False(t, decision.Repaired, "%#v", decision)
+			require.Equal(t, "reasoning_effort", decision.Path)
+		})
+	}
+}
+
+func TestOpenAIRuntimeGuardReasoningEffortDecisionChecksNestedAndFlat(t *testing.T) {
+	decision := evaluateOpenAIReasoningEffortGuard([]byte(`{"reasoning":{"effort":"low"},"reasoning_effort":"hyperdrive"}`))
+
+	require.True(t, decision.Blocked, "%#v", decision)
+	require.False(t, decision.Repaired, "%#v", decision)
+	require.Equal(t, "reasoning_effort", decision.Path)
+}
+
+func TestOpenAIRuntimeGuardReasoningEffortDecisionBlocksNestedFlatConflict(t *testing.T) {
+	decision := evaluateOpenAIReasoningEffortGuard([]byte(`{"reasoning":{"effort":"low"},"reasoning_effort":"high"}`))
+
+	require.True(t, decision.Blocked, "%#v", decision)
+	require.False(t, decision.Repaired, "%#v", decision)
+	require.Equal(t, "reasoning_effort", decision.Path)
+	require.Equal(t, "reasoning.conflicting_effort", decision.Category)
+}
+
 func TestOpenAIGatewayService_Forward_RuntimeGuardRepairsReasoningEffortBeforeUpstream(t *testing.T) {
 	for _, effort := range []string{"max", "maximum", "x-high", "x_high"} {
 		t.Run(effort, func(t *testing.T) {
@@ -385,6 +424,46 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardRepairsNestedMinimalToNone(t *
 	requireOpenAIRuntimeGuardMetadata(t, c, "repair", "reasoning.unsupported_effort_repaired", "openai_runtime_guard.repaired.reasoning_effort")
 }
 
+func TestOpenAIGatewayService_Forward_RuntimeGuardRepairsFlatMinimalToNone(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning_effort":"minimal","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "none", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+	require.Equal(t, "none", derefString(result.ReasoningEffort))
+	requireOpenAIRuntimeGuardMetadata(t, c, "repair", "reasoning.unsupported_effort_repaired", "openai_runtime_guard.repaired.reasoning_effort")
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksUnlistedAliasBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning_effort":"extra-high","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 0)
+	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
+	requireOpenAIRuntimeGuardMetadata(t, c, "block", "reasoning.unknown_effort", "openai_runtime_guard.blocked.reasoning_effort")
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksNestedFlatUnknownBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning":{"effort":"low"},"reasoning_effort":"hyperdrive","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 0)
+	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
+	requireOpenAIRuntimeGuardMetadata(t, c, "block", "reasoning.unknown_effort", "openai_runtime_guard.blocked.reasoning_effort")
+}
+
 func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksUnknownReasoningEffortBeforeUpstream(t *testing.T) {
 	upstream, rec, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
 	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning_effort":"hyperdrive","input":"hi"}`)
@@ -416,6 +495,123 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardLeavesValidEffortAndScopesProm
 	requireOpenAIRuntimeGuardMetadata(t, c, "pass", "reasoning.valid_effort", "openai_runtime_guard.passed.reasoning_effort")
 }
 
+func TestOpenAIGatewayService_Forward_RuntimeGuardSkipsAPIKeyRawFallback(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_raw"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)),
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID:          6201,
+		Name:        "openai-apikey-raw",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com"},
+		Extra:       map[string]any{"use_responses_api": false},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", bytes.NewReader(nil))
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning_effort":"hyperdrive","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.False(t, hasOpenAIRuntimeGuardMetadata(c))
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardSkipsAPIKeyPassthrough(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	account.Name = "openai-apikey-passthrough"
+	account.Type = AccountTypeAPIKey
+	account.Credentials = map[string]any{"api_key": "sk-test", "base_url": "https://example.com"}
+	account.Extra = map[string]any{"openai_passthrough": true, "use_responses_api": true}
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","reasoning_effort":"hyperdrive","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "hyperdrive", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+	require.False(t, hasOpenAIRuntimeGuardMetadata(c))
+}
+
+func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardOAuth(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_native"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_1","object":"response","usage":{"input_tokens":1,"output_tokens":1}}`)),
+	}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID:          6301,
+		Name:        "openai-oauth-native",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	resp, err := svc.DoNativeResponsesRequest(context.Background(), account, nil, []byte(`{"model":"gpt-5.4","reasoning_effort":"max","input":"hi"}`), false)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "xhigh", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+}
+
+func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardOAuthBlocksUnknownBeforeUpstream(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:          6302,
+		Name:        "openai-oauth-native",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+	}
+
+	resp, err := svc.DoNativeResponsesRequest(context.Background(), account, nil, []byte(`{"model":"gpt-5.4","reasoning_effort":"extrahigh","input":"hi"}`), false)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Len(t, upstream.bodies, 0)
+}
+
+func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardSkipsAPIKey(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID:          6303,
+		Name:        "openai-apikey-native",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com"},
+	}
+
+	resp, err := svc.DoNativeResponsesRequest(context.Background(), account, nil, []byte(`{"model":"gpt-5.4","reasoning_effort":"hyperdrive","input":"hi"}`), false)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "hyperdrive", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+}
+
 func newOpenAIRuntimeGuardForwardHarness(t *testing.T) (*httpUpstreamRecorder, *httptest.ResponseRecorder, *gin.Context, *OpenAIGatewayService, *Account) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -429,15 +625,15 @@ func newOpenAIRuntimeGuardForwardHarness(t *testing.T) (*httpUpstreamRecorder, *
 	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
 	account := &Account{
 		ID:          6101,
-		Name:        "openai-apikey-runtime-guard",
+		Name:        "openai-oauth-runtime-guard",
 		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
+		Type:        AccountTypeOAuth,
 		Concurrency: 1,
 		Credentials: map[string]any{
-			"api_key":  "sk-test",
-			"base_url": "https://example.com",
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
 		},
-		Extra: map[string]any{"use_responses_api": true},
+		Extra: map[string]any{"openai_passthrough": false, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
 	}
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -456,9 +652,17 @@ func requireOpenAIRuntimeGuardMetadata(t *testing.T, c *gin.Context, action, cat
 	require.Equal(t, category, metadata.Category)
 	require.Equal(t, metric, metadata.Metric)
 	require.Equal(t, "reasoning_effort", metadata.Field)
+	require.LessOrEqual(t, len(metadata.From), openAIRuntimeGuardMetadataValueMaxLen)
 	raw, err := json.Marshal(metadata)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "input")
+	require.NotContains(t, string(raw), "access_token")
+	require.NotContains(t, string(raw), "sk-test")
+}
+
+func hasOpenAIRuntimeGuardMetadata(c *gin.Context) bool {
+	_, ok := c.Get(OpenAIRuntimeGuardMetadataKey)
+	return ok
 }
 
 func derefString(v *string) string {
