@@ -1,6 +1,6 @@
 # 47 Claude Code Multi-provider Runtime Completion Audit
 
-Date: 2026-06-17
+Date: 2026-06-18
 Branch: `codex/claude-code-multiprovider-runtime`
 Worktree: `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime`
 Plan: `docs/anti-ban/47-zhumeng-agent-claude-code-multi-provider-runtime-patch-plan.md`
@@ -13,6 +13,43 @@ Local implementation for CP0-CP8 is present in the dedicated worktree branch. Lo
 
 The only remaining evidence that cannot be produced without an operator-owned live Sub2API gateway and live scenario artifacts is the final CP8 external live matrix. The release path is Claude Code Runtime -> Sub2API Gateway (for example `http://127.0.0.1:3012`) -> provider routing; direct official provider credential collection is retained only as a lab/fallback collector, not as the primary product acceptance path. The verifier and Sub2API collector fail closed for mock-only loopback fixtures or forged evidence; a loopback Sub2API gateway origin such as `http://127.0.0.1:3012` is allowed only when it forwards to real upstream provider routing. The operator must run the commands in [External live matrix steps](#external-live-matrix-steps) against a real Sub2API gateway and the corresponding live scenario artifact directory.
 
+
+## 2026-06-18 pre-L8 readiness update
+
+Latest worktree commits before operator L8 live:
+
+- `9cebbad6b feat: plan disabled claude code bridge placeholders` adds `tools/claude_code_runtime_canary_config.py` and `tools/tests/test_claude_code_runtime_canary_config.py`. The helper is dry-run only, emits disabled Claude Code bridge placeholder group plans for OpenAI, DeepSeek, AGNES, Anthropic-compatible, GLM, and Kimi, redacts target credentials/path/query, refuses `--apply`, does not bind upstream accounts, does not add native group 8 membership, and keeps `models_list_config.enabled=false`.
+- `008b86d10 test: align guard integration with native managed auth` updates the local guard integration harness to the hardened native formal-pool boundary: native Claude formal-pool messages use the separate native managed access token, and missing native managed token fails closed before upstream.
+
+Current local runtime configuration was checked with redacted field-presence output only:
+
+- `gateway_base_url`: `http://127.0.0.1:3012`
+- `server_base_url`: `http://127.0.0.1:3012`
+- `claude_code_sub2api_api_key`: present, redacted
+- `claude_code_native_access_token`: present, redacted
+- `claude_code_native_managed_session_id`: present, redacted
+- `claude_code_native_device_id`: present, redacted
+- `claude_code_native_attestation_secret`: present, redacted
+- `claude_code_route_hint_secret`: present, redacted
+
+Runtime status before live: `zhumeng_agent claude-code status` reports Claude Code runtime `2.1.177`, `status=enabled`, and integrity `pass`. Existing Docker services were observed healthy without restarting `3012`: `3012` app healthy, `3017` canary app healthy, postgres/redis healthy.
+
+Operator start command for L8 live from this worktree:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime/tools/zhumeng-agent
+uv run zhumeng-claude start
+```
+
+Optional project-specific start:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime/tools/zhumeng-agent
+uv run zhumeng-claude start --project-cwd /path/to/project
+```
+
+This start path uses the managed state above and points the Claude Code Runtime at the local Sub2API gateway (`3012`) through the loopback guard. It does not ask the operator to paste official Anthropic/OpenAI/DeepSeek provider keys directly into Claude Code Runtime.
+
 ## Checkpoint evidence
 
 | CP | Evidence | Required tests / fixtures |
@@ -22,7 +59,7 @@ The only remaining evidence that cannot be produced without an operator-owned li
 | CP2 mixed `/model` overlay proof-only | `model_overlay.py` builds proof-only mixed model list and route-hint stubs. Bridge entries are `live_enabled=False`, `formal_pool_eligible=False`, and not `claude_code_native`. | `tools/zhumeng-agent/tests/test_claude_code_model_overlay_cp2.py`, especially `test_cp2_static_patch_points_and_mixed_model_overlay_are_proof_only`, `test_cp2_route_hint_stub_for_bridge_fails_closed_before_cp4`, `test_cp2_print_smoke_uses_stubbed_runner_without_starting_live_process`. |
 | CP3 subagent/workflow and transcript boundary contracts | Provider-local fast/background alias resolver, inherit-first subagent policy, `ReplaySafeAnthropicTranscript`, frozen safe summary/tool result envelopes, resume/continue/compact/checkpoint/history replay cleaning. | `tools/zhumeng-agent/tests/test_claude_code_model_overlay_cp3a.py`; `tools/zhumeng-agent/tests/test_claude_code_transcript_boundary_cp3b.py`. |
 | CP4 routing trust contract | Signed route hint binds body/model, runtime/overlay/catalog hashes, session, nonce/timestamp; stale/replayed/mismatched/spoofed native fail closed; bridge routes do not receive native attestation. | `tools/zhumeng-agent/tests/test_claude_code_model_overlay_cp4_route_hint.py`; `tools/tests/test_cli_control_plane_guard.py` CP4 tests including route mismatch, spoofed native, unknown/stale/replayed nonce, and native-only attestation. |
-| CP5 provider router and bridge skeleton | Guard/backend route split for `claude_code_native` vs `claude_code_bridge_*`; bridge stub emits Anthropic-compatible SSE/tool-use skeleton without upstream or native attestation; audit records route/catalog safely. | `tools/tests/test_cli_control_plane_guard.py::CliControlPlaneGuardTest::test_cp5_bridge_route_hint_returns_internal_skeleton_anthropic_sse_without_upstream_or_native_attestation`; `::test_cp5_bridge_skeleton_tool_use_sse_golden_and_safe_audit_without_upstream_or_native`; backend bridge route tests. |
+| CP5 provider router and bridge skeleton | Guard/backend route split for `claude_code_native` vs `claude_code_bridge_*`; native formal-pool messages require the separate native managed access token; bridge stub emits Anthropic-compatible SSE/tool-use skeleton without upstream or native attestation; audit records route/catalog safely. | `tools/tests/test_cli_control_plane_guard.py::CliControlPlaneGuardTest::test_cp5_bridge_route_hint_returns_internal_skeleton_anthropic_sse_without_upstream_or_native_attestation`; `::test_cp5_bridge_skeleton_tool_use_sse_golden_and_safe_audit_without_upstream_or_native`; `tools/tests/test_cli_control_plane_guard_integration.py::CliControlPlaneGuardIntegrationTest::test_native_messages_fail_closed_without_native_managed_access_token`; backend bridge route tests. |
 | CP6 DeepSeek/GPT bridge parity and replay safety | DeepSeek defaults to Anthropic-compatible `/v1/messages` when probe fixtures pass; OpenAI-compatible/Responses fallback seam exists; GPT/OpenAI Responses bridge maps tool streaming/cache usage; foreign thinking/signature cleaning; dynamic background native egress remains 0; Codex Gateway no-regression fixture is hash-bound. | `tools/zhumeng-agent/tests/test_claude_code_provider_probe_cp6.py`; `tools/zhumeng-agent/tests/test_claude_code_transcript_boundary_cp6.py`; `backend/internal/service/claude_code_bridge_live_test.go`; `backend/internal/service/claude_code_bridge_stream_test.go`; `backend/internal/service/testdata/claude_code_bridge/cp6_tool_use_sse_golden.sse`; `tools/zhumeng-agent/tests/fixtures/claude_code_cp6/codex_gateway_no_regression_cp6.json`. |
 | CP7 UX / shell integration | `zhumeng-claude` entry point maps to `claude-code start`; status/install/rollback/alias commands avoid global overwrite and destructive delete; desktop open path starts managed guard. | `tools/zhumeng-agent/tests/test_cli.py::test_zhumeng_claude_entrypoint_maps_to_claude_code_start`; `::test_claude_code_runtime_install_status_rollback_and_alias_commands`; `tools/zhumeng-agent/tests/test_claude_code_runtime_installer.py::test_shell_alias_enable_disable_never_aliases_official_claude`; desktop open tests. |
 | CP8 live matrix verifier and final review | Local matrix fixture covers Claude native, GPT bridge, DeepSeek bridge, subagent, Claude->DeepSeek->Claude, manual switch, ToolSearch/MCP, Workflow, long context, interruption, cache/account audit, and netwatch bypass. Strict-live verifier rejects loopback/mock/forged/minimal/mismatched/stale/sensitive artifacts and requires provider/model/endpoint/run_id/artifact binding. | `tools/zhumeng-agent/tests/test_claude_code_live_matrix_cp8.py`; fixture `tools/zhumeng-agent/tests/fixtures/claude_code_cp8/live_matrix_pass.json`; workflow artifact `tools/zhumeng-agent/tests/fixtures/claude_code_cp8/artifacts/workflow_background.json`. |
@@ -96,6 +133,38 @@ git diff --check
 
 codegraph index
 # pass, `.codegraph/` present
+```
+
+
+Additional pre-L8 checks run on 2026-06-18 after the final hardening commits:
+
+```bash
+python3 -m unittest tools.tests.test_cli_control_plane_guard_integration -v
+# 30 tests OK
+
+python3 -m unittest \
+  tools.tests.test_claude_code_runtime_canary_config \
+  tools.tests.test_cli_control_plane_policy \
+  tools.tests.test_cli_control_plane_guard \
+  tools.tests.test_cli_control_plane_network_safety \
+  -v
+# 74 tests OK
+
+python3 tools/claude_code_runtime_canary_config.py --dry-run --target http://127.0.0.1:3017
+# disabled bridge placeholders only; writes_enabled=false
+
+cd backend
+go test ./internal/service -run 'AnthropicAPIKeyPassthrough|CCGatewayControlPlane|CCGatewayAnthropicAPIKeyPassthrough|ClaudeCodeNativeAttestationAcceptsCountTokensBetaRoute' -count=1
+go test ./internal/handler -run 'NativeCountTokensProbe|CountTokens|Gateway' -count=1
+go test ./internal/server/routes -run 'ClaudeCodeNativeRouteMatrix|OpenAI' -count=1
+go test ./internal/server/middleware -run 'APIKeyAuthAllowsExclusiveGroupWhenUserStillAllowed|ManagedDeviceOrAPIKeyAuth' -count=1
+# all pass
+
+git diff --check
+# pass
+
+codegraph sync /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime
+# pass; .codegraph/ present
 ```
 
 ## External live matrix steps
