@@ -301,6 +301,9 @@ func (s *GatewayService) selectCCGatewayAnthropicRouteForMode(account *Account, 
 	if canaryOnly && !explicitCanary {
 		return false, fmt.Errorf("cc gateway canary-only account %d is not eligible for broad routing", account.ID)
 	}
+	if IsFormalPoolAccount(account) && !isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))) {
+		return false, fmt.Errorf("cc gateway account ref missing or unsafe for account %d", account.ID)
+	}
 	if IsFormalPoolAccount(account) && !explicitCanary {
 		if !account.IsSchedulable() {
 			return false, fmt.Errorf("cc gateway lifecycle ineligible for account %d", account.ID)

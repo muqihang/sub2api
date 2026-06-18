@@ -196,6 +196,37 @@ func TestGatewayService_CCGatewayAnthropicOAuthMapsServerSessionIntoMetadataAndH
 	require.NotContains(t, rewrittenBody, "11111111-2222-4333-8444-555555555555")
 }
 
+func TestGatewayService_CCGatewayFormalPoolRequiresSafeAccountRef(t *testing.T) {
+	account := &Account{
+		ID:          42,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "selected-oauth-token",
+			"scope":        "user:profile user:inference user:sessions:claude_code",
+		},
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:          FormalPoolStageProduction,
+			FormalPoolExtraRuntimeRegistered:        "true",
+			FormalPoolExtraHealthcheckCCGatewaySeen: true,
+			"cc_gateway_enabled":                    "true",
+			"cc_gateway_canary_only":                "false",
+			"cc_gateway_policy_version":             ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                     "native_messages,native_count_tokens",
+			"cc_gateway_egress_bucket_enabled":      "true",
+			"cc_gateway_egress_bucket":              "bucket-a",
+		},
+	}
+	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
+
+	use, err := svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+
+	require.False(t, use)
+	require.ErrorContains(t, err, "account ref")
+}
+
 func TestGatewayService_CCGatewayAnthropicSessionMappingIsolatedAcrossUsers(t *testing.T) {
 	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":"hi"}]}`)
 	account := &Account{
@@ -951,7 +982,7 @@ func TestGatewayService_SelectCCGatewayAnthropicRouteUsesEffectiveFormalPoolSche
 	account.Extra["cc_gateway_routes"] = "native_messages"
 	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
-	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:formal-pool-ref"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:" + strings.Repeat("a", 64)
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRuntimeRegistered
 
 	useCCGateway, err := svc.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
