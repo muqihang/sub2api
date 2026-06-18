@@ -1,12 +1,15 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -29,9 +32,10 @@ type OpenAIRuntimeGuardMetadata struct {
 }
 
 type openAIReasoningEffortGuardRepair struct {
-	Path string
-	From string
-	To   string
+	Path   string
+	From   string
+	To     string
+	Delete bool
 }
 
 type openAIReasoningEffortGuardDecision struct {
@@ -49,8 +53,33 @@ type openAIReasoningEffortGuardDecision struct {
 }
 
 type openAIReasoningEffortGuardInput struct {
-	Path string
-	Raw  string
+	Path  string
+	Raw   string
+	Empty bool
+}
+
+// OpenAIRuntimeGuardBlockedError is a local guard rejection. It intentionally
+// does not masquerade as an upstream http.Response, so callers do not record
+// provider success, usage, or upstream response captures for local blocks.
+type OpenAIRuntimeGuardBlockedError struct {
+	StatusCode int
+	Payload    []byte
+	Decision   openAIReasoningEffortGuardDecision
+}
+
+func (e *OpenAIRuntimeGuardBlockedError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("openai runtime guard blocked request: status=%d category=%s", e.StatusCode, e.Decision.Category)
+}
+
+func newOpenAIRuntimeGuardBlockedError(decision openAIReasoningEffortGuardDecision) *OpenAIRuntimeGuardBlockedError {
+	return &OpenAIRuntimeGuardBlockedError{
+		StatusCode: openAIReasoningEffortGuardBlockedStatus(decision),
+		Payload:    openAIReasoningEffortGuardBlockedPayload(decision),
+		Decision:   decision,
+	}
 }
 
 func shouldApplyOpenAIReasoningEffortGuard(account *Account) bool {
@@ -64,18 +93,20 @@ func evaluateOpenAIReasoningEffortGuard(body []byte) openAIReasoningEffortGuardD
 	}
 
 	var repairs []openAIReasoningEffortGuardRepair
+	var emptyRepairs []openAIReasoningEffortGuardRepair
 	var firstPath, firstFrom, firstTo string
 	var normalizedSeen bool
 	var normalizedValue string
 
 	for _, input := range inputs {
 		value := strings.TrimSpace(input.Raw)
+		if value == "" || input.Empty {
+			emptyRepairs = append(emptyRepairs, openAIReasoningEffortGuardRepair{Path: input.Path, From: safeOpenAIRuntimeGuardMetadataValue(value), Delete: true})
+			continue
+		}
 		if firstPath == "" {
 			firstPath = input.Path
 			firstFrom = safeOpenAIRuntimeGuardMetadataValue(value)
-		}
-		if value == "" {
-			continue
 		}
 		normalized, ok := normalizeOpenAIRuntimeGuardReasoningEffort(value)
 		if !ok {
@@ -113,15 +144,43 @@ func evaluateOpenAIReasoningEffortGuard(body []byte) openAIReasoningEffortGuardD
 		}
 	}
 
-	if len(repairs) > 0 {
+	if !normalizedSeen && len(emptyRepairs) > 0 {
 		return openAIReasoningEffortGuardDecision{
 			Action:   "repair",
 			Repaired: true,
 			Present:  true,
-			Path:     repairs[0].Path,
-			From:     repairs[0].From,
-			To:       repairs[0].To,
-			Category: "reasoning.unsupported_effort_repaired",
+			Path:     emptyRepairs[0].Path,
+			From:     emptyRepairs[0].From,
+			Category: "reasoning.empty_effort_removed",
+			Metric:   "openai_runtime_guard.repaired.reasoning_effort",
+			Repairs:  emptyRepairs,
+		}
+	}
+	if len(emptyRepairs) > 0 {
+		repairs = append(emptyRepairs, repairs...)
+	}
+
+	if len(repairs) > 0 {
+		category := "reasoning.unsupported_effort_repaired"
+		decisionPath := repairs[0].Path
+		decisionFrom := repairs[0].From
+		decisionTo := repairs[0].To
+		if repairs[0].Delete {
+			category = "reasoning.empty_effort_removed"
+			if firstPath != "" {
+				decisionPath = firstPath
+				decisionFrom = firstFrom
+				decisionTo = firstTo
+			}
+		}
+		return openAIReasoningEffortGuardDecision{
+			Action:   "repair",
+			Repaired: true,
+			Present:  true,
+			Path:     decisionPath,
+			From:     decisionFrom,
+			To:       decisionTo,
+			Category: category,
 			Metric:   "openai_runtime_guard.repaired.reasoning_effort",
 			Repairs:  repairs,
 		}
@@ -144,10 +203,10 @@ func openAIReasoningEffortGuardInputs(body []byte) []openAIReasoningEffortGuardI
 	}
 	inputs := make([]openAIReasoningEffortGuardInput, 0, 2)
 	if nested := gjson.GetBytes(body, "reasoning.effort"); nested.Exists() {
-		inputs = append(inputs, openAIReasoningEffortGuardInput{Path: "reasoning.effort", Raw: nested.String()})
+		inputs = append(inputs, openAIReasoningEffortGuardInput{Path: "reasoning.effort", Raw: nested.String(), Empty: nested.Type == gjson.Null})
 	}
 	if flat := gjson.GetBytes(body, "reasoning_effort"); flat.Exists() {
-		inputs = append(inputs, openAIReasoningEffortGuardInput{Path: "reasoning_effort", Raw: flat.String()})
+		inputs = append(inputs, openAIReasoningEffortGuardInput{Path: "reasoning_effort", Raw: flat.String(), Empty: flat.Type == gjson.Null})
 	}
 	return inputs
 }
@@ -179,7 +238,13 @@ func applyOpenAIReasoningEffortGuardRepairs(body []byte, decision openAIReasonin
 		if strings.TrimSpace(repair.Path) == "" {
 			continue
 		}
-		next, err := sjson.SetBytes(updated, repair.Path, repair.To)
+		var next []byte
+		var err error
+		if repair.Delete {
+			next, err = sjson.DeleteBytes(updated, repair.Path)
+		} else {
+			next, err = sjson.SetBytes(updated, repair.Path, repair.To)
+		}
 		if err != nil {
 			return body, fmt.Errorf("repair openai reasoning_effort: %w", err)
 		}
@@ -194,6 +259,86 @@ func writeOpenAIReasoningEffortGuardBlockedResponse(c *gin.Context, decision ope
 	}
 	status := openAIReasoningEffortGuardBlockedStatus(decision)
 	c.Data(status, "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(decision))
+}
+
+func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, payload []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
+	if !shouldApplyOpenAIReasoningEffortGuard(account) {
+		return payload, nil, nil
+	}
+	if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) != "response.create" {
+		return payload, nil, nil
+	}
+	decision := evaluateOpenAIReasoningEffortGuard(payload)
+	if decision.Blocked {
+		return payload, newOpenAIRuntimeGuardBlockedError(decision), nil
+	}
+	if decision.Repaired {
+		repaired, err := applyOpenAIReasoningEffortGuardRepairs(payload, decision)
+		if err != nil {
+			return payload, nil, err
+		}
+		return repaired, nil, nil
+	}
+	return payload, nil, nil
+}
+
+func (s *OpenAIGatewayService) ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account *Account, payload []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
+	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, payload)
+}
+
+func buildOpenAIRuntimeGuardBlockedWSEvent(blocked *OpenAIRuntimeGuardBlockedError) []byte {
+	if blocked == nil {
+		return nil
+	}
+	message := "Unsupported reasoning_effort value"
+	if len(blocked.Payload) > 0 {
+		if msg := strings.TrimSpace(gjson.GetBytes(blocked.Payload, "error.message").String()); msg != "" {
+			message = msg
+		}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"event_id": newOpenAIFastPolicyWSEventID(),
+		"type":     "error",
+		"error": map[string]any{
+			"type":    "invalid_request_error",
+			"code":    "policy_violation",
+			"message": message,
+			"param":   firstNonBlankString(blocked.Decision.Path, "reasoning_effort"),
+		},
+	})
+	if err != nil {
+		return []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"policy_violation","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`)
+	}
+	return payload
+}
+
+func openAIRuntimeGuardBlockedWSReason(blocked *OpenAIRuntimeGuardBlockedError) string {
+	if blocked == nil {
+		return "Unsupported reasoning_effort value"
+	}
+	if len(blocked.Payload) > 0 {
+		if msg := strings.TrimSpace(gjson.GetBytes(blocked.Payload, "error.message").String()); msg != "" {
+			return msg
+		}
+	}
+	return "Unsupported reasoning_effort value"
+}
+
+func writeOpenAIRuntimeGuardBlockedWSEvent(ctx context.Context, conn *coderws.Conn, timeout time.Duration, blocked *OpenAIRuntimeGuardBlockedError) {
+	if conn == nil || blocked == nil {
+		return
+	}
+	eventBytes := buildOpenAIRuntimeGuardBlockedWSEvent(blocked)
+	if eventBytes == nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, timeout)
+	_ = conn.Write(writeCtx, coderws.MessageText, eventBytes)
+	cancel()
+}
+
+func (s *OpenAIGatewayService) WriteOpenAIRuntimeGuardBlockedWSEvent(ctx context.Context, conn *coderws.Conn, blocked *OpenAIRuntimeGuardBlockedError) {
+	writeOpenAIRuntimeGuardBlockedWSEvent(ctx, conn, s.openAIWSWriteTimeout(), blocked)
 }
 
 func newOpenAIReasoningEffortGuardBlockedHTTPResponse(decision openAIReasoningEffortGuardDecision) *http.Response {

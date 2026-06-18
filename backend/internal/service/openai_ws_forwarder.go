@@ -2776,6 +2776,20 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", sanitizeErr)
 		}
 		normalized = sanitizedPayload
+		guardApplied, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, normalized)
+		if runtimeErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", runtimeErr)
+		}
+		if runtimeBlocked != nil {
+			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+			writeOpenAIRuntimeGuardBlockedWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), runtimeBlocked)
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				openAIRuntimeGuardBlockedWSReason(runtimeBlocked),
+				runtimeBlocked,
+			)
+		}
+		normalized = guardApplied
 
 		values := gjson.GetManyBytes(normalized, "model", "prompt_cache_key", "previous_response_id")
 		originalModel := strings.TrimSpace(values[0].String())

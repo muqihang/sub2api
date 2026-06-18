@@ -2796,7 +2796,7 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 	if shouldApplyOpenAIReasoningEffortGuard(account) {
 		reasoningDecision := evaluateOpenAIReasoningEffortGuard(body)
 		if reasoningDecision.Blocked {
-			return newOpenAIReasoningEffortGuardBlockedHTTPResponse(reasoningDecision), nil
+			return nil, newOpenAIRuntimeGuardBlockedError(reasoningDecision)
 		}
 		if reasoningDecision.Repaired {
 			repairedBody, repairErr := applyOpenAIReasoningEffortGuardRepairs(body, reasoningDecision)

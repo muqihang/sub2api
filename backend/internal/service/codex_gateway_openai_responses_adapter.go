@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+var errCodexGatewayRuntimeGuardStreamHandled = errors.New("codex gateway openai runtime guard stream error already written")
 
 type codexGatewayOpenAIResponsesAdapter struct {
 	gateway *OpenAIGatewayService
@@ -29,6 +32,12 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, false)
 	if err != nil {
+		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+		if errors.As(err, &runtimeBlocked) {
+			return CodexGatewayDeepSeekAdapterResult{
+				ServiceResponse: codexGatewayOpenAIRuntimeGuardServiceResponse(runtimeBlocked),
+			}, nil
+		}
 		return CodexGatewayDeepSeekAdapterResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
@@ -97,6 +106,23 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, true)
 	if err != nil {
+		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+		if errors.As(err, &runtimeBlocked) {
+			serviceResp := codexGatewayOpenAIRuntimeGuardServiceResponse(runtimeBlocked)
+			errType := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.type").String())
+			errCode := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.code").String())
+			if errCode == "" {
+				errCode = "invalid_request"
+			}
+			message := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.message").String())
+			if err := writeCodexGatewayStreamFailure(req.Request.StreamWriter, "", errType, errCode, message); err != nil {
+				return CodexGatewayProviderResult{}, err
+			}
+			if req.Request.Flush != nil {
+				req.Request.Flush()
+			}
+			return CodexGatewayProviderResult{}, errCodexGatewayRuntimeGuardStreamHandled
+		}
 		return CodexGatewayProviderResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
@@ -311,6 +337,29 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		}
 	}
 	return result, nil
+}
+
+func codexGatewayOpenAIRuntimeGuardServiceResponse(blocked *OpenAIRuntimeGuardBlockedError) CodexGatewayServiceResponse {
+	status := http.StatusBadRequest
+	body := []byte(`{"error":{"type":"invalid_request_error","code":"invalid_request","message":"Unsupported reasoning_effort value"}}`)
+	if blocked != nil {
+		if blocked.StatusCode > 0 {
+			status = blocked.StatusCode
+		}
+		if len(blocked.Payload) > 0 {
+			body = append([]byte(nil), blocked.Payload...)
+		}
+	}
+	if strings.TrimSpace(gjson.GetBytes(body, "error.code").String()) == "" {
+		if patched, err := sjson.SetBytes(body, "error.code", "invalid_request"); err == nil {
+			body = patched
+		}
+	}
+	return CodexGatewayServiceResponse{
+		StatusCode: status,
+		Headers:    http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+		Body:       body,
+	}
 }
 
 func codexGatewayOpenAIRequestFailoverError(err error) error {

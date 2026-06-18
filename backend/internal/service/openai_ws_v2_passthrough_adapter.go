@@ -275,6 +275,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		initialRequestModel = hooks.InitialRequestModel
 	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
+	guardedFirst, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, firstClientMessage)
+	if runtimeErr != nil {
+		return fmt.Errorf("apply openai runtime guard on first ws frame: %w", runtimeErr)
+	}
+	if runtimeBlocked != nil {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		writeOpenAIRuntimeGuardBlockedWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), runtimeBlocked)
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardBlockedWSReason(runtimeBlocked), runtimeBlocked)
+	}
+	firstClientMessage = guardedFirst
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
 		return fmt.Errorf("apply openai fast policy on first ws frame: %w", policyErr)
@@ -450,6 +460,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if model == "" {
 				model = capturedSessionModel
 			}
+			guarded, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, payload)
+			if runtimeErr != nil {
+				return payload, nil, runtimeErr
+			}
+			if runtimeBlocked != nil {
+				MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+				writeOpenAIRuntimeGuardBlockedWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), runtimeBlocked)
+				return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardBlockedWSReason(runtimeBlocked), runtimeBlocked)
+			}
+			payload = guarded
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
 			if policyErr == nil && blocked == nil &&
 				strings.TrimSpace(gjson.GetBytes(out, "type").String()) == "response.create" {
