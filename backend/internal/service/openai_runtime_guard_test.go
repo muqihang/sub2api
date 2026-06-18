@@ -218,6 +218,7 @@ func TestOpenAIRuntimeGuardBaselineFixtureCatalogComplete(t *testing.T) {
 		"content_safety_clear_sexual_block",
 		"content_safety_credential_theft_block",
 		"content_safety_malware_block",
+		"content_safety_illicit_instruction_block",
 		"content_safety_defensive_security_not_blocked",
 	}
 	for _, id := range expectedIDs {

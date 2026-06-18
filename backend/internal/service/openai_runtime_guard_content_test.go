@@ -32,6 +32,7 @@ func TestOpenAIRuntimeGuardContentSafetyFixturesCoverMVPBlocksAndAllowedDefensiv
 		"content_safety_clear_sexual_block",
 		"content_safety_credential_theft_block",
 		"content_safety_malware_block",
+		"content_safety_illicit_instruction_block",
 	}
 	for _, id := range blockIDs {
 		t.Run(id, func(t *testing.T) {
