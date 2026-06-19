@@ -379,3 +379,87 @@ def test_cp6_resolver_to_boundary_claude_deepseek_flash_claude_only_replays_safe
     assert "query" not in serialized
     assert "raw_provider_response" not in serialized
     assert "reasoning_content" not in serialized
+
+
+def test_cp6_hot_switch_back_to_claude_native_preserves_native_history_and_only_frozen_bridge_summary():
+    from zhumeng_agent.adapters.claude_code.transcript_boundary import (  # noqa: PLC0415
+        ReplaySafeAnthropicTranscript,
+        TranscriptProvenance,
+        _stable_hash,  # type: ignore[attr-defined]
+        _transcript_hash,  # type: ignore[attr-defined]
+    )
+
+    native_history = [
+        {"role": "user", "content": "Use Opus as main controller."},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "Claude-native signed thinking stays native-only.", "signature": "claude-native-sig"},
+                {"type": "text", "text": "I will delegate read-only evidence gathering to DeepSeek."},
+            ],
+        },
+    ]
+    bridge_raw_history = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "DeepSeek hidden chain", "signature": "foreign-sig"},
+                {"type": "tool_use", "id": "toolu_hot", "name": "ToolSearch", "input": {"query": "private query"}},
+            ],
+            "raw_provider_response": {"reasoning_content": "provider-private"},
+        }
+    ]
+    frozen = freeze_safe_tool_result(
+        source_provider="deepseek",
+        source_turn_range=(0, 0),
+        tool_use_id="toolu_hot",
+        content="DeepSeek reported that the fixture and docs support Anthropic messages.",
+        evidence={
+            "tools": ["ToolSearch"],
+            "sources": ["DeepSeek Anthropic API docs"],
+            "tool_use": bridge_raw_history[0]["content"][1],
+            "raw_provider_response": bridge_raw_history[0]["raw_provider_response"],
+        },
+    )
+
+    sanitized_child = sanitize_for_target_provider(
+        source_messages=[dict(frozen.block)],
+        source_profile=_profile("deepseek"),
+        target_profile=_profile("claude", native_replay_allowed=True),
+        replay_context="history_replay",
+        provenance_snapshot=_snapshot("deepseek", [dict(frozen.block)]),
+    )
+    assert sanitized_child.transcript is not None
+    assert_claude_native_replay_safe(sanitized_child.transcript)
+
+    native_provenance = tuple(
+        TranscriptProvenance(
+            stable_id=f"claude-native:{index}:{_stable_hash(message)}",
+            source_provider="claude",
+            source_route="claude_native",
+            source_turn_range=(index, index),
+            source_hash=_stable_hash(message),
+            replay_class=ReplayClass.CLAUDE_NATIVE_REPLAYABLE,
+        )
+        for index, message in enumerate(native_history)
+    )
+    merged_messages = tuple(native_history) + sanitized_child.transcript.messages
+    merged_provenance = native_provenance + sanitized_child.transcript.provenance
+    transcript = ReplaySafeAnthropicTranscript(
+        messages=merged_messages,
+        provenance=merged_provenance,
+        replay_context="hot_switch_back_to_claude_native",
+        deterministic_hash=_transcript_hash(merged_messages, merged_provenance, "hot_switch_back_to_claude_native"),
+    )
+
+    assert_claude_native_replay_safe(transcript)
+    serialized = json.dumps(transcript.to_dict(), ensure_ascii=True, sort_keys=True)
+    assert "Use Opus as main controller" in serialized
+    assert "Claude-native signed thinking stays native-only" in serialized
+    assert "DeepSeek reported" in serialized
+    assert "DeepSeek hidden chain" not in serialized
+    assert "foreign-sig" not in serialized
+    assert "private query" not in serialized
+    assert "raw_provider_response" not in serialized
+    assert "reasoning_content" not in serialized
+    assert '"tool_use":' not in serialized

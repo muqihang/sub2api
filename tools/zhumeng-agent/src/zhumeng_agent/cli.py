@@ -1683,9 +1683,8 @@ def build_claude_code_start_payload(
 ) -> dict[str, object]:
     store = default_state_store()
     state = store.read()
-    missing = [key for key in ("gateway_base_url", "access_token", "managed_session_id", "device_id") if not state.get(key)]
-    if missing:
-        raise ValueError(f"managed setup is incomplete: missing {', '.join(missing)}")
+    if not state.get("gateway_base_url"):
+        raise ValueError("managed setup is incomplete: missing gateway_base_url")
     state = refresh_claude_code_native_managed_credentials_if_needed(state, store=store)
     selected_guard_port = int(guard_port or choose_local_proxy_port())
     active_runtime = resolve_active_managed_runtime(runtime_root)

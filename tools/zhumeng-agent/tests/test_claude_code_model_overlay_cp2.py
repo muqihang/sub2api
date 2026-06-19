@@ -218,7 +218,7 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     deepseek = proof.models_by_id["claude-code-bridge-deepseek-v4-pro"]
     assert deepseek.catalog_source == "provider_docs_observed"
     assert deepseek.catalog_authoritative is False
-    assert deepseek.api_formats == ("anthropic_messages", "openai_chat_completions")
+    assert deepseek.api_formats == ("anthropic_messages",)
     assert "deepseek-v4-pro" in docs_snapshot["observations"]["deepseek"]["models"]
     assert "deepseek-v4-flash" in docs_snapshot["observations"]["deepseek"]["models"]
     deepseek_1m = proof.models_by_id["claude-code-bridge-deepseek-v4-pro"]
@@ -231,7 +231,7 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert deepseek_1m.anthropic_base_url == docs_snapshot["observations"]["deepseek"]["anthropic_base_url"]
     assert deepseek_1m.cache_usage_fields == deepseek.cache_usage_fields
     assert deepseek.anthropic_base_url == docs_snapshot["observations"]["deepseek"]["anthropic_base_url"]
-    assert deepseek.openai_base_url == docs_snapshot["observations"]["deepseek"]["openai_base_url"]
+    assert deepseek.openai_base_url == ""
     assert deepseek.reasoning_effort_levels == ("high", "max")
     assert deepseek.reasoning_mapping["xhigh"] == "max"
     assert deepseek.cache_policy == "provider_prefix_kv_cache_automatic_best_effort"
@@ -245,7 +245,7 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert glm.route == "zai_glm_bridge"
     assert glm.client_type == "claude_code_bridge_zai_glm"
     assert glm.catalog_authoritative is False
-    assert glm.api_formats == ("anthropic_messages", "openai_compatible_chat")
+    assert glm.api_formats == ("anthropic_messages",)
     assert "glm-5.2[1m]" in docs_snapshot["observations"]["zai_glm"]["models"]
     assert glm.anthropic_base_url == docs_snapshot["observations"]["zai_glm"]["anthropic_base_url"]
     assert glm.openai_base_url == ""
@@ -258,10 +258,10 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
 
     kimi = proof.models_by_id["claude-code-bridge-kimi-k2.7-code"]
     assert kimi.catalog_authoritative is False
-    assert kimi.api_formats == ("anthropic_messages", "openai_chat_completions")
+    assert kimi.api_formats == ("anthropic_messages",)
     assert "kimi-k2.7-code" in docs_snapshot["observations"]["kimi"]["models"]
     assert kimi.anthropic_base_url == docs_snapshot["observations"]["kimi"]["anthropic_base_url"]
-    assert kimi.openai_base_url == docs_snapshot["observations"]["kimi"]["openai_base_url"]
+    assert kimi.openai_base_url == ""
     assert kimi.cache_key_strategy == docs_snapshot["observations"]["kimi"]["cache_key_strategy"]
     assert docs_snapshot["observations"]["kimi"]["prompt_cache_key"] is True
     assert docs_snapshot["observations"]["kimi"]["cache_usage_field"] == "usage.cached_tokens"

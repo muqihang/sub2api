@@ -124,8 +124,20 @@ func ClaudeCodeBridgeAnthropicLiveEligible(decision ClaudeCodeBridgeRouteDecisio
 }
 
 func ClaudeCodeBridgeAnthropicLiveDecisionValid(decision ClaudeCodeBridgeRouteDecision) error {
-	if strings.TrimSpace(decision.Provider) != "deepseek" || strings.TrimSpace(decision.Route) != "deepseek_bridge" || strings.TrimSpace(decision.ClientType) != "claude_code_bridge_deepseek" {
-		return fmt.Errorf("claude code bridge live only supports deepseek anthropic messages")
+	provider := strings.TrimSpace(decision.Provider)
+	route := strings.TrimSpace(decision.Route)
+	clientType := strings.TrimSpace(decision.ClientType)
+	allowed := map[string]struct {
+		route      string
+		clientType string
+	}{
+		"deepseek": {route: "deepseek_bridge", clientType: "claude_code_bridge_deepseek"},
+		"zai_glm":  {route: "zai_glm_bridge", clientType: "claude_code_bridge_zai_glm"},
+		"kimi":     {route: "kimi_bridge", clientType: "claude_code_bridge_kimi"},
+	}
+	contract, ok := allowed[provider]
+	if !ok || route != contract.route || clientType != contract.clientType {
+		return fmt.Errorf("claude code bridge live only supports verified anthropic-compatible bridge providers")
 	}
 	if strings.TrimSpace(decision.PreferredProtocol) != "anthropic_messages" || strings.TrimSpace(decision.AnthropicBaseURL) == "" {
 		return fmt.Errorf("claude code bridge live requires anthropic messages")

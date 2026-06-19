@@ -432,3 +432,131 @@ func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsWhenResponsesUpstre
 	require.False(t, result.Audit.FormalPoolAllowed)
 	require.Equal(t, "claude_code_bridge_openai", result.Audit.ClientType)
 }
+
+func TestClaudeCodeBridgeAnthropicLivePostsGLMAndKimiToAnthropicMessages(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	tests := []struct {
+		name          string
+		modelID       string
+		upstreamModel string
+		provider      string
+		route         string
+		clientType    string
+	}{
+		{
+			name:          "zai glm",
+			modelID:       "claude-code-bridge-glm-5.2-1m",
+			upstreamModel: "glm-5.2[1m]",
+			provider:      "zai_glm",
+			route:         "zai_glm_bridge",
+			clientType:    "claude_code_bridge_zai_glm",
+		},
+		{
+			name:          "kimi",
+			modelID:       "claude-code-bridge-kimi-k2.7-code",
+			upstreamModel: "kimi-k2.7-code",
+			provider:      "kimi",
+			route:         "kimi_bridge",
+			clientType:    "claude_code_bridge_kimi",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath string
+			var gotBody string
+			var gotAuth string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				gotPath = r.URL.Path
+				gotBody = string(body)
+				gotAuth = r.Header.Get("x-api-key")
+				require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: message_stop\n"))
+				_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+			}))
+			defer upstream.Close()
+
+			decision := cp6LiveDeepSeekDecision(upstream.URL + "/anthropic")
+			decision.ModelID = tt.modelID
+			decision.UpstreamModel = tt.upstreamModel
+			decision.Provider = tt.provider
+			decision.Route = tt.route
+			decision.ClientType = tt.clientType
+			decision.OpenAIBaseURL = ""
+			body := []byte(`{"model":"` + tt.modelID + `","messages":[{"role":"user","content":"anthropic only"}],"stream":true}`)
+
+			result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), decision, body, "sk-provider-test-key")
+
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, result.StatusCode)
+			require.Equal(t, "/anthropic/v1/messages", gotPath)
+			require.Equal(t, "sk-provider-test-key", gotAuth)
+			require.Contains(t, gotBody, `"model":"`+tt.upstreamModel+`"`)
+			require.NotContains(t, gotBody, tt.modelID)
+			require.Equal(t, "anthropic_messages", result.Audit.PreferredProtocol)
+			require.Equal(t, tt.clientType, result.Audit.ClientType)
+			require.False(t, result.Audit.FormalPoolAllowed)
+			require.False(t, result.Audit.NativeAttested)
+		})
+	}
+}
+
+func TestClaudeCodeBridgeAnthropicLiveDecisionAcceptsAnthropicCompatibleProvidersWithoutFormalPool(t *testing.T) {
+	base := cp6LiveDeepSeekDecision("http://127.0.0.1:9/anthropic")
+	tests := []struct {
+		name          string
+		modelID       string
+		upstreamModel string
+		provider      string
+		route         string
+		clientType    string
+	}{
+		{
+			name:          "deepseek",
+			modelID:       "claude-code-bridge-deepseek-v4-pro",
+			upstreamModel: "deepseek-v4-pro",
+			provider:      "deepseek",
+			route:         "deepseek_bridge",
+			clientType:    "claude_code_bridge_deepseek",
+		},
+		{
+			name:          "zai glm",
+			modelID:       "claude-code-bridge-glm-5.2-1m",
+			upstreamModel: "glm-5.2[1m]",
+			provider:      "zai_glm",
+			route:         "zai_glm_bridge",
+			clientType:    "claude_code_bridge_zai_glm",
+		},
+		{
+			name:          "kimi",
+			modelID:       "claude-code-bridge-kimi-k2.7-code",
+			upstreamModel: "kimi-k2.7-code",
+			provider:      "kimi",
+			route:         "kimi_bridge",
+			clientType:    "claude_code_bridge_kimi",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := base
+			decision.ModelID = tt.modelID
+			decision.UpstreamModel = tt.upstreamModel
+			decision.Provider = tt.provider
+			decision.Route = tt.route
+			decision.ClientType = tt.clientType
+			decision.PreferredProtocol = "anthropic_messages"
+			decision.AnthropicBaseURL = "http://127.0.0.1:9/anthropic"
+			decision.OpenAIBaseURL = ""
+			decision.FallbackProtocol = ""
+			decision.FallbackReason = ""
+
+			require.NoError(t, ClaudeCodeBridgeAnthropicLiveDecisionValid(decision))
+			require.False(t, decision.FormalPoolAllowed)
+			require.False(t, decision.NativeAttestationAllowed)
+			require.Equal(t, ClaudeCodeBridgeCredentialScope, decision.CredentialScope)
+		})
+	}
+}

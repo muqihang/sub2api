@@ -136,9 +136,6 @@ func TestClaudeCodeProviderRegistryBridgeDisplayIDUpstreamMappingMatrix(t *testi
 		}
 		if tc.preferredProtocol == "anthropic_messages" {
 			entry.AnthropicBaseURL = "http://127.0.0.1:8080"
-			entry.OpenAIBaseURL = "http://127.0.0.1:8080"
-			entry.FallbackProtocol = "openai_chat_completions"
-			entry.FallbackReason = "anthropic_cache_fixture_failed"
 		} else {
 			entry.OpenAIBaseURL = "http://127.0.0.1:8080"
 		}
@@ -648,11 +645,11 @@ func TestClaudeCodeProviderRegistryBridgeCatalogMappingContract(t *testing.T) {
 		{"claude-code-bridge-gpt-5.5", "gpt-5.5", "openai", "openai_bridge", "claude_code_bridge_openai", "responses", "", "https://api.openai.com/v1"},
 		{"claude-code-bridge-gpt-5.4", "gpt-5.4", "openai", "openai_bridge", "claude_code_bridge_openai", "responses", "", "https://api.openai.com/v1"},
 		{"claude-code-bridge-gpt-5.4-mini", "gpt-5.4-mini", "openai", "openai_bridge", "claude_code_bridge_openai", "responses", "", "https://api.openai.com/v1"},
-		{"claude-code-bridge-deepseek-v4-pro", "deepseek-v4-pro", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek", "anthropic_messages", "https://api.deepseek.com/anthropic", "https://api.deepseek.com"},
-		{"claude-code-bridge-deepseek-v4-flash", "deepseek-v4-flash", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek", "anthropic_messages", "https://api.deepseek.com/anthropic", "https://api.deepseek.com"},
+		{"claude-code-bridge-deepseek-v4-pro", "deepseek-v4-pro", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek", "anthropic_messages", "https://api.deepseek.com/anthropic", ""},
+		{"claude-code-bridge-deepseek-v4-flash", "deepseek-v4-flash", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek", "anthropic_messages", "https://api.deepseek.com/anthropic", ""},
 		{"claude-code-bridge-agnes-2.0-flash", "agnes-2.0-flash", "agnes", "agnes_bridge", "claude_code_bridge_agnes", "responses", "", "https://api.openai.com/v1"},
-		{"claude-code-bridge-glm-5.2-1m", "glm-5.2[1m]", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm", "anthropic_messages", "https://api.z.ai/api/anthropic", "https://api.z.ai/api/coding/paas/v4"},
-		{"claude-code-bridge-kimi-k2.7-code", "kimi-k2.7-code", "kimi", "kimi_bridge", "claude_code_bridge_kimi", "anthropic_messages", "https://api.moonshot.ai/anthropic", "https://api.moonshot.ai/v1"},
+		{"claude-code-bridge-glm-5.2-1m", "glm-5.2[1m]", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm", "anthropic_messages", "https://api.z.ai/api/anthropic", ""},
+		{"claude-code-bridge-kimi-k2.7-code", "kimi-k2.7-code", "kimi", "kimi_bridge", "claude_code_bridge_kimi", "anthropic_messages", "https://api.moonshot.ai/anthropic", ""},
 	}
 
 	entries := make([]ClaudeCodeProviderCatalogEntry, 0, len(tests))

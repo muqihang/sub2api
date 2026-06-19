@@ -450,3 +450,34 @@ def test_cp3a_workflow_explicit_claude_opt_in_has_audit_label(tmp_path: Path):
     assert resolution.native_egress_allowed is True
     assert resolution.formal_pool_allowed is True
     assert resolution.audit_label == "explicit_claude_formal_pool_workflow"
+
+
+def test_cp3a_protocol_strategy_keeps_anthropic_compatible_providers_off_openai_fallback(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    anthropic_compatible = {
+        "claude-code-bridge-deepseek-v4-pro",
+        "claude-code-bridge-deepseek-v4-flash",
+        "claude-code-bridge-glm-5.2-1m",
+        "claude-code-bridge-kimi-k2.7-code",
+    }
+    for model_id in anthropic_compatible:
+        entry = contract.models_by_id[model_id]
+        assert entry.api_formats == ("anthropic_messages",)
+        assert entry.anthropic_base_url
+        assert entry.openai_base_url == ""
+        assert entry.route.endswith("_bridge")
+        assert entry.client_type.startswith("claude_code_bridge_")
+        assert entry.formal_pool_eligible is False
+
+    for model_id in (
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-gpt-5.4",
+        "claude-code-bridge-gpt-5.4-mini",
+    ):
+        entry = contract.models_by_id[model_id]
+        assert entry.provider == "openai"
+        assert entry.api_formats == ("responses",)
+        assert entry.route == "openai_bridge"
+        assert entry.client_type == "claude_code_bridge_openai"
+        assert entry.formal_pool_eligible is False
