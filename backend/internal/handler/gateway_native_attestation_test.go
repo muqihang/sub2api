@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestGatewayHandlerNativeCountTokensAttestationValidatesAndSetsContext(t *testing.T) {
@@ -39,6 +41,63 @@ func TestGatewayHandlerNativeCountTokensAttestationValidatesAndSetsContext(t *te
 	require.Equal(t, service.ClaudeCodeNativeCCGatewayCount, summary.CCGatewayRoute)
 }
 
+
+func TestGatewayHandlerNativeCountTokensRespondsLocallyBeforeAccountSelection(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS", "claude-sonnet-4-6")
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"count-token-prompt-must-not-leak"}]}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(string(body)))
+	for key, values := range signedNativeHeadersForHandlerTest(t, body, "/v1/messages/count_tokens", time.Now()) {
+		for _, value := range values {
+			c.Request.Header.Add(key, value)
+		}
+	}
+	groupID := int64(8)
+	user := &service.User{ID: 1, Role: service.RoleUser, Status: service.StatusActive, Concurrency: 1}
+	group := &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive, ClaudeCodeOnly: true}
+	c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: 15, UserID: user.ID, User: user, GroupID: &groupID, Group: group, Status: service.StatusActive})
+	c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID, Concurrency: user.Concurrency})
+
+	h := &GatewayHandler{}
+	h.CountTokens(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotContains(t, rec.Body.String(), "count-token-prompt-must-not-leak")
+	require.Equal(t, "claude-sonnet-4-6", gjson.Get(rec.Body.String(), "model").String())
+	require.Greater(t, gjson.Get(rec.Body.String(), "input_tokens").Int(), int64(1))
+}
+
+func TestGatewayHandlerBridgeCountTokensRespondsLocallyWithoutPromptLeak(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"claude-code-bridge-deepseek-v4-flash","upstream_model":"deepseek-v4-flash","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"http://127.0.0.1:9/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`)
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":[{"type":"text","text":"bridge-count-token-prompt-must-not-leak"}]}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens?beta=true", strings.NewReader(string(body)))
+	for key, values := range signedBridgeRouteHintHeadersForHandlerTest(t, body, "/v1/messages/count_tokens?beta=true", time.Now()) {
+		for _, value := range values {
+			c.Request.Header.Add(key, value)
+		}
+	}
+
+	h := &GatewayHandler{}
+	require.True(t, h.handleClaudeCodeBridgeCountTokensLocal(c, body, "claude-code-bridge-deepseek-v4-flash"))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotContains(t, rec.Body.String(), "bridge-count-token-prompt-must-not-leak")
+	require.Equal(t, "claude-code-bridge-deepseek-v4-flash", gjson.Get(rec.Body.String(), "model").String())
+	require.Greater(t, gjson.Get(rec.Body.String(), "input_tokens").Int(), int64(1))
+}
+
 func TestGatewayHandlerNativeCountTokensForgedMarkersFailClosed(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
 	gin.SetMode(gin.TestMode)
@@ -54,15 +113,68 @@ func TestGatewayHandlerNativeCountTokensForgedMarkersFailClosed(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, rec.Code)
 }
 
+func signedBridgeRouteHintHeadersForHandlerTest(t *testing.T, body []byte, requestURI string, now time.Time) http.Header {
+	t.Helper()
+	digest := sha256.Sum256(body)
+	payload := map[string]any{
+		"key_id":                     "route_hint_v1",
+		"scope":                      service.ClaudeCodeRouteHintScope,
+		"version":                    service.ClaudeCodeRouteHintVersion,
+		"issued_at":                  now.Unix(),
+		"expires_at":                 now.Add(time.Minute).Unix(),
+		"nonce":                      "handler-bridge-count-tokens-" + hex.EncodeToString(digest[:4]),
+		"method":                     http.MethodPost,
+		"request_uri":                requestURI,
+		"model_id":                   "claude-code-bridge-deepseek-v4-flash",
+		"body_model":                 "claude-code-bridge-deepseek-v4-flash",
+		"body_sha256":                "sha256:" + hex.EncodeToString(digest[:]),
+		"runtime_hash":               "sha256:" + strings.Repeat("1", 64),
+		"overlay_hash":               "sha256:" + strings.Repeat("2", 64),
+		"catalog_hash":               "sha256:" + strings.Repeat("3", 64),
+		"catalog_version":            "cp5-route-catalog",
+		"session_ref":                "11111111-2222-4333-8444-555555555555",
+		"route":                      "deepseek_bridge",
+		"client_type":                "claude_code_bridge_deepseek",
+		"provider":                   "deepseek",
+		"live_request_allowed":       true,
+		"formal_pool_allowed":        false,
+		"native_attestation_allowed": false,
+		"provider_owner":             "zhumeng_managed",
+		"credential_scope":           "bridge_pool",
+		"gateway_location":           "cloud",
+	}
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	mac := hmac.New(sha256.New, []byte("route-hint-key"))
+	_, _ = mac.Write([]byte(encoded))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(http.MethodPost))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(requestURI))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(hex.EncodeToString(digest[:])))
+
+	headers := http.Header{}
+	headers.Set(service.ClaudeCodeRouteHintHeader, encoded)
+	headers.Set(service.ClaudeCodeRouteHintSignatureHeader, base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
+	headers.Set(service.ClaudeCodeNativeClientTypeHeader, "claude_code_bridge_deepseek")
+	headers.Set("x-sub2api-route", "deepseek_bridge")
+	headers.Set(service.ClaudeCodeNativeCatalogVersionHeader, "cp5-route-catalog")
+	headers.Set("x-claude-code-session-id", "11111111-2222-4333-8444-555555555555")
+	return headers
+}
+
 func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI string, now time.Time) http.Header {
 	t.Helper()
 	localSessionRef := "hmac-sha256:" + strings.Repeat("a", 64)
+	digest := sha256.Sum256(body)
 	payload := map[string]any{
 		"key_id":                    "guard_v1",
 		"scope":                     "claude_code_native_takeover",
 		"version":                   1,
 		"issued_at":                 now.Unix(),
-		"nonce":                     "handler-nonce-001",
+		"nonce":                     "handler-nonce-" + hex.EncodeToString(digest[:4]),
 		"method":                    http.MethodPost,
 		"request_uri":               requestURI,
 		"client_type":               service.ClaudeCodeNativeClientType,
@@ -87,7 +199,6 @@ func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI str
 	raw, err := json.Marshal(payload)
 	require.NoError(t, err)
 	encoded := base64.RawURLEncoding.EncodeToString(raw)
-	digest := sha256.Sum256(body)
 	mac := hmac.New(sha256.New, []byte("native-attestation-test-secret"))
 	_, _ = mac.Write([]byte(encoded))
 	_, _ = mac.Write([]byte("\n"))

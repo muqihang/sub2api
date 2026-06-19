@@ -74,8 +74,8 @@ def test_cp3a_zai_glm_provider_profile_uses_zai_glm_route_family(tmp_path: Path)
 
     assert profile.profile_id == "zai_glm"
     assert profile.provider == "zai_glm"
-    assert profile.main_model_id == "glm-5.2[1m]"
-    assert profile.fast_model_id == "glm-5-turbo"
+    assert profile.main_model_id == "claude-code-bridge-glm-5.2-1m"
+    assert profile.fast_model_id == "claude-code-bridge-glm-5.2-1m"
 
 
 def test_cp3a_agent_model_options_default_to_inherit(tmp_path: Path):
@@ -86,16 +86,18 @@ def test_cp3a_agent_model_options_default_to_inherit(tmp_path: Path):
     assert options[0].option_id == "inherit"
     assert options[0].is_default is True
     assert options[0].provider == "inherit"
-    assert any(option.model_id == "deepseek-v4-flash" and option.provider == "deepseek" for option in options)
+    assert any(option.model_id == "claude-code-bridge-deepseek-v4-pro" and option.provider == "deepseek" for option in options)
+    assert any(option.model_id == "claude-code-bridge-deepseek-v4-flash" and option.provider == "deepseek" for option in options)
+    assert any(option.model_id == "claude-code-bridge-gpt-5.4-mini" and option.provider == "openai" for option in options)
     assert any(option.model_id == "claude-sonnet-4-6" and option.native_egress_allowed for option in options)
 
 
 def test_cp3a_deepseek_parent_subagent_inherit_stays_deepseek(tmp_path: Path):
     contract = _contract(tmp_path)
 
-    resolution = resolve_subagent_model(contract, parent_model_id="deepseek-v4-pro", requested_model="inherit")
+    resolution = resolve_subagent_model(contract, parent_model_id="claude-code-bridge-deepseek-v4-pro", requested_model="inherit")
 
-    assert resolution.resolved_model_id == "deepseek-v4-pro"
+    assert resolution.resolved_model_id == "claude-code-bridge-deepseek-v4-pro"
     assert resolution.provider == "deepseek"
     assert resolution.route == "deepseek_bridge"
     assert resolution.client_type == "claude_code_bridge_deepseek"
@@ -108,9 +110,9 @@ def test_cp3a_deepseek_parent_subagent_inherit_stays_deepseek(tmp_path: Path):
 def test_cp3a_provider_local_fast_mapping_for_subagents(tmp_path: Path, requested: str):
     contract = _contract(tmp_path)
 
-    resolution = resolve_subagent_model(contract, parent_model_id="deepseek-v4-pro", requested_model=requested)
+    resolution = resolve_subagent_model(contract, parent_model_id="claude-code-bridge-deepseek-v4-pro", requested_model=requested)
 
-    assert resolution.resolved_model_id == "deepseek-v4-flash"
+    assert resolution.resolved_model_id == "claude-code-bridge-deepseek-v4-flash"
     assert resolution.provider == "deepseek"
     assert resolution.native_egress_allowed is False
     assert resolution.resolution_source == "provider_local_alias"
@@ -120,9 +122,9 @@ def test_cp3a_provider_local_fast_mapping_for_subagents(tmp_path: Path, requeste
 def test_cp3a_workflow_aliases_remap_to_active_non_claude_profile(tmp_path: Path, requested: str):
     contract = _contract(tmp_path)
 
-    resolution = resolve_workflow_model_alias(contract, active_model_id="deepseek-v4-pro", requested_model=requested)
+    resolution = resolve_workflow_model_alias(contract, active_model_id="claude-code-bridge-deepseek-v4-pro", requested_model=requested)
 
-    assert resolution.resolved_model_id == "deepseek-v4-flash"
+    assert resolution.resolved_model_id == "claude-code-bridge-deepseek-v4-flash"
     assert resolution.provider == "deepseek"
     assert resolution.native_egress_allowed is False
     assert resolution.formal_pool_allowed is False
@@ -133,11 +135,11 @@ def test_cp3a_background_models_resolve_from_active_profile_each_request(tmp_pat
     contract = _contract(tmp_path)
 
     started_on_claude = resolve_background_model(contract, active_model_id="claude-sonnet-4-6", task=task)
-    after_switch_to_deepseek = resolve_background_model(contract, active_model_id="deepseek-v4-pro", task=task)
+    after_switch_to_deepseek = resolve_background_model(contract, active_model_id="claude-code-bridge-deepseek-v4-pro", task=task)
 
     assert started_on_claude.provider == "claude"
     assert started_on_claude.native_egress_allowed is True
-    assert after_switch_to_deepseek.resolved_model_id == "deepseek-v4-flash"
+    assert after_switch_to_deepseek.resolved_model_id == "claude-code-bridge-deepseek-v4-flash"
     assert after_switch_to_deepseek.provider == "deepseek"
     assert after_switch_to_deepseek.native_egress_allowed is False
     assert after_switch_to_deepseek.formal_pool_allowed is False
@@ -149,7 +151,7 @@ def test_cp3a_explicit_claude_subagent_goes_native_and_is_auditable(tmp_path: Pa
 
     resolution = resolve_subagent_model(
         contract,
-        parent_model_id="deepseek-v4-pro",
+        parent_model_id="claude-code-bridge-deepseek-v4-pro",
         requested_model="claude-sonnet-4-6",
         explicit_claude_opt_in=True,
     )
@@ -170,8 +172,8 @@ def test_cp3a_hardcoded_claude_workflow_fails_closed_without_opt_in_when_no_mapp
     with pytest.raises(RuntimeOverlayError, match="explicit Claude opt-in"):
         resolve_workflow_model_alias(
             contract,
-            active_model_id="deepseek-v4-pro",
-            requested_model="claude-opus-4-7",
+            active_model_id="claude-code-bridge-deepseek-v4-pro",
+            requested_model="claude-opus-4-8",
             allow_hardcoded_claude_remap=False,
         )
 
@@ -180,20 +182,184 @@ def test_cp3a_unknown_model_fails_closed(tmp_path: Path):
     contract = _contract(tmp_path)
 
     with pytest.raises(RuntimeOverlayError, match="unknown Claude Code runtime model"):
-        resolve_subagent_model(contract, parent_model_id="deepseek-v4-pro", requested_model="glm-4.6")
+        resolve_subagent_model(contract, parent_model_id="claude-code-bridge-deepseek-v4-pro", requested_model="glm-4.6")
 
 
-@pytest.mark.parametrize("requested", ["deepseek-v4-pro", "deepseek-v4-flash"])
+@pytest.mark.parametrize("requested", ["claude-code-bridge-deepseek-v4-pro"])
 def test_cp3a_claude_parent_to_deepseek_subagent_requires_boundary(tmp_path: Path, requested: str):
     contract = _contract(tmp_path)
 
-    resolution = resolve_subagent_model(contract, parent_model_id="claude-opus-4-7", requested_model=requested)
+    resolution = resolve_subagent_model(contract, parent_model_id="claude-opus-4-8", requested_model=requested)
 
     assert resolution.provider == "deepseek"
     assert resolution.native_egress_allowed is False
     assert resolution.formal_pool_allowed is False
     assert resolution.replay_boundary == "safe_tool_result"
     assert resolution.raw_history_replay_allowed is False
+
+
+def test_cp3a_cross_provider_agent_options_are_mutually_visible_but_isolated(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    options = {option.model_id: option for option in build_agent_model_options(contract) if option.model_id}
+
+    for model_id in (
+        "claude-sonnet-4-6",
+        "claude-opus-4-8",
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-gpt-5.4",
+        "claude-code-bridge-gpt-5.4-mini",
+        "claude-code-bridge-deepseek-v4-pro",
+        "claude-code-bridge-deepseek-v4-flash",
+        "claude-code-bridge-agnes-2.0-flash",
+        "claude-code-bridge-glm-5.2-1m",
+        "claude-code-bridge-kimi-k2.7-code",
+    ):
+        assert model_id in options
+
+    claude_to_deepseek = resolve_subagent_model(
+        contract,
+        parent_model_id="claude-opus-4-8",
+        requested_model="claude-code-bridge-deepseek-v4-pro",
+    )
+    assert claude_to_deepseek.provider == "deepseek"
+    assert claude_to_deepseek.replay_boundary == "safe_tool_result"
+    assert claude_to_deepseek.native_egress_allowed is False
+    assert claude_to_deepseek.raw_history_replay_allowed is False
+
+    deepseek_to_claude = resolve_subagent_model(
+        contract,
+        parent_model_id="claude-code-bridge-deepseek-v4-pro",
+        requested_model="claude-opus-4-8",
+        explicit_claude_opt_in=True,
+    )
+    assert deepseek_to_claude.provider == "claude"
+    assert deepseek_to_claude.native_egress_allowed is True
+    assert deepseek_to_claude.formal_pool_allowed is True
+    assert deepseek_to_claude.audit_label == "explicit_claude_formal_pool_subagent"
+    assert deepseek_to_claude.replay_boundary == "safe_tool_result"
+    assert deepseek_to_claude.raw_history_replay_allowed is False
+
+
+
+def test_cp3a_openai_profile_exposes_all_gpt_variants_and_background_uses_mini(tmp_path: Path):
+    contract = _contract(tmp_path)
+    profile = contract.provider_profiles_by_provider["openai"]
+
+    assert profile.main_model_id == "claude-code-bridge-gpt-5.5"
+    assert profile.fast_model_id == "claude-code-bridge-gpt-5.4-mini"
+    options = {option.model_id for option in build_agent_model_options(contract)}
+    assert {
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-gpt-5.4",
+        "claude-code-bridge-gpt-5.4-mini",
+    }.issubset(options)
+
+
+def test_cp3a_claude_and_bridge_parents_can_select_each_other_across_boundary(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    claude_to_flash = resolve_subagent_model(
+        contract,
+        parent_model_id="claude-opus-4-8",
+        requested_model="claude-code-bridge-deepseek-v4-flash",
+    )
+    assert claude_to_flash.provider == "deepseek"
+    assert claude_to_flash.replay_boundary == "safe_tool_result"
+    assert claude_to_flash.raw_history_replay_allowed is False
+    assert claude_to_flash.native_egress_allowed is False
+
+    gpt_to_claude = resolve_subagent_model(
+        contract,
+        parent_model_id="claude-code-bridge-gpt-5.5",
+        requested_model="claude-opus-4-8",
+        explicit_claude_opt_in=True,
+    )
+    assert gpt_to_claude.provider == "claude"
+    assert gpt_to_claude.replay_boundary == "safe_tool_result"
+    assert gpt_to_claude.formal_pool_allowed is True
+    assert gpt_to_claude.raw_history_replay_allowed is False
+
+
+def test_cp3a_claude_profile_fast_uses_native_haiku_but_can_delegate_to_deepseek_flash(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    fast = resolve_background_model(contract, active_model_id="claude-opus-4-8", task="fast")
+    bridge_fast = resolve_background_model(
+        contract,
+        active_model_id="claude-opus-4-8",
+        task="fast",
+        fast_preference="bridge",
+    )
+    haiku = resolve_subagent_model(contract, parent_model_id="claude-opus-4-8", requested_model="haiku")
+    deepseek_flash = resolve_subagent_model(
+        contract,
+        parent_model_id="claude-opus-4-8",
+        requested_model="claude-code-bridge-deepseek-v4-flash",
+    )
+
+    assert fast.resolved_model_id == "claude-haiku-4-5-20251001"
+    assert fast.provider == "claude"
+    assert fast.native_egress_allowed is True
+    assert bridge_fast.resolved_model_id == "claude-code-bridge-deepseek-v4-flash"
+    assert bridge_fast.provider == "deepseek"
+    assert bridge_fast.replay_boundary == "safe_tool_result"
+    assert bridge_fast.formal_pool_allowed is False
+    assert bridge_fast.native_egress_allowed is False
+    assert haiku.resolved_model_id == "claude-haiku-4-5-20251001"
+    assert haiku.raw_history_replay_allowed is True
+    assert deepseek_flash.provider == "deepseek"
+    assert deepseek_flash.replay_boundary == "safe_tool_result"
+    assert deepseek_flash.native_egress_allowed is False
+
+
+def test_cp3a_non_claude_fast_never_resolves_to_claude_haiku(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    for active_model_id, expected_fast in (
+        ("claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-deepseek-v4-flash"),
+        ("claude-code-bridge-gpt-5.5", "claude-code-bridge-gpt-5.4-mini"),
+        ("claude-code-bridge-agnes-2.0-flash", "claude-code-bridge-agnes-2.0-flash"),
+        ("claude-code-bridge-glm-5.2-1m", "claude-code-bridge-glm-5.2-1m"),
+        ("claude-code-bridge-kimi-k2.7-code", "claude-code-bridge-kimi-k2.7-code"),
+    ):
+        resolution = resolve_background_model(contract, active_model_id=active_model_id, task="haiku")
+        assert resolution.resolved_model_id == expected_fast
+        assert resolution.resolved_model_id != "claude-haiku-4-5-20251001"
+        assert resolution.provider != "claude"
+        assert resolution.native_egress_allowed is False
+        assert resolution.formal_pool_allowed is False
+
+
+def test_cp3a_display_ids_resolve_to_distinct_upstream_models(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    expected = {
+        "claude-code-bridge-gpt-5.5": ("openai", "openai_bridge", "claude_code_bridge_openai", "gpt-5.5"),
+        "claude-code-bridge-gpt-5.4": ("openai", "openai_bridge", "claude_code_bridge_openai", "gpt-5.4"),
+        "claude-code-bridge-gpt-5.4-mini": ("openai", "openai_bridge", "claude_code_bridge_openai", "gpt-5.4-mini"),
+        "claude-code-bridge-deepseek-v4-pro": ("deepseek", "deepseek_bridge", "claude_code_bridge_deepseek", "deepseek-v4-pro"),
+        "claude-code-bridge-deepseek-v4-flash": ("deepseek", "deepseek_bridge", "claude_code_bridge_deepseek", "deepseek-v4-flash"),
+        "claude-code-bridge-agnes-2.0-flash": ("agnes", "agnes_bridge", "claude_code_bridge_agnes", "agnes-2.0-flash"),
+        "claude-code-bridge-glm-5.2-1m": ("zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm", "glm-5.2[1m]"),
+        "claude-code-bridge-kimi-k2.7-code": ("kimi", "kimi_bridge", "claude_code_bridge_kimi", "kimi-k2.7-code"),
+    }
+
+    assert set(contract.proof.display_model_ids) == set(expected)
+    for display_model_id, (provider, route, client_type, upstream_model_id) in expected.items():
+        resolution = resolve_subagent_model(
+            contract,
+            parent_model_id="claude-opus-4-8",
+            requested_model=display_model_id,
+        )
+        assert resolution.resolved_model_id == display_model_id
+        assert resolution.provider == provider
+        assert resolution.route == route
+        assert resolution.client_type == client_type
+        assert resolution.upstream_model_id == upstream_model_id
+        assert resolution.upstream_model_id != display_model_id
+        assert resolution.formal_pool_allowed is False
+        assert resolution.native_egress_allowed is False
 
 
 def test_cp3a_patch_probe_requires_dynamic_background_resolver_before_ready(tmp_path: Path):
@@ -263,7 +429,7 @@ def test_cp3a_rejects_provider_profile_alias_that_points_to_claude_native(tmp_pa
                 RuntimeProviderProfile(
                     profile_id="bad-deepseek",
                     provider="deepseek",
-                    main_model_id="deepseek-v4-pro",
+                    main_model_id="claude-code-bridge-deepseek-v4-pro",
                     fast_model_id="claude-sonnet-4-6",
                     family_aliases={"fast": "claude-sonnet-4-6"},
                 ),
@@ -276,8 +442,8 @@ def test_cp3a_workflow_explicit_claude_opt_in_has_audit_label(tmp_path: Path):
 
     resolution = resolve_workflow_model_alias(
         contract,
-        active_model_id="deepseek-v4-pro",
-        requested_model="claude-opus-4-7",
+        active_model_id="claude-code-bridge-deepseek-v4-pro",
+        requested_model="claude-opus-4-8",
         explicit_claude_opt_in=True,
     )
 

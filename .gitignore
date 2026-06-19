@@ -178,6 +178,10 @@ codex-manager/
 # Local runtime data may contain state and pricing caches.
 data/
 
+# Local runtime/canary artifacts may contain secrets, state, keys, and binaries.
+artifacts/
+
+
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
 .worktrees/

@@ -281,7 +281,11 @@ def _write_route_hint_preload_artifacts(
     catalog_path.write_text(json.dumps(catalog_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     preload_path.write_text(_ROUTE_HINT_PRELOAD_JS, encoding="utf-8")
     node_options = _prepend_node_require("", preload_path)
+    bun_options = _prepend_bun_preload("", preload_path)
     return {
+        # Claude Code 2.1.177 is a Bun-packed binary, so NODE_OPTIONS alone is
+        # ignored. Keep both forms: Node for test/future runtimes, Bun for live.
+        "BUN_OPTIONS": bun_options,
         "NODE_OPTIONS": node_options,
         "ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD": "enabled",
         "ZHUMENG_CLAUDE_ROUTE_HINT_SECRET": route_hint_secret,
@@ -344,9 +348,22 @@ def _prepend_node_require(existing_node_options: str, preload_path: Path) -> str
     return f"{require_arg} {existing}".strip()
 
 
+def _prepend_bun_preload(existing_bun_options: str, preload_path: Path) -> str:
+    # Bun's option parser does not accept --preload="/path with spaces"; it
+    # does accept a separate --preload argument with shell-style escaped spaces.
+    preload_arg = f"--preload {_escape_bun_options_value(str(preload_path))}"
+    existing = str(existing_bun_options or "").strip()
+    return f"{preload_arg} {existing}".strip()
+
+
 def _quote_node_options_value(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _escape_bun_options_value(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace(" ", "\\ ")
+    return escaped
 
 
 _ROUTE_HINT_PRELOAD_JS = r"""'use strict';
@@ -433,11 +450,26 @@ function modelFromBody(body) {
   return parsed.model.trim();
 }
 
-function signedHeaders(headers, body, requestPath) {
+function routeEntryForBody(body) {
   const modelId = modelFromBody(body);
   const entry = catalog.entries[modelId];
   if (!entry) {
     throw new Error('ZHUMENG route hint unknown model: ' + modelId);
+  }
+  return {modelId, entry};
+}
+
+function requiresRouteHint(entry) {
+  // Claude native formal-pool requests are guarded by the server-side catalog
+  // fallback plus native attestation over the final bytes. Keeping route hints
+  // off this path avoids trusting a pre-send body snapshot from the packed CLI.
+  return !(entry.provider === 'claude' && entry.route === 'claude_code_native' && entry.client_type === 'claude_code_native');
+}
+
+function signedHeaders(headers, body, requestPath) {
+  const {modelId, entry} = routeEntryForBody(body);
+  if (!requiresRouteHint(entry)) {
+    return headers;
   }
   const sessionRef = headers.get('x-claude-code-session-id') || process.env.ZHUMENG_CLAUDE_ROUTE_HINT_SESSION_REF || '';
   if (!sessionRef) {
@@ -484,20 +516,25 @@ globalThis.fetch = async function zhumengRouteHintFetch(input, init) {
   if (!shouldSign(method, requestPath)) {
     return originalFetch.call(this, input, init);
   }
-  const headers = new Headers((typeof input === 'object' && input && input.headers) || undefined);
-  if (init && init.headers) {
-    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  const finalRequest = typeof Request === 'function' ? new Request(input, init) : null;
+  if (!finalRequest) {
+    const headers = new Headers((typeof input === 'object' && input && input.headers) || undefined);
+    if (init && init.headers) {
+      new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    }
+    let body = init && Object.prototype.hasOwnProperty.call(init, 'body') ? init.body : undefined;
+    if (body === undefined && typeof input === 'object' && input && typeof input.clone === 'function') {
+      body = Buffer.from(await input.clone().arrayBuffer());
+    }
+    const bodyBytes = bodyBuffer(body);
+    signedHeaders(headers, bodyBytes, requestPath);
+    return originalFetch.call(this, input, {...(init || {}), method: 'POST', headers, body: bodyBytes});
   }
-  let body = init && Object.prototype.hasOwnProperty.call(init, 'body') ? init.body : undefined;
-  if (body === undefined && typeof input === 'object' && input && typeof input.clone === 'function') {
-    body = Buffer.from(await input.clone().arrayBuffer());
-  }
-  const bodyBytes = bodyBuffer(body);
+  const bodyBytes = Buffer.from(await finalRequest.clone().arrayBuffer());
+  const headers = new Headers(finalRequest.headers);
   signedHeaders(headers, bodyBytes, requestPath);
-  if (typeof input === 'object' && input && typeof Request === 'function' && input instanceof Request && (!init || !Object.prototype.hasOwnProperty.call(init, 'body'))) {
-    return originalFetch.call(this, new Request(input, {headers, body: bodyBytes, method: 'POST'}));
-  }
-  return originalFetch.call(this, input, {...(init || {}), method: 'POST', headers, body: bodyBytes});
+  headers.set('content-length', String(bodyBytes.length));
+  return originalFetch.call(this, new Request(finalRequest, {headers, body: bodyBytes, method: 'POST'}));
 };
 
 function requestOptionsToUrl(input, options, defaultProtocol) {

@@ -29,6 +29,21 @@ func TestAnthropicOnlyCompatProtocolAcceptsSystemRoleMessagesForClaudeModels(t *
 	require.Equal(t, "/v1/messages?beta=true", decision.CCGatewayRoute)
 }
 
+func TestAnthropicOnlyCompatProtocolAllowsBridgeRuntimeNonClaudeModelOnlyWithExplicitOption(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-flash","max_tokens":1,"messages":[{"role":"user","content":"hello"}]}`)
+
+	_, err := ValidateAnthropicOnlyCompatIngress(http.MethodPost, "/v1/messages", body)
+	require.Error(t, err)
+	var protocolErr *AnthropicCompatProtocolError
+	require.ErrorAs(t, err, &protocolErr)
+	require.Equal(t, "unsupported_body_shape", protocolErr.Code)
+
+	decision, err := ValidateAnthropicOnlyCompatIngressWithOptions(http.MethodPost, "/v1/messages", body, AnthropicCompatIngressOptions{AllowBridgeRuntimeModels: true})
+	require.NoError(t, err)
+	require.Equal(t, AnthropicCompatClientType, decision.ClientType)
+	require.Equal(t, AnthropicCompatInboundMessages, decision.InboundRoute)
+}
+
 func TestAnthropicOnlyCompatProtocolRejectsOpenAIProtocolRoutes(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello RAW_TOKEN_SENTINEL PROXY_CREDENTIAL_SENTINEL ACCOUNT_REF_SENTINEL"}]}`)
 

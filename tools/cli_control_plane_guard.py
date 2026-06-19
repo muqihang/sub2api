@@ -35,12 +35,16 @@ from tools.cli_guard_attestation import (
 )
 from tools.claude_code_route_trust import (
     RouteCatalog,
+    RouteCatalogEntry,
     RouteDecision,
     RouteHintReplayCache,
     body_model_id,
+    build_signed_route_hint_headers,
     cp4_fixture_route_catalog,
     route_catalog_content_hash,
+    route_hint_signature_diagnostic,
     verify_signed_route_hint_headers,
+    verify_signed_route_hint_headers_with_bridge_body_rebinding,
 )
 from tools.cli_control_plane_policy import (
     ControlPlanePolicy,
@@ -76,26 +80,14 @@ NATIVE_GATEWAY_LOCATION = "cloud"
 NATIVE_UNKNOWN_HASH = "sha256:" + ("0" * 64)
 CAPTURE_LEVELS = {"summary", "deep", "local-raw"}
 MODEL_DISPLAY_NAMES = {
-    "claude-sonnet-4-6": "Sonnet 4.6",
-    "claude-opus-4-8": "Opus 4.8",
-    "claude-opus-4-7": "Opus 4.7",
-    "claude-haiku-4-5": "Haiku 4.5",
-    "claude-haiku-4-5-20251001": "Haiku 4.5",
-    "gpt-5.5": "GPT 5.5",
-    "gpt-5.4-mini": "GPT 5.4 Mini",
-    "deepseek-v4-pro": "DeepSeek V4 Pro",
-    "deepseek-v4-pro[1m]": "DeepSeek V4 Pro (1M)",
-    "deepseek-v4-flash": "DeepSeek V4 Flash",
-    "agnes-1": "AGNES 1",
-    "glm-5.2": "GLM 5.2",
-    "glm-5.2[1m]": "GLM 5.2 (1M)",
-    "glm-5-turbo": "GLM 5 Turbo",
-    "glm-4.7": "GLM 4.7",
-    "glm-4.5-air": "GLM 4.5 Air",
-    "kimi-k2.7-code": "Kimi K2.7 Code",
-    "kimi-k2.7-code-highspeed": "Kimi K2.7 Code Highspeed",
-    "kimi-k2.6": "Kimi K2.6",
-    "kimi-k2.5": "Kimi K2.5",
+    "claude-code-bridge-gpt-5.5": "GPT 5.5 (Claude Code Bridge)",
+    "claude-code-bridge-gpt-5.4": "GPT 5.4 (Claude Code Bridge)",
+    "claude-code-bridge-gpt-5.4-mini": "GPT 5.4 Mini (Claude Code Bridge)",
+    "claude-code-bridge-deepseek-v4-pro": "DeepSeek V4 Pro (Claude Code Bridge)",
+    "claude-code-bridge-deepseek-v4-flash": "DeepSeek V4 Flash (Claude Code Bridge)",
+    "claude-code-bridge-agnes-2.0-flash": "AGNES 2.0 Flash (Claude Code Bridge)",
+    "claude-code-bridge-glm-5.2-1m": "GLM 5.2 1M (Claude Code Bridge)",
+    "claude-code-bridge-kimi-k2.7-code": "Kimi K2.7 Code (Claude Code Bridge)",
 }
 SAFE_VALUE_KEYS = {
     "event_name",
@@ -762,10 +754,12 @@ class RedactingForwarder:
 
     def _auth_token_for_route(self, route_decision: RouteDecision) -> str | None:
         if route_decision.native_attestation_allowed:
-            token = self._fresh_native_managed_access_token()
-            if token:
-                return token
-            token = str(self.config.native_managed_access_token or "").strip()
+            managed_token = self._fresh_native_managed_access_token()
+            if managed_token is None:
+                managed_token = str(self.config.native_managed_access_token or "").strip()
+            if not managed_token:
+                return None
+            token = str(self.config.sub2api_auth or "").strip()
             return token or None
         return self.config.sub2api_auth
 
@@ -876,7 +870,7 @@ class RedactingForwarder:
     def _messages_route_decision(self, body: bytes, request_path: str, headers: Mapping[str, str]) -> RouteDecision | None:
         if self.config.route_hint_secret and self.config.route_hint_catalog is not None:
             try:
-                return verify_signed_route_hint_headers(
+                return verify_signed_route_hint_headers_with_bridge_body_rebinding(
                     source_headers=headers,
                     body=body,
                     request_path=request_path,
@@ -902,14 +896,24 @@ class RedactingForwarder:
                             **messages_route_summary_markers(fallback, headers),
                         })
                         return fallback
-                self._record({
+                record = {
                     "ts": time.time(),
                     "event": "messages_gate_block",
                     "decision": "block_403",
                     "reason": "route_hint_invalid" if _has_route_hint_headers(headers) else "route_hint_unavailable",
+                    "route_hint_error": _safe_route_hint_error(str(exc)),
                     "path": request_path,
                     "error_type": type(exc).__name__,
-                })
+                    **body_summary(body),
+                }
+                if _has_route_hint_headers(headers):
+                    record["route_hint_signature_diagnostic"] = route_hint_signature_diagnostic(
+                        source_headers=headers,
+                        body=body,
+                        request_path=request_path,
+                        secret=self.config.route_hint_secret,
+                    )
+                self._record(record)
                 return None
         self._record({
             "ts": time.time(),
@@ -1270,6 +1274,30 @@ class RedactingForwarder:
                         return
                     self._respond_cp5_bridge_skeleton(body, request_path, route_decision)
                     return
+                auxiliary = _native_auxiliary_messages_stub_response(body, route_decision)
+                if auxiliary is not None:
+                    data, reason = auxiliary
+                    parent._record({
+                        "ts": time.time(),
+                        "event": "native_auxiliary_messages_stub",
+                        "decision": "local_stub",
+                        "reason": reason,
+                        "path": request_path,
+                        "status": 200,
+                        "response_content_type": "application/json",
+                        "response_body_size": len(data),
+                        **messages_route_summary_markers(route_decision, dict(self.headers)),
+                        **body_summary(body),
+                    })
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    stop_event = parent.execution_controller.on_message_completed()
+                    if stop_event is not None:
+                        parent._record({"ts": time.time(), **stop_event})
+                    return
                 url = parent.config.upstream_base.rstrip("/") + request_path
                 headers = {
                     key: value
@@ -1320,8 +1348,28 @@ class RedactingForwarder:
                     headers["x-sub2api-client-type"] = route_decision.client_type
                     headers["x-sub2api-route"] = route_decision.route
                     headers["x-sub2api-route-catalog-version"] = route_decision.catalog_version
-                    headers["x-zhumeng-claude-code-route-hint"] = self.headers.get("x-zhumeng-claude-code-route-hint", "")
-                    headers["x-zhumeng-claude-code-route-signature"] = self.headers.get("x-zhumeng-claude-code-route-signature", "")
+                    try:
+                        headers.update(_bridge_rebound_route_hint_headers(
+                            body=body,
+                            request_path=request_path,
+                            route_decision=route_decision,
+                            secret=parent.config.route_hint_secret,
+                        ))
+                    except RuntimeError as exc:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "bridge_route_hint_rebind_unavailable",
+                            "path": request_path,
+                            "error_type": type(exc).__name__,
+                            **messages_route_summary_markers(route_decision, dict(self.headers)),
+                            **body_summary(body),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
                 for key, value in parent._managed_forward_headers(use_managed_access=use_managed_access).items():
                     headers[key] = value
                 if parent.config.extra_forward_headers:
@@ -1463,6 +1511,8 @@ class RedactingForwarder:
         if catalog is not None:
             for entry in sorted(catalog.entries.values(), key=lambda item: (item.provider != "claude", item.provider, item.model_id)):
                 if entry.model_id.endswith("-placeholder"):
+                    continue
+                if entry.provider == "claude":
                     continue
                 data.append({
                     "type": "model",
@@ -2298,6 +2348,81 @@ def cp5_bridge_skeleton_sse_body(route_decision: RouteDecision, *, body: bytes |
     ).encode("utf-8")
 
 
+def _native_auxiliary_messages_stub_response(body: bytes, route_decision: RouteDecision) -> tuple[bytes, str] | None:
+    if not route_decision.native_attestation_allowed:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - malformed native messages should continue to normal validation/fail-closed.
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    stream = bool(payload.get("stream"))
+    if stream:
+        return None
+    model = str(payload.get("model") or route_decision.model_id).strip() or route_decision.model_id
+    max_tokens = payload.get("max_tokens")
+    if isinstance(max_tokens, (int, float)) and int(max_tokens) == 1 and "haiku" in model.lower():
+        return _native_auxiliary_message_json(model=model, text="#", stop_reason="max_tokens", input_tokens=1, output_tokens=1), "max_tokens_one_haiku_probe"
+    if _is_title_or_warmup_auxiliary_payload(payload):
+        return _native_auxiliary_message_json(model=model, text="New Conversation", stop_reason="end_turn", input_tokens=10, output_tokens=2), "title_or_warmup"
+    return None
+
+
+def _native_auxiliary_message_json(*, model: str, text: str, stop_reason: str, input_tokens: int, output_tokens: int) -> bytes:
+    return json.dumps({
+        "id": "msg_native_auxiliary_stub",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": input_tokens,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 0,
+            },
+            "output_tokens": output_tokens,
+        },
+    }, separators=(",", ":")).encode("utf-8")
+
+
+def _is_title_or_warmup_auxiliary_payload(payload: Mapping[str, Any]) -> bool:
+    texts = list(_iter_anthropic_text_values(payload.get("messages")))
+    texts.extend(_iter_anthropic_text_values(payload.get("system")))
+    for text in texts:
+        normalized = " ".join(text.split()).lower()
+        if normalized == "warmup":
+            return True
+        if "please write a 5-10 word title for the following conversation:" in normalized:
+            return True
+        if "indicates a new conversation topic" in normalized and "extract a 2-3 word title" in normalized:
+            return True
+        if normalized.startswith("[suggestion mode:"):
+            return True
+    return False
+
+
+def _iter_anthropic_text_values(value: Any):
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, Mapping):
+        if isinstance(value.get("text"), str):
+            yield value["text"]
+        content = value.get("content")
+        if content is not None:
+            yield from _iter_anthropic_text_values(content)
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_anthropic_text_values(item)
+
+
 def cp4_bridge_stub_sse_body(route_decision: RouteDecision) -> bytes:
     return cp5_bridge_skeleton_sse_body(route_decision, body=None)
 
@@ -2393,6 +2518,83 @@ def _has_route_hint_headers(headers: Mapping[str, str]) -> bool:
         "x-zhumeng-claude-code-route-hint",
         "x-zhumeng-claude-code-route-signature",
     } for key in headers)
+
+
+def _bridge_rebound_route_hint_headers(
+    *,
+    body: bytes,
+    request_path: str,
+    route_decision: RouteDecision,
+    secret: str | None,
+) -> dict[str, str]:
+    if not secret:
+        raise RuntimeError("route hint secret is required")
+    if route_decision.native_attestation_allowed or route_decision.formal_pool_allowed or route_decision.client_type == NATIVE_CLIENT_TYPE:
+        raise RuntimeError("route hint bridge cannot claim native")
+    catalog = RouteCatalog(
+        runtime_hash=route_decision.runtime_hash,
+        overlay_hash=route_decision.overlay_hash,
+        catalog_hash=route_decision.catalog_hash,
+        catalog_version=route_decision.catalog_version,
+        entries={
+            route_decision.model_id: RouteCatalogEntry(
+                model_id=route_decision.model_id,
+                provider=route_decision.provider,
+                route=route_decision.route,
+                client_type=route_decision.client_type,
+                live_enabled=route_decision.live_request_allowed,
+                formal_pool_allowed=route_decision.formal_pool_allowed,
+                native_attestation_allowed=route_decision.native_attestation_allowed,
+                provider_owner=route_decision.provider_owner,
+                credential_scope=route_decision.credential_scope,
+                gateway_location=route_decision.gateway_location,
+            ),
+        },
+    )
+    return build_signed_route_hint_headers(
+        body=body,
+        request_path=request_path,
+        catalog=catalog,
+        model_id=route_decision.model_id,
+        session_ref=route_decision.session_ref,
+        secret=secret,
+        nonce=route_decision.nonce,
+    )
+
+
+def _safe_route_hint_error(message: str) -> str:
+    normalized = str(message or "").strip().lower()
+    known = {
+        "route hint is required": "missing",
+        "route hint signature mismatch": "signature_mismatch",
+        "route hint stale": "stale",
+        "route hint request binding mismatch": "request_binding_mismatch",
+        "route hint body binding mismatch": "body_binding_mismatch",
+        "route hint session binding mismatch": "session_binding_mismatch",
+        "route hint runtime binding mismatch": "runtime_binding_mismatch",
+        "route hint overlay binding mismatch": "overlay_binding_mismatch",
+        "route hint catalog binding mismatch": "catalog_binding_mismatch",
+        "route hint unknown model": "unknown_model",
+        "route hint bridge cannot claim native": "bridge_claimed_native",
+        "route hint native attestation binding mismatch": "native_attestation_binding_mismatch",
+        "route hint model binding mismatch": "model_binding_mismatch",
+        "route hint body must be valid json": "invalid_json_body",
+        "route hint body must be a json object": "invalid_json_body",
+        "route hint body model is required": "missing_body_model",
+        "route hint payload decode failed": "payload_decode_failed",
+        "route hint payload must be an object": "payload_shape_mismatch",
+        "route hint payload shape mismatch": "payload_shape_mismatch",
+        "route hint scope/version mismatch": "scope_version_mismatch",
+    }
+    if normalized in known:
+        return known[normalized]
+    if normalized.startswith("route hint catalog route binding mismatch for "):
+        return "catalog_route_binding_mismatch"
+    if normalized.startswith("route hint nonce replayed"):
+        return "replay"
+    if normalized.startswith("route hint ") and normalized.endswith(" is invalid"):
+        return "payload_shape_mismatch"
+    return "unknown"
 
 
 def _sign_native_messages_attestation(encoded: str, method: str, request_path: str, body: bytes, secret: str) -> str:

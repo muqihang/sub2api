@@ -65,11 +65,11 @@ func newAnthropicCompatProtocolRouteRouter() *gin.Engine {
 }
 
 func cp6OpenAIBridgeRouteCatalogJSON() string {
-	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"responses","openai_base_url":"https://api.openai.com/v1","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
+	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"claude-code-bridge-gpt-5.5","upstream_model":"gpt-5.5","provider":"openai","route":"openai_bridge","client_type":"claude_code_bridge_openai","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"responses","openai_base_url":"https://api.openai.com/v1","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
 }
 
 func cp6DeepSeekBridgeRouteCatalogJSON() string {
-	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"deepseek-v4-pro","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"https://api.deepseek.com/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
+	return `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"claude-code-bridge-deepseek-v4-pro","upstream_model":"deepseek-v4-pro","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"https://api.deepseek.com/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`
 }
 
 func cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(baseURL string) string {
@@ -79,7 +79,8 @@ func cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(baseURL string) string {
 		"overlay_hash":    "sha256:" + strings.Repeat("2", 64),
 		"catalog_hash":    "sha256:" + strings.Repeat("3", 64),
 		"models": []map[string]any{{
-			"model_id":                   "deepseek-v4-pro",
+			"model_id":                   "claude-code-bridge-deepseek-v4-pro",
+			"upstream_model":             "deepseek-v4-pro",
 			"provider":                   "deepseek",
 			"route":                      "deepseek_bridge",
 			"client_type":                "claude_code_bridge_deepseek",
@@ -110,7 +111,8 @@ func cp6DeepSeekBridgeFallbackRouteCatalogJSONWithOpenAIBaseURL(baseURL string) 
 		"overlay_hash":    "sha256:" + strings.Repeat("2", 64),
 		"catalog_hash":    "sha256:" + strings.Repeat("3", 64),
 		"models": []map[string]any{{
-			"model_id":                   "deepseek-v4-pro",
+			"model_id":                   "claude-code-bridge-deepseek-v4-pro",
+			"upstream_model":             "deepseek-v4-pro",
 			"provider":                   "deepseek",
 			"route":                      "deepseek_bridge",
 			"client_type":                "claude_code_bridge_deepseek",
@@ -237,14 +239,14 @@ func TestClaudeCodeBridgeMessagesRouteReturnsSkeletonWithoutAnthropicCompatOrFor
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"should-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"get_weather"}}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"should-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"get_weather"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
 	req.Header.Set("x-sub2api-route", "openai_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":    "gpt-5.5",
+		"model_id":    "claude-code-bridge-gpt-5.5",
 		"provider":    "openai",
 		"route":       "openai_bridge",
 		"client_type": "claude_code_bridge_openai",
@@ -274,14 +276,14 @@ func TestClaudeCodeBridgeDeepSeekLiveFlagOffKeepsSkeletonAndDoesNotCallProvider(
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"flag-off-must-not-hit-provider"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"flag-off-must-not-hit-provider"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":    "deepseek-v4-pro",
+		"model_id":    "claude-code-bridge-deepseek-v4-pro",
 		"provider":    "deepseek",
 		"route":       "deepseek_bridge",
 		"client_type": "claude_code_bridge_deepseek",
@@ -310,14 +312,14 @@ func TestClaudeCodeBridgeDeepSeekLiveRequiresSignedLiveHintEvenWhenFlagEnabled(t
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hint-false-must-stay-skeleton"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hint-false-must-stay-skeleton"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -347,14 +349,14 @@ func TestClaudeCodeBridgeDeepSeekLiveRequiresBillingGuardBeforeProvider(t *testi
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"billing-guard-must-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"billing-guard-must-not-leak"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -416,7 +418,7 @@ func TestClaudeCodeBridgeDeepSeekLiveAnthropicMessagesForwardsToV1MessagesOnlyWh
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body must reach provider"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"raw body must reach provider"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer user-facing-sub2api-key-must-not-forward")
@@ -424,7 +426,7 @@ func TestClaudeCodeBridgeDeepSeekLiveAnthropicMessagesForwardsToV1MessagesOnlyWh
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -438,7 +440,8 @@ func TestClaudeCodeBridgeDeepSeekLiveAnthropicMessagesForwardsToV1MessagesOnlyWh
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, int64(1), upstreamHits.Load())
 	require.Equal(t, "/anthropic/v1/messages", upstreamPath)
-	require.Equal(t, body, upstreamBody)
+	require.Contains(t, upstreamBody, `"model":"deepseek-v4-pro"`)
+	require.NotContains(t, upstreamBody, `"model":"claude-code-bridge-deepseek-v4-pro"`)
 	require.Equal(t, "sk-deepseek-test-key", upstreamAuth)
 	require.Empty(t, upstreamAuthorization)
 	require.Empty(t, upstreamClientType)
@@ -480,7 +483,7 @@ func TestCP6DeepSeekLiveOpenAICompatibleFallbackForwardsToChatCompletionsWhenFix
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"fallback route must reach provider"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"fallback route must reach provider"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer user-facing-sub2api-key-must-not-forward")
@@ -488,7 +491,7 @@ func TestCP6DeepSeekLiveOpenAICompatibleFallbackForwardsToChatCompletionsWhenFix
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -529,7 +532,7 @@ func TestClaudeCodeBridgeDeepSeekLiveRejectsNativeAttestationHeadersBeforeProvid
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"native-header-must-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"native-header-must-not-leak"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
@@ -539,7 +542,7 @@ func TestClaudeCodeBridgeDeepSeekLiveRejectsNativeAttestationHeadersBeforeProvid
 	req.Header.Set(service.ClaudeCodeNativeAttestationHeader, "forged-native-attestation")
 	req.Header.Set(service.ClaudeCodeNativeSignatureHeader, "forged-native-signature")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -566,14 +569,14 @@ func TestClaudeCodeBridgeDeepSeekBetaRouteLiveHintWhenDisabledFailsClosedBeforeP
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"beta-live-disabled-must-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"beta-live-disabled-must-not-leak"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages?beta=true", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -598,14 +601,14 @@ func TestClaudeCodeBridgeDeepSeekLiveExternalBaseURLRequiresProductionBillingGua
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"external-live-must-not-leak-before-billing-guard"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"external-live-must-not-leak-before-billing-guard"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -631,14 +634,14 @@ func TestClaudeCodeBridgeDeepSeekLiveHintWhenDisabledFailsClosedBeforeProvider(t
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/anthropic"))
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"live-disabled-must-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"live-disabled-must-not-leak"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
 	req.Header.Set("x-sub2api-route", "deepseek_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "deepseek-v4-pro",
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
 		"provider":             "deepseek",
 		"route":                "deepseek_bridge",
 		"client_type":          "claude_code_bridge_deepseek",
@@ -694,7 +697,8 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveForwardsViaResponsesFallbackWhenExpl
 		"overlay_hash":    "sha256:" + strings.Repeat("2", 64),
 		"catalog_hash":    "sha256:" + strings.Repeat("3", 64),
 		"models": []map[string]any{{
-			"model_id":                   "gpt-5.5",
+			"model_id":                   "claude-code-bridge-gpt-5.5",
+			"upstream_model":             "gpt-5.5",
 			"provider":                   "openai",
 			"route":                      "openai_bridge",
 			"client_type":                "claude_code_bridge_openai",
@@ -723,7 +727,7 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveForwardsViaResponsesFallbackWhenExpl
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-bridge-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"raw anthropic body must become responses input"}],"stream":true,"max_tokens":32,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"thinking":{"type":"enabled"},"output_config":{"effort":"high"}}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"raw anthropic body must become responses input"}],"stream":true,"max_tokens":32,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"thinking":{"type":"enabled"},"output_config":{"effort":"high"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer user-facing-sub2api-key-must-not-forward")
@@ -731,7 +735,7 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveForwardsViaResponsesFallbackWhenExpl
 	req.Header.Set("x-sub2api-route", "openai_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "gpt-5.5",
+		"model_id":             "claude-code-bridge-gpt-5.5",
 		"provider":             "openai",
 		"route":                "openai_bridge",
 		"client_type":          "claude_code_bridge_openai",
@@ -751,6 +755,7 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveForwardsViaResponsesFallbackWhenExpl
 	require.Empty(t, upstreamNativeAttestation)
 	require.Empty(t, upstreamRouteHint)
 	require.Contains(t, upstreamBody, `"model":"gpt-5.5"`)
+	require.NotContains(t, upstreamBody, `"model":"claude-code-bridge-gpt-5.5"`)
 	require.Contains(t, upstreamBody, `"input"`)
 	require.Contains(t, upstreamBody, `"tools"`)
 	require.Contains(t, upstreamBody, `"reasoning"`)
@@ -774,14 +779,14 @@ func TestClaudeCodeBridgeLiveFlagDoesNotEnableOpenAIBridge(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"openai-live-must-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"openai-live-must-not-leak"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
 	req.Header.Set("x-sub2api-route", "openai_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":             "gpt-5.5",
+		"model_id":             "claude-code-bridge-gpt-5.5",
 		"provider":             "openai",
 		"route":                "openai_bridge",
 		"client_type":          "claude_code_bridge_openai",
@@ -800,7 +805,7 @@ func TestClaudeCodeBridgeLiveFlagDoesNotEnableOpenAIBridge(t *testing.T) {
 func TestClaudeCodeBridgeMessagesRejectsUnsignedSpoofedBridgeHeadersBeforeSkeleton(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"unsigned-bridge-must-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"unsigned-bridge-must-not-leak"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
@@ -827,15 +832,15 @@ func TestClaudeCodeBridgeMessagesRejectsSignedRouteHintMismatchesBeforeSkeleton(
 	}{
 		{
 			name: "body model mismatch",
-			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"model-mismatch-must-not-leak"}],"stream":true}`,
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"model-mismatch-must-not-leak"}],"stream":true}`,
 			overrides: map[string]any{
-				"model_id":   "deepseek-v4-pro",
-				"body_model": "deepseek-v4-pro",
+				"model_id":   "claude-code-bridge-deepseek-v4-pro",
+				"body_model": "claude-code-bridge-deepseek-v4-pro",
 			},
 		},
 		{
 			name: "bridge claims native route",
-			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"native-spoof-must-not-leak"}],"stream":true}`,
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"native-spoof-must-not-leak"}],"stream":true}`,
 			overrides: map[string]any{
 				"route":                      service.ClaudeCodeNativeRoute,
 				"client_type":                service.ClaudeCodeNativeClientType,
@@ -846,7 +851,7 @@ func TestClaudeCodeBridgeMessagesRejectsSignedRouteHintMismatchesBeforeSkeleton(
 		},
 		{
 			name: "stale hint",
-			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"stale-hint-must-not-leak"}],"stream":true}`,
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"stale-hint-must-not-leak"}],"stream":true}`,
 			overrides: map[string]any{
 				"issued_at":  time.Now().Add(-2 * time.Minute).Unix(),
 				"expires_at": time.Now().Add(-1 * time.Minute).Unix(),
@@ -854,21 +859,21 @@ func TestClaudeCodeBridgeMessagesRejectsSignedRouteHintMismatchesBeforeSkeleton(
 		},
 		{
 			name: "overlong ttl",
-			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"overlong-ttl-must-not-leak"}],"stream":true}`,
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"overlong-ttl-must-not-leak"}],"stream":true}`,
 			overrides: map[string]any{
 				"expires_at": time.Now().Add(10 * time.Minute).Unix(),
 			},
 		},
 		{
 			name: "signed stale catalog payload",
-			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"signed-stale-catalog-must-not-leak"}],"stream":true}`,
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"signed-stale-catalog-must-not-leak"}],"stream":true}`,
 			overrides: map[string]any{
 				"catalog_version": "stale-route-catalog",
 			},
 		},
 		{
 			name: "unknown key id",
-			body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"unknown-key-must-not-leak"}],"stream":true}`,
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"unknown-key-must-not-leak"}],"stream":true}`,
 			overrides: map[string]any{
 				"key_id": "unknown_route_hint_key",
 			},
@@ -883,7 +888,7 @@ func TestClaudeCodeBridgeMessagesRejectsSignedRouteHintMismatchesBeforeSkeleton(
 			req.Header.Set("x-sub2api-route", "openai_bridge")
 			req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 			fields := map[string]any{
-				"model_id":    "gpt-5.5",
+				"model_id":    "claude-code-bridge-gpt-5.5",
 				"provider":    "openai",
 				"route":       "openai_bridge",
 				"client_type": "claude_code_bridge_openai",
@@ -908,7 +913,7 @@ func TestClaudeCodeBridgeMessagesRejectsReplayedRouteHintBeforeSkeleton(t *testi
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"replay-must-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"replay-must-not-leak"}],"stream":true}`
 
 	newSignedRequest := func() *http.Request {
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -917,7 +922,7 @@ func TestClaudeCodeBridgeMessagesRejectsReplayedRouteHintBeforeSkeleton(t *testi
 		req.Header.Set("x-sub2api-route", "openai_bridge")
 		req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 		signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-			"model_id":    "gpt-5.5",
+			"model_id":    "claude-code-bridge-gpt-5.5",
 			"provider":    "openai",
 			"route":       "openai_bridge",
 			"client_type": "claude_code_bridge_openai",
@@ -940,7 +945,7 @@ func TestClaudeCodeBridgeMessagesRejectsReplayedRouteHintBeforeSkeleton(t *testi
 func TestClaudeCodeBridgeMessagesRouteRejectsSpoofedNativeOrCatalogMismatch(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"should-not-leak"}],"stream":true}`
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"should-not-leak"}],"stream":true}`
 	cases := []struct {
 		name        string
 		clientType  string
@@ -973,7 +978,7 @@ func TestClaudeCodeBridgeMessagesRouteRejectsSpoofedNativeOrCatalogMismatch(t *t
 func TestClaudeCodeBridgeCountTokensFailsClosedBeforeFormalPool(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"gpt-5.5","messages":[{"role":"user","content":"count-token-prompt-must-not-leak"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"count-token-prompt-must-not-leak"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
 	req.Header.Set("x-sub2api-route", "openai_bridge")
@@ -990,7 +995,7 @@ func TestClaudeCodeBridgeCountTokensFailsClosedBeforeFormalPool(t *testing.T) {
 func TestClaudeCodeBridgeCountTokensCatalogBridgeModelFailsClosedWithoutBridgeMarker(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"gpt-5.5","messages":[{"role":"user","content":"catalog-bridge-count-token-prompt-must-not-leak"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"catalog-bridge-count-token-prompt-must-not-leak"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -1005,14 +1010,14 @@ func TestClaudeCodeBridgeMessagesAllowsAnthropicValidMetadataStopSequencesAndTop
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	configureCP6RouteHintEnv(t)
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"anthropic-valid-fields-must-not-leak"}],"stream":true,"metadata":{"user_id":"safe-user"},"stop_sequences":["DONE"],"top_k":5,"thinking":{"type":"enabled","budget_tokens":1024}}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"anthropic-valid-fields-must-not-leak"}],"stream":true,"metadata":{"user_id":"safe-user"},"stop_sequences":["DONE"],"top_k":5,"thinking":{"type":"enabled","budget_tokens":1024}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
 	req.Header.Set("x-sub2api-route", "openai_bridge")
 	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
 	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
-		"model_id":    "gpt-5.5",
+		"model_id":    "claude-code-bridge-gpt-5.5",
 		"provider":    "openai",
 		"route":       "openai_bridge",
 		"client_type": "claude_code_bridge_openai",
@@ -1029,7 +1034,7 @@ func TestClaudeCodeBridgeMessagesAllowsAnthropicValidMetadataStopSequencesAndTop
 func TestClaudeCodeBridgeMessagesRejectOpenAIShapedBody(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"gpt-5.5","input":"bridge-openai-shape-must-not-leak","messages":[{"role":"user","content":"hello"}],"stream":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-code-bridge-gpt-5.5","input":"bridge-openai-shape-must-not-leak","messages":[{"role":"user","content":"hello"}],"stream":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
 	req.Header.Set("x-sub2api-route", "openai_bridge")
@@ -1046,7 +1051,7 @@ func TestClaudeCodeBridgeMessagesRejectOpenAIShapedBody(t *testing.T) {
 func TestClaudeCodeBridgeMessagesRejectOpenAIFunctionToolShape(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"function-tool-shape-must-not-leak"}],"stream":true,"tools":[{"type":"function","function":{"name":"leak","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"leak"}}}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"function-tool-shape-must-not-leak"}],"stream":true,"tools":[{"type":"function","function":{"name":"leak","parameters":{"type":"object"}}}],"tool_choice":{"type":"function","function":{"name":"leak"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
@@ -1064,7 +1069,7 @@ func TestClaudeCodeBridgeMessagesRejectOpenAIFunctionToolShape(t *testing.T) {
 func TestClaudeCodeBridgeMessagesRejectOpenAIFunctionToolTypeWithoutFunctionProperty(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"function-tool-type-must-not-leak"}],"stream":true,"tools":[{"type":"function","name":"leak","parameters":{"type":"object"}}]}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"function-tool-type-must-not-leak"}],"stream":true,"tools":[{"type":"function","name":"leak","parameters":{"type":"object"}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
@@ -1087,13 +1092,13 @@ func TestClaudeCodeBridgeMessagesRejectInvalidAnthropicToolShapes(t *testing.T) 
 		body string
 		leak string
 	}{
-		{name: "tools not array", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"tools-object-must-not-leak"}],"stream":true,"tools":{"name":"leak"}}`, leak: "tools-object-must-not-leak"},
-		{name: "tool missing name", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"missing-name-must-not-leak"}],"stream":true,"tools":[{"input_schema":{"type":"object"}}]}`, leak: "missing-name-must-not-leak"},
-		{name: "tool missing input_schema", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"missing-schema-must-not-leak"}],"stream":true,"tools":[{"name":"leak"}]}`, leak: "missing-schema-must-not-leak"},
-		{name: "tool_choice missing name", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"bad-choice-must-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool"}}`, leak: "bad-choice-must-not-leak"},
-		{name: "tool name dot not Anthropic compatible", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"bad-name-must-not-leak"}],"stream":true,"tools":[{"name":"unsafe.tool","input_schema":{"type":"object"}}]}`, leak: "bad-name-must-not-leak"},
-		{name: "tool_choice string not object", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"choice-string-must-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":"auto"}`, leak: "choice-string-must-not-leak"},
-		{name: "tool_choice names unknown tool", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"unknown-choice-must-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"unknown_tool"}}`, leak: "unknown-choice-must-not-leak"},
+		{name: "tools not array", body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"tools-object-must-not-leak"}],"stream":true,"tools":{"name":"leak"}}`, leak: "tools-object-must-not-leak"},
+		{name: "tool missing name", body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"missing-name-must-not-leak"}],"stream":true,"tools":[{"input_schema":{"type":"object"}}]}`, leak: "missing-name-must-not-leak"},
+		{name: "tool missing input_schema", body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"missing-schema-must-not-leak"}],"stream":true,"tools":[{"name":"leak"}]}`, leak: "missing-schema-must-not-leak"},
+		{name: "tool_choice missing name", body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"bad-choice-must-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool"}}`, leak: "bad-choice-must-not-leak"},
+		{name: "tool name dot not Anthropic compatible", body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"bad-name-must-not-leak"}],"stream":true,"tools":[{"name":"unsafe.tool","input_schema":{"type":"object"}}]}`, leak: "bad-name-must-not-leak"},
+		{name: "tool_choice string not object", body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"choice-string-must-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":"auto"}`, leak: "choice-string-must-not-leak"},
+		{name: "tool_choice names unknown tool", body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"unknown-choice-must-not-leak"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"unknown_tool"}}`, leak: "unknown-choice-must-not-leak"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1117,7 +1122,7 @@ func TestClaudeCodeBridgeMessagesRejectInvalidAnthropicToolShapes(t *testing.T) 
 func TestClaudeCodeBridgeMessagesRejectOpenAIResponsesTopLevelFields(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"responses-fields-must-not-leak"}],"stream":true,"reasoning":{"effort":"low"},"text":{"format":{"type":"text"}},"include":["message.output_text.logprobs"],"previous_response_id":"resp_leak","truncation":"auto","prompt_cache_key":"cache-leak","max_output_tokens":128,"conversation":"conv_leak","background":false}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"responses-fields-must-not-leak"}],"stream":true,"reasoning":{"effort":"low"},"text":{"format":{"type":"text"}},"include":["message.output_text.logprobs"],"previous_response_id":"resp_leak","truncation":"auto","prompt_cache_key":"cache-leak","max_output_tokens":128,"conversation":"conv_leak","background":false}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")
@@ -1136,7 +1141,7 @@ func TestClaudeCodeBridgeMessagesRejectOpenAIResponsesTopLevelFields(t *testing.
 func TestClaudeCodeBridgeMessagesRejectOpenAIChatTopLevelFields(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	router := newAnthropicCompatProtocolRouteRouter()
-	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"chat-fields-must-not-leak"}],"stream":true,"n":2,"stop":["secret-stop"],"stream_options":{"include_usage":true},"user":"user-leak"}`
+	body := `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"chat-fields-must-not-leak"}],"stream":true,"n":2,"stop":["secret-stop"],"stream_options":{"include_usage":true},"user":"user-leak"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_openai")

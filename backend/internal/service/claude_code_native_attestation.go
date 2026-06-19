@@ -1004,7 +1004,8 @@ func validateClaudeCodeRouteHintBinding(method, rawRoute string, body []byte, pa
 	if payload.RequestURI != rawRoute {
 		return fmt.Errorf("claude code route hint route mismatch")
 	}
-	if path, query := splitCompatRoute(rawRoute); path != ClaudeCodeNativeInboundMessages || (query != "" && query != "beta=true") {
+	path, query := splitCompatRoute(rawRoute)
+	if (path != ClaudeCodeNativeInboundMessages && path != ClaudeCodeNativeInboundCountTokens) || (query != "" && query != "beta=true") {
 		return fmt.Errorf("claude code route hint route unsupported")
 	}
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
@@ -1027,7 +1028,7 @@ func validateClaudeCodeRouteHintBinding(method, rawRoute string, body []byte, pa
 	if payload.FormalPoolAllowed || payload.NativeAttestationAllowed || payload.ClientType == ClaudeCodeNativeClientType || payload.Route == ClaudeCodeNativeRoute {
 		return fmt.Errorf("claude code route hint bridge cannot claim native")
 	}
-	if payload.LiveRequestAllowed && !ClaudeCodeProviderBridgeLiveRequestAllowed(decision) {
+	if payload.LiveRequestAllowed && path != ClaudeCodeNativeInboundCountTokens && !ClaudeCodeProviderBridgeLiveRequestAllowed(decision) {
 		return fmt.Errorf("claude code route hint bridge live request is not enabled")
 	}
 	return nil

@@ -55,13 +55,13 @@ def _contract(tmp_path: Path):
 
 def test_cp4_overlay_signed_route_hint_binds_body_model_hashes_session_and_nonce(tmp_path: Path):
     contract = _contract(tmp_path)
-    body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
+    body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
 
     headers = build_cp4_route_hint_headers(
         contract,
         body=body,
         request_path="/v1/messages?beta=true",
-        model_id="deepseek-v4-pro",
+        model_id="claude-code-bridge-deepseek-v4-pro",
         session_ref="session-a",
         secret="route-hint-secret",
         now=1000,
@@ -87,13 +87,13 @@ def test_cp4_overlay_signed_route_hint_binds_body_model_hashes_session_and_nonce
 
 def test_cp4_overlay_route_hint_rejects_bridge_spoofed_native_even_with_valid_key(tmp_path: Path):
     contract = _contract(tmp_path)
-    body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
+    body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
 
     headers = build_cp4_route_hint_headers(
         contract,
         body=body,
         request_path="/v1/messages?beta=true",
-        model_id="deepseek-v4-pro",
+        model_id="claude-code-bridge-deepseek-v4-pro",
         session_ref="session-a",
         secret="route-hint-secret",
         now=1000,
@@ -118,12 +118,12 @@ def test_cp4_overlay_route_hint_rejects_bridge_spoofed_native_even_with_valid_ke
 
 def test_cp4_overlay_route_hint_unknown_model_stale_catalog_and_replay_fail_closed(tmp_path: Path):
     contract = _contract(tmp_path)
-    body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
+    body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
     headers = build_cp4_route_hint_headers(
         contract,
         body=body,
         request_path="/v1/messages?beta=true",
-        model_id="deepseek-v4-pro",
+        model_id="claude-code-bridge-deepseek-v4-pro",
         session_ref="session-a",
         secret="route-hint-secret",
         now=1000,
@@ -182,12 +182,12 @@ def test_cp4_overlay_glm_route_hint_verifies_with_guard_catalog(tmp_path: Path):
     guard_route_trust = _guard_route_trust_module()
 
     contract = _contract(tmp_path)
-    body = b'{"model":"glm-5.2","messages":[{"role":"user","content":"hello"}]}'
+    body = b'{"model":"claude-code-bridge-glm-5.2-1m","messages":[{"role":"user","content":"hello"}]}'
     headers = build_cp4_route_hint_headers(
         contract,
         body=body,
         request_path="/v1/messages?beta=true",
-        model_id="glm-5.2",
+        model_id="claude-code-bridge-glm-5.2-1m",
         session_ref="session-glm",
         secret="route-hint-secret",
         now=1000,
@@ -257,6 +257,34 @@ def test_cp4_overlay_advertised_models_verify_with_guard_catalog(tmp_path: Path)
 
         assert decision.route == ("claude_code_native" if entry.route == "claude_native" else entry.route)
         assert decision.client_type == entry.client_type
+
+
+def test_cp4_guard_catalog_native_claude_models_are_current_curated_only(tmp_path: Path):
+    guard_route_trust = _guard_route_trust_module()
+    contract = _contract(tmp_path)
+
+    guard_catalog = guard_route_trust.cp4_fixture_route_catalog(
+        runtime_hash=contract.overlay_contract.proof.runtime_hash,
+        overlay_hash=contract.overlay_contract.proof.overlay_hash,
+        catalog_hash=contract.catalog_hash,
+        catalog_version=contract.catalog_version,
+    )
+    native_models = {
+        model_id
+        for model_id, entry in guard_catalog.entries.items()
+        if entry.route == "claude_code_native"
+    }
+
+    assert native_models == {
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+    }
+    assert "claude-opus-4-7" not in native_models
+    assert "claude-haiku-4-5" not in native_models
+    assert "claude-opus-4-5-20251101" not in native_models
+    assert "claude-sonnet-4-5-20250929" not in native_models
+    assert "claude-fable-5" not in native_models
 
 
 def json_escape(value: str) -> str:

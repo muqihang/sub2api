@@ -135,25 +135,15 @@ def cp4_fixture_route_catalog(
     entries = {
         "claude-sonnet-4-6": native("claude-sonnet-4-6"),
         "claude-opus-4-8": native("claude-opus-4-8"),
-        "claude-opus-4-7": native("claude-opus-4-7"),
-        "claude-haiku-4-5": native("claude-haiku-4-5"),
         "claude-haiku-4-5-20251001": native("claude-haiku-4-5-20251001"),
-        "openai-catalog-placeholder": bridge("openai-catalog-placeholder", "openai", "openai_bridge", "claude_code_bridge_openai"),
-        "gpt-5.5": bridge("gpt-5.5", "openai", "openai_bridge", "claude_code_bridge_openai"),
-        "gpt-5.4-mini": bridge("gpt-5.4-mini", "openai", "openai_bridge", "claude_code_bridge_openai"),
-        "deepseek-v4-pro": bridge("deepseek-v4-pro", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
-        "deepseek-v4-pro[1m]": bridge("deepseek-v4-pro[1m]", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
-        "deepseek-v4-flash": bridge("deepseek-v4-flash", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
-        "agnes-1": bridge("agnes-1", "agnes", "agnes_bridge", "claude_code_bridge_agnes"),
-        "glm-5.2": bridge("glm-5.2", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm"),
-        "glm-5.2[1m]": bridge("glm-5.2[1m]", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm"),
-        "glm-5-turbo": bridge("glm-5-turbo", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm"),
-        "glm-4.7": bridge("glm-4.7", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm"),
-        "glm-4.5-air": bridge("glm-4.5-air", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm"),
-        "kimi-k2.7-code": bridge("kimi-k2.7-code", "kimi", "kimi_bridge", "claude_code_bridge_kimi"),
-        "kimi-k2.7-code-highspeed": bridge("kimi-k2.7-code-highspeed", "kimi", "kimi_bridge", "claude_code_bridge_kimi"),
-        "kimi-k2.6": bridge("kimi-k2.6", "kimi", "kimi_bridge", "claude_code_bridge_kimi"),
-        "kimi-k2.5": bridge("kimi-k2.5", "kimi", "kimi_bridge", "claude_code_bridge_kimi"),
+        "claude-code-bridge-gpt-5.5": bridge("claude-code-bridge-gpt-5.5", "openai", "openai_bridge", "claude_code_bridge_openai"),
+        "claude-code-bridge-gpt-5.4": bridge("claude-code-bridge-gpt-5.4", "openai", "openai_bridge", "claude_code_bridge_openai"),
+        "claude-code-bridge-gpt-5.4-mini": bridge("claude-code-bridge-gpt-5.4-mini", "openai", "openai_bridge", "claude_code_bridge_openai"),
+        "claude-code-bridge-deepseek-v4-pro": bridge("claude-code-bridge-deepseek-v4-pro", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
+        "claude-code-bridge-deepseek-v4-flash": bridge("claude-code-bridge-deepseek-v4-flash", "deepseek", "deepseek_bridge", "claude_code_bridge_deepseek"),
+        "claude-code-bridge-agnes-2.0-flash": bridge("claude-code-bridge-agnes-2.0-flash", "agnes", "agnes_bridge", "claude_code_bridge_agnes"),
+        "claude-code-bridge-glm-5.2-1m": bridge("claude-code-bridge-glm-5.2-1m", "zai_glm", "zai_glm_bridge", "claude_code_bridge_zai_glm"),
+        "claude-code-bridge-kimi-k2.7-code": bridge("claude-code-bridge-kimi-k2.7-code", "kimi", "kimi_bridge", "claude_code_bridge_kimi"),
     }
     return RouteCatalog(
         runtime_hash=runtime_hash,
@@ -349,6 +339,116 @@ def verify_signed_route_hint_headers(
     )
 
 
+def verify_signed_route_hint_headers_with_bridge_body_rebinding(
+    *,
+    source_headers: Mapping[str, str],
+    body: bytes,
+    request_path: str,
+    catalog: RouteCatalog,
+    session_ref: str,
+    secret: str,
+    now: int | None = None,
+    replay_cache: RouteHintReplayCache | None = None,
+) -> RouteDecision:
+    try:
+        return verify_signed_route_hint_headers(
+            source_headers=source_headers,
+            body=body,
+            request_path=request_path,
+            catalog=catalog,
+            session_ref=session_ref,
+            secret=secret,
+            now=now,
+            replay_cache=replay_cache,
+        )
+    except RuntimeError as exc:
+        if str(exc) != "route hint signature mismatch":
+            raise
+    hint = _header(source_headers, ROUTE_HINT_HEADER)
+    signature = _header(source_headers, ROUTE_HINT_SIGNATURE_HEADER)
+    if not hint or not signature:
+        raise RuntimeError("route hint is required")
+    payload = _decode_payload(hint)
+    _validate_payload_shape(payload)
+    payload_body_sha = str(payload["body_sha256"])
+    payload_body_hex = payload_body_sha.split(":", 1)[1]
+    if not hmac.compare_digest(
+        _sign_route_hint_with_body_sha256(hint, "POST", request_path, payload_body_hex, secret),
+        signature,
+    ):
+        raise RuntimeError("route hint signature mismatch")
+    entry = catalog.entry_for(str(payload["model_id"]))
+    if entry is None:
+        raise RuntimeError("route hint unknown model")
+    if entry.provider == "claude" or entry.formal_pool_allowed or entry.native_attestation_allowed:
+        raise RuntimeError("route hint signature mismatch")
+    body_model = body_model_id(body)
+    if body_model != payload["body_model"] or body_model != payload["model_id"]:
+        raise RuntimeError("route hint model binding mismatch")
+    rebound_payload = dict(payload)
+    rebound_payload["body_sha256"] = "sha256:" + sha256(body).hexdigest()
+    rebound_hint = _encode_payload(rebound_payload)
+    rebound_headers = dict(source_headers)
+    rebound_headers[ROUTE_HINT_HEADER] = rebound_hint
+    rebound_headers[ROUTE_HINT_SIGNATURE_HEADER] = _sign_route_hint(rebound_hint, "POST", request_path, body, secret)
+    return verify_signed_route_hint_headers(
+        source_headers=rebound_headers,
+        body=body,
+        request_path=request_path,
+        catalog=catalog,
+        session_ref=session_ref,
+        secret=secret,
+        now=now,
+        replay_cache=replay_cache,
+    )
+
+
+def route_hint_signature_diagnostic(
+    *,
+    source_headers: Mapping[str, str],
+    body: bytes,
+    request_path: str,
+    secret: str,
+) -> dict[str, Any]:
+    """Return non-sensitive signature mismatch evidence for local debugging."""
+    hint = _header(source_headers, ROUTE_HINT_HEADER)
+    signature = _header(source_headers, ROUTE_HINT_SIGNATURE_HEADER)
+    result: dict[str, Any] = {
+        "hint_present": bool(hint),
+        "signature_present": bool(signature),
+        "signature_match_variant": "missing",
+    }
+    if not hint or not signature or not secret:
+        return result
+    try:
+        payload = _decode_payload(hint)
+    except RuntimeError:
+        result["signature_match_variant"] = "payload_decode_failed"
+        return result
+    payload_path = payload.get("request_uri") if isinstance(payload.get("request_uri"), str) else ""
+    payload_body_sha = payload.get("body_sha256") if isinstance(payload.get("body_sha256"), str) else ""
+    result["request_path_matches_payload"] = bool(payload_path and payload_path == request_path)
+    result["body_matches_payload_sha256"] = payload_body_sha == "sha256:" + sha256(body).hexdigest()
+
+    candidates = [
+        ("current_request_path_and_current_body", request_path, sha256(body).hexdigest()),
+    ]
+    if payload_path:
+        candidates.append(("payload_request_uri_and_current_body", payload_path, sha256(body).hexdigest()))
+    if _HASH_RE.fullmatch(payload_body_sha):
+        payload_body_hex = payload_body_sha.split(":", 1)[1]
+        candidates.append(("current_request_path_and_payload_body_sha256", request_path, payload_body_hex))
+        if payload_path:
+            candidates.append(("payload_request_uri_and_payload_body_sha256", payload_path, payload_body_hex))
+    for variant, candidate_path, candidate_body_hex in candidates:
+        expected = _sign_route_hint_with_body_sha256(hint, "POST", candidate_path, candidate_body_hex, secret)
+        if hmac.compare_digest(expected, signature):
+            result["signature_match_variant"] = variant
+            return result
+    result["signature_match_variant"] = "none"
+    return result
+
+
 def body_model_id(body: bytes) -> str:
     try:
         payload = json.loads(body.decode("utf-8")) if body else {}
@@ -393,11 +493,15 @@ def _decode_payload(encoded: str) -> dict[str, Any]:
 
 
 def _sign_route_hint(encoded: str, method: str, request_path: str, body: bytes, secret: str) -> str:
+    return _sign_route_hint_with_body_sha256(encoded, method, request_path, sha256(body).hexdigest(), secret)
+
+
+def _sign_route_hint_with_body_sha256(encoded: str, method: str, request_path: str, body_sha256_hex: str, secret: str) -> str:
     material = b"\n".join([
         encoded.encode("ascii"),
         method.upper().encode("ascii"),
         request_path.encode("utf-8"),
-        sha256(body).hexdigest().encode("ascii"),
+        body_sha256_hex.encode("ascii"),
     ])
     digest = hmac.new(secret.encode("utf-8"), material, sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
@@ -446,5 +550,7 @@ __all__ = [
     "build_signed_route_hint_headers",
     "cp4_fixture_route_catalog",
     "route_catalog_content_hash",
+    "route_hint_signature_diagnostic",
     "verify_signed_route_hint_headers",
+    "verify_signed_route_hint_headers_with_bridge_body_rebinding",
 ]

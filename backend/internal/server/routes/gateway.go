@@ -394,11 +394,40 @@ func claudeCodeNativeMessagesAuth(apiKeyAuth, nativeAuth middleware.APIKeyAuthMi
 				c.Abort()
 				return
 			}
-			gin.HandlerFunc(nativeAuth)(c)
+			if claudeCodeNativeAuthorizationLooksManagedJWT(c.GetHeader("Authorization")) {
+				gin.HandlerFunc(nativeAuth)(c)
+				return
+			}
+			gin.HandlerFunc(apiKeyAuth)(c)
 			return
 		}
 		gin.HandlerFunc(apiKeyAuth)(c)
 	})
+}
+
+func claudeCodeNativeAuthorizationLooksManagedJWT(authHeader string) bool {
+	authHeader = strings.TrimSpace(authHeader)
+	if authHeader == "" {
+		return false
+	}
+	parts := strings.Fields(authHeader)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+	token := strings.TrimSpace(parts[1])
+	if !strings.HasPrefix(token, "eyJ") {
+		return false
+	}
+	segments := strings.Split(token, ".")
+	if len(segments) != 3 {
+		return false
+	}
+	for _, segment := range segments {
+		if strings.TrimSpace(segment) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func isClaudeCodeNativeMessagesPath(path string) bool {
@@ -411,7 +440,7 @@ func isClaudeCodeNativeMessagesPath(path string) bool {
 }
 
 func shouldAutoRouteOpenAIGroupToOpenAI(headers http.Header) bool {
-	return !service.IsClaudeCodeNativeMarkerPresent(headers)
+	return !service.IsClaudeCodeNativeMarkerPresent(headers) && !service.IsClaudeCodeBridgeMarkerPresent(headers)
 }
 
 func shouldRejectOpenAIGroupCountTokens(headers http.Header) bool {

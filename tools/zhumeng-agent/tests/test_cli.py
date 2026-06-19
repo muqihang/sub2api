@@ -641,14 +641,14 @@ def test_active_runtime_bridge_live_models_fail_closed_on_missing_or_malformed_a
     assert cli._active_runtime_bridge_live_models({"live_bridge_models_enabled": True}) == ()
     assert cli._active_runtime_bridge_live_models({
         "live_bridge_models_enabled": True,
-        "live_bridge_model_allowlist": "gpt-5.5",
+        "live_bridge_model_allowlist": "claude-code-bridge-gpt-5.5",
     }) == ()
 
 
 def test_active_runtime_bridge_live_models_requires_catalog_metadata_not_model_version_hardcoding():
     assert cli._active_runtime_bridge_live_models({
         "live_bridge_models_enabled": True,
-        "live_bridge_model_allowlist": ["gpt-5.5", "deepseek-v4-pro"],
+        "live_bridge_model_allowlist": ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"],
     }) == ()
 
 
@@ -656,35 +656,35 @@ def test_active_runtime_bridge_live_models_allows_catalog_verified_bridge_models
     assert cli._active_runtime_bridge_live_models({
         "live_bridge_models_enabled": True,
         "live_bridge_model_allowlist": [
-            "gpt-5.5",
-            "deepseek-v4-pro",
-            "glm-5.2",
-            "kimi-k2",
+            "claude-code-bridge-gpt-5.5",
+            "claude-code-bridge-deepseek-v4-pro",
+            "claude-code-bridge-glm-5.2-1m",
+            "claude-code-bridge-kimi-k2.7-code",
             "claude-opus-4-8",
             "unsafe-bridge",
-            "gpt-5.5",
+            "claude-code-bridge-gpt-5.5",
         ],
         "live_bridge_model_catalog": {
-            "gpt-5.5": {
-                "route": "claude_code_bridge_openai",
+            "claude-code-bridge-gpt-5.5": {
+                "route": "openai_bridge",
                 "client_type": "claude_code_bridge_openai",
                 "live_enabled": True,
                 "formal_pool_eligible": False,
             },
-            "deepseek-v4-pro": {
-                "route": "claude_code_bridge_deepseek",
+            "claude-code-bridge-deepseek-v4-pro": {
+                "route": "deepseek_bridge",
                 "client_type": "claude_code_bridge_deepseek",
                 "live_enabled": True,
                 "formal_pool_eligible": False,
             },
-            "glm-5.2": {
-                "route": "claude_code_bridge_zai",
-                "client_type": "claude_code_bridge_zai",
+            "claude-code-bridge-glm-5.2-1m": {
+                "route": "zai_glm_bridge",
+                "client_type": "claude_code_bridge_zai_glm",
                 "live_enabled": True,
                 "formal_pool_eligible": False,
             },
-            "kimi-k2": {
-                "route": "claude_code_bridge_kimi",
+            "claude-code-bridge-kimi-k2.7-code": {
+                "route": "kimi_bridge",
                 "client_type": "claude_code_bridge_kimi",
                 "live_enabled": True,
                 "formal_pool_eligible": False,
@@ -696,13 +696,34 @@ def test_active_runtime_bridge_live_models_allows_catalog_verified_bridge_models
                 "formal_pool_eligible": True,
             },
             "unsafe-bridge": {
-                "route": "claude_code_bridge_openai",
+                "route": "openai_bridge",
                 "client_type": "claude_code_native",
                 "live_enabled": True,
                 "formal_pool_eligible": False,
             },
         },
-    }) == ("gpt-5.5", "deepseek-v4-pro", "glm-5.2", "kimi-k2")
+    }) == ("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-glm-5.2-1m", "claude-code-bridge-kimi-k2.7-code")
+
+
+def test_active_runtime_bridge_live_models_rejects_legacy_client_type_as_route():
+    assert cli._active_runtime_bridge_live_models({
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"],
+        "live_bridge_model_catalog": {
+            "claude-code-bridge-gpt-5.5": {
+                "route": "claude_code_bridge_openai",
+                "client_type": "claude_code_bridge_openai",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+            "claude-code-bridge-deepseek-v4-pro": {
+                "route": "deepseek_bridge",
+                "client_type": "claude_code_bridge_deepseek",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+        },
+    }) == ("claude-code-bridge-deepseek-v4-pro",)
 
 
 def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Path, monkeypatch):
@@ -713,7 +734,9 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
                 "client": "claude_code_native",
                 "server_base_url": "https://example.com",
                 "gateway_base_url": "http://127.0.0.1:18080",
-                "access_token": "sub2api-entry-secret",
+                "access_token": "eyJ.agent-login-jwt",
+                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key_configured": True,
                 "managed_session_id": "managed-session",
                 "device_id": 9,
                 "config_profile": {"model_provider": "zhumeng-claude"},
@@ -735,16 +758,16 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
         tmp_path / "managed-runtime" / "claude",
         patches={
             "live_bridge_models_enabled": True,
-            "live_bridge_model_allowlist": ["gpt-5.5", "deepseek-v4-pro", "agnes-1"],
+            "live_bridge_model_allowlist": ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-agnes-2.0-flash"],
             "live_bridge_model_catalog": {
-                "gpt-5.5": {
-                    "route": "claude_code_bridge_openai",
+                "claude-code-bridge-gpt-5.5": {
+                    "route": "openai_bridge",
                     "client_type": "claude_code_bridge_openai",
                     "live_enabled": True,
                     "formal_pool_eligible": False,
                 },
-                "deepseek-v4-pro": {
-                    "route": "claude_code_bridge_deepseek",
+                "claude-code-bridge-deepseek-v4-pro": {
+                    "route": "deepseek_bridge",
                     "client_type": "claude_code_bridge_deepseek",
                     "live_enabled": True,
                     "formal_pool_eligible": False,
@@ -804,10 +827,10 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert calls[0]["overlay_hash"] == overlay_hash
     assert data["runtime"]["version"] == "2.1.175"
     assert data["runtime"]["runtime_hash"] == runtime_hash
-    assert calls[0]["bridge_live_models"] == ("gpt-5.5", "deepseek-v4-pro")
-    assert data["runtime"]["bridge_live_models"] == ["gpt-5.5", "deepseek-v4-pro"]
+    assert calls[0]["bridge_live_models"] == ("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro")
+    assert data["runtime"]["bridge_live_models"] == ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"]
     assert calls[0]["upstream_base"] == "http://127.0.0.1:18080"
-    assert calls[0]["sub2api_auth"] == "sub2api-entry-secret"
+    assert calls[0]["sub2api_auth"] == "sk-zhumeng-claude-code-cli"
     assert calls[0]["managed_session_id"] == "managed-session"
     assert calls[0]["device_id"] == 9
     assert calls[0]["attestation_secret"] == "server-native-attestation-secret"
@@ -815,7 +838,7 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert calls[0]["argv"] == ["--print"]
     assert calls[0]["guard_listen_port"] == 43117
     dumped = json.dumps(data)
-    assert "sub2api-entry-secret" not in dumped
+    assert "sk-zhumeng-claude-code-cli" not in dumped
     assert "attestation-secret" not in dumped
 
 
@@ -965,6 +988,87 @@ def test_claude_code_start_uses_native_managed_credentials_separate_from_codex_g
     assert calls[0]["managed_session_id"] != "codex-managed-session"
     assert calls[0]["device_id"] != 31
     assert "eyJ.claude-code-native-token" not in json.dumps(data)
+
+
+def test_claude_code_start_reads_env_state_path_for_canary_state(capsys, tmp_path: Path, monkeypatch):
+    state_path = tmp_path / "canary-state" / "state.json"
+    state_path.parent.mkdir()
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3017",
+                "gateway_base_url": "http://127.0.0.1:3017",
+                "access_token": "eyJ.global-codex-token",
+                "managed_session_id": "global-codex-session",
+                "device_id": 31,
+                "claude_code_native_access_token": "eyJ.canary-claude-code-token",
+                "claude_code_native_refresh_token": "canary-refresh-token",
+                "claude_code_native_managed_session_id": "canary-claude-code-session",
+                "claude_code_native_device_id": 32,
+                "claude_code_sub2api_api_key": "sk-canary-claude-code-cli",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ZHUMENG_AGENT_STATE_PATH", str(state_path))
+    runtime_root = tmp_path / "runtimes"
+    managed_executable = tmp_path / "managed-runtime" / "claude"
+    write_fake_claude_runtime(runtime_root, managed_executable)
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(
+                env={
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                    "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+                },
+                cwd=kwargs["project_cwd"],
+            ),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117),
+            ),
+        )
+
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+
+    exit_code = main(
+        [
+            "claude-code",
+            "start",
+            "--runtime-root",
+            str(runtime_root),
+            "--state-root",
+            str(tmp_path / "canary-state"),
+            "--project-cwd",
+            str(tmp_path),
+            "--",
+            "--version",
+        ]
+    )
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["status"] == "exited"
+    assert calls[0]["upstream_base"] == "http://127.0.0.1:3017"
+    assert calls[0]["sub2api_auth"] == "sk-canary-claude-code-cli"
+    assert calls[0]["native_managed_access_token"] == "eyJ.canary-claude-code-token"
+    assert calls[0]["managed_session_id"] == "canary-claude-code-session"
+    assert calls[0]["device_id"] == 32
+    dumped = json.dumps(data)
+    assert "sk-canary-claude-code-cli" not in dumped
+    assert "eyJ.canary-claude-code-token" not in dumped
 
 
 def test_claude_code_start_refreshes_expired_native_managed_credentials(capsys, tmp_path: Path, monkeypatch):
@@ -1195,7 +1299,7 @@ def test_claude_code_start_rejects_env_jwt_and_official_anthropic_fallback(capsy
     assert "official" not in dumped
 
 
-def test_claude_code_start_keeps_legacy_non_jwt_access_token_compat(capsys, tmp_path: Path, monkeypatch):
+def test_claude_code_start_rejects_legacy_access_token_as_sub2api_key(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):
             return {
@@ -1254,10 +1358,11 @@ def test_claude_code_start_keeps_legacy_non_jwt_access_token_compat(capsys, tmp_
         "--version",
     ])
 
-    assert exit_code == 0
+    assert exit_code == 1
     data = parse_output(capsys)
-    assert data["status"] == "exited"
-    assert calls[0]["sub2api_auth"] == "legacy-sub2api-entry-secret"
+    assert data["status"] == "not_configured"
+    assert "claude_code_sub2api_api_key" in data["message"]
+    assert calls == []
     assert "legacy-sub2api-entry-secret" not in json.dumps(data)
 
 

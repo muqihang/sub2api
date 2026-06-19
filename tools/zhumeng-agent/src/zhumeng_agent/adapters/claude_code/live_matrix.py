@@ -101,7 +101,7 @@ _STRICT_LIVE_PROVIDER_ENDPOINTS = {
     "deepseek": frozenset({"https://api.deepseek.com/anthropic/v1/messages"}),
 }
 _STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST = {
-    "claude": frozenset({"claude-sonnet-4-6", "claude-opus-4-7"}),
+    "claude": frozenset({"claude-sonnet-4-6", "claude-opus-4-8"}),
     "openai": frozenset({"gpt-5.5", "gpt-5.4-mini"}),
     "deepseek": frozenset({"deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"}),
 }

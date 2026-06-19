@@ -25,6 +25,7 @@ var (
 
 type ClaudeCodeBridgeRouteDecision struct {
 	ModelID                  string
+	UpstreamModel            string
 	Provider                 string
 	Route                    string
 	ClientType               string
@@ -177,7 +178,11 @@ func StreamClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.C
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildAnthropicMessagesURL(decision.AnthropicBaseURL), bytes.NewReader(body))
+	upstreamBody, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
+	if err != nil {
+		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildAnthropicMessagesURL(decision.AnthropicBaseURL), bytes.NewReader(upstreamBody))
 	if err != nil {
 		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
 	}
@@ -407,6 +412,9 @@ func validateClaudeCodeBridgeDecision(decision ClaudeCodeBridgeRouteDecision) er
 	if strings.TrimSpace(decision.ModelID) == "" || strings.TrimSpace(decision.Provider) == "" || strings.TrimSpace(decision.Route) == "" {
 		return fmt.Errorf("claude code bridge route decision is incomplete")
 	}
+	if looksSensitiveText(claudeCodeBridgeEffectiveUpstreamModel(decision)) {
+		return fmt.Errorf("claude code bridge upstream model is invalid")
+	}
 	if !strings.HasPrefix(decision.ClientType, "claude_code_bridge_") || decision.ClientType == ClaudeCodeNativeClientType {
 		return fmt.Errorf("claude code bridge route decision cannot claim native")
 	}
@@ -414,6 +422,31 @@ func validateClaudeCodeBridgeDecision(decision ClaudeCodeBridgeRouteDecision) er
 		return fmt.Errorf("claude code bridge route decision cannot use formal pool")
 	}
 	return nil
+}
+
+func claudeCodeBridgeEffectiveUpstreamModel(decision ClaudeCodeBridgeRouteDecision) string {
+	upstream := strings.TrimSpace(decision.UpstreamModel)
+	if upstream == "" {
+		upstream = strings.TrimSpace(decision.ModelID)
+	}
+	return upstream
+}
+
+func rewriteClaudeCodeBridgeAnthropicBodyModel(decision ClaudeCodeBridgeRouteDecision, body []byte) ([]byte, error) {
+	upstreamModel := claudeCodeBridgeEffectiveUpstreamModel(decision)
+	if upstreamModel == strings.TrimSpace(decision.ModelID) {
+		return body, nil
+	}
+	var payload map[string]any
+	if len(body) == 0 || json.Unmarshal(body, &payload) != nil {
+		return nil, fmt.Errorf("claude code bridge model rewrite requires JSON body")
+	}
+	payload["model"] = upstreamModel
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return rewritten, nil
 }
 
 func claudeCodeBridgeSkeletonToolName(body []byte) string {

@@ -64,6 +64,22 @@ func TestSendMockInterceptResponse_MaxTokensOneHaiku(t *testing.T) {
 	require.Equal(t, float64(1), usage["output_tokens"])
 }
 
+
+func TestEstimateNativeCountTokensResponseDoesNotEchoPrompt(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","system":[{"type":"text","text":"system secret must not echo"}],"messages":[{"role":"user","content":[{"type":"text","text":"count-token-prompt-must-not-leak"}]}]}`)
+
+	response := buildNativeCountTokensLocalResponse("claude-sonnet-4-6", body)
+
+	require.Equal(t, "claude-sonnet-4-6", response["model"])
+	tokens, ok := response["input_tokens"].(int)
+	require.True(t, ok)
+	require.Greater(t, tokens, 1)
+	raw, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "count-token-prompt-must-not-leak")
+	require.NotContains(t, string(raw), "system secret must not echo")
+}
+
 func TestSendNativeCountTokensProbeResponse_MaxTokensOneHaiku(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

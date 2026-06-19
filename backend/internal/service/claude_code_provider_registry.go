@@ -25,6 +25,7 @@ type ClaudeCodeProviderCatalog struct {
 
 type ClaudeCodeProviderCatalogEntry struct {
 	ModelID                  string   `json:"model_id"`
+	UpstreamModel            string   `json:"upstream_model,omitempty"`
 	Provider                 string   `json:"provider"`
 	Route                    string   `json:"route"`
 	ClientType               string   `json:"client_type"`
@@ -53,6 +54,7 @@ type ClaudeCodeProviderCatalogEntry struct {
 
 type ClaudeCodeProviderRouteDecision struct {
 	ModelID                  string
+	UpstreamModel            string
 	Provider                 string
 	Route                    string
 	ClientType               string
@@ -124,6 +126,7 @@ func (r *ClaudeCodeProviderRegistry) Resolve(ctx context.Context, model string) 
 	}
 	decision := ClaudeCodeProviderRouteDecision{
 		ModelID:                  entry.ModelID,
+		UpstreamModel:            strings.TrimSpace(entry.UpstreamModel),
 		Provider:                 strings.TrimSpace(entry.Provider),
 		Route:                    strings.TrimSpace(entry.Route),
 		ClientType:               strings.TrimSpace(entry.ClientType),
@@ -162,8 +165,17 @@ func (r *ClaudeCodeProviderRegistry) Resolve(ctx context.Context, model string) 
 		}
 		return decision, nil
 	}
+	if !strings.HasPrefix(decision.ModelID, "claude-code-bridge-") {
+		return ClaudeCodeProviderRouteDecision{}, fmt.Errorf("claude code provider registry bridge display model id invalid")
+	}
 	if !strings.HasPrefix(decision.ClientType, "claude_code_bridge_") || decision.FormalPoolAllowed || decision.NativeAttestationAllowed || decision.CredentialScope != ClaudeCodeBridgeCredentialScope || decision.ClientType == ClaudeCodeNativeClientType {
 		return ClaudeCodeProviderRouteDecision{}, fmt.Errorf("claude code provider registry bridge binding invalid")
+	}
+	if err := validateClaudeCodeProviderBridgeRoute(decision.Provider, decision.Route, decision.ClientType); err != nil {
+		return ClaudeCodeProviderRouteDecision{}, err
+	}
+	if looksSensitiveText(decision.UpstreamModel) || strings.TrimSpace(decision.UpstreamModel) == "" || decision.UpstreamModel == decision.ModelID {
+		return ClaudeCodeProviderRouteDecision{}, fmt.Errorf("claude code provider registry bridge upstream model invalid")
 	}
 	if !decision.bridgeCapabilitiesAreVerified() {
 		return ClaudeCodeProviderRouteDecision{}, fmt.Errorf("claude code provider registry bridge capability contract invalid")
@@ -171,8 +183,38 @@ func (r *ClaudeCodeProviderRegistry) Resolve(ctx context.Context, model string) 
 	return decision, nil
 }
 
+func validateClaudeCodeProviderBridgeRoute(provider string, route string, clientType string) error {
+	provider = strings.TrimSpace(provider)
+	route = strings.TrimSpace(route)
+	clientType = strings.TrimSpace(clientType)
+	if !strings.HasSuffix(route, "_bridge") || strings.HasPrefix(route, "claude_code_bridge_") {
+		return fmt.Errorf("claude code provider registry bridge route invalid")
+	}
+	expectedRoutes := map[string]string{
+		"openai":   "openai_bridge",
+		"deepseek": "deepseek_bridge",
+		"agnes":    "agnes_bridge",
+		"zai_glm":  "zai_glm_bridge",
+		"kimi":     "kimi_bridge",
+	}
+	expectedClientTypes := map[string]string{
+		"openai":   "claude_code_bridge_openai",
+		"deepseek": "claude_code_bridge_deepseek",
+		"agnes":    "claude_code_bridge_agnes",
+		"zai_glm":  "claude_code_bridge_zai_glm",
+		"kimi":     "claude_code_bridge_kimi",
+	}
+	if expected, ok := expectedRoutes[provider]; !ok || route != expected {
+		return fmt.Errorf("claude code provider registry bridge route invalid")
+	}
+	if expected, ok := expectedClientTypes[provider]; !ok || clientType != expected {
+		return fmt.Errorf("claude code provider registry bridge route invalid")
+	}
+	return nil
+}
+
 func (d ClaudeCodeProviderRouteDecision) hasBridgeOnlyMetadata() bool {
-	return d.PreferredProtocol != "" || d.AnthropicBaseURL != "" || d.OpenAIBaseURL != "" || d.FallbackProtocol != "" || d.FallbackReason != "" || d.CapabilitiesVerified || d.SupportsText || d.SupportsTools || d.SupportsStreaming || d.SupportsUsage || d.SupportsCacheAudit || d.SupportsReasoningMapping || d.SupportsErrorPassthrough || len(d.ReasoningEffortLevels) > 0 || d.CachePolicy != ""
+	return d.UpstreamModel != "" || d.PreferredProtocol != "" || d.AnthropicBaseURL != "" || d.OpenAIBaseURL != "" || d.FallbackProtocol != "" || d.FallbackReason != "" || d.CapabilitiesVerified || d.SupportsText || d.SupportsTools || d.SupportsStreaming || d.SupportsUsage || d.SupportsCacheAudit || d.SupportsReasoningMapping || d.SupportsErrorPassthrough || len(d.ReasoningEffortLevels) > 0 || d.CachePolicy != ""
 }
 
 func (d ClaudeCodeProviderRouteDecision) bridgeCapabilitiesAreVerified() bool {
@@ -229,6 +271,7 @@ func (d ClaudeCodeProviderRouteDecision) NativeCatalogAdmissionDecision() claude
 func (d ClaudeCodeProviderRouteDecision) BridgeRouteDecision() ClaudeCodeBridgeRouteDecision {
 	return ClaudeCodeBridgeRouteDecision{
 		ModelID:                  d.ModelID,
+		UpstreamModel:            d.UpstreamModel,
 		Provider:                 d.Provider,
 		Route:                    d.Route,
 		ClientType:               d.ClientType,

@@ -197,7 +197,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 		} else {
-			decision, err := service.ValidateAnthropicOnlyCompatIngress(c.Request.Method, c.Request.URL.RequestURI(), body)
+			compatOpts := service.AnthropicCompatIngressOptions{
+				AllowBridgeRuntimeModels: apiKey.IsClientProduct("claude_code_runtime"),
+			}
+			decision, err := service.ValidateAnthropicOnlyCompatIngressWithOptions(c.Request.Method, c.Request.URL.RequestURI(), body, compatOpts)
 			if err != nil {
 				if protocolErr, ok := err.(*service.AnthropicCompatProtocolError); ok {
 					h.errorResponse(c, protocolErr.Status, protocolErr.Code, protocolErr.Message)
@@ -258,6 +261,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 检查是否为 Claude Code 客户端，设置到 context 中（复用已解析请求，避免二次反序列化）。
 	SetClaudeCodeClientContext(c, body, parsedReq)
 	forceAnthropicCompatNonNative(c)
+	preserveClaudeCodeRuntimeBridgeClient(c, apiKey)
 	isClaudeCodeClient := service.IsClaudeCodeClient(c.Request.Context())
 
 	// 版本检查：仅对 Claude Code 客户端，拒绝低于最低版本的请求
@@ -1222,6 +1226,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		availableModels = h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
 	}
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
+		if apiKey.Group.ClaudeCodeOnly {
+			writeCustomModelsList(c, platform, apiKey.Group.ModelsListConfig.Models)
+			return
+		}
 		availableModels = filterModelsByCustomList(availableModels, defaultModelIDsForPlatform(platform), apiKey.Group.ModelsListConfig.Models)
 		writeCustomModelsList(c, platform, availableModels)
 		return
@@ -2132,11 +2140,13 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
+	countTokensModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	if service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
-		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+		if !h.handleClaudeCodeBridgeCountTokensLocal(c, body, countTokensModel) {
+			return
+		}
 		return
 	}
-	countTokensModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	if countTokensModel != "" {
 		if decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), countTokensModel); err == nil && decision.Route != service.ClaudeCodeNativeRoute {
 			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
@@ -2172,8 +2182,8 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	if nativeClaudeCodeAttested && isMaxTokensOneHaikuRequest(parsedReq.Model, parsedReq.MaxTokens, parsedReq.Stream) {
-		sendNativeCountTokensProbeResponse(c, parsedReq.Model)
+	if nativeClaudeCodeAttested {
+		sendNativeCountTokensLocalResponse(c, parsedReq.Model, body)
 		return
 	}
 
@@ -2218,6 +2228,35 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		// 错误响应已在 ForwardCountTokens 中处理
 		return
 	}
+}
+
+func (h *GatewayHandler) handleClaudeCodeBridgeCountTokensLocal(c *gin.Context, body []byte, model string) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return false
+	}
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil || decision.Route == service.ClaudeCodeNativeRoute {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	clientType := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeClientTypeHeader))
+	route := strings.TrimSpace(c.GetHeader("x-sub2api-route"))
+	catalogVersion := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeCatalogVersionHeader))
+	if clientType != decision.ClientType || route != decision.Route || catalogVersion == "" || catalogVersion != decision.CatalogVersion {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	if _, err := service.NewClaudeCodeNativeAttestationService().VerifyBridgeRouteHintRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body, decision); err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	sendNativeCountTokensLocalResponse(c, model, body)
+	return true
 }
 
 // InterceptType 表示请求拦截类型
@@ -2441,6 +2480,76 @@ func sendNativeCountTokensProbeResponse(c *gin.Context, model string) {
 		"input_tokens": 1,
 		"model":        model,
 	})
+}
+
+func sendNativeCountTokensLocalResponse(c *gin.Context, model string, body []byte) {
+	c.JSON(http.StatusOK, buildNativeCountTokensLocalResponse(model, body))
+}
+
+func buildNativeCountTokensLocalResponse(model string, body []byte) gin.H {
+	inputTokens := estimateAnthropicCountTokens(body)
+	if inputTokens < 1 {
+		inputTokens = 1
+	}
+	return gin.H{
+		"input_tokens": inputTokens,
+		"model":        model,
+	}
+}
+
+func estimateAnthropicCountTokens(body []byte) int {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return estimateTextTokensForCountTokens(string(body))
+	}
+	return estimateAnthropicValueTokens(decoded, "")
+}
+
+func estimateAnthropicValueTokens(value any, key string) int {
+	switch v := value.(type) {
+	case map[string]any:
+		total := 0
+		for childKey, child := range v {
+			total += estimateAnthropicValueTokens(child, childKey)
+		}
+		return total
+	case []any:
+		total := 0
+		for _, child := range v {
+			total += estimateAnthropicValueTokens(child, key)
+		}
+		return total
+	case string:
+		switch key {
+		case "text", "content", "system":
+			return estimateTextTokensForCountTokens(v)
+		default:
+			return 0
+		}
+	default:
+		return 0
+	}
+}
+
+func estimateTextTokensForCountTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	runes := []rune(text)
+	ascii := 0
+	for _, r := range runes {
+		if r <= 0x7f {
+			ascii++
+		}
+	}
+	if len(runes) == 0 {
+		return 0
+	}
+	if float64(ascii)/float64(len(runes)) >= 0.8 {
+		return (len(runes) + 3) / 4
+	}
+	return len(runes)
 }
 
 // extractQuotaResetSeconds 从 quota 错误的 metadata 中提取 window_resets_at 并计算

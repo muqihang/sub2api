@@ -399,7 +399,8 @@ func TestGatewayRoutesClaudeCodeNativeMarkersUseManagedAuthOnlyForMessages(t *te
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages?beta=true", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"max_tokens":8}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer managed-token")
+	managedJWT := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtYW5hZ2VkLXNlc3Npb24ifQ.signature"
+	req.Header.Set("Authorization", "Bearer "+managedJWT)
 	req.Header.Set("X-Zhumeng-Device-ID", "9")
 	req.Header.Set("X-Zhumeng-Managed-Session", "managed-session")
 	req.Header.Set("x-sub2api-client-type", service.ClaudeCodeNativeClientType)
@@ -411,7 +412,7 @@ func TestGatewayRoutesClaudeCodeNativeMarkersUseManagedAuthOnlyForMessages(t *te
 	require.Equal(t, http.StatusNoContent, w.Code)
 	require.Equal(t, 0, rawAuthCalls)
 	require.Equal(t, 1, nativeAuthCalls)
-	require.Equal(t, "Bearer managed-token", observedNativeAuthorization)
+	require.Equal(t, "Bearer "+managedJWT, observedNativeAuthorization)
 	require.Equal(t, "managed-session", observedNativeSession)
 }
 

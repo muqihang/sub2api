@@ -5785,6 +5785,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
 		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, gjson.GetBytes(body, "model").String())
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	if getHeaderRaw(req.Header, "content-type") == "" {
@@ -10504,6 +10507,9 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
 		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, gjson.GetBytes(body, "model").String())
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	if req.Header.Get("content-type") == "" {

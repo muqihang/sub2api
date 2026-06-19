@@ -199,6 +199,9 @@ def emit_failed(payload: dict[str, object]) -> int:
 
 
 def default_state_store() -> JsonStateStore:
+    override = os.environ.get("ZHUMENG_AGENT_STATE_PATH")
+    if override:
+        return JsonStateStore(Path(override).expanduser())
     return JsonStateStore(state_dir() / "state.json")
 
 
@@ -630,12 +633,6 @@ def resolve_claude_code_sub2api_auth(state: Mapping[str, object], *, state_root:
         value = _safe_claude_code_sub2api_key(str(os.environ.get(key) or ""))
         if value:
             return value
-    legacy = _safe_claude_code_sub2api_key(_managed_state_str(state, "access_token"))
-    if legacy:
-        return legacy
-    value = _safe_claude_code_sub2api_key(str(os.environ.get("SUB2API_API_KEY") or ""))
-    if value:
-        return value
     raise ValueError("managed Claude Code setup is incomplete: missing Claude Code dedicated Sub2API API key (state claude_code_sub2api_api_key, claude-code-sub2api.env SUB2API_API_KEY, or ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY)")
 
 
@@ -1759,9 +1756,12 @@ def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[s
             continue
         route = str(metadata.get("route") or "")
         client_type = str(metadata.get("client_type") or "")
+        route_is_bridge = route.endswith("_bridge") and not route.startswith("claude_code_bridge_")
         if (
-            route.startswith("claude_code_bridge_")
-            and client_type == route
+            model.startswith("claude-code-bridge-")
+            and route_is_bridge
+            and client_type.startswith("claude_code_bridge_")
+            and client_type != "claude_code_native"
             and metadata.get("live_enabled") is True
             and metadata.get("formal_pool_eligible") is False
         ):

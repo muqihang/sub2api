@@ -16,6 +16,7 @@ import pytest
 
 import zhumeng_agent.adapters.claude_code.launcher as launcher
 from zhumeng_agent.adapters.claude_code.launcher import (
+    _escape_bun_options_value,
     build_claude_code_launch_plan,
     detect_claude_code_version,
     run_managed_claude_code,
@@ -192,6 +193,8 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert Path(launch["env"]["NODE_EXTRA_CA_CERTS"]).exists()
     assert launch["env"]["ENABLE_TOOL_SEARCH"] == "auto"
     assert "route-hint-preload.cjs" in launch["env"]["NODE_OPTIONS"]
+    assert "route-hint-preload.cjs" in launch["env"]["BUN_OPTIONS"]
+    assert "--preload " in launch["env"]["BUN_OPTIONS"]
     assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD"] == "enabled"
     assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "route-hint-secret"
     catalog = json.loads(Path(launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH"]).read_text(encoding="utf-8"))
@@ -199,13 +202,20 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert catalog["catalog_version"] == "cp4-test-v1"
     assert catalog["catalog_hash"] == route_catalog_content_hash(expected_catalog)
     assert set(catalog["entries"]) == set(expected_catalog.entries)
-    assert catalog["entries"]["deepseek-v4-pro"]["client_type"] == "claude_code_bridge_deepseek"
-    assert catalog["entries"]["deepseek-v4-pro"]["formal_pool_allowed"] is False
-    assert catalog["entries"]["deepseek-v4-pro[1m]"]["client_type"] == "claude_code_bridge_deepseek"
-    assert catalog["entries"]["deepseek-v4-pro[1m]"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["client_type"] == "claude_code_bridge_deepseek"
+    assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["claude-code-bridge-deepseek-v4-flash"]["client_type"] == "claude_code_bridge_deepseek"
+    assert catalog["entries"]["claude-code-bridge-deepseek-v4-flash"]["formal_pool_allowed"] is False
     assert catalog["entries"]["claude-sonnet-4-6"]["client_type"] == "claude_code_native"
     assert catalog["entries"]["claude-sonnet-4-6"]["formal_pool_allowed"] is True
     assert "local-user-key" not in "\n".join(launch["env"].values())
+
+
+def test_bun_preload_option_escapes_application_support_paths():
+    path = "/Users/example/Library/Application Support/zhumeng-agent/route-hint-preload.cjs"
+    assert _escape_bun_options_value(path) == (
+        "/Users/example/Library/Application\\ Support/zhumeng-agent/route-hint-preload.cjs"
+    )
 
 
 def test_managed_launch_can_explicitly_enable_bridge_live_models_without_formal_pool_pollution(tmp_path: Path):
@@ -238,7 +248,7 @@ def test_managed_launch_can_explicitly_enable_bridge_live_models_without_formal_
         config_root=tmp_path / "zhumeng-state",
         project_cwd=tmp_path,
         guard_listen_port=18181,
-        bridge_live_models=("gpt-5.5", "deepseek-v4-pro", "agnes-1"),
+        bridge_live_models=("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-agnes-2.0-flash"),
         start_guard=fake_start_guard,
         process_runner=fake_runner,
         inherited_env={"PATH": "/usr/bin"},
@@ -246,12 +256,12 @@ def test_managed_launch_can_explicitly_enable_bridge_live_models_without_formal_
 
     assert result.returncode == 0
     catalog = json.loads(Path(captured["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH"]).read_text(encoding="utf-8"))
-    assert catalog["entries"]["gpt-5.5"]["live_enabled"] is True
-    assert catalog["entries"]["gpt-5.5"]["formal_pool_allowed"] is False
-    assert catalog["entries"]["deepseek-v4-pro"]["live_enabled"] is True
-    assert catalog["entries"]["deepseek-v4-pro"]["formal_pool_allowed"] is False
-    assert catalog["entries"]["agnes-1"]["live_enabled"] is False
-    assert catalog["entries"]["agnes-1"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["claude-code-bridge-gpt-5.5"]["live_enabled"] is True
+    assert catalog["entries"]["claude-code-bridge-gpt-5.5"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["live_enabled"] is True
+    assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["live_enabled"] is False
+    assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["formal_pool_allowed"] is False
 
 
 def test_managed_launch_preload_node_options_loads_from_paths_with_spaces(tmp_path: Path):
@@ -521,7 +531,10 @@ if (response.status !== 200) {
     assert headers["x-sub2api-guard-attested"] == "true"
     assert headers["x-sub2api-native-attestation"]
     assert headers["x-sub2api-native-signature"]
+    assert "x-zhumeng-claude-code-route-hint" not in headers
+    assert "x-zhumeng-claude-code-route-signature" not in headers
     summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "native_catalog_fallback" in summary
     assert "walking-skeleton-prompt" not in summary
 
 
@@ -580,8 +593,91 @@ if (response.status !== 200) {
     headers = ManagedLaunchCaptureHandler.requests[0]["headers"]
     assert headers["x-sub2api-client-type"] == "claude_code_native"
     assert headers["x-sub2api-guard-attested"] == "true"
+    assert "x-zhumeng-claude-code-route-hint" not in headers
+    assert "x-zhumeng-claude-code-route-signature" not in headers
     summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "native_catalog_fallback" in summary
     assert "command-faithful-prompt" not in summary
+
+
+def test_managed_launch_preload_signs_final_fetch_request_after_init_merge(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    ManagedLaunchCaptureHandler.requests = []
+    upstream = _start_server(ManagedLaunchCaptureHandler)
+    guard_port = _free_port()
+    fake_claude = tmp_path / "fetch-request-init-claude.js"
+    fake_claude.write_text(
+        """
+const staleBody = JSON.stringify({
+  model: "claude-sonnet-4-6",
+  messages: [{role: "user", content: "stale-request-body"}],
+  max_tokens: 8
+});
+const finalBody = JSON.stringify({
+  model: "claude-sonnet-4-6",
+  messages: [{role: "user", content: "final-fetch-init-body"}],
+  max_tokens: 8,
+  tools: [{name: "Read", input_schema: {type: "object"}}]
+});
+const request = new Request(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555"
+  },
+  body: staleBody
+});
+const response = await fetch(request, {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    "x-claude-code-session-id": "11111111-2222-4333-8444-555555555555",
+    "x-claude-code-final-init": "true"
+  },
+  body: finalBody
+});
+if (response.status !== 200) {
+  throw new Error("unexpected guard response " + response.status);
+}
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        result = launcher.run_managed_claude_code(
+            executable=node,
+            repo_root=REPO_ROOT,
+            upstream_base=f"http://127.0.0.1:{upstream.server_port}",
+            sub2api_auth="sub2api-entry",
+            native_managed_access_token="native-managed-access-token",
+            attestation_secret="attestation-secret",
+            route_hint_secret="route-hint-secret",
+            config_root=tmp_path / "zhumeng-state",
+            project_cwd=tmp_path,
+            guard_listen_port=guard_port,
+            argv=[str(fake_claude)],
+            inherited_env={"PATH": "/usr/bin"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert result.returncode == 0
+    assert len(ManagedLaunchCaptureHandler.requests) == 1
+    request = ManagedLaunchCaptureHandler.requests[0]
+    assert b"final-fetch-init-body" in request["body"]
+    assert b"stale-request-body" not in request["body"]
+    headers = request["headers"]
+    assert headers["x-sub2api-client-type"] == "claude_code_native"
+    assert headers["x-sub2api-guard-attested"] == "true"
+    assert "x-zhumeng-claude-code-route-hint" not in headers
+    assert "x-zhumeng-claude-code-route-signature" not in headers
+    summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "native_catalog_fallback" in summary
+    assert "final-fetch-init-body" not in summary
+    assert "stale-request-body" not in summary
 
 
 def test_managed_launch_preload_signs_node_http_client_with_native_headers(tmp_path: Path):
@@ -657,7 +753,10 @@ main().catch((err) => {{
     assert headers["x-sub2api-guard-attested"] == "true"
     assert headers["x-sub2api-native-attestation"]
     assert headers["x-sub2api-native-signature"]
+    assert "x-zhumeng-claude-code-route-hint" not in headers
+    assert "x-zhumeng-claude-code-route-signature" not in headers
     summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "native_catalog_fallback" in summary
     assert "http-sdk-prompt" not in summary
 
 
@@ -888,7 +987,10 @@ main().catch((err) => {{
     headers = request["headers"]
     assert headers["x-sub2api-client-type"] == "claude_code_native"
     assert headers["x-sub2api-guard-attested"] == "true"
+    assert "x-zhumeng-claude-code-route-hint" not in headers
+    assert "x-zhumeng-claude-code-route-signature" not in headers
     summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
+    assert "native_catalog_fallback" in summary
     assert "count-tokens-http-sdk-prompt" not in summary
 
 
@@ -903,7 +1005,7 @@ def test_managed_launch_preload_routes_bridge_model_to_internal_skeleton_without
     fake_claude.write_text(
         """
 const body = JSON.stringify({
-  model: "deepseek-v4-pro[1m]",
+  model: "claude-code-bridge-deepseek-v4-pro",
   messages: [{role: "user", content: "bridge walking skeleton"}],
   max_tokens: 8
 });
@@ -916,7 +1018,7 @@ const response = await fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta
   body
 });
 const text = await response.text();
-if (response.status !== 200 || !text.includes("message_start") || !text.includes("deepseek-v4-pro[1m]")) {
+if (response.status !== 200 || !text.includes("message_start") || !text.includes("claude-code-bridge-deepseek-v4-pro")) {
   throw new Error("unexpected bridge skeleton " + response.status + " " + text);
 }
 """,
@@ -960,7 +1062,7 @@ if (response.status !== 200 || !text.includes("message_start") || !text.includes
     assert ManagedLaunchCaptureHandler.requests == []
     summary = result.guard_plan.config.summary_path.read_text(encoding="utf-8")
     assert "claude_code_bridge_deepseek" in summary
-    assert "deepseek-v4-pro[1m]" in summary
+    assert "claude-code-bridge-deepseek-v4-pro" in summary
     assert '"native_attested": false' in summary
     assert '"formal_pool_allowed": false' in summary
     assert "bridge walking skeleton" not in summary

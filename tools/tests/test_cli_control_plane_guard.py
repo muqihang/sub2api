@@ -20,6 +20,7 @@ from tools.cli_control_plane_guard import (
     ExecutionController,
     GuardConfig,
     RedactingForwarder,
+    _bridge_rebound_route_hint_headers,
     _cli_session_budget_ledger,
     body_summary,
     build_native_messages_attestation_headers,
@@ -36,7 +37,9 @@ from tools.claude_code_route_trust import (
     build_signed_route_hint_headers,
     cp4_fixture_route_catalog,
     route_catalog_content_hash,
+    route_hint_signature_diagnostic,
     verify_signed_route_hint_headers,
+    verify_signed_route_hint_headers_with_bridge_body_rebinding,
 )
 from tools.cli_control_plane_policy import load_default_policy
 
@@ -45,7 +48,7 @@ _ROUTE_HINT_SECRET = 'route-hint-secret'
 _ROUTE_HINT_CATALOG = cp4_fixture_route_catalog(catalog_version='cp4-cli-fixture-v1')
 _ROUTE_HINT_CATALOG_WITH_BRIDGE_LIVE = cp4_fixture_route_catalog(
     catalog_version='cp4-cli-fixture-v1',
-    bridge_live_models=('gpt-5.5',),
+    bridge_live_models=('claude-code-bridge-gpt-5.5',),
 )
 _DEFAULT_SESSION_REF = '11111111-2222-4333-8444-555555555555'
 
@@ -73,7 +76,7 @@ def _bridge_route_headers(body: bytes, path: str, catalog, *, session_ref: str =
         body=body,
         request_path=path,
         catalog=catalog,
-        model_id='gpt-5.5',
+        model_id='claude-code-bridge-gpt-5.5',
         session_ref=session_ref,
         secret=_ROUTE_HINT_SECRET,
         nonce=nonce or f'unit-{time.time_ns()}',
@@ -97,7 +100,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
     def test_main_accepts_bridge_live_catalog_hash_from_env(self):
         runtime_hash = 'sha256:' + '1' * 64
         overlay_hash = 'sha256:' + '2' * 64
-        bridge_live_models = ('gpt-5.5', 'gpt-5.4-mini', 'deepseek-v4-pro')
+        bridge_live_models = ('claude-code-bridge-gpt-5.5', 'claude-code-bridge-deepseek-v4-pro')
         catalog = cp4_fixture_route_catalog(
             runtime_hash=runtime_hash,
             overlay_hash=overlay_hash,
@@ -142,7 +145,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             overlay_hash=overlay_hash,
             catalog_hash='sha256:' + '0' * 64,
             catalog_version='cp4-cli-fixture-v1',
-            bridge_live_models=('gpt-5.5', 'deepseek-v4-pro'),
+            bridge_live_models=('claude-code-bridge-gpt-5.5', 'claude-code-bridge-deepseek-v4-pro'),
         )
         env = {
             'ROUTE_HINT_SECRET': 'route-hint-secret',
@@ -195,13 +198,34 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 forwarder.stop()
 
         models = {item['id']: item for item in payload['data']}
-        self.assertIn('claude-sonnet-4-6', models)
-        self.assertIn('claude-opus-4-8', models)
-        self.assertIn('gpt-5.5', models)
-        self.assertIn('deepseek-v4-pro', models)
-        self.assertEqual(models['gpt-5.5']['x_zhumeng_route'], 'openai_bridge')
-        self.assertFalse(models['gpt-5.5']['x_zhumeng_live_enabled'])
-        self.assertFalse(models['gpt-5.5']['x_zhumeng_formal_pool_allowed'])
+        expected_bridge_models = {
+            'claude-code-bridge-gpt-5.5',
+            'claude-code-bridge-gpt-5.4',
+            'claude-code-bridge-gpt-5.4-mini',
+            'claude-code-bridge-deepseek-v4-pro',
+            'claude-code-bridge-deepseek-v4-flash',
+            'claude-code-bridge-agnes-2.0-flash',
+            'claude-code-bridge-glm-5.2-1m',
+            'claude-code-bridge-kimi-k2.7-code',
+        }
+        self.assertEqual(set(models), expected_bridge_models)
+        self.assertNotIn('claude-sonnet-4-6', models)
+        self.assertNotIn('claude-opus-4-8', models)
+        for model_id, item in models.items():
+            self.assertTrue(model_id.startswith('claude-code-bridge-'))
+            self.assertTrue(item['x_zhumeng_client_type'].startswith('claude_code_bridge_'))
+            self.assertFalse(item['x_zhumeng_live_enabled'])
+            self.assertFalse(item['x_zhumeng_formal_pool_allowed'])
+            self.assertFalse(item['x_zhumeng_native_attestation_allowed'])
+            self.assertEqual(item['x_zhumeng_credential_scope'], 'bridge_pool')
+        self.assertEqual(models['claude-code-bridge-gpt-5.5']['x_zhumeng_route'], 'openai_bridge')
+        self.assertEqual(models['claude-code-bridge-gpt-5.4']['x_zhumeng_provider'], 'openai')
+        self.assertEqual(models['claude-code-bridge-gpt-5.4-mini']['x_zhumeng_provider'], 'openai')
+        self.assertEqual(models['claude-code-bridge-deepseek-v4-pro']['x_zhumeng_provider'], 'deepseek')
+        self.assertEqual(models['claude-code-bridge-deepseek-v4-flash']['x_zhumeng_provider'], 'deepseek')
+        self.assertEqual(models['claude-code-bridge-agnes-2.0-flash']['x_zhumeng_provider'], 'agnes')
+        self.assertEqual(models['claude-code-bridge-glm-5.2-1m']['x_zhumeng_provider'], 'zai_glm')
+        self.assertEqual(models['claude-code-bridge-kimi-k2.7-code']['x_zhumeng_provider'], 'kimi')
         self.assertIn('model_discovery_overlay', summary_dump)
         self.assertNotIn('local-token-that-must-not-leak', summary_dump)
 
@@ -247,7 +271,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             ))
             forwarder.start_background()
             try:
-                body = b'{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                body = b'{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
                 path = '/v1/messages?beta=true'
                 request = urllib.request.Request(
                     f'http://127.0.0.1:{listen_port}{path}',
@@ -331,7 +355,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 upstream.shutdown()
                 upstream.server_close()
 
-        self.assertEqual(seen['authorization'], 'Bearer eyJhbGciOiJIUzI1NiJ9.managed-access-token.signature')
+        self.assertEqual(seen['authorization'], 'Bearer sk-sub2api-dedicated-claude-code-key')
         self.assertEqual(seen['managed_session'], 'managed-session')
         self.assertEqual(seen['device_id'], '9')
 
@@ -399,7 +423,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 upstream.shutdown()
                 upstream.server_close()
 
-        self.assertEqual(seen['authorization'], 'Bearer latest-native-token-from-state')
+        self.assertEqual(seen['authorization'], 'Bearer sk-sub2api-dedicated-claude-code-key')
 
     def test_native_messages_refresh_expiring_state_token_before_forwarding(self):
         seen = {'refresh_calls': 0}
@@ -498,7 +522,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
 
         self.assertEqual(seen['refresh_calls'], 1)
         self.assertEqual(seen['refresh_body'], {'device_id': 32, 'refresh_token': 'old-refresh-token'})
-        self.assertEqual(seen['authorization'], f'Bearer {refreshed_token}')
+        self.assertEqual(seen['authorization'], 'Bearer sk-sub2api-dedicated-claude-code-key')
         self.assertEqual(seen['managed_session'], 'next-managed-session')
         self.assertEqual(updated_state['claude_code_native_access_token'], refreshed_token)
         self.assertEqual(updated_state['claude_code_native_refresh_token'], 'next-refresh-token')
@@ -567,7 +591,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 upstream.server_close()
 
         headers = seen['headers']
-        self.assertEqual(headers['authorization'], 'Bearer native-managed-access-token')
+        self.assertEqual(headers['authorization'], 'Bearer managed-access-token')
         self.assertEqual(headers['user-agent'], 'claude-cli/2.1.150 (external, sdk-cli)')
         self.assertEqual(headers['anthropic-version'], '2023-06-01')
         self.assertEqual(headers['x-stainless-lang'], 'js')
@@ -764,7 +788,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
 
                 headers = seen['headers']
                 self.assertEqual(seen['path'], '/v1/messages?beta=true')
-                self.assertEqual(headers['authorization'], 'Bearer native-managed-access-token')
+                self.assertEqual(headers['authorization'], 'Bearer managed-access-token')
                 self.assertEqual(headers['x-sub2api-client-type'], 'claude_code_native')
                 self.assertEqual(headers['x-sub2api-guard-attested'], 'true')
                 self.assertIn('x-sub2api-native-attestation', headers)
@@ -809,7 +833,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 ))
                 forwarder.start_background()
                 try:
-                    body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"bridge-must-not-native"}],"max_tokens":16}'
+                    body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"bridge-must-not-native"}],"max_tokens":16}'
                     request = urllib.request.Request(
                         f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
                         data=body,
@@ -842,12 +866,12 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             catalog_hash='sha256:' + '3' * 64,
             catalog_version='cp4-test-v1',
         )
-        body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+        body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
         headers = build_signed_route_hint_headers(
             body=body,
             request_path='/v1/messages?beta=true',
             catalog=catalog,
-            model_id='deepseek-v4-pro',
+            model_id='claude-code-bridge-deepseek-v4-pro',
             session_ref='session-a',
             secret='route-hint-secret',
             now=1000,
@@ -870,6 +894,208 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertFalse(decision.native_attestation_allowed)
         self.assertFalse(decision.formal_pool_allowed)
 
+
+
+    def test_route_hint_signature_diagnostics_identify_path_and_body_variants_without_prompt_leak(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+        signed_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16}'
+        sent_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16,"stream":true}'
+        headers = build_signed_route_hint_headers(
+            body=signed_body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            model_id='claude-code-bridge-deepseek-v4-flash',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-diagnostic',
+        )
+
+        diagnostic = route_hint_signature_diagnostic(
+            source_headers=headers,
+            body=sent_body,
+            request_path='/v1/messages?beta=true',
+            secret='route-hint-secret',
+        )
+
+        self.assertEqual(diagnostic['signature_match_variant'], 'payload_request_uri_and_payload_body_sha256')
+        self.assertEqual(diagnostic['request_path_matches_payload'], False)
+        self.assertEqual(diagnostic['body_matches_payload_sha256'], False)
+        dumped = json.dumps(diagnostic, ensure_ascii=False, sort_keys=True)
+        self.assertNotIn('SECRET_PROMPT', dumped)
+        self.assertNotIn('messages', dumped)
+        self.assertNotIn('route-hint-secret', dumped)
+
+
+    def test_route_hint_invalid_summary_includes_safe_signature_diagnostic_without_prompt_leak(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+        signed_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16}'
+        sent_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16,"stream":true}'
+        headers = build_signed_route_hint_headers(
+            body=signed_body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            model_id='claude-code-bridge-deepseek-v4-flash',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-summary-diagnostic',
+        )
+        with tempfile.TemporaryDirectory() as td:
+            summary = Path(td) / 'summary.jsonl'
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=1,
+                upstream_base='http://127.0.0.1:18080',
+                sub2api_auth='entry',
+                summary_path=summary,
+                route_hint_secret='route-hint-secret',
+                route_hint_catalog=catalog,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            ))
+
+            self.assertIsNone(forwarder._messages_route_decision(sent_body, '/v1/messages?beta=true', headers))
+
+            dumped = summary.read_text(encoding='utf-8')
+            self.assertIn('route_hint_signature_diagnostic', dumped)
+            self.assertIn('payload_request_uri_and_payload_body_sha256', dumped)
+            self.assertIn('\"body_size\"', dumped)
+            self.assertIn('claude-code-bridge-deepseek-v4-flash', dumped)
+            self.assertNotIn('SECRET_PROMPT', dumped)
+            self.assertNotIn('route-hint-secret', dumped)
+
+
+    def test_bridge_route_hint_can_rebind_final_body_when_signature_matches_payload_body_hash(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+            bridge_live_models=('claude-code-bridge-deepseek-v4-flash',),
+        )
+        signed_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16}'
+        final_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16,"stream":true}'
+        headers = build_signed_route_hint_headers(
+            body=signed_body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            model_id='claude-code-bridge-deepseek-v4-flash',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-bridge-rebind',
+        )
+
+        decision = verify_signed_route_hint_headers_with_bridge_body_rebinding(
+            source_headers=headers,
+            body=final_body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+
+        self.assertEqual(decision.route, 'deepseek_bridge')
+        self.assertEqual(decision.client_type, 'claude_code_bridge_deepseek')
+        self.assertFalse(decision.formal_pool_allowed)
+        self.assertFalse(decision.native_attestation_allowed)
+
+    def test_native_route_hint_never_rebinds_body_for_formal_pool(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+        )
+        signed_body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16}'
+        final_body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16,"stream":true}'
+        headers = build_signed_route_hint_headers(
+            body=signed_body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            model_id='claude-sonnet-4-6',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-native-no-rebind',
+        )
+
+        with self.assertRaisesRegex(RuntimeError, 'signature mismatch'):
+            verify_signed_route_hint_headers_with_bridge_body_rebinding(
+                source_headers=headers,
+                body=final_body,
+                request_path='/v1/messages?beta=true',
+                catalog=catalog,
+                session_ref='session-a',
+                secret='route-hint-secret',
+                now=1000,
+                replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            )
+
+
+    def test_bridge_forward_rewrites_route_hint_to_final_body_for_backend_verifier(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp4-test-v1',
+            bridge_live_models=('claude-code-bridge-deepseek-v4-flash',),
+        )
+        signed_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16}'
+        final_body = b'{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"SECRET_PROMPT"}],"max_tokens":16,"stream":true}'
+        original = build_signed_route_hint_headers(
+            body=signed_body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            model_id='claude-code-bridge-deepseek-v4-flash',
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-forward-rebind',
+        )
+        decision = verify_signed_route_hint_headers_with_bridge_body_rebinding(
+            source_headers=original,
+            body=final_body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            session_ref='session-a',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+
+        rebound = _bridge_rebound_route_hint_headers(
+            body=final_body,
+            request_path='/v1/messages?beta=true',
+            route_decision=decision,
+            secret='route-hint-secret',
+        )
+
+        verified = verify_signed_route_hint_headers(
+            source_headers=rebound,
+            body=final_body,
+            request_path='/v1/messages?beta=true',
+            catalog=catalog,
+            session_ref='session-a',
+            secret='route-hint-secret',
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+        self.assertEqual(verified.route, 'deepseek_bridge')
+        dumped = json.dumps(rebound, ensure_ascii=False, sort_keys=True)
+        self.assertNotIn('SECRET_PROMPT', dumped)
+        self.assertNotIn('route-hint-secret', dumped)
 
     def test_cp5_native_route_hint_hashes_and_catalog_version_are_signed_into_attestation(self):
         catalog = cp4_fixture_route_catalog(
@@ -928,12 +1154,12 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             catalog_hash='sha256:' + '3' * 64,
             catalog_version='cp4-test-v1',
         )
-        body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
+        body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}]}'
         headers = build_signed_route_hint_headers(
             body=body,
             request_path='/v1/messages?beta=true',
             catalog=catalog,
-            model_id='deepseek-v4-pro',
+            model_id='claude-code-bridge-deepseek-v4-pro',
             session_ref='session-a',
             secret='route-hint-secret',
             now=1000,
@@ -966,7 +1192,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             body=body,
             request_path='/v1/messages?beta=true',
             catalog=catalog,
-            model_id='deepseek-v4-pro',
+            model_id='claude-code-bridge-deepseek-v4-pro',
             session_ref='session-a',
             secret='route-hint-secret',
             now=1000,
@@ -1067,8 +1293,8 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             catalog_version='cp4-test-v1',
         )
         live_entries = dict(base_catalog.entries)
-        live_entries['deepseek-v4-pro'] = RouteCatalogEntry(
-            model_id='deepseek-v4-pro',
+        live_entries['claude-code-bridge-deepseek-v4-pro'] = RouteCatalogEntry(
+            model_id='claude-code-bridge-deepseek-v4-pro',
             provider='deepseek',
             route='deepseek_bridge',
             client_type='claude_code_bridge_deepseek',
@@ -1086,7 +1312,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             catalog_version=base_catalog.catalog_version,
             entries=live_entries,
         )
-        body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"must-reach-backend-not-provider"}],"max_tokens":16,"stream":true}'
+        body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"must-reach-backend-not-provider"}],"max_tokens":16,"stream":true}'
         path = '/v1/messages?beta=true'
         captured: dict[str, object] = {}
 
@@ -1144,7 +1370,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         body=body,
                         request_path=path,
                         catalog=catalog,
-                        model_id='deepseek-v4-pro',
+                        model_id='claude-code-bridge-deepseek-v4-pro',
                         session_ref='11111111-2222-4333-8444-555555555555',
                         secret='route-hint-secret',
                         nonce='nonce-bridge-loopback-backend',
@@ -1221,13 +1447,13 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         threading.Thread(target=upstream.serve_forever, daemon=True).start()
         try:
             with tempfile.TemporaryDirectory() as td:
-                body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16,"stream":true}'
+                body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16,"stream":true}'
                 path = '/v1/messages?beta=true'
                 route_headers = build_signed_route_hint_headers(
                     body=body,
                     request_path=path,
                     catalog=catalog,
-                    model_id='deepseek-v4-pro',
+                    model_id='claude-code-bridge-deepseek-v4-pro',
                     session_ref='11111111-2222-4333-8444-555555555555',
                     secret='route-hint-secret',
                     now=None,
@@ -1325,7 +1551,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as td:
                 body = json.dumps({
-                    'model': 'gpt-5.5',
+                    'model': 'claude-code-bridge-gpt-5.5',
                     'messages': [{'role': 'user', 'content': 'please call weather'}],
                     'max_tokens': 16,
                     'stream': True,
@@ -1345,7 +1571,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     body=body,
                     request_path=path,
                     catalog=catalog,
-                    model_id='gpt-5.5',
+                    model_id='claude-code-bridge-gpt-5.5',
                     session_ref='11111111-2222-4333-8444-555555555555',
                     secret='route-hint-secret',
                     now=None,
@@ -1428,7 +1654,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             catalog_version='cp5-test-v1',
         )
         body = json.dumps({
-            'model': 'gpt-5.5',
+            'model': 'claude-code-bridge-gpt-5.5',
             'messages': [{'role': 'user', 'content': 'hello'}],
             'stream': True,
             'metadata': {'user_id': 'safe-user'},
@@ -1440,7 +1666,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             body=body,
             request_path='/v1/messages',
             catalog=catalog,
-            model_id='gpt-5.5',
+            model_id='claude-code-bridge-gpt-5.5',
             session_ref='session-bridge',
             secret='route-hint-secret',
             now=1000,
@@ -1491,7 +1717,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as td:
                 body = json.dumps({
-                    'model': 'gpt-5.5',
+                    'model': 'claude-code-bridge-gpt-5.5',
                     'messages': [{'role': 'user', 'content': 'function-tool-shape-must-not-leak'}],
                     'stream': True,
                     'tools': [{
@@ -1505,7 +1731,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     body=body,
                     request_path=path,
                     catalog=catalog,
-                    model_id='gpt-5.5',
+                    model_id='claude-code-bridge-gpt-5.5',
                     session_ref='11111111-2222-4333-8444-555555555555',
                     secret='route-hint-secret',
                     now=None,
@@ -1582,7 +1808,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as td:
                 body = json.dumps({
-                    'model': 'gpt-5.5',
+                    'model': 'claude-code-bridge-gpt-5.5',
                     'messages': [{'role': 'user', 'content': 'count-tokens-bridge-must-not-leak'}],
                 }, separators=(',', ':')).encode('utf-8')
                 path = '/v1/messages/count_tokens'
@@ -1590,7 +1816,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     body=body,
                     request_path=path,
                     catalog=catalog,
-                    model_id='gpt-5.5',
+                    model_id='claude-code-bridge-gpt-5.5',
                     session_ref='11111111-2222-4333-8444-555555555555',
                     secret='route-hint-secret',
                     now=None,
@@ -1671,7 +1897,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 forwarder.start_background()
                 try:
                     body = json.dumps({
-                        'model': 'gpt-5.5',
+                        'model': 'claude-code-bridge-gpt-5.5',
                         'messages': [{'role': 'user', 'content': 'no-catalog-gpt-must-not-leak'}],
                         'stream': True,
                     }, separators=(',', ':')).encode('utf-8')
@@ -1817,7 +2043,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as td:
                 body = json.dumps({
-                    'model': 'gpt-5.5',
+                    'model': 'claude-code-bridge-gpt-5.5',
                     'messages': [{'role': 'user', 'content': 'chat-fields-must-not-leak'}],
                     'stream': True,
                     'n': 2,
@@ -1830,7 +2056,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     body=body,
                     request_path=path,
                     catalog=catalog,
-                    model_id='gpt-5.5',
+                    model_id='claude-code-bridge-gpt-5.5',
                     session_ref='11111111-2222-4333-8444-555555555555',
                     secret='route-hint-secret',
                     now=None,
@@ -1904,7 +2130,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as td:
                 body = json.dumps({
-                    'model': 'gpt-5.5',
+                    'model': 'claude-code-bridge-gpt-5.5',
                     'messages': [{'role': 'user', 'content': 'responses-fields-must-not-leak'}],
                     'stream': True,
                     'reasoning': {'effort': 'low'},
@@ -1922,7 +2148,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                     body=body,
                     request_path=path,
                     catalog=catalog,
-                    model_id='gpt-5.5',
+                    model_id='claude-code-bridge-gpt-5.5',
                     session_ref='11111111-2222-4333-8444-555555555555',
                     secret='route-hint-secret',
                     now=None,
@@ -2016,7 +2242,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         (
                             'tools_not_array',
                             {
-                                'model': 'gpt-5.5',
+                                'model': 'claude-code-bridge-gpt-5.5',
                                 'messages': [{'role': 'user', 'content': 'tools-object-must-not-leak'}],
                                 'stream': True,
                                 'tools': {'name': 'leak'},
@@ -2027,7 +2253,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         (
                             'tool_missing_name',
                             {
-                                'model': 'gpt-5.5',
+                                'model': 'claude-code-bridge-gpt-5.5',
                                 'messages': [{'role': 'user', 'content': 'missing-name-must-not-leak'}],
                                 'stream': True,
                                 'tools': [{'input_schema': {'type': 'object'}}],
@@ -2038,7 +2264,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         (
                             'tool_missing_input_schema',
                             {
-                                'model': 'gpt-5.5',
+                                'model': 'claude-code-bridge-gpt-5.5',
                                 'messages': [{'role': 'user', 'content': 'missing-schema-must-not-leak'}],
                                 'stream': True,
                                 'tools': [{'name': 'leak'}],
@@ -2049,7 +2275,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         (
                             'tool_choice_tool_missing_name',
                             {
-                                'model': 'gpt-5.5',
+                                'model': 'claude-code-bridge-gpt-5.5',
                                 'messages': [{'role': 'user', 'content': 'bad-choice-must-not-leak'}],
                                 'stream': True,
                                 'tools': [{'name': 'get_weather', 'input_schema': {'type': 'object'}}],
@@ -2061,7 +2287,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         (
                             'tool_name_dot_not_anthropic_compatible',
                             {
-                                'model': 'gpt-5.5',
+                                'model': 'claude-code-bridge-gpt-5.5',
                                 'messages': [{'role': 'user', 'content': 'bad-name-must-not-leak'}],
                                 'stream': True,
                                 'tools': [{'name': 'unsafe.tool', 'input_schema': {'type': 'object'}}],
@@ -2072,7 +2298,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         (
                             'tool_choice_string_not_object',
                             {
-                                'model': 'gpt-5.5',
+                                'model': 'claude-code-bridge-gpt-5.5',
                                 'messages': [{'role': 'user', 'content': 'choice-string-must-not-leak'}],
                                 'stream': True,
                                 'tools': [{'name': 'get_weather', 'input_schema': {'type': 'object'}}],
@@ -2084,7 +2310,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         (
                             'tool_choice_names_unknown_tool',
                             {
-                                'model': 'gpt-5.5',
+                                'model': 'claude-code-bridge-gpt-5.5',
                                 'messages': [{'role': 'user', 'content': 'unknown-choice-must-not-leak'}],
                                 'stream': True,
                                 'tools': [{'name': 'get_weather', 'input_schema': {'type': 'object'}}],
@@ -2102,7 +2328,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                                 body=body,
                                 request_path=path,
                                 catalog=catalog,
-                                model_id='gpt-5.5',
+                                model_id='claude-code-bridge-gpt-5.5',
                                 session_ref='11111111-2222-4333-8444-555555555555',
                                 secret='route-hint-secret',
                                 now=None,
@@ -2173,7 +2399,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 try:
                     missing_req = urllib.request.Request(
                         f'http://127.0.0.1:{listen_port}/v1/messages?beta=true',
-                        data=b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
+                        data=b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}',
                         method='POST',
                         headers={'content-type': 'application/json', 'x-claude-code-session-id': '11111111-2222-4333-8444-555555555555'},
                     )
@@ -2181,12 +2407,12 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         urllib.request.urlopen(missing_req, timeout=5)
                     self.assertEqual(missing_ctx.exception.code, 403)
 
-                    spoof_body = b'{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+                    spoof_body = b'{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
                     spoof_headers = build_signed_route_hint_headers(
                         body=spoof_body,
                         request_path='/v1/messages?beta=true',
                         catalog=catalog,
-                        model_id='deepseek-v4-pro',
+                        model_id='claude-code-bridge-deepseek-v4-pro',
                         session_ref='11111111-2222-4333-8444-555555555555',
                         secret='route-hint-secret',
                         now=None,
@@ -2210,7 +2436,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         body=spoof_body,
                         request_path='/v1/messages?beta=true',
                         catalog=catalog,
-                        model_id='deepseek-v4-pro',
+                        model_id='claude-code-bridge-deepseek-v4-pro',
                         session_ref='11111111-2222-4333-8444-555555555555',
                         secret='route-hint-secret',
                         now=None,
@@ -2762,7 +2988,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         self.assertEqual(resp.status, 200)
                     self.assertEqual(len(CaptureHandler.requests), 1)
                     forwarded = CaptureHandler.requests[0]
-                    self.assertEqual(forwarded['headers'].get('authorization'), 'Bearer native-managed-access-token')
+                    self.assertEqual(forwarded['headers'].get('authorization'), 'Bearer sub2api-entry-key')
                     self.assertNotIn('x-api-key', forwarded['headers'])
                     self.assertNotIn('cookie', forwarded['headers'])
                     self.assertNotIn('proxy-authorization', forwarded['headers'])
@@ -2984,7 +3210,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             gateway_location='cloud',
         )
         bridge = RouteCatalogEntry(
-            model_id='deepseek-v4-flash',
+            model_id='claude-code-bridge-deepseek-v4-flash',
             provider='deepseek',
             route='deepseek_bridge',
             client_type='claude_code_bridge_deepseek',
@@ -3000,7 +3226,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             overlay_hash='sha256:' + '2' * 64,
             catalog_hash='sha256:' + '3' * 64,
             catalog_version='cp6-live-bridge-loopback-v1',
-            entries={'claude-sonnet-4-6': native, 'deepseek-v4-flash': bridge},
+            entries={'claude-sonnet-4-6': native, 'claude-code-bridge-deepseek-v4-flash': bridge},
         )
 
         class CaptureHandler(BaseHTTPRequestHandler):
@@ -3047,7 +3273,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 try:
                     for index, task in enumerate(['title', 'compact', 'summary', 'probe', 'fast', 'simple', 'haiku']):
                         body = json.dumps({
-                            'model': 'deepseek-v4-flash',
+                            'model': 'claude-code-bridge-deepseek-v4-flash',
                             'messages': [{'role': 'user', 'content': f'background {task}'}],
                             'metadata': {'zhumeng_background_task': task},
                             'max_tokens': 16,
@@ -3058,7 +3284,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                             body=body,
                             request_path=path,
                             catalog=catalog,
-                            model_id='deepseek-v4-flash',
+                            model_id='claude-code-bridge-deepseek-v4-flash',
                             session_ref='11111111-2222-4333-8444-555555555555',
                             secret='route-hint-secret',
                             nonce=f'nonce-cp6-live-background-{index}',
@@ -3139,7 +3365,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 try:
                     for index, task in enumerate(['title', 'compact', 'summary', 'probe', 'fast', 'simple', 'haiku']):
                         body = json.dumps({
-                            'model': 'deepseek-v4-flash',
+                            'model': 'claude-code-bridge-deepseek-v4-flash',
                             'messages': [{'role': 'user', 'content': f'background {task}'}],
                             'metadata': {'zhumeng_background_task': task},
                             'max_tokens': 16,
@@ -3150,7 +3376,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                             body=body,
                             request_path=path,
                             catalog=catalog,
-                            model_id='deepseek-v4-flash',
+                            model_id='claude-code-bridge-deepseek-v4-flash',
                             session_ref='11111111-2222-4333-8444-555555555555',
                             secret='route-hint-secret',
                             nonce=f'nonce-cp6-background-{index}',
@@ -3235,7 +3461,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         body=mismatch_body,
                         request_path=path,
                         catalog=catalog,
-                        model_id='deepseek-v4-flash',
+                        model_id='claude-code-bridge-deepseek-v4-flash',
                         session_ref='11111111-2222-4333-8444-555555555555',
                         secret='route-hint-secret',
                         nonce='nonce-cp6-switch-mismatch',
@@ -3254,7 +3480,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         urllib.request.urlopen(mismatch_req, timeout=5)
                     self.assertEqual(mismatch_ctx.exception.code, 403)
                     body = json.dumps({
-                        'model': 'deepseek-v4-flash',
+                        'model': 'claude-code-bridge-deepseek-v4-flash',
                         'messages': [{'role': 'user', 'content': 'title after switch'}],
                         'metadata': {'zhumeng_active_profile': 'deepseek', 'zhumeng_background_task': 'title'},
                         'max_tokens': 16,
@@ -3264,7 +3490,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                         body=body,
                         request_path=path,
                         catalog=catalog,
-                        model_id='deepseek-v4-flash',
+                        model_id='claude-code-bridge-deepseek-v4-flash',
                         session_ref='11111111-2222-4333-8444-555555555555',
                         secret='route-hint-secret',
                         nonce='nonce-cp6-switch-deepseek',

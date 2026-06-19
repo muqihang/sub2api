@@ -723,6 +723,38 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BuildRequestRejectsInvalidBas
 	require.Error(t, err)
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_BaseURLPathPreservedForAnthropicCompatibleProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "k",
+			"base_url": "https://api.deepseek.com/anthropic",
+		},
+		Extra: map[string]any{"anthropic_passthrough": true},
+	}
+
+	req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"deepseek-v4-pro"}`), "k")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.deepseek.com/anthropic/v1/messages?beta=true", req.URL.String())
+
+	countReq, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"deepseek-v4-pro"}`), "k")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.deepseek.com/anthropic/v1/messages/count_tokens?beta=true", countReq.URL.String())
+}
+
 func TestGatewayService_AnthropicOAuth_NotAffectedByAPIKeyPassthroughToggle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

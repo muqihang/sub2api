@@ -105,39 +105,59 @@ def test_cp2_static_patch_points_and_mixed_model_overlay_are_proof_only(tmp_path
         "model_allowlist",
         "route_hint_injection_stub",
     )
-    assert set(proof.display_model_ids) == set(proof.model_allowlist)
-    assert {entry.model_id for entry in proof.models} >= {
-        "claude-sonnet-4-6",
-        "openai-catalog-placeholder",
-        "gpt-5.5",
-        "gpt-5.4-mini",
-        "deepseek-v4-pro",
-        "deepseek-v4-pro[1m]",
-        "agnes-1",
-        "glm-5.2",
-        "glm-5.2[1m]",
-        "glm-5-turbo",
-        "glm-4.7",
-        "glm-4.5-air",
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-        "kimi-k2.6",
-        "kimi-k2.5",
+    expected_models = {
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-gpt-5.4",
+        "claude-code-bridge-gpt-5.4-mini",
+        "claude-code-bridge-deepseek-v4-pro",
+        "claude-code-bridge-deepseek-v4-flash",
+        "claude-code-bridge-agnes-2.0-flash",
+        "claude-code-bridge-glm-5.2-1m",
+        "claude-code-bridge-kimi-k2.7-code",
     }
-    assert "openai-catalog-placeholder" in proof.model_allowlist
+    assert set(proof.display_model_ids) == expected_models
+    assert set(proof.model_allowlist) == expected_models
+    assert "openai-catalog-placeholder" not in proof.model_allowlist
+    assert "gpt-5.4-mini" not in proof.model_allowlist
+    assert "deepseek-v4-flash" not in proof.model_allowlist
+    assert "claude-code-bridge-gpt-5.4" in proof.model_allowlist
+    assert "claude-code-bridge-gpt-5.4-mini" in proof.model_allowlist
+    assert "claude-code-bridge-deepseek-v4-flash" in proof.model_allowlist
+    assert "glm-4.6" not in proof.model_allowlist
+    assert "claude-sonnet-4-6" not in proof.display_model_ids
     assert proof.models_by_id["claude-sonnet-4-6"].client_type == "claude_code_native"
-    assert proof.models_by_id["openai-catalog-placeholder"].client_type == "claude_code_bridge_openai"
-    assert proof.models_by_id["gpt-5.5"].client_type == "claude_code_bridge_openai"
-    assert proof.models_by_id["gpt-5.4-mini"].client_type == "claude_code_bridge_openai"
-    assert proof.models_by_id["deepseek-v4-pro"].client_type == "claude_code_bridge_deepseek"
-    assert proof.models_by_id["deepseek-v4-pro[1m]"].client_type == "claude_code_bridge_deepseek"
-    assert proof.models_by_id["deepseek-v4-pro[1m]"].context_window == 1_000_000
-    assert proof.models_by_id["deepseek-v4-flash"].context_window == 1_000_000
-    agnes = proof.models_by_id["agnes-1"]
+    assert proof.models_by_id["claude-code-bridge-gpt-5.5"].client_type == "claude_code_bridge_openai"
+    assert proof.models_by_id["claude-code-bridge-gpt-5.4"].client_type == "claude_code_bridge_openai"
+    assert proof.models_by_id["claude-code-bridge-gpt-5.4-mini"].client_type == "claude_code_bridge_openai"
+    assert proof.models_by_id["claude-code-bridge-deepseek-v4-pro"].client_type == "claude_code_bridge_deepseek"
+    assert proof.models_by_id["claude-code-bridge-deepseek-v4-flash"].client_type == "claude_code_bridge_deepseek"
+    assert proof.models_by_id["claude-code-bridge-deepseek-v4-pro"].context_window == 1_000_000
+    assert proof.models_by_id["claude-code-bridge-deepseek-v4-flash"].context_window == 1_000_000
+    agnes = proof.models_by_id["claude-code-bridge-agnes-2.0-flash"]
     assert "Experimental" in agnes.display_label
     assert agnes.live_enabled is False
     assert agnes.runtime_verified is False
     assert agnes.compatibility_status == "experimental_hidden_not_runtime_verified"
+
+
+def test_cp2_native_claude_overlay_models_are_current_curated_formal_pool_only(tmp_path: Path):
+    proof = build_cp2_model_overlay_proof(_runtime_plan(tmp_path))
+
+    native_model_ids = {
+        entry.model_id
+        for entry in proof.models
+        if entry.route == "claude_native"
+    }
+
+    assert native_model_ids == {
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+    }
+    assert "claude-opus-4-7" not in native_model_ids
+    assert "claude-opus-4-5-20251101" not in native_model_ids
+    assert "claude-sonnet-4-5-20250929" not in native_model_ids
+    assert "claude-fable-5" not in native_model_ids
 
 
 def test_cp2_model_list_capture_shows_mixed_models_but_marks_bridges_disabled(tmp_path: Path):
@@ -146,13 +166,15 @@ def test_cp2_model_list_capture_shows_mixed_models_but_marks_bridges_disabled(tm
     capture = render_model_list_capture(proof)
 
     assert "/model overlay proof" in capture
-    assert "Claude Sonnet 4.6" in capture
-    assert "OpenAI catalog placeholder" in capture
+    assert "Claude Sonnet 4.6" not in capture
+    assert "OpenAI catalog placeholder" not in capture
     assert "GPT 5.5" in capture
+    assert "GPT 5.4" in capture
     assert "GPT 5.4 Mini" in capture
     assert "DeepSeek V4 Pro" in capture
-    assert "AGNES 1 (Experimental)" in capture
-    assert "GLM 5.2" in capture
+    assert "DeepSeek V4 Flash" in capture
+    assert "AGNES 2.0 Flash (Experimental)" in capture
+    assert "GLM 5.2 1M" in capture
     assert "Kimi K2.7 Code" in capture
     assert "bridge display only; live disabled until CP4" in capture
 
@@ -193,14 +215,19 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
             assert entry.catalog_authoritative is False
             assert entry.compatibility_status.endswith("_not_runtime_verified")
 
-    deepseek = proof.models_by_id["deepseek-v4-pro"]
+    deepseek = proof.models_by_id["claude-code-bridge-deepseek-v4-pro"]
     assert deepseek.catalog_source == "provider_docs_observed"
     assert deepseek.catalog_authoritative is False
     assert deepseek.api_formats == ("anthropic_messages", "openai_chat_completions")
-    assert deepseek.model_id in docs_snapshot["observations"]["deepseek"]["models"]
-    deepseek_1m = proof.models_by_id["deepseek-v4-pro[1m]"]
-    assert deepseek_1m.model_id in docs_snapshot["observations"]["deepseek"]["models"]
+    assert "deepseek-v4-pro" in docs_snapshot["observations"]["deepseek"]["models"]
+    assert "deepseek-v4-flash" in docs_snapshot["observations"]["deepseek"]["models"]
+    deepseek_1m = proof.models_by_id["claude-code-bridge-deepseek-v4-pro"]
+    deepseek_flash = proof.models_by_id["claude-code-bridge-deepseek-v4-flash"]
+    assert "deepseek-v4-pro[1m]" in docs_snapshot["observations"]["deepseek"]["models"]
     assert deepseek_1m.context_window == 1_000_000
+    assert deepseek_flash.context_window == 1_000_000
+    assert deepseek_flash.reasoning_effort_levels == deepseek.reasoning_effort_levels
+    assert deepseek_flash.cache_usage_fields == deepseek.cache_usage_fields
     assert deepseek_1m.anthropic_base_url == docs_snapshot["observations"]["deepseek"]["anthropic_base_url"]
     assert deepseek_1m.cache_usage_fields == deepseek.cache_usage_fields
     assert deepseek.anthropic_base_url == docs_snapshot["observations"]["deepseek"]["anthropic_base_url"]
@@ -213,26 +240,26 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert list(deepseek.deprecated_aliases) == docs_snapshot["observations"]["deepseek"]["deprecated_aliases"]
     assert "api-docs.deepseek.com" in deepseek.provider_docs_url
 
-    glm = proof.models_by_id["glm-5.2"]
+    glm = proof.models_by_id["claude-code-bridge-glm-5.2-1m"]
     assert glm.provider == "zai_glm"
     assert glm.route == "zai_glm_bridge"
     assert glm.client_type == "claude_code_bridge_zai_glm"
     assert glm.catalog_authoritative is False
     assert glm.api_formats == ("anthropic_messages", "openai_compatible_chat")
-    assert glm.model_id in docs_snapshot["observations"]["zai_glm"]["models"]
+    assert "glm-5.2[1m]" in docs_snapshot["observations"]["zai_glm"]["models"]
     assert glm.anthropic_base_url == docs_snapshot["observations"]["zai_glm"]["anthropic_base_url"]
     assert glm.openai_base_url == ""
     assert glm.coding_openai_compatible_base_url == docs_snapshot["observations"]["zai_glm"]["coding_openai_compatible_base_url"]
     assert glm.cache_key_strategy == docs_snapshot["observations"]["zai_glm"]["cache_key_strategy"]
     assert glm.reasoning_mapping["low"] == "high"
     assert glm.reasoning_mapping["max"] == "max"
-    assert proof.models_by_id["glm-5.2[1m]"].context_window == 1_000_000
+    assert proof.models_by_id["claude-code-bridge-glm-5.2-1m"].context_window == 1_000_000
     assert "docs.z.ai" in glm.provider_docs_url
 
-    kimi = proof.models_by_id["kimi-k2.7-code"]
+    kimi = proof.models_by_id["claude-code-bridge-kimi-k2.7-code"]
     assert kimi.catalog_authoritative is False
     assert kimi.api_formats == ("anthropic_messages", "openai_chat_completions")
-    assert kimi.model_id in docs_snapshot["observations"]["kimi"]["models"]
+    assert "kimi-k2.7-code" in docs_snapshot["observations"]["kimi"]["models"]
     assert kimi.anthropic_base_url == docs_snapshot["observations"]["kimi"]["anthropic_base_url"]
     assert kimi.openai_base_url == docs_snapshot["observations"]["kimi"]["openai_base_url"]
     assert kimi.cache_key_strategy == docs_snapshot["observations"]["kimi"]["cache_key_strategy"]
@@ -251,10 +278,10 @@ def test_cp2_refuses_to_enable_live_bridge_catalog_before_cp4(tmp_path: Path):
 def test_cp2_route_hint_stub_for_bridge_fails_closed_before_cp4(tmp_path: Path):
     proof = build_cp2_model_overlay_proof(_runtime_plan(tmp_path))
 
-    hint = build_route_hint_stub(proof, "deepseek-v4-pro")
-    hint_1m = build_route_hint_stub(proof, "deepseek-v4-pro[1m]")
+    hint = build_route_hint_stub(proof, "claude-code-bridge-deepseek-v4-pro")
+    hint_1m = build_route_hint_stub(proof, "claude-code-bridge-deepseek-v4-pro")
 
-    assert hint["model_id"] == "deepseek-v4-pro"
+    assert hint["model_id"] == "claude-code-bridge-deepseek-v4-pro"
     assert hint["client_type"] == "claude_code_bridge_deepseek"
     assert hint["route"] == "deepseek_bridge"
     assert hint["live_request_allowed"] is False
@@ -262,7 +289,7 @@ def test_cp2_route_hint_stub_for_bridge_fails_closed_before_cp4(tmp_path: Path):
     assert hint["native_attestation_allowed"] is False
     assert hint["requires_cp4_routing_trust_contract"] is True
     assert hint["fail_closed_reason"] == "cp4_routing_trust_contract_not_green"
-    assert hint_1m["model_id"] == "deepseek-v4-pro[1m]"
+    assert hint_1m["model_id"] == "claude-code-bridge-deepseek-v4-pro"
     assert hint_1m["client_type"] == "claude_code_bridge_deepseek"
     assert hint_1m["route"] == "deepseek_bridge"
     assert hint_1m["live_request_allowed"] is False
@@ -300,16 +327,16 @@ def test_cp2_writes_overlay_proof_artifacts_and_rollback_metadata_under_runtime_
     assert proof_payload["overlay_mode"] == "proof_only"
     assert proof_payload["bridge_live_feature_flag"] is False
     assert proof_payload["route_hint_mode"] == "stub_only_cp4_required"
-    assert proof_payload["models"]["deepseek-v4-pro"]["live_enabled"] is False
-    assert proof_payload["models"]["deepseek-v4-pro[1m]"]["live_enabled"] is False
-    assert proof_payload["models"]["deepseek-v4-pro[1m]"]["formal_pool_eligible"] is False
+    assert proof_payload["models"]["claude-code-bridge-deepseek-v4-pro"]["live_enabled"] is False
+    assert proof_payload["models"]["claude-code-bridge-deepseek-v4-pro"]["live_enabled"] is False
+    assert proof_payload["models"]["claude-code-bridge-deepseek-v4-pro"]["formal_pool_eligible"] is False
 
     route_hint_payload = json.loads(artifacts["route_hint_stub"].read_text(encoding="utf-8"))
-    assert route_hint_payload["deepseek-v4-pro"]["live_request_allowed"] is False
-    assert route_hint_payload["deepseek-v4-pro[1m]"]["live_request_allowed"] is False
-    assert route_hint_payload["deepseek-v4-pro[1m]"]["formal_pool_allowed"] is False
-    assert route_hint_payload["deepseek-v4-pro[1m]"]["native_attestation_allowed"] is False
-    assert route_hint_payload["openai-catalog-placeholder"]["formal_pool_allowed"] is False
+    assert route_hint_payload["claude-code-bridge-deepseek-v4-pro"]["live_request_allowed"] is False
+    assert route_hint_payload["claude-code-bridge-deepseek-v4-pro"]["live_request_allowed"] is False
+    assert route_hint_payload["claude-code-bridge-deepseek-v4-pro"]["formal_pool_allowed"] is False
+    assert route_hint_payload["claude-code-bridge-deepseek-v4-pro"]["native_attestation_allowed"] is False
+    assert route_hint_payload["claude-code-bridge-gpt-5.5"]["formal_pool_allowed"] is False
     assert route_hint_payload["claude-sonnet-4-6"]["live_request_allowed"] is False
     assert route_hint_payload["claude-sonnet-4-6"]["native_attestation_allowed"] is False
 
@@ -331,7 +358,7 @@ def test_cp2_bridge_selection_cannot_build_live_formal_pool_request(tmp_path: Pa
     proof = build_cp2_model_overlay_proof(_runtime_plan(tmp_path))
 
     with pytest.raises(RuntimeOverlayError, match="display-only until CP4"):
-        build_route_hint_stub(proof, "openai-catalog-placeholder", require_live_request=True)
+        build_route_hint_stub(proof, "claude-code-bridge-gpt-5.5", require_live_request=True)
 
 
 def test_cp2_model_overlay_public_api_is_exported_from_adapter_package():
@@ -405,7 +432,7 @@ def test_cp2_print_smoke_plan_is_mock_only_and_uses_model_list_capture(tmp_path:
     assert smoke["command"] == ["claude", "--print", "/model"]
     assert smoke["will_start_process"] is False
     assert smoke["live_bridge_models_enabled"] is False
-    assert "OpenAI catalog placeholder" in smoke["expected_model_list_capture"]
+    assert "OpenAI catalog placeholder" not in smoke["expected_model_list_capture"]
     assert "bridge display only; live disabled until CP4" in smoke["expected_model_list_capture"]
 
 
@@ -467,7 +494,7 @@ def test_cp2_native_shape_equality_rejects_bridge_model_shape(tmp_path: Path):
     proof = build_cp2_model_overlay_proof(_runtime_plan(tmp_path))
     bridge_request = {
         "headers": {"content-type": "application/json"},
-        "body": {"model": "openai-catalog-placeholder", "messages": [], "max_tokens": 64},
+        "body": {"model": "claude-code-bridge-gpt-5.5", "messages": [], "max_tokens": 64},
     }
 
     from zhumeng_agent.adapters.claude_code.model_overlay import assert_cp2_native_shape_equality  # noqa: PLC0415
@@ -533,7 +560,7 @@ def test_cp2_rejects_non_claude_native_eligibility_spoof(tmp_path: Path):
         patch_points=("model_options",),
         models=(
             RuntimeModelOverlayEntry(
-                model_id="openai-catalog-placeholder",
+                model_id="claude-code-bridge-gpt-5.5",
                 display_label="OpenAI catalog placeholder",
                 provider="openai",
                 route="claude_native",
@@ -617,7 +644,7 @@ def test_cp2_provider_capability_gate_ignores_runtime_verified_spoof_without_pro
         patch_points=("model_options",),
         models=(
             RuntimeModelOverlayEntry(
-                model_id="openai-catalog-placeholder",
+                model_id="claude-code-bridge-gpt-5.5",
                 display_label="OpenAI catalog placeholder",
                 provider="openai",
                 route="openai_bridge",
@@ -738,9 +765,13 @@ def test_cp2_overlay_does_not_hardcode_stale_provider_model_aliases(tmp_path: Pa
     assert "glm-4.6" not in model_ids
     assert "kimi-k2" not in model_ids
     assert "gpt-5.4" not in model_ids
-    assert "gpt-5.5" in model_ids
-    assert "gpt-5.4-mini" in model_ids
-    assert "openai-catalog-placeholder" in model_ids
+    assert "deepseek-v4-flash" not in model_ids
+    assert "claude-code-bridge-gpt-5.5" in model_ids
+    assert "claude-code-bridge-gpt-5.4" in model_ids
+    assert "claude-code-bridge-gpt-5.4-mini" in model_ids
+    assert "claude-code-bridge-deepseek-v4-pro" in model_ids
+    assert "claude-code-bridge-deepseek-v4-flash" in model_ids
+    assert "claude-code-bridge-glm-5.2-1m" in model_ids
     capture = render_model_list_capture(proof)
     route_hint_payload = {entry.model_id: build_route_hint_stub(proof, entry.model_id) for entry in proof.models}
     for alias in {alias for entry in proof.models for alias in entry.deprecated_aliases}:
@@ -748,4 +779,4 @@ def test_cp2_overlay_does_not_hardcode_stale_provider_model_aliases(tmp_path: Pa
         assert alias not in capture
         assert alias not in route_hint_payload
     openai_ids = [entry.model_id for entry in proof.models if entry.provider == "openai"]
-    assert openai_ids == ["openai-catalog-placeholder", "gpt-5.5", "gpt-5.4-mini"]
+    assert openai_ids == ["claude-code-bridge-gpt-5.5", "claude-code-bridge-gpt-5.4", "claude-code-bridge-gpt-5.4-mini"]

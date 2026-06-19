@@ -204,6 +204,71 @@ func TestClaudeCodeNativeRouteMatrix_BypassesOpenAIGroupAutoRoute(t *testing.T) 
 	require.False(t, shouldAutoRouteOpenAIGroupToOpenAI(headers))
 	require.False(t, shouldRejectOpenAIGroupCountTokens(headers))
 
+	bridgeHeaders := http.Header{}
+	bridgeHeaders.Set(service.ClaudeCodeNativeClientTypeHeader, "claude_code_bridge_openai")
+	require.False(t, shouldAutoRouteOpenAIGroupToOpenAI(bridgeHeaders), "bridge route must stay on Claude Code bridge skeleton and not enter generic OpenAI auto-route")
+	require.True(t, shouldRejectOpenAIGroupCountTokens(bridgeHeaders))
+
 	require.True(t, shouldAutoRouteOpenAIGroupToOpenAI(http.Header{}))
 	require.True(t, shouldRejectOpenAIGroupCountTokens(http.Header{}))
+}
+
+func TestClaudeCodeNativeMessagesAuthUsesDedicatedAPIKeyWhenBearerIsNotManagedJWT(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	var apiKeyCalled bool
+	var nativeCalled bool
+	auth := claudeCodeNativeMessagesAuth(
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			apiKeyCalled = true
+			c.Next()
+		}),
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			nativeCalled = true
+			c.Next()
+		}),
+	)
+	router.POST("/v1/messages", gin.HandlerFunc(auth), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6"}`))
+	req.Header.Set("Authorization", "Bearer sk-claude-code-dedicated-sub2api-key")
+	req.Header.Set(service.ClaudeCodeNativeClientTypeHeader, service.ClaudeCodeNativeClientType)
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "managed-session")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.True(t, apiKeyCalled)
+	require.False(t, nativeCalled)
+}
+
+func TestClaudeCodeNativeMessagesAuthUsesManagedAuthForJWTBearer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	var apiKeyCalled bool
+	var nativeCalled bool
+	auth := claudeCodeNativeMessagesAuth(
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			apiKeyCalled = true
+			c.Next()
+		}),
+		servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+			nativeCalled = true
+			c.Next()
+		}),
+	)
+	router.POST("/v1/messages", gin.HandlerFunc(auth), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6"}`))
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature")
+	req.Header.Set(service.ClaudeCodeNativeClientTypeHeader, service.ClaudeCodeNativeClientType)
+	req.Header.Set("X-Zhumeng-Device-ID", "9")
+	req.Header.Set("X-Zhumeng-Managed-Session", "managed-session")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.False(t, apiKeyCalled)
+	require.True(t, nativeCalled)
 }

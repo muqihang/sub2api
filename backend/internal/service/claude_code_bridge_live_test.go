@@ -33,14 +33,15 @@ func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing
 		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
 	}))
 	defer upstream.Close()
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
 
 	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
 
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, result.StatusCode)
 	require.Equal(t, "/anthropic/v1/messages", gotPath)
-	require.Equal(t, string(body), gotBody)
+	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
+	require.NotContains(t, gotBody, `"model":"claude-code-bridge-deepseek-v4-pro"`)
 	require.Equal(t, "sk-deepseek-test-key", gotAuth)
 	require.Empty(t, gotClientType)
 	require.Contains(t, string(result.Body), "message_stop")
@@ -57,7 +58,7 @@ func TestCP6DeepSeekAnthropicLiveStripsForeignThinkingAndSignatureSSE(t *testing
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_start\n"))
-		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-code-bridge-deepseek-v4-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: content_block_start\n"))
 		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"hidden chain","signature":"sig_provider_private"}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: content_block_delta\n"))
@@ -78,7 +79,7 @@ func TestCP6DeepSeekAnthropicLiveStripsForeignThinkingAndSignatureSSE(t *testing
 		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
 	}))
 	defer upstream.Close()
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
 
 	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
 
@@ -106,7 +107,7 @@ func TestCP6DeepSeekAnthropicLivePreservesToolUseInputFieldsNamedThinking(t *tes
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_start\n"))
-		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","content":[],"model":"claude-code-bridge-deepseek-v4-pro","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: content_block_start\n"))
 		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_keep","name":"inspect","input":{"type":"thinking","thinking":"visible tool argument","signature":"visible signature argument"}}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: content_block_stop\n"))
@@ -117,7 +118,7 @@ func TestCP6DeepSeekAnthropicLivePreservesToolUseInputFieldsNamedThinking(t *tes
 		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
 	}))
 	defer upstream.Close()
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"use a tool"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"use a tool"}],"stream":true}`)
 
 	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
 
@@ -138,7 +139,7 @@ func TestClaudeCodeBridgeAnthropicLiveLabBypassRejectsExternalProviderBaseURL(t 
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	decision := cp6LiveDeepSeekDecision("https://api.deepseek.com/anthropic")
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
 
 	require.False(t, ClaudeCodeBridgeAnthropicLiveEligible(decision))
 	_, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), http.DefaultClient, decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
@@ -166,7 +167,7 @@ func TestClaudeCodeBridgeAnthropicLiveRejectsFormalPoolNativeAndOpenAI(t *testin
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
 	base := cp6LiveDeepSeekDecision("http://127.0.0.1:9/anthropic")
 	tests := []struct {
 		name   string
@@ -213,7 +214,7 @@ func TestClaudeCodeBridgeAnthropicLiveSanitizesProviderErrors(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"provider throttled req_secret req_123456789 sk-live-secret https://api.deepseek.com/anthropic/v1/messages"}`))
 	}))
 	defer upstream.Close()
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"raw body"}],"stream":true}`)
 
 	_, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
 
@@ -256,15 +257,17 @@ func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *te
 	decision.FallbackReason = "anthropic_cache_fixture_failed"
 	decision.SupportsCacheAudit = true
 	decision.SupportsReasoningMapping = true
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"fallback"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"fallback"}],"stream":true}`)
 
 	result, err := ExecuteClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(context.Background(), upstream.Client(), decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
 
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, result.StatusCode)
-	require.Equal(t, "/v1/chat/completions", gotPath)
+	require.Equal(t, "/chat/completions", gotPath)
 	require.Equal(t, "Bearer sk-deepseek-test-key", gotAuth)
 	require.Empty(t, gotClientType)
+	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
+	require.NotContains(t, gotBody, `"model":"claude-code-bridge-deepseek-v4-pro"`)
 	require.Contains(t, gotBody, `"messages"`)
 	require.NotContains(t, gotBody, `"input"`)
 	require.NotContains(t, gotBody, "claude_code_native")
@@ -301,7 +304,7 @@ func TestCP6DeepSeekOpenAICompatibleFallbackReasoningOnlyDoesNotFinalizeAsVisibl
 	decision.FallbackReason = "anthropic_reasoning_fixture_failed"
 	decision.SupportsCacheAudit = true
 	decision.SupportsReasoningMapping = true
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"reasoning only"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"reasoning only"}],"stream":true}`)
 
 	result, err := ExecuteClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(context.Background(), upstream.Client(), decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
 
@@ -318,7 +321,7 @@ func TestCP6DeepSeekOpenAICompatibleFallbackFailsClosedWithoutFixtureReasonOrWit
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
-	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"fallback"}],"stream":true}`)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"fallback"}],"stream":true}`)
 	base := cp6LiveDeepSeekDecision("http://127.0.0.1:9/anthropic")
 	base.PreferredProtocol = "openai_chat_completions"
 	base.AnthropicBaseURL = ""
@@ -358,7 +361,8 @@ func TestCP6DeepSeekOpenAICompatibleFallbackFailsClosedWithoutFixtureReasonOrWit
 
 func cp6LiveDeepSeekDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 	return ClaudeCodeBridgeRouteDecision{
-		ModelID:                  "deepseek-v4-pro",
+		ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:            "deepseek-v4-pro",
 		Provider:                 "deepseek",
 		Route:                    "deepseek_bridge",
 		ClientType:               "claude_code_bridge_deepseek",
@@ -378,4 +382,53 @@ func cp6LiveDeepSeekDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 		SupportsUsage:            true,
 		SupportsErrorPassthrough: true,
 	}
+}
+
+func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsWhenResponsesUpstreamFails(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test-key")
+	var paths []string
+	var chatBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/responses" {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"message":"responses unsupported"}}`))
+			return
+		}
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		chatBody = string(body)
+		require.Equal(t, "Bearer sk-openai-test-key", r.Header.Get("Authorization"))
+		require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"gpt-5.4-mini","choices":[{"index":0,"delta":{"role":"assistant"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"gpt-5.4-mini","choices":[{"index":0,"delta":{"content":"OK"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"gpt-5.4-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":1,"total_tokens":8,"prompt_tokens_details":{"cached_tokens":3}}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-gpt-5.4-mini","messages":[{"role":"user","content":"reply ok"}],"stream":true,"max_tokens":8}`)
+
+	decision := cp6LiveOpenAIDecision(upstream.URL)
+	decision.ModelID = "claude-code-bridge-gpt-5.4-mini"
+	decision.UpstreamModel = "gpt-5.4-mini"
+
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), decision, body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	require.Equal(t, []string{"/v1/responses", "/v1/chat/completions"}, paths)
+	require.Contains(t, chatBody, `"model":"gpt-5.4-mini"`)
+	require.NotContains(t, chatBody, "claude-code-bridge-gpt-5.4-mini")
+	stream := string(result.Body)
+	require.Contains(t, stream, "message_start")
+	require.Contains(t, stream, "OK")
+	require.Contains(t, stream, "message_stop")
+	require.Equal(t, 3, result.Audit.CacheReadTokens)
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+	require.Equal(t, "claude_code_bridge_openai", result.Audit.ClientType)
 }

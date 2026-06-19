@@ -140,6 +140,10 @@ type AnthropicCompatIngressDecision struct {
 	ClientType     string
 }
 
+type AnthropicCompatIngressOptions struct {
+	AllowBridgeRuntimeModels bool
+}
+
 type AnthropicCompatProtocolError struct {
 	Status  int
 	Code    string
@@ -154,6 +158,10 @@ func (e *AnthropicCompatProtocolError) Error() string {
 }
 
 func ValidateAnthropicOnlyCompatIngress(method, rawRoute string, body []byte) (AnthropicCompatIngressDecision, error) {
+	return ValidateAnthropicOnlyCompatIngressWithOptions(method, rawRoute, body, AnthropicCompatIngressOptions{})
+}
+
+func ValidateAnthropicOnlyCompatIngressWithOptions(method, rawRoute string, body []byte, opts AnthropicCompatIngressOptions) (AnthropicCompatIngressDecision, error) {
 	pathname, query := splitCompatRoute(rawRoute)
 	if method != http.MethodPost {
 		return AnthropicCompatIngressDecision{}, anthropicCompatError(http.StatusNotFound, "unsupported_route")
@@ -164,7 +172,7 @@ func ValidateAnthropicOnlyCompatIngress(method, rawRoute string, body []byte) (A
 	if query != "" && query != "beta=true" {
 		return AnthropicCompatIngressDecision{}, anthropicCompatError(http.StatusNotFound, "unsupported_route")
 	}
-	if err := validateAnthropicCompatMessagesBody(body); err != nil {
+	if err := validateAnthropicCompatMessagesBody(body, opts); err != nil {
 		return AnthropicCompatIngressDecision{}, err
 	}
 	return AnthropicCompatIngressDecision{
@@ -230,7 +238,7 @@ func splitCompatRoute(rawRoute string) (string, string) {
 	return path, query
 }
 
-func validateAnthropicCompatMessagesBody(body []byte) error {
+func validateAnthropicCompatMessagesBody(body []byte, opts AnthropicCompatIngressOptions) error {
 	if !gjson.ValidBytes(body) {
 		return anthropicCompatError(http.StatusBadRequest, "invalid_json")
 	}
@@ -247,7 +255,11 @@ func validateAnthropicCompatMessagesBody(body []byte) error {
 	if !model.Exists() || model.Type != gjson.String || strings.TrimSpace(model.String()) == "" {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
-	if !strings.HasPrefix(strings.TrimSpace(model.String()), "claude-") {
+	modelID := strings.TrimSpace(model.String())
+	if !strings.HasPrefix(modelID, "claude-") && !opts.AllowBridgeRuntimeModels {
+		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+	}
+	if opts.AllowBridgeRuntimeModels && (looksSensitiveText(modelID) || strings.HasPrefix(modelID, "claude-code-bridge-")) {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
 	messages := gjson.GetBytes(body, "messages")

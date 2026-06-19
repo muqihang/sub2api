@@ -160,6 +160,69 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
         finally:
             endpoint_server.shutdown()
             capture.stop()
+
+    def test_native_title_helper_messages_stub_before_upstream_without_prompt_leak(self):
+        capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"should":"not be called"}')])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url) as harness:
+                payload = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [{
+                        'role': 'user',
+                        'content': 'Please write a 5-10 word title for the following conversation: raw-title-prompt-must-not-leak',
+                    }],
+                    'max_tokens': 16,
+                    'stream': False,
+                }
+                result = harness.request(
+                    'POST',
+                    '/v1/messages?beta=true',
+                    body=json.dumps(payload).encode('utf-8'),
+                    headers={'content-type': 'application/json'},
+                )
+                self.assertEqual(result['status'], 200)
+                self.assertEqual(capture.count, 0)
+                response = json.loads(result['body'].decode('utf-8'))
+                self.assertEqual(response['type'], 'message')
+                self.assertEqual(response['role'], 'assistant')
+                self.assertEqual(response['content'][0]['type'], 'text')
+                self.assertNotIn('raw-title-prompt-must-not-leak', result['body'].decode('utf-8'))
+                summary = harness.summary_text()
+                self.assertIn('native_auxiliary_messages_stub', summary)
+                self.assertIn('title_or_warmup', summary)
+                self.assertNotIn('raw-title-prompt-must-not-leak', summary)
+        finally:
+            capture.stop()
+
+
+    def test_native_compact_summary_messages_still_forward_to_formal_pool(self):
+        capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"ok":true}')])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url) as harness:
+                payload = {
+                    'model': 'claude-sonnet-4-6',
+                    'system': [{'type': 'text', 'text': 'Compact the conversation into a detailed summary for continuation.'}],
+                    'messages': [{'role': 'user', 'content': 'summarize this session without helper stub'}],
+                    'max_tokens': 512,
+                    'stream': False,
+                }
+                result = harness.request(
+                    'POST',
+                    '/v1/messages?beta=true',
+                    body=json.dumps(payload).encode('utf-8'),
+                    headers={'content-type': 'application/json'},
+                )
+                self.assertEqual(result['status'], 200)
+                self.assertEqual(capture.count, 1)
+                summary = harness.summary_text()
+                self.assertIn('messages_upstream_response', summary)
+                self.assertNotIn('native_auxiliary_messages_stub', summary)
+                self.assertNotIn('summarize this session without helper stub', summary)
+        finally:
+            capture.stop()
+
     def test_messages_forward_only_replacement_auth_and_summary_redacted(self):
         capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"ok":true}')])
         capture.start()
@@ -187,7 +250,7 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 self.assertEqual(result['status'], 200)
                 self.assertEqual(capture.count, 1)
                 request = capture.requests[0]
-                self.assertEqual(request['headers'].get('authorization'), 'Bearer native-managed-access-token')
+                self.assertEqual(request['headers'].get('authorization'), 'Bearer sub2api-entry')
                 self.assertNotIn('x-api-key', request['headers'])
                 self.assertNotIn('cookie', request['headers'])
                 self.assertNotIn('proxy-authorization', request['headers'])

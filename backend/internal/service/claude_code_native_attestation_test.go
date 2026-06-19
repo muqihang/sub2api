@@ -425,6 +425,10 @@ func TestClaudeCodeRouteHintReplayCacheDoesNotResetNativeReplayCache(t *testing.
 func TestCP6RouteHintAllowsClaudeCodeBetaMessagesRouteButRejectsOtherQuery(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
 	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	now := time.Unix(2690, 0)
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"bridge beta route"}],"stream":true}`)
 	decision := ClaudeCodeProviderRouteDecision{
@@ -441,7 +445,7 @@ func TestCP6RouteHintAllowsClaudeCodeBetaMessagesRouteButRejectsOtherQuery(t *te
 		OverlayHash:              "sha256:" + stringOf('2', 64),
 		CatalogHash:              "sha256:" + stringOf('3', 64),
 		PreferredProtocol:        "anthropic_messages",
-		AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+		AnthropicBaseURL:         "http://127.0.0.1:9/anthropic",
 		CapabilitiesVerified:     true,
 		SupportsText:             true,
 		SupportsTools:            true,
@@ -477,6 +481,51 @@ func TestCP6RouteHintAllowsClaudeCodeBetaMessagesRouteButRejectsOtherQuery(t *te
 	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages?foo=bar", otherQueryHeaders, body, decision)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "route unsupported")
+}
+
+func TestCP6RouteHintAllowsBridgeCountTokensForLocalAuxiliaryEstimate(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	now := time.Unix(2695, 0)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-flash","messages":[{"role":"user","content":"bridge count tokens"}]}`)
+	decision := ClaudeCodeProviderRouteDecision{
+		ModelID:                  "claude-code-bridge-deepseek-v4-flash",
+		UpstreamModel:            "deepseek-v4-flash",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          "bridge_pool",
+		GatewayLocation:          "cloud",
+		CatalogFresh:             true,
+		CatalogVersion:           "cp5-route-catalog",
+		RuntimeHash:              "sha256:" + stringOf('1', 64),
+		OverlayHash:              "sha256:" + stringOf('2', 64),
+		CatalogHash:              "sha256:" + stringOf('3', 64),
+		PreferredProtocol:        "anthropic_messages",
+		AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsErrorPassthrough: true,
+	}
+	headers := signedRouteHintHeadersForTest(t, body, "/v1/messages/count_tokens?beta=true", now, map[string]any{
+		"nonce":                "cp6-count-tokens-bridge-auxiliary",
+		"model_id":             "claude-code-bridge-deepseek-v4-flash",
+		"body_model":           "claude-code-bridge-deepseek-v4-flash",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"provider":             "deepseek",
+		"live_request_allowed": true,
+	})
+
+	_, err := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages/count_tokens?beta=true", headers, body, decision)
+
+	require.NoError(t, err)
 }
 
 func TestCP6RouteHintLiveRequestAllowedRequiresServerBridgeLiveGate(t *testing.T) {

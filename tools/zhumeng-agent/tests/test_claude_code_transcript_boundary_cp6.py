@@ -283,3 +283,99 @@ def test_cp6_raw_tool_result_with_visible_text_fails_closed_not_partial_replay()
     assert result.fail_closed_reason == "raw_tool_result_requires_safe_tool_result"
     assert "messages[1].tool_use_id" in result.blocked_paths
     assert "messages[1].content" in result.blocked_paths
+
+
+def test_cp6_resolver_to_boundary_claude_deepseek_flash_claude_only_replays_safe_tool_result(tmp_path):
+    from zhumeng_agent.adapters.claude_code.model_overlay import (  # noqa: PLC0415
+        build_cp2_model_overlay_proof,
+        build_cp3a_model_overlay_contract,
+        resolve_subagent_model,
+    )
+    from zhumeng_agent.adapters.claude_code.runtime_installer import build_managed_runtime_install_plan  # noqa: PLC0415
+
+    class VersionRunner:
+        def __call__(self, command: list[str], **kwargs: object):
+            from types import SimpleNamespace  # noqa: PLC0415
+
+            return SimpleNamespace(stdout="Claude Code v2.1.175", stderr="", returncode=0)
+
+    executable = tmp_path / "claude"
+    executable.write_bytes(b"fake-claude-code-2.1.175")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=tmp_path / ".zhumeng" / "runtimes",
+        runner=VersionRunner(),
+    )
+    contract = build_cp3a_model_overlay_contract(build_cp2_model_overlay_proof(plan))
+
+    resolution = resolve_subagent_model(
+        contract,
+        parent_model_id="claude-opus-4-8",
+        requested_model="claude-code-bridge-deepseek-v4-flash",
+    )
+    assert resolution.provider == "deepseek"
+    assert resolution.upstream_model_id == "deepseek-v4-flash"
+    assert resolution.replay_boundary == "safe_tool_result"
+    assert resolution.raw_history_replay_allowed is False
+
+    raw_child_history = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "provider hidden reasoning", "signature": "foreign-sig"},
+                {"type": "tool_use", "id": "toolu_raw", "name": "ToolSearch", "input": {"query": "secret"}},
+            ],
+            "raw_provider_response": {"reasoning_content": "private"},
+        }
+    ]
+    blocked = sanitize_for_target_provider(
+        source_messages=raw_child_history,
+        source_profile=ProviderProfile(
+            provider=resolution.provider,
+            route=resolution.route,
+            client_type=resolution.client_type,
+            model_id=resolution.resolved_model_id,
+        ),
+        target_profile=_profile("claude", native_replay_allowed=True),
+        replay_context="history_replay",
+        provenance_snapshot=_snapshot("deepseek", raw_child_history),
+    )
+    assert blocked.transcript is None
+    assert blocked.fail_closed_reason in {"raw_tool_use_block_requires_safe_summary", "no_replay_safe_content"}
+
+    frozen = freeze_safe_tool_result(
+        source_provider="deepseek",
+        source_turn_range=(0, 0),
+        tool_use_id="toolu_raw",
+        content="DeepSeek Flash safe ToolSearch result summary.",
+        evidence={
+            "tools": ["ToolSearch"],
+            "files": ["a.py"],
+            "tool_call": {"name": "ToolSearch", "input": {"query": "secret"}},
+            "raw_provider_response": {"reasoning_content": "private"},
+        },
+    )
+    result = sanitize_for_target_provider(
+        source_messages=[dict(frozen.block)],
+        source_profile=ProviderProfile(
+            provider=resolution.provider,
+            route=resolution.route,
+            client_type=resolution.client_type,
+            model_id=resolution.resolved_model_id,
+        ),
+        target_profile=_profile("claude", native_replay_allowed=True),
+        replay_context="history_replay",
+        provenance_snapshot=_snapshot("deepseek", [dict(frozen.block)]),
+    )
+
+    assert result.fail_closed_reason is None
+    assert result.transcript is not None
+    assert_claude_native_replay_safe(result.transcript)
+    serialized = json.dumps(result.transcript.to_dict(), ensure_ascii=True, sort_keys=True)
+    assert "DeepSeek Flash safe ToolSearch result summary." in serialized
+    assert "provider hidden reasoning" not in serialized
+    assert "foreign-sig" not in serialized
+    assert "tool_call" not in serialized
+    assert "query" not in serialized
+    assert "raw_provider_response" not in serialized
+    assert "reasoning_content" not in serialized

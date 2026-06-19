@@ -13,7 +13,17 @@ from typing import Mapping
 
 from .runtime_installer import ManagedRuntimeInstallPlan, ensure_managed_runtime_write_path
 
-CLAUDE_NATIVE_MODEL_ALLOWLIST = frozenset({"claude-sonnet-4-6", "claude-opus-4-7"})
+CLAUDE_NATIVE_MODEL_ALLOWLIST = frozenset({"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"})
+CLAUDE_CODE_BRIDGE_MODEL_IDS = (
+    "claude-code-bridge-gpt-5.5",
+    "claude-code-bridge-gpt-5.4",
+    "claude-code-bridge-gpt-5.4-mini",
+    "claude-code-bridge-deepseek-v4-pro",
+    "claude-code-bridge-deepseek-v4-flash",
+    "claude-code-bridge-agnes-2.0-flash",
+    "claude-code-bridge-glm-5.2-1m",
+    "claude-code-bridge-kimi-k2.7-code",
+)
 CP2_PATCH_POINTS = (
     "model_options",
     "agent_model_options",
@@ -45,6 +55,7 @@ class RuntimeModelOverlayEntry:
     client_type: str
     live_enabled: bool
     formal_pool_eligible: bool
+    upstream_model_id: str = ""
     api_formats: tuple[str, ...] = ()
     anthropic_base_url: str = ""
     openai_base_url: str = ""
@@ -82,7 +93,7 @@ class RuntimeModelOverlayProof:
 
     @property
     def display_model_ids(self) -> tuple[str, ...]:
-        return tuple(entry.model_id for entry in self.models)
+        return tuple(entry.model_id for entry in self.models if entry.route != "claude_native")
 
     @property
     def model_allowlist(self) -> tuple[str, ...]:
@@ -151,8 +162,9 @@ def render_model_list_capture(proof: RuntimeModelOverlayProof) -> str:
         "bridge display only; live disabled until CP4",
     ]
     for entry in proof.models:
-        suffix = "" if entry.route == "claude_native" else " (bridge display only; live disabled until CP4)"
-        lines.append(f"- {entry.display_label} [{entry.model_id}] -> {entry.client_type}{suffix}")
+        if entry.route == "claude_native":
+            continue
+        lines.append(f"- {entry.display_label} [{entry.model_id}] -> {entry.client_type} (bridge display only; live disabled until CP4)")
     return "\n".join(lines) + "\n"
 
 
@@ -202,7 +214,7 @@ def run_cp2_print_smoke_with_stubbed_runner(proof: RuntimeModelOverlayProof, run
     if getattr(runner, "is_cp2_stub_runner", False) is not True:
         raise RuntimeOverlayError("CP2 --print smoke requires an explicit CP2 stub runner")
     output = str(runner())
-    expected_labels = [entry.display_label for entry in proof.models]
+    expected_labels = [entry.display_label for entry in proof.models if entry.route != "claude_native"]
     missing = [label for label in expected_labels if label not in output]
     return {
         "mode": "stubbed_runner",
@@ -463,6 +475,7 @@ class RuntimeProviderProfile:
     fast_model_id: str
     family_aliases: Mapping[str, str] = field(default_factory=dict)
     native_formal_pool: bool = False
+    cross_provider_fast_model_ids: tuple[str, ...] = ()
 
     def model_for_alias(self, alias: str) -> str | None:
         return self.family_aliases.get(alias)
@@ -485,6 +498,7 @@ class RuntimeModelResolution:
     provider: str
     provider_profile_id: str
     route: str
+    upstream_model_id: str
     client_type: str
     native_egress_allowed: bool
     formal_pool_allowed: bool
@@ -995,23 +1009,41 @@ def resolve_workflow_model_alias(
     )
 
 
-def resolve_background_model(contract: RuntimeModelOverlayContract, *, active_model_id: str, task: str) -> RuntimeModelResolution:
+def resolve_background_model(
+    contract: RuntimeModelOverlayContract,
+    *,
+    active_model_id: str,
+    task: str,
+    fast_preference: str = "provider_local",
+) -> RuntimeModelResolution:
     task_id = task.strip()
     if task_id not in CP3A_BACKGROUND_TASKS:
         raise RuntimeOverlayError(f"unknown Claude Code background model task: {task}")
+    preference = fast_preference.strip()
+    if preference not in {"provider_local", "bridge"}:
+        raise RuntimeOverlayError("unknown Claude Code background fast preference")
     active_entry = _entry_for_model(contract, active_model_id)
     active_profile = _profile_for_provider(contract, active_entry.provider)
     alias_model = active_profile.model_for_alias(task_id) or active_profile.fast_model_id
+    source = "active_profile_background_task"
+    boundary = "same_provider"
+    if preference == "bridge" and task_id != "haiku" and active_profile.cross_provider_fast_model_ids:
+        alias_model = active_profile.cross_provider_fast_model_ids[0]
+        source = "active_profile_cross_provider_fast"
+        boundary = "safe_tool_result"
     entry = _entry_for_model(contract, alias_model)
     if entry.provider != active_entry.provider:
-        raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+        if not (active_entry.provider == "claude" and preference == "bridge" and not entry.formal_pool_eligible):
+            raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+        if entry.provider == "claude" or entry.route == "claude_native":
+            raise RuntimeOverlayError("cross-provider fast must not consume Claude formal pool")
     return _resolution_for_entry(
         contract,
         entry,
         requested=task_id,
         active_provider=active_entry.provider,
-        source="active_profile_background_task",
-        boundary="same_provider",
+        source=source,
+        boundary=boundary,
         dynamic=True,
     )
 
@@ -1053,63 +1085,50 @@ def probe_cp3a_patch_points(
 
 
 def _default_cp3a_provider_profiles(proof: RuntimeModelOverlayProof) -> tuple[RuntimeProviderProfile, ...]:
-    model_ids = set(proof.model_allowlist)
+    model_ids = set(proof.models_by_id)
 
     def has(model_id: str) -> bool:
         return model_id in model_ids
 
     profiles: list[RuntimeProviderProfile] = []
-    if has("claude-sonnet-4-6"):
+    claude_main = "claude-opus-4-8" if has("claude-opus-4-8") else "claude-sonnet-4-6"
+    claude_fast = "claude-haiku-4-5-20251001" if has("claude-haiku-4-5-20251001") else claude_main
+    if has(claude_main):
         profiles.append(
             RuntimeProviderProfile(
                 profile_id="claude-native",
                 provider="claude",
-                main_model_id="claude-sonnet-4-6",
-                fast_model_id="claude-sonnet-4-6",
-                family_aliases={alias: "claude-sonnet-4-6" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                main_model_id=claude_main,
+                fast_model_id=claude_fast,
+                family_aliases={alias: claude_fast for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
                 native_formal_pool=True,
+                cross_provider_fast_model_ids=("claude-code-bridge-deepseek-v4-flash",) if has("claude-code-bridge-deepseek-v4-flash") else (),
             )
         )
-    deepseek_main_model = "deepseek-v4-pro[1m]" if has("deepseek-v4-pro[1m]") else "deepseek-v4-pro"
-    if has(deepseek_main_model) and has("deepseek-v4-flash"):
-        profiles.append(
-            RuntimeProviderProfile(
-                profile_id="deepseek",
-                provider="deepseek",
-                main_model_id=deepseek_main_model,
-                fast_model_id="deepseek-v4-flash",
-                family_aliases={alias: "deepseek-v4-flash" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
-                native_formal_pool=False,
+
+    profile_specs = (
+        ("openai", "openai", "claude-code-bridge-gpt-5.5", "claude-code-bridge-gpt-5.4-mini"),
+        ("deepseek", "deepseek", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-deepseek-v4-flash"),
+        ("agnes", "agnes", "claude-code-bridge-agnes-2.0-flash", "claude-code-bridge-agnes-2.0-flash"),
+        ("zai_glm", "zai_glm", "claude-code-bridge-glm-5.2-1m", "claude-code-bridge-glm-5.2-1m"),
+        ("kimi", "kimi", "claude-code-bridge-kimi-k2.7-code", "claude-code-bridge-kimi-k2.7-code"),
+    )
+    for profile_id, provider, main_model_id, fast_model_id in profile_specs:
+        if has(main_model_id) and has(fast_model_id):
+            profiles.append(
+                RuntimeProviderProfile(
+                    profile_id=profile_id,
+                    provider=provider,
+                    main_model_id=main_model_id,
+                    fast_model_id=fast_model_id,
+                    family_aliases={alias: fast_model_id for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                    native_formal_pool=False,
+                )
             )
-        )
-    glm_main_model = "glm-5.2[1m]" if has("glm-5.2[1m]") else "glm-5.2"
-    if has(glm_main_model) and has("glm-5-turbo"):
-        profiles.append(
-            RuntimeProviderProfile(
-                profile_id="zai_glm",
-                provider="zai_glm",
-                main_model_id=glm_main_model,
-                fast_model_id="glm-5-turbo",
-                family_aliases={alias: "glm-5-turbo" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
-                native_formal_pool=False,
-            )
-        )
-    if has("kimi-k2.7-code") and has("kimi-k2.7-code-highspeed"):
-        profiles.append(
-            RuntimeProviderProfile(
-                profile_id="kimi",
-                provider="kimi",
-                main_model_id="kimi-k2.7-code",
-                fast_model_id="kimi-k2.7-code-highspeed",
-                family_aliases={alias: "kimi-k2.7-code-highspeed" for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
-                native_formal_pool=False,
-            )
-        )
     return tuple(profiles)
 
-
 def _validate_cp3a_profiles(proof: RuntimeModelOverlayProof, profiles: tuple[RuntimeProviderProfile, ...]) -> None:
-    model_ids = set(proof.model_allowlist)
+    model_ids = set(proof.models_by_id)
     for profile in profiles:
         if profile.main_model_id not in model_ids or profile.fast_model_id not in model_ids:
             raise RuntimeOverlayError("CP3A provider profile references a model outside the overlay proof")
@@ -1124,6 +1143,14 @@ def _validate_cp3a_profiles(proof: RuntimeModelOverlayProof, profiles: tuple[Run
                 raise RuntimeOverlayError("CP3A provider alias references a model outside the overlay proof")
             if proof.models_by_id[model_id].provider != profile.provider:
                 raise RuntimeOverlayError("provider-local aliases must stay within the provider")
+        for model_id in profile.cross_provider_fast_model_ids:
+            if model_id not in model_ids:
+                raise RuntimeOverlayError("CP3A cross-provider fast references a model outside the overlay proof")
+            target = proof.models_by_id[model_id]
+            if target.provider == profile.provider:
+                continue
+            if profile.provider != "claude" or target.provider == "claude" or target.formal_pool_eligible:
+                raise RuntimeOverlayError("cross-provider fast must not consume Claude formal pool")
 
 
 def _entry_for_model(contract: RuntimeModelOverlayContract, model_id: str) -> RuntimeModelOverlayEntry:
@@ -1162,6 +1189,7 @@ def _resolution_for_entry(
         provider=entry.provider,
         provider_profile_id=profile.profile_id,
         route=entry.route,
+        upstream_model_id=entry.upstream_model_id or entry.model_id,
         client_type=entry.client_type,
         native_egress_allowed=native_allowed,
         formal_pool_allowed=formal_pool_allowed,
@@ -1176,40 +1204,41 @@ def _resolution_for_entry(
 def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
     return (
         RuntimeModelOverlayEntry(
+            model_id="claude-opus-4-8",
+            display_label="Claude Opus 4.8",
+            provider="claude",
+            route="claude_native",
+            upstream_model_id="claude-opus-4-8",
+            client_type="claude_code_native",
+            live_enabled=True,
+            formal_pool_eligible=True,
+        ),
+        RuntimeModelOverlayEntry(
             model_id="claude-sonnet-4-6",
             display_label="Claude Sonnet 4.6",
             provider="claude",
             route="claude_native",
+            upstream_model_id="claude-sonnet-4-6",
             client_type="claude_code_native",
             live_enabled=True,
             formal_pool_eligible=True,
         ),
         RuntimeModelOverlayEntry(
-            model_id="claude-opus-4-7",
-            display_label="Claude Opus 4.7",
+            model_id="claude-haiku-4-5-20251001",
+            display_label="Claude Haiku 4.5",
             provider="claude",
             route="claude_native",
+            upstream_model_id="claude-haiku-4-5-20251001",
             client_type="claude_code_native",
             live_enabled=True,
             formal_pool_eligible=True,
         ),
         RuntimeModelOverlayEntry(
-            model_id="openai-catalog-placeholder",
-            display_label="OpenAI catalog placeholder",
-            provider="openai",
-            route="openai_bridge",
-            client_type="claude_code_bridge_openai",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("responses", "openai_chat_completions"),
-            provider_docs_url="https://platform.openai.com/docs/models",
-            provider_docs_urls=("https://platform.openai.com/docs/models",),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="gpt-5.5",
+            model_id="claude-code-bridge-gpt-5.5",
             display_label="GPT 5.5",
             provider="openai",
             route="openai_bridge",
+            upstream_model_id="gpt-5.5",
             client_type="claude_code_bridge_openai",
             live_enabled=False,
             formal_pool_eligible=False,
@@ -1224,10 +1253,30 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             cache_key_strategy="responses_prompt_cache_key_or_automatic_prefix_cache",
         ),
         RuntimeModelOverlayEntry(
-            model_id="gpt-5.4-mini",
+            model_id="claude-code-bridge-gpt-5.4",
+            display_label="GPT 5.4",
+            provider="openai",
+            route="openai_bridge",
+            upstream_model_id="gpt-5.4",
+            client_type="claude_code_bridge_openai",
+            live_enabled=False,
+            formal_pool_eligible=False,
+            api_formats=("responses",),
+            provider_docs_url="https://platform.openai.com/docs/api-reference/responses/create",
+            provider_docs_urls=(
+                "https://platform.openai.com/docs/api-reference/responses/create",
+                "https://developers.openai.com/api/docs/guides/reasoning",
+                "https://developers.openai.com/api/docs/guides/prompt-caching",
+            ),
+            cache_usage_fields=("usage.prompt_tokens_details.cached_tokens",),
+            cache_key_strategy="responses_prompt_cache_key_or_automatic_prefix_cache",
+        ),
+        RuntimeModelOverlayEntry(
+            model_id="claude-code-bridge-gpt-5.4-mini",
             display_label="GPT 5.4 Mini",
             provider="openai",
             route="openai_bridge",
+            upstream_model_id="gpt-5.4-mini",
             client_type="claude_code_bridge_openai",
             live_enabled=False,
             formal_pool_eligible=False,
@@ -1242,35 +1291,11 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             cache_key_strategy="responses_prompt_cache_key_or_automatic_prefix_cache",
         ),
         RuntimeModelOverlayEntry(
-            model_id="deepseek-v4-pro",
+            model_id="claude-code-bridge-deepseek-v4-pro",
             display_label="DeepSeek V4 Pro",
             provider="deepseek",
             route="deepseek_bridge",
-            client_type="claude_code_bridge_deepseek",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_chat_completions"),
-            anthropic_base_url="https://api.deepseek.com/anthropic",
-            openai_base_url="https://api.deepseek.com",
-            reasoning_effort_levels=("high", "max"),
-            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max"},
-            cache_policy="provider_prefix_kv_cache_automatic_best_effort",
-            cache_usage_fields=("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"),
-            cache_key_strategy="provider_automatic_prefix_cache_best_effort",
-            deprecated_aliases=("deepseek-chat", "deepseek-reasoner"),
-            provider_docs_url="https://api-docs.deepseek.com/news/news260424",
-            provider_docs_urls=(
-                "https://api-docs.deepseek.com/guides/anthropic_api",
-                "https://api-docs.deepseek.com/guides/kv_cache",
-                "https://api-docs.deepseek.com/quick_start/pricing",
-                "https://api-docs.deepseek.com/news/news260424",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="deepseek-v4-pro[1m]",
-            display_label="DeepSeek V4 Pro 1M",
-            provider="deepseek",
-            route="deepseek_bridge",
+            upstream_model_id="deepseek-v4-pro",
             client_type="claude_code_bridge_deepseek",
             live_enabled=False,
             formal_pool_eligible=False,
@@ -1293,10 +1318,11 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             ),
         ),
         RuntimeModelOverlayEntry(
-            model_id="deepseek-v4-flash",
+            model_id="claude-code-bridge-deepseek-v4-flash",
             display_label="DeepSeek V4 Flash",
             provider="deepseek",
             route="deepseek_bridge",
+            upstream_model_id="deepseek-v4-flash",
             client_type="claude_code_bridge_deepseek",
             live_enabled=False,
             formal_pool_eligible=False,
@@ -1310,19 +1336,20 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             cache_key_strategy="provider_automatic_prefix_cache_best_effort",
             context_window=1_000_000,
             deprecated_aliases=("deepseek-chat", "deepseek-reasoner"),
-            provider_docs_url="https://api-docs.deepseek.com/news/news260424",
+            provider_docs_url="https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code",
             provider_docs_urls=(
+                "https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code",
                 "https://api-docs.deepseek.com/guides/anthropic_api",
                 "https://api-docs.deepseek.com/guides/kv_cache",
                 "https://api-docs.deepseek.com/quick_start/pricing",
-                "https://api-docs.deepseek.com/news/news260424",
             ),
         ),
         RuntimeModelOverlayEntry(
-            model_id="agnes-1",
-            display_label="AGNES 1 (Experimental)",
+            model_id="claude-code-bridge-agnes-2.0-flash",
+            display_label="AGNES 2.0 Flash (Experimental)",
             provider="agnes",
             route="agnes_bridge",
+            upstream_model_id="agnes-2.0-flash",
             client_type="claude_code_bridge_agnes",
             live_enabled=False,
             formal_pool_eligible=False,
@@ -1330,30 +1357,11 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             compatibility_status="experimental_hidden_not_runtime_verified",
         ),
         RuntimeModelOverlayEntry(
-            model_id="glm-5.2",
-            display_label="GLM 5.2",
-            provider="zai_glm",
-            route="zai_glm_bridge",
-            client_type="claude_code_bridge_zai_glm",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_compatible_chat"),
-            anthropic_base_url="https://api.z.ai/api/anthropic",
-            coding_openai_compatible_base_url="https://api.z.ai/api/coding/paas/v4",
-            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultracode": "max"},
-            cache_key_strategy="unknown_probe_required",
-            provider_docs_url="https://docs.z.ai/devpack/tool/others",
-            provider_docs_urls=(
-                "https://docs.z.ai/devpack/latest-model",
-                "https://docs.z.ai/devpack/tool/others",
-                "https://docs.z.ai/devpack/overview",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="glm-5.2[1m]",
+            model_id="claude-code-bridge-glm-5.2-1m",
             display_label="GLM 5.2 1M",
             provider="zai_glm",
             route="zai_glm_bridge",
+            upstream_model_id="glm-5.2[1m]",
             client_type="claude_code_bridge_zai_glm",
             live_enabled=False,
             formal_pool_eligible=False,
@@ -1371,70 +1379,11 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             ),
         ),
         RuntimeModelOverlayEntry(
-            model_id="glm-5-turbo",
-            display_label="GLM 5 Turbo",
-            provider="zai_glm",
-            route="zai_glm_bridge",
-            client_type="claude_code_bridge_zai_glm",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_compatible_chat"),
-            anthropic_base_url="https://api.z.ai/api/anthropic",
-            coding_openai_compatible_base_url="https://api.z.ai/api/coding/paas/v4",
-            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultracode": "max"},
-            cache_key_strategy="unknown_probe_required",
-            provider_docs_url="https://docs.z.ai/devpack/overview",
-            provider_docs_urls=(
-                "https://docs.z.ai/devpack/latest-model",
-                "https://docs.z.ai/devpack/tool/others",
-                "https://docs.z.ai/devpack/overview",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="glm-4.7",
-            display_label="GLM 4.7",
-            provider="zai_glm",
-            route="zai_glm_bridge",
-            client_type="claude_code_bridge_zai_glm",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_compatible_chat"),
-            anthropic_base_url="https://api.z.ai/api/anthropic",
-            coding_openai_compatible_base_url="https://api.z.ai/api/coding/paas/v4",
-            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultracode": "max"},
-            cache_key_strategy="unknown_probe_required",
-            provider_docs_url="https://docs.z.ai/devpack/overview",
-            provider_docs_urls=(
-                "https://docs.z.ai/devpack/latest-model",
-                "https://docs.z.ai/devpack/tool/others",
-                "https://docs.z.ai/devpack/overview",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="glm-4.5-air",
-            display_label="GLM 4.5 Air",
-            provider="zai_glm",
-            route="zai_glm_bridge",
-            client_type="claude_code_bridge_zai_glm",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_compatible_chat"),
-            anthropic_base_url="https://api.z.ai/api/anthropic",
-            coding_openai_compatible_base_url="https://api.z.ai/api/coding/paas/v4",
-            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultracode": "max"},
-            cache_key_strategy="unknown_probe_required",
-            provider_docs_url="https://docs.z.ai/devpack/overview",
-            provider_docs_urls=(
-                "https://docs.z.ai/devpack/latest-model",
-                "https://docs.z.ai/devpack/tool/others",
-                "https://docs.z.ai/devpack/overview",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="kimi-k2.7-code",
+            model_id="claude-code-bridge-kimi-k2.7-code",
             display_label="Kimi K2.7 Code",
             provider="kimi",
             route="kimi_bridge",
+            upstream_model_id="kimi-k2.7-code",
             client_type="claude_code_bridge_kimi",
             live_enabled=False,
             formal_pool_eligible=False,
@@ -1454,96 +1403,6 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
                 "kimi-k2-thinking-turbo",
             ),
             provider_docs_url="https://platform.kimi.ai/docs/guide/agent-support",
-            provider_docs_urls=(
-                "https://platform.kimi.ai/docs/models",
-                "https://platform.kimi.ai/docs/guide/agent-support",
-                "https://platform.kimi.ai/docs/api/chat",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="kimi-k2.7-code-highspeed",
-            display_label="Kimi K2.7 Code Highspeed",
-            provider="kimi",
-            route="kimi_bridge",
-            client_type="claude_code_bridge_kimi",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_chat_completions"),
-            anthropic_base_url="https://api.moonshot.ai/anthropic",
-            openai_base_url="https://api.moonshot.ai/v1",
-            reasoning_policy="always_thinks_preserve_reasoning_content",
-            cache_usage_fields=("usage.cached_tokens",),
-            cache_key_strategy="prompt_cache_key_required_or_recommended_for_coding_agents",
-            deprecated_aliases=(
-                "kimi-latest",
-                "kimi-thinking-preview",
-                "kimi-k2-0905-preview",
-                "kimi-k2-0711-preview",
-                "kimi-k2-turbo-preview",
-                "kimi-k2-thinking",
-                "kimi-k2-thinking-turbo",
-            ),
-            provider_docs_url="https://platform.kimi.ai/docs/models",
-            provider_docs_urls=(
-                "https://platform.kimi.ai/docs/models",
-                "https://platform.kimi.ai/docs/guide/agent-support",
-                "https://platform.kimi.ai/docs/api/chat",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="kimi-k2.6",
-            display_label="Kimi K2.6",
-            provider="kimi",
-            route="kimi_bridge",
-            client_type="claude_code_bridge_kimi",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_chat_completions"),
-            anthropic_base_url="https://api.moonshot.ai/anthropic",
-            openai_base_url="https://api.moonshot.ai/v1",
-            reasoning_policy="thinking_keep_all_supported",
-            cache_usage_fields=("usage.cached_tokens",),
-            cache_key_strategy="prompt_cache_key_required_or_recommended_for_coding_agents",
-            deprecated_aliases=(
-                "kimi-latest",
-                "kimi-thinking-preview",
-                "kimi-k2-0905-preview",
-                "kimi-k2-0711-preview",
-                "kimi-k2-turbo-preview",
-                "kimi-k2-thinking",
-                "kimi-k2-thinking-turbo",
-            ),
-            provider_docs_url="https://platform.kimi.ai/docs/models",
-            provider_docs_urls=(
-                "https://platform.kimi.ai/docs/models",
-                "https://platform.kimi.ai/docs/guide/agent-support",
-                "https://platform.kimi.ai/docs/api/chat",
-            ),
-        ),
-        RuntimeModelOverlayEntry(
-            model_id="kimi-k2.5",
-            display_label="Kimi K2.5",
-            provider="kimi",
-            route="kimi_bridge",
-            client_type="claude_code_bridge_kimi",
-            live_enabled=False,
-            formal_pool_eligible=False,
-            api_formats=("anthropic_messages", "openai_chat_completions"),
-            anthropic_base_url="https://api.moonshot.ai/anthropic",
-            openai_base_url="https://api.moonshot.ai/v1",
-            reasoning_policy="no_preserved_thinking",
-            cache_usage_fields=("usage.cached_tokens",),
-            cache_key_strategy="prompt_cache_key_required_or_recommended_for_coding_agents",
-            deprecated_aliases=(
-                "kimi-latest",
-                "kimi-thinking-preview",
-                "kimi-k2-0905-preview",
-                "kimi-k2-0711-preview",
-                "kimi-k2-turbo-preview",
-                "kimi-k2-thinking",
-                "kimi-k2-thinking-turbo",
-            ),
-            provider_docs_url="https://platform.kimi.ai/docs/models",
             provider_docs_urls=(
                 "https://platform.kimi.ai/docs/models",
                 "https://platform.kimi.ai/docs/guide/agent-support",
