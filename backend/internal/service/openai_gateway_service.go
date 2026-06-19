@@ -1804,6 +1804,9 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return false
 	}
+	if !openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, "") {
+		return false
+	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
 		return false
 	}
