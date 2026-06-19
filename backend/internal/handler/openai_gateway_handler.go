@@ -122,6 +122,10 @@ func isOpenAIRuntimeGuardLocalBlock(err error) bool {
 	if errors.As(err, &blocked) {
 		return true
 	}
+	var selectionErr *service.OpenAIRuntimeGuardSelectionError
+	if errors.As(err, &selectionErr) {
+		return true
+	}
 	var fastBlocked *service.OpenAIFastBlockedError
 	return errors.As(err, &fastBlocked)
 }

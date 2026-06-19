@@ -446,11 +446,33 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// → 不带 model 的 response.create fallback 到 gpt-4o" 的
 			// 绕过路径。这里只看 session.update 事件中的 session.model
 			// 字段，response.create 自己的 model 仍然由其本帧字段决定。
+			sessionRequestModel := openAIWSPassthroughRequestModelFromSessionFrame(payload)
+			if sessionRequestModel != "" {
+				if selectionErr := openAIAccountRuntimeGuardSelectionError(account, sessionRequestModel, ""); selectionErr != nil {
+					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+				}
+			}
 			if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
 				capturedSessionModel = updated
 			}
 			usageMeta.updateSessionRequestModel(payload)
 			requestModelForThisFrame := usageMeta.requestModelForFrame(payload)
+			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+				if requestModelForThisFrame == "" {
+					requestModelForThisFrame = strings.TrimSpace(capturedSessionModel)
+				}
+				imageCapability := OpenAIImagesCapability("")
+				if IsImageGenerationIntent(openAIResponsesEndpoint, requestModelForThisFrame, payload) {
+					imageCapability = OpenAIImagesCapabilityBasic
+				}
+				if selectionErr := openAIAccountRuntimeGuardSelectionError(account, requestModelForThisFrame, imageCapability); selectionErr != nil {
+					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+				}
+			}
 			// Per-frame model first; if the client omits "model" on a
 			// follow-up frame (legal in Realtime), fall back to the
 			// session-level model captured from the first frame so the

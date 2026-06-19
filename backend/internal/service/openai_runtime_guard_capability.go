@@ -90,6 +90,28 @@ func noAvailableOpenAISelectionErrorForRequest(requestedModel string, imageCapab
 	})
 }
 
+func openAIAccountRuntimeGuardSelectionError(account *Account, requestedModel string, imageCapability OpenAIImagesCapability) *OpenAIRuntimeGuardSelectionError {
+	if openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, imageCapability) {
+		return nil
+	}
+	return newOpenAIUnsupportedOAuthCapabilitySelectionError(requestedModel, imageCapability)
+}
+
+func newOpenAIUnsupportedOAuthCapabilitySelectionError(requestedModel string, imageCapability OpenAIImagesCapability) *OpenAIRuntimeGuardSelectionError {
+	err := noAvailableOpenAISelectionErrorForRequest(requestedModel, imageCapability, false, true)
+	var selectionErr *OpenAIRuntimeGuardSelectionError
+	if errors.As(err, &selectionErr) && selectionErr != nil {
+		return selectionErr
+	}
+	return newOpenAIRuntimeGuardSelectionError(
+		OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability,
+		openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel,
+		fmt.Sprintf("no available OpenAI accounts supporting model: %s", strings.TrimSpace(requestedModel)),
+		ErrNoAvailableAccounts,
+		map[string]string{"model": requestedModel, "image_capability": string(imageCapability)},
+	)
+}
+
 func openAIAccountRuntimeGuardRejectsOAuthCandidate(account *Account, requestedModel string, imageCapability OpenAIImagesCapability) bool {
 	if account == nil || !account.IsOpenAI() || !account.IsOpenAIOAuth() {
 		return false

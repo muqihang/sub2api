@@ -1026,6 +1026,172 @@ func TestOpenAIRuntimeGuard_WSPassthroughRepairsAndBlocksOAuthFrames(t *testing.
 	require.Empty(t, blockedConn.writes)
 }
 
+func TestOpenAIRuntimeGuard_WSIngressBlocksOAuthUnsupportedFollowupModelBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.completed","response":{"id":"resp_ws_capability_turn_1","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
+	svc := newOpenAIRuntimeGuardWSService(cfg, pool)
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModeCtxPool)
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.5","stream":false}`)))
+	cancelWrite()
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, firstEvent, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "response.completed", gjson.GetBytes(firstEvent, "type").String())
+
+	writeCtx2, cancelWrite2 := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx2, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.4-nano","stream":false}`)))
+	cancelWrite2()
+
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, event, readErr2 := clientConn.Read(readCtx2)
+	cancelRead2()
+	require.NoError(t, readErr2)
+	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+	require.Equal(t, "unsupported_oauth_capability", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "capability.unsupported_oauth_model_profile", gjson.GetBytes(event, "error.category").String())
+
+	readCtx3, cancelRead3 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, closeErr := clientConn.Read(readCtx3)
+	cancelRead3()
+	require.Error(t, closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(closeErr))
+
+	select {
+	case serverErr := <-serverErrCh:
+		require.Error(t, serverErr)
+		var wsCloseErr *OpenAIWSClientCloseError
+		require.ErrorAs(t, serverErr, &wsCloseErr)
+		var selectionErr *OpenAIRuntimeGuardSelectionError
+		require.ErrorAs(t, serverErr, &selectionErr)
+		require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for ws ingress server")
+	}
+	require.Len(t, captureConn.writes, 1, "unsupported follow-up model must not be sent upstream")
+	require.Equal(t, "gpt-5.5", captureConn.writes[0]["model"])
+}
+
+func TestOpenAIRuntimeGuard_WSPassthroughBlocksSessionFallbackUnsupportedModelBeforeUpstream(t *testing.T) {
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModePassthrough
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_capability_turn_1","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}
+	svc := newOpenAIRuntimeGuardWSService(cfg, nil)
+	svc.openaiWSPassthroughDialer = &openAIWSCaptureDialer{conn: captureConn}
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModePassthrough)
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.5","stream":false}`)))
+	cancelWrite()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, firstEvent, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "response.completed", gjson.GetBytes(firstEvent, "type").String())
+
+	writeCtx2, cancelWrite2 := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx2, coderws.MessageText, []byte(`{"type":"session.update","session":{"model":"gpt-4o"}}`)))
+	cancelWrite2()
+
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, event, readErr2 := clientConn.Read(readCtx2)
+	cancelRead2()
+	require.NoError(t, readErr2)
+	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+	require.Equal(t, "unsupported_oauth_capability", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "capability.unsupported_oauth_model_profile", gjson.GetBytes(event, "error.category").String())
+
+	readCtx3, cancelRead3 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, closeErr := clientConn.Read(readCtx3)
+	cancelRead3()
+	require.Error(t, closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(closeErr))
+
+	select {
+	case serverErr := <-serverErrCh:
+		require.Error(t, serverErr)
+		var selectionErr *OpenAIRuntimeGuardSelectionError
+		require.ErrorAs(t, serverErr, &selectionErr)
+		require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for blocked passthrough server")
+	}
+	require.Len(t, captureConn.writes, 1, "unsupported session.update must not be sent upstream")
+	require.Equal(t, "response.create", captureConn.writes[0]["type"])
+}
+
+func TestOpenAIRuntimeGuard_WSPassthroughBlocksExplicitUnsupportedFollowupModelBeforeUpstream(t *testing.T) {
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModePassthrough
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_explicit_turn_1","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}
+	svc := newOpenAIRuntimeGuardWSService(cfg, nil)
+	svc.openaiWSPassthroughDialer = &openAIWSCaptureDialer{conn: captureConn}
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModePassthrough)
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.5","stream":false}`)))
+	cancelWrite()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, firstEvent, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "response.completed", gjson.GetBytes(firstEvent, "type").String())
+
+	writeCtx2, cancelWrite2 := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx2, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-4o","stream":false}`)))
+	cancelWrite2()
+
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, event, readErr2 := clientConn.Read(readCtx2)
+	cancelRead2()
+	require.NoError(t, readErr2)
+	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+	require.Equal(t, "unsupported_oauth_capability", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "capability.unsupported_oauth_model_profile", gjson.GetBytes(event, "error.category").String())
+
+	select {
+	case serverErr := <-serverErrCh:
+		require.Error(t, serverErr)
+		var selectionErr *OpenAIRuntimeGuardSelectionError
+		require.ErrorAs(t, serverErr, &selectionErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for explicit blocked passthrough server")
+	}
+	require.Len(t, captureConn.writes, 1, "explicit unsupported follow-up model must not be sent upstream")
+}
+
 func newOpenAIRuntimeGuardWSTestConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false

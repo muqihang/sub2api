@@ -324,6 +324,62 @@ func (s *OpenAIGatewayService) ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(
 	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, payload)
 }
 
+func buildOpenAIRuntimeGuardSelectionWSEvent(selectionErr *OpenAIRuntimeGuardSelectionError) []byte {
+	if selectionErr == nil {
+		return nil
+	}
+	message := strings.TrimSpace(selectionErr.Message)
+	if message == "" {
+		message = "No available compatible OpenAI accounts"
+	}
+	code := selectionErr.Code
+	if code == "" {
+		code = OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability
+	}
+	category := strings.TrimSpace(selectionErr.Category)
+	if category == "" {
+		category = openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel
+	}
+	payload, err := json.Marshal(map[string]any{
+		"event_id": newOpenAIFastPolicyWSEventID(),
+		"type":     "error",
+		"error": map[string]any{
+			"type":     "invalid_request_error",
+			"code":     string(code),
+			"category": category,
+			"message":  message,
+			"param":    "model",
+		},
+	})
+	if err != nil {
+		return []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"unsupported_oauth_capability","category":"capability.unsupported_oauth_model_profile","message":"No available compatible OpenAI accounts","param":"model"}}`)
+	}
+	return payload
+}
+
+func openAIRuntimeGuardSelectionWSReason(selectionErr *OpenAIRuntimeGuardSelectionError) string {
+	if selectionErr == nil {
+		return "unsupported OpenAI OAuth capability"
+	}
+	if msg := strings.TrimSpace(selectionErr.Message); msg != "" {
+		return msg
+	}
+	return "unsupported OpenAI OAuth capability"
+}
+
+func writeOpenAIRuntimeGuardSelectionWSEvent(ctx context.Context, conn *coderws.Conn, timeout time.Duration, selectionErr *OpenAIRuntimeGuardSelectionError) {
+	if conn == nil || selectionErr == nil {
+		return
+	}
+	eventBytes := buildOpenAIRuntimeGuardSelectionWSEvent(selectionErr)
+	if eventBytes == nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, timeout)
+	_ = conn.Write(writeCtx, coderws.MessageText, eventBytes)
+	cancel()
+}
+
 func buildOpenAIRuntimeGuardBlockedWSEvent(blocked *OpenAIRuntimeGuardBlockedError) []byte {
 	if blocked == nil {
 		return nil

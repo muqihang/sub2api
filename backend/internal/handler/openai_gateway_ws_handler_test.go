@@ -525,6 +525,13 @@ func TestOpenAIRuntimeGuardLocalBlockDetectsWrappedWSClientCloseError(t *testing
 
 	runtimeBlocked := &service.OpenAIRuntimeGuardBlockedError{StatusCode: http.StatusBadRequest}
 	require.True(t, isOpenAIRuntimeGuardLocalBlock(service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "blocked", runtimeBlocked)))
+
+	selectionErr := &service.OpenAIRuntimeGuardSelectionError{
+		Code:     service.OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability,
+		Category: "capability.unsupported_oauth_model_profile",
+		Message:  "blocked",
+	}
+	require.True(t, isOpenAIRuntimeGuardLocalBlock(service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "blocked", selectionErr)))
 }
 
 func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account, optionalDeps ...any) (*OpenAIGatewayHandler, *wsHandlerAccountRepo, func()) {
