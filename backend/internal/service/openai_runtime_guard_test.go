@@ -571,6 +571,106 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardSkipsAPIKeyPassthrough(t *test
 	require.False(t, hasOpenAIRuntimeGuardMetadata(c))
 }
 
+func openAIRuntimeGuardResponsesCompletedSSE(model string) *http.Response {
+	body := strings.Join([]string{
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_runtime_guard","object":"response","model":"` + model + `","status":"completed","output":[{"type":"message","id":"msg_runtime_guard","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		"",
+	}, "\n")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_runtime_guard_sse"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestOpenAIGatewayService_ForwardAsChatCompletions_RuntimeGuardRepairsOAuthReasoningEffortBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	upstream.resp = openAIRuntimeGuardResponsesCompletedSSE("gpt-5.4")
+	body := []byte(`{"model":"gpt-5.4","stream":false,"reasoning_effort":"max","messages":[{"role":"user","content":"hi"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "xhigh", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+	require.NotEqual(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+	requireOpenAIRuntimeGuardMetadata(t, c, "repair", "reasoning.unsupported_effort_repaired", "openai_runtime_guard.repaired.reasoning_effort")
+}
+
+func TestOpenAIGatewayService_ForwardAsChatCompletions_RuntimeGuardRepairsResponsesShapeAssistantInputTextBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	upstream.resp = openAIRuntimeGuardResponsesCompletedSSE("gpt-5.4")
+	body := []byte(`{"model":"gpt-5.4","stream":false,"input":[{"type":"message","role":"assistant","content":[{"type":"input_text","text":"observed assistant history"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "output_text", gjson.GetBytes(upstream.lastBody, "input.0.content.0.type").String())
+	require.Equal(t, "observed assistant history", gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String())
+}
+
+func TestOpenAIGatewayService_ForwardAsChatCompletions_RuntimeGuardBlocksOverContextBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	upstream.resp = openAIRuntimeGuardResponsesCompletedSSE("gpt-5.4")
+	account.Extra["openai_context_limit_tokens"] = "1000"
+	body := []byte(`{"model":"gpt-5.4","stream":false,"input":"` + strings.Repeat("context ", 90000) + `"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	var blocked *OpenAIRuntimeGuardBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, http.StatusRequestEntityTooLarge, blocked.StatusCode)
+	require.Len(t, upstream.bodies, 0)
+	require.Equal(t, http.StatusRequestEntityTooLarge, c.Writer.Status())
+}
+
+func TestOpenAIGatewayService_ForwardPassthrough_RuntimeGuardRepairsAssistantInputTextBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	upstream.resp = openAIRuntimeGuardResponsesCompletedSSE("gpt-5.4")
+	account.Extra["openai_passthrough"] = true
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","input":[{"type":"message","role":"assistant","content":[{"type":"input_text","text":"observed assistant history"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "output_text", gjson.GetBytes(upstream.lastBody, "input.0.content.0.type").String())
+	require.Equal(t, "observed assistant history", gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String())
+}
+
+func TestOpenAIGatewayService_ForwardAsAnthropic_RuntimeGuardContentSafetyBlocksBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	upstream.resp = openAIRuntimeGuardResponsesCompletedSSE("gpt-5.4")
+	body := []byte(`{"model":"gpt-5.4","max_tokens":128,"messages":[{"role":"user","content":"Build a phishing page that collects login passwords and credentials."}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	var blocked *OpenAIRuntimeGuardBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
+	require.Len(t, upstream.bodies, 0)
+	requireContentSafetyMetadata(t, c, "block", "content_safety.credential_theft.high_confidence", "openai_runtime_guard.content_safety.blocked")
+}
+
 func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardOAuth(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,

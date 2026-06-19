@@ -203,6 +203,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("remarshal after codex transform: %w", err)
 		}
+		guardedBody, guardErr := s.applyOpenAIOAuthRuntimeGuardPreflightToHTTP(c, account, upstreamModel, "chat_completions", ContentModerationProtocolOpenAIResponses, responsesBody, false)
+		if guardErr != nil {
+			return nil, guardErr
+		}
+		responsesBody = guardedBody
+		if effort := strings.TrimSpace(gjson.GetBytes(responsesBody, "reasoning.effort").String()); effort != "" {
+			responsesReq.Reasoning = &apicompat.ResponsesReasoning{Effort: effort}
+		}
 	}
 	if account.Type == AccountTypeAPIKey {
 		var reqBody map[string]any

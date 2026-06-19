@@ -206,6 +206,9 @@ func classifyOpenAIRuntimeGuardContentSafety(text string) string {
 	if openAIRuntimeGuardContentSafetyMalware(lower) {
 		return "content_safety.malware.high_confidence"
 	}
+	if openAIRuntimeGuardContentSafetyOffensiveReverseEngineering(lower) {
+		return "content_safety.offensive_reverse_engineering.high_confidence"
+	}
 	if openAIRuntimeGuardContentSafetyDestructiveAttack(lower) {
 		return "content_safety.destructive_attack.high_confidence"
 	}
@@ -216,6 +219,9 @@ func classifyOpenAIRuntimeGuardContentSafety(text string) string {
 }
 
 func openAIRuntimeGuardContentSafetyLooksDefensive(text string) bool {
+	if openAIRuntimeGuardContentSafetyOffensiveReverseEngineering(text) {
+		return false
+	}
 	if hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "phishing", "fake login", "credential harvesting") &&
 		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "build", "create", "deploy", "host", "clone", "make", "write") &&
 		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "collect", "steal", "capture", "harvest", "exfiltrate", "send") {
@@ -256,6 +262,19 @@ func openAIRuntimeGuardContentSafetyMalware(text string) bool {
 	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "malware", "ransomware", "trojan", "keylogger", "payload") &&
 		(hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "write", "build", "create", "deploy", "install", "run") || hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "persists", "persistent", "encrypts", "exfiltrate", "steal", "sends")) &&
 		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "exfiltrate", "steal", "send", "sends", "encrypts", "ransom", "persists", "persistent", "cookies", "password", "passwords", "files")
+}
+
+func openAIRuntimeGuardContentSafetyOffensiveReverseEngineering(text string) bool {
+	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "reverse engineer", "reverse engineering", "decompile", "disassemble", "patcher", "keygen") {
+		return false
+	}
+	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "build", "create", "write", "make", "generate", "bypass", "crack", "patch", "remove", "disable") {
+		return false
+	}
+	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text,
+		"keygen", "patcher", "crack", "cracked", "bypass license", "bypasses license", "license check", "license checks",
+		"license bypass", "drm", "anti-debug", "anti debug", "copy protection", "activation", "serial number",
+	)
 }
 
 func openAIRuntimeGuardContentSafetyDestructiveAttack(text string) bool {

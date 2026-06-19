@@ -245,6 +245,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	responsesBody = updatedBody
 
+	if account.Type == AccountTypeOAuth {
+		guardedBody, guardErr := s.applyOpenAIOAuthRuntimeGuardPreflightToHTTP(c, account, upstreamModel, "messages", ContentModerationProtocolOpenAIResponses, responsesBody, false)
+		if guardErr != nil {
+			return nil, guardErr
+		}
+		responsesBody = guardedBody
+	}
+
 	// 5. Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {

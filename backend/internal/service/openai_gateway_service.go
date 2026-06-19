@@ -3934,6 +3934,16 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			body = normalizedBody
 		}
 		reqStream = gjson.GetBytes(body, "stream").Bool()
+		guardModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+		if guardModel == "" {
+			guardModel = upstreamPassthroughModel
+		}
+		guardedBody, guardErr := s.applyOpenAIOAuthRuntimeGuardPreflightToHTTP(c, account, guardModel, "responses", ContentModerationProtocolOpenAIResponses, body, isOpenAIResponsesCompactPath(c))
+		if guardErr != nil {
+			return nil, guardErr
+		}
+		body = guardedBody
+		reqStream = gjson.GetBytes(body, "stream").Bool()
 	}
 
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
