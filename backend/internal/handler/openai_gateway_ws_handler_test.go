@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
@@ -97,6 +99,77 @@ func (c *wsHandlerGatewayCache) DeleteSessionAccountID(ctx context.Context, grou
 
 func (c *wsHandlerGatewayCache) key(groupID int64, sessionHash string) string {
 	return fmt.Sprintf("%d:%s", groupID, strings.TrimSpace(sessionHash))
+}
+
+type wsHandlerSettingRepo struct {
+	service.SettingRepository
+	values map[string]string
+}
+
+func (r *wsHandlerSettingRepo) Get(ctx context.Context, key string) (*service.Setting, error) {
+	value, err := r.GetValue(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return &service.Setting{Key: key, Value: value}, nil
+}
+
+func (r *wsHandlerSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
+	if r == nil || r.values == nil {
+		return "", service.ErrSettingNotFound
+	}
+	value, ok := r.values[key]
+	if !ok {
+		return "", service.ErrSettingNotFound
+	}
+	return value, nil
+}
+
+func (r *wsHandlerSettingRepo) Set(ctx context.Context, key, value string) error {
+	if r.values == nil {
+		r.values = make(map[string]string)
+	}
+	r.values[key] = value
+	return nil
+}
+
+func (r *wsHandlerSettingRepo) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if value, ok := r.values[key]; ok {
+			out[key] = value
+		}
+	}
+	return out, nil
+}
+
+func (r *wsHandlerSettingRepo) SetMultiple(ctx context.Context, values map[string]string) error {
+	if r.values == nil {
+		r.values = make(map[string]string)
+	}
+	for key, value := range values {
+		r.values[key] = value
+	}
+	return nil
+}
+
+func (r *wsHandlerSettingRepo) GetAll(ctx context.Context) (map[string]string, error) {
+	out := make(map[string]string, len(r.values))
+	for key, value := range r.values {
+		out[key] = value
+	}
+	return out, nil
+}
+
+func (r *wsHandlerSettingRepo) Delete(ctx context.Context, key string) error {
+	if r.values == nil {
+		return service.ErrSettingNotFound
+	}
+	if _, ok := r.values[key]; !ok {
+		return service.ErrSettingNotFound
+	}
+	delete(r.values, key)
+	return nil
 }
 
 func TestOpenAIGatewayWSHandler_ProxyRelayWithFakeUpstream(t *testing.T) {
@@ -362,7 +435,99 @@ func TestOpenAIGatewayWSHandler_RetriesAnotherAccountWhenFirstUpstreamPreludeThe
 	require.GreaterOrEqual(t, accountRepo.listCalls.Load(), int32(2), "should re-select account after first upstream prelude close failure")
 }
 
-func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*OpenAIGatewayHandler, *wsHandlerAccountRepo, func()) {
+func TestOpenAIGatewayWSHandler_LocalFastPolicyBlockDoesNotReportSchedulerFailureOrUpstreamUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamHits := make(chan struct{}, 1)
+	usageCreated := make(chan *service.UsageLog, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits <- struct{}{}
+	}))
+	defer upstream.Close()
+
+	groupID := int64(7701)
+	settingsJSON, err := json.Marshal(service.OpenAIFastPolicySettings{Rules: []service.OpenAIFastPolicyRule{{
+		ServiceTier:  service.OpenAIFastTierPriority,
+		Action:       service.BetaPolicyActionBlock,
+		Scope:        service.BetaPolicyScopeAll,
+		ErrorMessage: "fast tier disabled locally",
+	}}})
+	require.NoError(t, err)
+
+	settingsRepo := &wsHandlerSettingRepo{values: map[string]string{
+		service.SettingKeyOpenAIFastPolicySettings: string(settingsJSON),
+		"openai_advanced_scheduler_enabled":        "true",
+	}}
+	settingSvc := service.NewSettingService(settingsRepo, &config.Config{})
+
+	accounts := []service.Account{{
+		ID:          8801,
+		Name:        "openai-apikey-fast-blocked",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{
+			"api_key":  "sk-upstream-primary",
+			"base_url": upstream.URL,
+		},
+		Extra: map[string]any{
+			"openai_apikey_responses_websockets_v2_enabled": true,
+		},
+	}}
+
+	h, accountRepo, cleanup := newOpenAIWSIntegrationHandler(t, accounts, settingSvc, &openAIWSUsageHandlerUsageLogRepoStub{created: usageCreated})
+	defer cleanup()
+	sub2apiServer := newOpenAIWSIntegrationServer(t, h)
+	defer sub2apiServer.Close()
+
+	clientConn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(sub2apiServer.URL, "http")+"/v1/responses", nil)
+	require.NoError(t, err)
+	defer clientConn.Close()
+
+	err = clientConn.WriteJSON(map[string]any{
+		"type":         "response.create",
+		"model":        "gpt-5.1",
+		"stream":       false,
+		"service_tier": "priority",
+		"input":        []any{map[string]any{"type": "input_text", "text": "hello blocked"}},
+	})
+	require.NoError(t, err)
+
+	_, clientMessage, err := clientConn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, "error", gjson.GetBytes(clientMessage, "type").String())
+	require.Equal(t, "fast tier disabled locally", gjson.GetBytes(clientMessage, "error.message").String())
+
+	select {
+	case <-upstreamHits:
+		t.Fatal("local fast policy block must not be forwarded upstream")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	snapshot := h.gatewayService.SnapshotOpenAIAccountSchedulerMetrics()
+	require.Zero(t, snapshot.RuntimeStatsAccountCount, "local WS block must not report scheduler failure")
+	require.Equal(t, int32(1), accountRepo.listCalls.Load(), "local WS block must not fail over to another account")
+
+	select {
+	case <-usageCreated:
+		t.Fatal("local fast policy block must not record usage")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestOpenAIRuntimeGuardLocalBlockDetectsWrappedWSClientCloseError(t *testing.T) {
+	fastBlocked := &service.OpenAIFastBlockedError{Message: "blocked"}
+	require.True(t, isOpenAIRuntimeGuardLocalBlock(service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "blocked", fastBlocked)))
+
+	runtimeBlocked := &service.OpenAIRuntimeGuardBlockedError{StatusCode: http.StatusBadRequest}
+	require.True(t, isOpenAIRuntimeGuardLocalBlock(service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "blocked", runtimeBlocked)))
+}
+
+func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account, optionalDeps ...any) (*OpenAIGatewayHandler, *wsHandlerAccountRepo, func()) {
 	t.Helper()
 
 	cfg := &config.Config{}
@@ -400,10 +565,20 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 	}
 	concurrencyService := service.NewConcurrencyService(concurrencyCache)
 	billingCacheService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	rateLimitService := service.NewRateLimitService(accountRepo, nil, cfg, nil, nil)
+	var usageLogRepo service.UsageLogRepository
+	for _, dep := range optionalDeps {
+		switch typed := dep.(type) {
+		case *service.SettingService:
+			rateLimitService.SetSettingService(typed)
+		case service.UsageLogRepository:
+			usageLogRepo = typed
+		}
+	}
 
 	gatewayService := service.NewOpenAIGatewayService(
 		accountRepo,
-		nil,
+		usageLogRepo,
 		nil,
 		nil,
 		nil,
@@ -413,15 +588,12 @@ func newOpenAIWSIntegrationHandler(t *testing.T, accounts []service.Account) (*O
 		nil,
 		concurrencyService,
 		nil,
-		nil,
+		rateLimitService,
 		billingCacheService,
 		nil,
+		&service.DeferredService{},
 		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
+		optionalDeps...,
 	)
 
 	h := &OpenAIGatewayHandler{

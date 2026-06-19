@@ -2134,6 +2134,23 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				continue
 			}
 
+			if isOpenAIRuntimeGuardLocalBlock(err) {
+				closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+				reqLog.Warn("openai.websocket_runtime_guard_blocked",
+					zap.Int64("account_id", account.ID),
+					zap.Error(err),
+					zap.String("close_status", closeStatus),
+					zap.String("close_reason", closeReason),
+				)
+				var closeErr *service.OpenAIWSClientCloseError
+				if errors.As(err, &closeErr) {
+					closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
+				} else {
+					closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "local policy block")
+				}
+				return
+			}
+
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 			closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
 			reqLog.Warn("openai.websocket_proxy_failed",
