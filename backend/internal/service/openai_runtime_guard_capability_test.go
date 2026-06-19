@@ -669,7 +669,7 @@ func TestOpenAIRuntimeGuardCapabilityClassifiesTokenInvalidatedAndExcludesSchedu
 	}
 	rateLimitSvc.SetAccountRuntimeBlocker(svc)
 
-	body := []byte(`{"detail":"Your authentication token has been invalidated. Please try signing in again"}`)
+	body := []byte(`{"error":{"code":"invalid_token","message":"Your authentication token has been invalidated. Please try signing in again"}}`)
 	shouldDisable := svc.handleOpenAIAccountUpstreamError(ctx, oauth, http.StatusUnauthorized, http.Header{}, body, "gpt-5.4")
 
 	require.True(t, shouldDisable)
@@ -696,6 +696,18 @@ func TestOpenAIRuntimeGuardCapabilityClassifiesRawTokenInvalidated401(t *testing
 	body := []byte(`Token revoked (401): Your authentication token has been invalidated. Please try signing in again`)
 
 	require.Equal(t, openAIAuthErrorCodeTokenInvalidated, classifyOpenAIUpstreamAuth401ErrorCode(body))
+}
+
+func TestOpenAIRuntimeGuardCapabilityClassifiesGenericCodeInvalidatedMessage(t *testing.T) {
+	body := []byte(`{"error":{"code":"invalid_token","message":"Your authentication token has been invalidated. Please try signing in again"}}`)
+
+	require.Equal(t, openAIAuthErrorCodeTokenInvalidated, classifyOpenAIUpstreamAuth401ErrorCode(body))
+}
+
+func TestOpenAIRuntimeGuardCapabilityClassifiesGenericCodeRevokedMessage(t *testing.T) {
+	body := []byte(`{"error":{"code":"invalid_token","message":"Your authentication token has been revoked. Please try signing in again"}}`)
+
+	require.Equal(t, openAIAuthErrorCodeTokenRevoked, classifyOpenAIUpstreamAuth401ErrorCode(body))
 }
 
 func TestOpenAIRuntimeGuardCapabilityCodexPersonaVersionGuard(t *testing.T) {

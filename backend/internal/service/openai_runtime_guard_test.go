@@ -823,6 +823,39 @@ func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardBlocksWithTyp
 	require.Len(t, upstream.bodies, 0)
 }
 
+func TestOpenAIGatewayService_DoNativeResponsesRequest_OldCodexPersonaFallbackRewritesBodyModel(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_native_persona_fallback","usage":{"input_tokens":1,"output_tokens":1}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:          6305,
+		Name:        "openai-oauth-native-fallback",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+			"model_mapping":      map[string]any{"gpt-5.1": "gpt-5.3-codex"},
+		},
+		Extra: map[string]any{
+			"openai_gateway_canonical_version":    "2.1.146",
+			"openai_gateway_canonical_user_agent": "codex_cli_rs/2.1.146",
+		},
+	}
+	body := []byte(`{"model":"gpt-5.1","input":"hi"}`)
+
+	resp, err := svc.DoNativeResponsesRequest(context.Background(), account, nil, body, false)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "gpt-5.3-codex", gjson.GetBytes(upstream.lastBody, "model").String())
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_CompleteRuntimeGuardLocalBlockNotCapturedAsUpstream(t *testing.T) {
 	adapter, upstream := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil)
 	account := newCodexGatewayOpenAIOAuthAccountForTest()
@@ -1098,6 +1131,45 @@ func TestOpenAIRuntimeGuard_WSPassthroughBlocksOldCodexPersonaFirstFrameBeforeUp
 		t.Fatal("waiting for old-persona passthrough server")
 	}
 	require.Equal(t, 0, dialer.DialCount(), "old persona passthrough first frame must be blocked before upstream websocket dial")
+}
+
+func TestOpenAIRuntimeGuard_WSPassthroughOldCodexPersonaFallbackRewritesFirstFrameBeforeUpstream(t *testing.T) {
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModePassthrough
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_persona_fallback_first","model":"gpt-5.3-codex","usage":{"input_tokens":1,"output_tokens":1}}}`)},
+	}
+	svc := newOpenAIRuntimeGuardWSService(cfg, nil)
+	svc.openaiWSPassthroughDialer = &openAIWSCaptureDialer{conn: captureConn}
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModePassthrough)
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+	account.Credentials["model_mapping"] = map[string]any{"gpt-5.1": "gpt-5.3-codex"}
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","stream":false}`)))
+	cancelWrite()
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, firstEvent, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "response.completed", gjson.GetBytes(firstEvent, "type").String())
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
+
+	select {
+	case serverErr := <-serverErrCh:
+		require.NoError(t, serverErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for passthrough fallback first frame server")
+	}
+	require.Len(t, captureConn.writes, 1)
+	require.Equal(t, "gpt-5.3-codex", captureConn.writes[0]["model"])
 }
 
 func TestOpenAIRuntimeGuard_WSIngressBlocksOAuthUnsupportedFollowupModelBeforeUpstream(t *testing.T) {
@@ -1717,4 +1789,67 @@ func TestOpenAIRuntimeGuard_WSIngressBlocksOldCodexPersonaFollowupModelBeforeUps
 	}
 	require.Len(t, captureConn.writes, 1, "old-persona follow-up model must not be sent upstream")
 	require.Equal(t, "gpt-5.3-codex", captureConn.writes[0]["model"])
+}
+
+func TestOpenAIRuntimeGuard_WSPassthroughOldCodexPersonaFallbackRewritesSessionUpdateAndFollowup(t *testing.T) {
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModePassthrough
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_persona_fallback_turn_1","model":"gpt-5.3-codex","usage":{"input_tokens":1,"output_tokens":1}}}`),
+			[]byte(`{"type":"session.updated","session":{"id":"sess_1","model":"gpt-5.3-codex"}}`),
+			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_persona_fallback_turn_2","model":"gpt-5.3-codex","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+		blockWhenEmpty: true,
+	}
+	svc := newOpenAIRuntimeGuardWSService(cfg, nil)
+	svc.openaiWSPassthroughDialer = &openAIWSCaptureDialer{conn: captureConn}
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModePassthrough)
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+	account.Credentials["model_mapping"] = map[string]any{"gpt-5.1": "gpt-5.3-codex"}
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.3-codex","stream":false}`)))
+	cancelWrite()
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, firstEvent, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "response.completed", gjson.GetBytes(firstEvent, "type").String())
+
+	writeCtx2, cancelWrite2 := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx2, coderws.MessageText, []byte(`{"type":"session.update","session":{"model":"gpt-5.1"}}`)))
+	cancelWrite2()
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, sessionEvent, readErr2 := clientConn.Read(readCtx2)
+	cancelRead2()
+	require.NoError(t, readErr2)
+	require.Equal(t, "session.updated", gjson.GetBytes(sessionEvent, "type").String())
+
+	writeCtx3, cancelWrite3 := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx3, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","stream":false}`)))
+	cancelWrite3()
+	readCtx3, cancelRead3 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, secondEvent, readErr3 := clientConn.Read(readCtx3)
+	cancelRead3()
+	require.NoError(t, readErr3)
+	require.Equal(t, "response.completed", gjson.GetBytes(secondEvent, "type").String())
+	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
+
+	select {
+	case serverErr := <-serverErrCh:
+		require.NoError(t, serverErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for passthrough fallback follow-up server")
+	}
+	require.Len(t, captureConn.writes, 3)
+	require.Equal(t, "gpt-5.3-codex", captureConn.writes[0]["model"])
+	require.Equal(t, "gpt-5.3-codex", gjson.Get(requestToJSONString(captureConn.writes[1]), "session.model").String())
+	require.Equal(t, "gpt-5.3-codex", captureConn.writes[2]["model"])
 }

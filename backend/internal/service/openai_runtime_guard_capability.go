@@ -420,9 +420,6 @@ func evaluateOpenAIOAuthCodexPersonaGuard(account *Account, requestedModel strin
 }
 
 func classifyOpenAIUpstreamAuth401ErrorCode(responseBody []byte) string {
-	if code := strings.TrimSpace(extractUpstreamErrorCode(responseBody)); code != "" {
-		return code
-	}
 	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
 	if msg == "" && len(responseBody) > 0 {
 		msg = strings.ToLower(strings.TrimSpace(sanitizeUpstreamErrorMessage(string(responseBody))))
@@ -432,9 +429,13 @@ func classifyOpenAIUpstreamAuth401ErrorCode(responseBody []byte) string {
 		strings.Contains(msg, "token has been invalidated"),
 		strings.Contains(msg, "token invalidated"):
 		return openAIAuthErrorCodeTokenInvalidated
-	case strings.Contains(msg, "token revoked"):
+	case strings.Contains(msg, "authentication token has been revoked"),
+		strings.Contains(msg, "token has been revoked"),
+		strings.Contains(msg, "token revoked"):
 		return openAIAuthErrorCodeTokenRevoked
-	default:
-		return ""
 	}
+	if code := strings.TrimSpace(extractUpstreamErrorCode(responseBody)); code != "" {
+		return code
+	}
+	return ""
 }

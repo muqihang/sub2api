@@ -2826,6 +2826,13 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 	if account != nil && nativeRequestedModel != "" {
 		nativeUpstreamModel = openAIAccountRuntimeGuardResolvedUpstreamModel(account, nativeRequestedModel)
 	}
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth && nativeUpstreamModel != "" && nativeUpstreamModel != nativeRequestedModel {
+		repairedBody, rewriteErr := sjson.SetBytes(body, "model", nativeUpstreamModel)
+		if rewriteErr != nil {
+			return nil, fmt.Errorf("rewrite native openai oauth model to upstream fallback: %w", rewriteErr)
+		}
+		body = repairedBody
+	}
 	if personaDecision := evaluateOpenAIOAuthCodexPersonaGuard(account, nativeUpstreamModel, ""); personaDecision.Blocked {
 		return nil, newOpenAIRuntimeGuardBlockedError(personaDecision)
 	}
