@@ -176,9 +176,17 @@ def run_managed_claude_code(
             guard_plan=guard_plan,
             route_hint_secret=route_hint_secret,
         )
+        provider_profile_env = _write_provider_profile_resolver_artifact(
+            config_root=config_root,
+            profile_id=safe_profile_id,
+            executable=Path(executable),
+            runtime_hash=guard_plan.env["ZHUMENG_CLAUDE_RUNTIME_HASH"],
+            overlay_hash=guard_plan.env["ZHUMENG_CLAUDE_OVERLAY_HASH"],
+            bridge_live_models=tuple(guard_plan.config.bridge_live_models),
+        )
         launch_plan = ClaudeCodeLaunchPlan(
             command=launch_plan.command,
-            env={**launch_plan.env, **route_hint_env},
+            env={**launch_plan.env, **route_hint_env, **provider_profile_env},
             cwd=launch_plan.cwd,
             profile=launch_plan.profile,
             will_start_process=True,
@@ -265,6 +273,156 @@ DNS.5 = mcp-proxy.anthropic.com
         pass
     return cert_path, key_path
 
+
+
+def _write_provider_profile_resolver_artifact(
+    *,
+    config_root: Path,
+    profile_id: str,
+    executable: Path,
+    runtime_hash: str,
+    overlay_hash: str,
+    bridge_live_models: tuple[str, ...],
+) -> dict[str, str]:
+    from .model_overlay import (  # noqa: PLC0415
+        build_agent_model_options,
+        build_cp2_model_overlay_proof,
+        build_cp3a_model_overlay_contract,
+        resolve_background_model,
+    )
+
+    overlay_dir = config_root / "claude-code" / profile_id / "overlay" / "cp3a-provider-profile"
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    profile_path = overlay_dir / "provider-profile-resolver.json"
+    proof = build_cp2_model_overlay_proof(_synthetic_runtime_plan_for_overlay(executable, runtime_hash=runtime_hash, overlay_hash=overlay_hash))
+    contract = build_cp3a_model_overlay_contract(proof)
+    live_models = {model for model in bridge_live_models if model}
+    profiles = {
+        profile.provider: {
+            "profile_id": profile.profile_id,
+            "provider": profile.provider,
+            "main_model_id": profile.main_model_id,
+            "fast_model_id": profile.fast_model_id,
+            "family_aliases": dict(sorted(profile.family_aliases.items())),
+            "native_formal_pool": profile.native_formal_pool,
+            "live_enabled": _provider_profile_live_enabled(profile, live_models),
+            "cross_provider_fast_model_ids": list(profile.cross_provider_fast_model_ids),
+            "live_cross_provider_fast_model_ids": [model for model in profile.cross_provider_fast_model_ids if model in live_models],
+        }
+        for profile in contract.provider_profiles
+    }
+    background_matrix: dict[str, dict[str, object]] = {}
+    for provider, profile in contract.provider_profiles_by_provider.items():
+        provider_local: dict[str, object] = {}
+        for task in sorted({"title", "compact", "summary", "probe", "fast", "simple", "haiku"}):
+            provider_local[task] = _runtime_resolution_payload(resolve_background_model(
+                contract,
+                active_model_id=profile.main_model_id,
+                task=task,
+                fast_preference="provider_local",
+            ))
+        provider_entry: dict[str, object] = {"provider_local": provider_local}
+        if provider == "claude":
+            provider_entry["fast_bridge"] = _runtime_resolution_payload(resolve_background_model(
+                contract,
+                active_model_id=profile.main_model_id,
+                task="fast",
+                fast_preference="bridge",
+            ))
+        background_matrix[provider] = provider_entry
+    payload = {
+        "schema_version": "cp3a-provider-profile-runtime-v1",
+        "runtime_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "bridge_live_models": list(bridge_live_models),
+        "display_id_prefix_required": "claude-",
+        "backend_route_metadata_prefix": "claude_code_bridge_",
+        "active_profile_dynamic_resolution": True,
+        "non_claude_background_native_egress_allowed": False,
+        "claude_cross_provider_fast_allowed": True,
+        "provider_profiles": profiles,
+        "agent_model_options": [_agent_model_option_payload(option) for option in build_agent_model_options(contract)],
+        "background_resolution_matrix": background_matrix,
+    }
+    profile_path.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    return {
+        "ZHUMENG_CLAUDE_PROVIDER_PROFILE_RESOLVER": "enabled",
+        "ZHUMENG_CLAUDE_PROVIDER_PROFILE_PATH": str(profile_path),
+    }
+
+
+def _provider_profile_live_enabled(profile, live_models: set[str]) -> bool:
+    if profile.native_formal_pool:
+        return True
+    if profile.main_model_id not in live_models:
+        return False
+    return profile.fast_model_id == profile.main_model_id or profile.fast_model_id in live_models
+
+
+def _runtime_resolution_payload(resolution) -> dict[str, object]:
+    return {
+        "requested": resolution.requested,
+        "resolved_model_id": resolution.resolved_model_id,
+        "provider": resolution.provider,
+        "provider_profile_id": resolution.provider_profile_id,
+        "route": resolution.route,
+        "upstream_model_id": resolution.upstream_model_id,
+        "client_type": resolution.client_type,
+        "native_egress_allowed": resolution.native_egress_allowed,
+        "formal_pool_allowed": resolution.formal_pool_allowed,
+        "replay_boundary": resolution.replay_boundary,
+        "resolution_source": resolution.resolution_source,
+        "dynamic_profile_resolved": resolution.dynamic_profile_resolved,
+        "explicit_claude_opt_in": resolution.explicit_claude_opt_in,
+        "raw_history_replay_allowed": resolution.raw_history_replay_allowed,
+        "audit_label": resolution.audit_label,
+    }
+
+
+def _agent_model_option_payload(option) -> dict[str, object]:
+    return {
+        "option_id": option.option_id,
+        "label": option.label,
+        "provider": option.provider,
+        "model_id": option.model_id,
+        "is_default": option.is_default,
+        "native_egress_allowed": option.native_egress_allowed,
+    }
+
+
+def _synthetic_runtime_plan_for_overlay(executable: Path, *, runtime_hash: str, overlay_hash: str):
+    from .runtime_installer import ManagedRuntimeInstallPlan, ManagedRuntimeManifest  # noqa: PLC0415
+
+    root = executable.parent if str(executable.parent) else Path(".")
+    manifest = ManagedRuntimeManifest(
+        runtime="claude-code",
+        upstream_version="managed",
+        zhumeng_runtime_version="managed-launch",
+        source="managed-launch",
+        upstream_hash=runtime_hash,
+        overlay_hash=overlay_hash,
+        patch_points=("runtime_manifest", "hash_lock", "isolated_config", "guard_env"),
+        cch_profile="native",
+        status="ready",
+        executable_path=str(executable),
+    )
+    return ManagedRuntimeInstallPlan(
+        executable=executable,
+        runtime_root=root,
+        upstream_version="managed",
+        runtime_dir=root,
+        version_dir=root,
+        cache_path=executable,
+        manifest_path=root / "manifest.json",
+        patches_path=root / "patches.json",
+        hash_lock_path=root / "hash-lock.json",
+        rollback_metadata_path=root / "rollback.json",
+        active_pointer=root / "active.json",
+        manifest=manifest,
+        patches={},
+        rollback_metadata={},
+        planned_write_paths=(),
+    )
 
 def _write_route_hint_preload_artifacts(
     *,
@@ -378,7 +536,11 @@ const SCOPE = 'claude_code_route_hint_cp4';
 const VERSION = 1;
 const secret = process.env.ZHUMENG_CLAUDE_ROUTE_HINT_SECRET || '';
 const catalogPath = process.env.ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH || '';
+const providerProfilePath = process.env.ZHUMENG_CLAUDE_PROVIDER_PROFILE_PATH || '';
 const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+const providerProfiles = providerProfilePath && fs.existsSync(providerProfilePath)
+  ? JSON.parse(fs.readFileSync(providerProfilePath, 'utf8'))
+  : {provider_profiles: {}, background_resolution_matrix: {}};
 const originalFetch = globalThis.fetch;
 const originalHttpRequest = http.request;
 const originalHttpsRequest = https.request;
@@ -442,16 +604,52 @@ function bodyBuffer(body) {
   throw new Error('ZHUMENG route hint requires a replayable request body');
 }
 
-function modelFromBody(body) {
+function parseBodyObject(body) {
   const parsed = JSON.parse(Buffer.from(body).toString('utf8'));
-  if (!parsed || typeof parsed !== 'object' || typeof parsed.model !== 'string' || !parsed.model.trim()) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || typeof parsed.model !== 'string' || !parsed.model.trim()) {
     throw new Error('ZHUMENG route hint requires body.model');
   }
-  return parsed.model.trim();
+  return parsed;
+}
+
+function activeProvider() {
+  const activeModel = (process.env.ZHUMENG_CLAUDE_ACTIVE_MODEL_ID || process.env.CLAUDE_CODE_MODEL || '').trim();
+  const entry = activeModel ? catalog.entries[activeModel] : undefined;
+  return entry && entry.provider ? String(entry.provider) : '';
+}
+
+function remapHardcodedClaudeBackgroundModel(parsed) {
+  const requestedModel = String(parsed.model || '').trim();
+  const active = activeProvider();
+  if (!active || active === 'claude') {
+    return {parsed, remapped: false};
+  }
+  const matrix = providerProfiles.background_resolution_matrix || {};
+  const providerMatrix = matrix[active] || {};
+  const providerLocal = providerMatrix.provider_local || {};
+  const aliases = new Set(['claude-haiku-4-5-20251001', 'claude-haiku', 'claude-3-haiku', 'claude-3-5-haiku', 'fast', 'simple', 'haiku']);
+  if (!aliases.has(requestedModel)) {
+    return {parsed, remapped: false};
+  }
+  const resolution = providerLocal.haiku || providerLocal.fast || providerLocal.simple;
+  const targetModel = resolution && resolution.resolved_model_id ? String(resolution.resolved_model_id) : '';
+  const targetEntry = targetModel ? catalog.entries[targetModel] : undefined;
+  if (!targetEntry || !targetEntry.live_enabled || targetEntry.provider !== active || targetEntry.formal_pool_allowed || targetEntry.native_attestation_allowed) {
+    throw new Error('ZHUMENG provider profile refused unsafe background remap for ' + active);
+  }
+  return {parsed: {...parsed, model: targetModel}, remapped: true};
+}
+
+function normalizedBodyBuffer(body) {
+  const parsed = parseBodyObject(body);
+  const remapped = remapHardcodedClaudeBackgroundModel(parsed);
+  if (!remapped.remapped) return {body: Buffer.from(body), remapped: false, active_provider: activeProvider(), resolved_model_id: String(parsed.model || '').trim()};
+  return {body: Buffer.from(canonicalJson(remapped.parsed)), remapped: true, active_provider: activeProvider(), resolved_model_id: String(remapped.parsed.model || '').trim()};
 }
 
 function routeEntryForBody(body) {
-  const modelId = modelFromBody(body);
+  const parsed = parseBodyObject(body);
+  const modelId = String(parsed.model || '').trim();
   const entry = catalog.entries[modelId];
   if (!entry) {
     throw new Error('ZHUMENG route hint unknown model: ' + modelId);
@@ -526,15 +724,17 @@ globalThis.fetch = async function zhumengRouteHintFetch(input, init) {
     if (body === undefined && typeof input === 'object' && input && typeof input.clone === 'function') {
       body = Buffer.from(await input.clone().arrayBuffer());
     }
-    const bodyBytes = bodyBuffer(body);
+    const normalized = normalizedBodyBuffer(bodyBuffer(body));
+    const bodyBytes = normalized.body;
     signedHeaders(headers, bodyBytes, requestPath);
     return originalFetch.call(this, input, {...(init || {}), method: 'POST', headers, body: bodyBytes});
   }
-  const bodyBytes = Buffer.from(await finalRequest.clone().arrayBuffer());
+  const normalized = normalizedBodyBuffer(Buffer.from(await finalRequest.clone().arrayBuffer()));
+  const bodyBytes = normalized.body;
   const headers = new Headers(finalRequest.headers);
   signedHeaders(headers, bodyBytes, requestPath);
   headers.set('content-length', String(bodyBytes.length));
-  return originalFetch.call(this, new Request(finalRequest, {headers, body: bodyBytes, method: 'POST'}));
+  return originalFetch.call(this, finalRequest.url, {method: 'POST', headers, body: bodyBytes});
 };
 
 function requestOptionsToUrl(input, options, defaultProtocol) {
@@ -651,7 +851,8 @@ function patchedRequest(originalRequest, protocol) {
       finalized = true;
       appendChunk(endArgs.chunk, typeof endArgs.encoding === 'string' ? endArgs.encoding : undefined);
       try {
-        const body = Buffer.concat(chunks);
+        const normalized = normalizedBodyBuffer(Buffer.concat(chunks));
+        const body = normalized.body;
         const headers = normalizeHeadersObject(baseOptions.headers);
         signedHeaders(headers, body, requestPath);
         headers.set('content-length', String(body.length));

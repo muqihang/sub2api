@@ -704,3 +704,117 @@ func TestClaudeCodeProviderRegistryBridgeCatalogMappingContract(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeCodeProviderRegistryProtocolContractsDoNotMisrouteAnthropicCompatibleProviders(t *testing.T) {
+	catalog := ClaudeCodeProviderCatalog{
+		CatalogVersion: "cp8-protocol-v1",
+		RuntimeHash:    "sha256:" + stringOf('1', 64),
+		OverlayHash:    "sha256:" + stringOf('2', 64),
+		CatalogHash:    "sha256:" + stringOf('3', 64),
+		Models: []ClaudeCodeProviderCatalogEntry{
+			{
+				ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+				UpstreamModel:            "deepseek-v4-pro",
+				Provider:                 "deepseek",
+				Route:                    "deepseek_bridge",
+				ClientType:               "claude_code_bridge_deepseek",
+				ProviderOwner:            "zhumeng_managed",
+				CredentialScope:          "bridge_pool",
+				GatewayLocation:          "cloud",
+				CatalogFresh:             true,
+				PreferredProtocol:        "anthropic_messages",
+				AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+				OpenAIBaseURL:            "https://api.deepseek.com",
+				FallbackProtocol:         "openai_chat_completions",
+				FallbackReason:           "anthropic_tool_sse_reasoning_cache_error_fixture_failed",
+				CapabilitiesVerified:     true,
+				SupportsText:             true,
+				SupportsTools:            true,
+				SupportsStreaming:        true,
+				SupportsUsage:            true,
+				SupportsCacheAudit:       true,
+				SupportsReasoningMapping: true,
+				SupportsErrorPassthrough: true,
+			},
+			{
+				ModelID:                  "claude-code-bridge-glm-5.2-1m",
+				UpstreamModel:            "glm-5.2[1m]",
+				Provider:                 "zai_glm",
+				Route:                    "zai_glm_bridge",
+				ClientType:               "claude_code_bridge_zai_glm",
+				ProviderOwner:            "zhumeng_managed",
+				CredentialScope:          "bridge_pool",
+				GatewayLocation:          "cloud",
+				CatalogFresh:             true,
+				PreferredProtocol:        "anthropic_messages",
+				AnthropicBaseURL:         "https://open.bigmodel.cn/api/anthropic",
+				CapabilitiesVerified:     true,
+				SupportsText:             true,
+				SupportsTools:            true,
+				SupportsStreaming:        true,
+				SupportsUsage:            true,
+				SupportsCacheAudit:       true,
+				SupportsReasoningMapping: true,
+				SupportsErrorPassthrough: true,
+			},
+			{
+				ModelID:                  "claude-code-bridge-kimi-k2.7-code",
+				UpstreamModel:            "kimi-k2.7-code",
+				Provider:                 "kimi",
+				Route:                    "kimi_bridge",
+				ClientType:               "claude_code_bridge_kimi",
+				ProviderOwner:            "zhumeng_managed",
+				CredentialScope:          "bridge_pool",
+				GatewayLocation:          "cloud",
+				CatalogFresh:             true,
+				PreferredProtocol:        "anthropic_messages",
+				AnthropicBaseURL:         "https://api.moonshot.cn/anthropic",
+				CapabilitiesVerified:     true,
+				SupportsText:             true,
+				SupportsTools:            true,
+				SupportsStreaming:        true,
+				SupportsUsage:            true,
+				SupportsCacheAudit:       true,
+				SupportsReasoningMapping: true,
+				SupportsErrorPassthrough: true,
+			},
+			{
+				ModelID:                  "claude-code-bridge-gpt-5.5",
+				UpstreamModel:            "gpt-5.5",
+				Provider:                 "openai",
+				Route:                    "openai_bridge",
+				ClientType:               "claude_code_bridge_openai",
+				ProviderOwner:            "zhumeng_managed",
+				CredentialScope:          "bridge_pool",
+				GatewayLocation:          "cloud",
+				CatalogFresh:             true,
+				PreferredProtocol:        "responses",
+				OpenAIBaseURL:            "https://api.openai.com/v1",
+				CapabilitiesVerified:     true,
+				SupportsText:             true,
+				SupportsTools:            true,
+				SupportsStreaming:        true,
+				SupportsUsage:            true,
+				SupportsErrorPassthrough: true,
+			},
+		},
+	}
+	registry := NewClaudeCodeProviderRegistry(catalog)
+
+	for _, modelID := range []string{"claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-glm-5.2-1m", "claude-code-bridge-kimi-k2.7-code"} {
+		decision, err := registry.Resolve(context.Background(), modelID)
+		require.NoError(t, err)
+		require.Equal(t, "anthropic_messages", decision.PreferredProtocol)
+		require.NotEmpty(t, decision.AnthropicBaseURL)
+		if decision.Provider != "deepseek" {
+			require.Empty(t, decision.OpenAIBaseURL)
+			require.Empty(t, decision.FallbackProtocol)
+		}
+	}
+
+	gpt, err := registry.Resolve(context.Background(), "claude-code-bridge-gpt-5.5")
+	require.NoError(t, err)
+	require.Equal(t, "responses", gpt.PreferredProtocol)
+	require.NotEmpty(t, gpt.OpenAIBaseURL)
+	require.Empty(t, gpt.AnthropicBaseURL)
+}
