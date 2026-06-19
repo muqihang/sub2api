@@ -1094,6 +1094,7 @@ func TestOpenAIRuntimeGuard_WSPassthroughBlocksSessionFallbackUnsupportedModelBe
 		events: [][]byte{
 			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_capability_turn_1","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":1}}}`),
 		},
+		blockWhenEmpty: true,
 	}
 	svc := newOpenAIRuntimeGuardWSService(cfg, nil)
 	svc.openaiWSPassthroughDialer = &openAIWSCaptureDialer{conn: captureConn}
@@ -1151,6 +1152,7 @@ func TestOpenAIRuntimeGuard_WSPassthroughBlocksExplicitUnsupportedFollowupModelB
 		events: [][]byte{
 			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_explicit_turn_1","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":1}}}`),
 		},
+		blockWhenEmpty: true,
 	}
 	svc := newOpenAIRuntimeGuardWSService(cfg, nil)
 	svc.openaiWSPassthroughDialer = &openAIWSCaptureDialer{conn: captureConn}
@@ -1180,6 +1182,12 @@ func TestOpenAIRuntimeGuard_WSPassthroughBlocksExplicitUnsupportedFollowupModelB
 	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
 	require.Equal(t, "unsupported_oauth_capability", gjson.GetBytes(event, "error.code").String())
 	require.Equal(t, "capability.unsupported_oauth_model_profile", gjson.GetBytes(event, "error.category").String())
+
+	readCtx3, cancelRead3 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, closeErr := clientConn.Read(readCtx3)
+	cancelRead3()
+	require.Error(t, closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(closeErr))
 
 	select {
 	case serverErr := <-serverErrCh:
