@@ -70,7 +70,7 @@ func newOpenAIRuntimeGuardSelectionError(code OpenAIRuntimeGuardErrorCode, categ
 	return &OpenAIRuntimeGuardSelectionError{Code: code, Category: category, Message: message, cause: cause, Metadata: md}
 }
 
-func noAvailableOpenAISelectionErrorForRequest(requestedModel string, imageCapability OpenAIImagesCapability, compactBlocked bool) error {
+func noAvailableOpenAISelectionErrorForRequest(requestedModel string, imageCapability OpenAIImagesCapability, compactBlocked bool, oauthCapabilityFiltered bool) error {
 	if compactBlocked {
 		return ErrNoAvailableCompactAccounts
 	}
@@ -80,7 +80,7 @@ func noAvailableOpenAISelectionErrorForRequest(requestedModel string, imageCapab
 	}
 	code := OpenAIRuntimeGuardErrorCodeNoCompatibleAccount
 	category := openAIRuntimeGuardCapabilityCategoryNoCompatibleAccount
-	if isUnsupportedOpenAIOAuthRuntimeGuardModel(requestedModel, imageCapability) {
+	if oauthCapabilityFiltered {
 		code = OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability
 		category = openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel
 	}
@@ -88,6 +88,16 @@ func noAvailableOpenAISelectionErrorForRequest(requestedModel string, imageCapab
 		"model":            requestedModel,
 		"image_capability": string(imageCapability),
 	})
+}
+
+func openAIAccountRuntimeGuardRejectsOAuthCandidate(account *Account, requestedModel string, imageCapability OpenAIImagesCapability) bool {
+	if account == nil || !account.IsOpenAI() || !account.IsOpenAIOAuth() {
+		return false
+	}
+	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+		return false
+	}
+	return !openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, imageCapability)
 }
 
 func isUnsupportedOpenAIOAuthRuntimeGuardModel(requestedModel string, imageCapability OpenAIImagesCapability) bool {

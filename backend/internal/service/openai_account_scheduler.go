@@ -887,6 +887,19 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 	return nil, compactBlocked, nil
 }
 
+func openAISelectionOrderHasOAuthRuntimeGuardReject(selectionOrder []openAIAccountCandidateScore, req OpenAIAccountScheduleRequest) bool {
+	for _, candidate := range selectionOrder {
+		if openAIAccountRuntimeGuardRejectsOAuthCandidate(candidate.account, req.RequestedModel, req.RequiredImageCapability) {
+			return true
+		}
+	}
+	return false
+}
+
+func openAISelectionPlanHasOAuthRuntimeGuardReject(candidates []openAIAccountCandidateScore, req OpenAIAccountScheduleRequest) bool {
+	return openAISelectionOrderHasOAuthRuntimeGuardReject(candidates, req)
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -896,7 +909,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, err
 	}
 	if len(accounts) == 0 {
-		return nil, 0, 0, 0, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, false)
+		return nil, 0, 0, 0, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, false, false)
 	}
 
 	// require_privacy_set: 获取分组信息
@@ -907,6 +920,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	oauthCapabilityFiltered := false
 	for i := range accounts {
 		account := &accounts[i]
 		if req.ExcludedIDs != nil {
@@ -928,6 +942,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			continue
 		}
 		if !s.isAccountRequestCompatible(ctx, account, req) {
+			if openAIAccountRuntimeGuardRejectsOAuthCandidate(account, req.RequestedModel, req.RequiredImageCapability) {
+				oauthCapabilityFiltered = true
+			}
 			continue
 		}
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
@@ -940,7 +957,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		})
 	}
 	if len(filtered) == 0 {
-		return nil, 0, 0, 0, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, false)
+		return nil, 0, 0, 0, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, false, oauthCapabilityFiltered)
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -962,7 +979,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, candidateCount, topK, loadSkew, ErrNoAvailableCompactAccounts
 	}
 	if len(selectionOrder) == 0 {
-		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, req.RequireCompact && len(plan.allCandidates) > 0)
+		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, req.RequireCompact && len(plan.allCandidates) > 0, oauthCapabilityFiltered || openAISelectionPlanHasOAuthRuntimeGuardReject(plan.allCandidates, req))
 	}
 
 	result, compactBlocked, acquireErr := s.tryAcquireOpenAISelectionOrder(ctx, req, selectionOrder)
@@ -1019,7 +1036,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}, candidateCount, topK, loadSkew, nil
 	}
 
-	return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, compactBlocked)
+	return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, compactBlocked, oauthCapabilityFiltered || openAISelectionOrderHasOAuthRuntimeGuardReject(selectionOrder, req))
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
@@ -1210,7 +1227,7 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 		return selection, decision, nil
 	}
 	if requiredCapability == OpenAIImagesCapabilityNative && err != nil {
-		baseErr := noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredCapability, false)
+		baseErr := noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredCapability, false, false)
 		return selection, decision, fmt.Errorf("%w: no compatible OpenAI image accounts supporting model: %s", baseErr, requestedModel)
 	}
 	return selection, decision, err
@@ -1253,7 +1270,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 					effectiveExcludedIDs = make(map[int64]struct{})
 				}
 				if _, exists := effectiveExcludedIDs[selection.Account.ID]; exists {
-					return nil, decision, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false)
+					return nil, decision, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false, false)
 				}
 				effectiveExcludedIDs[selection.Account.ID] = struct{}{}
 			}
@@ -1279,7 +1296,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 				effectiveExcludedIDs = make(map[int64]struct{})
 			}
 			if _, exists := effectiveExcludedIDs[selection.Account.ID]; exists {
-				return nil, decision, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false)
+				return nil, decision, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false, false)
 			}
 			effectiveExcludedIDs[selection.Account.ID] = struct{}{}
 		}

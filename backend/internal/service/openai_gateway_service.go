@@ -1759,7 +1759,7 @@ func (s *OpenAIGatewayService) SelectAccountForModelWithExclusions(ctx context.C
 // noAvailableOpenAISelectionError builds the standard "no account available" error
 // while preserving the compact-specific error when applicable.
 func noAvailableOpenAISelectionError(requestedModel string, compactBlocked bool) error {
-	return noAvailableOpenAISelectionErrorForRequest(requestedModel, "", compactBlocked)
+	return noAvailableOpenAISelectionErrorForRequest(requestedModel, "", compactBlocked, false)
 }
 
 // openAICompactSupportTier classifies an OpenAI account by compact capability.
@@ -2096,10 +2096,10 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 3. 按优先级 + LRU 选择最佳账号
 	// Select by priority + LRU
-	selected, compactBlocked := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, requiredImageCapability)
+	selected, compactBlocked, oauthCapabilityFiltered := s.selectBestAccount(ctx, groupID, accounts, requestedModel, excludedIDs, requireCompact, requiredCapability, requiredImageCapability)
 
 	if selected == nil {
-		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, compactBlocked)
+		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, compactBlocked, oauthCapabilityFiltered)
 	}
 
 	hydrated, err := s.hydrateSelectedAccount(ctx, selected)
@@ -2184,10 +2184,11 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 // Returns nil if no available account. The second return reports whether at
 // least one candidate was filtered out solely because it lacks compact support
 // (only meaningful when requireCompact=true).
-func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) (*Account, bool) {
+func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) (*Account, bool, bool) {
 	var selected *Account
 	selectedCompactTier := -1
 	compactBlocked := false
+	oauthCapabilityFiltered := false
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 
 	for i := range accounts {
@@ -2201,6 +2202,9 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability)
 		if fresh == nil {
+			if openAIAccountRuntimeGuardRejectsOAuthCandidate(acc, requestedModel, requiredImageCapability) {
+				oauthCapabilityFiltered = true
+			}
 			continue
 		}
 		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, false, requiredCapability, requiredImageCapability)
@@ -2242,7 +2246,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		}
 	}
 
-	return selected, compactBlocked
+	return selected, compactBlocked, oauthCapabilityFiltered
 }
 
 // isBetterAccount 判断 candidate 是否比 current 更优。
@@ -2332,7 +2336,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return nil, err
 	}
 	if len(accounts) == 0 {
-		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false)
+		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false, false)
 	}
 
 	isExcluded := func(accountID int64) bool {
@@ -2391,6 +2395,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 
 	// ============ Layer 2: Load-aware selection ============
 	baseCandidateCount := 0
+	oauthCapabilityFiltered := false
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
 		acc := &accounts[i]
@@ -2401,6 +2406,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		// re-check schedulability here so recently rate-limited/overloaded accounts
 		// are not selected again before the bucket is rebuilt.
 		if !isOpenAIAccountEligibleForRequest(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability) {
+			if openAIAccountRuntimeGuardRejectsOAuthCandidate(acc, requestedModel, requiredImageCapability) {
+				oauthCapabilityFiltered = true
+			}
 			continue
 		}
 		if s.isOpenAIAccountRuntimeBlocked(acc) {
@@ -2414,7 +2422,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	if len(candidates) == 0 {
-		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false)
+		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false, oauthCapabilityFiltered)
 	}
 
 	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
@@ -2611,7 +2619,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if requireCompact && baseCandidateCount > 0 {
 		return nil, ErrNoAvailableCompactAccounts
 	}
-	return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false)
+	return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false, oauthCapabilityFiltered)
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
@@ -7907,15 +7915,16 @@ func buildOpenAIFastPolicyBlockedWSEvent(err *OpenAIFastBlockedError) []byte {
 		"event_id": eventID,
 		"type":     "error",
 		"error": map[string]any{
-			"type":    "invalid_request_error",
-			"code":    "policy_violation",
-			"message": err.Message,
+			"type":     "invalid_request_error",
+			"code":     string(err.RuntimeGuardCode()),
+			"category": err.RuntimeGuardCategory(),
+			"message":  err.Message,
 		},
 	})
 	if mErr != nil {
 		// Fallback to a minimal hand-rolled payload; Marshal of the literal
 		// shape above should never fail in practice.
-		return []byte(`{"event_id":"` + eventID + `","type":"error","error":{"type":"invalid_request_error","code":"policy_violation","message":"openai fast policy blocked this request"}}`)
+		return []byte(`{"event_id":"` + eventID + `","type":"error","error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"openai fast policy blocked this request"}}`)
 	}
 	return payload
 }

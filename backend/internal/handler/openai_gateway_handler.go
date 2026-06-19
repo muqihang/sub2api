@@ -773,6 +773,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available OpenAI accounts support /responses/compact", streamStarted)
 					return
 				}
+				if h.handleOpenAISelectionError(c, err, streamStarted, "Service temporarily unavailable") {
+					return
+				}
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
 				return
 			}
@@ -2401,6 +2404,50 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 	}
 }
 
+func (h *OpenAIGatewayHandler) handleOpenAISelectionError(c *gin.Context, err error, streamStarted bool, fallbackMessage string) bool {
+	var selectionErr *service.OpenAIRuntimeGuardSelectionError
+	if !errors.As(err, &selectionErr) || selectionErr == nil {
+		return false
+	}
+	message := strings.TrimSpace(selectionErr.Message)
+	if message == "" {
+		message = strings.TrimSpace(fallbackMessage)
+	}
+	if message == "" {
+		message = "No available compatible accounts"
+	}
+	h.handleStreamingAwareErrorWithCodeCategory(
+		c,
+		http.StatusServiceUnavailable,
+		"api_error",
+		string(selectionErr.Code),
+		selectionErr.Category,
+		message,
+		streamStarted,
+	)
+	return true
+}
+
+func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCodeCategory(c *gin.Context, status int, errType, code, category, message string, streamStarted bool) {
+	if streamStarted {
+		if inboundIsResponses(c) {
+			if writeResponsesFailedSSEWithCodeCategory(c, errType, code, category, message) {
+				return
+			}
+		}
+		flusher, ok := c.Writer.(http.Flusher)
+		if ok {
+			errorEvent := "event: error\ndata: " + `{"error":{"type":` + strconv.Quote(errType) + `,"code":` + strconv.Quote(code) + `,"category":` + strconv.Quote(category) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
+			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
+				_ = c.Error(err)
+			}
+			flusher.Flush()
+		}
+		return
+	}
+	h.errorResponseWithCodeCategory(c, status, errType, code, category, message)
+}
+
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
@@ -2502,6 +2549,20 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 			"message": message,
 		},
 	})
+}
+
+func (h *OpenAIGatewayHandler) errorResponseWithCodeCategory(c *gin.Context, status int, errType, code, category, message string) {
+	errorObj := gin.H{
+		"type":    errType,
+		"message": message,
+	}
+	if strings.TrimSpace(code) != "" {
+		errorObj["code"] = strings.TrimSpace(code)
+	}
+	if strings.TrimSpace(category) != "" {
+		errorObj["category"] = strings.TrimSpace(category)
+	}
+	c.JSON(status, gin.H{"error": errorObj})
 }
 
 func setOpenAIClientTransportHTTP(c *gin.Context) {
