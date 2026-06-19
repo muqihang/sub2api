@@ -338,14 +338,15 @@ func buildOpenAIRuntimeGuardBlockedWSEvent(blocked *OpenAIRuntimeGuardBlockedErr
 		"event_id": newOpenAIFastPolicyWSEventID(),
 		"type":     "error",
 		"error": map[string]any{
-			"type":    "invalid_request_error",
-			"code":    "policy_violation",
-			"message": message,
-			"param":   firstNonBlankString(blocked.Decision.Path, "reasoning_effort"),
+			"type":     "invalid_request_error",
+			"code":     string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock),
+			"category": openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock,
+			"message":  message,
+			"param":    firstNonBlankString(blocked.Decision.Path, "reasoning_effort"),
 		},
 	})
 	if err != nil {
-		return []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"policy_violation","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`)
+		return []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`)
 	}
 	return payload
 }
@@ -408,13 +409,15 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 	}
 	payload, err := json.Marshal(map[string]any{
 		"error": map[string]any{
-			"type":    "invalid_request_error",
-			"message": message,
-			"param":   param,
+			"type":     "invalid_request_error",
+			"code":     string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock),
+			"category": openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock,
+			"message":  message,
+			"param":    param,
 		},
 	})
 	if err != nil {
-		return []byte(`{"error":{"type":"invalid_request_error","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`)
+		return []byte(`{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`)
 	}
 	return payload
 }

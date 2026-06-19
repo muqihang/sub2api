@@ -110,11 +110,9 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 			serviceResp := codexGatewayOpenAIRuntimeGuardServiceResponse(runtimeBlocked)
 			errType := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.type").String())
 			errCode := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.code").String())
-			if errCode == "" {
-				errCode = "invalid_request"
-			}
+			errCategory := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.category").String())
 			message := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.message").String())
-			if err := writeCodexGatewayStreamFailure(req.Request.StreamWriter, "", errType, errCode, message); err != nil {
+			if err := writeCodexGatewayStreamFailureWithRawFields(req.Request.StreamWriter, "", errType, errCode, errCategory, message); err != nil {
 				return CodexGatewayProviderResult{}, err
 			}
 			if req.Request.Flush != nil {
@@ -342,7 +340,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 
 func codexGatewayOpenAIRuntimeGuardServiceResponse(blocked *OpenAIRuntimeGuardBlockedError) CodexGatewayServiceResponse {
 	status := http.StatusBadRequest
-	body := []byte(`{"error":{"type":"invalid_request_error","code":"invalid_request","message":"Unsupported reasoning_effort value"}}`)
+	body := []byte(`{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"Unsupported reasoning_effort value"}}`)
 	if blocked != nil {
 		if blocked.StatusCode > 0 {
 			status = blocked.StatusCode
@@ -352,7 +350,12 @@ func codexGatewayOpenAIRuntimeGuardServiceResponse(blocked *OpenAIRuntimeGuardBl
 		}
 	}
 	if strings.TrimSpace(gjson.GetBytes(body, "error.code").String()) == "" {
-		if patched, err := sjson.SetBytes(body, "error.code", "invalid_request"); err == nil {
+		if patched, err := sjson.SetBytes(body, "error.code", string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock)); err == nil {
+			body = patched
+		}
+	}
+	if strings.TrimSpace(gjson.GetBytes(body, "error.category").String()) == "" {
+		if patched, err := sjson.SetBytes(body, "error.category", openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock); err == nil {
 			body = patched
 		}
 	}

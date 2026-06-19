@@ -1050,18 +1050,26 @@ func (s *codexGatewayStreamRecorder) Flush() {
 }
 
 func writeCodexGatewayStreamFailure(w io.Writer, responseID string, errType, errCode, message string) error {
+	return writeCodexGatewayStreamFailureWithRawFields(w, responseID, errType, errCode, "", message)
+}
+
+func writeCodexGatewayStreamFailureWithRawFields(w io.Writer, responseID string, errType, errCode, errCategory, message string) error {
 	writer := NewCodexGatewayResponseEventWriter(w)
+	rawFields := map[string]json.RawMessage{
+		"type": json.RawMessage(fmt.Sprintf("%q", strings.TrimSpace(errType))),
+	}
+	if strings.TrimSpace(errCategory) != "" {
+		rawFields["category"] = json.RawMessage(fmt.Sprintf("%q", strings.TrimSpace(errCategory)))
+	}
 	return writer.WriteResponseFailed(CodexGatewayResponse{
 		ID:     strings.TrimSpace(responseID),
 		Object: "response",
 		Status: "failed",
 		Output: []json.RawMessage{},
 		Error: &CodexGatewayResponseError{
-			Code:    strings.TrimSpace(errCode),
-			Message: strings.TrimSpace(message),
-			RawFields: map[string]json.RawMessage{
-				"type": json.RawMessage(fmt.Sprintf("%q", strings.TrimSpace(errType))),
-			},
+			Code:      strings.TrimSpace(errCode),
+			Message:   strings.TrimSpace(message),
+			RawFields: rawFields,
 		},
 	})
 }

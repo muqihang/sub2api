@@ -477,7 +477,7 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksUnknownReasoningEffortBe
 	require.Nil(t, result)
 	require.Len(t, upstream.bodies, 0)
 	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
-	require.JSONEq(t, `{"error":{"type":"invalid_request_error","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`, rec.Body.String())
+	require.JSONEq(t, `{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`, rec.Body.String())
 	requireOpenAIRuntimeGuardMetadata(t, c, "block", "reasoning.unknown_effort", "openai_runtime_guard.blocked.reasoning_effort")
 }
 
@@ -616,6 +616,8 @@ func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardOAuthBlocksUn
 	var blocked *OpenAIRuntimeGuardBlockedError
 	require.ErrorAs(t, err, &blocked)
 	require.Equal(t, http.StatusBadRequest, blocked.StatusCode)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(blocked.Payload, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(blocked.Payload, "error.category").String())
 	require.Len(t, upstream.bodies, 0)
 }
 
@@ -788,6 +790,8 @@ func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardBlocksWithTyp
 	require.ErrorAs(t, err, &blocked)
 	require.Equal(t, http.StatusBadRequest, blocked.StatusCode)
 	require.Equal(t, "reasoning.unknown_effort", blocked.Decision.Category)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(blocked.Payload, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(blocked.Payload, "error.category").String())
 	require.Len(t, upstream.bodies, 0)
 }
 
@@ -815,6 +819,8 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteRuntimeGuardLocalBlockNotCap
 	var localResp *codexGatewayLocalServiceResponseError
 	require.ErrorAs(t, err, &localResp)
 	require.Equal(t, http.StatusBadRequest, localResp.Response.StatusCode)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(localResp.Response.Body, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(localResp.Response.Body, "error.category").String())
 	require.Empty(t, result.ProviderResult.UpstreamRequestID)
 	require.Zero(t, result.ProviderResult.Usage.TotalTokens)
 	require.Nil(t, upstream.lastRequest)
@@ -854,6 +860,8 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamRuntimeGuardLocalBlockNotCaptu
 	require.Empty(t, result.UpstreamRequestID)
 	require.Zero(t, result.Usage.TotalTokens)
 	require.Contains(t, writer.String(), "Unsupported reasoning_effort value")
+	require.Contains(t, writer.String(), `"code":"local_policy_block"`)
+	require.Contains(t, writer.String(), `"category":"capability.local_policy_block"`)
 	require.Nil(t, upstream.lastRequest)
 	capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "blocked"})
 	require.NoError(t, capture.Close())
@@ -935,7 +943,8 @@ func TestOpenAIRuntimeGuard_WSIngressBlocksUnknownBeforeUpstream(t *testing.T) {
 	cancelRead()
 	require.NoError(t, readErr)
 	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
-	require.Equal(t, "policy_violation", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "local_policy_block", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(event, "error.category").String())
 	require.Equal(t, "reasoning_effort", gjson.GetBytes(event, "error.param").String())
 
 	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)

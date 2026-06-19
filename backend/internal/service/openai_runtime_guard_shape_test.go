@@ -124,6 +124,25 @@ func TestOpenAIRuntimeGuardShape_AssistantInputImageBlockedBeforeNativeUpstream(
 	require.ErrorAs(t, err, &blocked)
 	require.Equal(t, http.StatusBadRequest, blocked.StatusCode)
 	require.Equal(t, "shape.assistant_input_content_blocked", blocked.Decision.Category)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(blocked.Payload, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(blocked.Payload, "error.category").String())
+	serviceResp := codexGatewayOpenAIRuntimeGuardServiceResponse(blocked)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(serviceResp.Body, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(serviceResp.Body, "error.category").String())
+	require.Len(t, upstream.bodies, 0, "local shape block must not call upstream")
+}
+
+func TestOpenAIRuntimeGuardShape_AssistantInputImageHTTPPayloadIncludesStableLocalBlockMetadata(t *testing.T) {
+	upstream, rec, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"assistant","content":[{"type":"input_image","image_url":"data:image/png;base64,abcd"}]}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "local_policy_block", gjson.Get(rec.Body.String(), "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.Get(rec.Body.String(), "error.category").String())
 	require.Len(t, upstream.bodies, 0, "local shape block must not call upstream")
 }
 
@@ -214,6 +233,9 @@ func TestOpenAIRuntimeGuardShape_WSHelperBlocksAssistantInputImage(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, blocked)
 	require.Equal(t, "shape.assistant_input_content_blocked", blocked.Decision.Category)
+	event := buildOpenAIRuntimeGuardBlockedWSEvent(blocked)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(event, "error.category").String())
 	require.Equal(t, string(payload), string(repaired))
 }
 
