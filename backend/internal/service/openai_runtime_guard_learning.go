@@ -188,7 +188,7 @@ func redactOpenAIRuntimeGuardOpaqueJSON(value any) {
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIRuntimeGuardLearnedBlock(scope OpenAIRuntimeGuardLearnedBlockScope, classification OpenAIRuntimeGuardUpstreamErrorClassification) bool {
-	if s == nil || classification.Bucket == "" || classification.Retryable || classification.TTL <= 0 {
+	if s == nil || !openAIRuntimeGuardClassificationCanLearnBlock(classification) {
 		return false
 	}
 	key := openAIRuntimeGuardLearnedBlockKey(scope, classification.Bucket)
@@ -198,6 +198,22 @@ func (s *OpenAIGatewayService) RecordOpenAIRuntimeGuardLearnedBlock(scope OpenAI
 	classification.Message = openAIRuntimeGuardSanitizeClassificationMessage(classification.Message)
 	s.openaiRuntimeGuardLearnedBlocks.Store(key, openAIRuntimeGuardLearnedBlockEntry{Classification: classification, ExpiresAt: time.Now().Add(classification.TTL)})
 	return true
+}
+
+func openAIRuntimeGuardClassificationCanLearnBlock(classification OpenAIRuntimeGuardUpstreamErrorClassification) bool {
+	if classification.Bucket == "" || classification.Retryable || classification.Terminal || classification.TTL <= 0 {
+		return false
+	}
+	switch classification.Bucket {
+	case OpenAIRuntimeGuardBucketUnsupportedOAuthModelChannel, OpenAIRuntimeGuardBucketImageGenerationDisabled:
+		return true
+	default:
+		// Shape, transcript, context, encrypted-content, auth, and temporary
+		// failures are request- or account-state-specific. They are classified for
+		// ops visibility but must not poison all subsequent requests for the same
+		// model+endpoint.
+		return false
+	}
 }
 
 func (s *OpenAIGatewayService) IsOpenAIRuntimeGuardLearnedBlocked(scope OpenAIRuntimeGuardLearnedBlockScope) (OpenAIRuntimeGuardUpstreamErrorClassification, bool) {

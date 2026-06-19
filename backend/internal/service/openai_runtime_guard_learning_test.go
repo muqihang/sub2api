@@ -186,18 +186,30 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardLearnedBlockStopsRepeatedUpstr
 	require.JSONEq(t, `{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"OpenAI OAuth request is temporarily blocked by runtime guard learning","param":"model"}}`, rec.Body.String())
 }
 
-func TestHandleOpenAIAccountUpstreamErrorRecordsLearnedBlockScopedToModelEndpointProfile(t *testing.T) {
+func TestHandleOpenAIAccountUpstreamErrorRecordsCapabilityLearnedBlockScopedToModelEndpointProfile(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 7001, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_gateway_profile_id": "profile-a"}}
-	body := []byte(`{"error":{"message":"Invalid value: 'input_text'. Supported values are: 'output_text' and 'refusal'.","type":"invalid_request_error","param":"input.0.content.0.type","code":"invalid_value"}}`)
+	body := []byte(`{"error":{"message":"unsupported model/profile/channel for ChatGPT OAuth account","type":"invalid_request_error"}}`)
 
-	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusBadRequest, http.Header{}, body, "gpt-5.4")
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusForbidden, http.Header{}, body, "gpt-5.4")
 
 	require.False(t, shouldDisable)
 	_, blocked := svc.IsOpenAIRuntimeGuardLearnedBlocked(openAIRuntimeGuardLearnedBlockScopeForAccount(account, "gpt-5.4", "responses"))
 	require.True(t, blocked)
 	_, otherModelBlocked := svc.IsOpenAIRuntimeGuardLearnedBlocked(openAIRuntimeGuardLearnedBlockScopeForAccount(account, "gpt-5.3-codex", "responses"))
 	require.False(t, otherModelBlocked)
+}
+
+func TestHandleOpenAIAccountUpstreamErrorDoesNotLearnBlockRequestShapeSpecificErrors(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 7004, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_gateway_profile_id": "profile-a"}}
+	body := []byte(`{"error":{"message":"Invalid value: 'input_text'. Supported values are: 'output_text' and 'refusal'.","type":"invalid_request_error","param":"input.0.content.0.type","code":"invalid_value"}}`)
+
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, http.StatusBadRequest, http.Header{}, body, "gpt-5.4", "responses")
+
+	require.False(t, shouldDisable)
+	_, blocked := svc.IsOpenAIRuntimeGuardLearnedBlocked(openAIRuntimeGuardLearnedBlockScopeForAccount(account, "gpt-5.4", "responses"))
+	require.False(t, blocked, "request-shape errors must not poison the whole model+endpoint with a learned block")
 }
 
 func TestHandleOpenAIAccountUpstreamErrorLearnedBlockHonorsEndpointHint(t *testing.T) {
@@ -217,7 +229,7 @@ func TestOpenAIRuntimeGuardLearnedBlockHelperHonorsEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 7003, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_gateway_profile_id": "profile-a"}}
-	classification := OpenAIRuntimeGuardUpstreamErrorClassification{Bucket: "shape_transcript_error", Category: "shape.transcript_error", Metric: "openai_runtime_guard.upstream.shape_transcript_error", Action: "learn_block", TTL: time.Minute}
+	classification := OpenAIRuntimeGuardUpstreamErrorClassification{Bucket: "unsupported_oauth_model_channel", Category: "capability.unsupported_oauth_model_profile_channel", Metric: "openai_runtime_guard.upstream.unsupported_oauth_model_channel", Action: "learn_block", TTL: time.Minute}
 	require.True(t, svc.RecordOpenAIRuntimeGuardLearnedBlock(openAIRuntimeGuardLearnedBlockScopeForAccount(account, "gpt-5.4", "chat_completions"), classification))
 
 	responsesRecorder := httptest.NewRecorder()
