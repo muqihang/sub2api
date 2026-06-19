@@ -417,3 +417,21 @@ func TestShouldOverwriteMatchedOpenAIAccount(t *testing.T) {
 	}
 	require.False(t, ShouldOverwriteMatchedOpenAIAccount(existing, "chatgpt_account_id", atOnly))
 }
+
+func TestEvaluateOpenAIImportLifecycle_TokenInvalidatedValidationFailureIsTerminal(t *testing.T) {
+	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
+		refreshErr: errors.New("token refresh failed: status 401, body: {\"error\":{\"code\":\"token_invalidated\"}}"),
+	})
+
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), svc, "", map[string]any{
+		"access_token":  "old-at",
+		"refresh_token": "old-rt",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIAuthStateTerminal, decision.AuthState)
+	require.Equal(t, OpenAIValidationOutcomeRTValidationTerminalFailure, decision.ValidationOutcome)
+	require.Equal(t, StatusError, decision.Status)
+	require.False(t, decision.Schedulable)
+	require.Equal(t, openAIAuthErrorCodeTokenInvalidated, decision.RefreshErrorCode)
+}

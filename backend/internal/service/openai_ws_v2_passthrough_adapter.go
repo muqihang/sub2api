@@ -270,6 +270,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// model would miss any admin-configured model whitelist and be silently
 	// passed through, defeating that policy on every frame after the first.
 	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
+	if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, requestModel, capturedSessionModel, ""); selectionErr != nil {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+	}
 	initialRequestModel := ""
 	if hooks != nil {
 		initialRequestModel = hooks.InitialRequestModel
@@ -448,7 +453,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// 字段，response.create 自己的 model 仍然由其本帧字段决定。
 			sessionRequestModel := openAIWSPassthroughRequestModelFromSessionFrame(payload)
 			if sessionRequestModel != "" {
-				if selectionErr := openAIAccountRuntimeGuardSelectionError(account, sessionRequestModel, ""); selectionErr != nil {
+				sessionUpstreamModel := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload)
+				if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, sessionRequestModel, sessionUpstreamModel, ""); selectionErr != nil {
 					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
 					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
@@ -463,11 +469,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if requestModelForThisFrame == "" {
 					requestModelForThisFrame = strings.TrimSpace(capturedSessionModel)
 				}
+				upstreamModelForThisFrame := openAIWSPassthroughPolicyModelForFrame(account, payload)
+				if upstreamModelForThisFrame == "" {
+					upstreamModelForThisFrame = strings.TrimSpace(capturedSessionModel)
+				}
 				imageCapability := OpenAIImagesCapability("")
 				if IsImageGenerationIntent(openAIResponsesEndpoint, requestModelForThisFrame, payload) {
 					imageCapability = OpenAIImagesCapabilityBasic
 				}
-				if selectionErr := openAIAccountRuntimeGuardSelectionError(account, requestModelForThisFrame, imageCapability); selectionErr != nil {
+				if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, requestModelForThisFrame, upstreamModelForThisFrame, imageCapability); selectionErr != nil {
 					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
 					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)

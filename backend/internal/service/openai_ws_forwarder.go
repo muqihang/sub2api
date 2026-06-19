@@ -2890,7 +2890,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if imageIntent {
 			imageCapability = OpenAIImagesCapabilityBasic
 		}
-		if selectionErr := openAIAccountRuntimeGuardSelectionError(account, originalModel, imageCapability); selectionErr != nil {
+		if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, originalModel, upstreamModel, imageCapability); selectionErr != nil {
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(

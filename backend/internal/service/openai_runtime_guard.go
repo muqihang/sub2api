@@ -460,14 +460,19 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 		param = "reasoning_effort"
 	}
 	message := "Unsupported reasoning_effort value"
+	category := openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock
 	if strings.HasPrefix(decision.Category, "shape.") {
 		message = "Invalid OpenAI Responses request shape"
+	}
+	if decision.Category == openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona {
+		message = "Codex persona version is too old for this OpenAI OAuth model"
+		category = decision.Category
 	}
 	payload, err := json.Marshal(map[string]any{
 		"error": map[string]any{
 			"type":     "invalid_request_error",
 			"code":     string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock),
-			"category": openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock,
+			"category": category,
 			"message":  message,
 			"param":    param,
 		},

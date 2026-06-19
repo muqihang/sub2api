@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -594,4 +595,171 @@ func TestOpenAIRuntimeGuardCapabilityOAuthMappingDoesNotAuthorizeUnsupportedRequ
 	require.ErrorAs(t, err, &selectionErr)
 	require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
 	require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel, selectionErr.Category)
+}
+
+type openAITokenInvalidationAccountRepo struct {
+	AccountRepository
+	account             *Account
+	setErrorCalls       int
+	lastSetErrorID      int64
+	lastSetErrorMsg     string
+	updateExtraCalls    int
+	lastExtraUpdates    map[string]any
+	setTempUnschedCalls int
+}
+
+func (r *openAITokenInvalidationAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
+	r.setErrorCalls++
+	r.lastSetErrorID = id
+	r.lastSetErrorMsg = errorMsg
+	if r.account != nil && r.account.ID == id {
+		r.account.Status = StatusError
+		r.account.Schedulable = false
+		r.account.ErrorMessage = errorMsg
+	}
+	return nil
+}
+
+func (r *openAITokenInvalidationAccountRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	r.setTempUnschedCalls++
+	return nil
+}
+
+func (r *openAITokenInvalidationAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	r.updateExtraCalls++
+	r.lastExtraUpdates = cloneJSONMap(updates)
+	if r.account != nil && r.account.ID == id {
+		if r.account.Extra == nil {
+			r.account.Extra = map[string]any{}
+		}
+		for key, value := range updates {
+			r.account.Extra[key] = value
+		}
+	}
+	return nil
+}
+
+func TestOpenAIRuntimeGuardCapabilityClassifiesTokenInvalidatedAndExcludesScheduler(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30401)
+	oauth := &Account{
+		ID:          3040101,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    9,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{"access_token": "stale-at", "refresh_token": "rt"},
+		Extra: map[string]any{
+			"openai_pool_role":    OpenAIPoolRoleMain,
+			"openai_auth_state":   OpenAIAuthStateHealthy,
+			"openai_token_source": OpenAITokenSourceRTManaged,
+		},
+	}
+	apiKey := Account{ID: 3040102, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}}
+	repo := &openAITokenInvalidationAccountRepo{account: oauth}
+	rateLimitSvc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{*oauth, apiKey}},
+		cache:              &schedulerTestGatewayCache{},
+		rateLimitService:   rateLimitSvc,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	rateLimitSvc.SetAccountRuntimeBlocker(svc)
+
+	body := []byte(`{"detail":"Your authentication token has been invalidated. Please try signing in again"}`)
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(ctx, oauth, http.StatusUnauthorized, http.Header{}, body, "gpt-5.4")
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, oauth.ID, repo.lastSetErrorID)
+	require.Contains(t, repo.lastSetErrorMsg, "Token revoked (401)")
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, OpenAIAuthStateTerminal, repo.lastExtraUpdates["openai_auth_state"])
+	require.Equal(t, OpenAIValidationOutcomeRTValidationTerminalFailure, repo.lastExtraUpdates["openai_validation_outcome"])
+	require.Equal(t, openAIAuthErrorCodeTokenInvalidated, repo.lastExtraUpdates["openai_last_refresh_error_code"])
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(oauth))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-5.4", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, apiKey.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIRuntimeGuardCapabilityClassifiesRawTokenInvalidated401(t *testing.T) {
+	body := []byte(`Token revoked (401): Your authentication token has been invalidated. Please try signing in again`)
+
+	require.Equal(t, openAIAuthErrorCodeTokenInvalidated, classifyOpenAIUpstreamAuth401ErrorCode(body))
+}
+
+func TestOpenAIRuntimeGuardCapabilityCodexPersonaVersionGuard(t *testing.T) {
+	oldAccount := &Account{ID: 3040201, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Extra: map[string]any{
+		"openai_gateway_canonical_version":    "2.1.146",
+		"openai_gateway_canonical_user_agent": "codex_cli_rs/2.1.146 (Ubuntu 22.4.0; x86_64) xterm-256color",
+	}}
+	goodAccount := &Account{ID: 3040202, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Extra: map[string]any{
+		"openai_gateway_canonical_version":    "2.1.175",
+		"openai_gateway_canonical_user_agent": "codex_cli_rs/2.1.175 (Ubuntu 22.4.0; x86_64) xterm-256color",
+	}}
+
+	require.False(t, openAIAccountSupportsRuntimeGuardCapability(oldAccount, "gpt-5.4", ""))
+	require.True(t, openAIAccountRuntimeGuardRejectsOAuthCandidate(oldAccount, "gpt-5.4", ""))
+	require.True(t, openAIAccountSupportsRuntimeGuardCapability(goodAccount, "gpt-5.4", ""))
+	require.True(t, openAIAccountSupportsRuntimeGuardCapability(oldAccount, "gpt-5.3-codex", ""), "older persona remains usable for models without the new min-version gate")
+	require.False(t, openAIAccountSupportsRuntimeGuardCapability(oldAccount, "gpt-5.1", ""), "default OAuth alias gpt-5.1 resolves to gated upstream gpt-5.4")
+	require.False(t, openAIAccountSupportsRuntimeGuardUpstreamCapability(oldAccount, "gpt-5.1", "gpt-5.4", ""), "older persona must not send an aliased request to gated upstream gpt-5.4")
+
+	mappedOldAccount := *oldAccount
+	mappedOldAccount.Credentials = map[string]any{"model_mapping": map[string]any{"gpt-5.1": "gpt-5.3-codex"}}
+	require.True(t, openAIAccountSupportsRuntimeGuardCapability(&mappedOldAccount, "gpt-5.1", ""), "explicit fallback profile to a non-gated upstream model stays usable")
+	require.True(t, openAIAccountSupportsRuntimeGuardUpstreamCapability(&mappedOldAccount, "gpt-5.1", "gpt-5.3-codex", ""), "explicit fallback profile to a non-gated upstream model stays usable")
+}
+
+func TestOpenAIRuntimeGuardCapabilityOldCodexPersonaFallsBackToGoodPersonaBeforeUpstream(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30403)
+	accounts := []Account{
+		{ID: 3040301, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 9, GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_gateway_canonical_version": "2.1.146", "openai_gateway_canonical_user_agent": "codex_cli_rs/2.1.146"}},
+		{ID: 3040302, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_gateway_canonical_version": "2.1.175", "openai_gateway_canonical_user_agent": "codex_cli_rs/2.1.175"}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-5.4", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(3040302), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIRuntimeGuardCapabilityOnlyOldCodexPersonaReturnsStructuredBlock(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30404)
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{{
+			ID: 3040401, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true,
+			Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}, Extra: map[string]any{"openai_gateway_canonical_version": "2.1.146"},
+		}}},
+		cache:              &schedulerTestGatewayCache{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "", "gpt-5.4", nil, OpenAIUpstreamTransportAny, false)
+	require.Error(t, err)
+	require.Nil(t, selection)
+	var selectionErr *OpenAIRuntimeGuardSelectionError
+	require.ErrorAs(t, err, &selectionErr)
+	require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
+	require.Equal(t, "capability.unsupported_oauth_persona_version", selectionErr.Category)
 }

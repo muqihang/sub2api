@@ -621,6 +621,34 @@ func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardOAuthBlocksUn
 	require.Len(t, upstream.bodies, 0)
 }
 
+func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardBlocksOldCodexPersonaAliasBeforeUpstream(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:          6304,
+		Name:        "openai-oauth-native",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra: map[string]any{
+			"openai_gateway_canonical_version":    "2.1.146",
+			"openai_gateway_canonical_user_agent": "codex_cli_rs/2.1.146",
+		},
+	}
+
+	resp, err := svc.DoNativeResponsesRequest(context.Background(), account, nil, []byte(`{"model":"gpt-5.1","input":"hi"}`), false)
+
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var blocked *OpenAIRuntimeGuardBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, http.StatusBadRequest, blocked.StatusCode)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(blocked.Payload, "error.code").String())
+	require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona, gjson.GetBytes(blocked.Payload, "error.category").String())
+	require.Len(t, upstream.bodies, 0)
+}
+
 func TestOpenAIGatewayService_DoNativeResponsesRequest_RuntimeGuardSkipsAPIKey(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}}
 	cfg := &config.Config{}
@@ -1024,6 +1052,52 @@ func TestOpenAIRuntimeGuard_WSPassthroughRepairsAndBlocksOAuthFrames(t *testing.
 		t.Fatal("waiting for blocked passthrough server")
 	}
 	require.Empty(t, blockedConn.writes)
+}
+
+func TestOpenAIRuntimeGuard_WSPassthroughBlocksOldCodexPersonaFirstFrameBeforeUpstream(t *testing.T) {
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	cfg.Gateway.OpenAIWS.ModeRouterV2Enabled = true
+	cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModePassthrough
+	dialer := &openAIWSCaptureDialer{conn: &openAIWSCaptureConn{}}
+	svc := newOpenAIRuntimeGuardWSService(cfg, nil)
+	svc.openaiWSPassthroughDialer = dialer
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModePassthrough)
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","stream":false}`)))
+	cancelWrite()
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, event, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+	require.Equal(t, "unsupported_oauth_capability", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona, gjson.GetBytes(event, "error.category").String())
+
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, closeErr := clientConn.Read(readCtx2)
+	cancelRead2()
+	require.Error(t, closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(closeErr))
+
+	select {
+	case serverErr := <-serverErrCh:
+		require.Error(t, serverErr)
+		var selectionErr *OpenAIRuntimeGuardSelectionError
+		require.ErrorAs(t, serverErr, &selectionErr)
+		require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
+		require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona, selectionErr.Category)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for old-persona passthrough server")
+	}
+	require.Equal(t, 0, dialer.DialCount(), "old persona passthrough first frame must be blocked before upstream websocket dial")
 }
 
 func TestOpenAIRuntimeGuard_WSIngressBlocksOAuthUnsupportedFollowupModelBeforeUpstream(t *testing.T) {
@@ -1518,4 +1592,129 @@ func TestOpenAIRuntimeGuard_WSIngressMissingTypeRepairsAndBlocksBeforeUpstream(t
 		t.Fatal("waiting for missing type block ws server")
 	}
 	require.Empty(t, blockedConn.writes)
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksOldCodexPersonaBeforeUpstream(t *testing.T) {
+	upstream, rec, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+	body := []byte(`{"model":"gpt-5.1","stream":false,"instructions":"keep","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 0)
+	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
+	require.Equal(t, "local_policy_block", gjson.Get(rec.Body.String(), "error.code").String())
+	require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona, gjson.Get(rec.Body.String(), "error.category").String())
+}
+
+func TestOpenAIGatewayService_Forward_RuntimeGuardAllowsOldCodexPersonaFallbackProfile(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+	account.Credentials["model_mapping"] = map[string]any{"gpt-5.1": "gpt-5.3-codex"}
+	body := []byte(`{"model":"gpt-5.1","stream":false,"instructions":"keep","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, "gpt-5.3-codex", gjson.GetBytes(upstream.lastBody, "model").String())
+}
+
+func TestOpenAIGatewayService_ForwardWS_RuntimeGuardBlocksOldCodexPersonaBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+	account.Extra["openai_oauth_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+	svc.cfg.Gateway.OpenAIWS.IngressModeDefault = OpenAIWSIngressModeCtxPool
+	SetOpenAIClientTransport(c, OpenAIClientTransportWS)
+	body := []byte(`{"model":"gpt-5.5","stream":true,"instructions":"keep","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 0)
+	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
+}
+
+func TestOpenAIGatewayService_ForwardPassthrough_RuntimeGuardBlocksOldCodexPersonaBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	account.Extra["openai_passthrough"] = true
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+	body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"keep","input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 0)
+	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
+}
+
+func TestOpenAIRuntimeGuard_WSIngressBlocksOldCodexPersonaFollowupModelBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := newOpenAIRuntimeGuardWSTestConfig()
+	captureConn := &openAIWSCaptureConn{
+		events: [][]byte{
+			[]byte(`{"type":"response.completed","response":{"id":"resp_ws_persona_turn_1","model":"gpt-5.3-codex","usage":{"input_tokens":1,"output_tokens":1}}}`),
+		},
+	}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn})
+	svc := newOpenAIRuntimeGuardWSService(cfg, pool)
+	account := newOpenAIRuntimeGuardWSOAuthAccount(OpenAIWSIngressModeCtxPool)
+	account.Extra["openai_gateway_canonical_version"] = "2.1.146"
+	account.Extra["openai_gateway_canonical_user_agent"] = "codex_cli_rs/2.1.146"
+	account.Credentials["model_mapping"] = map[string]any{"gpt-5.1": "gpt-5.3-codex"}
+
+	serverErrCh, clientConn, closeServer := startOpenAIRuntimeGuardWSServer(t, svc, account)
+	defer closeServer()
+	defer func() { _ = clientConn.CloseNow() }()
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","stream":false}`)))
+	cancelWrite()
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, firstEvent, readErr := clientConn.Read(readCtx)
+	cancelRead()
+	require.NoError(t, readErr)
+	require.Equal(t, "response.completed", gjson.GetBytes(firstEvent, "type").String())
+
+	writeCtx2, cancelWrite2 := context.WithTimeout(context.Background(), 3*time.Second)
+	require.NoError(t, clientConn.Write(writeCtx2, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.5","stream":false}`)))
+	cancelWrite2()
+
+	readCtx2, cancelRead2 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, event, readErr2 := clientConn.Read(readCtx2)
+	cancelRead2()
+	require.NoError(t, readErr2)
+	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+	require.Equal(t, "unsupported_oauth_capability", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona, gjson.GetBytes(event, "error.category").String())
+
+	readCtx3, cancelRead3 := context.WithTimeout(context.Background(), 3*time.Second)
+	_, _, closeErr := clientConn.Read(readCtx3)
+	cancelRead3()
+	require.Error(t, closeErr)
+	require.Equal(t, coderws.StatusPolicyViolation, coderws.CloseStatus(closeErr))
+
+	select {
+	case serverErr := <-serverErrCh:
+		require.Error(t, serverErr)
+		var selectionErr *OpenAIRuntimeGuardSelectionError
+		require.ErrorAs(t, serverErr, &selectionErr)
+		require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
+		require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona, selectionErr.Category)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting for ws ingress server")
+	}
+	require.Len(t, captureConn.writes, 1, "old-persona follow-up model must not be sent upstream")
+	require.Equal(t, "gpt-5.3-codex", captureConn.writes[0]["model"])
 }

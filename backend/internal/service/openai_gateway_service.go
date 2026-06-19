@@ -2821,6 +2821,15 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 			body = repairedBody
 		}
 	}
+	nativeRequestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	nativeUpstreamModel := nativeRequestedModel
+	if account != nil && nativeRequestedModel != "" {
+		nativeUpstreamModel = openAIAccountRuntimeGuardResolvedUpstreamModel(account, nativeRequestedModel)
+	}
+	if personaDecision := evaluateOpenAIOAuthCodexPersonaGuard(account, nativeUpstreamModel, ""); personaDecision.Blocked {
+		return nil, newOpenAIRuntimeGuardBlockedError(personaDecision)
+	}
+
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, err
@@ -3408,6 +3417,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			requestView = newOpenAIRequestView(body)
 		}
 	}
+	if personaDecision := evaluateOpenAIOAuthCodexPersonaGuard(account, upstreamModel, ""); personaDecision.Blocked {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		c.Data(openAIReasoningEffortGuardBlockedStatus(personaDecision), "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(personaDecision))
+		return nil, newOpenAIRuntimeGuardBlockedError(personaDecision)
+	}
+
 	imageBillingModel := ""
 	imageSizeTier := ""
 	imageInputSize := ""
@@ -3990,6 +4005,12 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				streamWarnLogger.Warn("OpenAI passthrough 检测到超时相关请求头，将按配置过滤以降低断流风险")
 			}
 		}
+	}
+
+	if personaDecision := evaluateOpenAIOAuthCodexPersonaGuard(account, passthroughModelForCapability, ""); personaDecision.Blocked {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		c.Data(openAIReasoningEffortGuardBlockedStatus(personaDecision), "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(personaDecision))
+		return nil, newOpenAIRuntimeGuardBlockedError(personaDecision)
 	}
 
 	// Get access token

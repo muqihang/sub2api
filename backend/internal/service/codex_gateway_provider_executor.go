@@ -458,12 +458,16 @@ func (e *CodexGatewayProviderExecutor) executeOpenAIHostedWebSearchWithModel(ctx
 		if err != nil {
 			return "", true, err
 		}
-		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
 		resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
 		if err != nil {
+			var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+			if !errors.As(err, &runtimeBlocked) {
+				codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
+			}
 			excluded[account.ID] = struct{}{}
 			continue
 		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
 		if readErr != nil {
@@ -519,12 +523,16 @@ func (e *CodexGatewayProviderExecutor) executeOpenAIHostedImageVisionWithModel(c
 		if err != nil {
 			return "", true, err
 		}
-		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_image_vision", http.Header{}, body)
 		resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
 		if err != nil {
+			var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+			if !errors.As(err, &runtimeBlocked) {
+				codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_image_vision", http.Header{}, body)
+			}
 			excluded[account.ID] = struct{}{}
 			continue
 		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_image_vision", http.Header{}, body)
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
 		if readErr != nil {
