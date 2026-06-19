@@ -1991,7 +1991,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		if runtimeBlocked != nil {
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			h.gatewayService.WriteOpenAIRuntimeGuardBlockedWSEvent(ctx, wsConn, runtimeBlocked)
-			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "Unsupported reasoning_effort value")
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.OpenAIRuntimeGuardBlockedWSReason(runtimeBlocked))
 			return
 		}
 		wsFirstMessage = guardedFirstMessage

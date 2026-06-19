@@ -194,11 +194,11 @@ func classifyOpenAIRuntimeGuardContentSafety(text string) string {
 	if openAIRuntimeGuardContentSafetyMinorsSexual(lower) {
 		return "content_safety.minors_sexual.high_confidence"
 	}
-	if openAIRuntimeGuardContentSafetyExplicitSexual(lower) {
-		return "content_safety.sexual.high_confidence"
-	}
 	if openAIRuntimeGuardContentSafetyLooksDefensive(lower) {
 		return ""
+	}
+	if openAIRuntimeGuardContentSafetyExplicitSexual(lower) {
+		return "content_safety.sexual.high_confidence"
 	}
 	if openAIRuntimeGuardContentSafetyCredentialTheft(lower) {
 		return "content_safety.credential_theft.high_confidence"
@@ -217,7 +217,8 @@ func classifyOpenAIRuntimeGuardContentSafety(text string) string {
 
 func openAIRuntimeGuardContentSafetyLooksDefensive(text string) bool {
 	if hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "phishing", "fake login", "credential harvesting") &&
-		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "collect", "steal", "capture", "harvest", "exfiltrate") {
+		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "build", "create", "deploy", "host", "clone", "make", "write") &&
+		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "collect", "steal", "capture", "harvest", "exfiltrate", "send") {
 		return false
 	}
 	if hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "malware", "ransomware", "trojan", "keylogger", "payload") &&
@@ -236,12 +237,12 @@ func openAIRuntimeGuardContentSafetyLooksDefensive(text string) bool {
 }
 
 func openAIRuntimeGuardContentSafetyMinorsSexual(text string) bool {
-	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "minor", "underage", "child", "teen", "15 year old", "16 year old", "17 year old") &&
-		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "explicit sexual", "sex acts", "graphic sex", "porn", "nude", "sexual content")
+	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "minor", "underage", "child", "teen", "12-year-old", "12 year old", "13-year-old", "13 year old", "14-year-old", "14 year old", "15 year old", "15-year-old", "16 year old", "16-year-old", "17 year old", "17-year-old") &&
+		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "explicit sexual", "sex acts", "graphic sex", "porn", "nude", "naked", "sexual content")
 }
 
 func openAIRuntimeGuardContentSafetyExplicitSexual(text string) bool {
-	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "explicit sexual", "graphic sex", "sex acts", "pornographic", "erotic roleplay") &&
+	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "explicit sexual", "graphic sex", "sex acts", "porn", "pornographic", "erotic roleplay") &&
 		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "write", "create", "generate", "describe", "depicting", "content")
 }
 
@@ -253,8 +254,8 @@ func openAIRuntimeGuardContentSafetyCredentialTheft(text string) bool {
 
 func openAIRuntimeGuardContentSafetyMalware(text string) bool {
 	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "malware", "ransomware", "trojan", "keylogger", "payload") &&
-		(hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "write", "build", "create", "deploy", "install", "run") || hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "persists", "persistent", "encrypts", "exfiltrate", "steal")) &&
-		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "exfiltrate", "steal", "encrypts", "ransom", "persists", "persistent", "cookies", "files")
+		(hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "write", "build", "create", "deploy", "install", "run") || hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "persists", "persistent", "encrypts", "exfiltrate", "steal", "sends")) &&
+		hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "exfiltrate", "steal", "send", "sends", "encrypts", "ransom", "persists", "persistent", "cookies", "password", "passwords", "files")
 }
 
 func openAIRuntimeGuardContentSafetyDestructiveAttack(text string) bool {

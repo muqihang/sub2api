@@ -61,7 +61,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
-	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIChat, body); blocked != nil {
+	contentSafetyProtocol := ContentModerationProtocolOpenAIChat
+	if !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists() {
+		contentSafetyProtocol = ContentModerationProtocolOpenAIResponses
+	}
+	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, contentSafetyProtocol, body); blocked != nil {
 		return nil, blocked
 	}
 	// 入口分流：APIKey 账号 + 强制或已探测确认上游不支持 Responses，走 CC 直转。

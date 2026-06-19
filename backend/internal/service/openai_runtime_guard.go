@@ -432,7 +432,7 @@ func buildOpenAIRuntimeGuardBlockedWSEvent(blocked *OpenAIRuntimeGuardBlockedErr
 	return payload
 }
 
-func openAIRuntimeGuardBlockedWSReason(blocked *OpenAIRuntimeGuardBlockedError) string {
+func OpenAIRuntimeGuardBlockedWSReason(blocked *OpenAIRuntimeGuardBlockedError) string {
 	if blocked == nil {
 		return "Unsupported reasoning_effort value"
 	}
@@ -442,6 +442,10 @@ func openAIRuntimeGuardBlockedWSReason(blocked *OpenAIRuntimeGuardBlockedError) 
 		}
 	}
 	return "Unsupported reasoning_effort value"
+}
+
+func openAIRuntimeGuardBlockedWSReason(blocked *OpenAIRuntimeGuardBlockedError) string {
+	return OpenAIRuntimeGuardBlockedWSReason(blocked)
 }
 
 func writeOpenAIRuntimeGuardBlockedWSEvent(ctx context.Context, conn *coderws.Conn, timeout time.Duration, blocked *OpenAIRuntimeGuardBlockedError) {
