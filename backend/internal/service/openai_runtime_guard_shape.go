@@ -175,13 +175,32 @@ func evaluateOpenAIRuntimeGuardToolContinuationShape(reqBody map[string]any) ope
 		}
 	}
 
-	if len(outputCallIDs) > 0 && len(contextCallIDs) == 0 && !hasPreviousResponseID && !openAIRuntimeGuardIDsCovered(outputCallIDs, referenceIDs) {
+	if len(outputCallIDs) > 0 && !hasPreviousResponseID && !openAIRuntimeGuardIDsCoveredByAny(outputCallIDs, contextCallIDs, referenceIDs) {
 		return openAIRuntimeGuardShapeBlock("shape.tool_output_missing_context", "openai_runtime_guard.blocked.tool_output_context", firstNonBlankString(firstOutputPath, "input"), "")
 	}
 	if len(contextCallIDs) > 0 && !openAIRuntimeGuardIDsCovered(contextCallIDs, outputCallIDs) && !openAIRuntimeGuardIDsCovered(contextCallIDs, referenceIDs) {
 		return openAIRuntimeGuardShapeBlock("shape.missing_tool_output", "openai_runtime_guard.blocked.missing_tool_output", firstNonBlankString(firstContextPath, "input"), "")
 	}
 	return openAIReasoningEffortGuardDecision{}
+}
+
+func openAIRuntimeGuardIDsCoveredByAny(required map[string]struct{}, availableSets ...map[string]struct{}) bool {
+	if len(required) == 0 || len(availableSets) == 0 {
+		return false
+	}
+	for id := range required {
+		covered := false
+		for _, available := range availableSets {
+			if _, ok := available[id]; ok {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
 }
 
 func openAIRuntimeGuardIDsCovered(required map[string]struct{}, available map[string]struct{}) bool {

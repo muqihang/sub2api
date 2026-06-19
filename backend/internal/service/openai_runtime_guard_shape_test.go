@@ -143,6 +143,26 @@ func TestOpenAIRuntimeGuardShape_ToolOutputMissingContextBlockedBeforeNativeUpst
 	require.Len(t, upstream.bodies, 0, "local missing-context block must not call upstream")
 }
 
+func TestOpenAIRuntimeGuardShape_MixedPairedAndOrphanToolOutputBlockedBeforeNativeUpstream(t *testing.T) {
+	upstream := newOpenAIRuntimeGuardShapeUpstream()
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := newOpenAIRuntimeGuardShapeOAuthAccount()
+	body := []byte(`{"model":"gpt-5.4","input":[` +
+		`{"type":"function_call","call_id":"call_ok","name":"run_check","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_ok","output":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_orphan","output":"{}"}` +
+		`]}`)
+
+	resp, err := svc.DoNativeResponsesRequest(context.Background(), account, nil, body, false)
+
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var blocked *OpenAIRuntimeGuardBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, "shape.tool_output_missing_context", blocked.Decision.Category)
+	require.Len(t, upstream.bodies, 0, "mixed paired/orphan tool output must not call upstream")
+}
+
 func TestOpenAIRuntimeGuardShape_ToolOutputWithPreviousResponseIDPassesNativeUpstream(t *testing.T) {
 	upstream := newOpenAIRuntimeGuardShapeUpstream()
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
