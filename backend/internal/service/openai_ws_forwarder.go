@@ -4512,7 +4512,7 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 	excludedIDs map[int64]struct{},
 	requireCompact bool,
 ) (*AccountSelectionResult, error) {
-	return s.selectAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, "", requireCompact)
+	return s.selectAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, "", "", requireCompact)
 }
 
 func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
@@ -4522,6 +4522,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	requestedModel string,
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
 	requireCompact bool,
 ) (*AccountSelectionResult, error) {
 	if s == nil {
@@ -4598,6 +4599,12 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		return nil, nil
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
+		return nil, nil
+	}
+	if !openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, requiredImageCapability) {
+		return nil, nil
+	}
+	if !account.SupportsOpenAIImageCapability(requiredImageCapability) {
 		return nil, nil
 	}
 	if requireCompact && openAICompactSupportTier(account) == 0 {

@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 
 	"github.com/stretchr/testify/require"
 )
@@ -260,4 +263,183 @@ func TestOpenAIRuntimeGuardCapabilityExplicitNativeImageDoesNotFallbackToOAuthBa
 	require.Error(t, err)
 	require.Nil(t, selection)
 	require.ErrorContains(t, err, "compatible")
+}
+
+func TestOpenAIRuntimeGuardCapabilityPreviousResponseOAuthUnsupportedModelFallsBackToAPIKey(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30306)
+	accounts := []Account{
+		{ID: 3030601, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 3030602, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 9, GroupIDs: []int64{groupID}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                newSchedulerTestOpenAIWSV2Config(),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	store := svc.getOpenAIWSStateStore()
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_oauth_unsupported_model", 3030601, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"resp_oauth_unsupported_model",
+		"session_prev_oauth_unsupported",
+		"gpt-5.4-nano",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(3030602), selection.Account.ID)
+	require.Equal(t, AccountTypeAPIKey, selection.Account.Type)
+	require.False(t, decision.StickyPreviousHit)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIRuntimeGuardCapabilityBasicImageSelectsOAuthBridgeFallbackPath(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30307)
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{{
+			ID:          3030701,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+		}}},
+		cache:              &schedulerTestGatewayCache{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityBasic,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(3030701), selection.Account.ID)
+	require.Equal(t, AccountTypeOAuth, selection.Account.Type)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIRuntimeGuardCapabilityBasicImageSelectsOAuthBridgeAdvancedScheduler(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30308)
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{{
+			ID:          3030801,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+		}}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityBasic,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(3030801), selection.Account.ID)
+	require.Equal(t, AccountTypeOAuth, selection.Account.Type)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIRuntimeGuardCapabilityBasicImageRejectsOAuthBridgeOverrideFalse(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30309)
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{{
+			ID:          3030901,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Extra:       map[string]any{featureKeyCodexImageGenerationBridge: false},
+		}}},
+		cache:              &schedulerTestGatewayCache{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityBasic,
+	)
+
+	require.Error(t, err)
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+}
+
+func TestOpenAIRuntimeGuardCapabilitySelectionErrorsAreStructured(t *testing.T) {
+	t.Run("unsupported oauth capability", func(t *testing.T) {
+		err := noAvailableOpenAISelectionErrorForRequest("gpt-5.4-nano", "", false)
+		require.ErrorIs(t, err, ErrNoAvailableAccounts)
+		var selectionErr *OpenAIRuntimeGuardSelectionError
+		require.ErrorAs(t, err, &selectionErr)
+		require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
+		require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel, selectionErr.Category)
+		require.Equal(t, "gpt-5.4-nano", selectionErr.Metadata["model"])
+	})
+
+	t.Run("no compatible account", func(t *testing.T) {
+		err := noAvailableOpenAISelectionErrorForRequest("gpt-5.1", OpenAIImagesCapabilityBasic, false)
+		require.ErrorIs(t, err, ErrNoAvailableAccounts)
+		var selectionErr *OpenAIRuntimeGuardSelectionError
+		require.ErrorAs(t, err, &selectionErr)
+		require.Equal(t, OpenAIRuntimeGuardErrorCodeNoCompatibleAccount, selectionErr.Code)
+		require.Equal(t, openAIRuntimeGuardCapabilityCategoryNoCompatibleAccount, selectionErr.Category)
+		require.Equal(t, "gpt-5.1", selectionErr.Metadata["model"])
+		require.Equal(t, string(OpenAIImagesCapabilityBasic), selectionErr.Metadata["image_capability"])
+	})
+
+	t.Run("local policy block", func(t *testing.T) {
+		blocked := &OpenAIFastBlockedError{Message: "blocked"}
+		require.Equal(t, OpenAIRuntimeGuardErrorCodeLocalPolicyBlock, blocked.RuntimeGuardCode())
+		require.Equal(t, openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock, blocked.RuntimeGuardCategory())
+	})
 }

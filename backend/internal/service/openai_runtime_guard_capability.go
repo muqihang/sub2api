@@ -1,11 +1,110 @@
 package service
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+type OpenAIRuntimeGuardErrorCode string
 
 const (
+	OpenAIRuntimeGuardErrorCodeLocalPolicyBlock           OpenAIRuntimeGuardErrorCode = "local_policy_block"
+	OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability OpenAIRuntimeGuardErrorCode = "unsupported_oauth_capability"
+	OpenAIRuntimeGuardErrorCodeNoCompatibleAccount        OpenAIRuntimeGuardErrorCode = "no_compatible_account"
+
+	openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock      = "capability.local_policy_block"
 	openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel = "capability.unsupported_oauth_model_profile"
 	openAIRuntimeGuardCapabilityCategoryNoCompatibleAccount   = "capability.no_compatible_account"
 )
+
+type OpenAIRuntimeGuardSelectionError struct {
+	Code     OpenAIRuntimeGuardErrorCode
+	Category string
+	Metadata map[string]string
+	Message  string
+	cause    error
+}
+
+func (e *OpenAIRuntimeGuardSelectionError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.cause != nil {
+		return e.cause.Error()
+	}
+	return string(e.Code)
+}
+
+func (e *OpenAIRuntimeGuardSelectionError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *OpenAIRuntimeGuardSelectionError) Is(target error) bool {
+	if e == nil {
+		return false
+	}
+	if e.cause != nil && errors.Is(e.cause, target) {
+		return true
+	}
+	other, ok := target.(*OpenAIRuntimeGuardSelectionError)
+	return ok && other != nil && e.Code == other.Code && e.Category == other.Category
+}
+
+func newOpenAIRuntimeGuardSelectionError(code OpenAIRuntimeGuardErrorCode, category, message string, cause error, metadata map[string]string) *OpenAIRuntimeGuardSelectionError {
+	md := map[string]string{}
+	for key, value := range metadata {
+		if strings.TrimSpace(value) != "" {
+			md[key] = strings.TrimSpace(value)
+		}
+	}
+	if len(md) == 0 {
+		md = nil
+	}
+	return &OpenAIRuntimeGuardSelectionError{Code: code, Category: category, Message: message, cause: cause, Metadata: md}
+}
+
+func noAvailableOpenAISelectionErrorForRequest(requestedModel string, imageCapability OpenAIImagesCapability, compactBlocked bool) error {
+	if compactBlocked {
+		return ErrNoAvailableCompactAccounts
+	}
+	message := "no available OpenAI accounts"
+	if strings.TrimSpace(requestedModel) != "" {
+		message = fmt.Sprintf("no available OpenAI accounts supporting model: %s", strings.TrimSpace(requestedModel))
+	}
+	code := OpenAIRuntimeGuardErrorCodeNoCompatibleAccount
+	category := openAIRuntimeGuardCapabilityCategoryNoCompatibleAccount
+	if isUnsupportedOpenAIOAuthRuntimeGuardModel(requestedModel, imageCapability) {
+		code = OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability
+		category = openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel
+	}
+	return newOpenAIRuntimeGuardSelectionError(code, category, message, ErrNoAvailableAccounts, map[string]string{
+		"model":            requestedModel,
+		"image_capability": string(imageCapability),
+	})
+}
+
+func isUnsupportedOpenAIOAuthRuntimeGuardModel(requestedModel string, imageCapability OpenAIImagesCapability) bool {
+	model := strings.TrimSpace(requestedModel)
+	if model == "" || imageCapability != "" || isOpenAIImageGenerationModel(model) {
+		return false
+	}
+	return !openAIOAuthBuiltInModelSeedSupports(model)
+}
+
+func (e *OpenAIFastBlockedError) RuntimeGuardCode() OpenAIRuntimeGuardErrorCode {
+	return OpenAIRuntimeGuardErrorCodeLocalPolicyBlock
+}
+
+func (e *OpenAIFastBlockedError) RuntimeGuardCategory() string {
+	return openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock
+}
 
 // openAIAccountSupportsRuntimeGuardCapability applies server-side OpenAI OAuth
 // capability seeds that are intentionally independent of model_mapping. API-key
