@@ -270,6 +270,10 @@ func writeOpenAIReasoningEffortGuardBlockedResponse(c *gin.Context, decision ope
 }
 
 func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, payload []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
+	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account, payload, "")
+}
+
+func applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account *Account, payload []byte, resolvedModel string) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
 	if !shouldApplyOpenAIReasoningEffortGuard(account) {
 		return payload, nil, nil
 	}
@@ -295,7 +299,13 @@ func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, 
 		}
 		payload = repaired
 	}
-	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	model := strings.TrimSpace(resolvedModel)
+	if model == "" {
+		model = strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	}
+	if model != "" {
+		model = openAIAccountRuntimeGuardResolvedUpstreamModel(account, model)
+	}
 	if blocked := applyOpenAIRuntimeGuardContextToBody(account, model, payload, false); blocked != nil {
 		return payload, blocked, nil
 	}

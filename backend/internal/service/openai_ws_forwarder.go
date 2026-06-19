@@ -2776,7 +2776,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", sanitizeErr)
 		}
 		normalized = sanitizedPayload
-		guardApplied, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, normalized)
+		guardModel := strings.TrimSpace(gjson.GetBytes(normalized, "model").String())
+		if guardModel == "" {
+			guardModel = ingressSessionOriginalModel
+		}
+		guardApplied, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account, normalized, guardModel)
 		if runtimeErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", runtimeErr)
 		}

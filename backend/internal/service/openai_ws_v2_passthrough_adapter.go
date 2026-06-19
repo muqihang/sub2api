@@ -316,7 +316,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		initialRequestModel = hooks.InitialRequestModel
 	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
-	guardedFirst, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, firstClientMessage)
+	guardedFirst, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account, firstClientMessage, capturedSessionModel)
 	if runtimeErr != nil {
 		return fmt.Errorf("apply openai runtime guard on first ws frame: %w", runtimeErr)
 	}
@@ -533,7 +533,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if model == "" {
 				model = capturedSessionModel
 			}
-			guarded, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, payload)
+			guarded, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account, payload, model)
 			if runtimeErr != nil {
 				return payload, nil, runtimeErr
 			}
