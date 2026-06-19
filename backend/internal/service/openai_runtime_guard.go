@@ -299,6 +299,9 @@ func applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account *
 		}
 		payload = repaired
 	}
+	if blocked := applyOpenAIRuntimeGuardContentSafetyToBody(account, ContentModerationProtocolOpenAIResponses, payload); blocked != nil {
+		return payload, blocked, nil
+	}
 	model := strings.TrimSpace(resolvedModel)
 	if model == "" {
 		model = strings.TrimSpace(gjson.GetBytes(payload, "model").String())
@@ -488,6 +491,9 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 	}
 	if strings.HasPrefix(decision.Category, "context.") {
 		message = "OpenAI request context is too large for the selected model"
+	}
+	if strings.HasPrefix(decision.Category, "content_safety.") {
+		message = "Request blocked by local OpenAI OAuth content-safety guard"
 	}
 	if decision.Category == openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona {
 		message = "Codex persona version is too old for this OpenAI OAuth model"

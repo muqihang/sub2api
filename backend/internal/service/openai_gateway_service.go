@@ -2821,6 +2821,9 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 			body = repairedBody
 		}
 	}
+	if blocked := applyOpenAIRuntimeGuardContentSafetyToBody(account, ContentModerationProtocolOpenAIResponses, body); blocked != nil {
+		return nil, blocked
+	}
 	nativeRequestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	nativeUpstreamModel := nativeRequestedModel
 	if account != nil && nativeRequestedModel != "" {
@@ -3036,6 +3039,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		} else {
 			setOpenAIRuntimeGuardReasoningMetadata(c, reasoningDecision)
 		}
+	}
+	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIResponses, body); blocked != nil {
+		return nil, blocked
 	}
 
 	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {

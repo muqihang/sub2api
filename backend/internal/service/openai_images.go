@@ -546,6 +546,9 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIImages, body); blocked != nil {
+		return nil, blocked
+	}
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
