@@ -2475,7 +2475,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
-			setOpsUpstreamError(c, statusCode, errMsg, "")
+			appendOpenAIWSRuntimeGuardOpsError(c, account, statusCode, message, errMsg, lease.HandshakeHeaders())
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
 				emitStreamMessage(message, true)
@@ -4708,6 +4708,35 @@ func isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw string) bool {
 		return true
 	}
 	return false
+}
+
+func appendOpenAIWSRuntimeGuardOpsError(c *gin.Context, account *Account, statusCode int, payload []byte, message string, headers http.Header) {
+	safeMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
+	classification := ClassifyOpenAIRuntimeGuardUpstreamError(statusCode, headers, payload, safeMessage)
+	if classification.Bucket == "" {
+		setOpsUpstreamError(c, statusCode, safeMessage, "")
+		return
+	}
+	detail := sanitizeOpsUpstreamRuntimeGuardPayload(string(payload))
+	setOpsUpstreamError(c, statusCode, safeMessage, detail)
+	event := OpsUpstreamErrorEvent{
+		Platform:             PlatformOpenAI,
+		UpstreamStatusCode:   statusCode,
+		Kind:                 "websocket_error",
+		Message:              safeMessage,
+		Detail:               detail,
+		UpstreamResponseBody: detail,
+		RuntimeGuardBucket:   classification.Bucket,
+		RuntimeGuardCategory: classification.Category,
+		RuntimeGuardMetric:   classification.Metric,
+		RuntimeGuardAction:   classification.Action,
+	}
+	if account != nil {
+		event.AccountID = account.ID
+		event.AccountName = account.Name
+		event.Platform = account.Platform
+	}
+	appendOpsUpstreamError(c, event)
 }
 
 func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Context, account *Account, headers http.Header, responseBody []byte, codeRaw, errTypeRaw, msgRaw string) {

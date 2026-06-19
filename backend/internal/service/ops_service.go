@@ -247,7 +247,7 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 		if detail == "" {
 			entry.UpstreamErrorDetail = nil
 		} else {
-			sanitized, _ := sanitizeErrorBodyForStorage(detail, opsMaxStoredErrorBodyBytes)
+			sanitized := sanitizeOpsEntryUpstreamDetail(entry, detail)
 			if strings.TrimSpace(sanitized) == "" {
 				entry.UpstreamErrorDetail = nil
 			} else {
@@ -261,6 +261,28 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	}
 
 	return entry, true, nil
+}
+
+func sanitizeOpsEntryUpstreamDetail(entry *OpsInsertErrorLogInput, detail string) string {
+	if entry != nil && entry.Platform == PlatformOpenAI {
+		status := 0
+		if entry.UpstreamStatusCode != nil {
+			status = *entry.UpstreamStatusCode
+		}
+		classification := ClassifyOpenAIRuntimeGuardUpstreamError(status, nil, []byte(detail), derefStringForOps(entry.UpstreamErrorMessage))
+		if classification.Bucket != "" {
+			return sanitizeOpsUpstreamRuntimeGuardPayload(detail)
+		}
+	}
+	sanitized, _ := sanitizeErrorBodyForStorage(detail, opsMaxStoredErrorBodyBytes)
+	return sanitized
+}
+
+func derefStringForOps(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
@@ -300,12 +322,28 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 		out.Message = msg
 
 		detail := strings.TrimSpace(out.Detail)
+		if out.Platform == PlatformOpenAI {
+			classification := ClassifyOpenAIRuntimeGuardUpstreamError(out.UpstreamStatusCode, nil, []byte(firstNonBlankString(detail, out.UpstreamResponseBody)), out.Message)
+			if classification.Bucket != "" {
+				out.RuntimeGuardBucket = firstNonBlankString(out.RuntimeGuardBucket, classification.Bucket)
+				out.RuntimeGuardCategory = firstNonBlankString(out.RuntimeGuardCategory, classification.Category)
+				out.RuntimeGuardMetric = firstNonBlankString(out.RuntimeGuardMetric, classification.Metric)
+				out.RuntimeGuardAction = firstNonBlankString(out.RuntimeGuardAction, classification.Action)
+			}
+		}
 		if detail != "" {
-			// Keep upstream detail small; request bodies are not stored here, only upstream error payloads.
-			sanitizedDetail, _ := sanitizeErrorBodyForStorage(detail, opsMaxStoredErrorBodyBytes)
-			out.Detail = sanitizedDetail
+			if out.Platform == PlatformOpenAI && out.RuntimeGuardBucket != "" {
+				out.Detail = sanitizeOpsUpstreamRuntimeGuardPayload(detail)
+			} else {
+				// Keep upstream detail small; request bodies are not stored here, only upstream error payloads.
+				sanitizedDetail, _ := sanitizeErrorBodyForStorage(detail, opsMaxStoredErrorBodyBytes)
+				out.Detail = sanitizedDetail
+			}
 		} else {
 			out.Detail = ""
+		}
+		if strings.TrimSpace(out.UpstreamResponseBody) != "" && out.Platform == PlatformOpenAI && out.RuntimeGuardBucket != "" {
+			out.UpstreamResponseBody = sanitizeOpsUpstreamRuntimeGuardPayload(out.UpstreamResponseBody)
 		}
 
 		// Drop fully-empty events (can happen if only status code was known).

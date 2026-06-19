@@ -192,6 +192,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 			ev.Message = redactOpenAIRuntimeGuardOpaquePayloadMarkers(ev.Message)
 			ev.Detail = sanitizeOpsUpstreamRuntimeGuardPayload(ev.Detail)
 			ev.UpstreamResponseBody = sanitizeOpsUpstreamRuntimeGuardPayload(ev.UpstreamResponseBody)
+			setOpsUpstreamError(c, ev.UpstreamStatusCode, ev.Message, firstNonBlankString(ev.Detail, ev.UpstreamResponseBody))
 		}
 	}
 

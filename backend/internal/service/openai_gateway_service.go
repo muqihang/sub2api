@@ -3290,6 +3290,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	if account.Type == AccountTypeOAuth && !strings.EqualFold(strings.TrimSpace(upstreamModel), strings.TrimSpace(originalModel)) {
+		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, upstreamModel, "responses"); blocked != nil {
+			return nil, blocked
+		}
+	}
+
 	if account.Type == AccountTypeOAuth {
 		decoded, decodeErr := ensureReqBody()
 		if decodeErr != nil {

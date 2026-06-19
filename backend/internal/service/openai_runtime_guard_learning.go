@@ -43,10 +43,11 @@ type OpenAIRuntimeGuardUpstreamErrorClassification struct {
 }
 
 type OpenAIRuntimeGuardLearnedBlockScope struct {
-	AccountType string
-	Model       string
-	Endpoint    string
-	Profile     string
+	AccountType       string
+	Model             string
+	Endpoint          string
+	Profile           string
+	CapabilityVersion string
 }
 
 type openAIRuntimeGuardLearnedBlockEntry struct {
@@ -75,7 +76,7 @@ func ClassifyOpenAIRuntimeGuardUpstreamError(status int, headers http.Header, bo
 	}
 	if strings.Contains(param, "reasoning_effort") || strings.Contains(combined, "reasoning_effort") || strings.Contains(combined, "reasoning.effort") {
 		if strings.Contains(combined, "unsupported") || strings.Contains(combined, "invalid") || strings.Contains(combined, "unknown") || strings.Contains(combined, "max") {
-			return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketIllegalReasoningEffort, "reasoning.illegal_effort", "learn_block", false, false, openAIRuntimeGuardLearnedBlockDefaultTTL)
+			return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketIllegalReasoningEffort, "reasoning.illegal_effort", "terminal", false, true, openAIRuntimeGuardLearnedBlockDefaultTTL)
 		}
 	}
 	if strings.Contains(combined, "image generation is not enabled") || strings.Contains(combined, "image generation disabled") ||
@@ -86,13 +87,13 @@ func ClassifyOpenAIRuntimeGuardUpstreamError(status int, headers http.Header, bo
 	if strings.Contains(combined, "context length") || strings.Contains(combined, "context window") || strings.Contains(combined, "context too large") ||
 		strings.Contains(combined, "maximum context") || strings.Contains(combined, "tokens/context too large") ||
 		(strings.Contains(combined, "max tokens") && (strings.Contains(combined, "context") || strings.Contains(combined, "too large") || strings.Contains(combined, "exceeded"))) {
-		return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketContextOverflow, "context.upstream_overflow", "learn_block", false, false, openAIRuntimeGuardLearnedBlockDefaultTTL)
+		return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketContextOverflow, "context.upstream_overflow", "terminal", false, true, openAIRuntimeGuardLearnedBlockDefaultTTL)
 	}
 	if code == "invalid_value" && strings.Contains(combined, "input_text") && (strings.Contains(combined, "output_text") || strings.Contains(combined, "refusal")) {
-		return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketShapeTranscriptError, "shape.transcript_error", "learn_block", false, false, openAIRuntimeGuardLearnedBlockDefaultTTL)
+		return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketShapeTranscriptError, "shape.transcript_error", "observe", false, false, openAIRuntimeGuardLearnedBlockDefaultTTL)
 	}
 	if strings.Contains(param, "input.") && strings.Contains(param, ".content.") && (strings.Contains(errType, "invalid_request") || strings.Contains(combined, "invalid_request_error")) {
-		return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketShapeTranscriptError, "shape.transcript_error", "learn_block", false, false, openAIRuntimeGuardLearnedBlockDefaultTTL)
+		return out.withRuntimeGuardBucket(OpenAIRuntimeGuardBucketShapeTranscriptError, "shape.transcript_error", "observe", false, false, openAIRuntimeGuardLearnedBlockDefaultTTL)
 	}
 	if strings.Contains(combined, "unsupported model") || strings.Contains(combined, "unsupported profile") || strings.Contains(combined, "unsupported channel") ||
 		(strings.Contains(combined, "oauth") && strings.Contains(combined, "does not support")) ||
@@ -258,14 +259,15 @@ func openAIRuntimeGuardLearnedBlockScopePrefix(scope OpenAIRuntimeGuardLearnedBl
 	model := strings.ToLower(strings.TrimSpace(scope.Model))
 	endpoint := strings.ToLower(strings.TrimSpace(scope.Endpoint))
 	profile := strings.ToLower(strings.TrimSpace(scope.Profile))
+	capabilityVersion := strings.ToLower(strings.TrimSpace(scope.CapabilityVersion))
 	if accountType == "" || model == "" || endpoint == "" {
 		return ""
 	}
-	return fmt.Sprintf("account_type=%s|model=%s|endpoint=%s|profile=%s", accountType, model, endpoint, profile)
+	return fmt.Sprintf("account_type=%s|model=%s|endpoint=%s|profile=%s|capability_version=%s", accountType, model, endpoint, profile, capabilityVersion)
 }
 
 func openAIRuntimeGuardLearnedBlockScopeForAccount(account *Account, model, endpoint string) OpenAIRuntimeGuardLearnedBlockScope {
-	var accountType, profile string
+	var accountType, profile, capabilityVersion string
 	if account != nil {
 		accountType = account.Type
 		profile = firstNonBlankString(
@@ -273,8 +275,29 @@ func openAIRuntimeGuardLearnedBlockScopeForAccount(account *Account, model, endp
 			account.GetExtraString("openai_runtime_guard_profile"),
 			account.GetExtraString("profile"),
 		)
+		capabilityVersion = openAIRuntimeGuardCapabilityVersionForAccount(account)
 	}
-	return OpenAIRuntimeGuardLearnedBlockScope{AccountType: accountType, Model: model, Endpoint: endpoint, Profile: profile}
+	return OpenAIRuntimeGuardLearnedBlockScope{AccountType: accountType, Model: model, Endpoint: endpoint, Profile: profile, CapabilityVersion: capabilityVersion}
+}
+
+func openAIRuntimeGuardCapabilityVersionForAccount(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	for _, key := range []string{"openai_runtime_guard_capability_version", "openai_capability_version", "credential_version", "credentials_version", "token_version", "updated_at"} {
+		if value := strings.TrimSpace(account.GetExtraString(key)); value != "" {
+			return value
+		}
+	}
+	for _, key := range []string{"openai_runtime_guard_capability_version", "openai_capability_version", "credential_version", "credentials_version", "token_version", "_token_version", "updated_at"} {
+		if value := strings.TrimSpace(account.GetCredential(key)); value != "" {
+			return value
+		}
+	}
+	if !account.UpdatedAt.IsZero() {
+		return account.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return ""
 }
 
 func openAIRuntimeGuardEndpointFromModelHint(hint string) string {
