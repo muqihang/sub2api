@@ -117,6 +117,11 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 	}
 }
 
+func isOpenAIRuntimeGuardLocalBlock(err error) bool {
+	var blocked *service.OpenAIRuntimeGuardBlockedError
+	return errors.As(err, &blocked)
+}
+
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler.
 //
 // The constructor intentionally keeps a flexible dependency tail because older
@@ -881,6 +886,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					)
 					continue
 				}
+				if isOpenAIRuntimeGuardLocalBlock(err) {
+					reqLog.Warn("openai.runtime_guard_blocked", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, false) {
 					reqLog.Warn("openai.egress_policy_rejected", zap.Int64("account_id", account.ID), zap.Error(err))
@@ -1304,6 +1313,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Error(err),
 					)
+					return
+				}
+				if isOpenAIRuntimeGuardLocalBlock(err) {
+					reqLog.Warn("openai_messages.runtime_guard_blocked", zap.Int64("account_id", account.ID), zap.Error(err))
 					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)

@@ -2985,7 +2985,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			setOpenAIRuntimeGuardReasoningMetadata(c, reasoningDecision)
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			writeOpenAIReasoningEffortGuardBlockedResponse(c, reasoningDecision)
-			return nil, fmt.Errorf("openai runtime guard blocked reasoning_effort: %s", reasoningDecision.From)
+			return nil, newOpenAIRuntimeGuardBlockedError(reasoningDecision)
 		}
 		if reasoningDecision.Repaired {
 			repairedBody, repairErr := applyOpenAIReasoningEffortGuardRepairs(body, reasoningDecision)

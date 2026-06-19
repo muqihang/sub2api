@@ -136,7 +136,7 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 		}
 		var localResp *codexGatewayLocalServiceResponseError
 		if errors.As(err, &localResp) && localResp != nil {
-			return &localResp.Response, nil
+			return &localResp.Response, localResp
 		}
 		var failoverErr *UpstreamFailoverError
 		if errors.As(err, &failoverErr) {

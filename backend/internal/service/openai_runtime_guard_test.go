@@ -481,6 +481,30 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksUnknownReasoningEffortBe
 	requireOpenAIRuntimeGuardMetadata(t, c, "block", "reasoning.unknown_effort", "openai_runtime_guard.blocked.reasoning_effort")
 }
 
+func TestOpenAIGatewayService_Forward_RuntimeGuardLocalBlockDoesNotReportScheduleFailure(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	scheduler := &openAIRuntimeGuardRecordingScheduler{}
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
+		enabled:   true,
+		expiresAt: time.Now().Add(time.Minute).UnixNano(),
+	})
+	t.Cleanup(resetOpenAIAdvancedSchedulerSettingCacheForTest)
+	svc.openaiScheduler = scheduler
+
+	result, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5.4","stream":false,"reasoning_effort":"hyperdrive","input":"hi"}`))
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.bodies, 0)
+
+	var localBlock *OpenAIRuntimeGuardBlockedError
+	if !errors.As(err, &localBlock) {
+		svc.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+	}
+
+	require.Zero(t, scheduler.reportCalls, "local runtime guard block must not be reported as account/upstream failure")
+}
+
 func TestOpenAIGatewayService_Forward_RuntimeGuardLeavesValidEffortAndScopesPromptCacheKey(t *testing.T) {
 	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
 	entityCtx := WithResolvedEntity(c.Request.Context(), &ResolvedEntity{Entity: Entity{EntityKey: "team-alpha"}})
@@ -1078,6 +1102,24 @@ func startOpenAIRuntimeGuardWSServer(t *testing.T, svc *OpenAIGatewayService, ac
 	return serverErrCh, clientConn, wsServer.Close
 }
 
+type openAIRuntimeGuardRecordingScheduler struct {
+	reportCalls int
+}
+
+func (s *openAIRuntimeGuardRecordingScheduler) Select(ctx context.Context, req OpenAIAccountScheduleRequest) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return nil, OpenAIAccountScheduleDecision{}, errors.New("unexpected scheduler select")
+}
+
+func (s *openAIRuntimeGuardRecordingScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
+	s.reportCalls++
+}
+
+func (s *openAIRuntimeGuardRecordingScheduler) ReportSwitch() {}
+
+func (s *openAIRuntimeGuardRecordingScheduler) SnapshotMetrics() OpenAIAccountSchedulerMetricsSnapshot {
+	return OpenAIAccountSchedulerMetricsSnapshot{}
+}
+
 func TestCodexGatewayProviderExecutor_OpenAIRuntimeGuardLocalBlockDoesNotRecordProviderSuccessOrUsage(t *testing.T) {
 	baseDir := t.TempDir()
 	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
@@ -1114,7 +1156,9 @@ func TestCodexGatewayProviderExecutor_OpenAIRuntimeGuardLocalBlockDoesNotRecordP
 		CaptureTrace: trace,
 	})
 
-	require.NoError(t, err)
+	require.Error(t, err)
+	var localResp *codexGatewayLocalServiceResponseError
+	require.ErrorAs(t, err, &localResp)
 	require.NotNil(t, resp)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	require.Contains(t, string(resp.Body), "Unsupported reasoning_effort value")
@@ -1159,6 +1203,57 @@ func TestCodexGatewayService_StreamOpenAIRuntimeGuardLocalBlockDoesNotWriteGener
 	require.Equal(t, 1, strings.Count(out, "event: response.failed"), out)
 	require.Contains(t, out, "Unsupported reasoning_effort value")
 	require.NotContains(t, out, "upstream request failed", "service layer must not append a generic stream error after local block")
+}
+
+func TestCodexGatewayService_CompleteOpenAIRuntimeGuardLocalBlockTraceIsNotOK(t *testing.T) {
+	baseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              filepath.Join(baseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer capture.Close()
+
+	account := newCodexGatewayOpenAIOAuthAccountForTest()
+	usageRecorder := &codexGatewayUsageRecorderStub{}
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.usageRecorder = usageRecorder
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, _ string, _ map[int64]struct{}) (*Account, error) {
+			return account, nil
+		},
+	}
+	executor.openaiAdapter = &codexGatewayOpenAIResponsesAdapter{gateway: &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: &httpUpstreamRecorder{},
+	}}
+
+	svc := NewCodexGatewayService(NewDefaultCodexGatewayModelRegistry(), executor, capture)
+	resp, err := svc.Responses(context.Background(), CodexGatewayResponsesRequest{
+		APIKey:  validCodexGatewayAPIKeyForTest(),
+		Headers: http.Header{},
+		Body:    []byte(`{"model":"gpt-5.5","stream":false,"reasoning_effort":"hyperdrive","input":"hi"}`),
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Empty(t, usageRecorder.inputs, "local runtime guard block must not record provider usage")
+	require.NoError(t, capture.Close())
+
+	dateDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"))
+	traceDirs := codexGatewayCaptureTraceDirsForTest(t, dateDir)
+	require.Len(t, traceDirs, 1)
+	traceDir := filepath.Join(dateDir, traceDirs[0])
+	summary, err := os.ReadFile(filepath.Join(traceDir, "summary.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(summary), `"status": "blocked"`)
+	require.NotContains(t, string(summary), `"status": "ok"`, "local runtime guard block must not be traced as provider success")
+	for _, name := range []string{"upstream_request.shape.json", "upstream_response.shape.json"} {
+		_, statErr := os.Stat(filepath.Join(traceDir, name))
+		require.True(t, os.IsNotExist(statErr), "%s must not be written for local runtime guard blocks", name)
+	}
 }
 
 func TestOpenAIRuntimeGuard_WSHelperGuardsMissingTypeResponseCreateLikePayload(t *testing.T) {

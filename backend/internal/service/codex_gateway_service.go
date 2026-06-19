@@ -340,6 +340,11 @@ func (s *CodexGatewayService) Responses(ctx context.Context, req CodexGatewayRes
 
 	resp, err := s.executor.Complete(ctx, providerReq)
 	if err != nil {
+		var localResp *codexGatewayLocalServiceResponseError
+		if errors.As(err, &localResp) && localResp != nil && resp != nil {
+			s.finishCaptureLocalBlock(trace, localResp, model, "complete")
+			return resp, nil
+		}
 		s.finishCaptureError(trace, captureErrorForCodexGatewayError(err, model, "complete"))
 		return codexGatewayMapProviderError(err), nil
 	}
@@ -378,6 +383,41 @@ func (s *CodexGatewayService) finishCaptureError(trace *CodexGatewayTrace, errMe
 	}
 	s.capture.RecordError(trace, errMeta)
 	s.capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "failed", HTTPStatus: errMeta.HTTPStatus, UpstreamModel: errMeta.UpstreamModel})
+}
+
+func (s *CodexGatewayService) finishCaptureLocalBlock(trace *CodexGatewayTrace, localResp *codexGatewayLocalServiceResponseError, model CodexGatewayModel, stage string) {
+	if s == nil || s.capture == nil || trace == nil || localResp == nil {
+		return
+	}
+	status := localResp.Response.StatusCode
+	if status == 0 {
+		status = http.StatusBadRequest
+	}
+	errMeta := CodexGatewayCaptureError{
+		Origin:        "client",
+		Stage:         stage,
+		Provider:      model.Provider,
+		Model:         model.Slug,
+		UpstreamModel: model.UpstreamModel,
+		HTTPStatus:    status,
+		ErrorType:     CodexGatewayErrorTypeInvalidRequest,
+		ErrorCode:     CodexGatewayErrorCodeInvalidRequest,
+		ErrorClass:    "local_guard_block",
+		Message:       "local runtime guard blocked request",
+	}
+	if localResp.Err != nil {
+		errMeta.Message = localResp.Err.Error()
+	}
+	s.capture.RecordError(trace, errMeta)
+	s.capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{
+		Status:        "blocked",
+		HTTPStatus:    status,
+		UpstreamModel: model.UpstreamModel,
+		Additional: map[string]any{
+			"local_block": true,
+			"block_class": "runtime_guard",
+		},
+	})
 }
 
 func (s *CodexGatewayService) captureStreamPending(w io.Writer) {
