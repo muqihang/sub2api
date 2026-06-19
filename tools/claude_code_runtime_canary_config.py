@@ -72,6 +72,7 @@ _RUNTIME_DISPATCH_GROUPS: tuple[dict[str, Any], ...] = (
         "name": "zhumeng-claude-code-bridge-runtime-deepseek",
         "provider": "deepseek",
         "platform": "anthropic",
+        "source_platform": "openai",
         "account_names": ("zhumeng-claude-code-bridge-deepseek-anthropic",),
         "source_account_name": "codex-upstream-deepseek-v4",
         "api_key_name": "zhumeng-claude-code-bridge-deepseek-runtime-key",
@@ -232,6 +233,24 @@ def _load_route_trust_module():
     return module
 
 
+
+
+def _provider_for_model_id(model_id: str) -> str | None:
+    for provider, models in _BRIDGE_MODELS_BY_PROVIDER.items():
+        if any(str(model["model_id"]) == str(model_id).strip() for model in models):
+            return provider
+    return None
+
+
+def validate_live_bridge_models_supported(live_bridge_models: tuple[str, ...]) -> None:
+    runtime_providers = {str(spec["provider"]) for spec in _RUNTIME_DISPATCH_GROUPS}
+    for model_id in live_bridge_models:
+        provider = _provider_for_model_id(model_id)
+        if provider is None:
+            raise ValueError(f"unknown live bridge model: {model_id}")
+        if provider not in runtime_providers:
+            raise ValueError(f"unsupported live bridge provider without runtime account: {provider}")
+
 def _route_catalog_hash(*, runtime_hash: str, overlay_hash: str, catalog_version: str, bridge_live_models: Iterable[str]) -> str:
     route_trust = _load_route_trust_module()
     provisional = route_trust.cp4_fixture_route_catalog(
@@ -314,6 +333,7 @@ def build_provider_catalog_env(
     target_origin = _loopback_origin(target)
     runtime_origin = _loopback_origin(runtime_target or target_origin)
     live_set = tuple(str(model).strip() for model in live_bridge_models if str(model).strip())
+    validate_live_bridge_models_supported(live_set)
     catalog_hash = _route_catalog_hash(
         runtime_hash=runtime_hash,
         overlay_hash=overlay_hash,
@@ -367,6 +387,7 @@ def build_provider_catalog_env(
         "SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED": "true" if live_set else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB": "true" if live_set else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED": "true" if any(model.startswith("claude-code-bridge-gpt-") for model in live_set) else "false",
+        "SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED": "true" if any("deepseek" in model or "glm" in model or "kimi" in model for model in live_set) else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED": "true" if any("deepseek" in model for model in live_set) else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED": "true" if any("agnes" in model for model in live_set) else "false",
         "SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS": ",".join(_NATIVE_MODELS),
@@ -411,18 +432,20 @@ def _random_sub2api_key() -> str:
     return "sk-" + secrets.token_hex(32)
 
 
-def _runtime_key_literals(bridge_api_keys: dict[str, str] | None) -> dict[str, str]:
+def _runtime_key_literals(bridge_api_keys: dict[str, str] | None, existing_env: dict[str, str] | None = None) -> dict[str, str]:
     provided = bridge_api_keys or {}
+    existing = existing_env or {}
     out: dict[str, str] = {}
     for spec in _RUNTIME_DISPATCH_GROUPS:
         provider = str(spec["provider"])
-        out[provider] = str(provided.get(provider) or _random_sub2api_key()).strip()
+        env_name = str(spec["api_key_env"])
+        out[provider] = str(provided.get(provider) or existing.get(env_name) or _random_sub2api_key()).strip()
     return out
 
 
-def build_runtime_bridge_api_keys(bridge_api_keys: dict[str, str] | None = None) -> dict[str, str]:
+def build_runtime_bridge_api_keys(bridge_api_keys: dict[str, str] | None = None, existing_env: dict[str, str] | None = None) -> dict[str, str]:
     """Return provider->Sub2API API key values for env-file use only."""
-    return _runtime_key_literals(bridge_api_keys)
+    return _runtime_key_literals(bridge_api_keys, existing_env=existing_env)
 
 
 def build_apply_sql(bridge_api_keys: dict[str, str] | None = None) -> str:
@@ -473,18 +496,19 @@ def build_apply_sql(bridge_api_keys: dict[str, str] | None = None) -> str:
         source_name = str(spec.get("source_account_name", ""))
         if not source_name:
             continue
+        source_platform = str(spec.get("source_platform", spec["platform"]))
         mapping = {str(model["model_id"]): str(model["upstream_model"]) for model in spec["models"]}
         # Also allow already-rewritten upstream IDs for direct diagnostics.
         mapping.update({str(model["upstream_model"]): str(model["upstream_model"]) for model in spec["models"]})
-        if str(spec.get("provider")) == "openai":
-            # Keep Claude Code display IDs stable while using the working upstream slug observed for this pool.
-            mapping["claude-code-bridge-gpt-5.4-mini"] = "gpt-5.4-mini-2026-03-17"
-            mapping["gpt-5.4-mini"] = "gpt-5.4-mini-2026-03-17"
         credentials: dict[str, Any] = {
             "api_key": "__SOURCE_ACCOUNT_API_KEY__",
             "base_url": "__SOURCE_ACCOUNT_BASE_URL__",
             "model_mapping": mapping,
         }
+        if str(spec.get("provider")) == "openai":
+            # Preserve the upstream persona/profile expected by OpenAI-compatible Codex pools.
+            # The source account owns the actual UA; SQL clones it without printing the value.
+            credentials["user_agent"] = "__SOURCE_ACCOUNT_USER_AGENT__"
         if str(spec.get("platform")) == "anthropic" and spec.get("anthropic_base_url"):
             credentials["base_url"] = str(spec["anthropic_base_url"])
         extra = {
@@ -495,9 +519,10 @@ def build_apply_sql(bridge_api_keys: dict[str, str] | None = None) -> str:
         if str(spec.get("platform")) == "anthropic":
             extra["anthropic_passthrough"] = True
         runtime_account_values.append(
-            "({account_name},{source_name},{platform},{account_type},'active',true,{credentials},{extra})".format(
+            "({account_name},{source_name},{source_platform},{platform},{account_type},'active',true,{credentials},{extra})".format(
                 account_name=_sql_literal(str(spec["account_names"][0])),
                 source_name=_sql_literal(source_name),
+                source_platform=_sql_literal(source_platform),
                 platform=_sql_literal(str(spec["platform"])),
                 account_type=_sql_literal(str(spec.get("runtime_account_type", "apikey"))),
                 credentials=_sql_literal(json.dumps(credentials, ensure_ascii=True, sort_keys=True)) + "::jsonb",
@@ -595,33 +620,69 @@ ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
   mcp_xml_inject = false,
   updated_at = now();
 
-WITH desired_runtime_accounts(account_name, source_account_name, platform, type, status, schedulable, credentials_template, extra) AS (
+WITH desired_runtime_accounts(account_name, source_account_name, source_platform, platform, type, status, schedulable, credentials_template, extra) AS (
   VALUES
   {runtime_account_values}
 ), source_runtime_accounts AS (
-  SELECT DISTINCT ON (accounts.name) accounts.name, accounts.credentials
+  SELECT DISTINCT ON (accounts.name) accounts.name, accounts.credentials, accounts.extra, accounts.concurrency
   FROM accounts
   JOIN desired_runtime_accounts ON desired_runtime_accounts.source_account_name = accounts.name
   WHERE accounts.deleted_at IS NULL
+    AND accounts.status = 'active'
+    AND accounts.schedulable = true
+    AND accounts.platform = desired_runtime_accounts.source_platform
     AND accounts.credentials ? 'api_key'
   ORDER BY accounts.name, accounts.id
+), validate_runtime_sources AS (
+  SELECT CASE
+    WHEN COUNT(source_runtime_accounts.name) <> COUNT(desired_runtime_accounts.source_account_name) THEN
+      CAST((ARRAY['1','missing Claude Code bridge runtime source accounts'])[1 + LEAST(GREATEST((COUNT(desired_runtime_accounts.source_account_name) - COUNT(source_runtime_accounts.name))::integer, 0), 1)] AS integer)
+    ELSE 1
+  END AS all_sources_present
+  FROM desired_runtime_accounts
+  LEFT JOIN source_runtime_accounts ON source_runtime_accounts.name = desired_runtime_accounts.source_account_name
 ), resolved_runtime_accounts AS (
   SELECT desired_runtime_accounts.account_name, desired_runtime_accounts.platform, desired_runtime_accounts.type,
          desired_runtime_accounts.status, desired_runtime_accounts.schedulable,
-         jsonb_set(
-           jsonb_set(
-             desired_runtime_accounts.credentials_template,
-             '{{api_key}}',
-             to_jsonb(source_runtime_accounts.credentials->>'api_key'),
-             true
-           ),
-           '{{base_url}}',
-           to_jsonb(COALESCE(NULLIF(desired_runtime_accounts.credentials_template->>'base_url', '__SOURCE_ACCOUNT_BASE_URL__'), source_runtime_accounts.credentials->>'base_url')),
-           true
-         ) AS credentials,
-         desired_runtime_accounts.extra
+         CASE
+           WHEN desired_runtime_accounts.credentials_template->>'user_agent' = '__SOURCE_ACCOUNT_USER_AGENT__' THEN
+             jsonb_set(
+               jsonb_set(
+                 jsonb_set(
+                   desired_runtime_accounts.credentials_template,
+                   '{{api_key}}',
+                   to_jsonb(source_runtime_accounts.credentials->>'api_key'),
+                   true
+                 ),
+                 '{{base_url}}',
+                 to_jsonb(COALESCE(NULLIF(desired_runtime_accounts.credentials_template->>'base_url', '__SOURCE_ACCOUNT_BASE_URL__'), source_runtime_accounts.credentials->>'base_url')),
+                 true
+               ),
+               '{{user_agent}}',
+               to_jsonb(COALESCE(source_runtime_accounts.credentials->>'user_agent', '')),
+               true
+             )
+           ELSE
+             jsonb_set(
+               jsonb_set(
+                 desired_runtime_accounts.credentials_template,
+                 '{{api_key}}',
+                 to_jsonb(source_runtime_accounts.credentials->>'api_key'),
+                 true
+               ),
+               '{{base_url}}',
+               to_jsonb(COALESCE(NULLIF(desired_runtime_accounts.credentials_template->>'base_url', '__SOURCE_ACCOUNT_BASE_URL__'), source_runtime_accounts.credentials->>'base_url')),
+               true
+             )
+         END AS credentials,
+         (safe_source_extra || desired_runtime_accounts.extra) AS extra,
+         GREATEST(COALESCE(source_runtime_accounts.concurrency, 3), 3) + (validate_runtime_sources.all_sources_present - validate_runtime_sources.all_sources_present) AS concurrency
   FROM desired_runtime_accounts
   JOIN source_runtime_accounts ON source_runtime_accounts.name = desired_runtime_accounts.source_account_name
+  CROSS JOIN validate_runtime_sources
+  CROSS JOIN LATERAL (
+    SELECT jsonb_strip_nulls(jsonb_build_object('codex_gateway_local_test', source_runtime_accounts.extra->'codex_gateway_local_test')) AS safe_source_extra
+  ) safe_extra
 ), existing_runtime_accounts AS (
   SELECT DISTINCT ON (accounts.name) accounts.id, accounts.name
   FROM accounts
@@ -636,6 +697,11 @@ WITH desired_runtime_accounts(account_name, source_account_name, platform, type,
       schedulable = resolved_runtime_accounts.schedulable,
       credentials = resolved_runtime_accounts.credentials,
       extra = resolved_runtime_accounts.extra,
+      concurrency = resolved_runtime_accounts.concurrency,
+      temp_unschedulable_until = NULL,
+      temp_unschedulable_reason = NULL,
+      overload_until = NULL,
+      error_message = NULL,
       updated_at = now()
   FROM resolved_runtime_accounts
   JOIN existing_runtime_accounts ON existing_runtime_accounts.name = resolved_runtime_accounts.account_name
@@ -647,7 +713,7 @@ INSERT INTO accounts (
   concurrency, priority, rate_multiplier, created_at, updated_at
 )
 SELECT account_name, platform, type, status, schedulable, credentials, extra,
-       3, 50, 1.0, now(), now()
+       concurrency, 50, 1.0, now(), now()
 FROM resolved_runtime_accounts
 WHERE NOT EXISTS (
   SELECT 1 FROM updated_runtime_accounts WHERE updated_runtime_accounts.name = resolved_runtime_accounts.account_name
@@ -716,7 +782,7 @@ COMMIT;
         native_models_config=_sql_literal(json.dumps(native_models_config, ensure_ascii=True, sort_keys=True)) + "::jsonb",
         values=",\n  ".join(values),
         runtime_group_values=",\n  ".join(runtime_group_values),
-        runtime_account_values=",\n  ".join(runtime_account_values) if runtime_account_values else "('__none__','__none__','anthropic','apikey','disabled',false,'{}'::jsonb,'{}'::jsonb)",
+        runtime_account_values=",\n  ".join(runtime_account_values) if runtime_account_values else "('__none__','__none__','anthropic','anthropic','apikey','disabled',false,'{{}}'::jsonb,'{{}}'::jsonb)",
         account_binding_values=",\n  ".join(account_binding_values),
         api_key_values=",\n  ".join(api_key_values),
         native_group_id=NATIVE_GROUP_ID,
@@ -780,7 +846,9 @@ def _write_env_file(path: Path, env: dict[str, str]) -> None:
 
 
 def apply_bridge_groups(*, postgres_container: str, env_out: Path, target: str, live_bridge_models: tuple[str, ...], runtime_target: str | None = None, deepseek_anthropic_fixture_green: bool = True) -> dict[str, Any]:
-    bridge_api_keys = build_runtime_bridge_api_keys()
+    validate_live_bridge_models_supported(live_bridge_models)
+    existing_env = _read_env_file(env_out)
+    bridge_api_keys = build_runtime_bridge_api_keys(existing_env=existing_env)
     sql = build_apply_sql(bridge_api_keys=bridge_api_keys)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
         handle.write(sql)
@@ -803,7 +871,7 @@ def apply_bridge_groups(*, postgres_container: str, env_out: Path, target: str, 
         except OSError:
             pass
     env = merge_provider_catalog_env(
-        _read_env_file(env_out),
+        existing_env,
         target=target,
         runtime_target=runtime_target,
         live_bridge_models=live_bridge_models,

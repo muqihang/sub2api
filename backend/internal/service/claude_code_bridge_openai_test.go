@@ -163,6 +163,61 @@ func TestCP6OpenAIBridgeResponsesTopLevelErrorPassthroughIsSafe(t *testing.T) {
 	require.NotContains(t, stream, "event: message_stop")
 }
 
+func TestCP6OpenAIBridgeRequestsUseSyntheticCodexHeadersForLocalSub2API(t *testing.T) {
+	var userAgent string
+	var originator string
+	var stainlessLang string
+	var bridgeClient string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userAgent = r.Header.Get("User-Agent")
+		originator = r.Header.Get("originator")
+		stainlessLang = r.Header.Get("X-Stainless-Lang")
+		bridgeClient = r.Header.Get("X-Sub2API-Client-Type")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_headers","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_headers","model":"gpt-5.5","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Contains(t, userAgent, "codex_cli_rs/")
+	require.NotContains(t, strings.ToLower(userAgent), "claude")
+	require.Equal(t, "codex_cli_rs", originator)
+	require.Equal(t, "go", stainlessLang)
+	require.Equal(t, "claude_code_bridge_openai", bridgeClient)
+}
+
+func TestCP6OpenAIBridgeResponsesBadGatewayDoesNotFallbackToChatByDefault(t *testing.T) {
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream 502"}}`))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Equal(t, []string{"/v1/responses"}, paths)
+	require.NotContains(t, err.Error(), "chat completions")
+}
+
 func TestCP6OpenAIBridgeLiveRejectsExternalBaseURLAndNativeFormalPool(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")

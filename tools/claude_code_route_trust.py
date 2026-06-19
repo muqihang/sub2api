@@ -118,7 +118,7 @@ def cp4_fixture_route_catalog(
         )
 
     def bridge(model_id: str, provider: str, route: str, client_type: str) -> RouteCatalogEntry:
-        live_enabled = model_id in bridge_live_model_set and provider in {"openai", "deepseek"}
+        live_enabled = model_id in bridge_live_model_set and provider in {"openai", "deepseek", "zai_glm", "kimi"}
         return RouteCatalogEntry(
             model_id=model_id,
             provider=provider,

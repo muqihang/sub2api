@@ -235,12 +235,16 @@ func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *te
 	var gotPath string
 	var gotAuth string
 	var gotClientType string
+	var gotUserAgent string
+	var gotOriginator string
 	var gotBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotClientType = r.Header.Get(ClaudeCodeNativeClientTypeHeader)
+		gotUserAgent = r.Header.Get("User-Agent")
+		gotOriginator = r.Header.Get("originator")
 		gotBody = string(body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_deepseek\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hidden fallback reasoning\"}}]}\n\n"))
@@ -263,9 +267,11 @@ func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *te
 
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, result.StatusCode)
-	require.Equal(t, "/chat/completions", gotPath)
+	require.Equal(t, "/v1/chat/completions", gotPath)
 	require.Equal(t, "Bearer sk-deepseek-test-key", gotAuth)
-	require.Empty(t, gotClientType)
+	require.Equal(t, "claude_code_bridge_openai", gotClientType)
+	require.Contains(t, gotUserAgent, "codex_cli_rs/")
+	require.Equal(t, "codex_cli_rs", gotOriginator)
 	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
 	require.NotContains(t, gotBody, `"model":"claude-code-bridge-deepseek-v4-pro"`)
 	require.Contains(t, gotBody, `"messages"`)
@@ -384,11 +390,12 @@ func cp6LiveDeepSeekDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 	}
 }
 
-func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsWhenResponsesUpstreamFails(t *testing.T) {
+func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsOnlyWhenExplicitlyEnabled(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_CHAT_COMPLETIONS_FALLBACK_ENABLED", "1")
 	var paths []string
 	var chatBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -403,6 +410,10 @@ func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsWhenResponsesUpstre
 		chatBody = string(body)
 		require.Equal(t, "Bearer sk-openai-test-key", r.Header.Get("Authorization"))
 		require.Equal(t, "text/event-stream", r.Header.Get("Accept"))
+		require.Contains(t, r.Header.Get("User-Agent"), "codex_cli_rs/")
+		require.NotContains(t, strings.ToLower(r.Header.Get("User-Agent")), "claude")
+		require.Equal(t, "codex_cli_rs", r.Header.Get("originator"))
+		require.Equal(t, "claude_code_bridge_openai", r.Header.Get("X-Sub2API-Client-Type"))
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"gpt-5.4-mini","choices":[{"index":0,"delta":{"role":"assistant"}}]}` + "\n\n"))
 		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1,"model":"gpt-5.4-mini","choices":[{"index":0,"delta":{"content":"OK"}}]}` + "\n\n"))
@@ -435,7 +446,7 @@ func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsWhenResponsesUpstre
 
 func TestClaudeCodeBridgeAnthropicLivePostsGLMAndKimiToAnthropicMessages(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
-	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	tests := []struct {
 		name          string
@@ -500,6 +511,131 @@ func TestClaudeCodeBridgeAnthropicLivePostsGLMAndKimiToAnthropicMessages(t *test
 			require.Equal(t, tt.clientType, result.Audit.ClientType)
 			require.False(t, result.Audit.FormalPoolAllowed)
 			require.False(t, result.Audit.NativeAttested)
+		})
+	}
+}
+
+func TestClaudeCodeBridgeAnthropicLiveProviderKeysDoNotRequireDeepSeekGate(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_ZAI_GLM_API_KEY", "sk-glm-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_KIMI_API_KEY", "sk-kimi-test-key")
+	tests := []struct {
+		name          string
+		modelID       string
+		upstreamModel string
+		provider      string
+		route         string
+		clientType    string
+		wantKey       string
+	}{
+		{
+			name:          "zai glm",
+			modelID:       "claude-code-bridge-glm-5.2-1m",
+			upstreamModel: "glm-5.2[1m]",
+			provider:      "zai_glm",
+			route:         "zai_glm_bridge",
+			clientType:    "claude_code_bridge_zai_glm",
+			wantKey:       "sk-glm-test-key",
+		},
+		{
+			name:          "kimi",
+			modelID:       "claude-code-bridge-kimi-k2.7-code",
+			upstreamModel: "kimi-k2.7-code",
+			provider:      "kimi",
+			route:         "kimi_bridge",
+			clientType:    "claude_code_bridge_kimi",
+			wantKey:       "sk-kimi-test-key",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotAuth string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("x-api-key")
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: message_stop\n"))
+				_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+			}))
+			defer upstream.Close()
+
+			decision := cp6LiveDeepSeekDecision(upstream.URL + "/anthropic")
+			decision.ModelID = tt.modelID
+			decision.UpstreamModel = tt.upstreamModel
+			decision.Provider = tt.provider
+			decision.Route = tt.route
+			decision.ClientType = tt.clientType
+			decision.OpenAIBaseURL = ""
+			body := []byte(`{"model":"` + tt.modelID + `","messages":[{"role":"user","content":"anthropic only"}],"stream":true}`)
+
+			require.True(t, ClaudeCodeBridgeAnthropicLiveEligible(decision))
+			result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), decision, body, ClaudeCodeBridgeAnthropicAPIKeyFromEnv(tt.provider))
+
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, result.StatusCode)
+			require.Equal(t, tt.wantKey, gotAuth)
+			require.Equal(t, tt.clientType, result.Audit.ClientType)
+		})
+	}
+}
+
+func TestClaudeCodeProviderBridgeLiveRequestAllowedDoesNotApplyDeepSeekFallbackToGLMOrKimi(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	for _, provider := range []string{"zai_glm", "kimi"} {
+		t.Run(provider, func(t *testing.T) {
+			decision := cp6LiveDeepSeekDecision("http://127.0.0.1:9/anthropic")
+			decision.Provider = provider
+			if provider == "zai_glm" {
+				decision.ModelID = "claude-code-bridge-glm-5.2-1m"
+				decision.UpstreamModel = "glm-5.2[1m]"
+				decision.Route = "zai_glm_bridge"
+				decision.ClientType = "claude_code_bridge_zai_glm"
+			} else {
+				decision.ModelID = "claude-code-bridge-kimi-k2.7-code"
+				decision.UpstreamModel = "kimi-k2.7-code"
+				decision.Route = "kimi_bridge"
+				decision.ClientType = "claude_code_bridge_kimi"
+			}
+			decision.PreferredProtocol = "openai_chat_completions"
+			decision.AnthropicBaseURL = ""
+			decision.OpenAIBaseURL = "http://127.0.0.1:9"
+			decision.FallbackProtocol = "openai_chat_completions"
+			decision.FallbackReason = "anthropic_cache_fixture_failed"
+			decision.SupportsCacheAudit = true
+			decision.SupportsReasoningMapping = true
+
+			require.False(t, ClaudeCodeProviderBridgeLiveRequestAllowed(ClaudeCodeProviderRouteDecision{
+				ModelID:                  decision.ModelID,
+				UpstreamModel:            decision.UpstreamModel,
+				Provider:                 decision.Provider,
+				Route:                    decision.Route,
+				ClientType:               decision.ClientType,
+				ProviderOwner:            decision.ProviderOwner,
+				CredentialScope:          decision.CredentialScope,
+				GatewayLocation:          decision.GatewayLocation,
+				CatalogFresh:             true,
+				CatalogVersion:           decision.CatalogVersion,
+				RuntimeHash:              decision.RuntimeHash,
+				OverlayHash:              decision.OverlayHash,
+				CatalogHash:              decision.CatalogHash,
+				PreferredProtocol:        decision.PreferredProtocol,
+				OpenAIBaseURL:            decision.OpenAIBaseURL,
+				FallbackProtocol:         decision.FallbackProtocol,
+				FallbackReason:           decision.FallbackReason,
+				CapabilitiesVerified:     decision.CapabilitiesVerified,
+				SupportsText:             decision.SupportsText,
+				SupportsTools:            decision.SupportsTools,
+				SupportsStreaming:        decision.SupportsStreaming,
+				SupportsUsage:            decision.SupportsUsage,
+				SupportsCacheAudit:       decision.SupportsCacheAudit,
+				SupportsReasoningMapping: decision.SupportsReasoningMapping,
+				SupportsErrorPassthrough: decision.SupportsErrorPassthrough,
+			}))
 		})
 	}
 }

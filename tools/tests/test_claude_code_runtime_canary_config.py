@@ -190,6 +190,8 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
             self.assertNotIn("fallback_reason", entry)
             self.assertTrue(entry["supports_cache_audit"])
             self.assertTrue(entry["supports_reasoning_mapping"])
+        self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED"])
+        self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"])
 
     def test_deepseek_live_catalog_can_explicitly_fallback_to_chat_when_anthropic_fixture_not_green(self):
         from tools.claude_code_runtime_canary_config import build_provider_catalog_env
@@ -223,6 +225,29 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
             self.assertNotIn("openai_base_url", entry)
             self.assertNotIn("fallback_protocol", entry)
             self.assertNotIn("fallback_reason", entry)
+            self.assertFalse(entry["live_enabled"])
+        self.assertEqual("false", env["SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED"])
+        self.assertEqual("false", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"])
+
+    def test_apply_refuses_live_glm_or_kimi_until_runtime_accounts_exist(self):
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = main([
+                "--apply",
+                "--user-approved-db-write",
+                "--postgres-container",
+                "sub2api-codex-gateway-live-postgres",
+                "--target",
+                "http://127.0.0.1:3017",
+                "--live-bridge-models",
+                "claude-code-bridge-glm-5.2-1m",
+            ])
+
+        self.assertEqual(2, rc)
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("unsupported live bridge provider", stderr.getvalue())
 
     def test_provider_catalog_env_native_models_are_curated_not_legacy_or_fictional(self):
         from tools.claude_code_runtime_canary_config import build_provider_catalog_env
@@ -334,15 +359,36 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
 
 
 
-    def test_apply_sql_openai_runtime_account_maps_mini_to_known_working_upstream_slug(self):
+    def test_apply_sql_openai_runtime_account_inherits_codex_upstream_ua_and_stable_model_mapping(self):
         from tools.claude_code_runtime_canary_config import build_apply_sql
 
         sql = build_apply_sql(bridge_api_keys={"openai": "sk-openai", "deepseek": "sk-deepseek", "agnes": "sk-agnes"})
         account_section = sql.split("WITH desired_runtime_accounts", 1)[1].split("WITH desired_bindings", 1)[0]
 
         self.assertIn("zhumeng-claude-code-bridge-openai-runtime", account_section)
-        self.assertIn('"gpt-5.4-mini": "gpt-5.4-mini-2026-03-17"', account_section)
-        self.assertIn('"claude-code-bridge-gpt-5.4-mini": "gpt-5.4-mini-2026-03-17"', account_section)
+        self.assertIn('"gpt-5.4-mini": "gpt-5.4-mini"', account_section)
+        self.assertIn('"claude-code-bridge-gpt-5.4-mini": "gpt-5.4-mini"', account_section)
+        self.assertNotIn("gpt-5.4-mini-2026-03-17", account_section)
+        self.assertIn("__SOURCE_ACCOUNT_USER_AGENT__", account_section)
+        self.assertIn("source_runtime_accounts.credentials->>'user_agent'", account_section)
+        self.assertIn("safe_source_extra", account_section)
+        self.assertIn("jsonb_build_object('codex_gateway_local_test'", account_section)
+        self.assertIn("safe_source_extra || desired_runtime_accounts.extra", account_section)
+        self.assertNotIn("COALESCE(source_runtime_accounts.extra", account_section)
+        self.assertIn("temp_unschedulable_until = NULL", account_section)
+        self.assertIn("temp_unschedulable_reason = NULL", account_section)
+
+    def test_apply_sql_fails_closed_when_source_runtime_accounts_are_missing_or_unschedulable(self):
+        from tools.claude_code_runtime_canary_config import build_apply_sql
+
+        sql = build_apply_sql(bridge_api_keys={"openai": "sk-openai", "deepseek": "sk-deepseek", "agnes": "sk-agnes"})
+        account_section = sql.split("WITH desired_runtime_accounts", 1)[1].split("WITH desired_bindings", 1)[0]
+
+        self.assertIn("validate_runtime_sources", account_section)
+        self.assertIn("missing Claude Code bridge runtime source accounts", account_section)
+        self.assertIn("accounts.status = 'active'", account_section)
+        self.assertIn("accounts.schedulable = true", account_section)
+        self.assertIn("accounts.platform = desired_runtime_accounts.source_platform", account_section)
 
     def test_apply_sql_creates_deepseek_anthropic_runtime_account_without_reusing_codex_account(self):
         from tools.claude_code_runtime_canary_config import build_apply_sql
@@ -411,6 +457,19 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn("sk-deepseek-secret", dumped)
         self.assertNotIn("sk-agnes-secret", dumped)
         self.assertEqual("<redacted>", result["bridge_api_key_values"]["openai"])
+
+    def test_runtime_bridge_api_keys_reuse_existing_env_values_to_avoid_db_env_drift(self):
+        from tools.claude_code_runtime_canary_config import build_runtime_bridge_api_keys
+
+        keys = build_runtime_bridge_api_keys(existing_env={
+            "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY": "sk-existing-openai",
+            "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY": "sk-existing-deepseek",
+            "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY": "sk-existing-agnes",
+        })
+
+        self.assertEqual("sk-existing-openai", keys["openai"])
+        self.assertEqual("sk-existing-deepseek", keys["deepseek"])
+        self.assertEqual("sk-existing-agnes", keys["agnes"])
 
 
     def test_apply_sql_models_list_config_uses_string_arrays_not_objects(self):

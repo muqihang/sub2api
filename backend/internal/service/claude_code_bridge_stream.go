@@ -110,8 +110,10 @@ func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRoute
 	bridgeDecision := decision.BridgeRouteDecision()
 	switch strings.TrimSpace(bridgeDecision.Provider) {
 	case "deepseek":
-		return (ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)) ||
+		return (ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider) != "" && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)) ||
 			ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(bridgeDecision)
+	case "zai_glm", "kimi":
+		return ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider) != "" && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)
 	case "openai":
 		return ClaudeCodeBridgeOpenAIAPIKeyFromEnv() != "" && ClaudeCodeBridgeOpenAILiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeOpenAILiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeOpenAIUnsafeLabBaseURLAllowed(bridgeDecision)
 	default:
@@ -120,7 +122,7 @@ func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRoute
 }
 
 func ClaudeCodeBridgeAnthropicLiveEligible(decision ClaudeCodeBridgeRouteDecision) bool {
-	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeAnthropicLiveDecisionValid(decision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(decision)
+	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicAPIKeyFromEnv(decision.Provider) != "" && ClaudeCodeBridgeAnthropicLiveDecisionValid(decision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(decision)
 }
 
 func ClaudeCodeBridgeAnthropicLiveDecisionValid(decision ClaudeCodeBridgeRouteDecision) error {
@@ -221,11 +223,25 @@ func StreamClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.C
 }
 
 func ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() string {
-	return strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY"))
+	return ClaudeCodeBridgeAnthropicAPIKeyFromEnv("deepseek")
+}
+
+func ClaudeCodeBridgeAnthropicAPIKeyFromEnv(provider string) string {
+	provider = strings.TrimSpace(provider)
+	switch provider {
+	case "deepseek":
+		return strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY"))
+	case "zai_glm":
+		return strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_BRIDGE_ZAI_GLM_API_KEY"))
+	case "kimi":
+		return strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_BRIDGE_KIMI_API_KEY"))
+	default:
+		return ""
+	}
 }
 
 func ClaudeCodeBridgeAnthropicLiveConfigured() bool {
-	return claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED") && claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED")
+	return claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED") && (claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED") || claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"))
 }
 
 func ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() bool {

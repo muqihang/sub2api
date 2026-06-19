@@ -111,6 +111,7 @@ func StreamClaudeCodeBridgeOpenAILive(ctx context.Context, httpClient *http.Clie
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	applyClaudeCodeBridgeOpenAIClientHeaders(req.Header)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, err
@@ -151,7 +152,29 @@ func buildClaudeCodeOpenAIResponsesBody(decision ClaudeCodeBridgeRouteDecision, 
 	return json.Marshal(responsesReq)
 }
 
+func applyClaudeCodeBridgeOpenAIClientHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	// This request is an internal Claude Code bridge hop into the local Sub2API
+	// OpenAI gateway. Use a stable synthetic Codex-compatible client profile so
+	// the gateway can apply its existing OpenAI/Codex account safety rewrites,
+	// without forwarding the end user's Claude Code UA or local identity.
+	headers.Set("User-Agent", "codex_cli_rs/0.125.0 zhumeng-cc-bridge")
+	headers.Set("originator", "codex_cli_rs")
+	headers.Set("X-Stainless-Lang", "go")
+	headers.Set("X-Stainless-Package-Version", "0.125.0")
+	headers.Set("X-Stainless-OS", "Unknown")
+	headers.Set("X-Stainless-Arch", "unknown")
+	headers.Set("X-Stainless-Runtime", "go")
+	headers.Set("X-Stainless-Runtime-Version", "1.26")
+	headers.Set("X-Sub2API-Client-Type", "claude_code_bridge_openai")
+}
+
 func shouldFallbackClaudeCodeOpenAIResponsesToChat(statusCode int) bool {
+	if !claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_CHAT_COMPLETIONS_FALLBACK_ENABLED") {
+		return false
+	}
 	switch statusCode {
 	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented, http.StatusBadGateway:
 		return true
@@ -172,6 +195,7 @@ func streamClaudeCodeBridgeOpenAIChatCompletionsFallback(ctx context.Context, ht
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	applyClaudeCodeBridgeOpenAIClientHeaders(req.Header)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, err
@@ -513,6 +537,7 @@ func StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(ctx context.Cont
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	applyClaudeCodeBridgeOpenAIClientHeaders(req.Header)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, err
@@ -537,9 +562,6 @@ func StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(ctx context.Cont
 }
 
 func buildClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackURL(decision ClaudeCodeBridgeRouteDecision) string {
-	if endpoint := openAIChatCompletionsEndpointForProviderRole(decision.Provider); endpoint != "" {
-		return buildOpenAIEndpointURL(decision.OpenAIBaseURL, endpoint)
-	}
 	return buildOpenAIChatCompletionsURL(decision.OpenAIBaseURL)
 }
 

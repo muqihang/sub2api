@@ -2046,7 +2046,7 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 	}
 	bridgeDecision := decision.BridgeRouteDecision()
 	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeAnthropicLiveEligible(bridgeDecision) {
-		if _, err := service.StreamClaudeCodeBridgeAnthropicLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeDeepSeekAPIKeyFromEnv(), c.Writer); err != nil {
+		if _, err := service.StreamClaudeCodeBridgeAnthropicLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider), c.Writer); err != nil {
 			if c.Writer.Written() {
 				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
 				return
