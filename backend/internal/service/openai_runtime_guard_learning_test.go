@@ -315,6 +315,15 @@ func TestOpenAIRuntimeGuardOpsRedactsMalformedJSONFallbackPayload(t *testing.T) 
 	}
 }
 
+func TestOpenAIRuntimeGuardOpsRedactsMalformedRawJSONCredentialEscapedQuoteSuffix(t *testing.T) {
+	broken := `{"error":{"code":"invalid_encrypted_content","message":"broken"},"access_token":"ACCESS_BEFORE \\\" ACCESS_AFTER","refresh_token":"REFRESH_BEFORE \\\" REFRESH_AFTER","api_key":"sk-proj-BEFORE \\\" API_AFTER"`
+
+	out := sanitizeOpsUpstreamRuntimeGuardPayload(broken)
+	for _, secret := range []string{"ACCESS_BEFORE", "ACCESS_AFTER", "REFRESH_BEFORE", "REFRESH_AFTER", "sk-proj-BEFORE", "API_AFTER"} {
+		require.NotContains(t, out, secret)
+	}
+}
+
 func TestOpenAIRuntimeGuardOpsRedactsMalformedEscapedJSONFallbackPayload(t *testing.T) {
 	broken := `{\"error\":{\"code\":\"invalid_encrypted_content\",\"message\":\"broken\"},\"prompt\":\"SECRET_BEFORE \\\" SECRET_AFTER\",\"input\":\"INPUT_BEFORE \\\" INPUT_AFTER\",\"messages\":[{\"content\":\"MESSAGE_SECRET \\\" MESSAGE_AFTER\"}],\"instructions\":\"INSTRUCTIONS_SECRET \\\" INSTRUCTIONS_AFTER\",\"encrypted_content\":\"ENCRYPTED_SECRET \\\" ENCRYPTED_AFTER\",\"access_token\":\"TOKEN_SECRET \\\" TOKEN_AFTER\",\"refresh_token\":\"REFRESH_SECRET \\\" REFRESH_AFTER\",\"api_key\":\"sk-proj-TOKEN_SECRET \\\" API_AFTER\"`
 

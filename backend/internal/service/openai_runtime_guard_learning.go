@@ -207,8 +207,8 @@ func redactOpenAIRuntimeGuardOpaqueString(value string) string {
 			}
 		}
 	}
-	out := sanitizeUpstreamErrorMessage(value)
-	return redactOpenAIRuntimeGuardOpaqueFallback(out)
+	out := redactOpenAIRuntimeGuardOpaqueFallback(value)
+	return sanitizeUpstreamErrorMessage(out)
 }
 
 func openAIRuntimeGuardOpaqueJSONKey(key string) bool {

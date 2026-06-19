@@ -290,7 +290,7 @@ func sanitizeOpsUpstreamRuntimeGuardPayload(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	raw = sanitizeUpstreamErrorMessage(raw)
 	raw = redactOpenAIRuntimeGuardOpaquePayloadMarkers(raw)
+	raw = sanitizeUpstreamErrorMessage(raw)
 	return truncateString(raw, 2048)
 }
