@@ -415,6 +415,7 @@ type OpenAIGatewayService struct {
 	codexSnapshotThrottle               *accountWriteThrottle
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
+	openaiRuntimeGuardLearnedBlocks     sync.Map
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -2825,6 +2826,11 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 		return nil, blocked
 	}
 	nativeRequestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if shouldApplyOpenAIReasoningEffortGuard(account) {
+		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(nil, account, nativeRequestedModel, "responses"); blocked != nil {
+			return nil, blocked
+		}
+	}
 	nativeUpstreamModel := nativeRequestedModel
 	if account != nil && nativeRequestedModel != "" {
 		nativeUpstreamModel = openAIAccountRuntimeGuardResolvedUpstreamModel(account, nativeRequestedModel)
@@ -2987,7 +2993,7 @@ func (s *OpenAIGatewayService) handleFailoverSideEffectsWithBody(ctx context.Con
 		return
 	}
 	if len(requestedModel) > 0 {
-		s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, headers, body, requestedModel[0])
+		s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, headers, body, requestedModel...)
 		return
 	}
 	s.handleOpenAIAccountUpstreamError(ctx, account, statusCode, headers, body)
@@ -3015,6 +3021,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
+
+	if shouldApplyOpenAIReasoningEffortGuard(account) {
+		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, reqModel, "responses"); blocked != nil {
+			return nil, blocked
+		}
+	}
 
 	if shouldApplyOpenAIReasoningEffortGuard(account) {
 		reasoningDecision := evaluateOpenAIReasoningEffortGuard(body)
@@ -4376,7 +4388,7 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
 	reqModel, _, _ := extractOpenAIRequestMetaFromBody(requestBody)
-	_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
+	_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel, "responses")
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
@@ -4420,7 +4432,7 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	// 透传模式保留原始上游错误响应，但运行态账号状态仍需更新，
 	// 避免粘性路由继续复用刚被限流的账号。
 	reqModel, _, _ := extractOpenAIRequestMetaFromBody(requestBody)
-	_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
+	_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel, "responses")
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		Platform:             account.Platform,
 		AccountID:            account.ID,
@@ -5284,7 +5296,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	if reqModel == "" {
 		reqModel, _, _ = extractOpenAIRequestMetaFromBody(requestBody)
 	}
-	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel)
+	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, reqModel, "responses")
 	kind := "http_error"
 	if shouldDisable {
 		kind = "failover"
@@ -5423,7 +5435,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		modelForCooldown = requestedModel[0]
 	}
 	shouldDisable := s.handleOpenAIAccountUpstreamError(
-		c.Request.Context(), account, resp.StatusCode, resp.Header, body, modelForCooldown,
+		c.Request.Context(), account, resp.StatusCode, resp.Header, body, modelForCooldown, "responses",
 	)
 	kind := "http_error"
 	if shouldDisable {

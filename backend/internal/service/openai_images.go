@@ -557,6 +557,13 @@ func (s *OpenAIGatewayService) ForwardImages(
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
 	case AccountTypeOAuth:
+		model := strings.TrimSpace(parsed.Model)
+		if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+			model = mapped
+		}
+		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, model, "images"); blocked != nil {
+			return nil, blocked
+		}
 		return s.forwardOpenAIImagesOAuth(ctx, c, account, parsed, channelMappedModel)
 	default:
 		return nil, fmt.Errorf("unsupported account type: %s", account.Type)

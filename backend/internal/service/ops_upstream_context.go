@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -151,6 +152,11 @@ type OpsUpstreamErrorEvent struct {
 	// Kind: http_error | request_error | retry_exhausted | failover
 	Kind string `json:"kind,omitempty"`
 
+	RuntimeGuardBucket   string `json:"runtime_guard_bucket,omitempty"`
+	RuntimeGuardCategory string `json:"runtime_guard_category,omitempty"`
+	RuntimeGuardMetric   string `json:"runtime_guard_metric,omitempty"`
+	RuntimeGuardAction   string `json:"runtime_guard_action,omitempty"`
+
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
 }
@@ -171,6 +177,22 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.Detail = strings.TrimSpace(ev.Detail)
 	if ev.Message != "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
+	}
+	if ev.Platform == PlatformOpenAI || ev.RuntimeGuardBucket != "" {
+		if ev.RuntimeGuardBucket == "" {
+			classification := ClassifyOpenAIRuntimeGuardUpstreamError(ev.UpstreamStatusCode, nil, []byte(firstNonBlankString(ev.Detail, ev.UpstreamResponseBody)), ev.Message)
+			if classification.Bucket != "" {
+				ev.RuntimeGuardBucket = classification.Bucket
+				ev.RuntimeGuardCategory = classification.Category
+				ev.RuntimeGuardMetric = classification.Metric
+				ev.RuntimeGuardAction = classification.Action
+			}
+		}
+		if ev.RuntimeGuardBucket != "" {
+			ev.Message = redactOpenAIRuntimeGuardOpaquePayloadMarkers(ev.Message)
+			ev.Detail = sanitizeOpsUpstreamRuntimeGuardPayload(ev.Detail)
+			ev.UpstreamResponseBody = sanitizeOpsUpstreamRuntimeGuardPayload(ev.UpstreamResponseBody)
+		}
 	}
 
 	var existing []*OpsUpstreamErrorEvent
@@ -255,4 +277,19 @@ func safeUpstreamURL(rawURL string) string {
 		rawURL = rawURL[:idx]
 	}
 	return rawURL
+}
+
+var (
+	encryptedContentJSONRegex = regexp.MustCompile(`(?i)("encrypted_content"\s*:\s*")[^"]*(")`)
+	promptJSONRegex           = regexp.MustCompile(`(?i)("(?:prompt|input|instructions|messages)"\s*:\s*")[^"]*(")`)
+)
+
+func sanitizeOpsUpstreamRuntimeGuardPayload(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = sanitizeUpstreamErrorMessage(raw)
+	raw = redactOpenAIRuntimeGuardOpaquePayloadMarkers(raw)
+	return truncateString(raw, 2048)
 }
