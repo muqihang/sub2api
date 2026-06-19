@@ -223,6 +223,32 @@ func TestOpsServiceRecordErrorBatch_RuntimeGuardSingleFieldRedactsOpaquePayload(
 	require.Contains(t, *captured[0].UpstreamErrorsJSON, `"runtime_guard_bucket":"invalid_encrypted_content"`)
 }
 
+func TestOpsServiceRecordErrorBatch_RuntimeGuardPrimaryFieldsRedactOpaquePayload(t *testing.T) {
+	var captured []*OpsInsertErrorLogInput
+	repo := &opsRepoMock{
+		InsertErrorLogFn: func(ctx context.Context, input *OpsInsertErrorLogInput) (int64, error) {
+			captured = append(captured, input)
+			return int64(len(captured)), nil
+		},
+	}
+	svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	message := `{"access_token":"ACCESS_BEFORE \\\" ACCESS_AFTER","refresh_token":"REFRESH_BEFORE \\\" REFRESH_AFTER","api_key":"sk-proj-BEFORE \\\" API_AFTER"`
+	body := `{"error":{"code":"invalid_encrypted_content","message":"broken"},"prompt":"PROMPT_BEFORE \\\" PROMPT_AFTER","input":[{"content":"INPUT_SECRET"}],"messages":[{"content":"MESSAGE_SECRET"}],"instructions":"INSTRUCTIONS_SECRET","encrypted_content":"ENCRYPTED_SECRET","access_token":"ACCESS_BEFORE \\\" ACCESS_AFTER","refresh_token":"REFRESH_BEFORE \\\" REFRESH_AFTER","api_key":"sk-proj-BEFORE \\\" API_AFTER"`
+	entry := &OpsInsertErrorLogInput{
+		Platform:     PlatformOpenAI,
+		StatusCode:   http.StatusBadRequest,
+		ErrorMessage: message,
+		ErrorBody:    body,
+	}
+
+	require.NoError(t, svc.RecordErrorBatch(context.Background(), []*OpsInsertErrorLogInput{entry}))
+	require.Len(t, captured, 1)
+	combined := captured[0].ErrorMessage + "\n" + captured[0].ErrorBody
+	for _, secret := range []string{"PROMPT_BEFORE", "PROMPT_AFTER", "INPUT_SECRET", "MESSAGE_SECRET", "INSTRUCTIONS_SECRET", "ENCRYPTED_SECRET", "ACCESS_BEFORE", "ACCESS_AFTER", "REFRESH_BEFORE", "REFRESH_AFTER", "sk-proj-BEFORE", "API_AFTER"} {
+		require.NotContains(t, combined, secret)
+	}
+}
+
 func TestOpenAIRuntimeGuardOpsRedactsEscapedJSONMessagePayload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	inner := `{"input":[{"content":"PROMPT_SECRET"}],"messages":[{"content":"MESSAGE_SECRET"}],"encrypted_content":"ENCRYPTED_SECRET","access_token":"ACCESS_SECRET","refresh_token":"REFRESH_SECRET","api_key":"sk-proj-secretsecretsecret"}`

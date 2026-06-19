@@ -224,8 +224,19 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 
 	// Sanitize + truncate error_body to avoid storing sensitive data.
 	if strings.TrimSpace(entry.ErrorBody) != "" {
-		sanitized, _ := sanitizeErrorBodyForStorage(entry.ErrorBody, opsMaxStoredErrorBodyBytes)
-		entry.ErrorBody = sanitized
+		if opsEntryHasOpenAIRuntimeGuardPrimaryError(entry) {
+			entry.ErrorBody = sanitizeOpsUpstreamRuntimeGuardPayload(entry.ErrorBody)
+		} else {
+			sanitized, _ := sanitizeErrorBodyForStorage(entry.ErrorBody, opsMaxStoredErrorBodyBytes)
+			entry.ErrorBody = sanitized
+		}
+	}
+	if strings.TrimSpace(entry.ErrorMessage) != "" {
+		if opsEntryHasOpenAIRuntimeGuardPrimaryError(entry) {
+			entry.ErrorMessage = truncateString(sanitizeOpenAIRuntimeGuardMessage(entry.ErrorMessage), 2048)
+		} else {
+			entry.ErrorMessage = truncateString(sanitizeUpstreamErrorMessage(entry.ErrorMessage), 2048)
+		}
 	}
 
 	// Sanitize upstream error context if provided by gateway services.
@@ -274,6 +285,18 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	}
 
 	return entry, true, nil
+}
+
+func opsEntryHasOpenAIRuntimeGuardPrimaryError(entry *OpsInsertErrorLogInput) bool {
+	if entry == nil || entry.Platform != PlatformOpenAI {
+		return false
+	}
+	status := entry.StatusCode
+	if entry.UpstreamStatusCode != nil && *entry.UpstreamStatusCode > 0 {
+		status = *entry.UpstreamStatusCode
+	}
+	classification := ClassifyOpenAIRuntimeGuardUpstreamError(status, nil, []byte(entry.ErrorBody), entry.ErrorMessage)
+	return classification.Bucket != ""
 }
 
 func sanitizeOpsEntryUpstreamDetail(entry *OpsInsertErrorLogInput, detail string) string {
