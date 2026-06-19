@@ -856,6 +856,35 @@ func TestOpenAIGatewayService_DoNativeResponsesRequest_OldCodexPersonaFallbackRe
 	require.Equal(t, "gpt-5.3-codex", gjson.GetBytes(upstream.lastBody, "model").String())
 }
 
+func TestOpenAIGatewayService_DoNativeResponsesRequest_LearnedBlockChecksResolvedModelBeforeUpstream(t *testing.T) {
+	upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:          6306,
+		Name:        "openai-oauth-native-learned-block",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+			"model_mapping":      map[string]any{"alias-gpt": "gpt-5.4"},
+		},
+	}
+	classification := OpenAIRuntimeGuardUpstreamErrorClassification{Bucket: OpenAIRuntimeGuardBucketUnsupportedOAuthModelChannel, Category: "capability.unsupported_oauth_model_profile_channel", Metric: "openai_runtime_guard.upstream.unsupported_oauth_model_channel", Action: "learn_block", TTL: time.Minute}
+	require.True(t, svc.RecordOpenAIRuntimeGuardLearnedBlock(openAIRuntimeGuardLearnedBlockScopeForAccount(account, "gpt-5.4", "responses"), classification))
+
+	resp, err := svc.DoNativeResponsesRequest(context.Background(), account, nil, []byte(`{"model":"alias-gpt","input":"hi"}`), false)
+
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var blocked *OpenAIRuntimeGuardBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, http.StatusBadRequest, blocked.StatusCode)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(blocked.Payload, "error.code").String())
+	require.Len(t, upstream.bodies, 0, "resolved-model learned block must not call upstream")
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_CompleteRuntimeGuardLocalBlockNotCapturedAsUpstream(t *testing.T) {
 	adapter, upstream := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil)
 	account := newCodexGatewayOpenAIOAuthAccountForTest()

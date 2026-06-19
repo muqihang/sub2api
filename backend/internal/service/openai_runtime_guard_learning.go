@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -160,31 +161,153 @@ func redactOpenAIRuntimeGuardOpaquePayloadMarkers(value string) string {
 	}
 	var decoded any
 	if json.Unmarshal([]byte(value), &decoded) == nil {
-		redactOpenAIRuntimeGuardOpaqueJSON(decoded)
+		decoded = redactOpenAIRuntimeGuardOpaqueJSON(decoded)
 		if raw, err := json.Marshal(decoded); err == nil {
 			return string(raw)
 		}
 	}
-	out := encryptedContentJSONRegex.ReplaceAllString(value, `$1[redacted]$3`)
-	out = promptJSONRegex.ReplaceAllString(out, `$1[redacted]$3`)
-	return out
+	return redactOpenAIRuntimeGuardOpaqueFallback(value)
 }
 
-func redactOpenAIRuntimeGuardOpaqueJSON(value any) {
+func redactOpenAIRuntimeGuardOpaqueJSON(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
 			lower := strings.ToLower(strings.TrimSpace(key))
-			if lower == "encrypted_content" || lower == "prompt" || lower == "input" || lower == "messages" || lower == "instructions" {
+			if openAIRuntimeGuardOpaqueJSONKey(lower) {
 				typed[key] = "[redacted]"
 				continue
 			}
-			redactOpenAIRuntimeGuardOpaqueJSON(child)
+			if isSensitiveKey(lower) {
+				typed[key] = "[redacted]"
+				continue
+			}
+			typed[key] = redactOpenAIRuntimeGuardOpaqueJSON(child)
 		}
+		return typed
 	case []any:
-		for _, child := range typed {
-			redactOpenAIRuntimeGuardOpaqueJSON(child)
+		for i, child := range typed {
+			typed[i] = redactOpenAIRuntimeGuardOpaqueJSON(child)
 		}
+		return typed
+	case string:
+		return redactOpenAIRuntimeGuardOpaqueString(typed)
+	}
+	return value
+}
+
+func redactOpenAIRuntimeGuardOpaqueString(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed != "" && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
+		var decoded any
+		if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+			decoded = redactOpenAIRuntimeGuardOpaqueJSON(decoded)
+			if raw, err := json.Marshal(decoded); err == nil {
+				return string(raw)
+			}
+		}
+	}
+	out := sanitizeUpstreamErrorMessage(value)
+	return redactOpenAIRuntimeGuardOpaqueFallback(out)
+}
+
+func openAIRuntimeGuardOpaqueJSONKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "encrypted_content", "prompt", "input", "messages", "instructions":
+		return true
+	default:
+		return false
+	}
+}
+
+var openAIRuntimeGuardOpaqueFallbackFieldRegex = regexp.MustCompile(`(?i)"(encrypted_content|prompt|input|messages|instructions|access_token|refresh_token|id_token|api_key|apikey|x-api-key|client_secret|authorization|password|token)"\s*:\s*`)
+
+func redactOpenAIRuntimeGuardOpaqueFallback(value string) string {
+	out := strings.ReplaceAll(value, `\"`, `"`)
+	pos := 0
+	for {
+		loc := openAIRuntimeGuardOpaqueFallbackFieldRegex.FindStringSubmatchIndex(out[pos:])
+		if loc == nil {
+			break
+		}
+		matchStart := pos + loc[0]
+		prefixEnd := pos + loc[1]
+		key := out[pos+loc[2] : pos+loc[3]]
+		end := openAIRuntimeGuardJSONLikeValueEnd(out, prefixEnd)
+		replacement := `"[redacted]"`
+		if !openAIRuntimeGuardOpaqueJSONKey(key) && isSensitiveKey(key) {
+			replacement = `"***"`
+		}
+		out = out[:prefixEnd] + replacement + out[end:]
+		pos = matchStart + len(out[matchStart:prefixEnd]) + len(replacement)
+		if pos > len(out) {
+			pos = len(out)
+		}
+	}
+	return out
+}
+
+func openAIRuntimeGuardJSONLikeValueEnd(value string, start int) int {
+	for start < len(value) && (value[start] == ' ' || value[start] == '\t' || value[start] == '\r' || value[start] == '\n') {
+		start++
+	}
+	if start >= len(value) {
+		return start
+	}
+	switch value[start] {
+	case '"':
+		for i := start + 1; i < len(value); i++ {
+			if value[i] == '\\' {
+				i++
+				continue
+			}
+			if value[i] == '"' {
+				return i + 1
+			}
+		}
+		return len(value)
+	case '{', '[':
+		stack := []byte{value[start]}
+		inString := false
+		for i := start + 1; i < len(value); i++ {
+			ch := value[i]
+			if inString {
+				if ch == '\\' {
+					i++
+					continue
+				}
+				if ch == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch ch {
+			case '"':
+				inString = true
+			case '{', '[':
+				stack = append(stack, ch)
+			case '}', ']':
+				if len(stack) == 0 {
+					return i
+				}
+				open := stack[len(stack)-1]
+				if (open == '{' && ch == '}') || (open == '[' && ch == ']') {
+					stack = stack[:len(stack)-1]
+					if len(stack) == 0 {
+						return i + 1
+					}
+				}
+			}
+		}
+		return len(value)
+	default:
+		for i := start; i < len(value); i++ {
+			switch value[i] {
+			case ',', '}', ']':
+				return i
+			}
+		}
+		return len(value)
 	}
 }
 

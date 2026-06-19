@@ -223,6 +223,98 @@ func TestOpsServiceRecordErrorBatch_RuntimeGuardSingleFieldRedactsOpaquePayload(
 	require.Contains(t, *captured[0].UpstreamErrorsJSON, `"runtime_guard_bucket":"invalid_encrypted_content"`)
 }
 
+func TestOpenAIRuntimeGuardOpsRedactsEscapedJSONMessagePayload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	inner := `{"input":[{"content":"PROMPT_SECRET"}],"messages":[{"content":"MESSAGE_SECRET"}],"encrypted_content":"ENCRYPTED_SECRET","access_token":"ACCESS_SECRET","refresh_token":"REFRESH_SECRET","api_key":"sk-proj-secretsecretsecret"}`
+	bodyMap := map[string]any{
+		"error": map[string]any{
+			"code":    "invalid_encrypted_content",
+			"message": inner,
+			"type":    "invalid_request_error",
+		},
+	}
+	body, err := json.Marshal(bodyMap)
+	require.NoError(t, err)
+
+	classification := ClassifyOpenAIRuntimeGuardUpstreamError(http.StatusBadRequest, nil, body, "")
+	require.Equal(t, OpenAIRuntimeGuardBucketInvalidEncryptedContent, classification.Bucket)
+
+	c, _ := gin.CreateTestContext(nil)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:             PlatformOpenAI,
+		UpstreamStatusCode:   http.StatusBadRequest,
+		Kind:                 "http_error",
+		Message:              "invalid_encrypted_content",
+		Detail:               string(body),
+		UpstreamResponseBody: string(body),
+	})
+
+	singleDetailRaw, ok := c.Get(OpsUpstreamErrorDetailKey)
+	require.True(t, ok)
+	singleDetail, _ := singleDetailRaw.(string)
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	serializedEvents, err := json.Marshal(rawEvents)
+	require.NoError(t, err)
+	combined := classification.Message + "\n" + singleDetail + "\n" + string(serializedEvents)
+	for _, secret := range []string{"PROMPT_SECRET", "MESSAGE_SECRET", "ENCRYPTED_SECRET", "ACCESS_SECRET", "REFRESH_SECRET", "sk-proj-secretsecretsecret"} {
+		require.NotContains(t, combined, secret)
+	}
+}
+
+func TestOpsServiceRecordErrorBatch_RuntimeGuardRedactsEscapedJSONEventMessage(t *testing.T) {
+	var captured []*OpsInsertErrorLogInput
+	repo := &opsRepoMock{
+		InsertErrorLogFn: func(ctx context.Context, input *OpsInsertErrorLogInput) (int64, error) {
+			captured = append(captured, input)
+			return int64(len(captured)), nil
+		},
+	}
+	svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	inner := `{"input":[{"content":"PROMPT_SECRET"}],"messages":[{"content":"MESSAGE_SECRET"}],"encrypted_content":"ENCRYPTED_SECRET","access_token":"ACCESS_SECRET","refresh_token":"REFRESH_SECRET","api_key":"sk-proj-secretsecretsecret"}`
+	bodyMap := map[string]any{
+		"error": map[string]any{
+			"code":    "invalid_encrypted_content",
+			"message": inner,
+			"type":    "invalid_request_error",
+		},
+	}
+	body, err := json.Marshal(bodyMap)
+	require.NoError(t, err)
+	entry := &OpsInsertErrorLogInput{
+		Platform:             PlatformOpenAI,
+		UpstreamStatusCode:   intPtr(http.StatusBadRequest),
+		UpstreamErrorMessage: strPtr(inner),
+		UpstreamErrorDetail:  strPtr(string(body)),
+		UpstreamErrors: []*OpsUpstreamErrorEvent{{
+			Platform:           PlatformOpenAI,
+			UpstreamStatusCode: http.StatusBadRequest,
+			Kind:               "http_error",
+			Message:            inner,
+			Detail:             string(body),
+		}},
+	}
+
+	require.NoError(t, svc.RecordErrorBatch(context.Background(), []*OpsInsertErrorLogInput{entry}))
+	require.Len(t, captured, 1)
+	require.NotNil(t, captured[0].UpstreamErrorMessage)
+	require.NotNil(t, captured[0].UpstreamErrorDetail)
+	require.NotNil(t, captured[0].UpstreamErrorsJSON)
+	combined := *captured[0].UpstreamErrorMessage + "\n" + *captured[0].UpstreamErrorDetail + "\n" + *captured[0].UpstreamErrorsJSON
+	for _, secret := range []string{"PROMPT_SECRET", "MESSAGE_SECRET", "ENCRYPTED_SECRET", "ACCESS_SECRET", "REFRESH_SECRET", "sk-proj-secretsecretsecret"} {
+		require.NotContains(t, combined, secret)
+	}
+}
+
+func TestOpenAIRuntimeGuardOpsRedactsMalformedJSONFallbackPayload(t *testing.T) {
+	broken := `{"error":{"code":"invalid_encrypted_content","message":"broken","input":[{"content":"PROMPT_SECRET"}],"messages":[{"content":"MESSAGE_SECRET"}],"instructions":{"text":"INSTRUCTIONS_SECRET"},"encrypted_content":{"value":"ENCRYPTED_SECRET"},"access_token":"ACCESS_SECRET","refresh_token":"REFRESH_SECRET","api_key":"sk-proj-secretsecretsecret"`
+
+	out := sanitizeOpsUpstreamRuntimeGuardPayload(broken)
+	for _, secret := range []string{"PROMPT_SECRET", "MESSAGE_SECRET", "INSTRUCTIONS_SECRET", "ENCRYPTED_SECRET", "ACCESS_SECRET", "REFRESH_SECRET", "sk-proj-secretsecretsecret"} {
+		require.NotContains(t, out, secret)
+	}
+}
+
 func TestOpenAIRuntimeGuardLearnedBlockScopeIncludesCapabilityVersion(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	classification := OpenAIRuntimeGuardUpstreamErrorClassification{Bucket: OpenAIRuntimeGuardBucketUnsupportedOAuthModelChannel, Category: "capability.unsupported_oauth_model_profile_channel", Metric: "openai_runtime_guard.upstream.unsupported_oauth_model_channel", Action: "learn_block", TTL: time.Minute}

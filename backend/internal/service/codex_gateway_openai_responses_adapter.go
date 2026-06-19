@@ -19,6 +19,14 @@ type codexGatewayOpenAIResponsesAdapter struct {
 	gateway *OpenAIGatewayService
 }
 
+func openAINativeResponsesResolvedModelFromBody(account *Account, body []byte) string {
+	requestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if requestedModel == "" {
+		return ""
+	}
+	return openAIAccountRuntimeGuardResolvedUpstreamModel(account, requestedModel)
+}
+
 func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
 	if a == nil || a.gateway == nil {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex gateway openai adapter is not configured")
@@ -27,6 +35,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
+	upstreamModel := openAINativeResponsesResolvedModelFromBody(account, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, false)
 	if err != nil {
 		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
@@ -55,7 +64,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if resp.StatusCode >= 400 {
 		msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if a.gateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, body) {
-			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
+			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account, upstreamModel, "responses")
 			return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: append([]byte(nil), body...)}
 		}
 		return CodexGatewayDeepSeekAdapterResult{ServiceResponse: serviceResp}, nil
@@ -103,6 +112,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	if err != nil {
 		return CodexGatewayProviderResult{}, err
 	}
+	upstreamModel := openAINativeResponsesResolvedModelFromBody(account, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, true)
 	if err != nil {
 		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
@@ -135,7 +145,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, body)
 		msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if a.gateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, body) {
-			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
+			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account, upstreamModel, "responses")
 			return CodexGatewayProviderResult{}, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: append([]byte(nil), body...)}
 		}
 		mapped := codexGatewayDeepSeekMapErrorBody(resp.StatusCode, body)
