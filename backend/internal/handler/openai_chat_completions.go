@@ -276,6 +276,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					)
 					continue
 				}
+				if isOpenAIRuntimeGuardLocalBlock(err) {
+					reqLog.Warn("openai_chat_completions.runtime_guard_blocked", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
+				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, upstreamErrorAlreadyCommunicated) {

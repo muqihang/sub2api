@@ -140,11 +140,6 @@ func openAIOAuthAccountSupportsRequestedModel(account *Account, requestedModel s
 	if isOpenAIImageGenerationModel(model) {
 		return imageCapability == OpenAIImagesCapabilityBasic && openAIOAuthAccountSupportsImageBridge(account)
 	}
-	if account != nil {
-		if mapped := strings.TrimSpace(account.GetMappedModel(model)); mapped != "" && mapped != model {
-			model = mapped
-		}
-	}
 	return openAIOAuthBuiltInModelSeedSupports(model)
 }
 

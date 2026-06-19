@@ -557,3 +557,41 @@ func TestOpenAIRuntimeGuardCapabilitySelectionErrorsAreStructured(t *testing.T) 
 		require.Equal(t, openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock, blocked.RuntimeGuardCategory())
 	})
 }
+
+func TestOpenAIRuntimeGuardCapabilityOAuthMappingDoesNotAuthorizeUnsupportedRequestedModel(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30313)
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{{
+			ID:          3031301,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.4-nano": "gpt-5.4"}},
+		}}},
+		cache:              &schedulerTestGatewayCache{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.4-nano",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.Error(t, err)
+	require.Nil(t, selection)
+	var selectionErr *OpenAIRuntimeGuardSelectionError
+	require.ErrorAs(t, err, &selectionErr)
+	require.Equal(t, OpenAIRuntimeGuardErrorCodeUnsupportedOAuthCapability, selectionErr.Code)
+	require.Equal(t, openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthModel, selectionErr.Category)
+}

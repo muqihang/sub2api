@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -107,6 +108,46 @@ func (c *entityRateLimitCacheForHandlerTest) AddEntityCost(ctx context.Context, 
 	return 0, nil
 }
 
+type openAIFastPolicyHandlerSettingRepoStub struct {
+	values map[string]string
+}
+
+func (r *openAIFastPolicyHandlerSettingRepoStub) Get(ctx context.Context, key string) (*service.Setting, error) {
+	return nil, service.ErrSettingNotFound
+}
+
+func (r *openAIFastPolicyHandlerSettingRepoStub) GetValue(ctx context.Context, key string) (string, error) {
+	if value, ok := r.values[key]; ok {
+		return value, nil
+	}
+	return "", service.ErrSettingNotFound
+}
+
+func (r *openAIFastPolicyHandlerSettingRepoStub) Set(ctx context.Context, key, value string) error {
+	if r.values == nil {
+		r.values = map[string]string{}
+	}
+	r.values[key] = value
+	return nil
+}
+
+func (r *openAIFastPolicyHandlerSettingRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	return nil, service.ErrSettingNotFound
+}
+
+func (r *openAIFastPolicyHandlerSettingRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
+	return nil
+}
+
+func (r *openAIFastPolicyHandlerSettingRepoStub) GetAll(ctx context.Context) (map[string]string, error) {
+	return nil, nil
+}
+
+func (r *openAIFastPolicyHandlerSettingRepoStub) Delete(ctx context.Context, key string) error {
+	delete(r.values, key)
+	return nil
+}
+
 type openAIEgressPolicyHarnessConfigHook func(*config.Config)
 
 func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account, optionalDeps ...any) (*OpenAIGatewayHandler, *openAIEgressPolicyHandlerUpstream) {
@@ -124,10 +165,14 @@ func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account, 
 	}
 	cfg.Default.RateMultiplier = 1
 	serviceOptionalDeps := make([]any, 0, len(optionalDeps)+1)
+	var settingSvc *service.SettingService
 	for _, dep := range optionalDeps {
 		if hook, ok := dep.(openAIEgressPolicyHarnessConfigHook); ok {
 			hook(cfg)
 			continue
+		}
+		if svc, ok := dep.(*service.SettingService); ok {
+			settingSvc = svc
 		}
 		serviceOptionalDeps = append(serviceOptionalDeps, dep)
 	}
@@ -137,6 +182,10 @@ func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account, 
 	upstream := &openAIEgressPolicyHandlerUpstream{}
 	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingCache.Stop)
+	rateLimitSvc := service.NewRateLimitService(repo, nil, cfg, nil, nil)
+	if settingSvc != nil {
+		rateLimitSvc.SetSettingService(settingSvc)
+	}
 	serviceOptionalDeps = append(serviceOptionalDeps, core)
 
 	gatewaySvc := service.NewOpenAIGatewayService(
@@ -151,7 +200,7 @@ func newOpenAIEgressPolicyHandlerHarness(t *testing.T, account service.Account, 
 		nil,
 		nil,
 		service.NewBillingService(cfg, nil),
-		nil,
+		rateLimitSvc,
 		billingCache,
 		upstream,
 		&service.DeferredService{},
@@ -318,4 +367,58 @@ func TestOpenAIImagesHandlerMapsEgressPolicyError(t *testing.T) {
 	h.Images(c)
 
 	requireOpenAIEgressPolicyHandlerResponse(t, rec, upstream)
+}
+
+func TestOpenAIChatCompletionsFastPolicyBlockDoesNotReportSchedulerFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	settings := &service.OpenAIFastPolicySettings{
+		Rules: []service.OpenAIFastPolicyRule{{
+			ServiceTier:    service.OpenAIFastTierPriority,
+			Action:         service.BetaPolicyActionBlock,
+			Scope:          service.BetaPolicyScopeAll,
+			ErrorMessage:   "priority tier disabled by local policy",
+			ModelWhitelist: []string{},
+			FallbackAction: service.BetaPolicyActionPass,
+		}},
+	}
+	settingsRepo := &openAIFastPolicyHandlerSettingRepoStub{values: map[string]string{}}
+	rawSettings, err := json.Marshal(settings)
+	require.NoError(t, err)
+	settingsRepo.values[service.SettingKeyOpenAIFastPolicySettings] = string(rawSettings)
+	settingsRepo.values["openai_advanced_scheduler_enabled"] = "true"
+
+	account := service.Account{
+		ID:          19306,
+		Name:        "openai-apikey-fast-block",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.openai.com",
+		},
+		Extra: map[string]any{
+			openai_compat.ExtraKeyResponsesSupported: false,
+		},
+	}
+	h, upstream := newOpenAIEgressPolicyHandlerHarness(
+		t,
+		account,
+		service.NewSettingService(settingsRepo, &config.Config{}),
+	)
+	body := []byte(`{"model":"gpt-5.3-codex","messages":[{"role":"user","content":"hello"}],"stream":false,"service_tier":"priority"}`)
+	c, rec := newOpenAIEgressPolicyHandlerContext(http.MethodPost, "/v1/chat/completions", body)
+
+	h.ChatCompletions(c)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(rec.Body.Bytes(), "error.category").String())
+	require.Zero(t, upstream.calls)
+	snapshot := h.gatewayService.SnapshotOpenAIAccountSchedulerMetrics()
+	require.Zero(t, snapshot.RuntimeStatsAccountCount)
+	require.Zero(t, snapshot.AccountSwitchTotal)
 }

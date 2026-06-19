@@ -119,7 +119,11 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 
 func isOpenAIRuntimeGuardLocalBlock(err error) bool {
 	var blocked *service.OpenAIRuntimeGuardBlockedError
-	return errors.As(err, &blocked)
+	if errors.As(err, &blocked) {
+		return true
+	}
+	var fastBlocked *service.OpenAIFastBlockedError
+	return errors.As(err, &fastBlocked)
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler.
