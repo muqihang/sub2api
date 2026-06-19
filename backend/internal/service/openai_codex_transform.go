@@ -1269,16 +1269,15 @@ func normalizeCodexTools(reqBody map[string]any) bool {
 			continue
 		}
 
-		// OpenAI Responses-style tools use top-level name/parameters.
-		if name, ok := toolMap["name"].(string); ok && strings.TrimSpace(name) != "" {
-			validTools = append(validTools, toolMap)
-			continue
-		}
-
 		// ChatCompletions-style tools use {type:"function", function:{...}}.
 		functionValue, hasFunction := toolMap["function"]
 		function, ok := functionValue.(map[string]any)
 		if !hasFunction || functionValue == nil || !ok || function == nil {
+			// OpenAI Responses-style tools use top-level name/parameters.
+			if name, ok := toolMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+				validTools = append(validTools, toolMap)
+				continue
+			}
 			// Drop invalid function tools.
 			modified = true
 			continue
