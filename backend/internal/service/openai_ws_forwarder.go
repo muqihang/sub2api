@@ -2895,7 +2895,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
 				coderws.StatusPolicyViolation,
-				openAIRuntimeGuardSelectionWSReason(selectionErr),
+				OpenAIRuntimeGuardSelectionWSReason(selectionErr),
 				selectionErr,
 			)
 		}

@@ -1909,6 +1909,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			var selectionErr *service.OpenAIRuntimeGuardSelectionError
+			if errors.As(err, &selectionErr) && selectionErr != nil {
+				writeOpenAISelectionErrorWS(ctx, wsConn, h.openAIWSWriteTimeout(), selectionErr)
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.OpenAIRuntimeGuardSelectionWSReason(selectionErr))
+				return
+			}
 			if lastFailoverErr != nil {
 				closeOpenAIWSFailoverExhausted(wsConn, lastFailoverErr)
 			} else {
@@ -2622,6 +2628,26 @@ func isOpenAIWSUpgradeRequest(r *http.Request) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(strings.TrimSpace(r.Header.Get("Connection"))), "upgrade")
+}
+
+func (h *OpenAIGatewayHandler) openAIWSWriteTimeout() time.Duration {
+	if h != nil && h.cfg != nil && h.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds > 0 {
+		return time.Duration(h.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds) * time.Second
+	}
+	return 3 * time.Second
+}
+
+func writeOpenAISelectionErrorWS(ctx context.Context, conn *coderws.Conn, timeout time.Duration, selectionErr *service.OpenAIRuntimeGuardSelectionError) {
+	if conn == nil || selectionErr == nil {
+		return
+	}
+	eventBytes := service.BuildOpenAIRuntimeGuardSelectionWSEvent(selectionErr)
+	if eventBytes == nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, timeout)
+	_ = conn.Write(writeCtx, coderws.MessageText, eventBytes)
+	cancel()
 }
 
 func closeOpenAIClientWS(conn *coderws.Conn, status coderws.StatusCode, reason string) {

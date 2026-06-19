@@ -324,7 +324,7 @@ func (s *OpenAIGatewayService) ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(
 	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, payload)
 }
 
-func buildOpenAIRuntimeGuardSelectionWSEvent(selectionErr *OpenAIRuntimeGuardSelectionError) []byte {
+func BuildOpenAIRuntimeGuardSelectionWSEvent(selectionErr *OpenAIRuntimeGuardSelectionError) []byte {
 	if selectionErr == nil {
 		return nil
 	}
@@ -357,7 +357,7 @@ func buildOpenAIRuntimeGuardSelectionWSEvent(selectionErr *OpenAIRuntimeGuardSel
 	return payload
 }
 
-func openAIRuntimeGuardSelectionWSReason(selectionErr *OpenAIRuntimeGuardSelectionError) string {
+func OpenAIRuntimeGuardSelectionWSReason(selectionErr *OpenAIRuntimeGuardSelectionError) string {
 	if selectionErr == nil {
 		return "unsupported OpenAI OAuth capability"
 	}
@@ -371,7 +371,7 @@ func writeOpenAIRuntimeGuardSelectionWSEvent(ctx context.Context, conn *coderws.
 	if conn == nil || selectionErr == nil {
 		return
 	}
-	eventBytes := buildOpenAIRuntimeGuardSelectionWSEvent(selectionErr)
+	eventBytes := BuildOpenAIRuntimeGuardSelectionWSEvent(selectionErr)
 	if eventBytes == nil {
 		return
 	}

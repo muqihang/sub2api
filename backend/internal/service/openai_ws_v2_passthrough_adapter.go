@@ -451,7 +451,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if selectionErr := openAIAccountRuntimeGuardSelectionError(account, sessionRequestModel, ""); selectionErr != nil {
 					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
-					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
 				}
 			}
 			if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
@@ -470,7 +470,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if selectionErr := openAIAccountRuntimeGuardSelectionError(account, requestModelForThisFrame, imageCapability); selectionErr != nil {
 					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
-					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
 				}
 			}
 			// Per-frame model first; if the client omits "model" on a

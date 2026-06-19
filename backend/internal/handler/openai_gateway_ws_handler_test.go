@@ -435,6 +435,74 @@ func TestOpenAIGatewayWSHandler_RetriesAnotherAccountWhenFirstUpstreamPreludeThe
 	require.GreaterOrEqual(t, accountRepo.listCalls.Load(), int32(2), "should re-select account after first upstream prelude close failure")
 }
 
+func TestOpenAIGatewayWSHandler_InitialUnsupportedOAuthModelReturnsStructuredSelectionError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	usageCreated := make(chan *service.UsageLog, 1)
+	settingsRepo := &wsHandlerSettingRepo{values: map[string]string{
+		"openai_advanced_scheduler_enabled": "true",
+	}}
+	settingSvc := service.NewSettingService(settingsRepo, &config.Config{})
+
+	accounts := []service.Account{{
+		ID:          8701,
+		Name:        "openai-oauth-unsupported-ws",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+		Extra: map[string]any{
+			"openai_oauth_responses_websockets_v2_enabled": true,
+		},
+	}}
+
+	h, accountRepo, cleanup := newOpenAIWSIntegrationHandler(t, accounts, settingSvc, &openAIWSUsageHandlerUsageLogRepoStub{created: usageCreated})
+	defer cleanup()
+	sub2apiServer := newOpenAIWSIntegrationServer(t, h)
+	defer sub2apiServer.Close()
+
+	clientConn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(sub2apiServer.URL, "http")+"/v1/responses", nil)
+	require.NoError(t, err)
+	defer clientConn.Close()
+
+	err = clientConn.WriteJSON(map[string]any{
+		"type":   "response.create",
+		"model":  "gpt-5.4-nano",
+		"stream": false,
+		"input":  []any{map[string]any{"type": "input_text", "text": "hello unsupported oauth"}},
+	})
+	require.NoError(t, err)
+
+	_, clientMessage, err := clientConn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, "error", gjson.GetBytes(clientMessage, "type").String())
+	require.Equal(t, "unsupported_oauth_capability", gjson.GetBytes(clientMessage, "error.code").String())
+	require.Equal(t, "capability.unsupported_oauth_model_profile", gjson.GetBytes(clientMessage, "error.category").String())
+	require.Equal(t, "model", gjson.GetBytes(clientMessage, "error.param").String())
+
+	_, _, closeErr := clientConn.ReadMessage()
+	require.Error(t, closeErr)
+	var wsCloseErr *websocket.CloseError
+	require.ErrorAs(t, closeErr, &wsCloseErr)
+	require.Equal(t, websocket.ClosePolicyViolation, wsCloseErr.Code)
+
+	snapshot := h.gatewayService.SnapshotOpenAIAccountSchedulerMetrics()
+	require.Zero(t, snapshot.RuntimeStatsAccountCount, "selection local block must not report scheduler failure")
+	require.Equal(t, int32(1), accountRepo.listCalls.Load(), "selection local block must not fail over")
+
+	select {
+	case <-usageCreated:
+		t.Fatal("selection local block must not record usage")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestOpenAIGatewayWSHandler_LocalFastPolicyBlockDoesNotReportSchedulerFailureOrUpstreamUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
