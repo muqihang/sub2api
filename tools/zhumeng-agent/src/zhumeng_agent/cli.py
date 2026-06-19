@@ -768,7 +768,7 @@ def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, obje
     catalog_version = str(os.environ.get("SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION") or os.environ.get("ZHUMENG_CLAUDE_CATALOG_VERSION") or _catalog_version_from_state(state) or "")
     bridge_live_models = _active_runtime_bridge_live_models(getattr(active_runtime, "patches", {})) if active_runtime is not None else ()
     catalog_hash = str(os.environ.get("ZHUMENG_CLAUDE_CATALOG_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_CATALOG_HASH") or route_catalog_content_hash_for_cp8_live(catalog_version, bridge_live_models=bridge_live_models) or "")
-    return {
+    payload = {
         "run_id": args.run_id,
         "output_root": args.output_root,
         "base_url": str(args.sub2api_base_url or os.environ.get("SUB2API_CP8_LIVE_BASE_URL") or os.environ.get("SUB2API_BASE_URL") or _managed_state_str(state, "gateway_base_url") or ""),
@@ -780,6 +780,19 @@ def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, obje
         "catalog_hash": catalog_hash,
         "catalog_version": catalog_version,
     }
+    managed_session_id = _managed_state_str(state, "claude_code_native_managed_session_id") or _managed_state_str(state, "managed_session_id")
+    raw_device_id = state.get("claude_code_native_device_id")
+    if raw_device_id is None or str(raw_device_id).strip() == "":
+        raw_device_id = state.get("device_id")
+    if managed_session_id and raw_device_id is not None and str(raw_device_id).strip():
+        try:
+            device_id = int(raw_device_id)
+        except (TypeError, ValueError):
+            device_id = 0
+        if device_id > 0:
+            payload["managed_session_id"] = managed_session_id
+            payload["device_id"] = device_id
+    return payload
 
 
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:

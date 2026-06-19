@@ -101,7 +101,7 @@ _STRICT_LIVE_PROVIDER_ENDPOINTS = {
     "deepseek": frozenset({"https://api.deepseek.com/anthropic/v1/messages"}),
 }
 _STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST = {
-    "claude": frozenset({"claude-sonnet-4-6", "claude-opus-4-8"}),
+    "claude": frozenset({"claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8"}),
     "openai": frozenset({"gpt-5.5", "gpt-5.4-mini"}),
     "deepseek": frozenset({"deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"}),
 }
@@ -1086,6 +1086,9 @@ def collect_cp8_sub2api_gateway_live_provenance(
     overlay_hash: str | None = None,
     catalog_hash: str | None = None,
     catalog_version: str | None = None,
+    managed_session_id: str | None = None,
+    device_id: int | str | None = None,
+    agent_version: str | None = None,
     transport: object | None = None,
 ) -> dict[str, object]:
     run_id = str(run_id or "").strip()
@@ -1111,17 +1114,17 @@ def collect_cp8_sub2api_gateway_live_provenance(
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     provider_specs = {
-        "claude": ("formal_pool", f"{base}/v1/messages", _cp8_live_model("claude"), "claude_code_native", "claude_code_native"),
-        "openai": ("bridge_pool", f"{base}/v1/messages", _cp8_live_model("openai"), "openai_bridge", "claude_code_bridge_openai"),
-        "deepseek": ("bridge_pool", f"{base}/v1/messages", _cp8_live_model("deepseek"), "deepseek_bridge", "claude_code_bridge_deepseek"),
+        "claude": ("formal_pool", f"{base}/v1/messages", _cp8_live_model("claude"), _cp8_sub2api_gateway_request_model("claude"), "claude_code_native", "claude_code_native"),
+        "openai": ("bridge_pool", f"{base}/v1/messages", _cp8_live_model("openai", ignore_env=True), _cp8_sub2api_gateway_request_model("openai"), "openai_bridge", "claude_code_bridge_openai"),
+        "deepseek": ("bridge_pool", f"{base}/v1/messages", _cp8_live_model("deepseek", ignore_env=True), _cp8_sub2api_gateway_request_model("deepseek"), "deepseek_bridge", "claude_code_bridge_deepseek"),
     }
     session_ref = _cp8_live_session_ref(run_id, native_secret=native_secret, route_secret=route_secret)
     probe = transport or _sub2api_gateway_transport
     providers: dict[str, object] = {}
-    for provider, (scope, endpoint, model, route, client_type) in provider_specs.items():
+    for provider, (scope, endpoint, model, request_model, route, client_type) in provider_specs.items():
         body, headers = _cp8_sub2api_gateway_probe_request(
             provider,
-            model,
+            request_model,
             token,
             route=route,
             client_type=client_type,
@@ -1132,6 +1135,9 @@ def collect_cp8_sub2api_gateway_live_provenance(
             catalog_hash=catalog_hash_value,
             catalog_version=catalog_version_value,
             session_ref=session_ref,
+            managed_session_id=managed_session_id,
+            device_id=device_id,
+            agent_version=agent_version,
         )
         result = probe(provider, endpoint, {"body": body, "headers": headers})  # type: ignore[misc]
         if not isinstance(result, Mapping):
@@ -1146,6 +1152,7 @@ def collect_cp8_sub2api_gateway_live_provenance(
             "run_id": run_id,
             "provider": provider,
             "model": model,
+            "request_model": request_model,
             "credential_scope": scope,
             "endpoint": endpoint,
             "host": urlparse(endpoint).hostname or "",
@@ -1199,6 +1206,9 @@ def _cp8_sub2api_gateway_probe_request(
     catalog_hash: str,
     catalog_version: str,
     session_ref: str,
+    managed_session_id: str | None = None,
+    device_id: int | str | None = None,
+    agent_version: str | None = None,
 ) -> tuple[dict[str, object], dict[str, str]]:
     body = {
         "model": model,
@@ -1225,6 +1235,15 @@ def _cp8_sub2api_gateway_probe_request(
             catalog_version=catalog_version,
             session_ref=session_ref,
         ))
+        managed_session = str(managed_session_id or "").strip()
+        device_text = str(device_id or "").strip()
+        headers["User-Agent"] = os.getenv("SUB2API_CP8_CLAUDE_CODE_USER_AGENT", "Claude-Code/2.1.177")
+        headers["anthropic-beta"] = os.getenv("SUB2API_CP8_CLAUDE_CODE_ANTHROPIC_BETA", "claude-code-20250219")
+        headers["x-claude-code-session-id"] = "cp8-" + secrets.token_hex(8)
+        if managed_session and device_text:
+            headers["X-Zhumeng-Managed-Session"] = managed_session
+            headers["X-Zhumeng-Device-ID"] = device_text
+            headers["X-Zhumeng-Agent-Version"] = str(agent_version or "0.1.0").strip() or "0.1.0"
     else:
         headers.update(_cp8_bridge_route_hint_headers(
             body_bytes,
@@ -1319,7 +1338,7 @@ def _cp8_native_attestation_headers(
     key_id = os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID", "guard_v1")
     payload = {
         "key_id": key_id,
-        "scope": os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE", "claude_code_native_v1"),
+        "scope": os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE", "claude_code_native_takeover"),
         "version": int(os.getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", "1")),
         "issued_at": now,
         "nonce": secrets.token_hex(16),
@@ -1605,7 +1624,31 @@ def _cp8_live_probe_request(provider: str, credential: str) -> tuple[dict[str, o
     raise CP8LiveMatrixError(f"CP8 external live probe provider is unsupported: {provider}")
 
 
-def _cp8_live_model(provider: str) -> str:
+def _cp8_sub2api_gateway_request_model(provider: str) -> str:
+    model_env = {
+        "claude": "SUB2API_CLAUDE_CODE_LIVE_CLAUDE_MODEL",
+        "openai": "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL",
+        "deepseek": "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_MODEL",
+    }.get(provider)
+    default_model = {
+        "claude": "claude-haiku-4-5-20251001",
+        "openai": "claude-code-bridge-gpt-5.5",
+        "deepseek": "claude-code-bridge-deepseek-v4-pro",
+    }.get(provider)
+    if not model_env or not default_model:
+        raise CP8LiveMatrixError(f"CP8 Sub2API gateway live probe provider is unsupported: {provider}")
+    model = (os.getenv(model_env) or default_model).strip()
+    allowed = {
+        "claude": _STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST["claude"],
+        "openai": frozenset({"claude-code-bridge-gpt-5.5", "claude-code-bridge-gpt-5.4", "claude-code-bridge-gpt-5.4-mini"}),
+        "deepseek": frozenset({"claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-deepseek-v4-flash"}),
+    }.get(provider, frozenset())
+    if model not in allowed:
+        raise CP8LiveMatrixError(f"CP8 Sub2API gateway live probe model for {provider} is not Claude Code catalog verified: {model}")
+    return model
+
+
+def _cp8_live_model(provider: str, *, ignore_env: bool = False) -> str:
     model_env = {
         "claude": "SUB2API_CLAUDE_CODE_LIVE_CLAUDE_MODEL",
         "openai": "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL",
@@ -1618,7 +1661,8 @@ def _cp8_live_model(provider: str) -> str:
     }.get(provider)
     if not model_env or not default_model:
         raise CP8LiveMatrixError(f"CP8 external live probe provider is unsupported: {provider}")
-    model = (os.getenv(model_env) or default_model).strip()
+    model = ("" if ignore_env else os.getenv(model_env) or "") or default_model
+    model = model.strip()
     allowed = _STRICT_LIVE_PROVIDER_MODEL_ALLOWLIST.get(provider, frozenset())
     if model not in allowed:
         raise CP8LiveMatrixError(f"CP8 live probe model for {provider} is not CP4 live-catalog verified: {model}")

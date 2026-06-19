@@ -1015,6 +1015,83 @@ def test_cp8_sub2api_gateway_live_collector_uses_single_gateway_token_and_routes
         assert "api.anthropic.com" not in artifact_text
 
 
+
+def test_cp8_sub2api_gateway_collector_sends_managed_native_headers_for_claude_probe(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    seen_headers: dict[str, dict[str, str]] = {}
+
+    def transport(provider: str, endpoint: str, request: dict[str, object]) -> dict[str, object]:
+        headers = request["headers"]
+        assert isinstance(headers, dict)
+        seen_headers[provider] = {str(key): str(value) for key, value in headers.items()}
+        return {"status": 200, "request_id": f"sub2api_{provider}_managed_req"}
+
+    collect_cp8_sub2api_gateway_live_provenance(
+        run_id="cp8-sub2api-managed-native",
+        output_root=tmp_path,
+        base_url="http://127.0.0.1:3017",
+        gateway_token="sub2api-gateway-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        managed_session_id="managed-session-cp8",
+        device_id=42,
+        transport=transport,
+    )
+
+    assert seen_headers["claude"]["X-Zhumeng-Managed-Session"] == "managed-session-cp8"
+    assert seen_headers["claude"]["X-Zhumeng-Device-ID"] == "42"
+    assert seen_headers["claude"]["X-Zhumeng-Agent-Version"]
+    encoded = seen_headers["claude"]["x-sub2api-native-attestation"]
+    padded = encoded + "=" * (-len(encoded) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    assert payload["scope"] == "claude_code_native_takeover"
+    for provider in ("openai", "deepseek"):
+        assert "X-Zhumeng-Managed-Session" not in seen_headers[provider]
+        assert "X-Zhumeng-Device-ID" not in seen_headers[provider]
+
+
+def test_cp8_sub2api_gateway_collector_accepts_claude_code_bridge_display_models_for_sub2api_mode(tmp_path: Path, monkeypatch):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "claude-code-bridge-gpt-5.5")
+    monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_MODEL", "claude-code-bridge-deepseek-v4-pro")
+    seen_bodies: dict[str, dict[str, object]] = {}
+
+    def transport(provider: str, endpoint: str, request: dict[str, object]) -> dict[str, object]:
+        body = request["body"]
+        assert isinstance(body, dict)
+        seen_bodies[provider] = body
+        return {"status": 200, "request_id": f"sub2api_{provider}_display_req"}
+
+    provenance = collect_cp8_sub2api_gateway_live_provenance(
+        run_id="cp8-sub2api-display-models",
+        output_root=tmp_path,
+        base_url="http://127.0.0.1:3017",
+        gateway_token="sub2api-gateway-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        transport=transport,
+    )
+
+    assert seen_bodies["openai"]["model"] == "claude-code-bridge-gpt-5.5"
+    assert seen_bodies["deepseek"]["model"] == "claude-code-bridge-deepseek-v4-pro"
+    assert provenance["providers"]["openai"]["model"] == "gpt-5.5"
+    assert provenance["providers"]["deepseek"]["model"] == "deepseek-v4-pro"
+    for provider in ("openai", "deepseek"):
+        artifact = json.loads((tmp_path / provenance["providers"][provider]["artifact_refs"][0]["path"]).read_text(encoding="utf-8"))
+        assert artifact["model"] == provenance["providers"][provider]["model"]
+        assert artifact["request_model"] == seen_bodies[provider]["model"]
+
+
 def test_cp8_sub2api_gateway_live_collector_rejects_official_provider_hosts(tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
 
@@ -1104,6 +1181,9 @@ def test_cp8_sub2api_gateway_live_collector_sends_gateway_auth_and_signed_runtim
     assert by_provider["claude"][1]["x-sub2api-route"] == "claude_code_native"
     assert by_provider["claude"][1]["x-sub2api-native-attestation"]
     assert by_provider["claude"][1]["x-sub2api-native-signature"]
+    assert by_provider["claude"][1]["User-Agent"].startswith("Claude-Code/")
+    assert "claude-code-20250219" in by_provider["claude"][1]["anthropic-beta"]
+    assert by_provider["claude"][1]["x-claude-code-session-id"].startswith("cp8-")
     assert by_provider["openai"][1]["x-sub2api-client-type"] == "claude_code_bridge_openai"
     assert by_provider["openai"][1]["x-sub2api-route"] == "openai_bridge"
     assert by_provider["openai"][1]["x-zhumeng-claude-code-route-hint"]
@@ -1124,9 +1204,9 @@ def test_cp8_sub2api_gateway_live_collector_sends_gateway_auth_and_signed_runtim
         assert route_payload["session_ref"] == claude_session_ref
         assert route_payload["formal_pool_allowed"] is False
         assert route_payload["native_attestation_allowed"] is False
-    assert by_provider["openai"][2]["model"] == "gpt-5.5"
-    assert by_provider["deepseek"][2]["model"] == "deepseek-v4-pro"
-    assert by_provider["claude"][2]["model"] == "claude-sonnet-4-6"
+    assert by_provider["openai"][2]["model"] == "claude-code-bridge-gpt-5.5"
+    assert by_provider["deepseek"][2]["model"] == "claude-code-bridge-deepseek-v4-pro"
+    assert by_provider["claude"][2]["model"] == "claude-haiku-4-5-20251001"
 
 
 def test_cp8_sub2api_gateway_live_collector_extracts_sub2api_and_provider_request_id_headers(tmp_path: Path):

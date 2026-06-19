@@ -1875,6 +1875,8 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
                 "claude_code_route_hint_secret": "managed-route-secret",
                 "claude_code_route_hint_secret_source": "server",
                 "catalog_hash_after": "sha256:" + "a" * 64,
+                "claude_code_native_managed_session_id": "managed-session-cp8",
+                "claude_code_native_device_id": 42,
                 "config_profile": {"id": "default"},
             }
 
@@ -1943,6 +1945,8 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
         "overlay_hash": "sha256:" + "c" * 64,
         "catalog_hash": "sha256:" + "e" * 64,
         "catalog_version": "cp4-cli-fixture-v1",
+        "managed_session_id": "managed-session-cp8",
+        "device_id": 42,
     }]
 
 
