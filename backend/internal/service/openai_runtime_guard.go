@@ -21,14 +21,18 @@ const (
 )
 
 type OpenAIRuntimeGuardMetadata struct {
-	Action   string `json:"action"`
-	Category string `json:"category"`
-	Metric   string `json:"metric"`
-	Field    string `json:"field"`
-	Path     string `json:"path,omitempty"`
-	From     string `json:"from,omitempty"`
-	To       string `json:"to,omitempty"`
-	Status   int    `json:"status,omitempty"`
+	Action          string `json:"action"`
+	Category        string `json:"category"`
+	Metric          string `json:"metric"`
+	Field           string `json:"field"`
+	Path            string `json:"path,omitempty"`
+	From            string `json:"from,omitempty"`
+	To              string `json:"to,omitempty"`
+	Status          int    `json:"status,omitempty"`
+	EstimatedTokens int    `json:"estimated_tokens,omitempty"`
+	LimitTokens     int    `json:"limit_tokens,omitempty"`
+	ReserveTokens   int    `json:"reserve_tokens,omitempty"`
+	Confidence      string `json:"confidence,omitempty"`
 }
 
 type openAIReasoningEffortGuardRepair struct {
@@ -39,17 +43,21 @@ type openAIReasoningEffortGuardRepair struct {
 }
 
 type openAIReasoningEffortGuardDecision struct {
-	Action   string
-	Blocked  bool
-	Repaired bool
-	Present  bool
-	Status   int
-	Path     string
-	From     string
-	To       string
-	Category string
-	Metric   string
-	Repairs  []openAIReasoningEffortGuardRepair
+	Action          string
+	Blocked         bool
+	Repaired        bool
+	Present         bool
+	Status          int
+	Path            string
+	From            string
+	To              string
+	Category        string
+	Metric          string
+	Repairs         []openAIReasoningEffortGuardRepair
+	EstimatedTokens int
+	LimitTokens     int
+	ReserveTokens   int
+	Confidence      string
 }
 
 type openAIReasoningEffortGuardInput struct {
@@ -285,7 +293,11 @@ func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, 
 		if err != nil {
 			return payload, nil, err
 		}
-		return repaired, nil, nil
+		payload = repaired
+	}
+	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	if blocked := applyOpenAIRuntimeGuardContextToBody(account, model, payload, false); blocked != nil {
+		return payload, blocked, nil
 	}
 	return payload, nil, nil
 }
@@ -463,6 +475,9 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 	category := openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock
 	if strings.HasPrefix(decision.Category, "shape.") {
 		message = "Invalid OpenAI Responses request shape"
+	}
+	if strings.HasPrefix(decision.Category, "context.") {
+		message = "OpenAI request context is too large for the selected model"
 	}
 	if decision.Category == openAIRuntimeGuardCapabilityCategoryUnsupportedOAuthPersona {
 		message = "Codex persona version is too old for this OpenAI OAuth model"

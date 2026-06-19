@@ -2836,6 +2836,9 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 	if personaDecision := evaluateOpenAIOAuthCodexPersonaGuard(account, nativeUpstreamModel, ""); personaDecision.Blocked {
 		return nil, newOpenAIRuntimeGuardBlockedError(personaDecision)
 	}
+	if blocked := applyOpenAIRuntimeGuardContextToBody(account, nativeUpstreamModel, body, false); blocked != nil {
+		return nil, blocked
+	}
 
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -3429,6 +3432,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		c.Data(openAIReasoningEffortGuardBlockedStatus(personaDecision), "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(personaDecision))
 		return nil, newOpenAIRuntimeGuardBlockedError(personaDecision)
 	}
+	if blocked := applyOpenAIRuntimeGuardContextToHTTP(c, account, upstreamModel, body, isCompactRequest); blocked != nil {
+		return nil, blocked
+	}
 
 	imageBillingModel := ""
 	imageSizeTier := ""
@@ -4018,6 +4024,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 		c.Data(openAIReasoningEffortGuardBlockedStatus(personaDecision), "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(personaDecision))
 		return nil, newOpenAIRuntimeGuardBlockedError(personaDecision)
+	}
+	if blocked := applyOpenAIRuntimeGuardContextToHTTP(c, account, passthroughModelForCapability, body, isOpenAIResponsesCompactPath(c)); blocked != nil {
+		return nil, blocked
 	}
 
 	// Get access token
