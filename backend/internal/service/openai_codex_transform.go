@@ -1308,6 +1308,10 @@ func normalizeCodexTools(reqBody map[string]any) bool {
 				modified = true
 			}
 		}
+		if _, ok := toolMap["function"]; ok {
+			delete(toolMap, "function")
+			modified = true
+		}
 
 		validTools = append(validTools, toolMap)
 	}

@@ -2793,6 +2793,16 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 	if account == nil {
 		return nil, fmt.Errorf("native responses request requires selected account")
 	}
+	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
+		repairedBody, blocked, shapeErr := applyOpenAIRuntimeGuardShapeGuardToBody(body)
+		if shapeErr != nil {
+			return nil, shapeErr
+		}
+		if blocked != nil {
+			return nil, blocked
+		}
+		body = repairedBody
+	}
 	if shouldApplyOpenAIReasoningEffortGuard(account) {
 		reasoningDecision := evaluateOpenAIReasoningEffortGuard(body)
 		if reasoningDecision.Blocked {
@@ -3242,6 +3252,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		decoded, decodeErr := ensureReqBody()
 		if decodeErr != nil {
 			return nil, decodeErr
+		}
+		shapeDecision := applyOpenAIRuntimeGuardShapeGuard(decoded)
+		if shapeDecision.Blocked {
+			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+			c.Data(openAIReasoningEffortGuardBlockedStatus(shapeDecision), "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(shapeDecision))
+			return nil, newOpenAIRuntimeGuardBlockedError(shapeDecision)
+		}
+		if shapeDecision.Repaired {
+			markDecodedModified()
 		}
 		codexResult := codexTransformResult{}
 		if compatMessagesBridge {

@@ -268,6 +268,14 @@ func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, 
 	if !openAIRuntimeGuardShouldTreatWSFrameAsResponseCreate(payload) {
 		return payload, nil, nil
 	}
+	shapeApplied, shapeBlocked, shapeErr := applyOpenAIRuntimeGuardShapeGuardToBody(payload)
+	if shapeErr != nil {
+		return payload, nil, shapeErr
+	}
+	if shapeBlocked != nil {
+		return payload, shapeBlocked, nil
+	}
+	payload = shapeApplied
 	decision := evaluateOpenAIReasoningEffortGuard(payload)
 	if decision.Blocked {
 		return payload, newOpenAIRuntimeGuardBlockedError(decision), nil
@@ -394,10 +402,14 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 	if param == "" {
 		param = "reasoning_effort"
 	}
+	message := "Unsupported reasoning_effort value"
+	if strings.HasPrefix(decision.Category, "shape.") {
+		message = "Invalid OpenAI Responses request shape"
+	}
 	payload, err := json.Marshal(map[string]any{
 		"error": map[string]any{
 			"type":    "invalid_request_error",
-			"message": "Unsupported reasoning_effort value",
+			"message": message,
 			"param":   param,
 		},
 	})
