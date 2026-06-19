@@ -220,26 +220,30 @@ func openAIRuntimeGuardOpaqueJSONKey(key string) bool {
 	}
 }
 
-var openAIRuntimeGuardOpaqueFallbackFieldRegex = regexp.MustCompile(`(?i)"(encrypted_content|prompt|input|messages|instructions|access_token|refresh_token|id_token|api_key|apikey|x-api-key|client_secret|authorization|password|token)"\s*:\s*`)
+var openAIRuntimeGuardOpaqueFallbackFieldRegex = regexp.MustCompile(`(?i)(\\?")(encrypted_content|prompt|input|messages|instructions|access_token|refresh_token|id_token|api_key|apikey|x-api-key|client_secret|authorization|password|token)(\\?")\s*:\s*`)
 
 func redactOpenAIRuntimeGuardOpaqueFallback(value string) string {
-	out := strings.ReplaceAll(value, `\"`, `"`)
+	out := value
 	pos := 0
 	for {
 		loc := openAIRuntimeGuardOpaqueFallbackFieldRegex.FindStringSubmatchIndex(out[pos:])
 		if loc == nil {
 			break
 		}
-		matchStart := pos + loc[0]
 		prefixEnd := pos + loc[1]
-		key := out[pos+loc[2] : pos+loc[3]]
-		end := openAIRuntimeGuardJSONLikeValueEnd(out, prefixEnd)
+		quotePrefix := out[pos+loc[2] : pos+loc[3]]
+		key := out[pos+loc[4] : pos+loc[5]]
+		escapedQuotes := strings.HasPrefix(quotePrefix, `\"`)
+		end := openAIRuntimeGuardJSONLikeValueEnd(out, prefixEnd, escapedQuotes)
 		replacement := `"[redacted]"`
 		if !openAIRuntimeGuardOpaqueJSONKey(key) && isSensitiveKey(key) {
 			replacement = `"***"`
 		}
+		if escapedQuotes {
+			replacement = `\` + replacement[:1] + replacement[1:len(replacement)-1] + `\"`
+		}
 		out = out[:prefixEnd] + replacement + out[end:]
-		pos = matchStart + len(out[matchStart:prefixEnd]) + len(replacement)
+		pos = prefixEnd + len(replacement)
 		if pos > len(out) {
 			pos = len(out)
 		}
@@ -247,12 +251,21 @@ func redactOpenAIRuntimeGuardOpaqueFallback(value string) string {
 	return out
 }
 
-func openAIRuntimeGuardJSONLikeValueEnd(value string, start int) int {
+func openAIRuntimeGuardJSONLikeValueEnd(value string, start int, escapedQuotes bool) int {
 	for start < len(value) && (value[start] == ' ' || value[start] == '\t' || value[start] == '\r' || value[start] == '\n') {
 		start++
 	}
 	if start >= len(value) {
 		return start
+	}
+	if start+1 < len(value) && value[start] == '\\' && value[start+1] == '"' {
+		escapedQuotes = true
+		for i := start + 2; i < len(value); i++ {
+			if value[i] == '"' && openAIRuntimeGuardEscapedJSONQuoteDelimiter(value, i) {
+				return i + 1
+			}
+		}
+		return len(value)
 	}
 	switch value[start] {
 	case '"':
@@ -272,6 +285,12 @@ func openAIRuntimeGuardJSONLikeValueEnd(value string, start int) int {
 		for i := start + 1; i < len(value); i++ {
 			ch := value[i]
 			if inString {
+				if escapedQuotes {
+					if ch == '"' && openAIRuntimeGuardEscapedJSONQuoteDelimiter(value, i) {
+						inString = false
+					}
+					continue
+				}
 				if ch == '\\' {
 					i++
 					continue
@@ -283,7 +302,9 @@ func openAIRuntimeGuardJSONLikeValueEnd(value string, start int) int {
 			}
 			switch ch {
 			case '"':
-				inString = true
+				if !escapedQuotes || openAIRuntimeGuardEscapedJSONQuoteDelimiter(value, i) {
+					inString = true
+				}
 			case '{', '[':
 				stack = append(stack, ch)
 			case '}', ']':
@@ -309,6 +330,14 @@ func openAIRuntimeGuardJSONLikeValueEnd(value string, start int) int {
 		}
 		return len(value)
 	}
+}
+
+func openAIRuntimeGuardEscapedJSONQuoteDelimiter(value string, quote int) bool {
+	backslashes := 0
+	for i := quote - 1; i >= 0 && value[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%4 == 1
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIRuntimeGuardLearnedBlock(scope OpenAIRuntimeGuardLearnedBlockScope, classification OpenAIRuntimeGuardUpstreamErrorClassification) bool {

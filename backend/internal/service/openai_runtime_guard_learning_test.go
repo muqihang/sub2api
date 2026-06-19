@@ -315,6 +315,31 @@ func TestOpenAIRuntimeGuardOpsRedactsMalformedJSONFallbackPayload(t *testing.T) 
 	}
 }
 
+func TestOpenAIRuntimeGuardOpsRedactsMalformedEscapedJSONFallbackPayload(t *testing.T) {
+	broken := `{\"error\":{\"code\":\"invalid_encrypted_content\",\"message\":\"broken\"},\"prompt\":\"SECRET_BEFORE \\\" SECRET_AFTER\",\"input\":\"INPUT_BEFORE \\\" INPUT_AFTER\",\"messages\":[{\"content\":\"MESSAGE_SECRET \\\" MESSAGE_AFTER\"}],\"instructions\":\"INSTRUCTIONS_SECRET \\\" INSTRUCTIONS_AFTER\",\"encrypted_content\":\"ENCRYPTED_SECRET \\\" ENCRYPTED_AFTER\",\"access_token\":\"TOKEN_SECRET \\\" TOKEN_AFTER\",\"refresh_token\":\"REFRESH_SECRET \\\" REFRESH_AFTER\",\"api_key\":\"sk-proj-TOKEN_SECRET \\\" API_AFTER\"`
+
+	out := sanitizeOpsUpstreamRuntimeGuardPayload(broken)
+	for _, secret := range []string{
+		"SECRET_BEFORE",
+		"SECRET_AFTER",
+		"INPUT_BEFORE",
+		"INPUT_AFTER",
+		"MESSAGE_SECRET",
+		"MESSAGE_AFTER",
+		"INSTRUCTIONS_SECRET",
+		"INSTRUCTIONS_AFTER",
+		"ENCRYPTED_SECRET",
+		"ENCRYPTED_AFTER",
+		"TOKEN_SECRET",
+		"TOKEN_AFTER",
+		"REFRESH_SECRET",
+		"REFRESH_AFTER",
+		"API_AFTER",
+	} {
+		require.NotContains(t, out, secret)
+	}
+}
+
 func TestOpenAIRuntimeGuardLearnedBlockScopeIncludesCapabilityVersion(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	classification := OpenAIRuntimeGuardUpstreamErrorClassification{Bucket: OpenAIRuntimeGuardBucketUnsupportedOAuthModelChannel, Category: "capability.unsupported_oauth_model_profile_channel", Metric: "openai_runtime_guard.upstream.unsupported_oauth_model_channel", Action: "learn_block", TTL: time.Minute}
