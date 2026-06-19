@@ -422,3 +422,41 @@ func TestOpenAIChatCompletionsFastPolicyBlockDoesNotReportSchedulerFailure(t *te
 	require.Zero(t, snapshot.RuntimeStatsAccountCount)
 	require.Zero(t, snapshot.AccountSwitchTotal)
 }
+
+func TestOpenAIImagesRuntimeGuardLocalBlockDoesNotReportSchedulerFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	settingsRepo := &openAIFastPolicyHandlerSettingRepoStub{values: map[string]string{
+		"openai_advanced_scheduler_enabled": "true",
+	}}
+	account := service.Account{
+		ID:          19307,
+		Name:        "openai-oauth-images-content-safety-block",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	}
+	h, upstream := newOpenAIEgressPolicyHandlerHarness(
+		t,
+		account,
+		service.NewSettingService(settingsRepo, &config.Config{}),
+	)
+	body := []byte(`{"prompt":"generate porn"}`)
+	c, rec := newOpenAIEgressPolicyHandlerContext(http.MethodPost, "/v1/images/generations", body)
+
+	h.Images(c)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "local_policy_block", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(rec.Body.Bytes(), "error.category").String())
+	require.Zero(t, upstream.calls)
+	snapshot := h.gatewayService.SnapshotOpenAIAccountSchedulerMetrics()
+	require.Zero(t, snapshot.RuntimeStatsAccountCount, "images local runtime guard block must not report scheduler failure")
+	require.Zero(t, snapshot.AccountSwitchTotal)
+}
