@@ -315,6 +315,35 @@ func TestOpenAIRuntimeGuardOpsRedactsMalformedJSONFallbackPayload(t *testing.T) 
 	}
 }
 
+func TestOpenAIRuntimeGuardMessagePathsRedactMalformedCredentialEscapedQuoteSuffix(t *testing.T) {
+	message := `{"access_token":"ACCESS_BEFORE \\\" ACCESS_AFTER","refresh_token":"REFRESH_BEFORE \\\" REFRESH_AFTER","api_key":"sk-proj-BEFORE \\\" API_AFTER"`
+
+	classificationMessage := openAIRuntimeGuardSanitizeClassificationMessage(message)
+	for _, secret := range []string{"ACCESS_BEFORE", "ACCESS_AFTER", "REFRESH_BEFORE", "REFRESH_AFTER", "sk-proj-BEFORE", "API_AFTER"} {
+		require.NotContains(t, classificationMessage, secret)
+	}
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(nil)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           PlatformOpenAI,
+		UpstreamStatusCode: http.StatusBadRequest,
+		Kind:               "http_error",
+		Message:            message,
+		Detail:             `{"error":{"code":"invalid_encrypted_content"}}`,
+	})
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	serialized, err := json.Marshal(events[0])
+	require.NoError(t, err)
+
+	for _, secret := range []string{"ACCESS_BEFORE", "ACCESS_AFTER", "REFRESH_BEFORE", "REFRESH_AFTER", "sk-proj-BEFORE", "API_AFTER"} {
+		require.NotContains(t, string(serialized), secret)
+	}
+}
+
 func TestOpenAIRuntimeGuardOpsRedactsMalformedRawJSONCredentialEscapedQuoteSuffix(t *testing.T) {
 	broken := `{"error":{"code":"invalid_encrypted_content","message":"broken"},"access_token":"ACCESS_BEFORE \\\" ACCESS_AFTER","refresh_token":"REFRESH_BEFORE \\\" REFRESH_AFTER","api_key":"sk-proj-BEFORE \\\" API_AFTER"`
 

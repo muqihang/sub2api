@@ -175,7 +175,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.Message = strings.TrimSpace(ev.Message)
 	ev.Detail = strings.TrimSpace(ev.Detail)
-	if ev.Message != "" {
+	if ev.Message != "" && ev.Platform != PlatformOpenAI && ev.RuntimeGuardBucket == "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
 	}
 	if ev.Platform == PlatformOpenAI || ev.RuntimeGuardBucket != "" {
@@ -189,10 +189,12 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 			}
 		}
 		if ev.RuntimeGuardBucket != "" {
-			ev.Message = redactOpenAIRuntimeGuardOpaquePayloadMarkers(ev.Message)
+			ev.Message = sanitizeOpenAIRuntimeGuardMessage(ev.Message)
 			ev.Detail = sanitizeOpsUpstreamRuntimeGuardPayload(ev.Detail)
 			ev.UpstreamResponseBody = sanitizeOpsUpstreamRuntimeGuardPayload(ev.UpstreamResponseBody)
 			setOpsUpstreamError(c, ev.UpstreamStatusCode, ev.Message, firstNonBlankString(ev.Detail, ev.UpstreamResponseBody))
+		} else if ev.Message != "" {
+			ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
 		}
 	}
 

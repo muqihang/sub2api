@@ -150,9 +150,17 @@ func openAIRuntimeGuardErrorFields(body []byte, fallback string) (message, code,
 }
 
 func openAIRuntimeGuardSanitizeClassificationMessage(message string) string {
-	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
-	message = redactOpenAIRuntimeGuardOpaquePayloadMarkers(message)
+	message = sanitizeOpenAIRuntimeGuardMessage(message)
 	return truncateString(message, openAIRuntimeGuardSanitizedMessageMaxBytes)
+}
+
+func sanitizeOpenAIRuntimeGuardMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	message = redactOpenAIRuntimeGuardOpaquePayloadMarkers(message)
+	return sanitizeUpstreamErrorMessage(message)
 }
 
 func redactOpenAIRuntimeGuardOpaquePayloadMarkers(value string) string {

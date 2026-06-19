@@ -234,7 +234,6 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	}
 	if entry.UpstreamErrorMessage != nil {
 		msg := strings.TrimSpace(*entry.UpstreamErrorMessage)
-		msg = sanitizeUpstreamErrorMessage(msg)
 		if entry.Platform == PlatformOpenAI {
 			status := 0
 			if entry.UpstreamStatusCode != nil {
@@ -242,8 +241,12 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 			}
 			classification := ClassifyOpenAIRuntimeGuardUpstreamError(status, nil, []byte(derefStringForOps(entry.UpstreamErrorDetail)), msg)
 			if classification.Bucket != "" {
-				msg = redactOpenAIRuntimeGuardOpaquePayloadMarkers(msg)
+				msg = sanitizeOpenAIRuntimeGuardMessage(msg)
+			} else {
+				msg = sanitizeUpstreamErrorMessage(msg)
 			}
+		} else {
+			msg = sanitizeUpstreamErrorMessage(msg)
 		}
 		msg = truncateString(msg, 2048)
 		if strings.TrimSpace(msg) == "" {
@@ -327,9 +330,7 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 			out.AtUnixMs = 0
 		}
 
-		msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(out.Message))
-		msg = truncateString(msg, 2048)
-		out.Message = msg
+		msg := strings.TrimSpace(out.Message)
 
 		detail := strings.TrimSpace(out.Detail)
 		if out.Platform == PlatformOpenAI {
@@ -342,8 +343,11 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 			}
 		}
 		if out.Platform == PlatformOpenAI && out.RuntimeGuardBucket != "" {
-			out.Message = redactOpenAIRuntimeGuardOpaquePayloadMarkers(out.Message)
+			msg = sanitizeOpenAIRuntimeGuardMessage(msg)
+		} else {
+			msg = sanitizeUpstreamErrorMessage(msg)
 		}
+		out.Message = truncateString(msg, 2048)
 		if detail != "" {
 			if out.Platform == PlatformOpenAI && out.RuntimeGuardBucket != "" {
 				out.Detail = sanitizeOpsUpstreamRuntimeGuardPayload(detail)
