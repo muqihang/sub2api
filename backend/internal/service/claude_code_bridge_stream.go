@@ -587,6 +587,12 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 	if strings.TrimSpace(model) == "" || strings.TrimSpace(model) != decision.ModelID {
 		return fmt.Errorf("claude code bridge model binding mismatch")
 	}
+	if claudeCodeBridgeHasDirectDeferredToolMarker(payload) {
+		return fmt.Errorf("claude code bridge unresolved deferred tool shape")
+	}
+	if claudeCodeBridgeContentBlocksHaveUnresolvedDeferredToolMarker(payload["system"]) {
+		return fmt.Errorf("claude code bridge unresolved deferred tool shape")
+	}
 	for _, field := range anthropicCompatOpenAIOnlyTopLevelFields {
 		if _, exists := payload[field]; exists {
 			return fmt.Errorf("claude code bridge body must use Anthropic messages shape")
@@ -607,6 +613,9 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 		default:
 			return fmt.Errorf("claude code bridge message role is invalid")
 		}
+		if claudeCodeBridgeMessageHasUnresolvedDeferredToolMarker(message) {
+			return fmt.Errorf("claude code bridge unresolved deferred tool shape")
+		}
 	}
 	toolNames := map[string]struct{}{}
 	if rawTools, exists := payload["tools"]; exists {
@@ -618,6 +627,9 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 			tool, ok := item.(map[string]any)
 			if !ok {
 				return fmt.Errorf("claude code bridge tool shape is invalid")
+			}
+			if claudeCodeBridgeToolHasUnresolvedDeferredToolMarker(tool) {
+				return fmt.Errorf("claude code bridge unresolved deferred tool shape")
 			}
 			if _, exists := tool["function"]; exists || tool["type"] == "function" {
 				return fmt.Errorf("claude code bridge body must use Anthropic messages tool shape")
@@ -647,6 +659,9 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 			if !isAnthropicCompatSafeToolName(name) {
 				return fmt.Errorf("claude code bridge tool choice shape is invalid")
 			}
+			if claudeCodeBridgeIsNativeToolSearchName(name) {
+				return fmt.Errorf("claude code bridge unresolved deferred tool shape")
+			}
 			if _, ok := toolNames[name]; !ok {
 				return fmt.Errorf("claude code bridge tool choice shape is invalid")
 			}
@@ -659,6 +674,76 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 		return err
 	}
 	return nil
+}
+
+func claudeCodeBridgeHasDirectDeferredToolMarker(obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	_, hasToolReference := obj["tool_reference"]
+	_, hasDeferLoading := obj["defer_loading"]
+	return hasToolReference || hasDeferLoading
+}
+
+func claudeCodeBridgeMessageHasUnresolvedDeferredToolMarker(message map[string]any) bool {
+	if claudeCodeBridgeHasDirectDeferredToolMarker(message) {
+		return true
+	}
+	return claudeCodeBridgeContentBlocksHaveUnresolvedDeferredToolMarker(message["content"])
+}
+
+func claudeCodeBridgeContentBlocksHaveUnresolvedDeferredToolMarker(raw any) bool {
+	content, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range content {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if claudeCodeBridgeContentBlockHasUnresolvedDeferredToolMarker(block) {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeCodeBridgeContentBlockHasUnresolvedDeferredToolMarker(block map[string]any) bool {
+	if claudeCodeBridgeHasDirectDeferredToolMarker(block) {
+		return true
+	}
+	blockType := strings.TrimSpace(firstClaudeCodeBridgeString(block["type"]))
+	if blockType == "tool_use" && claudeCodeBridgeIsNativeToolSearchName(firstClaudeCodeBridgeString(block["name"])) {
+		return true
+	}
+	if blockType != "tool_use" && claudeCodeBridgeContentBlocksHaveUnresolvedDeferredToolMarker(block["content"]) {
+		return true
+	}
+	return false
+}
+
+func claudeCodeBridgeToolHasUnresolvedDeferredToolMarker(tool map[string]any) bool {
+	if claudeCodeBridgeHasDirectDeferredToolMarker(tool) {
+		return true
+	}
+	if custom, ok := tool["custom"].(map[string]any); ok && claudeCodeBridgeHasDirectDeferredToolMarker(custom) {
+		return true
+	}
+	if claudeCodeBridgeIsNativeToolSearchName(firstClaudeCodeBridgeString(tool["name"])) {
+		return true
+	}
+	toolType := strings.ToLower(strings.TrimSpace(firstClaudeCodeBridgeString(tool["type"])))
+	return toolType == "tool_search" || strings.Contains(toolType, "tool_search_tool")
+}
+
+func claudeCodeBridgeIsNativeToolSearchName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "ToolSearchTool")
+}
+
+func firstClaudeCodeBridgeString(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func validateClaudeCodeBridgeEffortBinding(decision ClaudeCodeBridgeRouteDecision, payload map[string]any) error {

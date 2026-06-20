@@ -287,6 +287,103 @@ func TestClaudeCodeBridgeStreamRejectsOpenAIResponsesTopLevelFields(t *testing.T
 	require.Contains(t, err.Error(), "Anthropic messages")
 }
 
+func TestClaudeCodeBridgeRejectsUnresolvedDeferredToolSearchShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "tool_reference and defer_loading on tool",
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","tool_reference":{"id":"native-ref"},"defer_loading":true,"input_schema":{"type":"object"}}]}`,
+		},
+		{
+			name: "custom defer_loading on tool",
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","custom":{"defer_loading":true},"input_schema":{"type":"object"}}]}`,
+		},
+		{
+			name: "top level tool_reference",
+			body: `{"model":"claude-code-bridge-gpt-5.5","tool_reference":{"id":"top-ref"},"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}]}`,
+		},
+		{
+			name: "message content tool_reference",
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"hi","tool_reference":{"id":"nested-ref"}}]}],"tools":[{"name":"Read","input_schema":{"type":"object"}}]}`,
+		},
+		{
+			name: "tool_result nested content tool_reference",
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"ok","tool_reference":{"id":"nested-ref"}}]}]}],"tools":[{"name":"Read","input_schema":{"type":"object"}}]}`,
+		},
+		{
+			name: "system block defer_loading",
+			body: `{"model":"claude-code-bridge-gpt-5.5","system":[{"type":"text","text":"stable","defer_loading":true}],"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}]}`,
+		},
+		{
+			name: "native ToolSearchTool name",
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"ToolSearchTool","input_schema":{"type":"object"}}]}`,
+		},
+		{
+			name: "native tool_search_tool type",
+			body: `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"native_search","type":"tool_search_tool_regex_20251119","input_schema":{"type":"object"}}]}`,
+		},
+	}
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-gpt-5.5",
+		Provider:                 "openai",
+		Route:                    "openai_bridge",
+		ClientType:               "claude_code_bridge_openai",
+		CatalogVersion:           "cp6-toolsearch-gate-v1",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildClaudeCodeBridgeSkeletonSSE(decision, []byte(tt.body))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "unresolved deferred tool")
+		})
+	}
+}
+
+func TestClaudeCodeBridgeAllowsToolUseInputBusinessFieldsNamedLikeDeferredMarkers(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"tool_reference":"business-value","defer_loading":false}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}],"tools":[{"name":"lookup","description":"materialized tool","input_schema":{"type":"object","properties":{"tool_reference":{"type":"string"},"defer_loading":{"type":"boolean"}}}}]}`)
+
+	result, err := BuildClaudeCodeBridgeSkeletonSSE(ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-gpt-5.5",
+		Provider:                 "openai",
+		Route:                    "openai_bridge",
+		ClientType:               "claude_code_bridge_openai",
+		CatalogVersion:           "cp6-toolsearch-gate-v1",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+	}, body)
+
+	require.NoError(t, err)
+	require.Contains(t, string(result.Body), `"type":"tool_use"`)
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+}
+
+func TestClaudeCodeBridgeAllowsMaterializedToolSchemasWithToolReferenceFieldNames(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"lookup","description":"materialized tool","input_schema":{"type":"object","properties":{"tool_reference":{"type":"string"},"defer_loading":{"type":"boolean"},"query":{"type":"string"}}}}]}`)
+
+	result, err := BuildClaudeCodeBridgeSkeletonSSE(ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-gpt-5.5",
+		Provider:                 "openai",
+		Route:                    "openai_bridge",
+		ClientType:               "claude_code_bridge_openai",
+		CatalogVersion:           "cp6-toolsearch-gate-v1",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+	}, body)
+
+	require.NoError(t, err)
+	require.Contains(t, string(result.Body), `"type":"tool_use"`)
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+}
+
 func TestClaudeCodeBridgeStreamRejectsInvalidAnthropicToolShapes(t *testing.T) {
 	decision := ClaudeCodeBridgeRouteDecision{
 		ModelID:                  "gpt-5.5",

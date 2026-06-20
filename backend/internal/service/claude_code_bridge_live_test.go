@@ -429,6 +429,28 @@ func TestCP6DeepSeekAnthropicLiveMismatchedTerminalEventFailsClosed(t *testing.T
 	require.NotContains(t, stream, "mismatch terminal sentinel")
 }
 
+func TestCP6DeepSeekAnthropicLiveRejectsDeferredToolSearchBeforeUpstreamDispatch(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","tool_reference":{"id":"native-ref"},"defer_loading":true,"input_schema":{"type":"object"}}],"stream":true}`)
+
+	_, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unresolved deferred tool")
+	require.False(t, upstreamCalled)
+}
+
 func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
@@ -599,6 +621,35 @@ func cp6LiveDeepSeekDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 		SupportsErrorPassthrough: true,
 		CachePolicy:              "provider_cache_audit_required",
 	}
+}
+
+func TestCP6DeepSeekOpenAICompatibleFallbackRejectsDeferredToolSearchBeforeUpstreamDispatch(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	decision := cp6LiveDeepSeekDecision(upstream.URL + "/anthropic")
+	decision.PreferredProtocol = "openai_chat_completions"
+	decision.AnthropicBaseURL = ""
+	decision.OpenAIBaseURL = upstream.URL
+	decision.FallbackProtocol = "openai_chat_completions"
+	decision.FallbackReason = "anthropic_cache_fixture_failed"
+	decision.SupportsCacheAudit = true
+	decision.SupportsReasoningMapping = true
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"ok","defer_loading":true}]}]}],"stream":true}`)
+
+	_, err := ExecuteClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(context.Background(), upstream.Client(), decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unresolved deferred tool")
+	require.False(t, upstreamCalled)
 }
 
 func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsOnlyWhenExplicitlyEnabled(t *testing.T) {

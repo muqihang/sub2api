@@ -234,6 +234,28 @@ func TestCP6OpenAIBridgeResponsesTopLevelErrorPassthroughIsSafe(t *testing.T) {
 	require.NotContains(t, stream, "event: message_stop")
 }
 
+func TestCP6OpenAIBridgeRejectsDeferredToolSearchBeforeUpstreamDispatch(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_unreachable","model":"gpt-5.5","output":[]}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true,"tools":[{"name":"ToolSearchTool","input_schema":{"type":"object"}}]}`)
+
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unresolved deferred tool")
+	require.False(t, upstreamCalled)
+}
+
 func TestCP6OpenAIBridgeRequestsUseSyntheticCodexHeadersForLocalSub2API(t *testing.T) {
 	var userAgent string
 	var originator string
