@@ -982,6 +982,7 @@ func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) (ClaudeCodeBridgeProv
 	flusher, _ := dst.(interface{ Flush() })
 	state := claudeCodeBridgeSSESanitizerState{indexMap: map[int]int{}}
 	fixture := ClaudeCodeBridgeProviderFixture{}
+	terminalSeen := false
 	reader := bufio.NewReader(src)
 	block := make([]string, 0, 8)
 	for {
@@ -989,9 +990,11 @@ func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) (ClaudeCodeBridgeProv
 		if line != "" {
 			block = append(block, line)
 			if strings.TrimRight(line, "\r\n") == "" {
-				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state, &fixture); err != nil {
+				terminal, err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state, &fixture)
+				if err != nil {
 					return fixture, err
 				}
+				terminalSeen = terminalSeen || terminal
 				if flusher != nil {
 					flusher.Flush()
 				}
@@ -1000,7 +1003,17 @@ func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) (ClaudeCodeBridgeProv
 		}
 		if readErr == io.EOF {
 			if len(block) > 0 {
-				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state, &fixture); err != nil {
+				terminal, err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state, &fixture)
+				if err != nil {
+					return fixture, err
+				}
+				terminalSeen = terminalSeen || terminal
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if !terminalSeen {
+				if _, err := dst.Write(buildClaudeCodeBridgeErrorSSE("upstream_stream_closed", "Anthropic-compatible bridge upstream stream closed before terminal event")); err != nil {
 					return fixture, err
 				}
 				if flusher != nil {
@@ -1020,48 +1033,104 @@ type claudeCodeBridgeSSESanitizerState struct {
 	nextIndex int
 }
 
-func writeClaudeCodeBridgeSafeSSEBlock(dst io.Writer, block []string, state *claudeCodeBridgeSSESanitizerState, fixture *ClaudeCodeBridgeProviderFixture) error {
+func writeClaudeCodeBridgeSafeSSEBlock(dst io.Writer, block []string, state *claudeCodeBridgeSSESanitizerState, fixture *ClaudeCodeBridgeProviderFixture) (bool, error) {
 	payload, hasData := claudeCodeBridgeSSEDataPayload(block)
 	if !hasData {
 		_, err := io.WriteString(dst, strings.Join(block, ""))
-		return err
+		return false, err
 	}
 	if strings.TrimSpace(payload) == "[DONE]" {
 		_, err := io.WriteString(dst, strings.Join(block, ""))
-		return err
+		return false, err
 	}
 	collectClaudeCodeBridgeProviderUsage(payload, fixture)
 	var data any
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
-		return fmt.Errorf("claude code bridge upstream SSE data is not valid JSON: %w", err)
+		return false, fmt.Errorf("claude code bridge upstream SSE data is not valid JSON: %w", err)
+	}
+	if safeError, ok := claudeCodeBridgeSafeUpstreamErrorSSE(block, data); ok {
+		_, err := dst.Write(safeError)
+		return true, err
 	}
 	if claudeCodeBridgeContainsForeignPrivateReasoning(data, "") {
-		return nil
+		return false, nil
 	}
 	remapped, keep := remapClaudeCodeBridgeSSEIndex(data, state)
 	if !keep {
-		return nil
+		return false, nil
 	}
 	encoded, err := json.Marshal(remapped)
 	if err != nil {
-		return err
+		return false, err
 	}
+	eventName := claudeCodeBridgeSSEEventName(block)
+	payloadType := claudeCodeBridgeSSEPayloadType(remapped)
+	if !claudeCodeBridgeSSEEventMatchesPayload(eventName, payloadType) {
+		return false, nil
+	}
+	terminal := eventName == "message_stop" && payloadType == "message_stop"
 	wroteData := false
 	for _, line := range block {
 		if strings.HasPrefix(line, "data:") {
 			if !wroteData {
 				if _, err := fmt.Fprintf(dst, "data: %s\n", encoded); err != nil {
-					return err
+					return false, err
 				}
 				wroteData = true
 			}
 			continue
 		}
 		if _, err := io.WriteString(dst, line); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return terminal, nil
+}
+
+func claudeCodeBridgeSafeUpstreamErrorSSE(block []string, data any) ([]byte, bool) {
+	if claudeCodeBridgeSSEEventName(block) != "error" && claudeCodeBridgeSSEPayloadType(data) != "error" {
+		return nil, false
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return buildClaudeCodeBridgeErrorSSE("upstream_error", "Anthropic-compatible bridge upstream returned an error"), true
+	}
+	parsed := gjson.ParseBytes(raw)
+	errorType := safeClaudeCodeNativeLabel(parsed.Get("error.type").String())
+	if errorType == "" {
+		errorType = safeClaudeCodeNativeLabel(parsed.Get("error.code").String())
+	}
+	if errorType == "" {
+		errorType = "upstream_error"
+	}
+	return buildClaudeCodeBridgeErrorSSE(errorType, "Anthropic-compatible bridge upstream returned an error"), true
+}
+
+func claudeCodeBridgeSSEEventName(block []string) string {
+	for _, line := range block {
+		if strings.HasPrefix(line, "event:") {
+			return strings.TrimSpace(strings.TrimRight(strings.TrimPrefix(line, "event:"), "\r\n"))
+		}
+	}
+	return ""
+}
+
+func claudeCodeBridgeSSEPayloadType(data any) string {
+	obj, ok := data.(map[string]any)
+	if !ok {
+		return ""
+	}
+	eventType, _ := obj["type"].(string)
+	return strings.TrimSpace(eventType)
+}
+
+func claudeCodeBridgeSSEEventMatchesPayload(eventName string, payloadType string) bool {
+	eventName = strings.TrimSpace(eventName)
+	payloadType = strings.TrimSpace(payloadType)
+	if eventName == "" || payloadType == "" {
+		return true
+	}
+	return eventName == payloadType
 }
 
 func collectClaudeCodeBridgeProviderUsage(payload string, fixture *ClaudeCodeBridgeProviderFixture) {

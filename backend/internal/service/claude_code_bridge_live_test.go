@@ -345,6 +345,90 @@ func TestClaudeCodeBridgeAnthropicLiveSanitizesProviderErrors(t *testing.T) {
 	require.NotContains(t, message, "api.deepseek.com")
 }
 
+func TestCP6DeepSeekAnthropicLiveMissingTerminalEmitsSafeStreamError(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_missing_terminal","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":11}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial answer"}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"missing terminal sentinel"}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: message_start")
+	require.Contains(t, stream, "event: error")
+	require.Contains(t, stream, `"type":"upstream_stream_closed"`)
+	require.NotContains(t, stream, "event: message_stop")
+	require.NotContains(t, stream, "missing terminal sentinel")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+}
+
+func TestCP6DeepSeekAnthropicLiveSSEErrorIsSanitizedAndTerminal(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	const rawPromptSentinel = "raw prompt body sentinel must not leak"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\n"))
+		_, _ = w.Write([]byte(`data: {"type":"error","error":{"type":"rate_limit_error","message":"request req_sse_123 failed with sk-live-secret at https://api.deepseek.com/anthropic/v1/messages while handling prompt: raw prompt body sentinel must not leak"}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"raw prompt body sentinel must not leak"}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: error")
+	require.Contains(t, stream, `"type":"rate_limit_error"`)
+	require.NotContains(t, stream, "req_sse_123")
+	require.NotContains(t, stream, "sk-live-secret")
+	require.NotContains(t, stream, "api.deepseek.com")
+	require.NotContains(t, stream, rawPromptSentinel)
+	require.NotContains(t, stream, "event: message_stop")
+	require.NotContains(t, stream, `"type":"upstream_stream_closed"`)
+}
+
+func TestCP6DeepSeekAnthropicLiveMismatchedTerminalEventFailsClosed(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_mismatch","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":11}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"mismatch terminal sentinel"}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: message_start")
+	require.Contains(t, stream, "event: error")
+	require.Contains(t, stream, `"type":"upstream_stream_closed"`)
+	require.NotContains(t, stream, "event: message_stop")
+	require.NotContains(t, stream, "mismatch terminal sentinel")
+}
+
 func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
