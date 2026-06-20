@@ -320,16 +320,37 @@ func hasNonNegatedOpenAIRuntimeGuardContentSafetyTerm(text string, terms ...stri
 				break
 			}
 			idx += searchFrom
-			prefixStart := idx - 24
-			if prefixStart < 0 {
-				prefixStart = 0
-			}
-			prefix := text[prefixStart:idx]
-			if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(prefix, "without ", "do not ", "don't ", "not ") {
+			if !isDirectlyNegatedOpenAIRuntimeGuardContentSafetyTerm(text, idx, term) {
 				return true
 			}
 			searchFrom = idx + len(term)
 		}
+	}
+	return false
+}
+
+func isDirectlyNegatedOpenAIRuntimeGuardContentSafetyTerm(text string, idx int, term string) bool {
+	if idx < 0 || idx > len(text) {
+		return false
+	}
+	prefix := text[:idx]
+	trimmedPrefix := strings.TrimRight(prefix, " \t\r\n")
+	directNegations := []string{
+		"without",
+		"do not",
+		"don't",
+		"not",
+	}
+	for _, negation := range directNegations {
+		if strings.HasSuffix(trimmedPrefix, negation) {
+			return true
+		}
+	}
+	if term == "bypass" && strings.HasPrefix(text[idx:], "bypassing") {
+		return strings.HasSuffix(trimmedPrefix, "without") || strings.HasSuffix(trimmedPrefix, "not")
+	}
+	if term == "crack" && strings.HasPrefix(text[idx:], "cracking") {
+		return strings.HasSuffix(trimmedPrefix, "without") || strings.HasSuffix(trimmedPrefix, "not")
 	}
 	return false
 }
