@@ -305,14 +305,14 @@ def _bridge_catalog_entry(entry: Any, model_meta: dict[str, str], runtime_origin
         "supports_streaming": True,
         "supports_usage": True,
         "supports_cache_audit": True,
-        "supports_reasoning_mapping": provider in {"deepseek", "openai", "zai_glm", "kimi"},
+        "supports_reasoning_mapping": provider in {"deepseek", "openai", "zai_glm"},
         "supports_error_passthrough": True,
         "cache_policy": "provider_cache_audit_required",
         "capability_tier": model_meta.get("capability_tier", "standard"),
         "live_enabled": bool(entry.live_enabled),
     }
     if provider == "deepseek":
-        result["reasoning_effort_levels"] = ["high", "xhigh", "max"]
+        result["reasoning_effort_levels"] = ["high", "max"]
         if deepseek_anthropic_fixture_green:
             result["anthropic_base_url"] = runtime_origin
         else:
@@ -320,9 +320,19 @@ def _bridge_catalog_entry(entry: Any, model_meta: dict[str, str], runtime_origin
             result["openai_base_url"] = runtime_origin
             result["fallback_protocol"] = "openai_chat_completions"
             result["fallback_reason"] = "anthropic_cache_fixture_failed"
-    elif provider in {"zai_glm", "kimi"}:
+    elif provider == "zai_glm":
+        result["reasoning_effort_levels"] = ["high", "max"]
         result["anthropic_base_url"] = runtime_origin
+    elif provider == "kimi":
+        # Kimi K2.7 Code documents Claude Code "Thinking on", not a
+        # multi-level effort enum. Do not invent UI levels here.
+        result["anthropic_base_url"] = runtime_origin
+    elif provider == "openai":
+        result["reasoning_effort_levels"] = ["low", "medium", "high", "xhigh"]
+        result["cache_policy"] = "responses_prompt_cache_key_exact_prefix"
+        result["openai_base_url"] = runtime_origin
     else:
+        result["supports_reasoning_mapping"] = False
         result["openai_base_url"] = runtime_origin
     return result
 

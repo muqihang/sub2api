@@ -184,6 +184,9 @@ func buildClaudeCodeOpenAIResponsesBody(decision ClaudeCodeBridgeRouteDecision, 
 		return nil, err
 	}
 	responsesReq.Stream = true
+	if strings.TrimSpace(responsesReq.PromptCacheKey) == "" && shouldAutoInjectPromptCacheKeyForCompat(responsesReq.Model) {
+		responsesReq.PromptCacheKey = deriveAnthropicCompatPromptCacheKey(&anthropicReq, responsesReq.Model)
+	}
 	return json.Marshal(responsesReq)
 }
 

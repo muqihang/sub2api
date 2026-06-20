@@ -233,7 +233,7 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert deepseek.anthropic_base_url == docs_snapshot["observations"]["deepseek"]["anthropic_base_url"]
     assert deepseek.openai_base_url == ""
     assert deepseek.reasoning_effort_levels == ("high", "max")
-    assert deepseek.reasoning_mapping["xhigh"] == "max"
+    assert set(deepseek.reasoning_mapping) == {"high", "max"}
     assert deepseek.cache_policy == "provider_prefix_kv_cache_automatic_best_effort"
     assert list(deepseek.cache_usage_fields) == docs_snapshot["observations"]["deepseek"]["cache_usage_fields"]
     assert deepseek.cache_key_strategy == docs_snapshot["observations"]["deepseek"]["cache_key_strategy"]
@@ -251,8 +251,10 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert glm.openai_base_url == ""
     assert glm.coding_openai_compatible_base_url == docs_snapshot["observations"]["zai_glm"]["coding_openai_compatible_base_url"]
     assert glm.cache_key_strategy == docs_snapshot["observations"]["zai_glm"]["cache_key_strategy"]
+    assert glm.reasoning_effort_levels == ("high", "max")
     assert glm.reasoning_mapping["low"] == "high"
     assert glm.reasoning_mapping["max"] == "max"
+    assert "xhigh" not in glm.reasoning_effort_levels
     assert proof.models_by_id["claude-code-bridge-glm-5.2-1m"].context_window == 1_000_000
     assert "docs.z.ai" in glm.provider_docs_url
 
@@ -265,6 +267,8 @@ def test_cp2_provider_entries_record_docs_sourced_protocol_and_cache_constraints
     assert kimi.cache_key_strategy == docs_snapshot["observations"]["kimi"]["cache_key_strategy"]
     assert docs_snapshot["observations"]["kimi"]["prompt_cache_key"] is True
     assert docs_snapshot["observations"]["kimi"]["cache_usage_field"] == "usage.cached_tokens"
+    assert kimi.reasoning_effort_levels == ()
+    assert kimi.reasoning_mapping == {}
     assert kimi.reasoning_policy == "always_thinks_preserve_reasoning_content"
     assert set(docs_snapshot["observations"]["kimi"]["deprecated_aliases"]).issubset(set(kimi.deprecated_aliases))
     assert "platform.kimi" in kimi.provider_docs_url

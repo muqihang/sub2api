@@ -440,7 +440,7 @@ def _write_cp2_patches_metadata(runtime_plan: ManagedRuntimeInstallPlan, proof: 
 
 
 CP3A_BACKGROUND_TASKS = frozenset({"title", "compact", "summary", "probe", "fast", "simple", "haiku"})
-CP3A_PROVIDER_LOCAL_ALIASES = frozenset({"fast", "simple", "haiku"})
+CP3A_PROVIDER_LOCAL_ALIASES = frozenset({"fast", "simple", "haiku", "sonnet", "opus"})
 CP3A_HARDCODED_CLAUDE_ALIASES = frozenset({
     "claude-haiku-legacy-hardcoded",
     "claude-haiku",
@@ -947,6 +947,8 @@ def resolve_subagent_model(
             boundary="same_provider" if entry.provider == parent_entry.provider else "safe_tool_result",
             dynamic=True,
         )
+    if requested == "fable":
+        raise RuntimeOverlayError("unknown Claude Code runtime model alias for provider: fable")
     entry = _entry_for_model(contract, requested)
     if entry.provider == "claude" and parent_entry.provider != "claude" and not explicit_claude_opt_in:
         raise RuntimeOverlayError("explicit Claude opt-in is required before consuming Claude formal pool from a non-Claude profile")
@@ -1100,7 +1102,12 @@ def _default_cp3a_provider_profiles(proof: RuntimeModelOverlayProof) -> tuple[Ru
                 provider="claude",
                 main_model_id=claude_main,
                 fast_model_id=claude_fast,
-                family_aliases={alias: claude_fast for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                family_aliases={
+                    **{alias: claude_fast for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                    "opus": claude_main,
+                    "sonnet": "claude-sonnet-4-6" if has("claude-sonnet-4-6") else claude_main,
+                    "haiku": claude_fast,
+                },
                 native_formal_pool=True,
                 cross_provider_fast_model_ids=("claude-code-bridge-deepseek-v4-flash",) if has("claude-code-bridge-deepseek-v4-flash") else (),
             )
@@ -1121,7 +1128,12 @@ def _default_cp3a_provider_profiles(proof: RuntimeModelOverlayProof) -> tuple[Ru
                     provider=provider,
                     main_model_id=main_model_id,
                     fast_model_id=fast_model_id,
-                    family_aliases={alias: fast_model_id for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                    family_aliases={
+                        **{alias: fast_model_id for alias in CP3A_BACKGROUND_TASKS | CP3A_PROVIDER_LOCAL_ALIASES},
+                        "opus": main_model_id,
+                        "sonnet": main_model_id,
+                        "haiku": fast_model_id,
+                    },
                     native_formal_pool=False,
                 )
             )
@@ -1302,7 +1314,7 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             api_formats=("anthropic_messages",),
             anthropic_base_url="https://api.deepseek.com/anthropic",
             reasoning_effort_levels=("high", "max"),
-            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max"},
+            reasoning_mapping={"high": "high", "max": "max"},
             cache_policy="provider_prefix_kv_cache_automatic_best_effort",
             cache_usage_fields=("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"),
             cache_key_strategy="provider_automatic_prefix_cache_best_effort",
@@ -1328,7 +1340,7 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             api_formats=("anthropic_messages",),
             anthropic_base_url="https://api.deepseek.com/anthropic",
             reasoning_effort_levels=("high", "max"),
-            reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max"},
+            reasoning_mapping={"high": "high", "max": "max"},
             cache_policy="provider_prefix_kv_cache_automatic_best_effort",
             cache_usage_fields=("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"),
             cache_key_strategy="provider_automatic_prefix_cache_best_effort",
@@ -1366,6 +1378,7 @@ def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
             api_formats=("anthropic_messages",),
             anthropic_base_url="https://api.z.ai/api/anthropic",
             coding_openai_compatible_base_url="https://api.z.ai/api/coding/paas/v4",
+            reasoning_effort_levels=("high", "max"),
             reasoning_mapping={"low": "high", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultracode": "max"},
             cache_key_strategy="unknown_probe_required",
             context_window=1_000_000,

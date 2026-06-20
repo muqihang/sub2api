@@ -50,6 +50,31 @@ func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing
 	require.Equal(t, "claude_code_bridge_deepseek", result.Audit.ClientType)
 }
 
+func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekPromptCacheFields(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_cache","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":20,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"cache audit"}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Equal(t, 7, result.Audit.CacheReadTokens)
+	require.Equal(t, 13, result.Audit.CacheMissTokens)
+	require.Contains(t, string(result.Body), "prompt_cache_hit_tokens")
+}
+
 func TestCP6DeepSeekAnthropicLiveStripsForeignThinkingAndSignatureSSE(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
@@ -442,6 +467,42 @@ func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsOnlyWhenExplicitlyE
 	require.False(t, result.Audit.NativeAttested)
 	require.False(t, result.Audit.FormalPoolAllowed)
 	require.Equal(t, "claude_code_bridge_openai", result.Audit.ClientType)
+}
+
+func TestClaudeCodeBridgeOpenAIResponsesLiveMapsAnthropicToolsAndPromptCacheKey(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test-key")
+	var responsesBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		responsesBody = string(body)
+		require.Equal(t, "/v1/responses", r.URL.Path)
+		require.Equal(t, "Bearer sk-openai-test-key", r.Header.Get("Authorization"))
+		require.Contains(t, responsesBody, `"type":"function"`)
+		require.Contains(t, responsesBody, `"name":"get_weather"`)
+		require.Contains(t, responsesBody, `"prompt_cache_key"`)
+		require.Contains(t, responsesBody, `"effort":"high"`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"OK"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.5","output":[],"usage":{"input_tokens":1600,"output_tokens":2,"input_tokens_details":{"cached_tokens":1500}}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"weather?"}],"stream":true,"max_tokens":8,"output_config":{"effort":"high"},"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"tool_choice":{"type":"tool","name":"get_weather"}}`)
+	decision := cp6LiveOpenAIDecision(upstream.URL)
+	decision.ModelID = "claude-code-bridge-gpt-5.5"
+	decision.UpstreamModel = "gpt-5.5"
+
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), decision, body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	require.Contains(t, string(result.Body), "OK")
+	require.Equal(t, 1500, result.Audit.CacheReadTokens)
+	require.NotContains(t, responsesBody, "claude-code-bridge-gpt-5.5")
 }
 
 func TestClaudeCodeBridgeAnthropicLivePostsGLMAndKimiToAnthropicMessages(t *testing.T) {

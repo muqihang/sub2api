@@ -259,7 +259,6 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ClaudeCodeBridgeRuntimeUsesSt
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
 }
 
-
 func TestGatewayService_AnthropicAPIKeyPassthrough_ClaudeCodeNativeRemoteSub2APIUsesStandardHTTP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES", "zhumeng-claude-code-native-upstream")
@@ -1291,6 +1290,33 @@ func TestParseClaudeUsageFromResponseBody(t *testing.T) {
 		require.Equal(t, 9, got.CacheCreationInputTokens, "已显式提供聚合字段时不应被明细覆盖")
 		require.Equal(t, 7, got.CacheReadInputTokens, "已显式提供 cache_read_input_tokens 时不应回退 cached_tokens")
 	})
+}
+
+func TestGatewayService_ParseSSEUsagePassthrough_DeepSeekPromptCacheFields(t *testing.T) {
+	svc := &GatewayService{}
+	usage := &ClaudeUsage{}
+	data := `{"type":"message_start","message":{"usage":{"input_tokens":20,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}}`
+
+	svc.parseSSEUsagePassthrough(data, usage)
+
+	require.Equal(t, 20, usage.InputTokens)
+	require.Equal(t, 7, usage.CacheReadInputTokens, "DeepSeek Anthropic prompt_cache_hit_tokens 应折算为 cache_read_tokens")
+	require.NotNil(t, usage.ProviderUsageExtra)
+	require.Equal(t, float64(7), usage.ProviderUsageExtra["prompt_cache_hit_tokens"])
+	require.Equal(t, float64(13), usage.ProviderUsageExtra["prompt_cache_miss_tokens"])
+}
+
+func TestParseClaudeUsageFromResponseBody_DeepSeekPromptCacheFields(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":20,"output_tokens":3,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}`)
+
+	got := parseClaudeUsageFromResponseBody(body)
+
+	require.Equal(t, 20, got.InputTokens)
+	require.Equal(t, 3, got.OutputTokens)
+	require.Equal(t, 7, got.CacheReadInputTokens)
+	require.NotNil(t, got.ProviderUsageExtra)
+	require.Equal(t, float64(7), got.ProviderUsageExtra["prompt_cache_hit_tokens"])
+	require.Equal(t, float64(13), got.ProviderUsageExtra["prompt_cache_miss_tokens"])
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingErrTooLong(t *testing.T) {

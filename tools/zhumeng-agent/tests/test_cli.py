@@ -726,6 +726,71 @@ def test_active_runtime_bridge_live_models_rejects_legacy_client_type_as_route()
     }) == ("claude-code-bridge-deepseek-v4-pro",)
 
 
+def test_claude_code_start_applies_agent_schema_patch_before_launch(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "http://127.0.0.1:18080",
+                "access_token": "eyJ.agent-login-jwt",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
+                "claude_code_sub2api_api_key_configured": True,
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+        def update(self, patch):
+            return {**self.read(), **patch}
+
+    runtime_root = tmp_path / "runtimes"
+    managed_executable, _, _ = write_fake_claude_runtime(
+        runtime_root,
+        tmp_path / "managed-runtime" / "claude",
+        payload=b'k.enum(["sonnet","opus","haiku","fable"]).optional()',
+    )
+    captured = {}
+
+    def fake_run_managed_claude_code(**kwargs):
+        captured["executable_bytes_at_launch"] = Path(kwargs["executable"]).read_bytes()
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(command=[str(kwargs["executable"])], env={"ANTHROPIC_BASE_URL": "http://127.0.0.1:43117", "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117"}, cwd=kwargs["project_cwd"]),
+            guard_plan=SimpleNamespace(command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"], config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117)),
+        )
+
+    cli.default_state_store = lambda: FakeStore()
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["runtime"]["agent_model_schema_patch"]["status"] == "patched"
+    assert b"k.enum" not in captured["executable_bytes_at_launch"]
+    assert b"k.string().min(1).max(128).optional()" in captured["executable_bytes_at_launch"]
+    assert Path(data["runtime"]["executable"]) == managed_executable
+
+
 def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):
@@ -735,7 +800,7 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
                 "server_base_url": "https://example.com",
                 "gateway_base_url": "http://127.0.0.1:18080",
                 "access_token": "eyJ.agent-login-jwt",
-                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
                 "claude_code_sub2api_api_key_configured": True,
                 "managed_session_id": "managed-session",
                 "device_id": 9,
@@ -830,7 +895,7 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert calls[0]["bridge_live_models"] == ("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro")
     assert data["runtime"]["bridge_live_models"] == ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"]
     assert calls[0]["upstream_base"] == "http://127.0.0.1:18080"
-    assert calls[0]["sub2api_auth"] == "sk-zhumeng-claude-code-cli"
+    assert calls[0]["sub2api_auth"] == "test-zhumeng-claude-code-cli-key"
     assert calls[0]["managed_session_id"] == "managed-session"
     assert calls[0]["device_id"] == 9
     assert calls[0]["attestation_secret"] == "server-native-attestation-secret"
@@ -838,7 +903,7 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert calls[0]["argv"] == ["--print"]
     assert calls[0]["guard_listen_port"] == 43117
     dumped = json.dumps(data)
-    assert "sk-zhumeng-claude-code-cli" not in dumped
+    assert "test-zhumeng-claude-code-cli-key" not in dumped
     assert "attestation-secret" not in dumped
 
 
@@ -851,7 +916,7 @@ def test_claude_code_start_prefers_dedicated_sub2api_key_over_agent_jwt(capsys, 
                 "server_base_url": "http://127.0.0.1:3013",
                 "gateway_base_url": "http://127.0.0.1:3013",
                 "access_token": "eyJ.agent-login-jwt",
-                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
                 "claude_code_sub2api_api_key_configured": True,
                 "managed_session_id": "managed-session",
                 "device_id": 9,
@@ -906,9 +971,9 @@ def test_claude_code_start_prefers_dedicated_sub2api_key_over_agent_jwt(capsys, 
     assert exit_code == 0
     data = parse_output(capsys)
     assert data["status"] == "exited"
-    assert calls[0]["sub2api_auth"] == "sk-zhumeng-claude-code-cli"
+    assert calls[0]["sub2api_auth"] == "test-zhumeng-claude-code-cli-key"
     assert calls[0]["sub2api_auth"] != "eyJ.agent-login-jwt"
-    assert "sk-zhumeng-claude-code-cli" not in json.dumps(data)
+    assert "test-zhumeng-claude-code-cli-key" not in json.dumps(data)
 
 
 def test_claude_code_start_uses_native_managed_credentials_separate_from_codex_gateway(capsys, tmp_path: Path, monkeypatch):
@@ -927,7 +992,7 @@ def test_claude_code_start_uses_native_managed_credentials_separate_from_codex_g
                 "claude_code_native_refresh_token": "claude-code-refresh-token",
                 "claude_code_native_managed_session_id": "claude-code-session",
                 "claude_code_native_device_id": 32,
-                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
                 "claude_code_sub2api_api_key_configured": True,
                 "config_profile": {"model_provider": "zhumeng-claude"},
                 "proxy_port": 18081,
@@ -980,7 +1045,7 @@ def test_claude_code_start_uses_native_managed_credentials_separate_from_codex_g
     assert exit_code == 0
     data = parse_output(capsys)
     assert data["status"] == "exited"
-    assert calls[0]["sub2api_auth"] == "sk-zhumeng-claude-code-cli"
+    assert calls[0]["sub2api_auth"] == "test-zhumeng-claude-code-cli-key"
     assert calls[0]["native_managed_access_token"] == "eyJ.claude-code-native-token"
     assert calls[0]["managed_session_id"] == "claude-code-session"
     assert calls[0]["device_id"] == 32
@@ -1172,7 +1237,7 @@ def test_claude_code_start_refreshes_expired_native_managed_credentials(capsys, 
                 "claude_code_native_refresh_token": "claude-code-refresh-token",
                 "claude_code_native_managed_session_id": "expired-claude-code-session",
                 "claude_code_native_device_id": 32,
-                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
                 "claude_code_sub2api_api_key_configured": True,
                 "config_profile": {"model_provider": "zhumeng-claude"},
                 "proxy_port": 18081,
@@ -1345,7 +1410,7 @@ def test_claude_code_start_does_not_require_generic_codex_token_when_native_cred
                 "claude_code_native_refresh_token": "native-refresh-token",
                 "claude_code_native_managed_session_id": "native-session",
                 "claude_code_native_device_id": 32,
-                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
                 "claude_code_native_attestation_secret": "server-native-attestation-secret",
                 "claude_code_native_attestation_secret_source": "server",
                 "claude_code_route_hint_secret": "server-route-hint-secret",
@@ -1394,7 +1459,7 @@ def test_claude_code_start_does_not_require_generic_codex_token_when_native_cred
     assert exit_code == 0
     data = parse_output(capsys)
     assert data["status"] == "exited"
-    assert calls[0]["sub2api_auth"] == "sk-zhumeng-claude-code-cli"
+    assert calls[0]["sub2api_auth"] == "test-zhumeng-claude-code-cli-key"
     assert calls[0]["native_managed_access_token"] == "eyJ.native-only-token"
     assert calls[0]["managed_session_id"] == "native-session"
     assert calls[0]["device_id"] == 32
@@ -1412,7 +1477,7 @@ def test_claude_code_native_refresh_uses_gateway_base_url_when_server_base_url_m
                 "claude_code_native_refresh_token": "native-refresh-token",
                 "claude_code_native_managed_session_id": "expired-native-session",
                 "claude_code_native_device_id": 32,
-                "claude_code_sub2api_api_key": "sk-zhumeng-claude-code-cli",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
                 "claude_code_native_attestation_secret": "server-native-attestation-secret",
                 "claude_code_native_attestation_secret_source": "server",
                 "claude_code_route_hint_secret": "server-route-hint-secret",

@@ -40,6 +40,7 @@ from .adapters.base import BaseAdapter
 from .adapters.claude_code.launcher import run_managed_claude_code
 from .adapters.claude_code.runtime_installer import (
     RuntimeInstallerError,
+    apply_managed_runtime_agent_model_schema_patch,
     apply_shell_alias_plan,
     build_managed_runtime_install_plan,
     build_shell_alias_plan,
@@ -1735,6 +1736,9 @@ def build_claude_code_start_payload(
     active_runtime = resolve_active_managed_runtime(runtime_root)
     if executable is not None and str(Path(executable).expanduser()) != str(active_runtime.executable.expanduser()):
         raise ValueError("zhumeng-claude start refuses executable drift outside the active managed runtime")
+    agent_schema_patch = apply_managed_runtime_agent_model_schema_patch(runtime_root, active_runtime.executable)
+    if agent_schema_patch.get("runtime_hash_after") != active_runtime.runtime_hash:
+        active_runtime = resolve_active_managed_runtime(runtime_root)
     bridge_live_models = tuple(_active_runtime_bridge_live_models(active_runtime.patches))
     attestation_secret = require_server_native_attestation_secret(state)
     route_hint_secret = require_server_route_hint_secret(state)
@@ -1779,6 +1783,7 @@ def build_claude_code_start_payload(
             "overlay_hash": active_runtime.overlay_hash,
             "executable": str(active_runtime.executable),
             "bridge_live_models": list(bridge_live_models),
+            "agent_model_schema_patch": agent_schema_patch,
         },
     }
 

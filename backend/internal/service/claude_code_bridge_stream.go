@@ -13,6 +13,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 const ClaudeCodeBridgeCredentialScope = "bridge_pool"
@@ -83,6 +85,7 @@ type ClaudeCodeBridgeAuditSummary struct {
 	CachePolicy              string `json:"cache_policy,omitempty"`
 	CacheReadTokens          int    `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens         int    `json:"cache_write_tokens,omitempty"`
+	CacheMissTokens          int    `json:"cache_miss_tokens,omitempty"`
 }
 
 type ClaudeCodeBridgeStreamResult struct {
@@ -212,13 +215,14 @@ func StreamClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.C
 		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, fmt.Errorf("claude code bridge upstream status %d: %s", resp.StatusCode, sanitizeClaudeCodeBridgeErrorMessage(string(limited)))
 	}
 	applyClaudeCodeBridgeLiveResponseHeaders(dst, header)
-	if err := copyClaudeCodeBridgeSSE(dst, resp.Body); err != nil {
+	fixture, err := copyClaudeCodeBridgeSSE(dst, resp.Body)
+	if err != nil {
 		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
 	}
 	return ClaudeCodeBridgeAnthropicLiveStreamResult{
 		StatusCode: resp.StatusCode,
 		Header:     header,
-		Audit:      buildClaudeCodeBridgeAuditSummary(decision, ClaudeCodeBridgeProviderFixture{}),
+		Audit:      buildClaudeCodeBridgeAuditSummary(decision, fixture),
 	}, nil
 }
 
@@ -292,6 +296,7 @@ type ClaudeCodeBridgeProviderFixture struct {
 	OutputTokens     int
 	CacheReadTokens  int
 	CacheWriteTokens int
+	CacheMissTokens  int
 	StopReason       string
 	ErrorType        string
 	ErrorMessage     string
@@ -353,6 +358,7 @@ func buildClaudeCodeBridgeAuditSummary(decision ClaudeCodeBridgeRouteDecision, f
 		CachePolicy:              decision.CachePolicy,
 		CacheReadTokens:          fixture.CacheReadTokens,
 		CacheWriteTokens:         fixture.CacheWriteTokens,
+		CacheMissTokens:          fixture.CacheMissTokens,
 	}
 }
 
@@ -607,9 +613,10 @@ func applyClaudeCodeBridgeLiveResponseHeaders(dst io.Writer, headers http.Header
 	}
 }
 
-func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) error {
+func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) (ClaudeCodeBridgeProviderFixture, error) {
 	flusher, _ := dst.(interface{ Flush() })
 	state := claudeCodeBridgeSSESanitizerState{indexMap: map[int]int{}}
+	fixture := ClaudeCodeBridgeProviderFixture{}
 	reader := bufio.NewReader(src)
 	block := make([]string, 0, 8)
 	for {
@@ -617,8 +624,8 @@ func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) error {
 		if line != "" {
 			block = append(block, line)
 			if strings.TrimRight(line, "\r\n") == "" {
-				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state); err != nil {
-					return err
+				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state, &fixture); err != nil {
+					return fixture, err
 				}
 				if flusher != nil {
 					flusher.Flush()
@@ -628,17 +635,17 @@ func copyClaudeCodeBridgeSSE(dst io.Writer, src io.Reader) error {
 		}
 		if readErr == io.EOF {
 			if len(block) > 0 {
-				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state); err != nil {
-					return err
+				if err := writeClaudeCodeBridgeSafeSSEBlock(dst, block, &state, &fixture); err != nil {
+					return fixture, err
 				}
 				if flusher != nil {
 					flusher.Flush()
 				}
 			}
-			return nil
+			return fixture, nil
 		}
 		if readErr != nil {
-			return readErr
+			return fixture, readErr
 		}
 	}
 }
@@ -648,7 +655,7 @@ type claudeCodeBridgeSSESanitizerState struct {
 	nextIndex int
 }
 
-func writeClaudeCodeBridgeSafeSSEBlock(dst io.Writer, block []string, state *claudeCodeBridgeSSESanitizerState) error {
+func writeClaudeCodeBridgeSafeSSEBlock(dst io.Writer, block []string, state *claudeCodeBridgeSSESanitizerState, fixture *ClaudeCodeBridgeProviderFixture) error {
 	payload, hasData := claudeCodeBridgeSSEDataPayload(block)
 	if !hasData {
 		_, err := io.WriteString(dst, strings.Join(block, ""))
@@ -658,6 +665,7 @@ func writeClaudeCodeBridgeSafeSSEBlock(dst io.Writer, block []string, state *cla
 		_, err := io.WriteString(dst, strings.Join(block, ""))
 		return err
 	}
+	collectClaudeCodeBridgeProviderUsage(payload, fixture)
 	var data any
 	if err := json.Unmarshal([]byte(payload), &data); err != nil {
 		return fmt.Errorf("claude code bridge upstream SSE data is not valid JSON: %w", err)
@@ -689,6 +697,43 @@ func writeClaudeCodeBridgeSafeSSEBlock(dst io.Writer, block []string, state *cla
 		}
 	}
 	return nil
+}
+
+func collectClaudeCodeBridgeProviderUsage(payload string, fixture *ClaudeCodeBridgeProviderFixture) {
+	if fixture == nil || strings.TrimSpace(payload) == "" || strings.TrimSpace(payload) == "[DONE]" {
+		return
+	}
+	parsed := gjson.Parse(payload)
+	collectClaudeCodeBridgeProviderUsageNode(parsed.Get("message.usage"), fixture)
+	collectClaudeCodeBridgeProviderUsageNode(parsed.Get("usage"), fixture)
+}
+
+func collectClaudeCodeBridgeProviderUsageNode(usageNode gjson.Result, fixture *ClaudeCodeBridgeProviderFixture) {
+	if !usageNode.Exists() {
+		return
+	}
+	if v := usageNode.Get("cache_read_input_tokens"); v.Exists() && int(v.Int()) > fixture.CacheReadTokens {
+		fixture.CacheReadTokens = int(v.Int())
+	}
+	if v := usageNode.Get("cached_tokens"); v.Exists() && fixture.CacheReadTokens == 0 && v.Int() > 0 {
+		fixture.CacheReadTokens = int(v.Int())
+	}
+	if v := usageNode.Get("prompt_cache_hit_tokens"); v.Exists() && int(v.Int()) > fixture.CacheReadTokens {
+		fixture.CacheReadTokens = int(v.Int())
+	}
+	if v := usageNode.Get("cache_creation_input_tokens"); v.Exists() && int(v.Int()) > fixture.CacheWriteTokens {
+		fixture.CacheWriteTokens = int(v.Int())
+	}
+	if fixture.CacheWriteTokens == 0 {
+		cc5m := usageNode.Get("cache_creation.ephemeral_5m_input_tokens").Int()
+		cc1h := usageNode.Get("cache_creation.ephemeral_1h_input_tokens").Int()
+		if total := int(cc5m + cc1h); total > 0 {
+			fixture.CacheWriteTokens = total
+		}
+	}
+	if v := usageNode.Get("prompt_cache_miss_tokens"); v.Exists() && int(v.Int()) > fixture.CacheMissTokens {
+		fixture.CacheMissTokens = int(v.Int())
+	}
 }
 
 func claudeCodeBridgeSSEDataPayload(block []string) (string, bool) {

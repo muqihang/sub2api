@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -19,6 +20,9 @@ DEFAULT_PATCH_POINTS = (
     "isolated_config",
     "guard_env",
 )
+AGENT_MODEL_SCHEMA_PATCH_POINT = "agent_model_schema"
+AGENT_MODEL_SCHEMA_ENUM_NEEDLE = b'k.enum(["sonnet","opus","haiku","fable"]).optional()'
+AGENT_MODEL_SCHEMA_STRING_PATCH = b"k.string().min(1).max(128).optional()               "
 GLOBAL_CLAUDE_BINARY_PATHS = frozenset({
     Path("/opt/homebrew/bin/claude"),
     Path("/usr/local/bin/claude"),
@@ -248,6 +252,54 @@ def write_managed_runtime_artifacts(plan: ManagedRuntimeInstallPlan) -> None:
         "global_overwrite": False,
         "official_claude_unaffected": True,
     }))
+
+
+def apply_managed_runtime_agent_model_schema_patch(runtime_root: Path, executable: Path | str) -> dict[str, object]:
+    """Widen the managed Claude Code Agent model schema inside the isolated runtime.
+
+    Claude Code 2.1.177 validates the Agent tool's `model` field with a packed
+    enum of Claude aliases. The managed runtime needs the field to accept our
+    signed overlay display IDs; route trust and the guard still decide whether a
+    model can go live. This patch is intentionally scoped to the active managed
+    executable and never targets the globally installed `claude` binary.
+    """
+    runtime_root = runtime_root.expanduser()
+    manifest_path = _active_manifest_path(runtime_root)
+    executable_path = _active_manifest_executable_path(manifest_path, runtime_root=runtime_root)
+    requested_executable = Path(executable).expanduser().resolve(strict=False)
+    if requested_executable != executable_path:
+        raise RuntimeInstallerError("managed Claude Code runtime executable drift before Agent schema patch")
+    before_hash = _hash_existing_file(executable_path)
+    if not before_hash:
+        raise RuntimeInstallerError("managed Claude Code runtime executable is missing")
+    data = executable_path.read_bytes()
+    status = "already_patched"
+    if AGENT_MODEL_SCHEMA_ENUM_NEEDLE in data:
+        data = data.replace(AGENT_MODEL_SCHEMA_ENUM_NEEDLE, AGENT_MODEL_SCHEMA_STRING_PATCH, 1)
+        executable_path.write_bytes(data)
+        _codesign_ad_hoc_if_macho(executable_path)
+        status = "patched"
+    elif AGENT_MODEL_SCHEMA_STRING_PATCH.rstrip() not in data:
+        raise RuntimeInstallerError("managed Claude Code Agent model schema patch point not found")
+
+    after_hash = _hash_existing_file(executable_path)
+    if not after_hash:
+        raise RuntimeInstallerError("managed Claude Code runtime executable is missing after patch")
+    _update_managed_runtime_hash_metadata(
+        runtime_root=runtime_root,
+        manifest_path=manifest_path,
+        runtime_hash=after_hash,
+        patch_status=status,
+        before_hash=before_hash,
+    )
+    return {
+        "status": status,
+        "patched_executable": str(executable_path),
+        "runtime_hash_before": before_hash,
+        "runtime_hash_after": after_hash,
+        "patch_point": AGENT_MODEL_SCHEMA_PATCH_POINT,
+        "official_claude_unaffected": True,
+    }
 
 
 def read_managed_runtime_status(runtime_root: Path) -> dict[str, object]:
@@ -502,6 +554,118 @@ def _runtime_integrity(manifest_path_value: object) -> dict[str, object]:
         "expected_manifest_hash": expected,
         "locked_files": locked_file_status,
     }
+
+
+def _active_manifest_path(runtime_root: Path) -> Path:
+    active_pointer = ensure_managed_runtime_write_path(runtime_root / RUNTIME_NAME / "active", runtime_root=runtime_root)
+    try:
+        active = json.loads(active_pointer.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime active pointer is unreadable") from exc
+    manifest_value = str(active.get("manifest_path") or "") if isinstance(active, dict) else ""
+    if not manifest_value:
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is missing")
+    return ensure_managed_runtime_write_path(Path(manifest_value), runtime_root=runtime_root)
+
+
+def _active_manifest_executable_path(manifest_path: Path, *, runtime_root: Path) -> Path:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is unreadable") from exc
+    executable_value = str(manifest.get("executable_path") or "") if isinstance(manifest, dict) else ""
+    if not executable_value:
+        raise RuntimeInstallerError("managed Claude Code runtime executable is missing from manifest")
+    raw_executable = Path(executable_value).expanduser()
+    if not raw_executable.is_absolute():
+        raise RuntimeInstallerError("managed Claude Code runtime manifest must contain an absolute executable path")
+    executable = raw_executable.resolve(strict=False)
+    if raw_executable in GLOBAL_CLAUDE_BINARY_PATHS or executable in GLOBAL_CLAUDE_BINARY_PATHS:
+        raise RuntimeInstallerError("managed Claude Code runtime refuses to patch global Claude Code binary")
+    return executable
+
+
+def _update_managed_runtime_hash_metadata(
+    *,
+    runtime_root: Path,
+    manifest_path: Path,
+    runtime_hash: str,
+    patch_status: str,
+    before_hash: str,
+) -> None:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is unreadable") from exc
+    if not isinstance(manifest, dict):
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is invalid")
+    manifest["upstream_hash"] = runtime_hash
+    patch_points = [str(item) for item in manifest.get("patch_points", []) if str(item)]
+    if AGENT_MODEL_SCHEMA_PATCH_POINT not in patch_points:
+        patch_points.append(AGENT_MODEL_SCHEMA_PATCH_POINT)
+    manifest["patch_points"] = patch_points
+
+    patches_path = ensure_managed_runtime_write_path(manifest_path.parent / "patches.json", runtime_root=runtime_root)
+    try:
+        patches = json.loads(patches_path.read_text(encoding="utf-8")) if patches_path.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime patches are unreadable") from exc
+    if not isinstance(patches, dict):
+        patches = {}
+    patch_file_points = [str(item) for item in patches.get("patch_points", []) if str(item)]
+    if AGENT_MODEL_SCHEMA_PATCH_POINT not in patch_file_points:
+        patch_file_points.append(AGENT_MODEL_SCHEMA_PATCH_POINT)
+    patches["patch_points"] = patch_file_points
+    patches["agent_model_schema_patch"] = {
+        "status": patch_status,
+        "patch_point": AGENT_MODEL_SCHEMA_PATCH_POINT,
+        "schema": "string_min_1_max_128",
+        "runtime_hash_before": before_hash,
+        "runtime_hash_after": runtime_hash,
+        "global_binary_touched": False,
+    }
+
+    rollback_path = ensure_managed_runtime_write_path(manifest_path.parent / "rollback.json", runtime_root=runtime_root)
+    try:
+        rollback = json.loads(rollback_path.read_text(encoding="utf-8")) if rollback_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        rollback = {}
+    if not isinstance(rollback, dict):
+        rollback = {}
+
+    manifest_bytes = _canonical_json_bytes(manifest)
+    patches_bytes = _canonical_json_bytes(patches)
+    rollback_bytes = _canonical_json_bytes(rollback)
+    hash_lock = {
+        "runtime": RUNTIME_NAME,
+        "upstream_version": str(manifest.get("upstream_version") or ""),
+        "manifest_hash": _sha256_bytes(manifest_bytes),
+        "overlay_hash": str(manifest.get("overlay_hash") or ""),
+        "upstream_hash": runtime_hash,
+        "locked_files": {
+            "manifest.json": _sha256_bytes(manifest_bytes),
+            "patches.json": _sha256_bytes(patches_bytes),
+            "rollback.json": _sha256_bytes(rollback_bytes),
+        },
+    }
+    manifest_path.write_bytes(manifest_bytes)
+    patches_path.write_bytes(patches_bytes)
+    rollback_path.write_bytes(rollback_bytes)
+    ensure_managed_runtime_write_path(manifest_path.parent / "hash.lock", runtime_root=runtime_root).write_bytes(_canonical_json_bytes(hash_lock))
+
+
+def _codesign_ad_hoc_if_macho(path: Path) -> None:
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(4)
+    except OSError:
+        return
+    if header not in {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}:
+        return
+    try:
+        subprocess.run(["codesign", "--force", "--sign", "-", str(path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime Agent schema patch could not re-sign executable") from exc
 
 
 def _resolve_runtime_executable(executable: Path) -> Path:

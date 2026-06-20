@@ -46,11 +46,9 @@ def test_cp3a_uses_official_docs_snapshot_but_keeps_provider_capabilities_unveri
     assert snapshot["purpose"].startswith("CP3 official-docs snapshot")
     assert snapshot["observations"]["deepseek"]["models"] == ["deepseek-v4-pro", "deepseek-v4-pro[1m]", "deepseek-v4-flash"]
     assert snapshot["observations"]["deepseek"]["context_windows"]["deepseek-v4-pro[1m]"] == 1_000_000
+    assert snapshot["observations"]["deepseek"]["native_reasoning_effort_levels"] == ["high", "max"]
     assert snapshot["observations"]["deepseek"]["thinking_effort_mapping"] == {
-        "low": "high",
-        "medium": "high",
         "high": "high",
-        "xhigh": "max",
         "max": "max",
     }
     assert snapshot["observations"]["deepseek"]["cache_usage_fields"] == [
@@ -144,6 +142,33 @@ def test_cp3a_background_models_resolve_from_active_profile_each_request(tmp_pat
     assert after_switch_to_deepseek.native_egress_allowed is False
     assert after_switch_to_deepseek.formal_pool_allowed is False
     assert after_switch_to_deepseek.dynamic_profile_resolved is True
+
+
+def test_cp3a_official_agent_aliases_resolve_against_parent_profile(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    claude_opus = resolve_subagent_model(contract, parent_model_id="claude-sonnet-4-6", requested_model="opus")
+    claude_sonnet = resolve_subagent_model(contract, parent_model_id="claude-opus-4-8", requested_model="sonnet")
+    deepseek_opus = resolve_subagent_model(contract, parent_model_id="claude-code-bridge-deepseek-v4-pro", requested_model="opus")
+    gpt_sonnet = resolve_subagent_model(contract, parent_model_id="claude-code-bridge-gpt-5.5", requested_model="sonnet")
+
+    assert claude_opus.resolved_model_id == "claude-opus-4-8"
+    assert claude_opus.provider == "claude"
+    assert claude_opus.native_egress_allowed is True
+    assert claude_sonnet.resolved_model_id == "claude-sonnet-4-6"
+    assert claude_sonnet.provider == "claude"
+    assert deepseek_opus.resolved_model_id == "claude-code-bridge-deepseek-v4-pro"
+    assert deepseek_opus.provider == "deepseek"
+    assert deepseek_opus.formal_pool_allowed is False
+    assert gpt_sonnet.resolved_model_id == "claude-code-bridge-gpt-5.5"
+    assert gpt_sonnet.provider == "openai"
+
+
+def test_cp3a_fable_agent_alias_does_not_consume_formal_pool_without_curated_model(tmp_path: Path):
+    contract = _contract(tmp_path)
+
+    with pytest.raises(RuntimeOverlayError, match="unknown Claude Code runtime model alias for provider: fable"):
+        resolve_subagent_model(contract, parent_model_id="claude-opus-4-8", requested_model="fable")
 
 
 def test_cp3a_explicit_claude_subagent_goes_native_and_is_auditable(tmp_path: Path):

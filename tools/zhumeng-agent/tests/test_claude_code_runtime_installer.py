@@ -10,6 +10,7 @@ import pytest
 
 from zhumeng_agent.adapters.claude_code.runtime_installer import (
     RuntimeInstallerError,
+    apply_managed_runtime_agent_model_schema_patch,
     apply_shell_alias_plan,
     build_managed_runtime_install_plan,
     build_shell_alias_plan,
@@ -240,6 +241,62 @@ def test_runtime_installer_active_manifest_rejects_relative_executable_path(tmp_
 
     with pytest.raises(RuntimeInstallerError, match="absolute executable path"):
         resolve_active_managed_runtime(runtime_root)
+
+
+def test_runtime_installer_patches_managed_agent_schema_without_touching_global_binary(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    original = (
+        b"prefix "
+        b"k.enum([\"sonnet\",\"opus\",\"haiku\",\"fable\"]).optional()"
+        b" suffix"
+    )
+    executable.write_bytes(original)
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+    before_hash = plan.manifest.upstream_hash
+
+    patch_result = apply_managed_runtime_agent_model_schema_patch(runtime_root, executable)
+
+    assert patch_result["status"] == "patched"
+    assert patch_result["official_claude_unaffected"] is True
+    assert patch_result["patched_executable"] == str(executable.resolve(strict=False))
+    assert patch_result["runtime_hash_before"] == before_hash
+    assert patch_result["runtime_hash_after"] != before_hash
+    patched = executable.read_bytes()
+    assert b'k.enum(["sonnet","opus","haiku","fable"]).optional()' not in patched
+    assert b"k.string().min(1).max(128).optional()" in patched
+
+    active = resolve_active_managed_runtime(runtime_root)
+    assert active.runtime_hash == patch_result["runtime_hash_after"]
+    assert "agent_model_schema" in active.manifest["patch_points"]
+    assert active.manifest["upstream_hash"] == patch_result["runtime_hash_after"]
+    assert active.patches["agent_model_schema_patch"]["schema"] == "string_min_1_max_128"
+    assert active.patches["agent_model_schema_patch"]["global_binary_touched"] is False
+
+
+def test_runtime_installer_agent_schema_patch_is_idempotent(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b'k.string().min(1).max(128).optional()               ')
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    patch_result = apply_managed_runtime_agent_model_schema_patch(runtime_root, executable)
+
+    assert patch_result["status"] == "already_patched"
+    active = resolve_active_managed_runtime(runtime_root)
+    assert active.runtime_hash == patch_result["runtime_hash_after"]
 
 
 def test_runtime_installer_start_requires_enabled_active_runtime(tmp_path: Path):

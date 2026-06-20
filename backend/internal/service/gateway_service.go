@@ -619,13 +619,14 @@ type AccountSelectionResult struct {
 
 // ClaudeUsage 表示Claude API返回的usage信息
 type ClaudeUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
-	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
-	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	InputTokens              int            `json:"input_tokens"`
+	OutputTokens             int            `json:"output_tokens"`
+	CacheCreationInputTokens int            `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int            `json:"cache_read_input_tokens"`
+	CacheCreation5mTokens    int            // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
+	CacheCreation1hTokens    int            // 1小时缓存创建token（来自嵌套 cache_creation 对象）
+	ImageOutputTokens        int            `json:"image_output_tokens,omitempty"`
+	ProviderUsageExtra       map[string]any `json:"provider_usage_extra,omitempty"`
 }
 
 // ForwardResult 转发结果
@@ -6070,6 +6071,7 @@ func (s *GatewayService) parseSSEUsagePassthrough(data string, usage *ClaudeUsag
 			usage.InputTokens = int(msgUsage.Get("input_tokens").Int())
 			usage.CacheCreationInputTokens = int(msgUsage.Get("cache_creation_input_tokens").Int())
 			usage.CacheReadInputTokens = int(msgUsage.Get("cache_read_input_tokens").Int())
+			recordProviderPromptCacheUsage(usage, msgUsage)
 
 			// 保持与通用解析一致：message_start 允许覆盖 5m/1h 明细（包括 0）。
 			cc5m := msgUsage.Get("cache_creation.ephemeral_5m_input_tokens")
@@ -6094,6 +6096,7 @@ func (s *GatewayService) parseSSEUsagePassthrough(data string, usage *ClaudeUsag
 			if v := deltaUsage.Get("cache_read_input_tokens").Int(); v > 0 {
 				usage.CacheReadInputTokens = int(v)
 			}
+			recordProviderPromptCacheUsage(usage, deltaUsage)
 
 			cc5m := deltaUsage.Get("cache_creation.ephemeral_5m_input_tokens")
 			cc1h := deltaUsage.Get("cache_creation.ephemeral_1h_input_tokens")
@@ -6126,6 +6129,8 @@ func (s *GatewayService) parseSSEUsagePassthrough(data string, usage *ClaudeUsag
 			usage.CacheCreationInputTokens = int(total)
 		}
 	}
+	recordProviderPromptCacheUsage(usage, parsed.Get("message.usage"))
+	recordProviderPromptCacheUsage(usage, parsed.Get("usage"))
 }
 
 func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
@@ -6159,7 +6164,32 @@ func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
 			usage.CacheReadInputTokens = int(cached)
 		}
 	}
+	recordProviderPromptCacheUsage(usage, usageNode)
 	return usage
+}
+
+func recordProviderPromptCacheUsage(usage *ClaudeUsage, usageNode gjson.Result) {
+	if usage == nil || !usageNode.Exists() {
+		return
+	}
+	hit := usageNode.Get("prompt_cache_hit_tokens")
+	miss := usageNode.Get("prompt_cache_miss_tokens")
+	if !hit.Exists() && !miss.Exists() {
+		return
+	}
+	if usage.ProviderUsageExtra == nil {
+		usage.ProviderUsageExtra = map[string]any{}
+	}
+	if hit.Exists() {
+		hitTokens := int(hit.Int())
+		usage.ProviderUsageExtra["prompt_cache_hit_tokens"] = hit.Num
+		if hitTokens > usage.CacheReadInputTokens {
+			usage.CacheReadInputTokens = hitTokens
+		}
+	}
+	if miss.Exists() {
+		usage.ProviderUsageExtra["prompt_cache_miss_tokens"] = miss.Num
+	}
 }
 
 func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(

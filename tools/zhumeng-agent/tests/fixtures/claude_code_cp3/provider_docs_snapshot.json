@@ -25,10 +25,7 @@
       "anthropic_base_url": "https://api.deepseek.com/anthropic",
       "openai_base_url": "https://api.deepseek.com",
       "thinking_effort_mapping": {
-        "low": "high",
-        "medium": "high",
         "high": "high",
-        "xhigh": "max",
         "max": "max"
       },
       "cache_usage_fields": [
@@ -41,7 +38,11 @@
         "deepseek-v4-pro": 1000000,
         "deepseek-v4-pro[1m]": 1000000,
         "deepseek-v4-flash": 1000000
-      }
+      },
+      "native_reasoning_effort_levels": [
+        "high",
+        "max"
+      ]
     },
     "zai_glm": {
       "claude_code_display_models": [
@@ -80,7 +81,17 @@
     },
     "openai": {
       "catalog_strategy": "signed_dynamic_catalog_required_no_static_gpt_defaults",
-      "runtime_verified": false
+      "runtime_verified": false,
+      "preferred_protocol": "responses",
+      "native_reasoning_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cache_key_strategy": "responses_prompt_cache_key_exact_prefix",
+      "cache_usage_field": "usage.prompt_tokens_details.cached_tokens",
+      "tool_bridge": "anthropic_tools_to_responses_function_tools"
     }
   }
 }
