@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -241,6 +242,27 @@ func TestBlockerRegressionOpenAITokenProviderTerminalRefreshErrorRequiresRelogin
 	require.Equal(t, OpenAIAuthStateTerminal, repo.updateExtra["openai_auth_state"])
 	require.Equal(t, "openai_refresh_terminal", blocker.reason)
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.deleteCalled))
+}
+
+func TestBlockerRegressionOpenAITransportErrorBranchesUseUnifiedHandler(t *testing.T) {
+	files := []string{
+		"openai_gateway_chat_completions.go",
+		"openai_gateway_chat_completions_raw.go",
+		"openai_gateway_messages.go",
+		"openai_images.go",
+		"openai_images_responses.go",
+		"openai_embeddings.go",
+		"openai_gateway_service.go",
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			content, err := os.ReadFile(file)
+			require.NoError(t, err)
+			text := string(content)
+			require.Contains(t, text, "handleOpenAIUpstreamTransportError", "OpenAI request-level transport errors must use the unified handler for failover and short cooldown")
+			require.NotContains(t, text, "writeOpenAIEmbeddingsError(c, http.StatusBadGateway, \"upstream_error\", \"Upstream request failed\")")
+		})
+	}
 }
 
 func TestBlockerRegressionForwardShapeRepairAddsLocalOpsEvent(t *testing.T) {
