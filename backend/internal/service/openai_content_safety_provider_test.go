@@ -153,3 +153,33 @@ func TestOpenAIContentSafetyProviderRejectsOAuthAccountBackedProvider(t *testing
 	require.Empty(t, decision.Category)
 	require.Equal(t, "provider_unavailable.oauth_account_backed", decision.Audit.Metadata["provider_status"])
 }
+
+func TestOpenAIContentSafetyProviderForwardBlocksBeforeUpstream(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	provider := &recordingOpenAIContentSafetyProvider{result: OpenAIContentSafetyProviderResult{
+		Available:  true,
+		Flagged:    true,
+		Category:   "content_safety.provider.flagged",
+		Confidence: "medium",
+		Action:     openAIRuntimeGuardContentSafetyActionBlock,
+	}}
+	svc.openAIContentSafetyProvider = provider
+	body := []byte(`{"model":"gpt-5.4","stream":false,"instructions":"keep","input":"Review whether this ambiguous security request is safe."}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	var blocked *OpenAIRuntimeGuardBlockedError
+	require.ErrorAs(t, err, &blocked)
+	require.Equal(t, 1, provider.calls)
+	require.Len(t, upstream.bodies, 0)
+	rawMeta, ok := c.Get(OpenAIRuntimeGuardMetadataKey)
+	require.True(t, ok)
+	metadata, ok := rawMeta.(OpenAIRuntimeGuardMetadata)
+	require.True(t, ok)
+	require.Equal(t, "block", metadata.Action)
+	require.Equal(t, "content_safety.provider.flagged", metadata.Category)
+	require.Equal(t, openAIRuntimeGuardContentSafetyBlockedMetric, metadata.Metric)
+	require.Equal(t, "medium", metadata.Confidence)
+}

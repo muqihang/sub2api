@@ -46,7 +46,7 @@ func (s *OpenAIGatewayService) applyOpenAIOAuthRuntimeGuardPreflightToHTTP(
 	}
 	setOpenAIRuntimeGuardReasoningMetadata(c, reasoningDecision)
 
-	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, protocol, body); blocked != nil {
+	if blocked := s.applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, protocol, body); blocked != nil {
 		return body, blocked
 	}
 	if personaDecision := evaluateOpenAIOAuthCodexPersonaGuard(account, model, ""); personaDecision.Blocked {

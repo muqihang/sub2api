@@ -550,7 +550,7 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if len(moderationBody) == 0 {
 		moderationBody = body
 	}
-	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIImages, moderationBody); blocked != nil {
+	if blocked := s.applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIImages, moderationBody); blocked != nil {
 		return nil, blocked
 	}
 	switch account.Type {

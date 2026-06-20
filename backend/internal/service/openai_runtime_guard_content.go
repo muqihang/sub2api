@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -399,6 +400,19 @@ func setOpenAIRuntimeGuardContentSafetyMetadata(c *gin.Context, decision openAIR
 
 func applyOpenAIRuntimeGuardContentSafetyToHTTP(c *gin.Context, account *Account, protocol string, body []byte) *OpenAIRuntimeGuardBlockedError {
 	decision := evaluateOpenAIRuntimeGuardContentSafety(account, protocol, body)
+	return applyOpenAIRuntimeGuardContentSafetyDecisionToHTTP(c, decision)
+}
+
+func (s *OpenAIGatewayService) applyOpenAIRuntimeGuardContentSafetyToHTTP(c *gin.Context, account *Account, protocol string, body []byte) *OpenAIRuntimeGuardBlockedError {
+	provider := OpenAIContentSafetyProvider(nil)
+	if s != nil {
+		provider = s.openAIContentSafetyProvider
+	}
+	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(requestContext(c), account, protocol, body, provider)
+	return applyOpenAIRuntimeGuardContentSafetyDecisionToHTTP(c, decision)
+}
+
+func applyOpenAIRuntimeGuardContentSafetyDecisionToHTTP(c *gin.Context, decision openAIRuntimeGuardContentSafetyDecision) *OpenAIRuntimeGuardBlockedError {
 	if decision.Category == "" {
 		return nil
 	}
@@ -419,6 +433,19 @@ func applyOpenAIRuntimeGuardContentSafetyToHTTP(c *gin.Context, account *Account
 
 func applyOpenAIRuntimeGuardContentSafetyToBody(account *Account, protocol string, body []byte) *OpenAIRuntimeGuardBlockedError {
 	decision := evaluateOpenAIRuntimeGuardContentSafety(account, protocol, body)
+	return openAIRuntimeGuardContentSafetyDecisionToBlockedError(decision)
+}
+
+func (s *OpenAIGatewayService) applyOpenAIRuntimeGuardContentSafetyToBody(ctx context.Context, account *Account, protocol string, body []byte) *OpenAIRuntimeGuardBlockedError {
+	provider := OpenAIContentSafetyProvider(nil)
+	if s != nil {
+		provider = s.openAIContentSafetyProvider
+	}
+	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(ctx, account, protocol, body, provider)
+	return openAIRuntimeGuardContentSafetyDecisionToBlockedError(decision)
+}
+
+func openAIRuntimeGuardContentSafetyDecisionToBlockedError(decision openAIRuntimeGuardContentSafetyDecision) *OpenAIRuntimeGuardBlockedError {
 	if !decision.Blocked {
 		return nil
 	}

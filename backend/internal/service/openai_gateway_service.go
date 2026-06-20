@@ -368,33 +368,34 @@ var ErrNoAvailableCompactAccounts = errors.New("no available OpenAI accounts sup
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
-	accountRepo           AccountRepository
-	usageLogRepo          UsageLogRepository
-	usageBillingRepo      UsageBillingRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	cache                 GatewayCache
-	cfg                   *config.Config
-	codexDetector         CodexClientRestrictionDetector
-	schedulerSnapshot     *SchedulerSnapshotService
-	concurrencyService    *ConcurrencyService
-	billingService        *BillingService
-	rateLimitService      *RateLimitService
-	billingCacheService   *BillingCacheService
-	userGroupRateResolver *userGroupRateResolver
-	httpUpstream          HTTPUpstream
-	deferredService       *DeferredService
-	openAITokenProvider   *OpenAITokenProvider
-	gatewayCoreService    *OpenAIGatewayCoreService
-	toolCorrector         *CodexToolCorrector
-	openaiWSResolver      OpenAIWSProtocolResolver
-	resolver              *ModelPricingResolver
-	channelService        *ChannelService
-	balanceNotifyService  *BalanceNotifyService
-	settingService        *SettingService
-	entityRegistryRepo    EntityRegistryRepository
-	entityRateLimitSvc    *EntityRateLimitService
-	userPlatformQuotaRepo UserPlatformQuotaRepository
+	accountRepo                 AccountRepository
+	usageLogRepo                UsageLogRepository
+	usageBillingRepo            UsageBillingRepository
+	userRepo                    UserRepository
+	userSubRepo                 UserSubscriptionRepository
+	cache                       GatewayCache
+	cfg                         *config.Config
+	codexDetector               CodexClientRestrictionDetector
+	schedulerSnapshot           *SchedulerSnapshotService
+	concurrencyService          *ConcurrencyService
+	billingService              *BillingService
+	rateLimitService            *RateLimitService
+	billingCacheService         *BillingCacheService
+	userGroupRateResolver       *userGroupRateResolver
+	httpUpstream                HTTPUpstream
+	deferredService             *DeferredService
+	openAITokenProvider         *OpenAITokenProvider
+	gatewayCoreService          *OpenAIGatewayCoreService
+	toolCorrector               *CodexToolCorrector
+	openaiWSResolver            OpenAIWSProtocolResolver
+	resolver                    *ModelPricingResolver
+	channelService              *ChannelService
+	balanceNotifyService        *BalanceNotifyService
+	settingService              *SettingService
+	entityRegistryRepo          EntityRegistryRepository
+	entityRateLimitSvc          *EntityRateLimitService
+	userPlatformQuotaRepo       UserPlatformQuotaRepository
+	openAIContentSafetyProvider OpenAIContentSafetyProvider
 
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
@@ -446,6 +447,7 @@ func NewOpenAIGatewayService(
 	var entityRegistryRepo EntityRegistryRepository
 	var entityRateLimitSvc *EntityRateLimitService
 	var userPlatformQuotaRepo UserPlatformQuotaRepository
+	var openAIContentSafetyProvider OpenAIContentSafetyProvider
 	for _, dep := range optionalDeps {
 		switch typed := dep.(type) {
 		case *OpenAIGatewayCoreService:
@@ -464,6 +466,8 @@ func NewOpenAIGatewayService(
 			entityRateLimitSvc = typed
 		case UserPlatformQuotaRepository:
 			userPlatformQuotaRepo = typed
+		case OpenAIContentSafetyProvider:
+			openAIContentSafetyProvider = typed
 		}
 	}
 
@@ -488,21 +492,22 @@ func NewOpenAIGatewayService(
 			nil,
 			"service.openai_gateway",
 		),
-		httpUpstream:          httpUpstream,
-		deferredService:       deferredService,
-		openAITokenProvider:   openAITokenProvider,
-		gatewayCoreService:    gatewayCoreService,
-		toolCorrector:         NewCodexToolCorrector(),
-		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
-		resolver:              resolver,
-		channelService:        channelService,
-		balanceNotifyService:  balanceNotifyService,
-		settingService:        settingService,
-		entityRegistryRepo:    entityRegistryRepo,
-		entityRateLimitSvc:    entityRateLimitSvc,
-		userPlatformQuotaRepo: userPlatformQuotaRepo,
-		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
-		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
+		httpUpstream:                httpUpstream,
+		deferredService:             deferredService,
+		openAITokenProvider:         openAITokenProvider,
+		gatewayCoreService:          gatewayCoreService,
+		toolCorrector:               NewCodexToolCorrector(),
+		openaiWSResolver:            NewOpenAIWSProtocolResolver(cfg),
+		resolver:                    resolver,
+		channelService:              channelService,
+		balanceNotifyService:        balanceNotifyService,
+		settingService:              settingService,
+		entityRegistryRepo:          entityRegistryRepo,
+		entityRateLimitSvc:          entityRateLimitSvc,
+		userPlatformQuotaRepo:       userPlatformQuotaRepo,
+		openAIContentSafetyProvider: openAIContentSafetyProvider,
+		responseHeaderFilter:        compileResponseHeaderFilter(cfg),
+		codexSnapshotThrottle:       newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 	}
 	if rateLimitService != nil {
 		rateLimitService.SetAccountRuntimeBlocker(svc)
@@ -2822,7 +2827,7 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 			body = repairedBody
 		}
 	}
-	if blocked := applyOpenAIRuntimeGuardContentSafetyToBody(account, ContentModerationProtocolOpenAIResponses, body); blocked != nil {
+	if blocked := s.applyOpenAIRuntimeGuardContentSafetyToBody(ctx, account, ContentModerationProtocolOpenAIResponses, body); blocked != nil {
 		return nil, blocked
 	}
 	nativeRequestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
@@ -3057,7 +3062,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			setOpenAIRuntimeGuardReasoningMetadata(c, reasoningDecision)
 		}
 	}
-	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIResponses, body); blocked != nil {
+	if blocked := s.applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIResponses, body); blocked != nil {
 		return nil, blocked
 	}
 
