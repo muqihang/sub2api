@@ -126,7 +126,7 @@ def run_managed_claude_code(
 ) -> ManagedClaudeCodeRunResult:
     if not str(route_hint_secret or "").strip():
         raise ValueError("managed Claude Code runtime requires route_hint_secret for CP4 routing trust contract")
-    config_root = config_root.expanduser()
+    config_root = config_root.expanduser().resolve()
     safe_profile_id = safe_profile_segment(profile_id)
     summary_path = config_root / "claude-code" / safe_profile_id / "native-guard-summary.jsonl"
     summary_path.parent.mkdir(parents=True, exist_ok=True)

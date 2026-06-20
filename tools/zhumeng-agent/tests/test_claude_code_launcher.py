@@ -192,8 +192,11 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert launch["env"]["NODE_EXTRA_CA_CERTS"].endswith("control-plane-stub-ca.pem")
     assert Path(launch["env"]["NODE_EXTRA_CA_CERTS"]).exists()
     assert launch["env"]["ENABLE_TOOL_SEARCH"] == "auto"
-    assert "route-hint-preload.cjs" in launch["env"]["NODE_OPTIONS"]
-    assert "route-hint-preload.cjs" in launch["env"]["BUN_OPTIONS"]
+    preload_path = Path(launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD_PATH"])
+    assert preload_path.is_absolute()
+    assert preload_path.exists()
+    assert str(preload_path) in launch["env"]["NODE_OPTIONS"]
+    assert str(preload_path) in launch["env"]["BUN_OPTIONS"].replace("\\ ", " ")
     assert "--preload " in launch["env"]["BUN_OPTIONS"]
     assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD"] == "enabled"
     assert launch["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] == "route-hint-secret"
@@ -209,6 +212,41 @@ def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base
     assert catalog["entries"]["claude-sonnet-4-6"]["client_type"] == "claude_code_native"
     assert catalog["entries"]["claude-sonnet-4-6"]["formal_pool_allowed"] is True
     assert "local-user-key" not in "\n".join(launch["env"].values())
+
+
+def test_managed_launch_uses_absolute_preload_paths_for_relative_state_root(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    executable = tmp_path / "claude"
+    captured = {}
+
+    @contextmanager
+    def fake_start_guard(plan, *, ready_timeout_seconds: float = 10.0):
+        yield SimpleNamespace(process=SimpleNamespace(pid=12345), ready={"listen": "http://127.0.0.1:43118"})
+
+    def fake_process_runner(command, *, env, cwd):
+        captured["env"] = env
+        return 0
+
+    launcher.run_managed_claude_code(
+        executable=executable,
+        repo_root=REPO_ROOT,
+        upstream_base="http://127.0.0.1:18080",
+        sub2api_auth="sub2api-entry",
+        attestation_secret="attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        config_root=Path("relative-zhumeng-state"),
+        project_cwd=tmp_path,
+        guard_listen_port=43118,
+        start_guard=fake_start_guard,
+        process_runner=fake_process_runner,
+    )
+
+    preload_path = Path(captured["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD_PATH"])
+    assert preload_path.is_absolute()
+    assert str(preload_path) in captured["env"]["NODE_OPTIONS"]
+    assert str(preload_path) in captured["env"]["BUN_OPTIONS"].replace("\\ ", " ")
 
 
 def test_bun_preload_option_escapes_application_support_paths():
