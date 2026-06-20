@@ -18,6 +18,7 @@ _VERSION_RE = re.compile(r"(?:claude(?:-code)?[/ ]+v?|Claude Code\s+v?)(\d+(?:\.
 _FALLBACK_VERSION_RE = re.compile(r"\bv?(\d+\.\d+(?:\.\d+){0,2})\b")
 _ROUTE_HINT_PRELOAD_NAME = "route-hint-preload.cjs"
 _ROUTE_HINT_CATALOG_NAME = "route-hint-catalog.json"
+_MODEL_CAPABILITIES_ENV_NAME = "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,7 +423,28 @@ def _write_provider_profile_resolver_artifact(
     return {
         "ZHUMENG_CLAUDE_PROVIDER_PROFILE_RESOLVER": "enabled",
         "ZHUMENG_CLAUDE_PROVIDER_PROFILE_PATH": str(profile_path),
+        _MODEL_CAPABILITIES_ENV_NAME: _bridge_model_capabilities_json(tuple(bridge_live_models)),
     }
+
+
+def _bridge_model_capabilities_json(bridge_live_models: tuple[str, ...] = ()) -> str:
+    from .model_overlay import build_cp2_model_overlay_proof  # noqa: PLC0415
+
+    proof = build_cp2_model_overlay_proof(_synthetic_runtime_plan_for_overlay(Path("claude"), runtime_hash="sha256:" + "0" * 64, overlay_hash="sha256:" + "0" * 64))
+    live_models = {model for model in bridge_live_models if model}
+    capabilities: dict[str, dict[str, bool]] = {}
+    for entry in proof.models:
+        if not entry.model_id.startswith("claude-code-bridge-"):
+            continue
+        levels = set(_bridge_reasoning_effort_levels(entry.model_id, entry.provider))
+        if entry.model_id not in live_models or entry.provider in {"agnes", "kimi"}:
+            levels = set()
+        capabilities[entry.model_id] = {
+            "effort": bool(levels),
+            "max_effort": "max" in levels,
+            "xhigh_effort": "xhigh" in levels,
+        }
+    return json.dumps(capabilities, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def _provider_profile_live_enabled(profile, live_models: set[str]) -> bool:
@@ -739,7 +761,7 @@ function sanitizeBridgeEffort(parsed) {
     return {parsed, changed: false};
   }
   const requested = String(outputConfig.effort || '').trim().toLowerCase();
-  const levels = Array.isArray(entry.reasoning_effort_levels) ? entry.reasoning_effort_levels.map((level) => String(level)) : [];
+  const levels = Array.isArray(entry.reasoning_effort_levels) ? entry.reasoning_effort_levels.map((level) => String(level).trim().toLowerCase()).filter(Boolean) : [];
   if (!levels.length) {
     const nextOutputConfig = {...outputConfig};
     delete nextOutputConfig.effort;
@@ -751,23 +773,10 @@ function sanitizeBridgeEffort(parsed) {
     }
     return {parsed: nextParsed, changed: true};
   }
-  let resolved = requested;
-  if (entry.provider === 'openai' && requested === 'max') {
-    resolved = 'xhigh';
-  } else if ((entry.provider === 'deepseek' || entry.provider === 'zai_glm') && (requested === 'low' || requested === 'medium')) {
-    resolved = 'high';
-  } else if ((entry.provider === 'deepseek' || entry.provider === 'zai_glm') && requested === 'xhigh') {
-    resolved = 'max';
-  } else if (entry.provider === 'zai_glm' && requested === 'ultracode') {
-    resolved = 'max';
-  }
-  if (!levels.includes(resolved)) {
-    resolved = levels[0];
-  }
-  if (resolved === requested) {
-    return {parsed, changed: false};
-  }
-  return {parsed: {...parsed, output_config: {...outputConfig, effort: resolved}}, changed: true};
+  // Do not silently translate unsupported effort (for example GPT max -> xhigh
+  // or DeepSeek medium -> high). Preserve it so the backend provider policy can
+  // fail closed against the final signed request body.
+  return {parsed, changed: false};
 }
 
 function normalizedBodyBuffer(body) {

@@ -251,6 +251,79 @@ func TestClaudeCodeProviderRegistryFailsClosedForUnknownStaleAndSpoofedBridge(t 
 	require.Contains(t, err.Error(), "bridge")
 }
 
+func TestClaudeCodeProviderRegistryClampsBridgeEffortLevelsToProviderPolicy(t *testing.T) {
+	registry := NewClaudeCodeProviderRegistry(ClaudeCodeProviderCatalog{
+		CatalogVersion: "cp6-catalog-v1",
+		RuntimeHash:    "sha256:" + stringOf('1', 64),
+		OverlayHash:    "sha256:" + stringOf('2', 64),
+		CatalogHash:    "sha256:" + stringOf('3', 64),
+		Models: []ClaudeCodeProviderCatalogEntry{
+			{
+				ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+				UpstreamModel:            "deepseek-v4-pro",
+				Provider:                 "deepseek",
+				Route:                    "deepseek_bridge",
+				ClientType:               "claude_code_bridge_deepseek",
+				ProviderOwner:            "zhumeng_managed",
+				CredentialScope:          "bridge_pool",
+				GatewayLocation:          "cloud",
+				CatalogFresh:             true,
+				PreferredProtocol:        "anthropic_messages",
+				AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+				CapabilitiesVerified:     true,
+				SupportsText:             true,
+				SupportsTools:            true,
+				SupportsStreaming:        true,
+				SupportsUsage:            true,
+				SupportsCacheAudit:       true,
+				SupportsReasoningMapping: true,
+				SupportsErrorPassthrough: true,
+				ReasoningEffortLevels:    []string{"medium", "high", "max", "xhigh"},
+				CachePolicy:              "provider_prefix_kv_cache_automatic_full_prefix_unit_match",
+			},
+		},
+	})
+
+	decision, err := registry.Resolve(context.Background(), "claude-code-bridge-deepseek-v4-pro")
+	require.NoError(t, err)
+	require.Equal(t, []string{"high", "max"}, decision.ReasoningEffortLevels)
+}
+
+func TestClaudeCodeProviderRegistryRejectsEffortForNoEffortProvider(t *testing.T) {
+	entry := ClaudeCodeProviderCatalogEntry{
+		ModelID:                  "claude-code-bridge-agnes-2.0-flash",
+		UpstreamModel:            "agnes-2.0-flash",
+		Provider:                 "agnes",
+		Route:                    "agnes_bridge",
+		ClientType:               "claude_code_bridge_agnes",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          "bridge_pool",
+		GatewayLocation:          "cloud",
+		CatalogFresh:             true,
+		PreferredProtocol:        "responses",
+		OpenAIBaseURL:            "https://api.agnes.example/v1",
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsReasoningMapping: true,
+		SupportsErrorPassthrough: true,
+		ReasoningEffortLevels:    []string{"high"},
+	}
+	registry := NewClaudeCodeProviderRegistry(ClaudeCodeProviderCatalog{
+		CatalogVersion: "cp6-catalog-v1",
+		RuntimeHash:    "sha256:" + stringOf('1', 64),
+		OverlayHash:    "sha256:" + stringOf('2', 64),
+		CatalogHash:    "sha256:" + stringOf('3', 64),
+		Models:         []ClaudeCodeProviderCatalogEntry{entry},
+	})
+
+	_, err := registry.Resolve(context.Background(), "claude-code-bridge-agnes-2.0-flash")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "effort")
+}
+
 func TestClaudeCodeProviderRegistryLoadsEnvCatalogAsSourceOfTruth(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"env-catalog-v1","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"claude-code-bridge-deepseek-v4-pro","upstream_model":"deepseek-v4-pro","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"https://api.deepseek.com/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_error_passthrough":true}]}`)
 

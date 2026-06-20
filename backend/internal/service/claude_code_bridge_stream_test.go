@@ -132,6 +132,84 @@ func TestCP6BridgeToolUseSSEMatchesGoldenFixture(t *testing.T) {
 	require.False(t, result.Audit.FormalPoolAllowed)
 }
 
+func TestClaudeCodeBridgeRejectsUnsupportedProviderEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision ClaudeCodeBridgeRouteDecision
+		body     string
+		want     string
+	}{
+		{
+			name:     "deepseek medium rejected",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-deepseek-v4-pro", Provider: "deepseek", Route: "deepseek_bridge", ClientType: "claude_code_bridge_deepseek", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"high", "max"}},
+			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"medium"}}`,
+			want:     "unsupported effort",
+		},
+		{
+			name:     "openai max rejected",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-gpt-5.5", Provider: "openai", Route: "openai_bridge", ClientType: "claude_code_bridge_openai", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}},
+			body:     `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`,
+			want:     "unsupported effort",
+		},
+		{
+			name:     "kimi effort rejected",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-kimi-k2.7-code", Provider: "kimi", Route: "kimi_bridge", ClientType: "claude_code_bridge_kimi", CredentialScope: "bridge_pool"},
+			body:     `{"model":"claude-code-bridge-kimi-k2.7-code","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}`,
+			want:     "does not support effort",
+		},
+		{
+			name:     "deepseek effort without catalog levels rejected",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-deepseek-v4-pro", Provider: "deepseek", Route: "deepseek_bridge", ClientType: "claude_code_bridge_deepseek", CredentialScope: "bridge_pool"},
+			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`,
+			want:     "does not support effort",
+		},
+		{
+			name:     "deepseek rejects catalog medium even when advertised",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-deepseek-v4-pro", Provider: "deepseek", Route: "deepseek_bridge", ClientType: "claude_code_bridge_deepseek", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"medium", "high", "max"}},
+			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"medium"}}`,
+			want:     "unsupported effort",
+		},
+		{
+			name:     "agnes rejects catalog effort even when advertised",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-agnes-2.0-flash", Provider: "agnes", Route: "agnes_bridge", ClientType: "claude_code_bridge_agnes", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"high"}},
+			body:     `{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}`,
+			want:     "does not support effort",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildClaudeCodeBridgeSkeletonSSE(tt.decision, []byte(tt.body))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+func TestClaudeCodeBridgeAcceptsSupportedProviderEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision ClaudeCodeBridgeRouteDecision
+		body     string
+	}{
+		{
+			name:     "deepseek max accepted",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-deepseek-v4-pro", Provider: "deepseek", Route: "deepseek_bridge", ClientType: "claude_code_bridge_deepseek", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"high", "max"}},
+			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`,
+		},
+		{
+			name:     "openai xhigh accepted",
+			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-gpt-5.5", Provider: "openai", Route: "openai_bridge", ClientType: "claude_code_bridge_openai", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}},
+			body:     `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"xhigh"}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildClaudeCodeBridgeSkeletonSSE(tt.decision, []byte(tt.body))
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestClaudeCodeBridgeStreamRejectsOpenAIFunctionToolShape(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"foo","parameters":{}}}],"tool_choice":{"type":"function","function":{"name":"foo"}}}`)
 	_, err := BuildClaudeCodeBridgeSkeletonSSE(ClaudeCodeBridgeRouteDecision{

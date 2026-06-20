@@ -9,8 +9,10 @@ from types import SimpleNamespace
 import pytest
 
 from zhumeng_agent.adapters.claude_code.runtime_installer import (
+    EFFORT_CAPABILITY_HOOK_NEEDLE,
     RuntimeInstallerError,
     apply_managed_runtime_agent_model_schema_patch,
+    apply_managed_runtime_effort_capability_patch,
     apply_shell_alias_plan,
     build_managed_runtime_install_plan,
     build_shell_alias_plan,
@@ -298,6 +300,110 @@ def test_runtime_installer_agent_schema_patch_is_idempotent(tmp_path: Path):
     active = resolve_active_managed_runtime(runtime_root)
     assert active.runtime_hash == patch_result["runtime_hash_after"]
 
+
+
+
+def test_runtime_installer_effort_capability_patch_requires_explicit_approval(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"prefix " + EFFORT_CAPABILITY_HOOK_NEEDLE + b" suffix")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    with pytest.raises(RuntimeInstallerError, match="explicit approval"):
+        apply_managed_runtime_effort_capability_patch(runtime_root, executable)
+
+    assert EFFORT_CAPABILITY_HOOK_NEEDLE in executable.read_bytes()
+
+def test_runtime_installer_effort_capability_patch_adds_bridge_model_capability_hook(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    original = (
+        b'prefix var QP5,us;var oK6=L(()=>{c7();V7();QP5=[{modelEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION",capabilitiesEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"}],us=V6((H,_)=>{if(OO())return;let q=H.toLowerCase();for(let K of QP5){let O=process.env[K.modelEnvVar],T=process.env[K.capabilitiesEnvVar];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)}); suffix'
+    )
+    executable.write_bytes(original)
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, executable, approved=True)
+
+    assert patch_result["status"] == "patched"
+    assert patch_result["patch_point"] == "effort_capability_hook"
+    assert patch_result["official_claude_unaffected"] is True
+    patched = executable.read_bytes()
+    assert len(patched) == len(original)
+    assert b"ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON" in patched
+    assert b"if(OO())return;let q=H.toLowerCase()" not in patched
+    active = resolve_active_managed_runtime(runtime_root)
+    assert active.runtime_hash == patch_result["runtime_hash_after"]
+    assert "effort_capability_hook" in active.manifest["patch_points"]
+    assert active.patches["effort_capability_patch"]["env"] == "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
+    assert active.patches["effort_capability_patch"]["direct_binary_patch_requires_approval"] is True
+
+
+def test_runtime_installer_effort_capability_patch_is_idempotent(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code import runtime_installer as installer  # noqa: PLC0415
+
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"prefix " + installer.EFFORT_CAPABILITY_HOOK_REPLACEMENT + b" suffix")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, executable, approved=True)
+
+    assert patch_result["status"] == "already_patched"
+    assert patch_result["runtime_hash_after"] == patch_result["runtime_hash_before"]
+
+
+def test_runtime_installer_effort_capability_patch_rejects_partial_marker(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"prefix ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON suffix")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    with pytest.raises(RuntimeInstallerError, match="patch point not found"):
+        apply_managed_runtime_effort_capability_patch(runtime_root, executable, approved=True)
+
+
+def test_runtime_installer_effort_capability_patch_requires_managed_runtime_executable(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed runtime")
+    other = tmp_path / "other" / "claude"
+    other.parent.mkdir()
+    other.write_bytes(b"managed runtime")
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    with pytest.raises(RuntimeInstallerError, match="executable drift"):
+        apply_managed_runtime_effort_capability_patch(runtime_root, other, approved=True)
 
 def test_runtime_installer_start_requires_enabled_active_runtime(tmp_path: Path):
     with pytest.raises(RuntimeInstallerError, match="not enabled"):

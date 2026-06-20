@@ -179,15 +179,53 @@ func buildClaudeCodeOpenAIResponsesBody(decision ClaudeCodeBridgeRouteDecision, 
 		return nil, fmt.Errorf("claude code OpenAI bridge request must be Anthropic messages JSON")
 	}
 	anthropicReq.Model = claudeCodeBridgeEffectiveUpstreamModel(decision)
+	explicitEffort := anthropicReq.OutputConfig != nil && strings.TrimSpace(anthropicReq.OutputConfig.Effort) != ""
+	requestedEffort := ""
+	if explicitEffort {
+		if normalized := NormalizeClaudeOutputEffort(anthropicReq.OutputConfig.Effort); normalized != nil {
+			requestedEffort = *normalized
+		}
+	}
 	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
 	if err != nil {
 		return nil, err
 	}
 	responsesReq.Stream = true
+	applyClaudeCodeOpenAIResponsesEffortPolicy(decision, responsesReq, explicitEffort, requestedEffort)
 	if strings.TrimSpace(responsesReq.PromptCacheKey) == "" && shouldAutoInjectPromptCacheKeyForCompat(responsesReq.Model) {
 		responsesReq.PromptCacheKey = deriveAnthropicCompatPromptCacheKey(&anthropicReq, responsesReq.Model)
 	}
 	return json.Marshal(responsesReq)
+}
+
+func applyClaudeCodeOpenAIResponsesEffortPolicy(decision ClaudeCodeBridgeRouteDecision, req *apicompat.ResponsesRequest, explicitEffort bool, requestedEffort string) {
+	if req == nil {
+		return
+	}
+	levels := normalizedClaudeCodeBridgeReasoningEffortLevels(decision)
+	if len(levels) == 0 || !explicitEffort || requestedEffort == "" || req.Reasoning == nil || strings.TrimSpace(req.Reasoning.Effort) == "" {
+		req.Reasoning = nil
+		req.Include = claudeCodeBridgeRemoveReasoningIncludes(req.Include)
+		return
+	}
+	if _, ok := levels[requestedEffort]; !ok {
+		req.Reasoning = nil
+		req.Include = claudeCodeBridgeRemoveReasoningIncludes(req.Include)
+	}
+}
+
+func claudeCodeBridgeRemoveReasoningIncludes(in []string) []string {
+	out := in[:0]
+	for _, item := range in {
+		if strings.HasPrefix(strings.TrimSpace(item), "reasoning.") {
+			continue
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func applyClaudeCodeBridgeOpenAIClientHeaders(headers http.Header, clientType string) {
@@ -648,9 +686,43 @@ func buildClaudeCodeDeepSeekChatCompletionsBody(decision ClaudeCodeBridgeRouteDe
 	if err != nil {
 		return nil, err
 	}
+	applyClaudeCodeDeepSeekChatEffortPolicy(decision, chatReq, body)
 	chatReq.Stream = true
 	chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	return json.Marshal(chatReq)
+}
+
+func applyClaudeCodeDeepSeekChatEffortPolicy(decision ClaudeCodeBridgeRouteDecision, req *apicompat.ChatCompletionsRequest, body []byte) {
+	if req == nil || strings.TrimSpace(decision.Provider) != "deepseek" {
+		return
+	}
+	effort := claudeCodeBridgeExplicitAnthropicEffort(body)
+	if effort == "" {
+		req.ReasoningEffort = ""
+		return
+	}
+	levels := normalizedClaudeCodeBridgeReasoningEffortLevels(decision)
+	if _, ok := levels[effort]; !ok {
+		req.ReasoningEffort = ""
+		return
+	}
+	req.ReasoningEffort = effort
+}
+
+func claudeCodeBridgeExplicitAnthropicEffort(body []byte) string {
+	var payload struct {
+		OutputConfig *struct {
+			Effort string `json:"effort"`
+		} `json:"output_config"`
+	}
+	if len(body) == 0 || json.Unmarshal(body, &payload) != nil || payload.OutputConfig == nil {
+		return ""
+	}
+	normalized := NormalizeClaudeOutputEffort(payload.OutputConfig.Effort)
+	if normalized == nil {
+		return ""
+	}
+	return *normalized
 }
 
 func copyClaudeCodeChatCompletionsAsAnthropicSSE(dst io.Writer, src io.Reader, model string) (int, error) {

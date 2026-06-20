@@ -41,6 +41,7 @@ from .model_overlay import (
 from .runtime_installer import (
     RuntimeInstallerError,
     apply_managed_runtime_agent_model_schema_patch,
+    apply_managed_runtime_effort_capability_patch,
     apply_shell_alias_plan,
     build_managed_runtime_install_plan,
     build_shell_alias_plan,
@@ -140,6 +141,7 @@ __all__ = [
     "assert_claude_native_replay_safe",
     "apply_shell_alias_plan",
     "apply_managed_runtime_agent_model_schema_patch",
+    "apply_managed_runtime_effort_capability_patch",
     "apply_capability_profile",
     "assemble_cp8_external_live_matrix_evidence",
     "build_agent_model_options",

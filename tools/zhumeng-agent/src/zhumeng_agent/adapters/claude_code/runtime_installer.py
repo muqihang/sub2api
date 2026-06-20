@@ -21,8 +21,13 @@ DEFAULT_PATCH_POINTS = (
     "guard_env",
 )
 AGENT_MODEL_SCHEMA_PATCH_POINT = "agent_model_schema"
+EFFORT_CAPABILITY_PATCH_POINT = "effort_capability_hook"
+EFFORT_CAPABILITY_ENV_VAR = "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
 AGENT_MODEL_SCHEMA_ENUM_NEEDLE = b'k.enum(["sonnet","opus","haiku","fable"]).optional()'
 AGENT_MODEL_SCHEMA_STRING_PATCH = b"k.string().min(1).max(128).optional()               "
+EFFORT_CAPABILITY_HOOK_NEEDLE = b'var QP5,us;var oK6=L(()=>{c7();V7();QP5=[{modelEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION",capabilitiesEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"}],us=V6((H,_)=>{if(OO())return;let q=H.toLowerCase();for(let K of QP5){let O=process.env[K.modelEnvVar],T=process.env[K.capabilitiesEnvVar];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)});'
+EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE = b'var QP5,us;var oK6=L(()=>{c7();V7();QP5=[["ANTHROPIC_DEFAULT_FABLE_MODEL","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_HAIKU_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_CUSTOM_MODEL_OPTION","ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"]],us=V6((H,_)=>{let q=H.toLowerCase(),J=process.env.ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON;if(J)try{let M=JSON.parse(J)[q];if(M&&M[_]!=null)return!!M[_]}catch{}if(OO())return;for(let K of QP5){let O=process.env[K[0]],T=process.env[K[1]];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)});'
+EFFORT_CAPABILITY_HOOK_REPLACEMENT = EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE + (b" " * (len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)))
 GLOBAL_CLAUDE_BINARY_PATHS = frozenset({
     Path("/opt/homebrew/bin/claude"),
     Path("/usr/local/bin/claude"),
@@ -299,6 +304,67 @@ def apply_managed_runtime_agent_model_schema_patch(runtime_root: Path, executabl
         "runtime_hash_after": after_hash,
         "patch_point": AGENT_MODEL_SCHEMA_PATCH_POINT,
         "official_claude_unaffected": True,
+    }
+
+
+def apply_managed_runtime_effort_capability_patch(runtime_root: Path, executable: Path | str, *, approved: bool = False) -> dict[str, object]:
+    """Patch managed Claude Code 2.1.177 to read per-model effort capabilities.
+
+    The packed 2.1.177 /model UI strips gateway model metadata and recomputes
+    effort support through its internal `us(model, key)` hook. This patch adds
+    a managed-runtime-only JSON env hook before the original Anthropic custom
+    model capability fallback. It is not applied by default; rollout remains a
+    separate approval checkpoint.
+    """
+    if not approved:
+        raise RuntimeInstallerError("managed Claude Code effort capability patch requires explicit approval")
+    if len(EFFORT_CAPABILITY_HOOK_REPLACEMENT) != len(EFFORT_CAPABILITY_HOOK_NEEDLE):
+        raise RuntimeInstallerError("managed Claude Code effort capability patch is not length preserving")
+    runtime_root = runtime_root.expanduser()
+    manifest_path = _active_manifest_path(runtime_root)
+    executable_path = _active_manifest_executable_path(manifest_path, runtime_root=runtime_root)
+    requested_executable = Path(executable).expanduser().resolve(strict=False)
+    if requested_executable != executable_path:
+        raise RuntimeInstallerError("managed Claude Code runtime executable drift before effort capability patch")
+    before_hash = _hash_existing_file(executable_path)
+    if not before_hash:
+        raise RuntimeInstallerError("managed Claude Code runtime executable is missing")
+    data = executable_path.read_bytes()
+    status = "already_patched"
+    if EFFORT_CAPABILITY_HOOK_NEEDLE in data:
+        data = data.replace(EFFORT_CAPABILITY_HOOK_NEEDLE, EFFORT_CAPABILITY_HOOK_REPLACEMENT, 1)
+        executable_path.write_bytes(data)
+        _codesign_ad_hoc_if_macho(executable_path)
+        status = "patched"
+    elif EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() not in data:
+        raise RuntimeInstallerError("managed Claude Code effort capability patch point not found")
+
+    after_hash = _hash_existing_file(executable_path)
+    if not after_hash:
+        raise RuntimeInstallerError("managed Claude Code runtime executable is missing after patch")
+    _update_managed_runtime_hash_metadata(
+        runtime_root=runtime_root,
+        manifest_path=manifest_path,
+        runtime_hash=after_hash,
+        patch_status=status,
+        before_hash=before_hash,
+        patch_point=EFFORT_CAPABILITY_PATCH_POINT,
+        patch_metadata={
+            "env": EFFORT_CAPABILITY_ENV_VAR,
+            "hook": "us_model_capabilities",
+            "direct_binary_patch_requires_approval": True,
+            "global_binary_touched": False,
+        },
+    )
+    return {
+        "status": status,
+        "patched_executable": str(executable_path),
+        "runtime_hash_before": before_hash,
+        "runtime_hash_after": after_hash,
+        "patch_point": EFFORT_CAPABILITY_PATCH_POINT,
+        "env": EFFORT_CAPABILITY_ENV_VAR,
+        "official_claude_unaffected": True,
+        "direct_binary_patch_requires_approval": True,
     }
 
 
@@ -592,6 +658,8 @@ def _update_managed_runtime_hash_metadata(
     runtime_hash: str,
     patch_status: str,
     before_hash: str,
+    patch_point: str = AGENT_MODEL_SCHEMA_PATCH_POINT,
+    patch_metadata: Mapping[str, object] | None = None,
 ) -> None:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -601,8 +669,8 @@ def _update_managed_runtime_hash_metadata(
         raise RuntimeInstallerError("managed Claude Code runtime manifest is invalid")
     manifest["upstream_hash"] = runtime_hash
     patch_points = [str(item) for item in manifest.get("patch_points", []) if str(item)]
-    if AGENT_MODEL_SCHEMA_PATCH_POINT not in patch_points:
-        patch_points.append(AGENT_MODEL_SCHEMA_PATCH_POINT)
+    if patch_point not in patch_points:
+        patch_points.append(patch_point)
     manifest["patch_points"] = patch_points
 
     patches_path = ensure_managed_runtime_write_path(manifest_path.parent / "patches.json", runtime_root=runtime_root)
@@ -613,17 +681,25 @@ def _update_managed_runtime_hash_metadata(
     if not isinstance(patches, dict):
         patches = {}
     patch_file_points = [str(item) for item in patches.get("patch_points", []) if str(item)]
-    if AGENT_MODEL_SCHEMA_PATCH_POINT not in patch_file_points:
-        patch_file_points.append(AGENT_MODEL_SCHEMA_PATCH_POINT)
+    if patch_point not in patch_file_points:
+        patch_file_points.append(patch_point)
     patches["patch_points"] = patch_file_points
-    patches["agent_model_schema_patch"] = {
+    metadata = {
         "status": patch_status,
-        "patch_point": AGENT_MODEL_SCHEMA_PATCH_POINT,
-        "schema": "string_min_1_max_128",
+        "patch_point": patch_point,
         "runtime_hash_before": before_hash,
         "runtime_hash_after": runtime_hash,
         "global_binary_touched": False,
     }
+    if patch_metadata:
+        metadata.update(dict(patch_metadata))
+    if patch_point == AGENT_MODEL_SCHEMA_PATCH_POINT:
+        metadata.setdefault("schema", "string_min_1_max_128")
+        patches["agent_model_schema_patch"] = metadata
+    elif patch_point == EFFORT_CAPABILITY_PATCH_POINT:
+        patches["effort_capability_patch"] = metadata
+    else:
+        patches[f"{patch_point}_patch"] = metadata
 
     rollback_path = ensure_managed_runtime_write_path(manifest_path.parent / "rollback.json", runtime_root=runtime_root)
     try:

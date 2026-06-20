@@ -153,7 +153,7 @@ func (r *ClaudeCodeProviderRegistry) Resolve(ctx context.Context, model string) 
 		SupportsCacheAudit:       entry.SupportsCacheAudit,
 		SupportsReasoningMapping: entry.SupportsReasoningMapping,
 		SupportsErrorPassthrough: entry.SupportsErrorPassthrough,
-		ReasoningEffortLevels:    append([]string(nil), entry.ReasoningEffortLevels...),
+		ReasoningEffortLevels:    normalizeClaudeCodeProviderCatalogEffortLevels(entry.Provider, entry.ReasoningEffortLevels),
 		CachePolicy:              strings.TrimSpace(entry.CachePolicy),
 	}
 	if !decision.CatalogFresh {
@@ -177,10 +177,70 @@ func (r *ClaudeCodeProviderRegistry) Resolve(ctx context.Context, model string) 
 	if looksSensitiveText(decision.UpstreamModel) || strings.TrimSpace(decision.UpstreamModel) == "" || decision.UpstreamModel == decision.ModelID {
 		return ClaudeCodeProviderRouteDecision{}, fmt.Errorf("claude code provider registry bridge upstream model invalid")
 	}
+	if claudeCodeProviderCatalogDeclaresUnsupportedEffort(decision.Provider, entry.ReasoningEffortLevels) {
+		return ClaudeCodeProviderRouteDecision{}, fmt.Errorf("claude code provider registry bridge effort capability contract invalid")
+	}
 	if !decision.bridgeCapabilitiesAreVerified() {
 		return ClaudeCodeProviderRouteDecision{}, fmt.Errorf("claude code provider registry bridge capability contract invalid")
 	}
 	return decision, nil
+}
+
+func normalizeClaudeCodeProviderCatalogEffortLevels(provider string, rawLevels []string) []string {
+	policy := claudeCodeBridgeProviderEffortPolicy(provider)
+	if len(policy) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, raw := range rawLevels {
+		normalized := NormalizeClaudeOutputEffort(raw)
+		if normalized == nil {
+			continue
+		}
+		if _, ok := policy[*normalized]; !ok {
+			continue
+		}
+		seen[*normalized] = struct{}{}
+	}
+	ordered := claudeCodeBridgeProviderEffortOrder(provider)
+	out := make([]string, 0, len(seen))
+	for _, level := range ordered {
+		if _, ok := seen[level]; ok {
+			out = append(out, level)
+		}
+	}
+	return out
+}
+
+func claudeCodeProviderCatalogDeclaresUnsupportedEffort(provider string, rawLevels []string) bool {
+	if len(rawLevels) == 0 {
+		return false
+	}
+	policy := claudeCodeBridgeProviderEffortPolicy(provider)
+	if len(policy) == 0 {
+		return true
+	}
+	for _, raw := range rawLevels {
+		normalized := NormalizeClaudeOutputEffort(raw)
+		if normalized == nil {
+			continue
+		}
+		if _, ok := policy[*normalized]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+func claudeCodeBridgeProviderEffortOrder(provider string) []string {
+	switch strings.TrimSpace(provider) {
+	case "deepseek", "zai_glm":
+		return []string{"high", "max"}
+	case "openai":
+		return []string{"low", "medium", "high", "xhigh"}
+	default:
+		return nil
+	}
 }
 
 func validateClaudeCodeProviderBridgeRoute(provider string, route string, clientType string) error {

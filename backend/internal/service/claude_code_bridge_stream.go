@@ -443,7 +443,70 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 			return fmt.Errorf("claude code bridge tool choice shape is invalid")
 		}
 	}
+	if err := validateClaudeCodeBridgeEffortBinding(decision, payload); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateClaudeCodeBridgeEffortBinding(decision ClaudeCodeBridgeRouteDecision, payload map[string]any) error {
+	outputConfig, ok := payload["output_config"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawEffort, exists := outputConfig["effort"]
+	if !exists {
+		return nil
+	}
+	effort, ok := rawEffort.(string)
+	if !ok {
+		return fmt.Errorf("claude code bridge effort must be a string")
+	}
+	normalized := NormalizeClaudeOutputEffort(effort)
+	if normalized == nil {
+		return fmt.Errorf("claude code bridge unsupported effort")
+	}
+	levels := normalizedClaudeCodeBridgeReasoningEffortLevels(decision)
+	if len(levels) == 0 {
+		return fmt.Errorf("claude code bridge provider does not support effort")
+	}
+	if _, ok := levels[*normalized]; !ok {
+		return fmt.Errorf("claude code bridge unsupported effort")
+	}
+	return nil
+}
+
+func normalizedClaudeCodeBridgeReasoningEffortLevels(decision ClaudeCodeBridgeRouteDecision) map[string]struct{} {
+	policy := claudeCodeBridgeProviderEffortPolicy(decision.Provider)
+	if len(policy) == 0 {
+		return nil
+	}
+	levels := make(map[string]struct{}, len(decision.ReasoningEffortLevels))
+	for _, raw := range decision.ReasoningEffortLevels {
+		normalized := NormalizeClaudeOutputEffort(raw)
+		if normalized == nil {
+			continue
+		}
+		if _, ok := policy[*normalized]; !ok {
+			continue
+		}
+		levels[*normalized] = struct{}{}
+	}
+	if len(levels) == 0 {
+		return nil
+	}
+	return levels
+}
+
+func claudeCodeBridgeProviderEffortPolicy(provider string) map[string]struct{} {
+	switch strings.TrimSpace(provider) {
+	case "deepseek", "zai_glm":
+		return map[string]struct{}{"high": {}, "max": {}}
+	case "openai":
+		return map[string]struct{}{"low": {}, "medium": {}, "high": {}, "xhigh": {}}
+	default:
+		return nil
+	}
 }
 
 func validateClaudeCodeBridgeDecision(decision ClaudeCodeBridgeRouteDecision) error {

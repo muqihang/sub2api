@@ -1214,6 +1214,13 @@ def test_managed_launch_writes_provider_profile_resolver_artifact(tmp_path: Path
     assert result.returncode == 0
     env = captured["launch_env"]
     assert env["ZHUMENG_CLAUDE_PROVIDER_PROFILE_RESOLVER"] == "enabled"
+    capabilities = json.loads(env["ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"])
+    assert capabilities["claude-code-bridge-gpt-5.5"] == {"effort": True, "max_effort": False, "xhigh_effort": True}
+    assert capabilities["claude-code-bridge-deepseek-v4-pro"] == {"effort": True, "max_effort": True, "xhigh_effort": False}
+    assert capabilities["claude-code-bridge-agnes-2.0-flash"] == {"effort": False, "max_effort": False, "xhigh_effort": False}
+    assert capabilities["claude-code-bridge-glm-5.2-1m"] == {"effort": False, "max_effort": False, "xhigh_effort": False}
+    assert capabilities["claude-code-bridge-kimi-k2.7-code"] == {"effort": False, "max_effort": False, "xhigh_effort": False}
+    assert "claude-opus-4-8" not in capabilities
     profile_path = Path(env["ZHUMENG_CLAUDE_PROVIDER_PROFILE_PATH"])
     assert profile_path.exists()
     payload = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -1385,6 +1392,9 @@ async function post(model, effort) {
   await post("claude-code-bridge-gpt-5.5", "max");
   await post("claude-code-bridge-deepseek-v4-pro", "medium");
   await post("claude-code-bridge-glm-5.2-1m", "ultracode");
+  await post("claude-code-bridge-gpt-5.5", "xhigh");
+  await post("claude-code-bridge-deepseek-v4-pro", "max");
+  await post("claude-code-bridge-glm-5.2-1m", "max");
   await post("claude-code-bridge-kimi-k2.7-code", "max");
   fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({calls}, null, 2));
 })().catch((err) => {
@@ -1425,13 +1435,19 @@ async function post(model, effort) {
         process_runner=fake_runner,
     )
 
-    gpt_body = json.loads(captured["calls"][0]["body"])
-    deepseek_body = json.loads(captured["calls"][1]["body"])
-    glm_body = json.loads(captured["calls"][2]["body"])
-    kimi_body = json.loads(captured["calls"][3]["body"])
-    assert gpt_body["output_config"]["effort"] == "xhigh"
-    assert deepseek_body["output_config"]["effort"] == "high"
-    assert glm_body["output_config"]["effort"] == "max"
+    gpt_unsupported_body = json.loads(captured["calls"][0]["body"])
+    deepseek_unsupported_body = json.loads(captured["calls"][1]["body"])
+    glm_unsupported_body = json.loads(captured["calls"][2]["body"])
+    gpt_supported_body = json.loads(captured["calls"][3]["body"])
+    deepseek_supported_body = json.loads(captured["calls"][4]["body"])
+    glm_supported_body = json.loads(captured["calls"][5]["body"])
+    kimi_body = json.loads(captured["calls"][6]["body"])
+    assert gpt_unsupported_body["output_config"]["effort"] == "max"
+    assert deepseek_unsupported_body["output_config"]["effort"] == "medium"
+    assert glm_unsupported_body["output_config"]["effort"] == "ultracode"
+    assert gpt_supported_body["output_config"]["effort"] == "xhigh"
+    assert deepseek_supported_body["output_config"]["effort"] == "max"
+    assert glm_supported_body["output_config"]["effort"] == "max"
     assert "output_config" not in kimi_body
 
 

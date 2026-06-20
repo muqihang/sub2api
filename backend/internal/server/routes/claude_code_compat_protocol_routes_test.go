@@ -750,6 +750,7 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveForwardsViaResponsesFallbackWhenExpl
 			"supports_cache_audit":       true,
 			"supports_reasoning_mapping": true,
 			"supports_error_passthrough": true,
+			"reasoning_effort_levels":    []string{"low", "medium", "high", "xhigh"},
 			"cache_policy":               "prompt_cache_key_required_or_recommended_for_coding_agents",
 		}},
 	})

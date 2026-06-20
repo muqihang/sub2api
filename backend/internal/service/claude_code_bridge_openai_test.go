@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -316,6 +317,7 @@ func cp6LiveAgnesDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 	decision.Route = "agnes_bridge"
 	decision.ClientType = "claude_code_bridge_agnes"
 	decision.SupportsReasoningMapping = false
+	decision.ReasoningEffortLevels = nil
 	decision.CachePolicy = "provider_cache_audit_required"
 	return decision
 }
@@ -342,6 +344,69 @@ func cp6LiveOpenAIDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 		SupportsCacheAudit:       true,
 		SupportsReasoningMapping: true,
 		SupportsErrorPassthrough: true,
+		ReasoningEffortLevels:    []string{"low", "medium", "high", "xhigh"},
 		CachePolicy:              "prompt_cache_key_required_or_recommended_for_coding_agents",
 	}
+}
+
+func TestClaudeCodeOpenAIResponsesBodyOmitsReasoningForNoEffortProvider(t *testing.T) {
+	decision := cp6LiveAgnesDecision("http://127.0.0.1:1")
+	body := []byte(`{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"hi"}]}`)
+
+	upstream, err := buildClaudeCodeOpenAIResponsesBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.NotContains(t, payload, "reasoning")
+}
+
+func TestClaudeCodeOpenAIResponsesBodyDoesNotMapClaudeMaxToGPTXHigh(t *testing.T) {
+	decision := cp6LiveOpenAIDecision("http://127.0.0.1:1")
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`)
+
+	upstream, err := buildClaudeCodeOpenAIResponsesBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.NotContains(t, payload, "reasoning")
+}
+
+func TestClaudeCodeDeepSeekChatFallbackMapsMaxToProviderMax(t *testing.T) {
+	decision := cp6LiveDeepSeekDecision("http://127.0.0.1:1")
+	decision.PreferredProtocol = "openai_compatible_chat"
+	decision.FallbackProtocol = "openai_compatible_chat"
+	decision.FallbackReason = "anthropic_messages_fixture_failed"
+	decision.AnthropicBaseURL = ""
+	decision.OpenAIBaseURL = "http://127.0.0.1:1"
+	decision.SupportsReasoningMapping = true
+	decision.ReasoningEffortLevels = []string{"high", "max"}
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`)
+
+	upstream, err := buildClaudeCodeDeepSeekChatCompletionsBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.Equal(t, "max", payload["reasoning_effort"])
+}
+
+func TestClaudeCodeDeepSeekChatFallbackOmitsDefaultMediumEffort(t *testing.T) {
+	decision := cp6LiveDeepSeekDecision("http://127.0.0.1:1")
+	decision.PreferredProtocol = "openai_compatible_chat"
+	decision.FallbackProtocol = "openai_compatible_chat"
+	decision.FallbackReason = "anthropic_messages_fixture_failed"
+	decision.AnthropicBaseURL = ""
+	decision.OpenAIBaseURL = "http://127.0.0.1:1"
+	decision.SupportsReasoningMapping = true
+	decision.ReasoningEffortLevels = []string{"high", "max"}
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}]}`)
+
+	upstream, err := buildClaudeCodeDeepSeekChatCompletionsBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.NotContains(t, payload, "reasoning_effort")
 }
