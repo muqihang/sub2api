@@ -757,8 +757,31 @@ def _optional_server_route_hint_secret(state: dict[str, object]) -> str:
         return ""
 
 
+def _state_store_root(store: object) -> Path:
+    path = getattr(store, "path", None)
+    if path:
+        return Path(path).expanduser().parent
+    return state_dir()
+
+
+def _optional_claude_code_sub2api_auth(state: Mapping[str, object], *, state_root: Path) -> str:
+    try:
+        return resolve_claude_code_sub2api_auth(state, state_root=state_root)
+    except ValueError:
+        return ""
+
+
+def _cp8_sub2api_gateway_token(args: argparse.Namespace, state: Mapping[str, object], *, state_root: Path) -> str:
+    explicit = _safe_claude_code_sub2api_key(str(args.sub2api_token or os.environ.get("SUB2API_CP8_LIVE_GATEWAY_TOKEN") or ""))
+    if explicit:
+        return explicit
+    return _optional_claude_code_sub2api_auth(state, state_root=state_root)
+
+
 def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, object]:
-    state = default_state_store().read()
+    store = default_state_store()
+    state = store.read()
+    state_root = _state_store_root(store)
     runtime_root = getattr(args, "runtime_root", state_dir() / "runtimes")
     active_runtime = None
     try:
@@ -772,7 +795,7 @@ def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, obje
         "run_id": args.run_id,
         "output_root": args.output_root,
         "base_url": str(args.sub2api_base_url or os.environ.get("SUB2API_CP8_LIVE_BASE_URL") or os.environ.get("SUB2API_BASE_URL") or _managed_state_str(state, "gateway_base_url") or ""),
-        "gateway_token": str(args.sub2api_token or os.environ.get("SUB2API_CP8_LIVE_GATEWAY_TOKEN") or os.environ.get("SUB2API_API_KEY") or os.environ.get("SUB2API_ACCESS_TOKEN") or _managed_state_str(state, "access_token") or ""),
+        "gateway_token": _cp8_sub2api_gateway_token(args, state, state_root=state_root),
         "native_attestation_secret": str(os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") or _optional_server_native_attestation_secret(state) or ""),
         "route_hint_secret": str(os.environ.get("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET") or _optional_server_route_hint_secret(state) or ""),
         "runtime_hash": str(os.environ.get("ZHUMENG_CLAUDE_RUNTIME_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_RUNTIME_HASH") or (getattr(active_runtime, "runtime_hash", "") if active_runtime is not None else "") or ""),

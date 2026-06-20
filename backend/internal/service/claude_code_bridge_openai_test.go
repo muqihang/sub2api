@@ -11,6 +11,76 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCP8AgnesBridgeResponsesUsesDedicatedRouteAndKey(t *testing.T) {
+	var upstreamPath string
+	var upstreamAuth string
+	var upstreamClientType string
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		upstreamAuth = r.Header.Get("Authorization")
+		upstreamClientType = r.Header.Get("X-Sub2API-Client-Type")
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_agnes","model":"agnes-2.0-flash"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"vision ok"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_agnes","model":"agnes-2.0-flash","status":"completed","usage":{"input_tokens":5,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY", "sk-agnes-test")
+
+	body := []byte(`{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"describe image"}],"stream":true}`)
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveAgnesDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv("agnes"))
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	require.Equal(t, "/v1/responses", upstreamPath)
+	require.Equal(t, "Bearer sk-agnes-test", upstreamAuth)
+	require.Equal(t, "claude_code_bridge_agnes", upstreamClientType)
+	require.Contains(t, upstreamBody, `"model":"agnes-2.0-flash"`)
+	require.NotContains(t, upstreamBody, "claude-code-bridge-agnes-2.0-flash")
+	stream := string(result.Body)
+	require.Contains(t, stream, "message_start")
+	require.Contains(t, stream, "vision ok")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+	require.Equal(t, "claude_code_bridge_agnes", result.Audit.ClientType)
+	require.Equal(t, "responses", result.Audit.PreferredProtocol)
+}
+
+func TestCP8AgnesBridgeDoesNotUseOpenAIChatCompletionsFallback(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY", "sk-agnes-test")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_CHAT_COMPLETIONS_FALLBACK_ENABLED", "1")
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/v1/chat/completions" {
+			t.Fatalf("AGNES must not inherit GPT/OpenAI chat completions fallback")
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"responses unsupported"}}`))
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"describe image"}],"stream":true}`)
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveAgnesDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv("agnes"))
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "upstream status 502")
+	require.Equal(t, []string{"/v1/responses"}, paths)
+}
+
 func TestCP6OpenAIBridgeResponsesStreamMapsToolCallUsageCacheAndCleansReasoning(t *testing.T) {
 	var upstreamPath string
 	var upstreamAuth string
@@ -236,6 +306,18 @@ func TestCP6OpenAIBridgeLiveRejectsExternalBaseURLAndNativeFormalPool(t *testing
 	native.NativeAttestationAllowed = true
 	native.CredentialScope = ClaudeCodeNativeCredentialScope
 	require.False(t, ClaudeCodeBridgeOpenAILiveEligible(native))
+}
+
+func cp6LiveAgnesDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
+	decision := cp6LiveOpenAIDecision(baseURL)
+	decision.ModelID = "claude-code-bridge-agnes-2.0-flash"
+	decision.UpstreamModel = "agnes-2.0-flash"
+	decision.Provider = "agnes"
+	decision.Route = "agnes_bridge"
+	decision.ClientType = "claude_code_bridge_agnes"
+	decision.SupportsReasoningMapping = false
+	decision.CachePolicy = "provider_cache_audit_required"
+	return decision
 }
 
 func cp6LiveOpenAIDecision(baseURL string) ClaudeCodeBridgeRouteDecision {

@@ -5424,6 +5424,30 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}, nil
 }
 
+func isClaudeCodeBridgeRuntimeAnthropicAPIKeyAccount(account *Account) bool {
+	return account != nil &&
+		account.Platform == PlatformAnthropic &&
+		account.Type == AccountTypeAPIKey &&
+		strings.EqualFold(strings.TrimSpace(account.GetExtraString("claude_code_bridge_runtime")), "true")
+}
+
+func isClaudeCodeNativeRemoteSub2APIUpstreamAccount(account *Account) bool {
+	if account == nil || account.Platform != PlatformAnthropic || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(account.GetExtraString("claude_code_native_remote_sub2api_upstream")), "true") {
+		return true
+	}
+	allowedNames := strings.Split(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES"), ",")
+	accountName := strings.TrimSpace(account.Name)
+	for _, name := range allowedNames {
+		if accountName != "" && strings.EqualFold(accountName, strings.TrimSpace(name)) {
+			return true
+		}
+	}
+	return false
+}
+
 type anthropicPassthroughForwardInput struct {
 	Body          []byte
 	Parsed        *ParsedRequest
@@ -5493,7 +5517,8 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	var resp *http.Response
 	retryStart := time.Now()
 	var tlsProfile *tlsfingerprint.Profile
-	if !useCCGateway {
+	standardHTTPUpstream := isClaudeCodeBridgeRuntimeAnthropicAPIKeyAccount(account) || isClaudeCodeNativeRemoteSub2APIUpstreamAccount(account)
+	if !useCCGateway && !standardHTTPUpstream {
 		tlsProfile = s.tlsFPProfileService.ResolveTLSProfile(account)
 	}
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
@@ -5511,7 +5536,11 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			input.Body = input.Parsed.Body.Bytes()
 		}
 
-		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
+		if standardHTTPUpstream {
+			resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		} else {
+			resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
+		}
 		if err != nil {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()

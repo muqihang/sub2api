@@ -190,6 +190,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.handleClaudeCodeBridgeMessagesSkeleton(c, body)
 		return
 	}
+	if h.rejectClaudeCodeCatalogBridgeMessagesWithoutMarker(c, body) {
+		return
+	}
 
 	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages {
 		if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
@@ -2003,6 +2006,29 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 	})
 }
 
+func (h *GatewayHandler) rejectClaudeCodeCatalogBridgeMessagesWithoutMarker(c *gin.Context, body []byte) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil || c.Request.URL.Path != service.AnthropicCompatInboundMessages {
+		return false
+	}
+	if service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		return false
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		return false
+	}
+	if service.IsClaudeCodeBridgeDisplayModelID(model) {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge messages require a signed bridge route")
+		return true
+	}
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil || decision.Route == service.ClaudeCodeNativeRoute {
+		return false
+	}
+	h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge messages require a signed bridge route")
+	return true
+}
+
 func (h *GatewayHandler) applyClaudeCodeNativeMessagesAttestation(c *gin.Context, body []byte) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
@@ -2060,7 +2086,7 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 		return
 	}
 	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeOpenAILiveEligible(bridgeDecision) {
-		if _, err := service.StreamClaudeCodeBridgeOpenAILive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeOpenAIAPIKeyFromEnv(), c.Writer); err != nil {
+		if _, err := service.StreamClaudeCodeBridgeOpenAILive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv(bridgeDecision.Provider), c.Writer); err != nil {
 			if c.Writer.Written() {
 				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
 				return
@@ -2148,6 +2174,10 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 	if countTokensModel != "" {
+		if service.IsClaudeCodeBridgeDisplayModelID(countTokensModel) {
+			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+			return
+		}
 		if decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), countTokensModel); err == nil && decision.Route != service.ClaudeCodeNativeRoute {
 			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
 			return

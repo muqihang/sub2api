@@ -269,7 +269,7 @@ func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *te
 	require.Equal(t, http.StatusOK, result.StatusCode)
 	require.Equal(t, "/v1/chat/completions", gotPath)
 	require.Equal(t, "Bearer sk-deepseek-test-key", gotAuth)
-	require.Equal(t, "claude_code_bridge_openai", gotClientType)
+	require.Equal(t, "claude_code_bridge_deepseek", gotClientType)
 	require.Contains(t, gotUserAgent, "codex_cli_rs/")
 	require.Equal(t, "codex_cli_rs", gotOriginator)
 	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
@@ -579,6 +579,48 @@ func TestClaudeCodeBridgeAnthropicLiveProviderKeysDoNotRequireDeepSeekGate(t *te
 			require.Equal(t, tt.clientType, result.Audit.ClientType)
 		})
 	}
+}
+
+func TestClaudeCodeProviderBridgeLiveRequestAllowedAcceptsAgnesWithDedicatedKey(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY", "sk-agnes-test-key")
+
+	decision := cp6LiveOpenAIDecision("http://127.0.0.1:9/v1")
+	decision.ModelID = "claude-code-bridge-agnes-2.0-flash"
+	decision.UpstreamModel = "agnes-2.0-flash"
+	decision.Provider = "agnes"
+	decision.Route = "agnes_bridge"
+	decision.ClientType = "claude_code_bridge_agnes"
+	decision.SupportsReasoningMapping = false
+
+	require.True(t, ClaudeCodeProviderBridgeLiveRequestAllowed(ClaudeCodeProviderRouteDecision{
+		ModelID:                  decision.ModelID,
+		UpstreamModel:            decision.UpstreamModel,
+		Provider:                 decision.Provider,
+		Route:                    decision.Route,
+		ClientType:               decision.ClientType,
+		ProviderOwner:            decision.ProviderOwner,
+		CredentialScope:          decision.CredentialScope,
+		GatewayLocation:          decision.GatewayLocation,
+		CatalogFresh:             true,
+		CatalogVersion:           decision.CatalogVersion,
+		RuntimeHash:              decision.RuntimeHash,
+		OverlayHash:              decision.OverlayHash,
+		CatalogHash:              decision.CatalogHash,
+		PreferredProtocol:        decision.PreferredProtocol,
+		OpenAIBaseURL:            decision.OpenAIBaseURL,
+		CapabilitiesVerified:     decision.CapabilitiesVerified,
+		SupportsText:             decision.SupportsText,
+		SupportsTools:            decision.SupportsTools,
+		SupportsStreaming:        decision.SupportsStreaming,
+		SupportsUsage:            decision.SupportsUsage,
+		SupportsCacheAudit:       decision.SupportsCacheAudit,
+		SupportsReasoningMapping: decision.SupportsReasoningMapping,
+		SupportsErrorPassthrough: decision.SupportsErrorPassthrough,
+	}))
 }
 
 func TestClaudeCodeProviderBridgeLiveRequestAllowedDoesNotApplyDeepSeekFallbackToGLMOrKimi(t *testing.T) {

@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -176,6 +177,12 @@ def run_managed_claude_code(
             guard_plan=guard_plan,
             route_hint_secret=route_hint_secret,
         )
+        _refresh_gateway_model_cache(
+            config_root=config_root,
+            profile_id=safe_profile_id,
+            guard_base_url=guard_base_url,
+            guard_plan=guard_plan,
+        )
         provider_profile_env = _write_provider_profile_resolver_artifact(
             config_root=config_root,
             profile_id=safe_profile_id,
@@ -274,6 +281,57 @@ DNS.5 = mcp-proxy.anthropic.com
     return cert_path, key_path
 
 
+
+
+def _refresh_gateway_model_cache(
+    *,
+    config_root: Path,
+    profile_id: str,
+    guard_base_url: str,
+    guard_plan: NativeGuardPlan,
+) -> None:
+    cache_dir = build_isolated_config_dir(config_root, profile_id=profile_id) / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    catalog = _route_hint_catalog_payload(guard_plan)
+    bridge_entries = [
+        entry
+        for entry in catalog["entries"].values()
+        if isinstance(entry, dict) and str(entry.get("model_id") or "").startswith("claude-code-bridge-")
+    ]
+    order = {model: index for index, model in enumerate(guard_plan.config.bridge_live_models)}
+    bridge_entries.sort(key=lambda entry: order.get(str(entry.get("model_id") or ""), 10_000))
+    models = [
+        {
+            "id": str(entry["model_id"]),
+            "type": "model",
+            "display_name": _bridge_display_name(str(entry["model_id"])),
+            "display_only": not bool(entry.get("live_enabled")),
+            "live_enabled": bool(entry.get("live_enabled")),
+            "route": str(entry.get("route") or ""),
+            "client_type": str(entry.get("client_type") or ""),
+        }
+        for entry in bridge_entries
+    ]
+    payload = {
+        "baseUrl": guard_base_url,
+        "fetchedAt": int(time.time() * 1000),
+        "models": models,
+    }
+    (cache_dir / "gateway-models.json").write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+def _bridge_display_name(model_id: str) -> str:
+    labels = {
+        "claude-code-bridge-gpt-5.5": "GPT 5.5 (Claude Code Bridge)",
+        "claude-code-bridge-gpt-5.4": "GPT 5.4 (Claude Code Bridge)",
+        "claude-code-bridge-gpt-5.4-mini": "GPT 5.4 Mini (Claude Code Bridge)",
+        "claude-code-bridge-deepseek-v4-pro": "DeepSeek V4 Pro (Claude Code Bridge)",
+        "claude-code-bridge-deepseek-v4-flash": "DeepSeek V4 Flash (Claude Code Bridge)",
+        "claude-code-bridge-agnes-2.0-flash": "AGNES 2.0 Flash (Claude Code Bridge)",
+        "claude-code-bridge-glm-5.2-1m": "GLM 5.2 1M (Claude Code Bridge)",
+        "claude-code-bridge-kimi-k2.7-code": "Kimi K2.7 Code (Claude Code Bridge)",
+    }
+    return labels.get(model_id, model_id)
 
 def _write_provider_profile_resolver_artifact(
     *,

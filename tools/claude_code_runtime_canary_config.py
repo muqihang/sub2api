@@ -56,6 +56,15 @@ _PLACEHOLDERS: tuple[dict[str, str], ...] = (
     {"name": "zhumeng-claude-code-bridge-kimi", "provider": "kimi", "client_type": "claude_code_bridge_kimi", "route": "kimi_bridge"},
 )
 
+_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES = "zhumeng-claude-code-native-upstream"
+_DEEPSEEK_CANARY_PROXY = {
+    "name": "zhumeng-claude-code-deepseek-host-proxy",
+    "protocol": "http",
+    "host": "host.docker.internal",
+    "port": 8080,
+}
+
+
 _RUNTIME_DISPATCH_GROUPS: tuple[dict[str, Any], ...] = (
     {
         "name": "zhumeng-claude-code-bridge-runtime-openai",
@@ -79,6 +88,7 @@ _RUNTIME_DISPATCH_GROUPS: tuple[dict[str, Any], ...] = (
         "api_key_env": "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY",
         "models": _BRIDGE_MODELS_BY_PROVIDER["deepseek"],
         "anthropic_base_url": "https://api.deepseek.com/anthropic",
+        "canary_proxy": _DEEPSEEK_CANARY_PROXY,
     },
     {
         "name": "zhumeng-claude-code-bridge-runtime-agnes",
@@ -98,8 +108,6 @@ _NATIVE_MODELS = (
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
 )
-
-
 def _native_display_models() -> list[str]:
     return list(_NATIVE_MODELS) + [
         model["model_id"]
@@ -375,6 +383,7 @@ def build_provider_catalog_env(
         "catalog_hash": catalog_hash,
         "models": catalog_models,
     }
+    openai_bridge_live = any(model.startswith("claude-code-bridge-gpt-") for model in live_set)
     env = {
         "SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON": json.dumps(catalog, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
         "SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION": catalog_version,
@@ -386,11 +395,13 @@ def build_provider_catalog_env(
         "SUB2API_CLAUDE_CODE_DEEPSEEK_ANTHROPIC_FIXTURE_GREEN": "true" if deepseek_anthropic_fixture_green else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED": "true" if live_set else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB": "true" if live_set else "false",
-        "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED": "true" if any(model.startswith("claude-code-bridge-gpt-") for model in live_set) else "false",
+        "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED": "true" if openai_bridge_live else "false",
+        "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_CHAT_COMPLETIONS_FALLBACK_ENABLED": "true" if openai_bridge_live else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED": "true" if any("deepseek" in model or "glm" in model or "kimi" in model for model in live_set) else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED": "true" if any("deepseek" in model for model in live_set) else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED": "true" if any("agnes" in model for model in live_set) else "false",
         "SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS": ",".join(_NATIVE_MODELS),
+        "SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES": _NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES,
     }
     for provider, api_key in (bridge_api_keys or {}).items():
         provider_key = str(provider).strip().upper().replace("-", "_")
@@ -490,6 +501,27 @@ def build_apply_sql(bridge_api_keys: dict[str, str] | None = None) -> str:
                     group_name=_sql_literal(str(spec["name"])),
                 )
             )
+
+    runtime_proxy_values = []
+    runtime_account_proxy_values = []
+    for spec in _RUNTIME_DISPATCH_GROUPS:
+        proxy = spec.get("canary_proxy")
+        if not proxy:
+            continue
+        runtime_proxy_values.append(
+            "({name},{protocol},{host},{port})".format(
+                name=_sql_literal(str(proxy["name"])),
+                protocol=_sql_literal(str(proxy["protocol"])),
+                host=_sql_literal(str(proxy["host"])),
+                port=int(proxy["port"]),
+            )
+        )
+        runtime_account_proxy_values.append(
+            "({account_name},{proxy_name})".format(
+                account_name=_sql_literal(str(spec["account_names"][0])),
+                proxy_name=_sql_literal(str(proxy["name"])),
+            )
+        )
 
     runtime_account_values = []
     for spec in _RUNTIME_DISPATCH_GROUPS:
@@ -620,6 +652,34 @@ ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
   mcp_xml_inject = false,
   updated_at = now();
 
+WITH desired_runtime_proxies(name, protocol, host, port) AS (
+  VALUES
+  {runtime_proxy_values}
+), existing_runtime_proxies AS (
+  SELECT DISTINCT ON (proxies.name) proxies.id, proxies.name
+  FROM proxies
+  JOIN desired_runtime_proxies ON desired_runtime_proxies.name = proxies.name
+  WHERE proxies.deleted_at IS NULL
+  ORDER BY proxies.name, proxies.id
+), updated_runtime_proxies AS (
+  UPDATE proxies
+  SET protocol = desired_runtime_proxies.protocol,
+      host = desired_runtime_proxies.host,
+      port = desired_runtime_proxies.port,
+      status = 'active',
+      updated_at = now()
+  FROM desired_runtime_proxies
+  JOIN existing_runtime_proxies ON existing_runtime_proxies.name = desired_runtime_proxies.name
+  WHERE proxies.id = existing_runtime_proxies.id
+  RETURNING proxies.name
+)
+INSERT INTO proxies (name, protocol, host, port, status, created_at, updated_at)
+SELECT name, protocol, host, port, 'active', now(), now()
+FROM desired_runtime_proxies
+WHERE NOT EXISTS (
+  SELECT 1 FROM updated_runtime_proxies WHERE updated_runtime_proxies.name = desired_runtime_proxies.name
+);
+
 WITH desired_runtime_accounts(account_name, source_account_name, source_platform, platform, type, status, schedulable, credentials_template, extra) AS (
   VALUES
   {runtime_account_values}
@@ -719,6 +779,21 @@ WHERE NOT EXISTS (
   SELECT 1 FROM updated_runtime_accounts WHERE updated_runtime_accounts.name = resolved_runtime_accounts.account_name
 );
 
+WITH desired_runtime_account_proxies(account_name, proxy_name) AS (
+  VALUES
+  {runtime_account_proxy_values}
+), resolved_runtime_account_proxies AS (
+  SELECT accounts.id AS account_id, proxies.id AS proxy_id
+  FROM desired_runtime_account_proxies
+  JOIN accounts ON accounts.name = desired_runtime_account_proxies.account_name AND accounts.deleted_at IS NULL
+  JOIN proxies ON proxies.name = desired_runtime_account_proxies.proxy_name AND proxies.deleted_at IS NULL
+)
+UPDATE accounts
+SET proxy_id = resolved_runtime_account_proxies.proxy_id,
+    updated_at = now()
+FROM resolved_runtime_account_proxies
+WHERE accounts.id = resolved_runtime_account_proxies.account_id;
+
 WITH desired_bindings(account_name, group_name, priority) AS (
   VALUES
   {account_binding_values}
@@ -782,7 +857,9 @@ COMMIT;
         native_models_config=_sql_literal(json.dumps(native_models_config, ensure_ascii=True, sort_keys=True)) + "::jsonb",
         values=",\n  ".join(values),
         runtime_group_values=",\n  ".join(runtime_group_values),
+        runtime_proxy_values=",\n  ".join(runtime_proxy_values) if runtime_proxy_values else "('__none__','http','127.0.0.1',0)",
         runtime_account_values=",\n  ".join(runtime_account_values) if runtime_account_values else "('__none__','__none__','anthropic','anthropic','apikey','disabled',false,'{{}}'::jsonb,'{{}}'::jsonb)",
+        runtime_account_proxy_values=",\n  ".join(runtime_account_proxy_values) if runtime_account_proxy_values else "('__none__','__none__')",
         account_binding_values=",\n  ".join(account_binding_values),
         api_key_values=",\n  ".join(api_key_values),
         native_group_id=NATIVE_GROUP_ID,

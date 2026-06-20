@@ -190,6 +190,10 @@ func AnthropicCompatUnsupportedProtocolMessage() string {
 	return anthropicCompatUnsupportedMessage
 }
 
+func IsClaudeCodeBridgeDisplayModelID(modelID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(modelID), "claude-code-bridge-")
+}
+
 func SanitizeAnthropicCompatInboundHeaders(headers http.Header) http.Header {
 	out := http.Header{}
 	for key, values := range headers {
@@ -256,10 +260,13 @@ func validateAnthropicCompatMessagesBody(body []byte, opts AnthropicCompatIngres
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
 	modelID := strings.TrimSpace(model.String())
+	if IsClaudeCodeBridgeDisplayModelID(modelID) {
+		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+	}
 	if !strings.HasPrefix(modelID, "claude-") && !opts.AllowBridgeRuntimeModels {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
-	if opts.AllowBridgeRuntimeModels && (looksSensitiveText(modelID) || strings.HasPrefix(modelID, "claude-code-bridge-")) {
+	if opts.AllowBridgeRuntimeModels && looksSensitiveText(modelID) {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
 	messages := gjson.GetBytes(body, "messages")

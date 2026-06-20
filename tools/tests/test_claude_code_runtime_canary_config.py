@@ -138,6 +138,7 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertIn("claude-code-bridge-agnes-2.0-flash", models)
         self.assertEqual("gpt-5.5", models["claude-code-bridge-gpt-5.5"]["upstream_model"])
         self.assertEqual("deepseek-v4-pro", models["claude-code-bridge-deepseek-v4-pro"]["upstream_model"])
+        self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_CHAT_COMPLETIONS_FALLBACK_ENABLED"])
         self.assertEqual("openai_bridge", models["claude-code-bridge-gpt-5.5"]["route"])
         self.assertEqual("deepseek_bridge", models["claude-code-bridge-deepseek-v4-pro"]["route"])
         self.assertEqual("http://127.0.0.1:3017", models["claude-code-bridge-gpt-5.5"]["openai_base_url"])
@@ -192,6 +193,19 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
             self.assertTrue(entry["supports_reasoning_mapping"])
         self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED"])
         self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"])
+
+    def test_apply_sql_creates_dedicated_deepseek_anthropic_runtime_account_from_codex_key(self):
+        from tools.claude_code_runtime_canary_config import build_apply_sql
+
+        sql = build_apply_sql()
+
+        self.assertIn("zhumeng-claude-code-bridge-runtime-deepseek", sql)
+        self.assertIn("zhumeng-claude-code-bridge-deepseek-anthropic", sql)
+        self.assertIn("codex-upstream-deepseek-v4", sql)
+        self.assertIn("https://api.deepseek.com/anthropic", sql)
+        self.assertIn("'anthropic'", sql)
+        self.assertIn("claude_code_bridge_runtime", sql)
+        self.assertIn("Do not add native Claude formal-pool accounts to this group", sql)
 
     def test_deepseek_live_catalog_can_explicitly_fallback_to_chat_when_anthropic_fixture_not_green(self):
         from tools.claude_code_runtime_canary_config import build_provider_catalog_env
@@ -407,6 +421,23 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn("https://api.deepseek.com/v1/chat/completions", sql)
 
 
+    def test_apply_sql_binds_deepseek_runtime_account_to_canary_host_proxy_only(self):
+        from tools.claude_code_runtime_canary_config import build_apply_sql
+
+        sql = build_apply_sql(bridge_api_keys={"openai": "sk-openai", "deepseek": "sk-deepseek", "agnes": "sk-agnes"})
+        proxy_section = sql.split("WITH desired_runtime_proxies", 1)[1].split("WITH desired_runtime_accounts", 1)[0]
+        account_proxy_section = sql.split("WITH desired_runtime_account_proxies", 1)[1].split("WITH desired_bindings", 1)[0]
+
+        self.assertIn("zhumeng-claude-code-deepseek-host-proxy", proxy_section)
+        self.assertIn("host.docker.internal", proxy_section)
+        self.assertIn("8080", proxy_section)
+        self.assertIn("zhumeng-claude-code-bridge-deepseek-anthropic", account_proxy_section)
+        self.assertIn("proxy_id = resolved_runtime_account_proxies.proxy_id", account_proxy_section)
+        self.assertNotIn("zhumeng-claude-code-native-upstream", account_proxy_section)
+        self.assertNotIn("zhumeng-claude-code-bridge-openai-runtime", account_proxy_section)
+        self.assertNotIn("zhumeng-claude-code-bridge-agnes-runtime", account_proxy_section)
+
+
     def test_apply_sql_upserts_runtime_accounts_without_requiring_account_name_unique_index(self):
         from tools.claude_code_runtime_canary_config import build_apply_sql
 
@@ -544,6 +575,20 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertEqual("sha256:" + "b" * 64, merged["SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES"])
         self.assertNotEqual("sha256:" + "1" * 64, merged["SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES"])
         self.assertIn("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", merged)
+
+    def test_apply_env_marks_native_remote_sub2api_upstream_accounts(self):
+        from tools.claude_code_runtime_canary_config import merge_provider_catalog_env
+
+        merged = merge_provider_catalog_env(
+            {},
+            target="http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+        )
+
+        self.assertEqual(
+            "zhumeng-claude-code-native-upstream",
+            merged["SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES"],
+        )
 
     def test_env_file_writer_outputs_docker_env_file_values_without_json_wrapping_quotes(self):
         from tools.claude_code_runtime_canary_config import _write_env_file

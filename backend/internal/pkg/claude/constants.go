@@ -187,30 +187,6 @@ type Model struct {
 // DefaultModels Claude Code 客户端支持的默认模型列表
 var DefaultModels = []Model{
 	{
-		ID:          "claude-fable-5",
-		Type:        "model",
-		DisplayName: "Claude Fable 5",
-		CreatedAt:   "2026-06-10T00:00:00Z",
-	},
-	{
-		ID:          "claude-opus-4-5-20251101",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.5",
-		CreatedAt:   "2025-11-01T00:00:00Z",
-	},
-	{
-		ID:          "claude-opus-4-6",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.6",
-		CreatedAt:   "2026-02-06T00:00:00Z",
-	},
-	{
-		ID:          "claude-opus-4-7",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.7",
-		CreatedAt:   "2026-04-17T00:00:00Z",
-	},
-	{
 		ID:          "claude-opus-4-8",
 		Type:        "model",
 		DisplayName: "Claude Opus 4.8",
@@ -221,12 +197,6 @@ var DefaultModels = []Model{
 		Type:        "model",
 		DisplayName: "Claude Sonnet 4.6",
 		CreatedAt:   "2026-02-18T00:00:00Z",
-	},
-	{
-		ID:          "claude-sonnet-4-5-20250929",
-		Type:        "model",
-		DisplayName: "Claude Sonnet 4.5",
-		CreatedAt:   "2025-09-29T00:00:00Z",
 	},
 	{
 		ID:          "claude-haiku-4-5-20251001",
@@ -246,20 +216,16 @@ func DefaultModelIDs() []string {
 }
 
 // DefaultTestModel 测试时使用的默认模型
-const DefaultTestModel = "claude-sonnet-4-5-20250929"
+const DefaultTestModel = "claude-sonnet-4-6"
 
 // ModelIDOverrides Claude OAuth 请求需要的模型 ID 映射
 var ModelIDOverrides = map[string]string{
-	"claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
-	"claude-opus-4-5":   "claude-opus-4-5-20251101",
-	"claude-haiku-4-5":  "claude-haiku-4-5-20251001",
+	"claude-haiku-4-5": "claude-haiku-4-5-20251001",
 }
 
 // ModelIDReverseOverrides 用于将上游模型 ID 还原为短名
 var ModelIDReverseOverrides = map[string]string{
-	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
-	"claude-opus-4-5-20251101":   "claude-opus-4-5",
-	"claude-haiku-4-5-20251001":  "claude-haiku-4-5",
+	"claude-haiku-4-5-20251001": "claude-haiku-4-5",
 }
 
 // NormalizeModelID 根据 Claude OAuth 规则映射模型

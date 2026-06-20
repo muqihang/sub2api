@@ -140,6 +140,40 @@ func cp6DeepSeekBridgeFallbackRouteCatalogJSONWithOpenAIBaseURL(baseURL string) 
 	return string(raw)
 }
 
+func cp8AgnesBridgeRouteCatalogJSONWithBaseURL(baseURL string) string {
+	raw, err := json.Marshal(map[string]any{
+		"catalog_version": "cp5-route-catalog",
+		"runtime_hash":    "sha256:" + strings.Repeat("1", 64),
+		"overlay_hash":    "sha256:" + strings.Repeat("2", 64),
+		"catalog_hash":    "sha256:" + strings.Repeat("3", 64),
+		"models": []map[string]any{{
+			"model_id":                   "claude-code-bridge-agnes-2.0-flash",
+			"upstream_model":             "agnes-2.0-flash",
+			"provider":                   "agnes",
+			"route":                      "agnes_bridge",
+			"client_type":                "claude_code_bridge_agnes",
+			"provider_owner":             "zhumeng_managed",
+			"credential_scope":           "bridge_pool",
+			"gateway_location":           "cloud",
+			"catalog_fresh":              true,
+			"preferred_protocol":         "responses",
+			"openai_base_url":            baseURL,
+			"capabilities_verified":      true,
+			"supports_text":              true,
+			"supports_tools":             true,
+			"supports_streaming":         true,
+			"supports_usage":             true,
+			"supports_cache_audit":       true,
+			"supports_error_passthrough": true,
+			"cache_policy":               "provider_cache_audit_required",
+		}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
 func configureCP6RouteHintEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
@@ -506,7 +540,7 @@ func TestCP6DeepSeekLiveOpenAICompatibleFallbackForwardsToChatCompletionsWhenFix
 	require.Equal(t, int64(1), upstreamHits.Load())
 	require.Equal(t, "/v1/chat/completions", upstreamPath)
 	require.Equal(t, "Bearer sk-deepseek-test-key", upstreamAuthorization)
-	require.Equal(t, "claude_code_bridge_openai", upstreamClientType)
+	require.Equal(t, "claude_code_bridge_deepseek", upstreamClientType)
 	require.Empty(t, upstreamNativeAttestation)
 	require.Empty(t, upstreamRouteHint)
 	require.Contains(t, upstreamBody, `"messages"`)
@@ -771,6 +805,71 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveForwardsViaResponsesFallbackWhenExpl
 	require.NotContains(t, stream, "raw anthropic body must become responses input")
 }
 
+func TestCP8AgnesBridgeLiveForwardsToResponsesWithDedicatedKey(t *testing.T) {
+	var upstreamHits atomic.Int64
+	var upstreamPath string
+	var upstreamAuth string
+	var upstreamClientType string
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		upstreamPath = r.URL.Path
+		upstreamAuth = r.Header.Get("Authorization")
+		upstreamClientType = r.Header.Get("X-Sub2API-Client-Type")
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_agnes_route","model":"agnes-2.0-flash"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"agnes route ok"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_agnes_route","model":"agnes-2.0-flash","status":"completed","usage":{"input_tokens":9,"output_tokens":3}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp8AgnesBridgeRouteCatalogJSONWithBaseURL(upstream.URL+"/v1"))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY", "test-agnes-route-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"describe image"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer user-facing-sub2api-key-must-not-forward")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_agnes")
+	req.Header.Set("x-sub2api-route", "agnes_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "claude-code-bridge-agnes-2.0-flash",
+		"provider":             "agnes",
+		"route":                "agnes_bridge",
+		"client_type":          "claude_code_bridge_agnes",
+		"nonce":                "cp8-agnes-responses-live-enabled",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(1), upstreamHits.Load())
+	require.Equal(t, "/v1/responses", upstreamPath)
+	require.Equal(t, "Bearer test-agnes-route-key", upstreamAuth)
+	require.Equal(t, "claude_code_bridge_agnes", upstreamClientType)
+	require.Contains(t, upstreamBody, `"model":"agnes-2.0-flash"`)
+	require.NotContains(t, upstreamBody, "claude-code-bridge-agnes-2.0-flash")
+	require.Contains(t, upstreamBody, `"input"`)
+	require.NotContains(t, upstreamBody, `"messages"`)
+	stream := rec.Body.String()
+	require.Contains(t, stream, "event: message_start")
+	require.Contains(t, stream, `"text":"agnes route ok"`)
+	require.NotContains(t, stream, "bridge skeleton")
+	require.NotContains(t, stream, "describe image")
+}
+
 func TestClaudeCodeBridgeLiveFlagDoesNotEnableOpenAIBridge(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
@@ -1004,6 +1103,50 @@ func TestClaudeCodeBridgeCountTokensCatalogBridgeModelFailsClosedWithoutBridgeMa
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.NotContains(t, rec.Body.String(), "catalog-bridge-count-token-prompt-must-not-leak")
 	require.NotContains(t, rec.Body.String(), "gpt-5.5")
+}
+
+func TestClaudeCodeBridgeCountTokensDisplayModelFailsClosedWithoutCatalogOrMarker(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", "")
+	router := newAnthropicCompatProtocolRouteRouter()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"catalog-missing-count-prompt-must-not-leak"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.NotContains(t, rec.Body.String(), "catalog-missing-count-prompt-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "deepseek-v4-pro")
+}
+
+func TestClaudeCodeBridgeMessagesCatalogBridgeModelFailsClosedWithoutBridgeMarker(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6OpenAIBridgeRouteCatalogJSON())
+	router := newAnthropicCompatProtocolRouteRouter()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"catalog-bridge-message-prompt-must-not-leak"}],"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.NotContains(t, rec.Body.String(), "catalog-bridge-message-prompt-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "gpt-5.5")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
+}
+
+func TestClaudeCodeBridgeMessagesDisplayModelFailsClosedWithoutCatalogOrMarker(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", "")
+	router := newAnthropicCompatProtocolRouteRouter()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"catalog-missing-bridge-prompt-must-not-leak"}],"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.NotContains(t, rec.Body.String(), "catalog-missing-bridge-prompt-must-not-leak")
+	require.NotContains(t, rec.Body.String(), "deepseek-v4-pro")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
 }
 
 func TestClaudeCodeBridgeMessagesAllowsAnthropicValidMetadataStopSequencesAndTopK(t *testing.T) {

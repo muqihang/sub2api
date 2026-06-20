@@ -249,6 +249,18 @@ func TestLoadDefaultAugmentGatewayConfig(t *testing.T) {
 	require.NotContains(t, cfg.Gateway.Augment.EnabledModels, "gemini-2.5-pro")
 }
 
+func TestLoadDefaultCodexGatewayCurrentClaudeModels(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-8")
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-sonnet-4-6")
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-haiku-4-5-20251001")
+	require.NotContains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-7")
+	require.NotContains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-5-20251101")
+}
+
 func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

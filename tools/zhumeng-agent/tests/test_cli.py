@@ -1866,10 +1866,13 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
     calls: list[dict[str, object]] = []
 
     class FakeStateStore:
+        path = tmp_path / "state.json"
+
         def read(self):
             return {
                 "gateway_base_url": "http://127.0.0.1:3012",
-                "access_token": "managed-sub2api-token",
+                "access_token": "eyJ.generic-managed-jwt",
+                "claude_code_sub2api_api_key": "test-dedicated-claude-code-sub2api",
                 "claude_code_native_attestation_secret": "managed-native-secret",
                 "claude_code_native_attestation_secret_source": "server",
                 "claude_code_route_hint_secret": "managed-route-secret",
@@ -1908,6 +1911,8 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
         "SUB2API_CP8_LIVE_GATEWAY_TOKEN",
         "SUB2API_API_KEY",
         "SUB2API_ACCESS_TOKEN",
+        "ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY",
+        "SUB2API_CLAUDE_CODE_API_KEY",
         "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET",
         "SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET",
         "ZHUMENG_CLAUDE_RUNTIME_HASH",
@@ -1938,7 +1943,7 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
         "run_id": "cp8-sub2api-managed-cli",
         "output_root": tmp_path,
         "base_url": "http://127.0.0.1:3012",
-        "gateway_token": "managed-sub2api-token",
+        "gateway_token": "test-dedicated-claude-code-sub2api",
         "native_attestation_secret": "managed-native-secret",
         "route_hint_secret": "managed-route-secret",
         "runtime_hash": "sha256:" + "b" * 64,
@@ -1956,10 +1961,13 @@ def test_claude_code_live_matrix_cli_derives_route_catalog_hash_not_model_catalo
     expected_route_hash = "sha256:" + "e" * 64
 
     class FakeStateStore:
+        path = tmp_path / "state.json"
+
         def read(self):
             return {
                 "gateway_base_url": "http://127.0.0.1:3012",
                 "access_token": "managed-sub2api-token",
+                "claude_code_sub2api_api_key": "test-dedicated-claude-code-sub2api",
                 "claude_code_native_attestation_secret": "managed-native-secret",
                 "claude_code_native_attestation_secret_source": "server",
                 "claude_code_route_hint_secret": "managed-route-secret",
@@ -2015,10 +2023,13 @@ def test_claude_code_live_matrix_cli_ignores_non_server_managed_runtime_secrets(
     calls: list[dict[str, object]] = []
 
     class FakeStateStore:
+        path = tmp_path / "state.json"
+
         def read(self):
             return {
                 "gateway_base_url": "http://127.0.0.1:3012",
                 "access_token": "managed-sub2api-token",
+                "claude_code_sub2api_api_key": "test-dedicated-claude-code-sub2api",
                 "claude_code_native_attestation_secret": "local-native-secret",
                 "claude_code_native_attestation_secret_source": "local",
                 "claude_code_route_hint_secret": "local-route-secret",
@@ -2072,7 +2083,9 @@ def test_claude_code_live_matrix_cli_sub2api_collection_requires_run_id_output_a
     monkeypatch.delenv("SUB2API_CP8_LIVE_GATEWAY_TOKEN", raising=False)
     monkeypatch.delenv("SUB2API_API_KEY", raising=False)
     monkeypatch.delenv("SUB2API_ACCESS_TOKEN", raising=False)
-    monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(read=lambda: {}), raising=False)
+    monkeypatch.delenv("ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY", raising=False)
+    monkeypatch.delenv("SUB2API_CLAUDE_CODE_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(path=tmp_path / "state.json", read=lambda: {}), raising=False)
     monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
 
     assert main(["claude-code", "live-matrix", "--collect-sub2api-provenance"]) == 1
@@ -2090,6 +2103,82 @@ def test_claude_code_live_matrix_cli_sub2api_collection_requires_run_id_output_a
         str(tmp_path),
         "--sub2api-base-url",
         "http://127.0.0.1:3012",
+    ]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix"
+    assert "gateway token" in data["message"]
+
+
+def test_claude_code_live_matrix_cli_does_not_use_managed_jwt_as_sub2api_gateway_token(capsys, tmp_path: Path, monkeypatch):
+    class FakeStateStore:
+        path = tmp_path / "state.json"
+
+        def read(self):
+            return {
+                "gateway_base_url": "http://127.0.0.1:3012",
+                "access_token": "eyJ.generic-managed-jwt",
+                "claude_code_native_attestation_secret": "managed-native-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "managed-route-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    def fake_collect_cp8_sub2api_gateway_live_provenance(**kwargs):
+        if not kwargs["gateway_token"]:
+            raise cli.CP8LiveMatrixError("CP8 Sub2API gateway token is required")
+        raise AssertionError("managed JWT must not be reused as the Sub2API gateway token")
+
+    monkeypatch.setattr(cli, "default_state_store", lambda: FakeStateStore(), raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): "sha256:" + "e" * 64, raising=False)
+    monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
+    for key in (
+        "SUB2API_CP8_LIVE_BASE_URL",
+        "SUB2API_BASE_URL",
+        "SUB2API_CP8_LIVE_GATEWAY_TOKEN",
+        "SUB2API_API_KEY",
+        "SUB2API_ACCESS_TOKEN",
+        "ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY",
+        "SUB2API_CLAUDE_CODE_API_KEY",
+        "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET",
+        "SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-sub2api-managed-jwt",
+        "--output-root",
+        str(tmp_path),
+    ]) == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code live-matrix"
+    assert "gateway token" in data["message"]
+
+
+def test_claude_code_live_matrix_cli_rejects_explicit_jwt_as_sub2api_gateway_token(capsys, tmp_path: Path, monkeypatch):
+    def fake_collect_cp8_sub2api_gateway_live_provenance(**kwargs):
+        if not kwargs["gateway_token"]:
+            raise cli.CP8LiveMatrixError("CP8 Sub2API gateway token is required")
+        raise AssertionError("collector must not receive a JWT-shaped Sub2API gateway token")
+
+    monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(path=tmp_path / "state.json", read=lambda: {}), raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
+    monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
+    monkeypatch.setenv("SUB2API_CP8_LIVE_BASE_URL", "http://127.0.0.1:3012")
+    monkeypatch.setenv("SUB2API_CP8_LIVE_GATEWAY_TOKEN", "eyJ.explicit-jwt")
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-sub2api-explicit-jwt",
+        "--output-root",
+        str(tmp_path),
     ]) == 1
     data = parse_output(capsys)
     assert data["command"] == "claude-code live-matrix"

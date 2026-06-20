@@ -260,7 +260,7 @@ def test_managed_launch_can_explicitly_enable_bridge_live_models_without_formal_
     assert catalog["entries"]["claude-code-bridge-gpt-5.5"]["formal_pool_allowed"] is False
     assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["live_enabled"] is True
     assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["formal_pool_allowed"] is False
-    assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["live_enabled"] is False
+    assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["live_enabled"] is True
     assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["formal_pool_allowed"] is False
 
 
@@ -1104,7 +1104,7 @@ def test_managed_launch_passes_managed_device_headers_to_guard(tmp_path: Path):
         executable="claude",
         repo_root=REPO_ROOT,
         upstream_base="https://gateway.zhumeng.example",
-        sub2api_auth="sk-sub2api-dedicated-claude-code-key",
+        sub2api_auth="test-sub2api-dedicated-claude-code-key",
         native_managed_access_token="managed-access-token",
         managed_session_id="managed-session",
         device_id=9,
@@ -1124,7 +1124,7 @@ def test_managed_launch_passes_managed_device_headers_to_guard(tmp_path: Path):
     assert command[command.index("--device-id") + 1] == "9"
     assert "--native-managed-access-token-env" in command
     assert captured["guard_plan"].env["ZHUMENG_CLAUDE_NATIVE_MANAGED_ACCESS_TOKEN"] == "managed-access-token"
-    assert captured["launch_env"]["ANTHROPIC_API_KEY"] == "sk-sub2api-dedicated-claude-code-key"
+    assert captured["launch_env"]["ANTHROPIC_API_KEY"] == "test-sub2api-dedicated-claude-code-key"
     assert "managed-access-token" not in captured["launch_env"].values()
     assert result.returncode == 0
 
@@ -1152,7 +1152,7 @@ def test_managed_launch_writes_provider_profile_resolver_artifact(tmp_path: Path
         executable="claude",
         repo_root=REPO_ROOT,
         upstream_base="http://127.0.0.1:3017",
-        sub2api_auth="sk-sub2api-dedicated-claude-code-key",
+        sub2api_auth="test-sub2api-dedicated-claude-code-key",
         native_managed_access_token="managed-access-token",
         managed_session_id="managed-session",
         device_id=9,
@@ -1201,6 +1201,83 @@ def test_managed_launch_writes_provider_profile_resolver_artifact(tmp_path: Path
             assert resolution["provider"] == provider
             assert resolution["native_egress_allowed"] is False
             assert resolution["resolved_model_id"] != "claude-haiku-4-5-20251001", (provider, task)
+
+
+def test_managed_launch_refreshes_gateway_model_cache_for_current_guard(tmp_path: Path):
+    captured = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        captured["launch_env"] = dict(env)
+        return 0
+
+    stale_cache = tmp_path / "claude-code" / "prod" / "config" / "cache" / "gateway-models.json"
+    stale_cache.parent.mkdir(parents=True)
+    stale_cache.write_text(json.dumps({
+        "baseUrl": "http://127.0.0.1:59999",
+        "fetchedAt": 1,
+        "models": [{"id": "claude-code-bridge-old", "display_name": "Old"}],
+    }), encoding="utf-8")
+
+    run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="http://127.0.0.1:3017",
+        sub2api_auth="test-sub2api-dedicated-claude-code-key",
+        native_managed_access_token="managed-access-token",
+        managed_session_id="managed-session",
+        device_id=9,
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        bridge_live_models=(
+            "claude-code-bridge-gpt-5.5",
+            "claude-code-bridge-gpt-5.4",
+            "claude-code-bridge-gpt-5.4-mini",
+            "claude-code-bridge-deepseek-v4-pro",
+            "claude-code-bridge-deepseek-v4-flash",
+            "claude-code-bridge-agnes-2.0-flash",
+        ),
+        config_root=tmp_path,
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+    )
+
+    cache = json.loads(stale_cache.read_text(encoding="utf-8"))
+    assert cache["baseUrl"] == "http://127.0.0.1:18181"
+    model_ids = [model["id"] for model in cache["models"]]
+    assert model_ids == [
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-gpt-5.4",
+        "claude-code-bridge-gpt-5.4-mini",
+        "claude-code-bridge-deepseek-v4-pro",
+        "claude-code-bridge-deepseek-v4-flash",
+        "claude-code-bridge-agnes-2.0-flash",
+        "claude-code-bridge-glm-5.2-1m",
+        "claude-code-bridge-kimi-k2.7-code",
+    ]
+    assert all(model_id.startswith("claude-") for model_id in model_ids)
+    assert all("display_only" in model and "live_enabled" in model for model in cache["models"])
+    live_by_id = {model["id"]: model["live_enabled"] for model in cache["models"]}
+    assert live_by_id["claude-code-bridge-gpt-5.5"] is True
+    assert live_by_id["claude-code-bridge-agnes-2.0-flash"] is True
+    assert live_by_id["claude-code-bridge-glm-5.2-1m"] is False
+    assert live_by_id["claude-code-bridge-kimi-k2.7-code"] is False
+
 
 def test_managed_launch_preload_remaps_non_claude_hardcoded_haiku_to_active_provider_fast(tmp_path: Path):
     node = shutil.which("node")

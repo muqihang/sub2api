@@ -22,11 +22,14 @@ import (
 )
 
 type anthropicHTTPUpstreamRecorder struct {
-	lastReq  *http.Request
-	lastBody []byte
-	requests int
-	resp     *http.Response
-	err      error
+	lastReq        *http.Request
+	lastBody       []byte
+	requests       int
+	doCalls        int
+	doWithTLSCalls int
+	lastTLSProfile *tlsfingerprint.Profile
+	resp           *http.Response
+	err            error
 }
 
 func newAnthropicAPIKeyAccountForTest() *Account {
@@ -49,6 +52,17 @@ func newAnthropicAPIKeyAccountForTest() *Account {
 }
 
 func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.doCalls++
+	return u.doRequest(req)
+}
+
+func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	u.doWithTLSCalls++
+	u.lastTLSProfile = profile
+	return u.doRequest(req)
+}
+
+func (u *anthropicHTTPUpstreamRecorder) doRequest(req *http.Request) (*http.Response, error) {
 	u.requests++
 	u.lastReq = req
 	if req != nil && req.Body != nil {
@@ -61,10 +75,6 @@ func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, a
 		return nil, u.err
 	}
 	return u.resp, nil
-}
-
-func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
-	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
 type streamReadCloser struct {
@@ -192,6 +202,121 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.NotContains(t, rec.Body.String(), `"cache_read_input_tokens":7`, "透传输出不应被网关改写")
 	require.Equal(t, 7, result.Usage.CacheReadInputTokens, "计费 usage 解析应保留 cached_tokens 兼容")
 	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ClaudeCodeBridgeRuntimeUsesStandardHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"deepseek-v4-pro","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+	parsed := &ParsedRequest{
+		Body:   NewRequestBodyRef(body),
+		Model:  "deepseek-v4-pro",
+		Stream: false,
+	}
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-deepseek-bridge"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_ds","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`)),
+		},
+	}
+	svc := &GatewayService{
+		cfg:                  &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+	account := &Account{
+		ID:          134,
+		Name:        "zhumeng-claude-code-bridge-deepseek-anthropic",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 3,
+		Credentials: map[string]any{
+			"api_key":  "upstream-deepseek-key",
+			"base_url": "https://api.deepseek.com/anthropic",
+		},
+		Extra: map[string]any{
+			"anthropic_passthrough":      true,
+			"claude_code_bridge_runtime": true,
+			"provider_role":              "deepseek",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, upstream.doCalls)
+	require.Equal(t, 0, upstream.doWithTLSCalls)
+	require.Equal(t, "https://api.deepseek.com/anthropic/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, "upstream-deepseek-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
+}
+
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ClaudeCodeNativeRemoteSub2APIUsesStandardHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES", "zhumeng-claude-code-native-upstream")
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "Claude-Code/2.1.177")
+	c.Request.Header.Set("X-App", "claude-code")
+	c.Request.Header.Set("Anthropic-Version", "2023-06-01")
+	c.Request.Header.Set("Anthropic-Beta", "claude-code-20250219")
+
+	body := []byte(`{"model":"claude-haiku-4-5-20251001","stream":false,"max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
+	parsed := &ParsedRequest{
+		Body:   NewRequestBodyRef(body),
+		Model:  "claude-haiku-4-5-20251001",
+		Stream: false,
+	}
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-native-remote-sub2api"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_native","type":"message","role":"assistant","model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`)),
+		},
+	}
+	svc := &GatewayService{
+		cfg:                  &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+	account := &Account{
+		ID:          132,
+		Name:        "zhumeng-claude-code-native-upstream",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 3,
+		Credentials: map[string]any{
+			"api_key":  "remote-sub2api-key",
+			"base_url": "http://198.12.67.185:18080",
+		},
+		Extra: map[string]any{
+			"anthropic_passthrough": true,
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, upstream.doCalls)
+	require.Equal(t, 0, upstream.doWithTLSCalls)
+	require.Equal(t, "http://198.12.67.185:18080/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, "remote-sub2api-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {

@@ -44,6 +44,23 @@ func TestAnthropicOnlyCompatProtocolAllowsBridgeRuntimeNonClaudeModelOnlyWithExp
 	require.Equal(t, AnthropicCompatInboundMessages, decision.InboundRoute)
 }
 
+func TestAnthropicOnlyCompatProtocolRejectsClaudeCodeBridgeDisplayIDsEvenWithRuntimeOption(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","max_tokens":1,"messages":[{"role":"user","content":"bridge-display-must-not-reach-formal-pool"}]}`)
+
+	for _, opts := range []AnthropicCompatIngressOptions{
+		{},
+		{AllowBridgeRuntimeModels: true},
+	} {
+		_, err := ValidateAnthropicOnlyCompatIngressWithOptions(http.MethodPost, "/v1/messages", body, opts)
+		require.Error(t, err)
+		var protocolErr *AnthropicCompatProtocolError
+		require.ErrorAs(t, err, &protocolErr)
+		require.Equal(t, "unsupported_body_shape", protocolErr.Code)
+		require.NotContains(t, protocolErr.Error(), "bridge-display-must-not-reach-formal-pool")
+		require.NotContains(t, protocolErr.Error(), "claude-code-bridge-deepseek-v4-pro")
+	}
+}
+
 func TestAnthropicOnlyCompatProtocolRejectsOpenAIProtocolRoutes(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"hello RAW_TOKEN_SENTINEL PROXY_CREDENTIAL_SENTINEL ACCOUNT_REF_SENTINEL"}]}`)
 

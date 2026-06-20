@@ -114,8 +114,8 @@ func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRoute
 			ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(bridgeDecision)
 	case "zai_glm", "kimi":
 		return ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider) != "" && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeAnthropicLiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeAnthropicUnsafeLabBaseURLAllowed(bridgeDecision)
-	case "openai":
-		return ClaudeCodeBridgeOpenAIAPIKeyFromEnv() != "" && ClaudeCodeBridgeOpenAILiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeOpenAILiveDecisionValid(bridgeDecision) == nil && claudeCodeBridgeOpenAIUnsafeLabBaseURLAllowed(bridgeDecision)
+	case "openai", "agnes":
+		return ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv(bridgeDecision.Provider) != "" && ClaudeCodeBridgeOpenAILiveEligible(bridgeDecision)
 	default:
 		return false
 	}
