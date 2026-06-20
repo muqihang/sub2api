@@ -205,6 +205,15 @@ def default_state_store() -> JsonStateStore:
     return JsonStateStore(state_dir() / "state.json")
 
 
+def claude_code_start_state_store(state_root: Path) -> JsonStateStore:
+    if os.environ.get("ZHUMENG_AGENT_STATE_PATH"):
+        return default_state_store()
+    state_path = Path(state_root).expanduser() / "state.json"
+    if state_path.exists():
+        return JsonStateStore(state_path)
+    return default_state_store()
+
+
 def default_http_client(server: str) -> AgentHTTPClient:
     return AgentHTTPClient(server)
 
@@ -1717,7 +1726,7 @@ def build_claude_code_start_payload(
     runtime_root: Path,
     argv: list[str],
 ) -> dict[str, object]:
-    store = default_state_store()
+    store = claude_code_start_state_store(state_root)
     state = store.read()
     if not state.get("gateway_base_url"):
         raise ValueError("managed setup is incomplete: missing gateway_base_url")

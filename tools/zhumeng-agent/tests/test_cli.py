@@ -990,6 +990,91 @@ def test_claude_code_start_uses_native_managed_credentials_separate_from_codex_g
     assert "eyJ.claude-code-native-token" not in json.dumps(data)
 
 
+def test_claude_code_start_reads_state_root_state_json_without_env_override(capsys, tmp_path: Path, monkeypatch):
+    state_root = tmp_path / "canary-state-root"
+    runtime_root = tmp_path / "runtime-root"
+    state_root.mkdir()
+    runtime_root.mkdir()
+    (state_root / "state.json").write_text(json.dumps({
+        "client": "claude_code_native",
+        "server_base_url": "http://127.0.0.1:3017",
+        "gateway_base_url": "http://127.0.0.1:3017",
+        "managed_session_id": "session-from-state-root",
+        "device_id": 42,
+        "claude_code_native_access_token": "eyJ.state-root-native-token",
+        "claude_code_native_refresh_token": "state-root-refresh-token",
+        "claude_code_native_managed_session_id": "session-from-state-root",
+        "claude_code_native_device_id": 42,
+        "claude_code_sub2api_api_key": "sk-state-root-claude-code-cli",
+        "claude_code_native_attestation_secret": "server-native-attestation-secret",
+        "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": "server-route-hint-secret",
+        "claude_code_route_hint_secret_source": "server",
+    }), encoding="utf-8")
+    calls = []
+
+    class FakeRuntime:
+        executable = tmp_path / "runtime" / "claude"
+        upstream_version = "2.1.177"
+        manifest_path = tmp_path / "runtime" / "manifest.json"
+        runtime_hash = "sha256:" + "1" * 64
+        overlay_hash = "sha256:" + "2" * 64
+        patches = {
+            "live_bridge_models_enabled": True,
+            "live_bridge_model_allowlist": ["claude-code-bridge-deepseek-v4-pro"],
+            "live_bridge_model_catalog": {
+                "claude-code-bridge-deepseek-v4-pro": {
+                    "route": "deepseek_bridge",
+                    "client_type": "claude_code_bridge_deepseek",
+                    "live_enabled": True,
+                    "formal_pool_eligible": False,
+                }
+            },
+        }
+
+    FakeRuntime.executable.parent.mkdir(parents=True)
+    FakeRuntime.executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    FakeRuntime.manifest_path.write_text("{}", encoding="utf-8")
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:18181"},
+            guard_plan=SimpleNamespace(
+                command=["python", "cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl"),
+            ),
+            launch_plan=SimpleNamespace(env={
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:18181",
+                "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:18181",
+            }),
+        )
+
+    monkeypatch.delenv("ZHUMENG_AGENT_STATE_PATH", raising=False)
+    monkeypatch.setattr(cli, "state_dir", lambda app_name="zhumeng-agent": tmp_path / "default-state", raising=False)
+    monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root_arg: FakeRuntime, raising=False)
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+    monkeypatch.setattr(cli, "choose_local_proxy_port", lambda preferred=None: 18181, raising=False)
+
+    assert main([
+        "claude-code",
+        "start",
+        "--state-root",
+        str(state_root),
+        "--runtime-root",
+        str(runtime_root),
+        "--project-cwd",
+        str(tmp_path),
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["status"] == "exited"
+    assert calls[0]["upstream_base"] == "http://127.0.0.1:3017"
+    assert calls[0]["sub2api_auth"] == "sk-state-root-claude-code-cli"
+    assert calls[0]["native_managed_access_token"] == "eyJ.state-root-native-token"
+
+
 def test_claude_code_start_reads_env_state_path_for_canary_state(capsys, tmp_path: Path, monkeypatch):
     state_path = tmp_path / "canary-state" / "state.json"
     state_path.parent.mkdir()

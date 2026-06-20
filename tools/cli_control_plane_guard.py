@@ -1600,19 +1600,36 @@ class RedactingForwarder:
             if self.config.control_plane_intent_url is not None:
                 effective_decision = self._submit_control_plane_intent(intent, source_headers=headers)
         except IntentValidationError:
-            effective_decision = PolicyDecision(
-                action="quarantine_block",
-                reason="intent_validation_failed",
-                status=403,
-            )
-            intent = _quarantine_control_plane_intent(
-                method=method,
-                path=path,
-                body=body,
-                classification="intent_validation_failed",
-                defaults=defaults,
-                routing_intent="local_quarantine_block",
-            )
+            if decision.action in {"suppress_204", "stub_json"}:
+                effective_decision = PolicyDecision(
+                    action=decision.action,
+                    reason="intent_validation_failed_local_stub_preserved",
+                    status=decision.status,
+                    content_type=decision.content_type,
+                    body=decision.body,
+                )
+                intent = _quarantine_control_plane_intent(
+                    method=method,
+                    path=path,
+                    body=body,
+                    classification="intent_validation_failed_local_stub_preserved",
+                    defaults=defaults,
+                    routing_intent="local_stub_or_suppress",
+                )
+            else:
+                effective_decision = PolicyDecision(
+                    action="quarantine_block",
+                    reason="intent_validation_failed",
+                    status=403,
+                )
+                intent = _quarantine_control_plane_intent(
+                    method=method,
+                    path=path,
+                    body=body,
+                    classification="intent_validation_failed",
+                    defaults=defaults,
+                    routing_intent="local_quarantine_block",
+                )
         record: dict[str, Any] = {
             "ts": time.time(),
             "event": event,

@@ -12,6 +12,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from tools.cli_control_plane_intent import IntentValidationError
 from tools.cli_control_plane_guard import ExecutionController, GuardConfig, RedactingForwarder
 from tools.claude_code_route_trust import RouteHintReplayCache, build_signed_route_hint_headers, cp4_fixture_route_catalog
 from tools.cli_session_budget import SessionBudgetLedger, SessionBudgetPolicy
@@ -679,6 +680,33 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 self.assertNotIn('raw-prompt-marker', summary)
         finally:
             capture.stop()
+
+    def test_connect_tls_stub_preserves_bootstrap_and_mcp_when_intent_validation_fails(self):
+        capture = UpstreamCaptureServer([])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url, connect_mode='stub') as harness:
+                with unittest.mock.patch(
+                    'tools.cli_control_plane_guard.build_control_plane_intent',
+                    side_effect=IntentValidationError('forced safe-intent fallback'),
+                ):
+                    for payload in (
+                        b'GET /api/claude_cli/bootstrap HTTP/1.1\r\n'
+                        b'Host: api.anthropic.com\r\n'
+                        b'Connection: close\r\n\r\n',
+                        b'GET /mcp-registry/v0/servers?version=latest HTTP/1.1\r\n'
+                        b'Host: api.anthropic.com\r\n'
+                        b'Connection: close\r\n\r\n',
+                    ):
+                        result = harness.connect_tls_request('api.anthropic.com:443', payload)
+                        self.assertIn(b'200 OK', result)
+                self.assertEqual(capture.count, 0)
+                summary = harness.summary_text()
+                self.assertIn('intent_validation_failed_local_stub_preserved', summary)
+                self.assertNotIn('"decision": "quarantine_block"', summary)
+        finally:
+            capture.stop()
+
     def test_direct_messages_inside_connect_is_blocked_and_not_forwarded(self):
         capture = UpstreamCaptureServer([])
         capture.start()

@@ -30,6 +30,7 @@ from tools.cli_control_plane_guard import (
     validate_cp5_bridge_body,
     main as guard_main,
 )
+from tools.cli_control_plane_intent import IntentValidationError
 from tools.claude_code_route_trust import (
     RouteCatalog,
     RouteCatalogEntry,
@@ -2858,6 +2859,104 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 self.assertNotIn('intent_validation_failed', dumped)
         finally:
             upstream.shutdown()
+            upstream.server_close()
+
+    def test_local_stub_control_plane_preserved_when_intent_validation_fails(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            count = 0
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.__class__.count += 1
+                self.send_response(500)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='unused',
+                    summary_path=summary,
+                ))
+                forwarder.start_background()
+                try:
+                    with unittest.mock.patch(
+                        'tools.cli_control_plane_guard.build_control_plane_intent',
+                        side_effect=IntentValidationError('query parameters are not allowed for this path'),
+                    ):
+                        for path in (
+                            '/api/claude_cli/bootstrap',
+                            '/mcp-registry/v0/servers?version=latest',
+                        ):
+                            with urllib.request.urlopen(f'http://127.0.0.1:{listen_port}{path}', timeout=5) as resp:
+                                self.assertEqual(resp.status, 200)
+                finally:
+                    forwarder.stop()
+
+                self.assertEqual(CaptureHandler.count, 0)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('intent_validation_failed_local_stub_preserved', dumped)
+                self.assertNotIn('"decision": "quarantine_block"', dumped)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+
+    def test_unknown_control_plane_still_quarantines_when_intent_validation_fails(self):
+        class CaptureHandler(BaseHTTPRequestHandler):
+            count = 0
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.__class__.count += 1
+                self.send_response(500)
+                self.send_header('content-length', '0')
+                self.end_headers()
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), CaptureHandler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                listen_port = _free_port()
+                summary = Path(td) / 'summary.jsonl'
+                forwarder = RedactingForwarder(GuardConfig(
+                    listen_host='127.0.0.1',
+                    listen_port=listen_port,
+                    upstream_base=f'http://127.0.0.1:{upstream_port}',
+                    sub2api_auth='unused',
+                    summary_path=summary,
+                ))
+                forwarder.start_background()
+                try:
+                    with unittest.mock.patch(
+                        'tools.cli_control_plane_guard.build_control_plane_intent',
+                        side_effect=IntentValidationError('unsafe path cannot be summarized'),
+                    ):
+                        with self.assertRaises(urllib.error.HTTPError) as raised:
+                            urllib.request.urlopen(f'http://127.0.0.1:{listen_port}/api/private-account-settings', timeout=5)
+                        self.assertEqual(raised.exception.code, 403)
+                finally:
+                    forwarder.stop()
+
+                self.assertEqual(CaptureHandler.count, 0)
+                dumped = summary.read_text(encoding='utf-8')
+                self.assertIn('intent_validation_failed', dumped)
+                self.assertIn('"decision": "quarantine_block"', dumped)
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
 
     def test_messages_forward_without_native_attestation_secret_fails_closed(self):
         class CaptureHandler(BaseHTTPRequestHandler):
