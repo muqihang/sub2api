@@ -265,7 +265,10 @@ func openAIRuntimeGuardContentSafetyMalware(text string) bool {
 }
 
 func openAIRuntimeGuardContentSafetyOffensiveReverseEngineering(text string) bool {
-	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "reverse engineer", "reverse engineering", "decompile", "disassemble", "patcher", "keygen") {
+	if hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "without bypass", "do not bypass", "don't bypass", "not bypassing", "without cracking", "do not crack") {
+		return false
+	}
+	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "reverse engineer", "reverse engineering", "decompile", "disassemble", "patcher", "keygen", "crack", "cracked", "drm", "anti-debug", "anti debug", "license activation") {
 		return false
 	}
 	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "build", "create", "write", "make", "generate", "bypass", "crack", "patch", "remove", "disable") {
