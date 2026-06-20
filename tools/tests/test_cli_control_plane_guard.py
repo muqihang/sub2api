@@ -25,6 +25,7 @@ from tools.cli_control_plane_guard import (
     body_summary,
     build_native_messages_attestation_headers,
     classify_request,
+    cp5_bridge_skeleton_sse_body,
     deep_body_summary,
     redact_headers,
     validate_cp5_bridge_body,
@@ -667,6 +668,279 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertNotIn('x-prompt', headers)
         self.assertNotIn('x-access-token', headers)
         self.assertNotIn('x-random-local-debug', headers)
+
+
+    def test_native_request_records_replay_safe_audit_without_raw_prompt(self):
+        seen = {}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen['body'] = self.rfile.read(int(self.headers.get('content-length', '0')))
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            summary_path = Path(td) / 'summary.jsonl'
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token='native-managed-access-token',
+                summary_path=summary_path,
+                max_messages=0,
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+                cost_envelope_limits={'allow_assistant_messages': True, 'allow_thinking': True, 'allow_tool_content': True, 'max_messages': 2048, 'max_content_blocks': 8192},
+            ))
+            forwarder.start_background()
+            try:
+                body_obj = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [
+                        {'role': 'user', 'content': 'native-visible-prompt'},
+                        {'role': 'assistant', 'content': [
+                            {'type': 'text', 'text': 'Bridge final answer visible to Claude.'},
+                        ]},
+                    ],
+                    'max_tokens': 16,
+                }
+                body = json.dumps(body_obj).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.177 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='replay-safe-audit'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+            records = [json.loads(line) for line in summary_path.read_text(encoding='utf-8').splitlines()]
+
+        request_record = next(record for record in records if record.get('event') == 'request')
+        replay = request_record['replay_safety']
+        self.assertEqual(replay['boundary'], 'replay_safe_anthropic_transcript')
+        self.assertEqual(replay['target_provider'], 'claude')
+        self.assertTrue(replay['allowed'])
+        self.assertFalse(replay['raw_body_persisted'])
+        self.assertEqual(replay['forbidden_paths_count'], 0)
+        dumped = json.dumps(records)
+        self.assertNotIn('native-visible-prompt', dumped)
+        self.assertNotIn('Bridge final answer visible to Claude.', dumped)
+        self.assertEqual(seen['body'], body)
+
+    def test_native_request_sanitizes_foreign_raw_reasoning_before_formal_pool(self):
+        seen = {'calls': 0}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen['calls'] += 1
+                seen['body'] = self.rfile.read(int(self.headers.get('content-length', '0')))
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            summary_path = Path(td) / 'summary.jsonl'
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token='native-managed-access-token',
+                summary_path=summary_path,
+                max_messages=0,
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+                cost_envelope_limits={'allow_assistant_messages': True, 'allow_thinking': True, 'allow_tool_content': True, 'max_messages': 2048, 'max_content_blocks': 8192},
+            ))
+            forwarder.start_background()
+            try:
+                body_obj = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [
+                        {'role': 'user', 'content': 'safe user text'},
+                        {'role': 'assistant', 'content': [
+                            {'type': 'text', 'text': 'visible answer', 'reasoning_content': 'foreign hidden chain'},
+                            {'type': 'tool_use', 'id': 'toolu_foreign', 'name': 'Agent', 'input': {'model': 'claude-code-bridge-deepseek-v4-flash'}},
+                        ]},
+                    ],
+                    'max_tokens': 16,
+                }
+                body = json.dumps(body_obj).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.177 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='foreign-raw-reasoning-sanitize'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+            records = [json.loads(line) for line in summary_path.read_text(encoding='utf-8').splitlines()]
+
+        self.assertEqual(seen['calls'], 1)
+        forwarded = json.loads(seen['body'].decode('utf-8'))
+        forwarded_dump = json.dumps(forwarded)
+        self.assertNotIn('reasoning_content', forwarded_dump)
+        self.assertNotIn('foreign hidden chain', forwarded_dump)
+        self.assertNotIn('"tool_use"', forwarded_dump)
+        self.assertNotIn('claude-code-bridge-deepseek-v4-flash', forwarded_dump)
+        self.assertIn('ReplaySafeAnthropicTranscript', forwarded_dump)
+        request_record = next(record for record in records if record.get('event') == 'request')
+        replay = request_record['replay_safety']
+        self.assertTrue(replay['allowed'])
+        self.assertTrue(replay['sanitized'])
+        self.assertGreaterEqual(replay['forbidden_paths_count'], 2)
+        self.assertIn('messages[].content[].reasoning_content', replay['forbidden_path_kinds'])
+        self.assertIn('messages[].content[].type:tool_use:bridge_model', replay['forbidden_path_kinds'])
+        dumped = json.dumps(records)
+        self.assertNotIn('foreign hidden chain', dumped)
+
+
+    def test_native_request_sanitizes_foreign_plain_tool_use_when_message_tainted_before_formal_pool(self):
+        seen = {'body': None, 'calls': 0}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen['calls'] += 1
+                seen['body'] = self.rfile.read(int(self.headers.get('content-length', '0')))
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            summary_path = Path(td) / 'summary.jsonl'
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token='native-managed-access-token',
+                summary_path=summary_path,
+                max_messages=0,
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+                cost_envelope_limits={'allow_assistant_messages': True, 'allow_thinking': True, 'allow_tool_content': True, 'max_messages': 2048, 'max_content_blocks': 8192},
+            ))
+            forwarder.start_background()
+            try:
+                body_obj = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [
+                        {'role': 'user', 'content': 'safe user text'},
+                        {'role': 'assistant', 'content': [
+                            {'type': 'thinking', 'thinking': 'DeepSeek hidden chain', 'signature': 'foreign-sig'},
+                            {'type': 'tool_use', 'id': 'toolu_raw', 'name': 'ToolSearch', 'input': {'query': 'private query'}},
+                            {'type': 'tool_result', 'tool_use_id': 'toolu_raw', 'content': 'raw provider tool output'},
+                        ], 'raw_provider_response': {'reasoning_content': 'provider-private'}},
+                    ],
+                    'max_tokens': 16,
+                }
+                body = json.dumps(body_obj).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.177 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='foreign-plain-tool-sanitize'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+            records = [json.loads(line) for line in summary_path.read_text(encoding='utf-8').splitlines()]
+
+        self.assertEqual(seen['calls'], 1)
+        forwarded = json.loads(seen['body'].decode('utf-8'))
+        forwarded_dump = json.dumps(forwarded)
+        self.assertNotIn('raw_provider_response', forwarded_dump)
+        self.assertNotIn('reasoning_content', forwarded_dump)
+        self.assertNotIn('provider-private', forwarded_dump)
+        self.assertNotIn('"tool_use"', forwarded_dump)
+        self.assertNotIn('"tool_result"', forwarded_dump)
+        self.assertNotIn('ToolSearch', forwarded_dump)
+        self.assertNotIn('private query', forwarded_dump)
+        self.assertNotIn('toolu_raw', forwarded_dump)
+        self.assertIn('ReplaySafeAnthropicTranscript', forwarded_dump)
+        request_record = next(record for record in records if record.get('event') == 'request')
+        replay = request_record['replay_safety']
+        self.assertTrue(replay['allowed'])
+        self.assertTrue(replay['sanitized'])
+        self.assertIn('messages[].raw_provider_response', replay['forbidden_path_kinds'])
+        self.assertIn('messages[].content[].type:tool_use:foreign_tainted_message', replay['forbidden_path_kinds'])
+        self.assertIn('messages[].content[].type:tool_result:provider_private', replay['forbidden_path_kinds'])
 
     def test_cli_main_does_not_enforce_session_budget_by_default(self):
         args = argparse.Namespace(
@@ -1685,6 +1959,96 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         )
 
         self.assertIsNone(validate_cp5_bridge_body(decision, body))
+
+
+    def test_cp5_bridge_body_accepts_parallel_agent_tool_name_for_live_bridge(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+            bridge_live_models=('claude-code-bridge-deepseek-v4-pro',),
+        )
+        body = json.dumps({
+            'model': 'claude-code-bridge-deepseek-v4-pro',
+            'messages': [{'role': 'user', 'content': 'launch agents'}],
+            'tools': [
+                {'name': 'multi_tool_use.parallel', 'description': 'parallel tools', 'input_schema': {'type': 'object'}},
+                {'name': 'Agent', 'description': 'subagent', 'input_schema': {'type': 'object'}},
+            ],
+            'tool_choice': {'type': 'tool', 'name': 'multi_tool_use.parallel'},
+            'stream': True,
+        }, separators=(',', ':')).encode('utf-8')
+        route_headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            model_id='claude-code-bridge-deepseek-v4-pro',
+            session_ref='session-bridge',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-parallel-agent-live',
+        )
+        decision = verify_signed_route_hint_headers(
+            source_headers=route_headers,
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            session_ref='session-bridge',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+
+        self.assertTrue(decision.live_request_allowed)
+        self.assertIsNone(validate_cp5_bridge_body(decision, body))
+
+    def test_cp5_bridge_skeleton_fails_closed_for_parallel_agent_tools_without_fake_tool_use(self):
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash='sha256:' + '1' * 64,
+            overlay_hash='sha256:' + '2' * 64,
+            catalog_hash='sha256:' + '3' * 64,
+            catalog_version='cp5-test-v1',
+        )
+        body = json.dumps({
+            'model': 'claude-code-bridge-deepseek-v4-pro',
+            'messages': [{'role': 'user', 'content': 'launch agents'}],
+            'tools': [
+                {'name': 'multi_tool_use.parallel', 'description': 'parallel tools', 'input_schema': {'type': 'object'}},
+                {'name': 'Agent', 'description': 'subagent', 'input_schema': {'type': 'object'}},
+            ],
+            'tool_choice': {'type': 'tool', 'name': 'multi_tool_use.parallel'},
+            'stream': True,
+        }, separators=(',', ':')).encode('utf-8')
+        route_headers = build_signed_route_hint_headers(
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            model_id='claude-code-bridge-deepseek-v4-pro',
+            session_ref='session-bridge',
+            secret='route-hint-secret',
+            now=1000,
+            nonce='nonce-parallel-agent-skeleton',
+        )
+        decision = verify_signed_route_hint_headers(
+            source_headers=route_headers,
+            body=body,
+            request_path='/v1/messages',
+            catalog=catalog,
+            session_ref='session-bridge',
+            secret='route-hint-secret',
+            now=1000,
+            replay_cache=RouteHintReplayCache(ttl_seconds=60),
+        )
+
+        self.assertFalse(decision.live_request_allowed)
+        self.assertIsNone(validate_cp5_bridge_body(decision, body))
+        stream = cp5_bridge_skeleton_sse_body(decision, body=body).decode('utf-8')
+        self.assertIn('event: error', stream)
+        self.assertIn('bridge live required', stream)
+        self.assertNotIn('content_block_start', stream)
+        self.assertNotIn('"name":"multi_tool_use.parallel"', stream)
+        self.assertNotIn('San Francisco', stream)
 
     def test_cp5_bridge_skeleton_rejects_openai_function_tool_shape_without_upstream_or_prompt_leak(self):
         catalog = cp4_fixture_route_catalog(

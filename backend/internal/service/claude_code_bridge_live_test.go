@@ -50,6 +50,33 @@ func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing
 	require.Equal(t, "claude_code_bridge_deepseek", result.Audit.ClientType)
 }
 
+func TestClaudeCodeBridgeAnthropicLiveInjectsDeepSeekCacheControlInUpstreamBody(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system prefix","messages":[{"role":"user","content":"stable context"},{"role":"user","content":"latest turn"}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
+	require.Contains(t, gotBody, `"system":[{"cache_control":{"type":"ephemeral"},"text":"stable system prefix","type":"text"}]`)
+	require.Contains(t, gotBody, `"content":[{"cache_control":{"type":"ephemeral"},"text":"stable context","type":"text"}]`)
+	require.Contains(t, gotBody, `"tools":[{"cache_control":{"type":"ephemeral"}`)
+	require.Contains(t, gotBody, `"content":"latest turn"`)
+}
+
 func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekPromptCacheFields(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
@@ -411,7 +438,9 @@ func cp6LiveDeepSeekDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 		SupportsTools:            true,
 		SupportsStreaming:        true,
 		SupportsUsage:            true,
+		SupportsCacheAudit:       true,
 		SupportsErrorPassthrough: true,
+		CachePolicy:              "provider_cache_audit_required",
 	}
 }
 

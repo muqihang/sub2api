@@ -279,6 +279,10 @@ func BuildClaudeCodeBridgeSkeletonSSE(decision ClaudeCodeBridgeRouteDecision, bo
 	if err := validateClaudeCodeBridgeBodyBinding(decision, body); err != nil {
 		return ClaudeCodeBridgeStreamResult{}, err
 	}
+	if claudeCodeBridgeSkeletonRequiresLive(body) {
+		stream := buildClaudeCodeBridgeErrorSSE("invalid_request_error", "Claude Code bridge live required for multi_tool_use.parallel or Agent tool execution")
+		return ClaudeCodeBridgeStreamResult{Body: stream, Audit: buildClaudeCodeBridgeAuditSummary(decision, ClaudeCodeBridgeProviderFixture{})}, nil
+	}
 	toolName := claudeCodeBridgeSkeletonToolName(body)
 	var stream []byte
 	if toolName != "" {
@@ -468,7 +472,7 @@ func claudeCodeBridgeEffectiveUpstreamModel(decision ClaudeCodeBridgeRouteDecisi
 
 func rewriteClaudeCodeBridgeAnthropicBodyModel(decision ClaudeCodeBridgeRouteDecision, body []byte) ([]byte, error) {
 	upstreamModel := claudeCodeBridgeEffectiveUpstreamModel(decision)
-	if upstreamModel == strings.TrimSpace(decision.ModelID) {
+	if upstreamModel == strings.TrimSpace(decision.ModelID) && !claudeCodeBridgeShouldInjectAnthropicCacheControl(decision) {
 		return body, nil
 	}
 	var payload map[string]any
@@ -476,11 +480,97 @@ func rewriteClaudeCodeBridgeAnthropicBodyModel(decision ClaudeCodeBridgeRouteDec
 		return nil, fmt.Errorf("claude code bridge model rewrite requires JSON body")
 	}
 	payload["model"] = upstreamModel
+	if claudeCodeBridgeShouldInjectAnthropicCacheControl(decision) {
+		injectClaudeCodeBridgeAnthropicCacheControl(payload)
+	}
 	rewritten, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 	return rewritten, nil
+}
+
+func claudeCodeBridgeShouldInjectAnthropicCacheControl(decision ClaudeCodeBridgeRouteDecision) bool {
+	provider := strings.TrimSpace(decision.Provider)
+	protocol := strings.TrimSpace(decision.PreferredProtocol)
+	policy := strings.TrimSpace(decision.CachePolicy)
+	return provider == "deepseek" && protocol == "anthropic_messages" && (strings.Contains(policy, "kv_cache") || strings.Contains(policy, "cache_audit"))
+}
+
+func injectClaudeCodeBridgeAnthropicCacheControl(payload map[string]any) {
+	cacheControl := map[string]any{"type": "ephemeral"}
+	switch system := payload["system"].(type) {
+	case string:
+		payload["system"] = []any{map[string]any{"type": "text", "text": system, "cache_control": cacheControl}}
+	case []any:
+		for _, item := range system {
+			if block, ok := item.(map[string]any); ok && block["cache_control"] == nil {
+				block["cache_control"] = cacheControl
+			}
+		}
+	}
+	if messages, ok := payload["messages"].([]any); ok {
+		limit := len(messages) - 1
+		if limit < 0 {
+			limit = 0
+		}
+		for i := 0; i < limit; i++ {
+			message, ok := messages[i].(map[string]any)
+			if !ok {
+				continue
+			}
+			switch content := message["content"].(type) {
+			case string:
+				message["content"] = []any{map[string]any{"type": "text", "text": content, "cache_control": cacheControl}}
+			case []any:
+				for _, item := range content {
+					if block, ok := item.(map[string]any); ok && block["cache_control"] == nil {
+						block["cache_control"] = cacheControl
+					}
+				}
+			}
+		}
+	}
+	if tools, ok := payload["tools"].([]any); ok {
+		for _, item := range tools {
+			if tool, ok := item.(map[string]any); ok && tool["cache_control"] == nil {
+				tool["cache_control"] = cacheControl
+			}
+		}
+	}
+	if _, exists := payload["cache_control"]; !exists {
+		payload["cache_control"] = cacheControl
+	}
+}
+
+func claudeCodeBridgeSkeletonRequiresLive(body []byte) bool {
+	var payload map[string]any
+	if len(body) == 0 || json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	if choice, ok := payload["tool_choice"].(map[string]any); ok {
+		name, _ := choice["name"].(string)
+		if strings.TrimSpace(name) == "multi_tool_use.parallel" {
+			return true
+		}
+	}
+	if tools, ok := payload["tools"].([]any); ok {
+		if len(tools) > 1 {
+			return true
+		}
+		for _, item := range tools {
+			tool, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := tool["name"].(string)
+			switch strings.TrimSpace(name) {
+			case "multi_tool_use.parallel", "Agent":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func claudeCodeBridgeSkeletonToolName(body []byte) string {

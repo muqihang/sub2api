@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestClaudeCodeBridgeStreamTextProducesAnthropicMessagesEventOrder(t *testing.T) {
@@ -228,7 +229,7 @@ func TestClaudeCodeBridgeStreamRejectsInvalidAnthropicToolShapes(t *testing.T) {
 		{name: "tool missing name", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"input_schema":{"type":"object"}}]}`, want: "tool shape"},
 		{name: "tool missing input_schema", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"leak"}]}`, want: "tool shape"},
 		{name: "tool_choice tool missing name", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool"}}`, want: "tool choice"},
-		{name: "tool name dot not Anthropic compatible", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"unsafe.tool","input_schema":{"type":"object"}}]}`, want: "tool shape"},
+		{name: "tool name slash not Anthropic compatible", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"unsafe/tool","input_schema":{"type":"object"}}]}`, want: "tool shape"},
 		{name: "tool_choice string not object", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":"auto"}`, want: "tool choice"},
 		{name: "tool_choice names unknown tool", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"unknown_tool"}}`, want: "tool choice"},
 	}
@@ -377,4 +378,104 @@ func TestCP6BridgeStreamErrorPassthroughIsSafeAnthropicError(t *testing.T) {
 	require.NotContains(t, stream, "api.openai.com")
 	require.False(t, result.Audit.NativeAttested)
 	require.False(t, result.Audit.FormalPoolAllowed)
+}
+
+func TestClaudeCodeBridgeAcceptsParallelToolUseToolName(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"launch agents"}],"tools":[{"name":"multi_tool_use.parallel","description":"parallel tools","input_schema":{"type":"object"}},{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"multi_tool_use.parallel"},"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+	}
+
+	err := validateClaudeCodeBridgeBodyBinding(decision, body)
+
+	require.NoError(t, err)
+}
+
+func TestClaudeCodeBridgeSkeletonFailsClosedForParallelAgentTools(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"launch agents"}],"tools":[{"name":"multi_tool_use.parallel","description":"parallel tools","input_schema":{"type":"object"}},{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"multi_tool_use.parallel"},"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+	}
+
+	result, err := BuildClaudeCodeBridgeSkeletonSSE(decision, body)
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, `"type":"invalid_request_error"`)
+	require.Contains(t, stream, "bridge live required")
+	require.NotContains(t, stream, "content_block_start")
+	require.NotContains(t, stream, `"name":"multi_tool_use.parallel"`)
+	require.NotContains(t, stream, `"city":"San Francisco"`)
+}
+
+func TestClaudeCodeBridgeAnthropicRewriteAddsStableCacheControlForDeepSeek(t *testing.T) {
+	for _, cachePolicy := range []string{
+		"provider_prefix_kv_cache_automatic_full_prefix_unit_match",
+		"provider_cache_audit_required",
+	} {
+		t.Run(cachePolicy, func(t *testing.T) {
+			body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":[{"type":"text","text":"stable project instructions"}],"messages":[{"role":"user","content":[{"type":"text","text":"stable context"}]},{"role":"assistant","content":"ok"},{"role":"user","content":"latest turn"}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"stream":true}`)
+			decision := ClaudeCodeBridgeRouteDecision{
+				ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+				UpstreamModel:            "deepseek-v4-pro",
+				Provider:                 "deepseek",
+				Route:                    "deepseek_bridge",
+				ClientType:               "claude_code_bridge_deepseek",
+				FormalPoolAllowed:        false,
+				NativeAttestationAllowed: false,
+				CredentialScope:          "bridge_pool",
+				PreferredProtocol:        "anthropic_messages",
+				CachePolicy:              cachePolicy,
+			}
+
+			rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
+
+			require.NoError(t, err)
+			require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "system.0.cache_control").Raw)
+			require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "messages.0.content.0.cache_control").Raw)
+			require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "tools.0.cache_control").Raw)
+			require.False(t, gjson.GetBytes(rewritten, "messages.2.content.cache_control").Exists(), "latest turn must not become the cache anchor")
+			require.Equal(t, "deepseek-v4-pro", gjson.GetBytes(rewritten, "model").String())
+		})
+	}
+}
+
+func TestClaudeCodeBridgeAnthropicRewriteConvertsStableStringContentForDeepSeekCache(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system prefix","messages":[{"role":"user","content":"stable user context"},{"role":"assistant","content":"stable assistant context"},{"role":"user","content":"latest turn must stay a string"}],"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:            "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "anthropic_messages",
+		CachePolicy:              "provider_cache_audit_required",
+	}
+
+	rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
+
+	require.NoError(t, err)
+	require.Equal(t, "stable system prefix", gjson.GetBytes(rewritten, "system.0.text").String())
+	require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "system.0.cache_control").Raw)
+	require.Equal(t, "stable user context", gjson.GetBytes(rewritten, "messages.0.content.0.text").String())
+	require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "messages.0.content.0.cache_control").Raw)
+	require.Equal(t, "stable assistant context", gjson.GetBytes(rewritten, "messages.1.content.0.text").String())
+	require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "messages.1.content.0.cache_control").Raw)
+	require.Equal(t, "latest turn must stay a string", gjson.GetBytes(rewritten, "messages.2.content").String())
+	require.False(t, gjson.GetBytes(rewritten, "messages.2.content.0.cache_control").Exists())
 }

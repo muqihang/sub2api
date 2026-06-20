@@ -162,3 +162,12 @@ func TestAnthropicOnlyCompatProtocolRejectsOpenAIShapedBodyOnMessages(t *testing
 		})
 	}
 }
+
+func TestAnthropicCompatProtocolAcceptsClaudeCodeParallelToolName(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,"messages":[{"role":"user","content":"launch agents"}],"tools":[{"name":"multi_tool_use.parallel","description":"parallel tools","input_schema":{"type":"object"}},{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"multi_tool_use.parallel"}}`)
+
+	decision, err := ValidateAnthropicOnlyCompatIngress(http.MethodPost, "/v1/messages", body)
+
+	require.NoError(t, err)
+	require.Equal(t, AnthropicCompatClientType, decision.ClientType)
+}

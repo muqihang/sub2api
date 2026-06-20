@@ -30,7 +30,7 @@ const (
 	anthropicCompatUnsupportedMessage         = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
 )
 
-var anthropicCompatSafeToolNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var anthropicCompatSafeToolNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
 var anthropicCompatOpenAIOnlyTopLevelFields = []string{
 	"audio",

@@ -249,6 +249,14 @@ class CostEnvelopeDecision:
     metrics: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class NativeReplaySafetyDecision:
+    allowed: bool
+    body: bytes
+    audit: dict[str, Any]
+    reason: str | None = None
+
+
 def default_policy() -> ControlPlanePolicy:
     global _DEFAULT_POLICY
     if _DEFAULT_POLICY is None:
@@ -436,6 +444,323 @@ def redact_headers(headers: Mapping[str, str]) -> dict[str, Any]:
             else:
                 selected[lower] = _sanitize_selected_header_value(value)
     return {"header_names": names, "selected": selected, "auth_shape": auth_shape}
+
+
+
+_REPLAY_SAFE_BOUNDARY = "replay_safe_anthropic_transcript"
+_FOREIGN_RAW_KEYS = {
+    "reasoning_content",
+    "reasoning_details",
+    "provider_private",
+    "provider_private_history",
+    "hidden_reasoning",
+    "provider_reasoning",
+    "encrypted_reasoning",
+    "previous_response_id",
+    "provider_private_state_ref",
+    "raw_provider_request",
+    "raw_provider_response",
+    "raw_tool_input",
+    "raw_tool_output",
+    "raw_tool_runner_state",
+}
+_PROVIDER_PRIVATE_TEXT_MARKERS = (
+    "<task-notification>",
+    "<tool-use-id>",
+    "<output-file>",
+    "<subagent_tokens>",
+    "agentid:",
+    "internal id - do not mention to user",
+    "[tool result missing due to internal error]",
+)
+
+
+def native_replay_safety_decision(body: bytes, route_decision: RouteDecision) -> NativeReplaySafetyDecision:
+    """Last local guard before Claude formal-pool replay; never records raw text."""
+    if not route_decision.native_attestation_allowed or route_decision.provider != "claude":
+        return NativeReplaySafetyDecision(
+            allowed=True,
+            body=body,
+            audit={
+                "boundary": _REPLAY_SAFE_BOUNDARY,
+                "target_provider": route_decision.provider,
+                "applied": False,
+                "allowed": True,
+                "raw_body_persisted": False,
+            },
+        )
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        return NativeReplaySafetyDecision(
+            allowed=False,
+            body=body,
+            reason="json_body_required",
+            audit=_native_replay_safety_audit(
+                allowed=False,
+                sanitized=False,
+                forbidden_path_kinds=("body.json",),
+                messages_count=0,
+            ),
+        )
+    if not isinstance(payload, dict):
+        return NativeReplaySafetyDecision(
+            allowed=False,
+            body=body,
+            reason="json_object_required",
+            audit=_native_replay_safety_audit(
+                allowed=False,
+                sanitized=False,
+                forbidden_path_kinds=("body",),
+                messages_count=0,
+            ),
+        )
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return NativeReplaySafetyDecision(
+            allowed=True,
+            body=body,
+            audit=_native_replay_safety_audit(
+                allowed=True,
+                sanitized=False,
+                forbidden_path_kinds=(),
+                messages_count=0,
+            ),
+        )
+
+    sanitized_messages: list[Any] = []
+    forbidden_paths: list[str] = []
+    provider_private_count = 0
+    bridge_tool_count = 0
+    sanitized_count = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            sanitized_messages.append(message)
+            continue
+        sanitized_message, paths, counts = _sanitize_native_replay_message(message)
+        sanitized_messages.append(sanitized_message)
+        if sanitized_message is not message:
+            sanitized_count += 1
+        forbidden_paths.extend(paths)
+        provider_private_count += counts.get("provider_private", 0)
+        bridge_tool_count += counts.get("bridge_tool", 0)
+
+    sanitized = bool(forbidden_paths)
+    next_body = body
+    if sanitized:
+        next_payload = dict(payload)
+        next_payload["messages"] = sanitized_messages
+        next_body = json.dumps(next_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    audit = _native_replay_safety_audit(
+        allowed=True,
+        sanitized=sanitized,
+        forbidden_path_kinds=tuple(forbidden_paths),
+        messages_count=len(messages),
+        sanitized_messages_count=sanitized_count,
+        provider_private_markers_count=provider_private_count,
+        bridge_tool_markers_count=bridge_tool_count,
+        sanitized_body_shape_hash=_native_body_shape_hash(next_body) if sanitized else _native_body_shape_hash(body),
+    )
+    return NativeReplaySafetyDecision(allowed=True, body=next_body, audit=audit)
+
+
+def _native_replay_safety_audit(
+    *,
+    allowed: bool,
+    sanitized: bool,
+    forbidden_path_kinds: tuple[str, ...],
+    messages_count: int,
+    sanitized_messages_count: int = 0,
+    provider_private_markers_count: int = 0,
+    bridge_tool_markers_count: int = 0,
+    sanitized_body_shape_hash: str | None = None,
+) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for path in forbidden_path_kinds:
+        counts[path] = counts.get(path, 0) + 1
+    audit: dict[str, Any] = {
+        "boundary": _REPLAY_SAFE_BOUNDARY,
+        "target_provider": "claude",
+        "applied": True,
+        "allowed": bool(allowed),
+        "sanitized": bool(sanitized),
+        "raw_body_persisted": False,
+        "forbidden_paths_count": len(forbidden_path_kinds),
+        "forbidden_path_kinds": sorted(counts),
+        "forbidden_path_histogram": counts,
+        "messages_count": messages_count,
+        "sanitized_messages_count": sanitized_messages_count,
+        "provider_private_markers_count": provider_private_markers_count,
+        "bridge_tool_markers_count": bridge_tool_markers_count,
+    }
+    if sanitized_body_shape_hash is not None:
+        audit["sanitized_body_shape_hash"] = sanitized_body_shape_hash
+    return audit
+
+
+def _sanitize_native_replay_message(message: dict[str, Any]) -> tuple[dict[str, Any], list[str], dict[str, int]]:
+    paths: list[str] = []
+    counts = {"provider_private": 0, "bridge_tool": 0}
+    changed = False
+    next_message = dict(message)
+    message_tainted = any(key in _FOREIGN_RAW_KEYS for key in next_message)
+    for key in tuple(next_message):
+        if key in _FOREIGN_RAW_KEYS:
+            paths.append(f"messages[].{key}")
+            counts["provider_private"] += 1
+            next_message.pop(key, None)
+            changed = True
+    content = next_message.get("content")
+    if isinstance(content, str):
+        sanitized_text, text_changed, text_paths, marker_count = _sanitize_native_replay_text(content)
+        if text_changed:
+            next_message["content"] = sanitized_text
+            paths.extend(f"messages[].content.{path}" for path in text_paths)
+            counts["provider_private"] += marker_count
+            changed = True
+    elif isinstance(content, list):
+        message_tainted = message_tainted or _native_replay_content_has_foreign_marker(content)
+        next_content: list[Any] = []
+        for block in content:
+            if not isinstance(block, dict):
+                next_content.append(block)
+                continue
+            sanitized_block, block_changed, block_paths, block_counts = _sanitize_native_replay_block(block, message_tainted=message_tainted)
+            next_content.append(sanitized_block)
+            if block_changed:
+                changed = True
+                paths.extend(f"messages[].content[].{path}" for path in block_paths)
+                counts["provider_private"] += block_counts.get("provider_private", 0)
+                counts["bridge_tool"] += block_counts.get("bridge_tool", 0)
+        if changed:
+            next_message["content"] = next_content
+    return (next_message if changed else message), paths, counts
+
+
+def _sanitize_native_replay_block(block: dict[str, Any], *, message_tainted: bool = False) -> tuple[dict[str, Any], bool, list[str], dict[str, int]]:
+    paths: list[str] = []
+    counts = {"provider_private": 0, "bridge_tool": 0}
+    next_block = dict(block)
+    changed = False
+    for key in tuple(next_block):
+        if key in _FOREIGN_RAW_KEYS:
+            paths.append(key)
+            counts["provider_private"] += 1
+            next_block.pop(key, None)
+            changed = True
+    block_type = next_block.get("type")
+    if _is_bridge_agent_tool_use(next_block):
+        paths.append("type:tool_use:bridge_model")
+        counts["bridge_tool"] += 1
+        next_block = _bridge_agent_tool_use_safe_text(next_block)
+        changed = True
+    elif message_tainted and block_type == "tool_use":
+        paths.append("type:tool_use:foreign_tainted_message")
+        counts["bridge_tool"] += 1
+        next_block = _foreign_tool_use_safe_text(next_block)
+        changed = True
+    elif block_type == "tool_result" and (_native_tool_result_has_provider_private(next_block) or message_tainted):
+        paths.append("type:tool_result:provider_private")
+        counts["provider_private"] += 1
+        next_block = _tool_result_safe_text(next_block)
+        changed = True
+    text = next_block.get("text")
+    if isinstance(text, str):
+        sanitized_text, text_changed, text_paths, marker_count = _sanitize_native_replay_text(text)
+        if text_changed:
+            next_block["text"] = sanitized_text
+            paths.extend(text_paths)
+            counts["provider_private"] += marker_count
+            changed = True
+    return next_block, changed, paths, counts
+
+
+
+def _native_replay_content_has_foreign_marker(content: list[Any]) -> bool:
+    for block in content:
+        if not isinstance(block, Mapping):
+            continue
+        if any(key in _FOREIGN_RAW_KEYS for key in block):
+            return True
+        if _is_bridge_agent_tool_use(block):
+            return True
+        if block.get("type") == "tool_result" and _native_tool_result_has_provider_private(block):
+            return True
+        text = block.get("text")
+        if isinstance(text, str) and _contains_provider_private_marker(text):
+            return True
+    return False
+
+
+def _foreign_tool_use_safe_text(block: Mapping[str, Any]) -> dict[str, str]:
+    name = str(block.get("name") or "tool").strip()
+    provider_class = _safe_bridge_provider_class(name)
+    return {
+        "type": "text",
+        "text": "[ReplaySafeAnthropicTranscript] Cross-provider tool invocation was summarized before Claude native replay. target_provider_class=" + provider_class,
+    }
+
+def _is_bridge_agent_tool_use(block: Mapping[str, Any]) -> bool:
+    if block.get("type") != "tool_use" or block.get("name") != "Agent":
+        return False
+    tool_input = block.get("input")
+    if not isinstance(tool_input, Mapping):
+        return False
+    model = str(tool_input.get("model") or "")
+    return model.startswith("claude-code-bridge-") or model in {"deepseek", "gpt", "openai", "agnes", "glm", "kimi"}
+
+
+def _bridge_agent_tool_use_safe_text(block: Mapping[str, Any]) -> dict[str, str]:
+    tool_input = block.get("input") if isinstance(block.get("input"), Mapping) else {}
+    model = _sanitize_model_value(tool_input.get("model") if isinstance(tool_input, Mapping) else None)
+    safe_parts = ["[ReplaySafeAnthropicTranscript] Cross-provider Agent tool invocation was summarized before Claude native replay."]
+    if isinstance(model, str) and model:
+        safe_parts.append(f"target_provider_class={_safe_bridge_provider_class(model)}")
+    return {"type": "text", "text": " ".join(safe_parts)}
+
+
+
+def _safe_bridge_provider_class(model: str) -> str:
+    normalized = model.lower()
+    for provider in ("deepseek", "openai", "gpt", "agnes", "glm", "kimi"):
+        if provider in normalized:
+            return "gpt" if provider == "openai" else provider
+    return "bridge"
+
+def _native_tool_result_has_provider_private(block: Mapping[str, Any]) -> bool:
+    content = block.get("content")
+    if isinstance(content, str):
+        return _contains_provider_private_marker(content)
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, Mapping):
+                text = item.get("text")
+                if isinstance(text, str) and _contains_provider_private_marker(text):
+                    return True
+    return False
+
+
+def _tool_result_safe_text(block: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "type": "text",
+        "text": "[ReplaySafeAnthropicTranscript] Cross-provider tool result was summarized; internal launch metadata was withheld before Claude native replay.",
+    }
+
+
+def _sanitize_native_replay_text(text: str) -> tuple[str, bool, list[str], int]:
+    if not _contains_provider_private_marker(text):
+        return text, False, [], 0
+    return (
+        "[ReplaySafeAnthropicTranscript] Internal subagent/control metadata was withheld before Claude native replay.",
+        True,
+        ["text:provider_private_marker"],
+        1,
+    )
+
+
+def _contains_provider_private_marker(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _PROVIDER_PRIVATE_TEXT_MARKERS)
 
 
 def body_summary(body: bytes) -> dict[str, Any]:
@@ -1148,6 +1473,23 @@ class RedactingForwarder:
                         self.send_header("content-length", "0")
                         self.end_headers()
                         return
+                    replay_safety = native_replay_safety_decision(body, route_decision)
+                    if not replay_safety.allowed:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "native_replay_safety_violation",
+                            "path": request_path,
+                            "replay_safety": replay_safety.audit,
+                            **messages_route_summary_markers(route_decision, dict(self.headers)),
+                            **body_summary(body),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    body = replay_safety.body
                     envelope = evaluate_cost_envelope(body, parent.config)
                     request_record = {
                         "ts": time.time(),
@@ -1159,6 +1501,7 @@ class RedactingForwarder:
                         **messages_route_summary_markers(route_decision, dict(self.headers)),
                         **redact_headers(dict(self.headers)),
                         **body_summary(body),
+                        "replay_safety": replay_safety.audit,
                     }
                     if parent.config.capture_level in {"deep", "local-raw"}:
                         request_record["deep_body_summary"] = deep_body_summary(body)
@@ -2345,6 +2688,11 @@ def validate_cp5_bridge_body(route_decision: RouteDecision, body: bytes) -> str 
 
 def cp5_bridge_skeleton_sse_body(route_decision: RouteDecision, *, body: bytes | None) -> bytes:
     model = json.dumps(route_decision.model_id, separators=(",", ":"))
+    if _bridge_skeleton_requires_live(body):
+        return _cp5_bridge_error_sse_body(
+            "invalid_request_error",
+            "Claude Code bridge live required for multi_tool_use.parallel or Agent tool execution",
+        )
     tool_name = _bridge_skeleton_tool_name(body)
     if tool_name:
         return _cp5_bridge_tool_use_sse_body(model=model, tool_name=tool_name)
@@ -2444,6 +2792,28 @@ def cp4_bridge_stub_sse_body(route_decision: RouteDecision) -> bytes:
     return cp5_bridge_skeleton_sse_body(route_decision, body=None)
 
 
+def _bridge_skeleton_requires_live(body: bytes | None) -> bool:
+    if not body:
+        return False
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - skeleton falls back to text on malformed body
+        return False
+    if not isinstance(payload, dict):
+        return False
+    choice = payload.get("tool_choice")
+    if isinstance(choice, dict) and choice.get("type") == "tool" and str(choice.get("name") or "").strip() == "multi_tool_use.parallel":
+        return True
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        if len(tools) > 1:
+            return True
+        for item in tools:
+            if isinstance(item, dict) and str(item.get("name") or "").strip() in {"multi_tool_use.parallel", "Agent"}:
+                return True
+    return False
+
+
 def _bridge_skeleton_tool_name(body: bytes | None) -> str:
     if not body:
         return ""
@@ -2469,7 +2839,25 @@ def _bridge_skeleton_tool_name(body: bytes | None) -> str:
 
 
 def _safe_bridge_tool_name(value: str) -> bool:
-    return re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) is not None
+    return re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value) is not None
+
+
+def _cp5_bridge_error_sse_body(error_type: str, message: str) -> bytes:
+    data = json.dumps({
+        "type": "error",
+        "error": {"type": _sanitize_sse_label(error_type), "message": _sanitize_bridge_error_message(message)},
+    }, separators=(",", ":"))
+    return f"event: error\ndata: {data}\n\n".encode("utf-8")
+
+
+def _sanitize_sse_label(value: str) -> str:
+    value = str(value or "").strip()
+    return value if re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value) else "invalid_request_error"
+
+
+def _sanitize_bridge_error_message(value: str) -> str:
+    value = str(value or "").strip()
+    return value or "provider bridge request failed"
 
 
 def _cp5_bridge_tool_use_sse_body(*, model: str, tool_name: str) -> bytes:
