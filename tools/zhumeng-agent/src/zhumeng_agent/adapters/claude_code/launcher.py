@@ -300,24 +300,40 @@ def _refresh_gateway_model_cache(
     ]
     order = {model: index for index, model in enumerate(guard_plan.config.bridge_live_models)}
     bridge_entries.sort(key=lambda entry: order.get(str(entry.get("model_id") or ""), 10_000))
-    models = [
-        {
-            "id": str(entry["model_id"]),
-            "type": "model",
-            "display_name": _bridge_display_name(str(entry["model_id"])),
-            "display_only": not bool(entry.get("live_enabled")),
-            "live_enabled": bool(entry.get("live_enabled")),
-            "route": str(entry.get("route") or ""),
-            "client_type": str(entry.get("client_type") or ""),
-        }
-        for entry in bridge_entries
-    ]
+    models = [_gateway_model_cache_entry(entry) for entry in bridge_entries]
     payload = {
         "baseUrl": guard_base_url,
         "fetchedAt": int(time.time() * 1000),
         "models": models,
     }
     (cache_dir / "gateway-models.json").write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+def _gateway_model_cache_entry(entry: Mapping[str, object]) -> dict[str, object]:
+    model_id = str(entry["model_id"])
+    effort_levels = tuple(str(level) for level in entry.get("reasoning_effort_levels", ()) if str(level))
+    model: dict[str, object] = {
+        "id": model_id,
+        "type": "model",
+        "display_name": _bridge_display_name(model_id),
+        "display_only": not bool(entry.get("live_enabled")),
+        "live_enabled": bool(entry.get("live_enabled")),
+        "route": str(entry.get("route") or ""),
+        "client_type": str(entry.get("client_type") or ""),
+        "supportsEffort": bool(effort_levels),
+    }
+    if effort_levels:
+        model["supportedEffortLevels"] = list(effort_levels)
+    return model
+
+
+def _bridge_reasoning_effort_levels(model_id: str, provider: str) -> tuple[str, ...]:
+    provider = str(provider or "").strip()
+    if provider == "openai":
+        return ("low", "medium", "high", "xhigh")
+    if provider in {"deepseek", "zai_glm"}:
+        return ("high", "max")
+    return ()
 
 
 def _bridge_display_name(model_id: str) -> str:
@@ -536,6 +552,9 @@ def _route_hint_catalog_payload(guard_plan: NativeGuardPlan) -> dict[str, object
             "credential_scope": entry.credential_scope,
             "gateway_location": entry.gateway_location,
         }
+        effort_levels = _bridge_reasoning_effort_levels(entry.model_id, entry.provider)
+        if effort_levels:
+            normalized["reasoning_effort_levels"] = list(effort_levels)
         entries[model_id] = normalized
     return {
         "schema_version": "cp4-route-hint-preload-v1",
@@ -707,11 +726,56 @@ function remapHardcodedClaudeBackgroundModel(parsed) {
   return {parsed: {...parsed, model: targetModel}, remapped: true};
 }
 
+function sanitizeBridgeEffort(parsed) {
+  const modelId = String(parsed.model || '').trim();
+  const entry = catalog.entries[modelId];
+  if (!entry || entry.provider === 'claude') {
+    return {parsed, changed: false};
+  }
+  const outputConfig = parsed.output_config && typeof parsed.output_config === 'object' && !Array.isArray(parsed.output_config)
+    ? parsed.output_config
+    : undefined;
+  if (!outputConfig || typeof outputConfig.effort !== 'string') {
+    return {parsed, changed: false};
+  }
+  const requested = String(outputConfig.effort || '').trim().toLowerCase();
+  const levels = Array.isArray(entry.reasoning_effort_levels) ? entry.reasoning_effort_levels.map((level) => String(level)) : [];
+  if (!levels.length) {
+    const nextOutputConfig = {...outputConfig};
+    delete nextOutputConfig.effort;
+    const nextParsed = {...parsed};
+    if (Object.keys(nextOutputConfig).length) {
+      nextParsed.output_config = nextOutputConfig;
+    } else {
+      delete nextParsed.output_config;
+    }
+    return {parsed: nextParsed, changed: true};
+  }
+  let resolved = requested;
+  if (entry.provider === 'openai' && requested === 'max') {
+    resolved = 'xhigh';
+  } else if ((entry.provider === 'deepseek' || entry.provider === 'zai_glm') && (requested === 'low' || requested === 'medium')) {
+    resolved = 'high';
+  } else if ((entry.provider === 'deepseek' || entry.provider === 'zai_glm') && requested === 'xhigh') {
+    resolved = 'max';
+  } else if (entry.provider === 'zai_glm' && requested === 'ultracode') {
+    resolved = 'max';
+  }
+  if (!levels.includes(resolved)) {
+    resolved = levels[0];
+  }
+  if (resolved === requested) {
+    return {parsed, changed: false};
+  }
+  return {parsed: {...parsed, output_config: {...outputConfig, effort: resolved}}, changed: true};
+}
+
 function normalizedBodyBuffer(body) {
   const parsed = parseBodyObject(body);
   const remapped = remapHardcodedClaudeBackgroundModel(parsed);
-  if (!remapped.remapped) return {body: Buffer.from(body), remapped: false, active_provider: activeProvider(), resolved_model_id: String(parsed.model || '').trim()};
-  return {body: Buffer.from(canonicalJson(remapped.parsed)), remapped: true, active_provider: activeProvider(), resolved_model_id: String(remapped.parsed.model || '').trim()};
+  const sanitized = sanitizeBridgeEffort(remapped.parsed);
+  if (!remapped.remapped && !sanitized.changed) return {body: Buffer.from(body), remapped: false, active_provider: activeProvider(), resolved_model_id: String(parsed.model || '').trim()};
+  return {body: Buffer.from(canonicalJson(sanitized.parsed)), remapped: remapped.remapped, active_provider: activeProvider(), resolved_model_id: String(sanitized.parsed.model || '').trim()};
 }
 
 function routeEntryForBody(body) {

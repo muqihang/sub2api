@@ -431,21 +431,18 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn("https://api.deepseek.com/v1/chat/completions", sql)
 
 
-    def test_apply_sql_binds_deepseek_runtime_account_to_canary_host_proxy_only(self):
+    def test_apply_sql_clears_bridge_runtime_proxy_bindings_instead_of_using_canary_host_proxy(self):
         from tools.claude_code_runtime_canary_config import build_apply_sql
 
         sql = build_apply_sql(bridge_api_keys={"openai": "sk-openai", "deepseek": "sk-deepseek", "agnes": "sk-agnes"})
-        proxy_section = sql.split("WITH desired_runtime_proxies", 1)[1].split("WITH desired_runtime_accounts", 1)[0]
-        account_proxy_section = sql.split("WITH desired_runtime_account_proxies", 1)[1].split("WITH desired_bindings", 1)[0]
+        account_section = sql.split("WITH desired_runtime_accounts", 1)[1].split("WITH desired_bindings", 1)[0]
 
-        self.assertIn("zhumeng-claude-code-deepseek-host-proxy", proxy_section)
-        self.assertIn("host.docker.internal", proxy_section)
-        self.assertIn("8080", proxy_section)
-        self.assertIn("zhumeng-claude-code-bridge-deepseek-anthropic", account_proxy_section)
-        self.assertIn("proxy_id = resolved_runtime_account_proxies.proxy_id", account_proxy_section)
-        self.assertNotIn("zhumeng-claude-code-native-upstream", account_proxy_section)
-        self.assertNotIn("zhumeng-claude-code-bridge-openai-runtime", account_proxy_section)
-        self.assertNotIn("zhumeng-claude-code-bridge-agnes-runtime", account_proxy_section)
+        self.assertNotIn("zhumeng-claude-code-deepseek-host-proxy", sql)
+        self.assertNotIn("host.docker.internal", sql)
+        self.assertNotIn("WITH desired_runtime_account_proxies", sql)
+        self.assertIn("proxy_id = NULL", account_section)
+        self.assertIn("proxy_fallback_origin_id = NULL", account_section)
+        self.assertIn("zhumeng-claude-code-bridge-deepseek-anthropic", sql)
 
 
     def test_apply_sql_upserts_runtime_accounts_without_requiring_account_name_unique_index(self):
@@ -560,6 +557,35 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn("claude-sonnet-4-5-20250929", sql)
 
 
+
+    def test_apply_validates_runtime_hash_before_touching_database(self):
+        import tools.claude_code_runtime_canary_config as config
+
+        calls = []
+        original_run = config.subprocess.run
+        try:
+            def fake_run(*args, **kwargs):
+                calls.append((args, kwargs))
+                raise AssertionError("apply must not touch postgres when hash validation fails")
+
+            config.subprocess.run = fake_run
+            with tempfile.TemporaryDirectory() as tmp:
+                env_path = Path(tmp) / "runtime.env"
+                env_path.write_text("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY=sk-existing\n", encoding="utf-8")
+                with self.assertRaisesRegex(Exception, "runtime_hash"):
+                    config.apply_bridge_groups(
+                        postgres_container="postgres",
+                        env_out=env_path,
+                        target="http://127.0.0.1:3017",
+                        live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+                        runtime_hash="not-a-sha256-hash",
+                        overlay_hash="sha256:" + "2" * 64,
+                    )
+        finally:
+            config.subprocess.run = original_run
+
+        self.assertEqual([], calls)
+
     def test_apply_preserves_existing_native_attestation_and_runtime_hashes_when_rewriting_env(self):
         from tools.claude_code_runtime_canary_config import merge_provider_catalog_env
 
@@ -585,6 +611,39 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertEqual("sha256:" + "b" * 64, merged["SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES"])
         self.assertNotEqual("sha256:" + "1" * 64, merged["SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES"])
         self.assertIn("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", merged)
+
+    def test_apply_can_override_stale_runtime_hashes_when_runtime_manifest_changes(self):
+        from tools.claude_code_runtime_canary_config import merge_provider_catalog_env
+
+        existing = {
+            "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID": "guard_v1",
+            "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET": "secret-from-existing-env",
+            "SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES": "sha256:" + "a" * 64,
+            "SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES": "sha256:" + "b" * 64,
+            "SUB2API_CLAUDE_CODE_NATIVE_CATALOG_HASHES": "sha256:" + "c" * 64,
+        }
+        current_runtime_hash = "sha256:" + "7" * 64
+        current_overlay_hash = "sha256:" + "8" * 64
+
+        merged = merge_provider_catalog_env(
+            existing,
+            target="http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            runtime_hash=current_runtime_hash,
+            overlay_hash=current_overlay_hash,
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+            bridge_api_keys={"deepseek": "sk-deepseek"},
+        )
+        catalog = json.loads(merged["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"])
+
+        self.assertEqual("guard_v1", merged["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID"])
+        self.assertEqual("secret-from-existing-env", merged["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"])
+        self.assertEqual(current_runtime_hash, merged["SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES"])
+        self.assertEqual(current_overlay_hash, merged["SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES"])
+        self.assertEqual(current_runtime_hash, catalog["runtime_hash"])
+        self.assertEqual(current_overlay_hash, catalog["overlay_hash"])
+        self.assertEqual(merged["SUB2API_CLAUDE_CODE_NATIVE_CATALOG_HASHES"], catalog["catalog_hash"])
+        self.assertNotEqual("sha256:" + "c" * 64, catalog["catalog_hash"])
 
     def test_apply_env_marks_native_remote_sub2api_upstream_accounts(self):
         from tools.claude_code_runtime_canary_config import merge_provider_catalog_env

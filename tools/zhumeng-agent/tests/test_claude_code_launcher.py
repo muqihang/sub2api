@@ -1283,6 +1283,118 @@ def test_managed_launch_refreshes_gateway_model_cache_for_current_guard(tmp_path
     assert live_by_id["claude-code-bridge-agnes-2.0-flash"] is True
     assert live_by_id["claude-code-bridge-glm-5.2-1m"] is False
     assert live_by_id["claude-code-bridge-kimi-k2.7-code"] is False
+    models_by_id = {model["id"]: model for model in cache["models"]}
+    assert models_by_id["claude-code-bridge-gpt-5.5"]["supportsEffort"] is True
+    assert models_by_id["claude-code-bridge-gpt-5.5"]["supportedEffortLevels"] == ["low", "medium", "high", "xhigh"]
+    assert "max" not in models_by_id["claude-code-bridge-gpt-5.5"]["supportedEffortLevels"]
+    assert models_by_id["claude-code-bridge-deepseek-v4-pro"]["supportsEffort"] is True
+    assert models_by_id["claude-code-bridge-deepseek-v4-pro"]["supportedEffortLevels"] == ["high", "max"]
+    assert models_by_id["claude-code-bridge-glm-5.2-1m"]["supportedEffortLevels"] == ["high", "max"]
+    assert models_by_id["claude-code-bridge-kimi-k2.7-code"]["supportsEffort"] is False
+    assert "supportedEffortLevels" not in models_by_id["claude-code-bridge-kimi-k2.7-code"]
+
+
+def test_managed_launch_preload_clamps_bridge_effort_to_provider_supported_levels(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    captured: dict[str, object] = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        check = tmp_path / "check-effort-preload.js"
+        check.write_text(
+            r'''
+const fs = require('node:fs');
+let calls = [];
+globalThis.fetch = async function(input, init) {
+  const headers = new Headers(init && init.headers || (input && input.headers) || {});
+  const body = init && init.body ? Buffer.from(init.body).toString('utf8') : '';
+  const hint = headers.get('x-zhumeng-claude-code-route-hint');
+  calls.push({
+    body,
+    hint,
+    payload: hint ? JSON.parse(Buffer.from(hint, 'base64url').toString('utf8')) : null
+  });
+  return {status: 200, text: async () => 'ok'};
+};
+require(process.env.ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD_PATH);
+async function post(model, effort) {
+  await globalThis.fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", {
+    method: "POST",
+    headers: {"content-type": "application/json", "x-claude-code-session-id": "session-effort"},
+    body: JSON.stringify({
+      model,
+      messages: [{role: "user", content: "effort"}],
+      max_tokens: 8,
+      output_config: {effort},
+      thinking: {type: "enabled"}
+    })
+  });
+}
+(async () => {
+  await post("claude-code-bridge-gpt-5.5", "max");
+  await post("claude-code-bridge-deepseek-v4-pro", "medium");
+  await post("claude-code-bridge-glm-5.2-1m", "ultracode");
+  await post("claude-code-bridge-kimi-k2.7-code", "max");
+  fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({calls}, null, 2));
+})().catch((err) => {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+''',
+            encoding="utf-8",
+        )
+        run_env = dict(env)
+        run_env.pop("NODE_OPTIONS", None)
+        run_env.pop("BUN_OPTIONS", None)
+        run_env["CAPTURE_PATH"] = str(tmp_path / "capture-effort.json")
+        subprocess.run([node, str(check)], cwd=cwd, env=run_env, check=True, text=True)
+        captured.update(json.loads((tmp_path / "capture-effort.json").read_text(encoding="utf-8")))
+        return 0
+
+    run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="http://127.0.0.1:3017",
+        sub2api_auth="sub2api-entry",
+        native_managed_access_token="managed-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        bridge_live_models=(
+            "claude-code-bridge-gpt-5.5",
+            "claude-code-bridge-deepseek-v4-pro",
+            "claude-code-bridge-glm-5.2-1m",
+            "claude-code-bridge-kimi-k2.7-code",
+        ),
+        config_root=tmp_path,
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+    )
+
+    gpt_body = json.loads(captured["calls"][0]["body"])
+    deepseek_body = json.loads(captured["calls"][1]["body"])
+    glm_body = json.loads(captured["calls"][2]["body"])
+    kimi_body = json.loads(captured["calls"][3]["body"])
+    assert gpt_body["output_config"]["effort"] == "xhigh"
+    assert deepseek_body["output_config"]["effort"] == "high"
+    assert glm_body["output_config"]["effort"] == "max"
+    assert "output_config" not in kimi_body
 
 
 def test_managed_launch_preload_remaps_non_claude_hardcoded_haiku_to_active_provider_fast(tmp_path: Path):

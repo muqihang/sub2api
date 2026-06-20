@@ -57,14 +57,6 @@ _PLACEHOLDERS: tuple[dict[str, str], ...] = (
 )
 
 _NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES = "zhumeng-claude-code-native-upstream"
-_DEEPSEEK_CANARY_PROXY = {
-    "name": "zhumeng-claude-code-deepseek-host-proxy",
-    "protocol": "http",
-    "host": "host.docker.internal",
-    "port": 8080,
-}
-
-
 _RUNTIME_DISPATCH_GROUPS: tuple[dict[str, Any], ...] = (
     {
         "name": "zhumeng-claude-code-bridge-runtime-openai",
@@ -88,7 +80,6 @@ _RUNTIME_DISPATCH_GROUPS: tuple[dict[str, Any], ...] = (
         "api_key_env": "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY",
         "models": _BRIDGE_MODELS_BY_PROVIDER["deepseek"],
         "anthropic_base_url": "https://api.deepseek.com/anthropic",
-        "canary_proxy": _DEEPSEEK_CANARY_PROXY,
     },
     {
         "name": "zhumeng-claude-code-bridge-runtime-agnes",
@@ -512,27 +503,6 @@ def build_apply_sql(bridge_api_keys: dict[str, str] | None = None) -> str:
                 )
             )
 
-    runtime_proxy_values = []
-    runtime_account_proxy_values = []
-    for spec in _RUNTIME_DISPATCH_GROUPS:
-        proxy = spec.get("canary_proxy")
-        if not proxy:
-            continue
-        runtime_proxy_values.append(
-            "({name},{protocol},{host},{port})".format(
-                name=_sql_literal(str(proxy["name"])),
-                protocol=_sql_literal(str(proxy["protocol"])),
-                host=_sql_literal(str(proxy["host"])),
-                port=int(proxy["port"]),
-            )
-        )
-        runtime_account_proxy_values.append(
-            "({account_name},{proxy_name})".format(
-                account_name=_sql_literal(str(spec["account_names"][0])),
-                proxy_name=_sql_literal(str(proxy["name"])),
-            )
-        )
-
     runtime_account_values = []
     for spec in _RUNTIME_DISPATCH_GROUPS:
         source_name = str(spec.get("source_account_name", ""))
@@ -662,34 +632,6 @@ ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
   mcp_xml_inject = false,
   updated_at = now();
 
-WITH desired_runtime_proxies(name, protocol, host, port) AS (
-  VALUES
-  {runtime_proxy_values}
-), existing_runtime_proxies AS (
-  SELECT DISTINCT ON (proxies.name) proxies.id, proxies.name
-  FROM proxies
-  JOIN desired_runtime_proxies ON desired_runtime_proxies.name = proxies.name
-  WHERE proxies.deleted_at IS NULL
-  ORDER BY proxies.name, proxies.id
-), updated_runtime_proxies AS (
-  UPDATE proxies
-  SET protocol = desired_runtime_proxies.protocol,
-      host = desired_runtime_proxies.host,
-      port = desired_runtime_proxies.port,
-      status = 'active',
-      updated_at = now()
-  FROM desired_runtime_proxies
-  JOIN existing_runtime_proxies ON existing_runtime_proxies.name = desired_runtime_proxies.name
-  WHERE proxies.id = existing_runtime_proxies.id
-  RETURNING proxies.name
-)
-INSERT INTO proxies (name, protocol, host, port, status, created_at, updated_at)
-SELECT name, protocol, host, port, 'active', now(), now()
-FROM desired_runtime_proxies
-WHERE NOT EXISTS (
-  SELECT 1 FROM updated_runtime_proxies WHERE updated_runtime_proxies.name = desired_runtime_proxies.name
-);
-
 WITH desired_runtime_accounts(account_name, source_account_name, source_platform, platform, type, status, schedulable, credentials_template, extra) AS (
   VALUES
   {runtime_account_values}
@@ -768,6 +710,8 @@ WITH desired_runtime_accounts(account_name, source_account_name, source_platform
       credentials = resolved_runtime_accounts.credentials,
       extra = resolved_runtime_accounts.extra,
       concurrency = resolved_runtime_accounts.concurrency,
+      proxy_id = NULL,
+      proxy_fallback_origin_id = NULL,
       temp_unschedulable_until = NULL,
       temp_unschedulable_reason = NULL,
       overload_until = NULL,
@@ -788,21 +732,6 @@ FROM resolved_runtime_accounts
 WHERE NOT EXISTS (
   SELECT 1 FROM updated_runtime_accounts WHERE updated_runtime_accounts.name = resolved_runtime_accounts.account_name
 );
-
-WITH desired_runtime_account_proxies(account_name, proxy_name) AS (
-  VALUES
-  {runtime_account_proxy_values}
-), resolved_runtime_account_proxies AS (
-  SELECT accounts.id AS account_id, proxies.id AS proxy_id
-  FROM desired_runtime_account_proxies
-  JOIN accounts ON accounts.name = desired_runtime_account_proxies.account_name AND accounts.deleted_at IS NULL
-  JOIN proxies ON proxies.name = desired_runtime_account_proxies.proxy_name AND proxies.deleted_at IS NULL
-)
-UPDATE accounts
-SET proxy_id = resolved_runtime_account_proxies.proxy_id,
-    updated_at = now()
-FROM resolved_runtime_account_proxies
-WHERE accounts.id = resolved_runtime_account_proxies.account_id;
 
 WITH desired_bindings(account_name, group_name, priority) AS (
   VALUES
@@ -867,9 +796,7 @@ COMMIT;
         native_models_config=_sql_literal(json.dumps(native_models_config, ensure_ascii=True, sort_keys=True)) + "::jsonb",
         values=",\n  ".join(values),
         runtime_group_values=",\n  ".join(runtime_group_values),
-        runtime_proxy_values=",\n  ".join(runtime_proxy_values) if runtime_proxy_values else "('__none__','http','127.0.0.1',0)",
         runtime_account_values=",\n  ".join(runtime_account_values) if runtime_account_values else "('__none__','__none__','anthropic','anthropic','apikey','disabled',false,'{{}}'::jsonb,'{{}}'::jsonb)",
-        runtime_account_proxy_values=",\n  ".join(runtime_account_proxy_values) if runtime_account_proxy_values else "('__none__','__none__')",
         account_binding_values=",\n  ".join(account_binding_values),
         api_key_values=",\n  ".join(api_key_values),
         native_group_id=NATIVE_GROUP_ID,
@@ -899,20 +826,22 @@ def merge_provider_catalog_env(
     *,
     target: str = "http://127.0.0.1:3017",
     runtime_target: str | None = None,
+    runtime_hash: str | None = None,
+    overlay_hash: str | None = None,
     catalog_version: str = _CATALOG_VERSION,
     live_bridge_models: tuple[str, ...] = (),
     bridge_api_keys: dict[str, str] | None = None,
     deepseek_anthropic_fixture_green: bool = True,
 ) -> dict[str, str]:
     existing = existing_env or {}
-    runtime_hash = existing.get("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", _DEFAULT_RUNTIME_HASH)
-    overlay_hash = existing.get("SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES", _DEFAULT_OVERLAY_HASH)
+    resolved_runtime_hash = (str(runtime_hash).strip() if runtime_hash else "") or existing.get("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", _DEFAULT_RUNTIME_HASH)
+    resolved_overlay_hash = (str(overlay_hash).strip() if overlay_hash else "") or existing.get("SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES", _DEFAULT_OVERLAY_HASH)
     env = dict(existing)
     env.update(build_provider_catalog_env(
         target,
         runtime_target=runtime_target,
-        runtime_hash=runtime_hash,
-        overlay_hash=overlay_hash,
+        runtime_hash=resolved_runtime_hash,
+        overlay_hash=resolved_overlay_hash,
         catalog_version=catalog_version,
         live_bridge_models=live_bridge_models,
         bridge_api_keys=bridge_api_keys,
@@ -932,10 +861,30 @@ def _write_env_file(path: Path, env: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def apply_bridge_groups(*, postgres_container: str, env_out: Path, target: str, live_bridge_models: tuple[str, ...], runtime_target: str | None = None, deepseek_anthropic_fixture_green: bool = True) -> dict[str, Any]:
+def apply_bridge_groups(
+    *,
+    postgres_container: str,
+    env_out: Path,
+    target: str,
+    live_bridge_models: tuple[str, ...],
+    runtime_target: str | None = None,
+    runtime_hash: str | None = None,
+    overlay_hash: str | None = None,
+    deepseek_anthropic_fixture_green: bool = True,
+) -> dict[str, Any]:
     validate_live_bridge_models_supported(live_bridge_models)
     existing_env = _read_env_file(env_out)
     bridge_api_keys = build_runtime_bridge_api_keys(existing_env=existing_env)
+    env = merge_provider_catalog_env(
+        existing_env,
+        target=target,
+        runtime_target=runtime_target,
+        runtime_hash=runtime_hash,
+        overlay_hash=overlay_hash,
+        live_bridge_models=live_bridge_models,
+        bridge_api_keys=bridge_api_keys,
+        deepseek_anthropic_fixture_green=deepseek_anthropic_fixture_green,
+    )
     sql = build_apply_sql(bridge_api_keys=bridge_api_keys)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
         handle.write(sql)
@@ -957,14 +906,6 @@ def apply_bridge_groups(*, postgres_container: str, env_out: Path, target: str, 
             sql_path.unlink()
         except OSError:
             pass
-    env = merge_provider_catalog_env(
-        existing_env,
-        target=target,
-        runtime_target=runtime_target,
-        live_bridge_models=live_bridge_models,
-        bridge_api_keys=bridge_api_keys,
-        deepseek_anthropic_fixture_green=deepseek_anthropic_fixture_green,
-    )
     _write_env_file(env_out, env)
     return build_apply_result_metadata(
         postgres_container=postgres_container,
@@ -1028,6 +969,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--postgres-container", default="", help="Postgres container for approved apply; secrets are not printed.")
     parser.add_argument("--target", default="http://127.0.0.1:3017", help="Local Sub2API canary origin exposed to host tooling.")
     parser.add_argument("--runtime-target", default="", help="Loopback origin reachable from inside the canary runtime container; defaults to --target.")
+    parser.add_argument("--runtime-hash", default="", help="Current managed Claude Code runtime hash; overrides stale env-file values during apply.")
+    parser.add_argument("--overlay-hash", default="", help="Current managed Claude Code overlay hash; overrides stale env-file values during apply.")
     parser.add_argument("--deepseek-openai-fallback", action="store_true", help="Explicitly force DeepSeek OpenAI-compatible /chat/completions fallback when Anthropic-compatible fixture parity is not green.")
     parser.add_argument("--env-out", type=Path, default=_DEFAULT_ENV_OUT, help="Canary env file to write during approved apply.")
     parser.add_argument("--live-bridge-models", default="", help="Comma-separated bridge model ids to enable live in provider catalog.")
@@ -1053,6 +996,8 @@ def main(argv: list[str] | None = None) -> int:
                 target=args.target,
                 live_bridge_models=live_bridge_models,
                 runtime_target=args.runtime_target or None,
+                runtime_hash=args.runtime_hash or None,
+                overlay_hash=args.overlay_hash or None,
                 deepseek_anthropic_fixture_green=not args.deepseek_openai_fallback,
             )
         except Exception as exc:  # noqa: BLE001 - CLI must fail closed without leaking command details.
