@@ -265,13 +265,11 @@ func openAIRuntimeGuardContentSafetyMalware(text string) bool {
 }
 
 func openAIRuntimeGuardContentSafetyOffensiveReverseEngineering(text string) bool {
-	if hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "without bypass", "do not bypass", "don't bypass", "not bypassing", "without cracking", "do not crack") {
-		return false
-	}
 	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "reverse engineer", "reverse engineering", "decompile", "disassemble", "patcher", "keygen", "crack", "cracked", "drm", "anti-debug", "anti debug", "license activation") {
 		return false
 	}
-	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "build", "create", "write", "make", "generate", "bypass", "crack", "patch", "remove", "disable") {
+	if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(text, "build", "create", "write", "make", "generate", "patch", "remove", "disable") &&
+		!hasNonNegatedOpenAIRuntimeGuardContentSafetyTerm(text, "bypass", "crack") {
 		return false
 	}
 	return hasAnyOpenAIRuntimeGuardContentSafetyTerm(text,
@@ -304,6 +302,33 @@ func hasAnyOpenAIRuntimeGuardContentSafetyTerm(text string, terms ...string) boo
 		}
 		if strings.Contains(text, term) {
 			return true
+		}
+	}
+	return false
+}
+
+func hasNonNegatedOpenAIRuntimeGuardContentSafetyTerm(text string, terms ...string) bool {
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" {
+			continue
+		}
+		searchFrom := 0
+		for {
+			idx := strings.Index(text[searchFrom:], term)
+			if idx < 0 {
+				break
+			}
+			idx += searchFrom
+			prefixStart := idx - 24
+			if prefixStart < 0 {
+				prefixStart = 0
+			}
+			prefix := text[prefixStart:idx]
+			if !hasAnyOpenAIRuntimeGuardContentSafetyTerm(prefix, "without ", "do not ", "don't ", "not ") {
+				return true
+			}
+			searchFrom = idx + len(term)
 		}
 	}
 	return false
