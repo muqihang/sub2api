@@ -17,16 +17,20 @@ func (s *OpenAIGatewayService) applyOpenAIOAuthRuntimeGuardPreflightToHTTP(
 	if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, model, endpoint); blocked != nil {
 		return body, blocked
 	}
-	repairedBody, shapeBlocked, shapeErr := applyOpenAIRuntimeGuardShapeGuardToBody(body)
+	repairedBody, shapeBlocked, shapeDecision, shapeErr := applyOpenAIRuntimeGuardShapeGuardToBodyWithDecision(body)
 	if shapeErr != nil {
 		return body, shapeErr
 	}
 	if shapeBlocked != nil {
+		setOpenAIRuntimeGuardShapeMetadata(c, shapeDecision)
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 		if c != nil {
 			c.Data(shapeBlocked.StatusCode, "application/json; charset=utf-8", shapeBlocked.Payload)
 		}
 		return body, shapeBlocked
+	}
+	if shapeDecision.Repaired {
+		setOpenAIRuntimeGuardShapeMetadata(c, shapeDecision)
 	}
 	body = repairedBody
 

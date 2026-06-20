@@ -8,25 +8,30 @@ import (
 )
 
 func applyOpenAIRuntimeGuardShapeGuardToBody(body []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
+	repaired, blocked, _, err := applyOpenAIRuntimeGuardShapeGuardToBodyWithDecision(body)
+	return repaired, blocked, err
+}
+
+func applyOpenAIRuntimeGuardShapeGuardToBodyWithDecision(body []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, openAIReasoningEffortGuardDecision, error) {
 	if len(body) == 0 {
-		return body, nil, nil
+		return body, nil, openAIReasoningEffortGuardDecision{}, nil
 	}
 	var reqBody map[string]any
 	if err := json.Unmarshal(body, &reqBody); err != nil {
-		return body, nil, nil
+		return body, nil, openAIReasoningEffortGuardDecision{}, nil
 	}
 	decision := applyOpenAIRuntimeGuardShapeGuard(reqBody)
 	if decision.Blocked {
-		return body, newOpenAIRuntimeGuardBlockedError(decision), nil
+		return body, newOpenAIRuntimeGuardBlockedError(decision), decision, nil
 	}
 	if !decision.Repaired {
-		return body, nil, nil
+		return body, nil, decision, nil
 	}
 	repaired, err := marshalOpenAIUpstreamJSON(reqBody)
 	if err != nil {
-		return body, nil, fmt.Errorf("serialize openai runtime shape guard repair: %w", err)
+		return body, nil, decision, fmt.Errorf("serialize openai runtime shape guard repair: %w", err)
 	}
-	return repaired, nil, nil
+	return repaired, nil, decision, nil
 }
 
 func applyOpenAIRuntimeGuardShapeGuard(reqBody map[string]any) openAIReasoningEffortGuardDecision {

@@ -3320,11 +3320,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		shapeDecision := applyOpenAIRuntimeGuardShapeGuard(decoded)
 		if shapeDecision.Blocked {
+			setOpenAIRuntimeGuardShapeMetadata(c, shapeDecision)
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
 			c.Data(openAIReasoningEffortGuardBlockedStatus(shapeDecision), "application/json; charset=utf-8", openAIReasoningEffortGuardBlockedPayload(shapeDecision))
 			return nil, newOpenAIRuntimeGuardBlockedError(shapeDecision)
 		}
 		if shapeDecision.Repaired {
+			setOpenAIRuntimeGuardShapeMetadata(c, shapeDecision)
 			markDecodedModified()
 		}
 		codexResult := codexTransformResult{}

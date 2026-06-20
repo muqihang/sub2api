@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -240,4 +241,81 @@ func TestBlockerRegressionOpenAITokenProviderTerminalRefreshErrorRequiresRelogin
 	require.Equal(t, OpenAIAuthStateTerminal, repo.updateExtra["openai_auth_state"])
 	require.Equal(t, "openai_refresh_terminal", blocker.reason)
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.deleteCalled))
+}
+
+func TestBlockerRegressionForwardShapeRepairAddsLocalOpsEvent(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5","stream":false,"input":[{"type":"message","role":"assistant","content":[{"type":"input_text","text":"assistant history"}]}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	requireOpenAIRuntimeGuardMetadataForField(t, c, "shape", "repair", "shape.assistant_content_part_repaired", "openai_runtime_guard.repaired.assistant_content_part")
+	AppendOpsOpenAIRuntimeGuardLocalEvent(c)
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.Equal(t, "local_runtime_guard", events[0].Kind)
+	require.Equal(t, "repair", events[0].RuntimeGuardAction)
+	require.Equal(t, "shape.assistant_content_part_repaired", events[0].RuntimeGuardCategory)
+	require.NotNil(t, events[0].UpstreamCalled)
+	require.False(t, *events[0].UpstreamCalled)
+	require.NotNil(t, events[0].RawBodyLogged)
+	require.False(t, *events[0].RawBodyLogged)
+}
+
+func TestBlockerRegressionForwardShapeBlockAddsLocalOpsEvent(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	body := []byte(`{"model":"gpt-5","stream":false,"input":[{"type":"message","role":"assistant","content":[{"type":"input_image","image_url":"data:image/png;base64,abcd"}]}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Len(t, upstream.requests, 0)
+	requireOpenAIRuntimeGuardMetadataForField(t, c, "shape", "block", "shape.assistant_input_content_blocked", "openai_runtime_guard.blocked.assistant_content_part")
+	AppendOpsOpenAIRuntimeGuardLocalEvent(c)
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.Len(t, events, 1)
+	require.Equal(t, "local_runtime_guard", events[0].Kind)
+	require.Equal(t, "block", events[0].RuntimeGuardAction)
+	require.Equal(t, "shape.assistant_input_content_blocked", events[0].RuntimeGuardCategory)
+	require.NotNil(t, events[0].UpstreamCalled)
+	require.False(t, *events[0].UpstreamCalled)
+	require.NotNil(t, events[0].RawBodyLogged)
+	require.False(t, *events[0].RawBodyLogged)
+}
+
+func TestBlockerRegressionPreflightShapeMetadataForRepairAndBlock(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+
+	repairCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	repaired, err := svc.applyOpenAIOAuthRuntimeGuardPreflightToHTTP(repairCtx, account, "gpt-5.4", "responses", ContentModerationProtocolOpenAIResponses, []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"assistant","content":[{"type":"input_text","text":"history"}]}]}`), false)
+	require.NoError(t, err)
+	require.Contains(t, string(repaired), "output_text")
+	requireOpenAIRuntimeGuardMetadataForField(t, repairCtx, "shape", "repair", "shape.assistant_content_part_repaired", "openai_runtime_guard.repaired.assistant_content_part")
+
+	blockCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	_, err = svc.applyOpenAIOAuthRuntimeGuardPreflightToHTTP(blockCtx, account, "gpt-5.4", "responses", ContentModerationProtocolOpenAIResponses, []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"assistant","content":[{"type":"input_image","image_url":"data:image/png;base64,abcd"}]}]}`), false)
+	require.Error(t, err)
+	requireOpenAIRuntimeGuardMetadataForField(t, blockCtx, "shape", "block", "shape.assistant_input_content_blocked", "openai_runtime_guard.blocked.assistant_content_part")
+}
+
+func requireOpenAIRuntimeGuardMetadataForField(t *testing.T, c *gin.Context, field, action, category, metric string) {
+	t.Helper()
+	rawMeta, ok := c.Get(OpenAIRuntimeGuardMetadataKey)
+	require.True(t, ok)
+	metadata, ok := rawMeta.(OpenAIRuntimeGuardMetadata)
+	require.True(t, ok)
+	require.Equal(t, action, metadata.Action)
+	require.Equal(t, category, metadata.Category)
+	require.Equal(t, metric, metadata.Metric)
+	require.Equal(t, field, metadata.Field)
 }

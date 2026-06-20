@@ -536,18 +536,34 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 }
 
 func setOpenAIRuntimeGuardReasoningMetadata(c *gin.Context, decision openAIReasoningEffortGuardDecision) {
+	setOpenAIRuntimeGuardDecisionMetadata(c, decision, "reasoning_effort")
+}
+
+func setOpenAIRuntimeGuardShapeMetadata(c *gin.Context, decision openAIReasoningEffortGuardDecision) {
+	setOpenAIRuntimeGuardDecisionMetadata(c, decision, "shape")
+}
+
+func setOpenAIRuntimeGuardDecisionMetadata(c *gin.Context, decision openAIReasoningEffortGuardDecision, field string) {
 	if c == nil || !decision.Present || decision.Category == "" || decision.Metric == "" {
 		return
 	}
+	status := decision.Status
+	if status == 0 && decision.Blocked {
+		status = openAIReasoningEffortGuardBlockedStatus(decision)
+	}
 	c.Set(OpenAIRuntimeGuardMetadataKey, OpenAIRuntimeGuardMetadata{
-		Action:   decision.Action,
-		Category: decision.Category,
-		Metric:   decision.Metric,
-		Field:    "reasoning_effort",
-		Path:     decision.Path,
-		From:     safeOpenAIRuntimeGuardMetadataValue(decision.From),
-		To:       safeOpenAIRuntimeGuardMetadataValue(decision.To),
-		Status:   decision.Status,
+		Action:          decision.Action,
+		Category:        decision.Category,
+		Metric:          decision.Metric,
+		Field:           field,
+		Path:            decision.Path,
+		From:            safeOpenAIRuntimeGuardMetadataValue(decision.From),
+		To:              safeOpenAIRuntimeGuardMetadataValue(decision.To),
+		Status:          status,
+		EstimatedTokens: decision.EstimatedTokens,
+		LimitTokens:     decision.LimitTokens,
+		ReserveTokens:   decision.ReserveTokens,
+		Confidence:      safeOpenAIRuntimeGuardMetadataValue(decision.Confidence),
 	})
 }
 
