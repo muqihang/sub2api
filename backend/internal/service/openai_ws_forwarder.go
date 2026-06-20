@@ -2780,7 +2780,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if guardModel == "" {
 			guardModel = ingressSessionOriginalModel
 		}
-		guardApplied, runtimeBlocked, runtimeErr := applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account, normalized, guardModel)
+		guardApplied, runtimeBlocked, runtimeErr := s.applyOpenAIRuntimeGuardToWSResponseCreatePayloadWithModel(ctx, account, normalized, guardModel)
 		if runtimeErr != nil {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", runtimeErr)
 		}

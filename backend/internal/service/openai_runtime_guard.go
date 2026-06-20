@@ -272,10 +272,14 @@ func writeOpenAIReasoningEffortGuardBlockedResponse(c *gin.Context, decision ope
 }
 
 func applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account *Account, payload []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
-	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account, payload, "")
+	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithProvider(context.Background(), account, payload, "", nil)
 }
 
 func applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account *Account, payload []byte, resolvedModel string) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
+	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithProvider(context.Background(), account, payload, resolvedModel, nil)
+}
+
+func applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithProvider(ctx context.Context, account *Account, payload []byte, resolvedModel string, provider OpenAIContentSafetyProvider) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
 	if !shouldApplyOpenAIReasoningEffortGuard(account) {
 		return payload, nil, nil
 	}
@@ -301,7 +305,8 @@ func applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithModel(account *
 		}
 		payload = repaired
 	}
-	if blocked := applyOpenAIRuntimeGuardContentSafetyToBody(account, ContentModerationProtocolOpenAIResponses, payload); blocked != nil {
+	contentSafetyDecision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(ctx, account, ContentModerationProtocolOpenAIResponses, payload, provider)
+	if blocked := openAIRuntimeGuardContentSafetyDecisionToBlockedError(contentSafetyDecision); blocked != nil {
 		return payload, blocked, nil
 	}
 	model := strings.TrimSpace(resolvedModel)
@@ -347,8 +352,16 @@ func openAIRuntimeGuardShouldTreatWSFrameAsResponseCreate(payload []byte) bool {
 	return false
 }
 
+func (s *OpenAIGatewayService) applyOpenAIRuntimeGuardToWSResponseCreatePayloadWithModel(ctx context.Context, account *Account, payload []byte, resolvedModel string) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
+	provider := OpenAIContentSafetyProvider(nil)
+	if s != nil {
+		provider = s.openAIContentSafetyProvider
+	}
+	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayloadWithProvider(ctx, account, payload, resolvedModel, provider)
+}
+
 func (s *OpenAIGatewayService) ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account *Account, payload []byte) ([]byte, *OpenAIRuntimeGuardBlockedError, error) {
-	return applyOpenAIReasoningEffortGuardToWSResponseCreatePayload(account, payload)
+	return s.applyOpenAIRuntimeGuardToWSResponseCreatePayloadWithModel(context.Background(), account, payload, "")
 }
 
 func BuildOpenAIRuntimeGuardSelectionWSEvent(selectionErr *OpenAIRuntimeGuardSelectionError) []byte {

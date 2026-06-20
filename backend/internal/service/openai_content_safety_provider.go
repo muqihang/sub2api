@@ -5,7 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 // OpenAIContentSafetyProvider is an injectable moderation signal source. The
@@ -25,6 +29,7 @@ type OpenAIContentSafetyProviderInput struct {
 	Protocol         string            `json:"protocol"`
 	TextHash         string            `json:"text_hash"`
 	SanitizedSummary string            `json:"sanitized_summary"`
+	RedactedText     string            `json:"redacted_text,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
 
 	// These fields remain empty by construction and are present to make tests and
@@ -92,11 +97,20 @@ func evaluateOpenAIRuntimeGuardContentSafetyWithProvider(
 			},
 		}
 	}
+	redactedText := openAIContentSafetyRedactedText(text)
+	if redactedText == "" {
+		return openAIRuntimeGuardContentSafetyDecision{}
+	}
+	inputMetadata := map[string]string{"input_kind": "redacted_text"}
+	if model := safeOpenAIRuntimeGuardMetadataValue(gjson.GetBytes(body, "model").String()); model != "" {
+		inputMetadata["model"] = model
+	}
 	input := OpenAIContentSafetyProviderInput{
 		Protocol:         strings.TrimSpace(protocol),
 		TextHash:         textHash,
 		SanitizedSummary: summary,
-		Metadata:         map[string]string{"input_kind": "sanitized_summary_only"},
+		RedactedText:     redactedText,
+		Metadata:         inputMetadata,
 	}
 	result, err := provider.Moderate(ctx, input)
 	if err != nil || !result.Available {
@@ -131,7 +145,7 @@ func evaluateOpenAIRuntimeGuardContentSafetyWithProvider(
 	}
 	decision := openAIRuntimeGuardContentSafetyDecisionForAction(account, action, category, confidence)
 	decision.TextHash = textHash
-	decision.SanitizedSummary = openAIContentSafetyMergeSanitizedSummary(summary, result.Summary, textHash)
+	decision.SanitizedSummary = summary
 	decision.Audit = OpenAIContentSafetyAuditRecord{
 		Category:         decision.Category,
 		Confidence:       decision.Confidence,
@@ -188,11 +202,7 @@ func openAIContentSafetySanitizedSummary(text, textHash string) string {
 }
 
 func openAIContentSafetyMergeSanitizedSummary(localSummary, providerSummary, textHash string) string {
-	providerSummary = safeOpenAIRuntimeGuardMetadataValue(providerSummary)
-	if openAIContentSafetyContainsSensitive(providerSummary) || providerSummary == "" {
-		return localSummary
-	}
-	return providerSummary + " hash_prefix=" + openAIContentSafetyHashPrefix(textHash)
+	return localSummary
 }
 
 func openAIContentSafetySanitizedMetadata(metadata map[string]string) map[string]string {
@@ -203,7 +213,7 @@ func openAIContentSafetySanitizedMetadata(metadata map[string]string) map[string
 	for key, value := range metadata {
 		key = safeOpenAIRuntimeGuardMetadataValue(key)
 		value = safeOpenAIRuntimeGuardMetadataValue(value)
-		if key == "" || value == "" || openAIContentSafetyContainsSensitive(key) || openAIContentSafetyContainsSensitive(value) {
+		if !openAIContentSafetyAuditMetadataKeyAllowed(key) || value == "" || openAIContentSafetyContainsSensitive(value) {
 			continue
 		}
 		out[key] = value
@@ -229,4 +239,102 @@ func openAIContentSafetyHashPrefix(textHash string) string {
 		return textHash
 	}
 	return textHash[:12]
+}
+
+var openAIContentSafetyExtraSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bBearer\s+\S+`),
+	regexp.MustCompile(`(?i)\bCookie:\s*\S+`),
+	regexp.MustCompile(`(?i)\bsk-[A-Za-z0-9._~+/=-]{4,}\b`),
+	regexp.MustCompile(`(?i)\b(?:oauth-token|chatgpt-acc|secret-raw-body-marker)\b`),
+}
+
+func openAIContentSafetyRedactedText(text string) string {
+	redacted := redactContentModerationSecrets(normalizeContentModerationText(text))
+	for _, pattern := range openAIContentSafetyExtraSecretPatterns {
+		redacted = pattern.ReplaceAllString(redacted, "[redacted]")
+	}
+	return trimRunes(normalizeContentModerationText(redacted), maxModerationInputRunes)
+}
+
+func openAIContentSafetyAuditMetadataKeyAllowed(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "policy", "provider", "provider_status", "rule_id", "severity", "source":
+		return true
+	default:
+		return false
+	}
+}
+
+type contentModerationOpenAIContentSafetyProvider struct {
+	svc *ContentModerationService
+}
+
+func NewContentModerationOpenAIContentSafetyProvider(svc *ContentModerationService) OpenAIContentSafetyProvider {
+	if svc == nil {
+		return nil
+	}
+	return &contentModerationOpenAIContentSafetyProvider{svc: svc}
+}
+
+func (p *contentModerationOpenAIContentSafetyProvider) Moderate(ctx context.Context, input OpenAIContentSafetyProviderInput) (OpenAIContentSafetyProviderResult, error) {
+	if p == nil || p.svc == nil {
+		return OpenAIContentSafetyProviderResult{}, nil
+	}
+	text := openAIContentSafetyRedactedText(input.RedactedText)
+	if text == "" {
+		return OpenAIContentSafetyProviderResult{}, nil
+	}
+	protocol := strings.TrimSpace(input.Protocol)
+	if protocol == "" {
+		protocol = ContentModerationProtocolOpenAIResponses
+	}
+	body := []byte(strconv.Quote(text))
+	if protocol == ContentModerationProtocolOpenAIImages {
+		body = []byte(`{"prompt":` + strconv.Quote(text) + `}`)
+	} else {
+		body = []byte(`{"input":` + strconv.Quote(text) + `}`)
+		protocol = ContentModerationProtocolOpenAIResponses
+	}
+	decision, err := p.svc.Check(ctx, ContentModerationCheckInput{
+		Endpoint: "openai_runtime_guard",
+		Provider: "openai_runtime_guard",
+		Model:    strings.TrimSpace(input.Metadata["model"]),
+		Protocol: protocol,
+		Body:     body,
+	})
+	if err != nil {
+		return OpenAIContentSafetyProviderResult{}, err
+	}
+	if decision == nil {
+		return OpenAIContentSafetyProviderResult{Available: true}, nil
+	}
+	result := OpenAIContentSafetyProviderResult{
+		Available:  true,
+		Flagged:    decision.Flagged || decision.Blocked,
+		Category:   decision.HighestCategory,
+		Confidence: openAIContentSafetyConfidenceFromScore(decision.HighestScore),
+		Metadata: map[string]string{
+			"provider":        "content_moderation_service",
+			"provider_status": "ok",
+		},
+	}
+	if decision.Blocked {
+		result.Action = openAIRuntimeGuardContentSafetyActionBlock
+	} else if decision.Flagged {
+		result.Action = openAIRuntimeGuardContentSafetyActionShadow
+	}
+	return result, nil
+}
+
+func openAIContentSafetyConfidenceFromScore(score float64) string {
+	switch {
+	case score >= 0.90:
+		return "high"
+	case score >= 0.50:
+		return "medium"
+	case score > 0:
+		return "low"
+	default:
+		return ""
+	}
 }

@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -182,4 +185,123 @@ func TestOpenAIContentSafetyProviderForwardBlocksBeforeUpstream(t *testing.T) {
 	require.Equal(t, "content_safety.provider.flagged", metadata.Category)
 	require.Equal(t, openAIRuntimeGuardContentSafetyBlockedMetric, metadata.Metric)
 	require.Equal(t, "medium", metadata.Confidence)
+}
+
+func TestProvideOpenAIGatewayServiceWiresOpenAIContentSafetyProvider(t *testing.T) {
+	contentModerationService := &ContentModerationService{}
+
+	svc := ProvideOpenAIGatewayService(
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		contentModerationService,
+	)
+
+	require.NotNil(t, svc)
+	require.NotNil(t, svc.openAIContentSafetyProvider)
+	require.IsType(t, &contentModerationOpenAIContentSafetyProvider{}, svc.openAIContentSafetyProvider)
+}
+
+func TestOpenAIContentSafetyProviderReceivesRedactedModerationContentNotOnlyHash(t *testing.T) {
+	provider := &recordingOpenAIContentSafetyProvider{result: OpenAIContentSafetyProviderResult{Available: true}}
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	body := []byte(`{"model":"gpt-5.4","input":"Review this ambiguous reverse-engineering request with secret-raw-body-marker sk-test-secret Bearer abc."}`)
+
+	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
+
+	require.False(t, decision.Blocked, "%#v", decision)
+	require.Equal(t, 1, provider.calls)
+	require.NotEmpty(t, provider.input.RedactedText)
+	require.Contains(t, provider.input.RedactedText, "Review this ambiguous reverse-engineering request")
+	inputJSON, err := json.Marshal(provider.input)
+	require.NoError(t, err)
+	for _, forbidden := range []string{"secret-raw-body-marker", "sk-test-secret", "Bearer abc"} {
+		require.NotContains(t, string(inputJSON), forbidden)
+	}
+}
+
+func TestOpenAIContentSafetyProviderAuditDropsProviderRawSummaryAndMetadata(t *testing.T) {
+	provider := &recordingOpenAIContentSafetyProvider{result: OpenAIContentSafetyProviderResult{
+		Available:  true,
+		Flagged:    true,
+		Category:   "content_safety.provider.flagged",
+		Confidence: "medium",
+		Action:     openAIRuntimeGuardContentSafetyActionBlock,
+		Summary:    "raw prompt: my private medical legal text",
+		Metadata: map[string]string{
+			"excerpt": "my private medical legal text",
+			"policy":  "provider-policy-v1",
+		},
+	}}
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	body := []byte(`{"model":"gpt-5.4","input":"Ordinary request with private medical legal text"}`)
+
+	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
+
+	require.True(t, decision.Blocked, "%#v", decision)
+	auditJSON, err := json.Marshal(decision.Audit)
+	require.NoError(t, err)
+	require.Contains(t, string(auditJSON), "content_safety.provider.flagged")
+	require.Contains(t, string(auditJSON), provider.input.TextHash)
+	require.Contains(t, string(auditJSON), "provider-policy-v1")
+	for _, forbidden := range []string{"raw prompt", "private medical legal text", "Ordinary request with"} {
+		require.NotContains(t, string(auditJSON), forbidden)
+	}
+}
+
+func TestOpenAIContentSafetyProviderWSBlocksBeforeUpstream(t *testing.T) {
+	provider := &recordingOpenAIContentSafetyProvider{result: OpenAIContentSafetyProviderResult{
+		Available:  true,
+		Flagged:    true,
+		Category:   "content_safety.provider.flagged",
+		Confidence: "medium",
+		Action:     openAIRuntimeGuardContentSafetyActionBlock,
+	}}
+	svc := &OpenAIGatewayService{openAIContentSafetyProvider: provider}
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	payload := []byte(`{"type":"response.create","model":"gpt-5.4","input":"Review whether this ambiguous security request is safe."}`)
+
+	_, blocked, err := svc.ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account, payload)
+
+	require.NoError(t, err)
+	require.NotNil(t, blocked)
+	require.Equal(t, "content_safety.provider.flagged", blocked.Decision.Category)
+	require.Equal(t, 1, provider.calls)
+}
+
+func TestForwardAsChatCompletionsContentSafetyProviderCalledOnce(t *testing.T) {
+	upstream, _, c, svc, account := newOpenAIRuntimeGuardForwardHarness(t)
+	upstream.resp = openAIRuntimeGuardResponsesCompletedSSE("gpt-5.4")
+	provider := &recordingOpenAIContentSafetyProvider{result: OpenAIContentSafetyProviderResult{Available: true}}
+	svc.openAIContentSafetyProvider = provider
+	body := []byte(`{"model":"gpt-5.4","stream":false,"messages":[{"role":"user","content":"Review whether this ambiguous security request is safe."}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.bodies, 1)
+	require.Equal(t, 1, provider.calls)
 }

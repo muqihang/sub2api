@@ -519,6 +519,13 @@ func NewOpenAIGatewayService(
 	return svc
 }
 
+func (s *OpenAIGatewayService) SetOpenAIContentSafetyProvider(provider OpenAIContentSafetyProvider) {
+	if s == nil {
+		return
+	}
+	s.openAIContentSafetyProvider = provider
+}
+
 func previousResponseCapabilityKey(accountID int64, model string) string {
 	normalizedModel := normalizeOpenAICacheHealthModel(model)
 	if normalizedModel == "" {
