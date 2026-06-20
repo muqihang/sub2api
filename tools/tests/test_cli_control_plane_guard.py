@@ -847,6 +847,112 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertNotIn('foreign hidden chain', dumped)
 
 
+    def test_native_request_sanitizes_foreign_thinking_signature_before_formal_pool(self):
+        seen = {'body': None, 'calls': 0}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen['calls'] += 1
+                seen['body'] = self.rfile.read(int(self.headers.get('content-length', '0')))
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            summary_path = Path(td) / 'summary.jsonl'
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token='native-managed-access-token',
+                summary_path=summary_path,
+                max_messages=0,
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+                cost_envelope_limits={'allow_assistant_messages': True, 'allow_thinking': True, 'allow_tool_content': True, 'max_messages': 2048, 'max_content_blocks': 8192},
+            ))
+            forwarder.start_background()
+            try:
+                body_obj = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [
+                        {'role': 'user', 'content': 'safe user text'},
+                        {'role': 'assistant', 'thinking': {'text': 'DeepSeek top-level hidden chain marker', 'signature': 'foreign-top-sig'}, 'signature': 'foreign-message-sig', 'content': [
+                            {'type': 'thinking', 'thinking': 'DeepSeek hidden chain only marker', 'signature': 'foreign-sig-only'},
+                            {'type': 'tool_use', 'id': 'toolu_foreign_plain', 'name': 'ToolSearch', 'input': {'query': 'private query after thinking'}},
+                            {'type': 'text', 'text': 'visible answer'},
+                        ]},
+                    ],
+                    'max_tokens': 16,
+                }
+                body = json.dumps(body_obj).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.177 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='foreign-thinking-signature-sanitize'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+            records = [json.loads(line) for line in summary_path.read_text(encoding='utf-8').splitlines()]
+
+        self.assertEqual(seen['calls'], 1)
+        forwarded = json.loads(seen['body'].decode('utf-8'))
+        forwarded_dump = json.dumps(forwarded)
+        self.assertNotIn('"thinking"', forwarded_dump)
+        self.assertNotIn('DeepSeek hidden chain only marker', forwarded_dump)
+        self.assertNotIn('foreign-sig-only', forwarded_dump)
+        self.assertNotIn('DeepSeek top-level hidden chain marker', forwarded_dump)
+        self.assertNotIn('foreign-top-sig', forwarded_dump)
+        self.assertNotIn('foreign-message-sig', forwarded_dump)
+        self.assertNotIn('toolu_foreign_plain', forwarded_dump)
+        self.assertNotIn('ToolSearch', forwarded_dump)
+        self.assertNotIn('private query after thinking', forwarded_dump)
+        self.assertIn('ReplaySafeAnthropicTranscript', forwarded_dump)
+        self.assertIn('visible answer', forwarded_dump)
+        request_record = next(record for record in records if record.get('event') == 'request')
+        replay = request_record['replay_safety']
+        self.assertTrue(replay['allowed'])
+        self.assertTrue(replay['sanitized'])
+        self.assertIn('messages[].thinking', replay['forbidden_path_kinds'])
+        self.assertIn('messages[].signature', replay['forbidden_path_kinds'])
+        self.assertIn('messages[].content[].type:thinking', replay['forbidden_path_kinds'])
+        self.assertIn('messages[].content[].type:tool_use:foreign_tainted_message', replay['forbidden_path_kinds'])
+        dumped = json.dumps(records)
+        self.assertNotIn('DeepSeek hidden chain only marker', dumped)
+        self.assertNotIn('foreign-sig-only', dumped)
+        self.assertNotIn('DeepSeek top-level hidden chain marker', dumped)
+        self.assertNotIn('foreign-top-sig', dumped)
+        self.assertNotIn('foreign-message-sig', dumped)
+        self.assertNotIn('private query after thinking', dumped)
+
+
     def test_native_request_sanitizes_foreign_plain_tool_use_when_message_tainted_before_formal_pool(self):
         seen = {'body': None, 'calls': 0}
 

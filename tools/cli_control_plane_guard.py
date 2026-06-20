@@ -610,6 +610,14 @@ def _sanitize_native_replay_message(message: dict[str, Any]) -> tuple[dict[str, 
             counts["provider_private"] += 1
             next_message.pop(key, None)
             changed = True
+            message_tainted = True
+    for key in ("thinking", "signature"):
+        if key in next_message:
+            paths.append(f"messages[].{key}")
+            counts["provider_private"] += 1
+            next_message.pop(key, None)
+            changed = True
+            message_tainted = True
     content = next_message.get("content")
     if isinstance(content, str):
         sanitized_text, text_changed, text_paths, marker_count = _sanitize_native_replay_text(content)
@@ -649,7 +657,12 @@ def _sanitize_native_replay_block(block: dict[str, Any], *, message_tainted: boo
             next_block.pop(key, None)
             changed = True
     block_type = next_block.get("type")
-    if _is_bridge_agent_tool_use(next_block):
+    if block_type == "thinking" or "thinking" in next_block or "signature" in next_block:
+        paths.append("type:thinking")
+        counts["provider_private"] += 1
+        next_block = _foreign_thinking_safe_text()
+        changed = True
+    elif _is_bridge_agent_tool_use(next_block):
         paths.append("type:tool_use:bridge_model")
         counts["bridge_tool"] += 1
         next_block = _bridge_agent_tool_use_safe_text(next_block)
@@ -682,6 +695,8 @@ def _native_replay_content_has_foreign_marker(content: list[Any]) -> bool:
             continue
         if any(key in _FOREIGN_RAW_KEYS for key in block):
             return True
+        if block.get("type") == "thinking" or "thinking" in block or "signature" in block:
+            return True
         if _is_bridge_agent_tool_use(block):
             return True
         if block.get("type") == "tool_result" and _native_tool_result_has_provider_private(block):
@@ -690,6 +705,13 @@ def _native_replay_content_has_foreign_marker(content: list[Any]) -> bool:
         if isinstance(text, str) and _contains_provider_private_marker(text):
             return True
     return False
+
+
+def _foreign_thinking_safe_text() -> dict[str, str]:
+    return {
+        "type": "text",
+        "text": "[ReplaySafeAnthropicTranscript] Cross-provider reasoning/signature block was withheld before Claude native replay.",
+    }
 
 
 def _foreign_tool_use_safe_text(block: Mapping[str, Any]) -> dict[str, str]:
@@ -2839,7 +2861,8 @@ def _bridge_skeleton_tool_name(body: bytes | None) -> str:
 
 
 def _safe_bridge_tool_name(value: str) -> bool:
-    return re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value) is not None
+    value = value.strip()
+    return re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None or value == "multi_tool_use.parallel"
 
 
 def _cp5_bridge_error_sse_body(error_type: str, message: str) -> bytes:
