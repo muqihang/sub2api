@@ -21,18 +21,20 @@ const (
 )
 
 type OpenAIRuntimeGuardMetadata struct {
-	Action          string `json:"action"`
-	Category        string `json:"category"`
-	Metric          string `json:"metric"`
-	Field           string `json:"field"`
-	Path            string `json:"path,omitempty"`
-	From            string `json:"from,omitempty"`
-	To              string `json:"to,omitempty"`
-	Status          int    `json:"status,omitempty"`
-	EstimatedTokens int    `json:"estimated_tokens,omitempty"`
-	LimitTokens     int    `json:"limit_tokens,omitempty"`
-	ReserveTokens   int    `json:"reserve_tokens,omitempty"`
-	Confidence      string `json:"confidence,omitempty"`
+	Action           string `json:"action"`
+	Category         string `json:"category"`
+	Metric           string `json:"metric"`
+	Field            string `json:"field"`
+	Path             string `json:"path,omitempty"`
+	From             string `json:"from,omitempty"`
+	To               string `json:"to,omitempty"`
+	Status           int    `json:"status,omitempty"`
+	EstimatedTokens  int    `json:"estimated_tokens,omitempty"`
+	LimitTokens      int    `json:"limit_tokens,omitempty"`
+	ReserveTokens    int    `json:"reserve_tokens,omitempty"`
+	Confidence       string `json:"confidence,omitempty"`
+	TextHash         string `json:"text_hash,omitempty"`
+	SanitizedSummary string `json:"sanitized_summary,omitempty"`
 }
 
 type openAIReasoningEffortGuardRepair struct {

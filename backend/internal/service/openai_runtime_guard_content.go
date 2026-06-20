@@ -18,12 +18,17 @@ const (
 )
 
 type openAIRuntimeGuardContentSafetyDecision struct {
-	Action     string
-	Category   string
-	Metric     string
-	Confidence string
-	Blocked    bool
-	Shadow     bool
+	Action           string
+	Category         string
+	Metric           string
+	Confidence       string
+	Blocked          bool
+	Shadow           bool
+	TextHash         string
+	SanitizedSummary string
+	Audit            OpenAIContentSafetyAuditRecord
+	LearnedCacheKey  string
+	PermanentBlock   bool
 }
 
 func evaluateOpenAIRuntimeGuardContentSafety(account *Account, protocol string, body []byte) openAIRuntimeGuardContentSafetyDecision {
@@ -380,13 +385,15 @@ func setOpenAIRuntimeGuardContentSafetyMetadata(c *gin.Context, decision openAIR
 		return
 	}
 	c.Set(OpenAIRuntimeGuardMetadataKey, OpenAIRuntimeGuardMetadata{
-		Action:     decision.Action,
-		Category:   decision.Category,
-		Metric:     decision.Metric,
-		Field:      "input",
-		Path:       "input",
-		Status:     http.StatusBadRequest,
-		Confidence: decision.Confidence,
+		Action:           decision.Action,
+		Category:         decision.Category,
+		Metric:           decision.Metric,
+		Field:            "input",
+		Path:             "input",
+		Status:           http.StatusBadRequest,
+		Confidence:       decision.Confidence,
+		TextHash:         decision.TextHash,
+		SanitizedSummary: decision.SanitizedSummary,
 	})
 }
 
