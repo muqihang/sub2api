@@ -599,6 +599,7 @@ const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
 const providerProfiles = providerProfilePath && fs.existsSync(providerProfilePath)
   ? JSON.parse(fs.readFileSync(providerProfilePath, 'utf8'))
   : {provider_profiles: {}, background_resolution_matrix: {}};
+let activeModelId = (process.env.ZHUMENG_CLAUDE_ACTIVE_MODEL_ID || process.env.CLAUDE_CODE_MODEL || '').trim();
 const originalFetch = globalThis.fetch;
 const originalHttpRequest = http.request;
 const originalHttpsRequest = https.request;
@@ -671,9 +672,17 @@ function parseBodyObject(body) {
 }
 
 function activeProvider() {
-  const activeModel = (process.env.ZHUMENG_CLAUDE_ACTIVE_MODEL_ID || process.env.CLAUDE_CODE_MODEL || '').trim();
+  const activeModel = activeModelId;
   const entry = activeModel ? catalog.entries[activeModel] : undefined;
   return entry && entry.provider ? String(entry.provider) : '';
+}
+
+function rememberActiveModelFromBody(body) {
+  const parsed = parseBodyObject(body);
+  const modelId = String(parsed.model || '').trim();
+  if (catalog.entries[modelId]) {
+    activeModelId = modelId;
+  }
 }
 
 function remapHardcodedClaudeBackgroundModel(parsed) {
@@ -785,12 +794,14 @@ globalThis.fetch = async function zhumengRouteHintFetch(input, init) {
     const normalized = normalizedBodyBuffer(bodyBuffer(body));
     const bodyBytes = normalized.body;
     signedHeaders(headers, bodyBytes, requestPath);
+    rememberActiveModelFromBody(bodyBytes);
     return originalFetch.call(this, input, {...(init || {}), method: 'POST', headers, body: bodyBytes});
   }
   const normalized = normalizedBodyBuffer(Buffer.from(await finalRequest.clone().arrayBuffer()));
   const bodyBytes = normalized.body;
   const headers = new Headers(finalRequest.headers);
   signedHeaders(headers, bodyBytes, requestPath);
+  rememberActiveModelFromBody(bodyBytes);
   headers.set('content-length', String(bodyBytes.length));
   return originalFetch.call(this, finalRequest.url, {method: 'POST', headers, body: bodyBytes});
 };
@@ -913,6 +924,7 @@ function patchedRequest(originalRequest, protocol) {
         const body = normalized.body;
         const headers = normalizeHeadersObject(baseOptions.headers);
         signedHeaders(headers, body, requestPath);
+        rememberActiveModelFromBody(body);
         headers.set('content-length', String(body.length));
         for (const [key, value] of Object.entries(headersToPlainObject(headers))) {
           req.setHeader(key, value);

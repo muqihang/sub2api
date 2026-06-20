@@ -1194,6 +1194,8 @@ def test_managed_launch_writes_provider_profile_resolver_artifact(tmp_path: Path
     assert profiles["kimi"]["live_enabled"] is False
 
     background = payload["background_resolution_matrix"]
+    assert background["claude"]["provider_local"]["haiku"]["resolved_model_id"] == "claude-haiku-4-5-20251001"
+    assert background["claude"]["provider_local"]["haiku"]["native_egress_allowed"] is True
     assert background["claude"]["fast_bridge"]["resolved_model_id"] == "claude-code-bridge-deepseek-v4-flash"
     assert background["claude"]["fast_bridge"]["replay_boundary"] == "safe_tool_result"
     for provider in ("deepseek", "openai", "zai_glm", "kimi"):
@@ -1273,6 +1275,10 @@ def test_managed_launch_refreshes_gateway_model_cache_for_current_guard(tmp_path
     assert all(model_id.startswith("claude-") for model_id in model_ids)
     assert all("display_only" in model and "live_enabled" in model for model in cache["models"])
     live_by_id = {model["id"]: model["live_enabled"] for model in cache["models"]}
+    for model in cache["models"]:
+        assert model["id"].startswith("claude-")
+        assert model["client_type"].startswith("claude_code_bridge_")
+        assert model["route"].endswith("_bridge")
     assert live_by_id["claude-code-bridge-gpt-5.5"] is True
     assert live_by_id["claude-code-bridge-agnes-2.0-flash"] is True
     assert live_by_id["claude-code-bridge-glm-5.2-1m"] is False
@@ -1373,3 +1379,95 @@ globalThis.fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", {
     assert payload["client_type"] == "claude_code_bridge_deepseek"
     assert payload["formal_pool_allowed"] is False
     assert payload["native_attestation_allowed"] is False
+
+
+def test_managed_launch_preload_updates_active_profile_from_hot_switched_request_body(tmp_path: Path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("managed Claude Code route-hint preload requires node")
+    captured: dict[str, object] = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        check = tmp_path / "check-hot-switch-preload.js"
+        check.write_text(
+            r'''
+const fs = require('node:fs');
+let calls = [];
+globalThis.fetch = async function(input, init) {
+  const headers = new Headers(init && init.headers || (input && input.headers) || {});
+  const body = init && init.body ? Buffer.from(init.body).toString('utf8') : '';
+  const hint = headers.get('x-zhumeng-claude-code-route-hint');
+  calls.push({
+    body,
+    hint,
+    payload: hint ? JSON.parse(Buffer.from(hint, 'base64url').toString('utf8')) : null
+  });
+  return {status: 200, text: async () => 'ok'};
+};
+require(process.env.ZHUMENG_CLAUDE_ROUTE_HINT_PRELOAD_PATH);
+async function post(model, content) {
+  await globalThis.fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", {
+    method: "POST",
+    headers: {"content-type": "application/json", "x-claude-code-session-id": "session-hot-switch"},
+    body: JSON.stringify({model, messages: [{role: "user", content}], max_tokens: 8})
+  });
+}
+(async () => {
+  await post("claude-code-bridge-deepseek-v4-pro", "manual /model hot switch to DeepSeek");
+  await post("claude-haiku-4-5-20251001", "background title after hot switch");
+  fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({calls}, null, 2));
+})().catch((err) => {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+''',
+            encoding="utf-8",
+        )
+        run_env = dict(env)
+        run_env.pop("NODE_OPTIONS", None)
+        run_env.pop("BUN_OPTIONS", None)
+        run_env["ZHUMENG_CLAUDE_ACTIVE_MODEL_ID"] = "claude-opus-4-8"
+        run_env["CAPTURE_PATH"] = str(tmp_path / "capture-hot-switch.json")
+        subprocess.run([node, str(check)], cwd=cwd, env=run_env, check=True, text=True)
+        captured.update(json.loads((tmp_path / "capture-hot-switch.json").read_text(encoding="utf-8")))
+        return 0
+
+    run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="http://127.0.0.1:3017",
+        sub2api_auth="sub2api-entry",
+        native_managed_access_token="managed-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        bridge_live_models=("claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-deepseek-v4-flash"),
+        config_root=tmp_path,
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+    )
+
+    first_body = json.loads(captured["calls"][0]["body"])
+    second_body = json.loads(captured["calls"][1]["body"])
+    second_payload = captured["calls"][1]["payload"]
+    assert first_body["model"] == "claude-code-bridge-deepseek-v4-pro"
+    assert second_body["model"] == "claude-code-bridge-deepseek-v4-flash"
+    assert second_payload["model_id"] == "claude-code-bridge-deepseek-v4-flash"
+    assert second_payload["provider"] == "deepseek"
+    assert second_payload["formal_pool_allowed"] is False
+    assert second_payload["native_attestation_allowed"] is False
