@@ -30,7 +30,12 @@ const (
 	anthropicCompatUnsupportedMessage         = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
 )
 
-var anthropicCompatSafeToolNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+var anthropicCompatSafeToolNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+func isAnthropicCompatSafeToolName(name string) bool {
+	name = strings.TrimSpace(name)
+	return anthropicCompatSafeToolNameRE.MatchString(name) || name == "multi_tool_use.parallel"
+}
 
 var anthropicCompatOpenAIOnlyTopLevelFields = []string{
 	"audio",
@@ -311,7 +316,7 @@ func validateAnthropicCompatToolShapes(body []byte) bool {
 				return false
 			}
 			name := strings.TrimSpace(tool.Get("name").String())
-			if !anthropicCompatSafeToolNameRE.MatchString(name) || !tool.Get("input_schema").IsObject() {
+			if !isAnthropicCompatSafeToolName(name) || !tool.Get("input_schema").IsObject() {
 				valid = false
 				return false
 			}
@@ -332,7 +337,7 @@ func validateAnthropicCompatToolShapes(body []byte) bool {
 	switch choice.Get("type").String() {
 	case "tool":
 		name := strings.TrimSpace(choice.Get("name").String())
-		if !anthropicCompatSafeToolNameRE.MatchString(name) {
+		if !isAnthropicCompatSafeToolName(name) {
 			return false
 		}
 		_, ok := toolNames[name]

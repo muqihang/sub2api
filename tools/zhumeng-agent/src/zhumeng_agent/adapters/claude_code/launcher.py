@@ -10,8 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from .doctor import ClaudeCodeDoctorContext, evaluate_toolsearch_profile
 from .guard import NativeGuardConfig, NativeGuardMode, NativeGuardPlan, build_native_guard_plan, start_native_guard
-from .profile import CaptureMode, ClaudeCodeProfile, build_isolated_config_dir, build_safe_env, safe_profile_segment
+from .profile import CaptureMode, ClaudeCodeCapabilityProfile, ClaudeCodeProfile, apply_capability_profile, build_isolated_config_dir, build_safe_env, safe_profile_segment
 
 Runner = Callable[..., object]
 _VERSION_RE = re.compile(r"(?:claude(?:-code)?[/ ]+v?|Claude Code\s+v?)(\d+(?:\.\d+){1,3})", re.IGNORECASE)
@@ -120,6 +121,8 @@ def run_managed_claude_code(
     argv: Sequence[str] | None = None,
     inherited_env: Mapping[str, str] | None = None,
     profile_id: str = "prod",
+    capability_profile: ClaudeCodeCapabilityProfile | None = None,
+    toolsearch_doctor_context: ClaudeCodeDoctorContext | None = None,
     mode: NativeGuardMode = NativeGuardMode.PRODUCTION,
     start_guard=start_native_guard,
     process_runner=None,
@@ -165,6 +168,14 @@ def run_managed_claude_code(
             capture_mode=CaptureMode.PRODUCTION,
             node_extra_ca_certs=cert_path,
         )
+        toolsearch_status_env = _apply_toolsearch_capability_profile(
+            profile_ref=profile,
+            config_root=config_root,
+            profile_id=safe_profile_id,
+            capability_profile=capability_profile,
+            toolsearch_doctor_context=toolsearch_doctor_context,
+        )
+        profile = toolsearch_status_env[0]
         launch_plan = build_claude_code_launch_plan(
             executable=executable,
             profile=profile,
@@ -194,7 +205,7 @@ def run_managed_claude_code(
         )
         launch_plan = ClaudeCodeLaunchPlan(
             command=launch_plan.command,
-            env={**launch_plan.env, **route_hint_env, **provider_profile_env},
+            env={**launch_plan.env, **route_hint_env, **provider_profile_env, **toolsearch_status_env[1]},
             cwd=launch_plan.cwd,
             profile=launch_plan.profile,
             will_start_process=True,
@@ -215,6 +226,51 @@ def run_managed_claude_code(
 
 def _default_process_runner(command: list[str], *, env: Mapping[str, str], cwd: str | None) -> int:
     return subprocess.call(command, env=dict(env), cwd=cwd)
+
+
+def _apply_toolsearch_capability_profile(
+    *,
+    profile_ref: ClaudeCodeProfile,
+    config_root: Path,
+    profile_id: str,
+    capability_profile: ClaudeCodeCapabilityProfile | None,
+    toolsearch_doctor_context: ClaudeCodeDoctorContext | None,
+) -> tuple[ClaudeCodeProfile, dict[str, str]]:
+    if capability_profile is None:
+        return profile_ref, {}
+
+    decision = None
+    tool_search_env_value = None
+    if toolsearch_doctor_context is not None:
+        decision = evaluate_toolsearch_profile(capability_profile, toolsearch_doctor_context)
+        tool_search_env_value = decision.env_value
+
+    profile = apply_capability_profile(
+        profile_ref,
+        capability_profile,
+        tool_search_env_value=tool_search_env_value,
+    )
+    status_path = config_root / "claude-code" / profile_id / "toolsearch-status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    if decision is None:
+        status_payload = {
+            "status": "toolsearch_degraded",
+            "env_value": profile.enable_tool_search or "auto",
+            "degraded": True,
+            "reasons": ["doctor_context_missing"],
+        }
+    else:
+        status_payload = {
+            "status": decision.status,
+            "env_value": profile.enable_tool_search or "auto",
+            "degraded": bool(decision.degraded),
+            "reasons": list(decision.reasons),
+        }
+    status_path.write_text(
+        json.dumps(status_payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return profile, {"ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH": str(status_path)}
 
 
 def _ensure_control_plane_stub_cert(config_root: Path, *, profile_id: str) -> tuple[Path, Path]:

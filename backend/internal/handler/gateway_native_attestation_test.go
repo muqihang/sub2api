@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -13,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/service"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -40,7 +41,6 @@ func TestGatewayHandlerNativeCountTokensAttestationValidatesAndSetsContext(t *te
 	require.Equal(t, service.ClaudeCodeNativeInboundCountTokens, summary.InboundRoute)
 	require.Equal(t, service.ClaudeCodeNativeCCGatewayCount, summary.CCGatewayRoute)
 }
-
 
 func TestGatewayHandlerNativeCountTokensRespondsLocallyBeforeAccountSelection(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
@@ -96,6 +96,59 @@ func TestGatewayHandlerBridgeCountTokensRespondsLocallyWithoutPromptLeak(t *test
 	require.NotContains(t, rec.Body.String(), "bridge-count-token-prompt-must-not-leak")
 	require.Equal(t, "claude-code-bridge-deepseek-v4-flash", gjson.Get(rec.Body.String(), "model").String())
 	require.Greater(t, gjson.Get(rec.Body.String(), "input_tokens").Int(), int64(1))
+}
+
+func TestGatewayHandlerBridgeLiveStoresSafeAuditSummaryOnContext(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "deepseek-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "local-cache-audit-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "cache-test-v1")
+	var upstreamPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		upstreamPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_cache","type":"message","role":"assistant","content":[],"model":"deepseek-v4-flash","usage":{"input_tokens":20,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"claude-code-bridge-deepseek-v4-flash","upstream_model":"deepseek-v4-flash","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"`+upstream.URL+`/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_cache_audit":true,"supports_error_passthrough":true}]}`)
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-flash","system":"stable system prefix sentinel","messages":[{"role":"user","content":"stable context sentinel"},{"role":"user","content":"latest turn sentinel"}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	for key, values := range signedBridgeRouteHintHeadersForHandlerTest(t, body, "/v1/messages", time.Now()) {
+		for _, value := range values {
+			c.Request.Header.Add(key, value)
+		}
+	}
+
+	(&GatewayHandler{}).handleClaudeCodeBridgeMessagesSkeleton(c, body)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "/anthropic/v1/messages", upstreamPath)
+	rawAudit, ok := c.Get("claude_code_bridge_audit_summary")
+	require.True(t, ok)
+	audit, ok := rawAudit.(service.ClaudeCodeBridgeAuditSummary)
+	require.True(t, ok)
+	require.Equal(t, "claude_code_bridge_deepseek", audit.ClientType)
+	require.Equal(t, "anthropic_messages", audit.SelectedProtocol)
+	require.Equal(t, "/anthropic/v1/messages", audit.UpstreamPathKind)
+	require.Equal(t, "deepseek_prefix_kv", audit.ProviderCacheMechanism)
+	require.True(t, audit.CacheControlProviderIgnored)
+	require.Equal(t, 7, audit.CacheReadTokens)
+	require.Equal(t, 13, audit.CacheMissTokens)
+	dumped, err := json.Marshal(audit)
+	require.NoError(t, err)
+	require.NotContains(t, string(dumped), "stable system prefix sentinel")
+	require.NotContains(t, string(dumped), "latest turn sentinel")
 }
 
 func TestGatewayHandlerNativeCountTokensForgedMarkersFailClosed(t *testing.T) {

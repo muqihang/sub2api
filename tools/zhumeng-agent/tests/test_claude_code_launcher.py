@@ -21,7 +21,8 @@ from zhumeng_agent.adapters.claude_code.launcher import (
     detect_claude_code_version,
     run_managed_claude_code,
 )
-from zhumeng_agent.adapters.claude_code.profile import CaptureMode, ClaudeCodeProfile
+from zhumeng_agent.adapters.claude_code.doctor import ClaudeCodeDoctorContext
+from zhumeng_agent.adapters.claude_code.profile import CaptureMode, ClaudeCodeCapabilityProfile, ClaudeCodeProfile, ToolSearchMode
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROUTE_TRUST_SPEC = importlib.util.spec_from_file_location("claude_code_route_trust", REPO_ROOT / "tools" / "claude_code_route_trust.py")
@@ -128,6 +129,189 @@ def test_launch_plan_repr_does_not_expose_env_api_key(tmp_path: Path):
 
     assert "secret-entry-key" not in repr(plan)
 
+
+
+
+
+def test_managed_launch_applies_toolsearch_doctor_decision_to_start_env(tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        return 0
+
+    capability = ClaudeCodeCapabilityProfile(
+        profile_id="native-prod",
+        claude_code_version_family="2.1.x",
+        persona_profile_id="claude-code-native-prod",
+        tool_search_mode=ToolSearchMode.TRUE,
+        tool_search_healthcheck_passed=True,
+        control_plane_policy_version="cp-v1",
+        server_shape_healthcheck_version="shape-v1",
+    )
+    doctor_context = ClaudeCodeDoctorContext(
+        model="claude-sonnet-4-6",
+        claude_code_version="2.1.177",
+        has_mcp_deferred_tools=True,
+        has_pending_mcp_server=False,
+        disallowed_tools=set(),
+        model_supports_tool_reference=True,
+    )
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+        inherited_env={"ENABLE_TOOL_SEARCH": "false", "PATH": "/usr/bin"},
+        capability_profile=capability,
+        toolsearch_doctor_context=doctor_context,
+    )
+
+    assert result.returncode == 0
+    env = captured["env"]
+    assert env["ENABLE_TOOL_SEARCH"] == "true"
+    assert env["ZHUMENG_CLAUDE_TOOL_SEARCH_MODE"] == "true"
+    assert env["ZHUMENG_CLAUDE_CAPABILITY_PROFILE_ID"] == "native-prod"
+    artifact = json.loads(Path(env["ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH"]).read_text(encoding="utf-8"))
+    assert artifact == {
+        "status": "ready",
+        "env_value": "true",
+        "degraded": False,
+        "reasons": [],
+    }
+
+
+def test_managed_launch_records_toolsearch_degraded_when_doctor_fails(tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        return 0
+
+    capability = ClaudeCodeCapabilityProfile(
+        profile_id="native-prod",
+        claude_code_version_family="2.1.x",
+        persona_profile_id="claude-code-native-prod",
+        tool_search_mode=ToolSearchMode.TRUE,
+        tool_search_healthcheck_passed=False,
+        control_plane_policy_version="cp-v1",
+        server_shape_healthcheck_version="shape-v1",
+    )
+    doctor_context = ClaudeCodeDoctorContext(
+        model="claude-sonnet-4-6",
+        claude_code_version="2.1.177",
+        has_mcp_deferred_tools=True,
+        has_pending_mcp_server=False,
+        disallowed_tools=set(),
+        model_supports_tool_reference=True,
+    )
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=lambda *args, **kwargs: FakeGuard(),
+        process_runner=fake_runner,
+        inherited_env={"PATH": "/usr/bin"},
+        capability_profile=capability,
+        toolsearch_doctor_context=doctor_context,
+    )
+
+    assert result.returncode == 0
+    env = captured["env"]
+    assert env["ENABLE_TOOL_SEARCH"] == "auto"
+    artifact = json.loads(Path(env["ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH"]).read_text(encoding="utf-8"))
+    assert artifact["status"] == "toolsearch_degraded"
+    assert artifact["env_value"] == "auto"
+    assert artifact["degraded"] is True
+    assert artifact["reasons"] == ["healthcheck"]
+
+
+def test_managed_launch_records_toolsearch_degraded_without_doctor_context(tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        return 0
+
+    capability = ClaudeCodeCapabilityProfile(
+        profile_id="native-prod",
+        claude_code_version_family="2.1.x",
+        persona_profile_id="claude-code-native-prod",
+        tool_search_mode=ToolSearchMode.TRUE,
+        tool_search_healthcheck_passed=True,
+        control_plane_policy_version="cp-v1",
+        server_shape_healthcheck_version="shape-v1",
+    )
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=lambda *args, **kwargs: FakeGuard(),
+        process_runner=fake_runner,
+        inherited_env={"PATH": "/usr/bin"},
+        capability_profile=capability,
+    )
+
+    assert result.returncode == 0
+    env = captured["env"]
+    assert env["ENABLE_TOOL_SEARCH"] == "auto"
+    artifact = json.loads(Path(env["ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH"]).read_text(encoding="utf-8"))
+    assert artifact["status"] == "toolsearch_degraded"
+    assert artifact["env_value"] == "auto"
+    assert artifact["degraded"] is True
+    assert artifact["reasons"] == ["doctor_context_missing"]
 
 
 def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base_url(tmp_path: Path):

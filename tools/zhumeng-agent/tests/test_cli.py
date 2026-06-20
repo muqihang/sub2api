@@ -592,7 +592,7 @@ def test_reauth_does_not_promote_non_server_route_hint_secret(capsys, tmp_path: 
     assert store.payload.get("claude_code_route_hint_secret", "") == ""
     assert store.payload.get("claude_code_route_hint_secret_source", "") == ""
 
-def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: bytes = b"managed-claude-code", patches: dict[str, object] | None = None) -> tuple[Path, str, str]:
+def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: bytes = b'k.enum(["sonnet","opus","haiku","fable"]).optional()', patches: dict[str, object] | None = None) -> tuple[Path, str, str]:
     executable.parent.mkdir(parents=True, exist_ok=True)
     executable.write_bytes(payload)
     runtime_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
@@ -821,6 +821,7 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     managed_executable, runtime_hash, overlay_hash = write_fake_claude_runtime(
         runtime_root,
         tmp_path / "managed-runtime" / "claude",
+        payload=b"k.string().min(1).max(128).optional()               ",
         patches={
             "live_bridge_models_enabled": True,
             "live_bridge_model_allowlist": ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-agnes-2.0-flash"],
@@ -902,9 +903,116 @@ def test_claude_code_start_real_path_starts_loopback_guard(capsys, tmp_path: Pat
     assert calls[0]["route_hint_secret"] == "server-route-hint-secret"
     assert calls[0]["argv"] == ["--print"]
     assert calls[0]["guard_listen_port"] == 43117
+    assert calls[0]["capability_profile"].profile_id == "native-prod"
+    assert calls[0]["capability_profile"].tool_search_mode == "true"
+    assert calls[0]["capability_profile"].tool_search_healthcheck_passed is False
+    assert calls[0]["toolsearch_doctor_context"] is None
     dumped = json.dumps(data)
     assert "test-zhumeng-claude-code-cli-key" not in dumped
     assert "attestation-secret" not in dumped
+
+
+def test_claude_code_start_passes_capability_profile_and_toolsearch_doctor(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "http://127.0.0.1:18080",
+                "access_token": "eyJ.agent-login-jwt",
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
+                "claude_code_sub2api_api_key_configured": True,
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+                "claude_code_capability_profile": {
+                    "profile_id": "native-prod",
+                    "claude_code_version_family": "2.1.x",
+                    "persona_profile_id": "claude-code-native-prod",
+                    "tool_search_mode": "true",
+                    "control_plane_policy_version": "cp-v1",
+                    "server_shape_healthcheck_version": "shape-v1",
+                    "tool_search_healthcheck_passed": True,
+                },
+                "claude_code_toolsearch_doctor_context": {
+                    "model": "claude-sonnet-4-6",
+                    "has_mcp_deferred_tools": True,
+                    "has_pending_mcp_server": False,
+                    "disallowed_tools": [],
+                    "model_supports_tool_reference": True,
+                },
+            }
+
+        def update(self, patch):
+            return {**self.read(), **patch}
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(
+        runtime_root,
+        tmp_path / "managed-runtime" / "claude",
+        payload=b'k.enum(["sonnet","opus","haiku","fable"]).optional()',
+    )
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(
+                env={
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                    "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+                    "ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH": str(tmp_path / "toolsearch-status.json"),
+                },
+                cwd=kwargs["project_cwd"],
+            ),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117),
+            ),
+        )
+
+    cli.default_state_store = lambda: FakeStore()
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    capability = calls[0]["capability_profile"]
+    doctor = calls[0]["toolsearch_doctor_context"]
+    assert capability.profile_id == "native-prod"
+    assert capability.tool_search_mode == "true"
+    assert capability.tool_search_healthcheck_passed is True
+    assert capability.control_plane_policy_version == "cp-v1"
+    assert capability.server_shape_healthcheck_version == "shape-v1"
+    assert doctor.model == "claude-sonnet-4-6"
+    assert doctor.claude_code_version == data["runtime"]["version"]
+    assert doctor.has_mcp_deferred_tools is True
+    assert doctor.has_pending_mcp_server is False
+    assert calls[0]["capability_profile"].kill_switches == ()
+    assert data["toolsearch"]["status_path"].endswith("toolsearch-status.json")
+    assert "test-zhumeng-claude-code-cli-key" not in json.dumps(data)
 
 
 def test_claude_code_start_prefers_dedicated_sub2api_key_over_agent_jwt(capsys, tmp_path: Path, monkeypatch):
@@ -1119,6 +1227,12 @@ def test_claude_code_start_reads_state_root_state_json_without_env_override(caps
     monkeypatch.delenv("ZHUMENG_AGENT_STATE_PATH", raising=False)
     monkeypatch.setattr(cli, "state_dir", lambda app_name="zhumeng-agent": tmp_path / "default-state", raising=False)
     monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root_arg: FakeRuntime, raising=False)
+    monkeypatch.setattr(
+        cli,
+        "apply_managed_runtime_agent_model_schema_patch",
+        lambda runtime_root_arg, executable_arg: {"status": "already_patched", "runtime_hash_after": FakeRuntime.runtime_hash},
+        raising=False,
+    )
     monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
     monkeypatch.setattr(cli, "choose_local_proxy_port", lambda preferred=None: 18181, raising=False)
 

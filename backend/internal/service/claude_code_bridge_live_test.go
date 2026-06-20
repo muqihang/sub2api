@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,71 @@ func TestClaudeCodeBridgeAnthropicLiveInjectsDeepSeekCacheControlInUpstreamBody(
 	require.Contains(t, gotBody, `"content":[{"cache_control":{"type":"ephemeral"},"text":"stable context","type":"text"}]`)
 	require.Contains(t, gotBody, `"tools":[{"cache_control":{"type":"ephemeral"}`)
 	require.Contains(t, gotBody, `"content":"latest turn"`)
+}
+
+func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekCacheTruthWithoutRawBody(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "deepseek-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "local-cache-audit-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "cache-test-v1")
+	var gotBody string
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_cache","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":20,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system prefix sentinel","messages":[{"role":"user","content":"stable context sentinel"},{"role":"user","content":"latest turn sentinel"}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Equal(t, "/anthropic/v1/messages", gotPath)
+	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
+	require.Equal(t, "anthropic_messages", result.Audit.PreferredProtocol)
+	require.Equal(t, "anthropic_messages", result.Audit.SelectedProtocol)
+	require.False(t, result.Audit.FallbackUsed)
+	require.Equal(t, "/anthropic/v1/messages", result.Audit.UpstreamPathKind)
+	require.Equal(t, "deepseek_prefix_kv", result.Audit.ProviderCacheMechanism)
+	require.True(t, result.Audit.CacheControlPresent)
+	require.ElementsMatch(t, []string{"history", "system", "tools", "top_level"}, result.Audit.CacheControlLocations)
+	require.True(t, result.Audit.CacheControlProviderIgnored)
+	require.Regexp(t, `^hmac-sha256:cache-test-v1:[a-f0-9]{64}$`, result.Audit.StablePrefixHMAC)
+	require.Equal(t, "lt_1k", result.Audit.StablePrefixTokenBucket)
+	require.Equal(t, 7, result.Audit.CacheReadTokens)
+	require.Equal(t, 13, result.Audit.CacheMissTokens)
+	rawAudit, err := json.Marshal(result.Audit)
+	require.NoError(t, err)
+	require.NotContains(t, string(rawAudit), "stable system prefix sentinel")
+	require.NotContains(t, string(rawAudit), "stable context sentinel")
+	require.NotContains(t, string(rawAudit), "latest turn sentinel")
+}
+
+func TestClaudeCodeBridgeAnthropicLiveAuditsCurrentTurnCacheControlLocation(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"stable history"},{"role":"user","content":[{"type":"text","text":"latest turn","cache_control":{"type":"ephemeral"}}]}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Contains(t, result.Audit.CacheControlLocations, "current")
 }
 
 func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekPromptCacheFields(t *testing.T) {
@@ -338,8 +404,15 @@ func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *te
 	require.False(t, result.Audit.NativeAttested)
 	require.False(t, result.Audit.FormalPoolAllowed)
 	require.Equal(t, "openai_chat_completions", result.Audit.PreferredProtocol)
+	require.Equal(t, "openai_chat_completions", result.Audit.SelectedProtocol)
+	require.True(t, result.Audit.FallbackUsed)
 	require.Equal(t, "anthropic_cache_fixture_failed", result.Audit.FallbackReason)
+	require.Equal(t, "/v1/chat/completions", result.Audit.UpstreamPathKind)
+	require.Equal(t, "deepseek_prefix_kv", result.Audit.ProviderCacheMechanism)
+	require.False(t, result.Audit.CacheControlPresent)
+	require.True(t, result.Audit.CacheControlProviderIgnored)
 	require.Equal(t, 7, result.Audit.CacheReadTokens)
+	require.Equal(t, 4, result.Audit.CacheMissTokens)
 }
 
 func TestCP6DeepSeekOpenAICompatibleFallbackReasoningOnlyDoesNotFinalizeAsVisibleText(t *testing.T) {

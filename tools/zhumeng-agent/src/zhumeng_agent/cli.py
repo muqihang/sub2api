@@ -38,6 +38,8 @@ from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup,
 from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
 from .adapters.claude_code.launcher import run_managed_claude_code
+from .adapters.claude_code.doctor import ClaudeCodeDoctorContext
+from .adapters.claude_code.profile import ClaudeCodeCapabilityProfile, FgtsMode, ToolSearchMode
 from .adapters.claude_code.runtime_installer import (
     RuntimeInstallerError,
     apply_managed_runtime_agent_model_schema_patch,
@@ -1744,6 +1746,11 @@ def build_claude_code_start_payload(
     route_hint_secret = require_server_route_hint_secret(state)
     claude_code_sub2api_auth = resolve_claude_code_sub2api_auth(state, state_root=state_root)
     native_access_token, native_managed_session_id, native_device_id = resolve_claude_code_native_managed_credentials(state)
+    capability_profile = _claude_code_capability_profile_from_state(state)
+    toolsearch_doctor_context = _claude_code_toolsearch_doctor_context_from_state(
+        state,
+        claude_code_version=active_runtime.upstream_version,
+    )
     result = run_managed_claude_code(
         executable=active_runtime.executable,
         repo_root=Path(__file__).resolve().parents[4],
@@ -1762,6 +1769,8 @@ def build_claude_code_start_payload(
         guard_listen_port=selected_guard_port,
         argv=argv,
         inherited_env=dict(os.environ),
+        capability_profile=capability_profile,
+        toolsearch_doctor_context=toolsearch_doctor_context,
     )
     guard_listen = str(result.guard_ready.get("listen", ""))
     return {
@@ -1785,7 +1794,83 @@ def build_claude_code_start_payload(
             "bridge_live_models": list(bridge_live_models),
             "agent_model_schema_patch": agent_schema_patch,
         },
+        **(
+            {
+                "toolsearch": {
+                    "status_path": result.launch_plan.env.get("ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH", ""),
+                    "capability_profile_id": capability_profile.profile_id,
+                }
+            }
+            if capability_profile is not None
+            else {}
+        ),
     }
+
+
+def _claude_code_capability_profile_from_state(state: Mapping[str, object]) -> ClaudeCodeCapabilityProfile | None:
+    raw = state.get("claude_code_capability_profile")
+    if not isinstance(raw, Mapping):
+        raw = {}
+    return ClaudeCodeCapabilityProfile(
+        profile_id=_string_field(raw, "profile_id", "native-prod"),
+        claude_code_version_family=_string_field(raw, "claude_code_version_family", "2.1.x"),
+        persona_profile_id=_string_field(raw, "persona_profile_id", "claude-code-native-prod"),
+        tool_search_mode=ToolSearchMode(_string_field(raw, "tool_search_mode", ToolSearchMode.TRUE.value)),
+        fgts_mode=FgtsMode(_string_field(raw, "fgts_mode", FgtsMode.OBSERVE_ONLY.value)),
+        control_plane_policy_version=_string_field(raw, "control_plane_policy_version", ""),
+        capture_level=_string_field(raw, "capture_level", "summary"),
+        netwatch_required=_bool_field(raw, "netwatch_required", True),
+        server_shape_healthcheck_version=_string_field(raw, "server_shape_healthcheck_version", ""),
+        tool_search_healthcheck_passed=_bool_field(raw, "tool_search_healthcheck_passed", False),
+        kill_switches=tuple(
+            item
+            for item in (_string_list_field(raw, "kill_switches"))
+            if item
+        ),
+    )
+
+
+def _claude_code_toolsearch_doctor_context_from_state(
+    state: Mapping[str, object],
+    *,
+    claude_code_version: str,
+) -> ClaudeCodeDoctorContext | None:
+    raw = state.get("claude_code_toolsearch_doctor_context")
+    if not isinstance(raw, Mapping):
+        return None
+    return ClaudeCodeDoctorContext(
+        model=_string_field(raw, "model", "claude-sonnet-4-6"),
+        claude_code_version=_string_field(raw, "claude_code_version", claude_code_version),
+        has_mcp_deferred_tools=_bool_field(raw, "has_mcp_deferred_tools", False),
+        has_pending_mcp_server=_bool_field(raw, "has_pending_mcp_server", False),
+        disallowed_tools=set(_string_list_field(raw, "disallowed_tools")),
+        model_supports_tool_reference=_bool_field(raw, "model_supports_tool_reference", True),
+    )
+
+
+def _string_field(raw: Mapping[str, object], key: str, default: str) -> str:
+    value = raw.get(key, default)
+    if isinstance(value, str):
+        value = value.strip()
+    return str(value or default)
+
+
+def _bool_field(raw: Mapping[str, object], key: str, default: bool) -> bool:
+    value = raw.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _string_list_field(raw: Mapping[str, object], key: str) -> list[str]:
+    value = raw.get(key, ())
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, Sequence):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[str, ...]:

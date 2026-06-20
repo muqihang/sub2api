@@ -2072,7 +2072,8 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 	}
 	bridgeDecision := decision.BridgeRouteDecision()
 	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeAnthropicLiveEligible(bridgeDecision) {
-		if _, err := service.StreamClaudeCodeBridgeAnthropicLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider), c.Writer); err != nil {
+		result, err := service.StreamClaudeCodeBridgeAnthropicLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider), c.Writer)
+		if err != nil {
 			if c.Writer.Written() {
 				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
 				return
@@ -2080,13 +2081,15 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
 			return
 		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
 		if !c.Writer.Written() {
 			c.Status(http.StatusOK)
 		}
 		return
 	}
 	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeOpenAILiveEligible(bridgeDecision) {
-		if _, err := service.StreamClaudeCodeBridgeOpenAILive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv(bridgeDecision.Provider), c.Writer); err != nil {
+		result, err := service.StreamClaudeCodeBridgeOpenAILive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv(bridgeDecision.Provider), c.Writer)
+		if err != nil {
 			if c.Writer.Written() {
 				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
 				return
@@ -2094,13 +2097,15 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
 			return
 		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
 		if !c.Writer.Written() {
 			c.Status(http.StatusOK)
 		}
 		return
 	}
 	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(bridgeDecision) {
-		if _, err := service.StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeDeepSeekAPIKeyFromEnv(), c.Writer); err != nil {
+		result, err := service.StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeDeepSeekAPIKeyFromEnv(), c.Writer)
+		if err != nil {
 			if c.Writer.Written() {
 				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
 				return
@@ -2108,6 +2113,7 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
 			return
 		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
 		if !c.Writer.Written() {
 			c.Status(http.StatusOK)
 		}
@@ -2123,6 +2129,16 @@ func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, 
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 	_, _ = c.Writer.Write(result.Body)
+}
+
+func setClaudeCodeBridgeAuditSummary(c *gin.Context, summary service.ClaudeCodeBridgeAuditSummary) {
+	if c == nil {
+		return
+	}
+	c.Set("claude_code_bridge_audit_summary", summary)
+	if c.Request != nil {
+		c.Request = c.Request.WithContext(service.WithClaudeCodeBridgeAuditSummary(c.Request.Context(), summary))
+	}
 }
 
 // CountTokens handles token counting endpoint

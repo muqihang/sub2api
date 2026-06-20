@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -58,34 +62,43 @@ type ClaudeCodeBridgeRouteDecision struct {
 }
 
 type ClaudeCodeBridgeAuditSummary struct {
-	ClientType               string `json:"client_type"`
-	Route                    string `json:"route"`
-	Provider                 string `json:"provider"`
-	ModelID                  string `json:"model_id"`
-	NativeAttested           bool   `json:"native_attested"`
-	FormalPoolAllowed        bool   `json:"formal_pool_allowed"`
-	RuntimeHash              string `json:"runtime_hash,omitempty"`
-	OverlayHash              string `json:"overlay_hash,omitempty"`
-	CatalogHash              string `json:"catalog_hash,omitempty"`
-	CatalogVersion           string `json:"catalog_version,omitempty"`
-	ProviderOwner            string `json:"provider_owner,omitempty"`
-	CredentialScope          string `json:"credential_scope"`
-	GatewayLocation          string `json:"gateway_location,omitempty"`
-	PreferredProtocol        string `json:"preferred_protocol,omitempty"`
-	FallbackProtocol         string `json:"fallback_protocol,omitempty"`
-	FallbackReason           string `json:"fallback_reason,omitempty"`
-	CapabilitiesVerified     bool   `json:"capabilities_verified,omitempty"`
-	SupportsText             bool   `json:"supports_text,omitempty"`
-	SupportsTools            bool   `json:"supports_tools,omitempty"`
-	SupportsStreaming        bool   `json:"supports_streaming,omitempty"`
-	SupportsUsage            bool   `json:"supports_usage,omitempty"`
-	SupportsCacheAudit       bool   `json:"supports_cache_audit,omitempty"`
-	SupportsReasoningMapping bool   `json:"supports_reasoning_mapping,omitempty"`
-	SupportsErrorPassthrough bool   `json:"supports_error_passthrough,omitempty"`
-	CachePolicy              string `json:"cache_policy,omitempty"`
-	CacheReadTokens          int    `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens         int    `json:"cache_write_tokens,omitempty"`
-	CacheMissTokens          int    `json:"cache_miss_tokens,omitempty"`
+	ClientType                  string   `json:"client_type"`
+	Route                       string   `json:"route"`
+	Provider                    string   `json:"provider"`
+	ModelID                     string   `json:"model_id"`
+	NativeAttested              bool     `json:"native_attested"`
+	FormalPoolAllowed           bool     `json:"formal_pool_allowed"`
+	RuntimeHash                 string   `json:"runtime_hash,omitempty"`
+	OverlayHash                 string   `json:"overlay_hash,omitempty"`
+	CatalogHash                 string   `json:"catalog_hash,omitempty"`
+	CatalogVersion              string   `json:"catalog_version,omitempty"`
+	ProviderOwner               string   `json:"provider_owner,omitempty"`
+	CredentialScope             string   `json:"credential_scope"`
+	GatewayLocation             string   `json:"gateway_location,omitempty"`
+	PreferredProtocol           string   `json:"preferred_protocol,omitempty"`
+	SelectedProtocol            string   `json:"selected_protocol,omitempty"`
+	FallbackProtocol            string   `json:"fallback_protocol,omitempty"`
+	FallbackReason              string   `json:"fallback_reason,omitempty"`
+	FallbackUsed                bool     `json:"fallback_used,omitempty"`
+	CapabilitiesVerified        bool     `json:"capabilities_verified,omitempty"`
+	SupportsText                bool     `json:"supports_text,omitempty"`
+	SupportsTools               bool     `json:"supports_tools,omitempty"`
+	SupportsStreaming           bool     `json:"supports_streaming,omitempty"`
+	SupportsUsage               bool     `json:"supports_usage,omitempty"`
+	SupportsCacheAudit          bool     `json:"supports_cache_audit,omitempty"`
+	SupportsReasoningMapping    bool     `json:"supports_reasoning_mapping,omitempty"`
+	SupportsErrorPassthrough    bool     `json:"supports_error_passthrough,omitempty"`
+	CachePolicy                 string   `json:"cache_policy,omitempty"`
+	ProviderCacheMechanism      string   `json:"provider_cache_mechanism,omitempty"`
+	UpstreamPathKind            string   `json:"upstream_path_kind,omitempty"`
+	CacheControlPresent         bool     `json:"cache_control_present,omitempty"`
+	CacheControlLocations       []string `json:"cache_control_locations,omitempty"`
+	CacheControlProviderIgnored bool     `json:"cache_control_provider_ignored,omitempty"`
+	StablePrefixHMAC            string   `json:"stable_prefix_hmac,omitempty"`
+	StablePrefixTokenBucket     string   `json:"stable_prefix_token_bucket,omitempty"`
+	CacheReadTokens             int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens            int      `json:"cache_write_tokens,omitempty"`
+	CacheMissTokens             int      `json:"cache_miss_tokens,omitempty"`
 }
 
 type ClaudeCodeBridgeStreamResult struct {
@@ -104,6 +117,29 @@ type ClaudeCodeBridgeAnthropicLiveStreamResult struct {
 	StatusCode int
 	Header     http.Header
 	Audit      ClaudeCodeBridgeAuditSummary
+}
+
+type claudeCodeBridgeRequestAudit struct {
+	SelectedProtocol            string
+	FallbackUsed                bool
+	UpstreamPathKind            string
+	ProviderCacheMechanism      string
+	CacheControlPresent         bool
+	CacheControlLocations       []string
+	CacheControlProviderIgnored bool
+	StablePrefixHMAC            string
+	StablePrefixTokenBucket     string
+}
+
+type claudeCodeBridgeAuditSummaryContextKey struct{}
+
+func WithClaudeCodeBridgeAuditSummary(ctx context.Context, summary ClaudeCodeBridgeAuditSummary) context.Context {
+	return context.WithValue(ctx, claudeCodeBridgeAuditSummaryContextKey{}, summary)
+}
+
+func ClaudeCodeBridgeAuditSummaryFromContext(ctx context.Context) (ClaudeCodeBridgeAuditSummary, bool) {
+	summary, ok := ctx.Value(claudeCodeBridgeAuditSummaryContextKey{}).(ClaudeCodeBridgeAuditSummary)
+	return summary, ok
 }
 
 func ClaudeCodeProviderBridgeLiveRequestAllowed(decision ClaudeCodeProviderRouteDecision) bool {
@@ -199,7 +235,9 @@ func StreamClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.C
 	if err != nil {
 		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildAnthropicMessagesURL(decision.AnthropicBaseURL), bytes.NewReader(upstreamBody))
+	upstreamURL := buildAnthropicMessagesURL(decision.AnthropicBaseURL)
+	requestAudit := buildClaudeCodeBridgeAnthropicRequestAudit(decision, upstreamBody, upstreamURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(upstreamBody))
 	if err != nil {
 		return ClaudeCodeBridgeAnthropicLiveStreamResult{}, err
 	}
@@ -222,7 +260,7 @@ func StreamClaudeCodeBridgeAnthropicLive(ctx context.Context, httpClient *http.C
 	return ClaudeCodeBridgeAnthropicLiveStreamResult{
 		StatusCode: resp.StatusCode,
 		Header:     header,
-		Audit:      buildClaudeCodeBridgeAuditSummary(decision, fixture),
+		Audit:      buildClaudeCodeBridgeAuditSummaryWithRequest(decision, fixture, requestAudit),
 	}, nil
 }
 
@@ -334,35 +372,209 @@ func BuildClaudeCodeBridgeFixtureSSE(decision ClaudeCodeBridgeRouteDecision, bod
 }
 
 func buildClaudeCodeBridgeAuditSummary(decision ClaudeCodeBridgeRouteDecision, fixture ClaudeCodeBridgeProviderFixture) ClaudeCodeBridgeAuditSummary {
+	return buildClaudeCodeBridgeAuditSummaryWithRequest(decision, fixture, claudeCodeBridgeRequestAudit{})
+}
+
+func buildClaudeCodeBridgeAuditSummaryWithRequest(decision ClaudeCodeBridgeRouteDecision, fixture ClaudeCodeBridgeProviderFixture, requestAudit claudeCodeBridgeRequestAudit) ClaudeCodeBridgeAuditSummary {
+	selectedProtocol := safeClaudeCodeNativeLabel(requestAudit.SelectedProtocol)
+	if selectedProtocol == "" {
+		selectedProtocol = safeClaudeCodeNativeLabel(decision.PreferredProtocol)
+	}
 	return ClaudeCodeBridgeAuditSummary{
-		ClientType:               decision.ClientType,
-		Route:                    decision.Route,
-		Provider:                 decision.Provider,
-		ModelID:                  decision.ModelID,
-		NativeAttested:           false,
-		FormalPoolAllowed:        false,
-		RuntimeHash:              decision.RuntimeHash,
-		OverlayHash:              decision.OverlayHash,
-		CatalogHash:              decision.CatalogHash,
-		CatalogVersion:           safeClaudeCodeNativeLabel(decision.CatalogVersion),
-		ProviderOwner:            safeClaudeCodeNativeLabel(decision.ProviderOwner),
-		CredentialScope:          decision.CredentialScope,
-		GatewayLocation:          safeClaudeCodeNativeLabel(decision.GatewayLocation),
-		PreferredProtocol:        safeClaudeCodeNativeLabel(decision.PreferredProtocol),
-		FallbackProtocol:         safeClaudeCodeNativeLabel(decision.FallbackProtocol),
-		FallbackReason:           safeClaudeCodeNativeLabel(decision.FallbackReason),
-		CapabilitiesVerified:     decision.CapabilitiesVerified,
-		SupportsText:             decision.SupportsText,
-		SupportsTools:            decision.SupportsTools,
-		SupportsStreaming:        decision.SupportsStreaming,
-		SupportsUsage:            decision.SupportsUsage,
-		SupportsCacheAudit:       decision.SupportsCacheAudit,
-		SupportsReasoningMapping: decision.SupportsReasoningMapping,
-		SupportsErrorPassthrough: decision.SupportsErrorPassthrough,
-		CachePolicy:              decision.CachePolicy,
-		CacheReadTokens:          fixture.CacheReadTokens,
-		CacheWriteTokens:         fixture.CacheWriteTokens,
-		CacheMissTokens:          fixture.CacheMissTokens,
+		ClientType:                  decision.ClientType,
+		Route:                       decision.Route,
+		Provider:                    decision.Provider,
+		ModelID:                     decision.ModelID,
+		NativeAttested:              false,
+		FormalPoolAllowed:           false,
+		RuntimeHash:                 decision.RuntimeHash,
+		OverlayHash:                 decision.OverlayHash,
+		CatalogHash:                 decision.CatalogHash,
+		CatalogVersion:              safeClaudeCodeNativeLabel(decision.CatalogVersion),
+		ProviderOwner:               safeClaudeCodeNativeLabel(decision.ProviderOwner),
+		CredentialScope:             decision.CredentialScope,
+		GatewayLocation:             safeClaudeCodeNativeLabel(decision.GatewayLocation),
+		PreferredProtocol:           safeClaudeCodeNativeLabel(decision.PreferredProtocol),
+		SelectedProtocol:            selectedProtocol,
+		FallbackProtocol:            safeClaudeCodeNativeLabel(decision.FallbackProtocol),
+		FallbackReason:              safeClaudeCodeNativeLabel(decision.FallbackReason),
+		FallbackUsed:                requestAudit.FallbackUsed,
+		CapabilitiesVerified:        decision.CapabilitiesVerified,
+		SupportsText:                decision.SupportsText,
+		SupportsTools:               decision.SupportsTools,
+		SupportsStreaming:           decision.SupportsStreaming,
+		SupportsUsage:               decision.SupportsUsage,
+		SupportsCacheAudit:          decision.SupportsCacheAudit,
+		SupportsReasoningMapping:    decision.SupportsReasoningMapping,
+		SupportsErrorPassthrough:    decision.SupportsErrorPassthrough,
+		CachePolicy:                 decision.CachePolicy,
+		ProviderCacheMechanism:      safeClaudeCodeNativeLabel(requestAudit.ProviderCacheMechanism),
+		UpstreamPathKind:            safeClaudeCodeBridgeAuditPathKind(requestAudit.UpstreamPathKind),
+		CacheControlPresent:         requestAudit.CacheControlPresent,
+		CacheControlLocations:       requestAudit.CacheControlLocations,
+		CacheControlProviderIgnored: requestAudit.CacheControlProviderIgnored,
+		StablePrefixHMAC:            safeClaudeCodeBridgeAuditHMAC(requestAudit.StablePrefixHMAC),
+		StablePrefixTokenBucket:     safeClaudeCodeNativeLabel(requestAudit.StablePrefixTokenBucket),
+		CacheReadTokens:             fixture.CacheReadTokens,
+		CacheWriteTokens:            fixture.CacheWriteTokens,
+		CacheMissTokens:             fixture.CacheMissTokens,
+	}
+}
+
+func buildClaudeCodeBridgeAnthropicRequestAudit(decision ClaudeCodeBridgeRouteDecision, upstreamBody []byte, upstreamURL string) claudeCodeBridgeRequestAudit {
+	out := claudeCodeBridgeRequestAudit{
+		SelectedProtocol: strings.TrimSpace(decision.PreferredProtocol),
+		FallbackUsed:     false,
+		UpstreamPathKind: safeClaudeCodeBridgeUpstreamPathKind(upstreamURL),
+	}
+	if strings.TrimSpace(decision.Provider) == "deepseek" && strings.TrimSpace(decision.PreferredProtocol) == "anthropic_messages" {
+		out.ProviderCacheMechanism = "deepseek_prefix_kv"
+		out.CacheControlProviderIgnored = true
+	}
+	out.CacheControlLocations = claudeCodeBridgeCacheControlLocations(upstreamBody)
+	out.CacheControlPresent = len(out.CacheControlLocations) > 0
+	out.StablePrefixHMAC, out.StablePrefixTokenBucket = claudeCodeBridgeStablePrefixAudit(decision, upstreamBody)
+	return out
+}
+
+func safeClaudeCodeBridgeUpstreamPathKind(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil {
+		return ""
+	}
+	path := strings.TrimSpace(parsed.EscapedPath())
+	if path == "" {
+		return "/"
+	}
+	return path
+}
+
+func safeClaudeCodeBridgeAuditPathKind(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || len(path) > 128 || strings.Contains(path, "?") || strings.Contains(path, "#") {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		return ""
+	}
+	for _, r := range path {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == '/' {
+			continue
+		}
+		return ""
+	}
+	return path
+}
+
+func safeClaudeCodeBridgeAuditHMAC(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "hmac-sha256:") || len(value) > 128 {
+		return ""
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 || parts[0] != "hmac-sha256" || parts[2] == "" {
+		return ""
+	}
+	if safeClaudeCodeNativeLabel(parts[1]) != parts[1] || len(parts[2]) != 64 {
+		return ""
+	}
+	for _, r := range parts[2] {
+		if (r >= 'a' && r <= 'f') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func claudeCodeBridgeCacheControlLocations(body []byte) []string {
+	locations := map[string]struct{}{}
+	if gjson.GetBytes(body, "cache_control").Exists() {
+		locations["top_level"] = struct{}{}
+	}
+	if gjson.GetBytes(body, "system.#.cache_control").Exists() {
+		locations["system"] = struct{}{}
+	}
+	if gjson.GetBytes(body, "tools.#.cache_control").Exists() {
+		locations["tools"] = struct{}{}
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if messages.IsArray() {
+		items := messages.Array()
+		lastIndex := len(items) - 1
+		for i := range items {
+			if gjson.GetBytes(body, fmt.Sprintf("messages.%d.content.#.cache_control", i)).Exists() ||
+				gjson.GetBytes(body, fmt.Sprintf("messages.%d.cache_control", i)).Exists() {
+				if i == lastIndex {
+					locations["current"] = struct{}{}
+				} else {
+					locations["history"] = struct{}{}
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(locations))
+	for location := range locations {
+		out = append(out, location)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func claudeCodeBridgeStablePrefixAudit(decision ClaudeCodeBridgeRouteDecision, body []byte) (string, string) {
+	secret := os.Getenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY")
+	if strings.TrimSpace(secret) == "" {
+		return "", ""
+	}
+	canonical, ok := claudeCodeBridgeStablePrefixCanonical(decision, body)
+	if !ok {
+		return "", ""
+	}
+	keyID := safeClaudeCodeNativeLabel(os.Getenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID"))
+	if keyID == "" {
+		keyID = "local-cache-audit-v1"
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(canonical)
+	return "hmac-sha256:" + keyID + ":" + hex.EncodeToString(mac.Sum(nil)), claudeCodeBridgeTokenBucket(len(canonical))
+}
+
+func claudeCodeBridgeStablePrefixCanonical(decision ClaudeCodeBridgeRouteDecision, body []byte) ([]byte, bool) {
+	var payload map[string]any
+	if len(body) == 0 || json.Unmarshal(body, &payload) != nil {
+		return nil, false
+	}
+	stable := map[string]any{
+		"provider": strings.TrimSpace(decision.Provider),
+		"model":    claudeCodeBridgeEffectiveUpstreamModel(decision),
+	}
+	if system, ok := payload["system"]; ok {
+		stable["system"] = system
+	}
+	if tools, ok := payload["tools"]; ok {
+		stable["tools"] = tools
+	}
+	if rawMessages, ok := payload["messages"].([]any); ok && len(rawMessages) > 1 {
+		stable["messages"] = rawMessages[:len(rawMessages)-1]
+	}
+	canonical, err := json.Marshal(stable)
+	if err != nil {
+		return nil, false
+	}
+	return canonical, true
+}
+
+func claudeCodeBridgeTokenBucket(canonicalBytes int) string {
+	estimatedTokens := canonicalBytes / 4
+	switch {
+	case estimatedTokens < 1000:
+		return "lt_1k"
+	case estimatedTokens < 4000:
+		return "1k_4k"
+	case estimatedTokens < 16000:
+		return "4k_16k"
+	default:
+		return "gt_16k"
 	}
 }
 
@@ -413,7 +625,7 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 			name, _ := tool["name"].(string)
 			_, schemaOK := tool["input_schema"].(map[string]any)
 			name = strings.TrimSpace(name)
-			if !schemaOK || !anthropicCompatSafeToolNameRE.MatchString(name) {
+			if !schemaOK || !isAnthropicCompatSafeToolName(name) {
 				return fmt.Errorf("claude code bridge tool shape is invalid")
 			}
 			toolNames[name] = struct{}{}
@@ -432,7 +644,7 @@ func validateClaudeCodeBridgeBodyBinding(decision ClaudeCodeBridgeRouteDecision,
 		case "tool":
 			name, _ := choice["name"].(string)
 			name = strings.TrimSpace(name)
-			if !anthropicCompatSafeToolNameRE.MatchString(name) {
+			if !isAnthropicCompatSafeToolName(name) {
 				return fmt.Errorf("claude code bridge tool choice shape is invalid")
 			}
 			if _, ok := toolNames[name]; !ok {
@@ -642,13 +854,13 @@ func claudeCodeBridgeSkeletonToolName(body []byte) string {
 		return ""
 	}
 	if choice, ok := payload["tool_choice"].(map[string]any); ok && choice["type"] == "tool" {
-		if name, ok := choice["name"].(string); ok && anthropicCompatSafeToolNameRE.MatchString(strings.TrimSpace(name)) {
+		if name, ok := choice["name"].(string); ok && isAnthropicCompatSafeToolName(name) {
 			return strings.TrimSpace(name)
 		}
 	}
 	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
 		if tool, ok := tools[0].(map[string]any); ok {
-			if name, ok := tool["name"].(string); ok && anthropicCompatSafeToolNameRE.MatchString(strings.TrimSpace(name)) {
+			if name, ok := tool["name"].(string); ok && isAnthropicCompatSafeToolName(name) {
 				return strings.TrimSpace(name)
 			}
 		}
@@ -869,6 +1081,9 @@ func collectClaudeCodeBridgeProviderUsageNode(usageNode gjson.Result, fixture *C
 		fixture.CacheReadTokens = int(v.Int())
 	}
 	if v := usageNode.Get("cached_tokens"); v.Exists() && fixture.CacheReadTokens == 0 && v.Int() > 0 {
+		fixture.CacheReadTokens = int(v.Int())
+	}
+	if v := usageNode.Get("prompt_tokens_details.cached_tokens"); v.Exists() && fixture.CacheReadTokens == 0 && v.Int() > 0 {
 		fixture.CacheReadTokens = int(v.Int())
 	}
 	if v := usageNode.Get("prompt_cache_hit_tokens"); v.Exists() && int(v.Int()) > fixture.CacheReadTokens {

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/tidwall/gjson"
 )
 
 type ClaudeCodeBridgeOpenAILiveResult struct {
@@ -290,15 +291,15 @@ func streamClaudeCodeBridgeOpenAIChatCompletionsFallback(ctx context.Context, ht
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, fmt.Errorf("claude code OpenAI bridge chat completions fallback upstream status %d: %s", resp.StatusCode, sanitizeClaudeCodeBridgeErrorMessage(string(limited)))
 	}
 	applyClaudeCodeBridgeLiveResponseHeaders(dst, header)
-	cacheReadTokens, err := copyClaudeCodeChatCompletionsAsAnthropicSSE(dst, resp.Body, decision.ModelID)
+	fixture, err := copyClaudeCodeChatCompletionsAsAnthropicSSE(dst, resp.Body, decision.ModelID)
 	if err != nil {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, err
 	}
-	fixture := ClaudeCodeBridgeProviderFixture{CacheReadTokens: cacheReadTokens}
+	requestAudit := buildClaudeCodeBridgeOpenAIChatFallbackRequestAudit(decision, body, req.URL.String(), true)
 	return ClaudeCodeBridgeOpenAILiveStreamResult{
 		StatusCode: resp.StatusCode,
 		Header:     header,
-		Audit:      buildClaudeCodeBridgeAuditSummary(decision, fixture),
+		Audit:      buildClaudeCodeBridgeAuditSummaryWithRequest(decision, fixture, requestAudit),
 	}, nil
 }
 
@@ -632,15 +633,15 @@ func StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(ctx context.Cont
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, fmt.Errorf("claude code DeepSeek OpenAI-compatible fallback upstream status %d: %s", resp.StatusCode, sanitizeClaudeCodeBridgeErrorMessage(string(limited)))
 	}
 	applyClaudeCodeBridgeLiveResponseHeaders(dst, header)
-	cacheReadTokens, err := copyClaudeCodeChatCompletionsAsAnthropicSSE(dst, resp.Body, decision.ModelID)
+	fixture, err := copyClaudeCodeChatCompletionsAsAnthropicSSE(dst, resp.Body, decision.ModelID)
 	if err != nil {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, err
 	}
-	fixture := ClaudeCodeBridgeProviderFixture{CacheReadTokens: cacheReadTokens}
+	requestAudit := buildClaudeCodeBridgeOpenAIChatFallbackRequestAudit(decision, body, req.URL.String(), true)
 	return ClaudeCodeBridgeOpenAILiveStreamResult{
 		StatusCode: resp.StatusCode,
 		Header:     header,
-		Audit:      buildClaudeCodeBridgeAuditSummary(decision, fixture),
+		Audit:      buildClaudeCodeBridgeAuditSummaryWithRequest(decision, fixture, requestAudit),
 	}, nil
 }
 
@@ -692,6 +693,25 @@ func buildClaudeCodeDeepSeekChatCompletionsBody(decision ClaudeCodeBridgeRouteDe
 	return json.Marshal(chatReq)
 }
 
+func buildClaudeCodeBridgeOpenAIChatFallbackRequestAudit(decision ClaudeCodeBridgeRouteDecision, originalBody []byte, upstreamURL string, fallbackUsed bool) claudeCodeBridgeRequestAudit {
+	audit := claudeCodeBridgeRequestAudit{
+		SelectedProtocol:      strings.TrimSpace(decision.FallbackProtocol),
+		FallbackUsed:          fallbackUsed,
+		UpstreamPathKind:      safeClaudeCodeBridgeUpstreamPathKind(upstreamURL),
+		CacheControlLocations: claudeCodeBridgeCacheControlLocations(originalBody),
+	}
+	if audit.SelectedProtocol == "" {
+		audit.SelectedProtocol = strings.TrimSpace(decision.PreferredProtocol)
+	}
+	audit.CacheControlPresent = len(audit.CacheControlLocations) > 0
+	if strings.TrimSpace(decision.Provider) == "deepseek" {
+		audit.ProviderCacheMechanism = "deepseek_prefix_kv"
+		audit.CacheControlProviderIgnored = true
+	}
+	audit.StablePrefixHMAC, audit.StablePrefixTokenBucket = claudeCodeBridgeStablePrefixAudit(decision, originalBody)
+	return audit
+}
+
 func applyClaudeCodeDeepSeekChatEffortPolicy(decision ClaudeCodeBridgeRouteDecision, req *apicompat.ChatCompletionsRequest, body []byte) {
 	if req == nil || strings.TrimSpace(decision.Provider) != "deepseek" {
 		return
@@ -725,11 +745,11 @@ func claudeCodeBridgeExplicitAnthropicEffort(body []byte) string {
 	return *normalized
 }
 
-func copyClaudeCodeChatCompletionsAsAnthropicSSE(dst io.Writer, src io.Reader, model string) (int, error) {
+func copyClaudeCodeChatCompletionsAsAnthropicSSE(dst io.Writer, src io.Reader, model string) (ClaudeCodeBridgeProviderFixture, error) {
 	chatState := apicompat.NewChatCompletionsToResponsesStreamState(model)
 	anthropicState := apicompat.NewResponsesEventToAnthropicState()
 	anthropicState.Model = model
-	cacheReadTokens := 0
+	fixture := ClaudeCodeBridgeProviderFixture{}
 	terminalSeen := false
 	visibleOutputSeen := false
 	flusher, _ := dst.(interface{ Flush() })
@@ -766,12 +786,8 @@ func copyClaudeCodeChatCompletionsAsAnthropicSSE(dst io.Writer, src io.Reader, m
 		}
 		chunk = sanitizeClaudeCodeDeepSeekChatCompletionsChunk(chunk)
 		if chunk.Usage != nil {
-			if chunk.Usage.PromptTokensDetails != nil && chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
-				cacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
-			}
-			if chunk.Usage.PromptCacheHitTokens > 0 {
-				cacheReadTokens = chunk.Usage.PromptCacheHitTokens
-			}
+			usagePayload, _ := json.Marshal(chunk.Usage)
+			collectClaudeCodeBridgeProviderUsageNode(gjson.ParseBytes(usagePayload), &fixture)
 		}
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {
@@ -787,37 +803,37 @@ func copyClaudeCodeChatCompletionsAsAnthropicSSE(dst io.Writer, src io.Reader, m
 		frame, ok := parser.AddLine(strings.TrimRight(scanner.Text(), "\r"))
 		if ok {
 			if err := handleFrame(frame); err != nil {
-				return cacheReadTokens, err
+				return fixture, err
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return cacheReadTokens, err
+		return fixture, err
 	}
 	if frame, ok := parser.Finish(); ok {
 		if err := handleFrame(frame); err != nil {
-			return cacheReadTokens, err
+			return fixture, err
 		}
 	}
 	if terminalSeen {
 		if !visibleOutputSeen {
 			if _, err := dst.Write(buildClaudeCodeBridgeErrorSSE("upstream_stream_closed", "OpenAI-compatible bridge fallback produced no replay-safe visible output")); err != nil {
-				return cacheReadTokens, err
+				return fixture, err
 			}
 			if flusher != nil {
 				flusher.Flush()
 			}
-			return cacheReadTokens, nil
+			return fixture, nil
 		}
-		return cacheReadTokens, emit(apicompat.FinalizeChatCompletionsResponsesStream(chatState))
+		return fixture, emit(apicompat.FinalizeChatCompletionsResponsesStream(chatState))
 	}
 	if _, err := dst.Write(buildClaudeCodeBridgeErrorSSE("upstream_stream_closed", "OpenAI-compatible bridge fallback stream closed before terminal event")); err != nil {
-		return cacheReadTokens, err
+		return fixture, err
 	}
 	if flusher != nil {
 		flusher.Flush()
 	}
-	return cacheReadTokens, nil
+	return fixture, nil
 }
 
 func claudeCodeChatCompletionsChunkHasVisibleOutput(chunk apicompat.ChatCompletionsChunk) bool {
