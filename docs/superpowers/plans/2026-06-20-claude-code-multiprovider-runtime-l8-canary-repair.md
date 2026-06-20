@@ -150,8 +150,9 @@ Confirmed gaps:
 - OpenAI bridge tools are not proven strict-tools equivalent.
 - Go bridge tests do not yet prove `tool_use -> tool_result -> next turn` end-to-end for GPT/DeepSeek/AGNES.
 - Cache audit fields are not normalized across providers.
+- Bridge behavior under `ENABLE_TOOL_SEARCH=true` is under-specified. If Claude Code emits `ToolSearchTool`, `tool_reference`, or `defer_loading` shapes for a bridge route, DeepSeek/GPT/AGNES cannot be assumed to understand those lazy/deferred shapes. The bridge must either materialize them before provider dispatch, provide an explicit ToolSearch shim, or disable ToolSearch per bridge model with a degraded reason.
 
-**Repair implication:** Provider live enablement must be probe-driven and evidence-driven. Unsupported/untested providers stay fail-closed.
+**Repair implication:** Provider live enablement must be probe-driven and evidence-driven. Unsupported/untested providers stay fail-closed. ToolSearch/deferred-tool parity is part of bridge live enablement, not only a native Claude capability check.
 
 ---
 
@@ -287,7 +288,7 @@ Implementation must keep these gates green. Each gate needs a local/fixture/live
 
 | Capability affected by custom/loopback Base URL | L8 stance | Required evidence |
 | --- | --- | --- |
-| ToolSearch / `ToolSearchTool` / `tool_reference` / `defer_loading` | restore to local Sub2API parity via runtime config/preload/patch once doctor + fixed MCP/deferred-tool healthcheck pass | shape A/B + start-path env/status + preserved tool_reference/defer_loading evidence |
+| ToolSearch / `ToolSearchTool` / `tool_reference` / `defer_loading` | restore to local Sub2API parity via runtime config/preload/patch once doctor + fixed MCP/deferred-tool healthcheck pass; for bridge routes, additionally materialize deferred tools, implement a ToolSearch shim, or disable ToolSearch per bridge model with an explicit degraded reason | shape A/B + start-path env/status + native preserved tool_reference/defer_loading evidence + bridge GPT/DeepSeek ToolSearch/MCP dispatch evidence |
 | FGTS / eager input streaming | trace gate first; restore only if managed local injection preserves safety, otherwise degraded/observe-only with reason | safe boolean audit + gate trace + no direct official egress |
 | Prompt caching for Claude native | parity target: preserve/enable Claude prompt-caching request shape through local Sub2API/CC Gateway and prove upstream usage fields | prompt-caching beta/context/cache_control presence + cache_creation/cache_read usage + no raw payload |
 | 1M context / thinking / context management | must not be regressed | native shape snapshot + long-context smoke |
@@ -316,6 +317,10 @@ Implementation must keep these gates green. Each gate needs a local/fixture/live
 - Wire `ClaudeCodeCapabilityProfile`, `evaluate_toolsearch_profile()`, and `apply_capability_profile()` into the real `claude-code start` path.
 - Make `ENABLE_TOOL_SEARCH=true` the intended healthy state after version-family match, fixed MCP/deferred-tool healthcheck, pending/deferred tool evidence, model support, and no kill switch. Otherwise choose explicit `auto` or `false` as degraded states with status reasons.
 - Add localhost-only A/B shape checks for unset/auto/true and resume history containing `tool_reference` / `defer_loading`.
+- Add bridge-specific ToolSearch/deferred-tool handling before any bridge provider is marked native-like under `ENABLE_TOOL_SEARCH=true`:
+  - preferred path: materialize `tool_reference` / deferred MCP tools into ordinary Claude tool definitions before bridge provider dispatch, preserving tool names, input schemas, descriptions, and route-trust metadata;
+  - alternate path: implement a bridge ToolSearch shim that resolves search/deferred references locally without sending unsupported lazy shapes to non-Claude providers;
+  - fail-closed path: set per-model ToolSearch disabled/degraded status for that bridge route with explicit reasons, and ensure the bridge request cannot receive unresolved `ToolSearchTool`, `tool_reference`, or `defer_loading` payloads.
 - Add Prompt Caching parity checks for Claude native: ensure top-level or block-level `cache_control`/prompt-caching beta/context-management shape survives runtime -> guard -> Sub2API/CC Gateway, and verify safe usage fields such as cache creation/read tokens when upstream returns them.
 - Trace the FGTS/eager input streaming gate. Keep it observe-only until evidence proves a local managed injection/config path is reliable and safe; never solve it by direct official egress.
 - Expand explicit control-plane matrix for policy limits, remote managed settings, settings sync, team memory, model capabilities, GrowthBook/feature flags, count_tokens, event logging, bootstrap, and official CONNECT/direct bypass.
@@ -324,7 +329,9 @@ Implementation must keep these gates green. Each gate needs a local/fixture/live
 **Acceptance tests:**
 
 - Production launch env changes based on doctor decision, not fixed `auto`.
-- ToolSearch fixture proves `ToolSearchTool`, `tool_reference`, and `defer_loading` are preserved when enabled.
+- Native ToolSearch fixture proves `ToolSearchTool`, `tool_reference`, and `defer_loading` are preserved when enabled.
+- Bridge ToolSearch fixture proves GPT and DeepSeek receive either materialized ordinary tools or a resolved shim result, never unresolved `tool_reference` / `defer_loading` shapes.
+- If bridge ToolSearch healthcheck fails, the affected bridge model is marked `toolsearch_degraded` or disabled for ToolSearch with explicit reasons; the request path fails closed rather than silently sending unsupported shapes upstream.
 - If healthcheck fails, status says `toolsearch_degraded` or equivalent with reasons.
 - Official CONNECT/direct bypass is fail-closed.
 - No raw telemetry/body/CCH persisted.
@@ -413,12 +420,14 @@ Implementation must keep these gates green. Each gate needs a local/fixture/live
 - Add multi-turn bridge e2e tests for DeepSeek, GPT, and AGNES: first turn emits tool_use; second turn sends tool_result; bridge preserves pairing.
 - Keep skeleton/mock fail-closed for `multi_tool_use.parallel` and `Agent`. Do not fabricate tool_use for unsupported live paths.
 - Live bridge must explicitly allow `multi_tool_use.parallel` + `Agent` only after provider probe and route contract pass.
+- When ToolSearch is enabled globally, bridge dispatch must check that deferred MCP/ToolSearch references were materialized or shim-resolved for the active provider. If unresolved lazy shapes remain, emit a safe structured bridge error or mark the route degraded before upstream dispatch.
 
 **Acceptance tests:**
 
 - Valid stream closure on success and failure.
 - Parallel Agent requests are live-only and fail closed otherwise.
 - Tool IDs remain stable across turns and providers.
+- GPT and DeepSeek bridge tests cover ToolSearch/MCP enabled mode and prove unresolved `ToolSearchTool` / `tool_reference` / `defer_loading` payloads do not reach upstream.
 
 ---
 
@@ -474,7 +483,7 @@ Implementation must keep these gates green. Each gate needs a local/fixture/live
   - subagent/Agent;
   - manual `/model` switch;
   - Claude -> DeepSeek/GPT -> Claude replay safety;
-  - ToolSearch/MCP;
+  - ToolSearch/MCP for Claude native and for at least GPT + DeepSeek bridge, proving materialization/shim success or explicit per-model degraded fail-closed behavior;
   - workflow/background/compact/title/summary resolution;
   - long context/context-management smoke;
   - interruption/cancel;
@@ -568,7 +577,7 @@ Close all items in section 4A before coding. Record the decision summary at `art
 
 ### Phase 1 — Local/unit implementation only
 
-Do not touch 3017. Implement and test in small gates: B1 capability-source discovery, B2 backend effort enforcement, C1 capability profile wiring, D/E cache audit, F stream/tool loop, G replay/formal-pool safety, H provider live matrix.
+Do not touch 3017. Implement and test in small gates: B1 capability-source discovery, B2 backend effort enforcement, C1 capability profile wiring, C2 bridge ToolSearch/deferred-tool materialization/shim/degrade gate, D/E cache audit, F stream/tool loop, G replay/formal-pool safety, H provider live matrix.
 
 ### Phase 2 — Local runtime verification only
 
