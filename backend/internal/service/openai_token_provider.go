@@ -184,11 +184,12 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 
 		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, openAITokenRefreshSkew)
 		if err != nil {
-			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
-				return "", err
-			}
 			slog.Warn("openai_token_refresh_failed", "account_id", account.ID, "error", err)
 			p.metrics.refreshFailure.Add(1)
+			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
+				p.handleRequestPathRefreshFailure(ctx, account, cacheKey, err)
+				return "", err
+			}
 			refreshFailed = true
 		} else if result.LockHeld {
 			if p.refreshPolicy.OnLockHeld == ProviderLockHeldWaitForCache {
@@ -277,6 +278,69 @@ func (p *OpenAITokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	}
 
 	return accessToken, nil
+}
+
+func (p *OpenAITokenProvider) handleRequestPathRefreshFailure(ctx context.Context, account *Account, cacheKey string, err error) {
+	if p == nil || account == nil || err == nil {
+		return
+	}
+	stateCtx, cancel := openAIAccountStateContext(ctx)
+	defer cancel()
+
+	if p.tokenCache != nil {
+		if deleteErr := p.tokenCache.DeleteAccessToken(stateCtx, cacheKey); deleteErr != nil {
+			slog.Warn("openai_token_provider.cache_delete_failed", "account_id", account.ID, "error", deleteErr)
+		}
+	}
+
+	refreshErrorCode := classifyOpenAIRefreshError(err)
+	if isTerminalOpenAIAuthErrorCode(refreshErrorCode) {
+		if p.runtimeBlocker != nil {
+			p.runtimeBlocker.BlockAccountScheduling(account, time.Time{}, "openai_refresh_terminal")
+		}
+		p.updateOpenAIRefreshFailureLifecycle(stateCtx, account, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, refreshErrorCode)
+		if p.accountRepo != nil {
+			if setErr := p.accountRepo.SetError(stateCtx, account.ID, "OpenAI OAuth refresh failed; re-login required: "+err.Error()); setErr != nil {
+				slog.Warn("openai_token_provider.set_error_failed", "account_id", account.ID, "error", setErr)
+			}
+		}
+		return
+	}
+
+	until := time.Now().Add(openAIRuntimeGuardLearnedBlockTemporaryTTL)
+	if p.runtimeBlocker != nil {
+		p.runtimeBlocker.BlockAccountScheduling(account, until, "openai_refresh_retryable")
+	}
+	p.updateOpenAIRefreshFailureLifecycle(stateCtx, account, OpenAIAuthStateCooling, OpenAIValidationOutcomeRTValidationRetryableFailure, refreshErrorCode)
+	if p.accountRepo != nil {
+		reason := "OpenAI OAuth refresh failed; short cooldown: " + err.Error()
+		if setErr := p.accountRepo.SetTempUnschedulable(stateCtx, account.ID, until, reason); setErr != nil {
+			slog.Warn("openai_token_provider.set_temp_unschedulable_failed", "account_id", account.ID, "error", setErr)
+		}
+	}
+}
+
+func (p *OpenAITokenProvider) updateOpenAIRefreshFailureLifecycle(ctx context.Context, account *Account, authState, validationOutcome, refreshErrorCode string) {
+	if p == nil || p.accountRepo == nil || account == nil || !account.IsOpenAIOAuth() {
+		return
+	}
+	updates := map[string]any{
+		"openai_pool_role":               account.GetOpenAIPoolRole(),
+		"openai_auth_state":              authState,
+		"openai_token_source":            account.GetOpenAITokenSource(),
+		"openai_validation_outcome":      validationOutcome,
+		"openai_last_refresh_error_code": refreshErrorCode,
+	}
+	updates = mergeMap(updates, buildOpenAITokenCapabilityExtra(extractOpenAITokenCapabilityFromCredentials(account.Credentials)))
+	if updates["openai_pool_role"] == "" {
+		updates["openai_pool_role"] = OpenAIPoolRoleMain
+	}
+	if updates["openai_token_source"] == "" {
+		updates["openai_token_source"] = OpenAITokenSourceRTManaged
+	}
+	if err := p.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("openai_token_provider.auth_lifecycle_update_failed", "account_id", account.ID, "error", err)
+	}
 }
 
 // disableAccountMissingRefreshToken 在请求路径上发现 OpenAI OAuth 账号

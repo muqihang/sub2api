@@ -478,7 +478,7 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardBlocksUnknownReasoningEffortBe
 	require.Nil(t, result)
 	require.Len(t, upstream.bodies, 0)
 	require.Equal(t, http.StatusBadRequest, c.Writer.Status())
-	require.JSONEq(t, `{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`, rec.Body.String())
+	require.JSONEq(t, `{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","runtime_guard_category":"reasoning.unknown_effort","message":"Unsupported reasoning_effort value","param":"reasoning_effort"}}`, rec.Body.String())
 	requireOpenAIRuntimeGuardMetadata(t, c, "block", "reasoning.unknown_effort", "openai_runtime_guard.blocked.reasoning_effort")
 }
 

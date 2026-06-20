@@ -156,9 +156,66 @@ type OpsUpstreamErrorEvent struct {
 	RuntimeGuardCategory string `json:"runtime_guard_category,omitempty"`
 	RuntimeGuardMetric   string `json:"runtime_guard_metric,omitempty"`
 	RuntimeGuardAction   string `json:"runtime_guard_action,omitempty"`
+	UpstreamCalled       *bool  `json:"upstream_called,omitempty"`
+	RawBodyLogged        *bool  `json:"raw_body_logged,omitempty"`
+	TextHash             string `json:"text_hash,omitempty"`
+	SanitizedSummary     string `json:"sanitized_summary,omitempty"`
 
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+}
+
+func AppendOpsOpenAIRuntimeGuardLocalEvent(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	rawMeta, ok := c.Get(OpenAIRuntimeGuardMetadataKey)
+	if !ok {
+		return
+	}
+	meta, ok := rawMeta.(OpenAIRuntimeGuardMetadata)
+	if !ok {
+		if ptr, ptrOK := rawMeta.(*OpenAIRuntimeGuardMetadata); ptrOK && ptr != nil {
+			meta = *ptr
+			ok = true
+		}
+	}
+	action := strings.TrimSpace(meta.Action)
+	switch action {
+	case "repair", "block", "learned_block":
+	default:
+		return
+	}
+	if !ok || strings.TrimSpace(meta.Category) == "" || strings.TrimSpace(meta.Metric) == "" {
+		return
+	}
+	upstreamCalled := false
+	rawBodyLogged := false
+	detailMap := map[string]any{
+		"field": meta.Field,
+		"path":  meta.Path,
+		"status": func() int {
+			if meta.Status > 0 {
+				return meta.Status
+			}
+			return 0
+		}(),
+	}
+	detail, _ := json.Marshal(detailMap)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:             PlatformOpenAI,
+		Kind:                 "local_runtime_guard",
+		RuntimeGuardBucket:   "local_runtime_guard",
+		RuntimeGuardCategory: strings.TrimSpace(meta.Category),
+		RuntimeGuardMetric:   strings.TrimSpace(meta.Metric),
+		RuntimeGuardAction:   action,
+		UpstreamCalled:       &upstreamCalled,
+		RawBodyLogged:        &rawBodyLogged,
+		TextHash:             safeOpenAIRuntimeGuardMetadataValue(meta.TextHash),
+		SanitizedSummary:     truncateString(sanitizeOpenAIRuntimeGuardMessage(meta.SanitizedSummary), 512),
+		Message:              strings.TrimSpace(meta.Category),
+		Detail:               string(detail),
+	})
 }
 
 func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {

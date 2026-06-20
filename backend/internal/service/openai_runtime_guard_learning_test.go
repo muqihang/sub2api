@@ -477,7 +477,7 @@ func TestOpenAIGatewayService_Forward_RuntimeGuardLearnedBlockStopsRepeatedUpstr
 	require.Nil(t, result)
 	require.Len(t, upstream.bodies, 0)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.JSONEq(t, `{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"OpenAI OAuth request is temporarily blocked by runtime guard learning","param":"model"}}`, rec.Body.String())
+	require.JSONEq(t, `{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"OpenAI OAuth request is temporarily blocked by runtime guard learning","runtime_guard_category":"capability.unsupported_oauth_model_profile_channel","param":"model"}}`, rec.Body.String())
 }
 
 func TestHandleOpenAIAccountUpstreamErrorRecordsCapabilityLearnedBlockScopedToModelEndpointProfile(t *testing.T) {

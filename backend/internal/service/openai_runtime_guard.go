@@ -505,6 +505,7 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 	}
 	message := "Unsupported reasoning_effort value"
 	category := openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock
+	runtimeGuardCategory := strings.TrimSpace(decision.Category)
 	if strings.HasPrefix(decision.Category, "shape.") {
 		message = "Invalid OpenAI Responses request shape"
 	}
@@ -520,11 +521,12 @@ func openAIReasoningEffortGuardBlockedPayload(decision openAIReasoningEffortGuar
 	}
 	payload, err := json.Marshal(map[string]any{
 		"error": map[string]any{
-			"type":     "invalid_request_error",
-			"code":     string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock),
-			"category": category,
-			"message":  message,
-			"param":    param,
+			"type":                   "invalid_request_error",
+			"code":                   string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock),
+			"category":               category,
+			"runtime_guard_category": runtimeGuardCategory,
+			"message":                message,
+			"param":                  param,
 		},
 	})
 	if err != nil {

@@ -504,19 +504,24 @@ func (s *OpenAIGatewayService) blockOpenAIRuntimeGuardLearnedRequest(c *gin.Cont
 			Status:   decision.Status,
 		})
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
-		c.Data(decision.Status, "application/json; charset=utf-8", openAIRuntimeGuardLearnedBlockPayload())
+		c.Data(decision.Status, "application/json; charset=utf-8", openAIRuntimeGuardLearnedBlockPayload(decision.Category))
 	}
-	return &OpenAIRuntimeGuardBlockedError{StatusCode: decision.Status, Payload: openAIRuntimeGuardLearnedBlockPayload(), Decision: decision}
+	return &OpenAIRuntimeGuardBlockedError{StatusCode: decision.Status, Payload: openAIRuntimeGuardLearnedBlockPayload(decision.Category), Decision: decision}
 }
 
-func openAIRuntimeGuardLearnedBlockPayload() []byte {
+func openAIRuntimeGuardLearnedBlockPayload(categoryOverride ...string) []byte {
+	runtimeGuardCategory := ""
+	if len(categoryOverride) > 0 {
+		runtimeGuardCategory = strings.TrimSpace(categoryOverride[0])
+	}
 	payload, err := json.Marshal(map[string]any{
 		"error": map[string]any{
-			"type":     "invalid_request_error",
-			"code":     string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock),
-			"category": openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock,
-			"message":  "OpenAI OAuth request is temporarily blocked by runtime guard learning",
-			"param":    "model",
+			"type":                   "invalid_request_error",
+			"code":                   string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock),
+			"category":               openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock,
+			"runtime_guard_category": runtimeGuardCategory,
+			"message":                "OpenAI OAuth request is temporarily blocked by runtime guard learning",
+			"param":                  "model",
 		},
 	})
 	if err != nil {

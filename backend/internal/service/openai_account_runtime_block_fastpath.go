@@ -44,6 +44,9 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 		endpointHint = openAIRuntimeGuardEndpointFromModelHint(modelHint)
 	}
 	classification := ClassifyOpenAIRuntimeGuardUpstreamError(statusCode, headers, responseBody, "")
+	if classification.Bucket == OpenAIRuntimeGuardBucketTemporaryNetwork && classification.TTL > 0 {
+		s.BlockAccountScheduling(account, time.Now().Add(classification.TTL), "temporary_network")
+	}
 	if classification.Bucket != "" {
 		s.RecordOpenAIRuntimeGuardLearnedBlock(openAIRuntimeGuardLearnedBlockScopeForAccount(account, modelHint, endpointHint), classification)
 	}
