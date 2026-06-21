@@ -888,7 +888,7 @@ def _safe_sha256_hash(value: object) -> str:
 
 def _safe_hash_list(value: object) -> list[str]:
     out: list[str] = []
-    for part in str(value or "").split(","):
+    for part in str(value or "").replace(",", " ").split():
         safe = _safe_sha256_hash(part)
         if safe and safe not in out:
             out.append(safe)
@@ -921,7 +921,8 @@ def build_canary_env_readiness_metadata(
     else:
         issues.append("missing provider catalog JSON")
 
-    expected_runtime_hash_safe = _safe_sha256_hash(expected_runtime_hash)
+    expected_runtime_hash_raw = str(expected_runtime_hash or "").strip()
+    expected_runtime_hash_safe = _safe_sha256_hash(expected_runtime_hash_raw)
     env_runtime_hashes = _safe_hash_list(env.get("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", ""))
     catalog_runtime_hash = _safe_sha256_hash(catalog.get("runtime_hash")) if catalog_status == "ok" else ""
     env_matches_catalog_runtime_hash = bool(catalog_runtime_hash and catalog_runtime_hash in env_runtime_hashes)
@@ -930,13 +931,19 @@ def build_canary_env_readiness_metadata(
         if expected_runtime_hash_safe
         else env_matches_catalog_runtime_hash
     )
+    required_singleton_runtime_hash = expected_runtime_hash_safe or catalog_runtime_hash
+    env_native_runtime_hashes_exact = bool(required_singleton_runtime_hash and env_runtime_hashes == [required_singleton_runtime_hash])
     if catalog_status == "ok":
+        if expected_runtime_hash_raw and not expected_runtime_hash_safe:
+            issues.append("provided Claude Code runtime hash is not a safe sha256 value")
         if not env_runtime_hashes:
             issues.append("missing SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES")
         if not catalog_runtime_hash:
             issues.append("provider catalog JSON missing safe runtime_hash")
         elif not env_matches_catalog_runtime_hash:
             issues.append("Claude Code runtime hash drift between env and provider catalog")
+        elif not env_native_runtime_hashes_exact:
+            issues.append("Claude Code native runtime hash allowlist must contain only the active managed runtime hash")
         if expected_runtime_hash_safe and not env_matches_requested_runtime_hash:
             issues.append("Claude Code runtime hash drift from active managed runtime")
 
@@ -1034,6 +1041,7 @@ def build_canary_env_readiness_metadata(
             "expected_runtime_hash": expected_runtime_hash_safe,
             "env_matches_catalog_runtime_hash": env_matches_catalog_runtime_hash,
             "env_matches_requested_runtime_hash": env_matches_requested_runtime_hash,
+            "env_native_runtime_hashes_exact": env_native_runtime_hashes_exact,
         },
         "catalog_summary": {
             "model_count": len(models),

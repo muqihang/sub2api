@@ -199,13 +199,14 @@ Current release statement after CP26: **local implementation complete for the re
 
 Final review of CP26 found a blocking drift: the active patched managed Claude Code Runtime hash was `sha256:aa1e920563a2d32a6b96f7f2700a2c8f69d09bb4f2b1118974dd08a1484919b4`, but the first CP26 3017 env/catalog still advertised the pre-patch runtime hash. This would make route-hint/native attestation binding fail for real L8 traffic.
 
-The fix added a readiness gate that compares the expected active runtime hash, `SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES`, and the provider catalog top-level `runtime_hash`. A stale env now fails `--verify-env --runtime-hash ...` with `Claude Code runtime hash drift from active managed runtime`; a regenerated candidate env passes only when all runtime-hash fields match.
+The fix added a readiness gate that compares the expected active runtime hash, `SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES`, and the provider catalog top-level `runtime_hash`. A stale env now fails `--verify-env --runtime-hash ...` with `Claude Code runtime hash drift from active managed runtime`; a regenerated candidate env passes only when all runtime-hash fields match. The review follow-up made this binding strict: the native runtime hash allowlist must contain only the active managed runtime hash, and malformed supplied `--runtime-hash` values fail closed instead of being ignored.
 
 3017 was hot-switched again with only the 3017 canary touched. The active env is now `artifacts/claude-code-runtime/3017-claude-code-runtime-cp28.env`, and secret-free readiness reports:
 
 - `ready=true`
 - `runtime_hash_binding.env_matches_catalog_runtime_hash=true`
 - `runtime_hash_binding.env_matches_requested_runtime_hash=true`
+- `runtime_hash_binding.env_native_runtime_hashes_exact=true`
 - DeepSeek live selected protocol remains `anthropic_messages`
 - DeepSeek OpenAI fallback gate remains present and false
 
