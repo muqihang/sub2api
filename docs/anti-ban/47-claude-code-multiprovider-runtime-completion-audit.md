@@ -248,12 +248,13 @@ Current release statement after CP30: **external live verifier is stricter and s
 
 ## 2026-06-21 CP31 provenance file output alignment
 
-The `claude-code live-matrix --collect-provider-provenance` and `--collect-sub2api-provenance` CLI paths now persist the collected provenance JSON as an artifact as well as returning it on stdout. By default the file is `$EVIDENCE_ROOT/live_provenance.json`; operators can override it with `--out`. This aligns the collection step with the later `--assemble-external --provenance "$EVIDENCE_ROOT/live_provenance.json"` command and avoids a manual copy/paste step that could otherwise lose run/provider/artifact bindings.
+The `claude-code live-matrix --collect-provider-provenance` and `--collect-sub2api-provenance` CLI paths now persist the collected provenance JSON as an artifact as well as returning it on stdout. By default the file is `$EVIDENCE_ROOT/live_provenance.json`; operators can override it with `--out`. This aligns the collection step with the later `--assemble-external --provenance "$EVIDENCE_ROOT/live_provenance.json"` command and avoids a manual copy/paste step that could otherwise lose run/provider/artifact bindings. The collector refuses to overwrite an existing provenance file and refuses `--out` paths inside `$EVIDENCE_ROOT/artifacts/`, so provenance output cannot accidentally replace scenario artifacts.
 
 Local CP31 evidence:
 
 - `test_claude_code_live_matrix_cli_collects_provider_provenance` verifies default `live_provenance.json` output.
 - `test_claude_code_live_matrix_cli_collects_provider_provenance_respects_out_path` verifies `--out` override behavior.
+- `test_claude_code_live_matrix_cli_collect_provenance_out_refuses_overwrite` and `test_claude_code_live_matrix_cli_collect_provenance_out_rejects_artifacts_dir` verify operator-safe output path guards.
 - `test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance` verifies Sub2API provenance writes the default artifact file.
 
 Current release statement after CP31: **external live collection/assembly CLI flow is file-aligned and still requires real operator scenario artifacts before `external_live_passed` can be claimed**.

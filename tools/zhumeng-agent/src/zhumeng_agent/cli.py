@@ -882,7 +882,13 @@ def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, obje
 def _write_cp8_live_provenance_file(args: argparse.Namespace, provenance: Mapping[str, object]) -> Path:
     out = getattr(args, "out", None)
     output_root = getattr(args, "output_root", None)
-    path = Path(out).expanduser() if out is not None else Path(output_root).expanduser() / "live_provenance.json"
+    root = Path(output_root).expanduser().resolve(strict=False)
+    path = (Path(out).expanduser() if out is not None else root / "live_provenance.json").resolve(strict=False)
+    artifacts_dir = (root / "artifacts").resolve(strict=False)
+    if artifacts_dir in path.parents or path == artifacts_dir:
+        raise CP8LiveMatrixError("CP8 live provenance output must not be inside the scenario artifacts directory")
+    if path.exists():
+        raise CP8LiveMatrixError("CP8 live provenance output refuses to overwrite existing file: " + str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(provenance), ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
     return path

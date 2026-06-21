@@ -3263,6 +3263,56 @@ def test_claude_code_live_matrix_cli_collects_provider_provenance_respects_out_p
     assert json.loads(out.read_text(encoding="utf-8")) == data["live_provenance"]
 
 
+def test_claude_code_live_matrix_cli_collect_provenance_out_refuses_overwrite(capsys, tmp_path: Path, monkeypatch):
+    def fake_collect_cp8_live_provider_provenance(**kwargs):
+        return {"credential_backed": True, "loopback_only": False, "run_id": kwargs["run_id"], "providers": {}}
+
+    monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+    out = tmp_path / "live_provenance.json"
+    out.write_text('{"existing": true}', encoding="utf-8")
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-provider-provenance",
+        "--run-id",
+        "cp8-cli-live-overwrite",
+        "--output-root",
+        str(tmp_path),
+        "--out",
+        str(out),
+    ]) == 1
+    data = parse_output(capsys)
+
+    assert data["status"] == "not_configured"
+    assert "refuses to overwrite" in data["message"]
+    assert json.loads(out.read_text(encoding="utf-8")) == {"existing": True}
+
+
+def test_claude_code_live_matrix_cli_collect_provenance_out_rejects_artifacts_dir(capsys, tmp_path: Path, monkeypatch):
+    def fake_collect_cp8_live_provider_provenance(**kwargs):
+        return {"credential_backed": True, "loopback_only": False, "run_id": kwargs["run_id"], "providers": {}}
+
+    monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-provider-provenance",
+        "--run-id",
+        "cp8-cli-live-artifacts-dir",
+        "--output-root",
+        str(tmp_path),
+        "--out",
+        str(tmp_path / "artifacts" / "scenario_manual_provider_switch_deepseek.json"),
+    ]) == 1
+    data = parse_output(capsys)
+
+    assert data["status"] == "not_configured"
+    assert "must not be inside the scenario artifacts directory" in data["message"]
+    assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch_deepseek.json").exists()
+
+
 def test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_provenance(tmp_path: Path):
     env = {
         key: value
