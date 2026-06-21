@@ -102,10 +102,44 @@
         {
           "path": "artifacts/cache_account_audit.json",
           "sensitive_scan_clean": true,
-          "sha256": "sha256:f881d5b84ac00bbf362846b384d65ce09806f5ca0473afb13c7b99c005bc9a19"
+          "sha256": "sha256:2ed3eb3a2f0fc9ce1a826ecef353e1e356817039276799e6aa8020b2d97aab7b"
         }
       ],
       "audit_summary_only": true,
+      "cache_provider_evidence": {
+        "claude_native": {
+          "cache_usage_fields": [
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens"
+          ],
+          "live_usage_fields_observed": false,
+          "mechanism": "anthropic_cache_control",
+          "raw_sensitive_stored": false,
+          "request_shape_preserved": true
+        },
+        "deepseek": {
+          "cache_control_provider_ignored": true,
+          "cache_usage_fields": [
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens"
+          ],
+          "live_usage_fields_observed": false,
+          "mechanism": "deepseek_prefix_kv",
+          "raw_sensitive_stored": false,
+          "request_shape_preserved": true,
+          "stable_prefix_hmac_present": true,
+          "treats_cache_control_as_cache_mechanism": false
+        },
+        "openai": {
+          "cache_usage_fields": [
+            "usage.prompt_tokens_details.cached_tokens"
+          ],
+          "live_usage_fields_observed": false,
+          "mechanism": "openai_prompt_cache",
+          "raw_sensitive_stored": false,
+          "request_shape_preserved": true
+        }
+      },
       "deepseek_cache_observability": "prompt_cache_hit_tokens/prompt_cache_miss_tokens",
       "live_provider_verified": false,
       "raw_sensitive_stored": false,
@@ -233,7 +267,7 @@
         {
           "path": "artifacts/cache_account_audit.json",
           "sensitive_scan_clean": true,
-          "sha256": "sha256:f881d5b84ac00bbf362846b384d65ce09806f5ca0473afb13c7b99c005bc9a19"
+          "sha256": "sha256:2ed3eb3a2f0fc9ce1a826ecef353e1e356817039276799e6aa8020b2d97aab7b"
         }
       ],
       "cache_prefix_stable": true,

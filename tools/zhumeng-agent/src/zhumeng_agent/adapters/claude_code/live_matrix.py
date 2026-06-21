@@ -124,6 +124,12 @@ _TOOLSEARCH_BRIDGE_PROVIDERS = ("openai", "deepseek")
 _TOOLSEARCH_PROVIDER_STRICT_MODES = frozenset({"materialized", "shim"})
 _TOOLSEARCH_PROVIDER_DEGRADED_MODES = frozenset({"disabled", "fail_closed", "degraded_disabled"})
 _TOOLSEARCH_SCENARIO_MODES = _TOOLSEARCH_PROVIDER_STRICT_MODES | frozenset({"degraded_disabled", "fail_closed"})
+_CACHE_PROVIDER_EVIDENCE = ("claude_native", "openai", "deepseek")
+_CACHE_PROVIDER_EXPECTED = {
+    "claude_native": ("anthropic_cache_control", ("cache_creation_input_tokens", "cache_read_input_tokens")),
+    "openai": ("openai_prompt_cache", ("usage.prompt_tokens_details.cached_tokens",)),
+    "deepseek": ("deepseek_prefix_kv", ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens")),
+}
 _PROVIDER_RELEASE_STATUSES = frozenset({"strict-live-pass", "degraded-pass", "fixture-pass-only", "live-disabled"})
 _REQUIRED_PROVIDER_RELEASE_CLASSIFICATION = ("claude_native", "openai", "deepseek", "agnes", "glm", "kimi")
 _STRICT_LIVE_CORE_PROVIDERS = frozenset({"claude_native", "openai", "deepseek"})
@@ -133,6 +139,7 @@ _PROVIDER_RELEASE_SENSITIVE_RE = re.compile(
     r"(authorization|bearer|api[_-]?key|cookie|raw[_-]?(?:body|prompt|request|response|payload)|(?:^|[^a-z0-9])raw(?:$|[^a-z0-9])|prompt|client[_-]?secret|password|secret|access[_-]?token|refresh[_-]?token|session[_-]?token|(?:^|[^a-z0-9])token(?:$|[^a-z0-9]))",
     re.IGNORECASE,
 )
+_INLINE_TEXT_KEY_RE = re.compile(r"(?:^|[\s,{\[])[\"']?([A-Za-z][A-Za-z0-9_./ -]{0,80})[\"']?\s*[:=]", re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,6 +504,8 @@ def _verify_scenario(
                 issues.append(f"{field} must be true")
         if _int(raw.get("ttl_fast_switch_boundary_miss_count")) > 1 or raw.get("stable_prefix_invalidated") is not False:
             issues.append("cache fast-switch boundary cost exceeded")
+        issues.extend(_cache_account_audit_issues(raw, strict_live=strict_live))
+        issues.extend(_cache_account_audit_artifact_issues(raw.get("artifact_refs"), evidence_root=evidence_root, scenario=raw, strict_live=strict_live))
     elif name == "netwatch_bypass":
         if _int(raw.get("potential_guard_bypass_count")) != 0 or _int(raw.get("official_or_public_bypass_count")) != 0:
             issues.append("netwatch detected guard bypass")
@@ -560,6 +569,99 @@ def _toolsearch_mcp_bridge_issues(raw: Mapping[str, object], *, strict_live: boo
             continue
         issues.append(f"ToolSearch bridge provider {provider} has invalid mode")
     return tuple(issues)
+
+
+def _cache_account_audit_issues(raw: Mapping[str, object], *, strict_live: bool) -> tuple[str, ...]:
+    evidence = raw.get("cache_provider_evidence")
+    return _cache_provider_evidence_issues(evidence, strict_live=strict_live)
+
+
+def _cache_provider_evidence_issues(value: object, *, strict_live: bool) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        return ("cache provider evidence is required",)
+    keys = {str(key).strip() for key in value if str(key).strip()}
+    if keys != set(_CACHE_PROVIDER_EVIDENCE):
+        return ("cache provider evidence must cover exactly claude_native/openai/deepseek",)
+    issues: list[str] = []
+    for provider in _CACHE_PROVIDER_EVIDENCE:
+        raw_entry = value.get(provider)
+        if not isinstance(raw_entry, Mapping):
+            issues.append(f"cache provider evidence for {provider} must be an object")
+            continue
+        expected_mechanism, expected_fields = _CACHE_PROVIDER_EXPECTED[provider]
+        mechanism = str(raw_entry.get("mechanism") or "").strip()
+        fields = tuple(_str_list(raw_entry.get("cache_usage_fields")))
+        if mechanism != expected_mechanism:
+            issues.append(f"cache provider evidence for {provider} has wrong mechanism")
+        if set(fields) != set(expected_fields):
+            issues.append(f"cache provider evidence for {provider} has wrong usage fields")
+        if raw_entry.get("request_shape_preserved") is not True:
+            issues.append(f"cache provider evidence for {provider} must prove request shape preservation")
+        if raw_entry.get("raw_sensitive_stored") is not False:
+            issues.append(f"cache provider evidence for {provider} must not store raw sensitive data")
+        if strict_live and raw_entry.get("live_usage_fields_observed") is not True:
+            issues.append(f"cache provider evidence for {provider} requires live usage fields in strict-live")
+        if provider == "deepseek":
+            if raw_entry.get("cache_control_provider_ignored") is not True:
+                issues.append("DeepSeek cache evidence must mark cache_control provider-ignored")
+            if raw_entry.get("treats_cache_control_as_cache_mechanism") is not False:
+                issues.append("DeepSeek cache evidence must not treat cache_control as cache mechanism")
+            if raw_entry.get("stable_prefix_hmac_present") is not True:
+                issues.append("DeepSeek cache evidence must include stable prefix HMAC evidence")
+    return tuple(issues)
+
+
+def _cache_account_audit_artifact_issues(
+    value: object,
+    *,
+    evidence_root: Path | None,
+    scenario: Mapping[str, object],
+    strict_live: bool,
+) -> tuple[str, ...]:
+    contents = _artifact_contents(value, evidence_root=evidence_root)
+    if not contents:
+        return ("cache/account artifact evidence missing",)
+    sensitive_issues: list[str] = []
+    has_valid_cache_account_artifact = False
+    for rel, text, payload in contents:
+        text_issue = _sensitive_inline_text_issue(text, path=f"cache_account_audit_artifact.{rel}")
+        if text_issue:
+            sensitive_issues.append(text_issue)
+            continue
+        payload_issue = _sensitive_inline_evidence_issue(payload, path=f"cache_account_audit_artifact.{rel}")
+        if payload_issue:
+            sensitive_issues.append(payload_issue)
+            continue
+        if isinstance(payload, Mapping) and _cache_account_audit_artifact_valid(payload, scenario=scenario, strict_live=strict_live):
+            has_valid_cache_account_artifact = True
+    if sensitive_issues:
+        return ("cache/account artifact contains raw or sensitive inline evidence: " + sensitive_issues[0],)
+    if has_valid_cache_account_artifact:
+        return ()
+    return ("cache/account artifact must prove provider cache evidence without raw payloads",)
+
+
+def _cache_account_audit_artifact_valid(
+    payload: Mapping[str, object],
+    *,
+    scenario: Mapping[str, object],
+    strict_live: bool,
+) -> bool:
+    if not (
+        payload.get("schema_version") == "cp8-cache-account-audit-v1"
+        and payload.get("checkpoint") == "CP8"
+        and payload.get("scenario") == "cache_account_audit"
+        and payload.get("status") == "pass"
+        and payload.get("raw_sensitive_stored") is False
+        and payload.get("audit_summary_only") is True
+        and payload.get("safe_summary_hash_stable") == scenario.get("safe_summary_hash_stable")
+        and payload.get("safe_tool_result_hash_stable") == scenario.get("safe_tool_result_hash_stable")
+        and payload.get("usage_accounting_split_by_route") == scenario.get("usage_accounting_split_by_route")
+        and payload.get("stable_prefix_invalidated") == scenario.get("stable_prefix_invalidated")
+        and _int(payload.get("ttl_fast_switch_boundary_miss_count")) == _int(scenario.get("ttl_fast_switch_boundary_miss_count"))
+    ):
+        return False
+    return not _cache_provider_evidence_issues(payload.get("cache_provider_evidence"), strict_live=strict_live)
 
 
 
@@ -1073,6 +1175,43 @@ def _workflow_provider_family(value: str) -> str:
         "moonshot": "kimi",
     }
     return aliases.get(normalized, normalized.split("_", 1)[0])
+
+
+def _sensitive_inline_text_issue(text: str, *, path: str) -> str:
+    if _SENSITIVE_ARTIFACT_RE.search(text):
+        return path
+    for match in _INLINE_TEXT_KEY_RE.finditer(text):
+        key = match.group(1)
+        normalized = _normalize_inline_evidence_key(key)
+        if _sensitive_inline_key(normalized) or _SENSITIVE_ARTIFACT_RE.search(key):
+            return path + "." + key
+    return ""
+
+
+def _artifact_contents(value: object, *, evidence_root: Path | None) -> tuple[tuple[str, str, object], ...]:
+    if evidence_root is None or not isinstance(value, list):
+        return ()
+    root = evidence_root.resolve(strict=False)
+    contents: list[tuple[str, str, object]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            continue
+        rel = raw.get("path")
+        if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts:
+            continue
+        path = (root / rel).resolve(strict=False)
+        if root not in (path, *path.parents) or not path.exists() or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        try:
+            payload: object = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        contents.append((rel, text, payload))
+    return tuple(contents)
 
 
 def _artifact_payloads(value: object, *, evidence_root: Path | None) -> tuple[Mapping[str, object], ...]:

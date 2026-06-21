@@ -100,6 +100,39 @@ def _mark_toolsearch_bridge_strict_live(payload: dict[str, object]) -> None:
     }
 
 
+def _cache_provider_evidence(*, strict_live: bool = False) -> dict[str, dict[str, object]]:
+    return {
+        "claude_native": {
+            "mechanism": "anthropic_cache_control",
+            "request_shape_preserved": True,
+            "cache_usage_fields": ["cache_creation_input_tokens", "cache_read_input_tokens"],
+            "live_usage_fields_observed": strict_live,
+            "raw_sensitive_stored": False,
+        },
+        "openai": {
+            "mechanism": "openai_prompt_cache",
+            "request_shape_preserved": True,
+            "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
+            "live_usage_fields_observed": strict_live,
+            "raw_sensitive_stored": False,
+        },
+        "deepseek": {
+            "mechanism": "deepseek_prefix_kv",
+            "cache_control_provider_ignored": True,
+            "treats_cache_control_as_cache_mechanism": False,
+            "request_shape_preserved": True,
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "stable_prefix_hmac_present": True,
+            "live_usage_fields_observed": strict_live,
+            "raw_sensitive_stored": False,
+        },
+    }
+
+
+def _mark_cache_account_strict_live(payload: dict[str, object]) -> None:
+    payload["scenarios"]["cache_account_audit"]["cache_provider_evidence"] = _cache_provider_evidence(strict_live=True)
+
+
 def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
     candidates = [
         root / "artifacts" / f"{provider}_sub2api_live_provenance.json",
@@ -132,6 +165,7 @@ def _sub2api_endpoint(provider: str) -> str:
 def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
     _mark_core_provider_release_strict_live(payload)
     _mark_toolsearch_bridge_strict_live(payload)
+    _mark_cache_account_strict_live(payload)
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
@@ -166,6 +200,8 @@ def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root
         refs = []
         if name == "workflow":
             refs.append(_workflow_background_ref(root))
+        if name == "cache_account_audit":
+            refs.append(_cache_account_ref(root, scenario, strict_live=True))
         refs.append(
             {
                 "path": f"artifacts/{artifact.name}",
@@ -228,9 +264,40 @@ def _workflow_background_ref(root: Path) -> dict[str, object]:
     }
 
 
+def _cache_account_ref(root: Path, scenario: dict[str, object], *, strict_live: bool) -> dict[str, object]:
+    artifact = root / "artifacts" / "cache_account_audit.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "schema_version": "cp8-cache-account-audit-v1",
+                "checkpoint": "CP8",
+                "scenario": "cache_account_audit",
+                "status": "pass",
+                "raw_sensitive_stored": False,
+                "safe_summary_hash_stable": scenario["safe_summary_hash_stable"],
+                "safe_tool_result_hash_stable": scenario["safe_tool_result_hash_stable"],
+                "ttl_fast_switch_boundary_miss_count": scenario["ttl_fast_switch_boundary_miss_count"],
+                "stable_prefix_invalidated": scenario["stable_prefix_invalidated"],
+                "usage_accounting_split_by_route": scenario["usage_accounting_split_by_route"],
+                "audit_summary_only": scenario["audit_summary_only"],
+                "cache_provider_evidence": _cache_provider_evidence(strict_live=strict_live),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "path": "artifacts/cache_account_audit.json",
+        "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    }
+
+
 def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
     _mark_core_provider_release_strict_live(payload)
     _mark_toolsearch_bridge_strict_live(payload)
+    _mark_cache_account_strict_live(payload)
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
@@ -264,6 +331,8 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
         refs = []
         if name == "workflow":
             refs.append(_workflow_background_ref(root))
+        if name == "cache_account_audit":
+            refs.append(_cache_account_ref(root, scenario, strict_live=True))
         refs.append(
             {
                 "path": f"artifacts/{artifact.name}",
@@ -755,6 +824,164 @@ def test_cp8_live_matrix_requires_artifact_hashes_and_rejects_sensitive_artifact
     assert result.status == "fail"
     assert "deepseek_bridge" in result.failed
     assert any("artifact contains sensitive marker" in issue for issue in result.scenario_results["deepseek_bridge"].issues)
+
+
+def test_cp8_cache_account_audit_requires_provider_truthful_cache_evidence():
+    payload = _fixture("live_matrix_pass.json")
+    payload["scenarios"]["cache_account_audit"].pop("cache_provider_evidence", None)
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("cache provider evidence" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_deepseek_cache_control_as_cache_mechanism():
+    payload = _fixture("live_matrix_pass.json")
+    payload["scenarios"]["cache_account_audit"]["cache_provider_evidence"] = _cache_provider_evidence()
+    deepseek = payload["scenarios"]["cache_account_audit"]["cache_provider_evidence"]["deepseek"]
+    deepseek["mechanism"] = "anthropic_cache_control"
+    deepseek["treats_cache_control_as_cache_mechanism"] = True
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("DeepSeek" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_sensitive_inline_artifact_keys(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact = fixture_root / "artifacts" / "cache_account_audit.json"
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["raw_body"] = "hello world"
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == "artifacts/cache_account_audit.json":
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("raw" in issue or "sensitive" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_sensitive_extra_artifact_refs(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    extra = fixture_root / "artifacts" / "cache_account_raw_extra.json"
+    extra.write_text(json.dumps({"raw_body": "hello world"}, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    payload["scenarios"]["cache_account_audit"]["artifact_refs"].append(
+        {
+            "path": "artifacts/cache_account_raw_extra.json",
+            "sha256": "sha256:" + hashlib.sha256(extra.read_bytes()).hexdigest(),
+            "sensitive_scan_clean": True,
+        }
+    )
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("raw" in issue or "sensitive" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    (
+        ("cache_account_raw_list.json", json.dumps([{"raw_body": "hello world"}], ensure_ascii=True, sort_keys=True)),
+        ("cache_account_raw_text.txt", "raw_body: hello world\n"),
+        ("cache_account_dot_raw_body.txt", "raw.body: hello world\n"),
+        ("cache_account_slash_raw_body.txt", "raw/body: hello world\n"),
+        ("cache_account_dot_raw_prompt.txt", "raw.prompt: hello world\n"),
+    ),
+)
+def test_cp8_cache_account_audit_rejects_sensitive_extra_artifact_ref_payload_shapes(tmp_path: Path, filename: str, content: str):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    extra = fixture_root / "artifacts" / filename
+    extra.write_text(content, encoding="utf-8")
+    payload["scenarios"]["cache_account_audit"]["artifact_refs"].append(
+        {
+            "path": "artifacts/" + filename,
+            "sha256": "sha256:" + hashlib.sha256(extra.read_bytes()).hexdigest(),
+            "sensitive_scan_clean": True,
+        }
+    )
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("raw" in issue or "sensitive" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_strict_live_cache_account_audit_requires_live_usage_fields(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-cache-strict-live"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    payload["scenarios"]["cache_account_audit"]["cache_provider_evidence"] = _cache_provider_evidence(strict_live=True)
+    payload["scenarios"]["cache_account_audit"]["cache_provider_evidence"]["deepseek"]["live_usage_fields_observed"] = False
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("live usage" in issue for issue in result.scenario_results["cache_account_audit"].issues)
 
 
 def test_cp8_live_matrix_rejects_unknown_schema_version():
