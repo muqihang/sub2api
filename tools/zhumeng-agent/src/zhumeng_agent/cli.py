@@ -43,6 +43,7 @@ from .adapters.claude_code.profile import ClaudeCodeCapabilityProfile, FgtsMode,
 from .adapters.claude_code.runtime_installer import (
     RuntimeInstallerError,
     apply_managed_runtime_agent_model_schema_patch,
+    apply_managed_runtime_effort_capability_patch,
     apply_shell_alias_plan,
     build_managed_runtime_install_plan,
     build_shell_alias_plan,
@@ -134,6 +135,10 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_rollback.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
     claude_code_uninstall = claude_code_subparsers.add_parser("uninstall")
     claude_code_uninstall.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_runtime_patch = claude_code_subparsers.add_parser("runtime-patch")
+    claude_code_runtime_patch.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_runtime_patch.add_argument("--approve-managed-binary-patch", action="store_true")
+    claude_code_runtime_patch.add_argument("patch_name", choices=("effort-capability",))
     claude_code_alias = claude_code_subparsers.add_parser("alias")
     claude_code_alias_subparsers = claude_code_alias.add_subparsers(dest="alias_action", required=True)
     for action in ("enable", "disable", "status"):
@@ -1375,7 +1380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "claude-code":
         if args.claude_code_command == "start":
             return handle_claude_code_start(args)
-        if args.claude_code_command in {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix"}:
+        if args.claude_code_command in {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix", "runtime-patch"}:
             return handle_claude_code_runtime_command(args)
         parser.error("unknown claude-code command")
 
@@ -1599,6 +1604,22 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 "manifest_path": status.get("manifest_path"),
                 "official_claude_unaffected": True,
             })
+        if args.claude_code_command == "runtime-patch":
+            if args.patch_name == "effort-capability":
+                result = apply_managed_runtime_effort_capability_patch(
+                    args.runtime_root,
+                    resolve_active_managed_runtime(args.runtime_root).executable,
+                    approved=bool(args.approve_managed_binary_patch),
+                )
+                return emit({
+                    "command": "claude-code runtime-patch effort-capability",
+                    **result,
+                })
+            return emit_failed({
+                "command": "claude-code runtime-patch",
+                "status": "unknown_patch",
+                "message": f"unsupported runtime patch: {args.patch_name}",
+            })
         if args.claude_code_command == "status":
             return emit({"command": "claude-code status", **read_managed_runtime_status(args.runtime_root)})
         if args.claude_code_command == "doctor":
@@ -1742,6 +1763,7 @@ def build_claude_code_start_payload(
     if agent_schema_patch.get("runtime_hash_after") != active_runtime.runtime_hash:
         active_runtime = resolve_active_managed_runtime(runtime_root)
     bridge_live_models = tuple(_active_runtime_bridge_live_models(active_runtime.patches))
+    _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models)
     attestation_secret = require_server_native_attestation_secret(state)
     route_hint_secret = require_server_route_hint_secret(state)
     claude_code_sub2api_auth = resolve_claude_code_sub2api_auth(state, state_root=state_root)
@@ -1873,6 +1895,38 @@ def _string_list_field(raw: Mapping[str, object], key: str) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _bridge_effort_ui_models(bridge_live_models: Sequence[str]) -> tuple[str, ...]:
+    effort_model_markers = (
+        "claude-code-bridge-gpt-",
+        "claude-code-bridge-deepseek-",
+        "claude-code-bridge-glm-",
+    )
+    return tuple(model for model in bridge_live_models if any(model.startswith(marker) for marker in effort_model_markers))
+
+
+def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models: Sequence[str]) -> None:
+    if not _bridge_effort_ui_models(bridge_live_models):
+        return
+    if str(getattr(active_runtime, "upstream_version", "")) != "2.1.177":
+        return
+    manifest = getattr(active_runtime, "manifest", {})
+    patches = getattr(active_runtime, "patches", {})
+    manifest_points = manifest.get("patch_points", ()) if isinstance(manifest, Mapping) else ()
+    patch_points = patches.get("patch_points", ()) if isinstance(patches, Mapping) else ()
+    effort_patch = patches.get("effort_capability_patch") if isinstance(patches, Mapping) else None
+    if (
+        "effort_capability_hook" in set(str(item) for item in manifest_points)
+        and "effort_capability_hook" in set(str(item) for item in patch_points)
+        and isinstance(effort_patch, Mapping)
+        and str(effort_patch.get("env", "")) == "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
+    ):
+        return
+    raise RuntimeInstallerError(
+        "managed Claude Code 2.1.177 bridge /model effort UI requires effort capability patch; "
+        "run 'zhumeng-agent claude-code runtime-patch --approve-managed-binary-patch effort-capability' before start"
+    )
+
+
 def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[str, ...]:
     if patches.get("live_bridge_models_enabled") is not True:
         return ()
@@ -1905,7 +1959,7 @@ def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[s
 
 def zhumeng_claude_main(argv: Sequence[str] | None = None) -> int:
     passthrough = list(argv) if argv is not None else list(sys.argv[1:])
-    claude_runtime_commands = {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix"}
+    claude_runtime_commands = {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix", "runtime-patch"}
     if passthrough and passthrough[0] == "start":
         return main(["claude-code", "start", *passthrough[1:]])
     if passthrough and passthrough[0] in claude_runtime_commands:
