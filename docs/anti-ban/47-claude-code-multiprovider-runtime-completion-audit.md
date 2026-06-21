@@ -212,6 +212,22 @@ The fix added a readiness gate that compares the expected active runtime hash, `
 
 CP28 evidence was written under `artifacts/claude-code-canary/cp28-hashfix-20260621T204535Z/`. Current release statement after CP28: **3017 canary hash binding repaired and ready for operator L8 live scenarios**. Still do not claim `external_live_passed` until the external CP8 live matrix artifacts are collected and verified.
 
+
+## 2026-06-21 CP29 local baseline revalidation
+
+After the CP28 runtime-hash binding review fixes (`0f4885d1b`, `b14d3056c`, and `922eddb51`), the repair plan's preserved local baseline commands were rerun from the dedicated worktree. This checkpoint is a local implementation/readiness revalidation only; it does not replace the external CP8/L8 live matrix.
+
+Latest local evidence:
+
+- Python targeted baseline from `tools/zhumeng-agent`: `174 passed`.
+- Go targeted baseline from `backend`: `ok` for `./internal/service`, `./internal/server/routes`, and `./internal/pkg/apicompat` with the `ClaudeCode|AnthropicCompat|CP6|CP8|PromptCache|ToolUse|Effort|RouteTrust` selector.
+- Non-interactive runtime preflight returned `2.1.177 (Claude Code)`, `returncode=0`, `guard.attested=true`, and `guard.route_hint_contract=true`.
+- 3017 health returned `{"status":"ok"}`.
+- 3017 env readiness for `artifacts/claude-code-runtime/3017-claude-code-runtime-cp28.env` and active runtime hash `sha256:aa1e920563a2d32a6b96f7f2700a2c8f69d09bb4f2b1118974dd08a1484919b4` returned `ready=true`.
+- DeepSeek canary readiness still reports `deepseek_protocols=anthropic_messages` and `deepseek_cache_evidence_eligible=true`; OpenAI-compatible chat fallback remains an explicit fallback-only path, not the default Claude Code DeepSeek transport.
+
+Current release statement after CP29: **local CP0-CP8 implementation and 3017 canary readiness are revalidated for operator L8 manual/live scenarios**. Still do not claim `external_live_passed` until the external CP8 live matrix artifacts are collected and verified.
+
 ## External live matrix steps
 
 These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.
