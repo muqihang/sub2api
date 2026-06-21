@@ -879,6 +879,15 @@ def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, obje
     return payload
 
 
+def _write_cp8_live_provenance_file(args: argparse.Namespace, provenance: Mapping[str, object]) -> Path:
+    out = getattr(args, "out", None)
+    output_root = getattr(args, "output_root", None)
+    path = Path(out).expanduser() if out is not None else Path(output_root).expanduser() / "live_provenance.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(provenance), ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+    return path
+
+
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
@@ -2076,10 +2085,12 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                         "message": "provider provenance collection requires --run-id and --output-root",
                     })
                 provenance = collect_cp8_live_provider_provenance(run_id=args.run_id, output_root=args.output_root)
+                provenance_path = _write_cp8_live_provenance_file(args, provenance)
                 return emit({
                     "command": "claude-code live-matrix collect-provider-provenance",
                     "status": "collected",
                     "live_provenance": provenance,
+                    "provenance": str(provenance_path),
                 })
             if getattr(args, "collect_sub2api_provenance", False):
                 if not args.run_id or args.output_root is None:
@@ -2089,10 +2100,12 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                         "message": "Sub2API provenance collection requires --run-id and --output-root",
                     })
                 provenance = collect_cp8_sub2api_gateway_live_provenance(**cp8_sub2api_live_provenance_args(args))
+                provenance_path = _write_cp8_live_provenance_file(args, provenance)
                 return emit({
                     "command": "claude-code live-matrix collect-sub2api-provenance",
                     "status": "collected",
                     "live_provenance": provenance,
+                    "provenance": str(provenance_path),
                 })
             if args.assemble_external:
                 if args.evidence is None or args.provenance is None or args.out is None:

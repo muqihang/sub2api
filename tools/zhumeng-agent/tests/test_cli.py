@@ -3220,7 +3220,47 @@ def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_pa
     assert data["command"] == "claude-code live-matrix collect-provider-provenance"
     assert data["status"] == "collected"
     assert data["live_provenance"]["credential_backed"] is True
+    provenance_file = tmp_path / "live_provenance.json"
+    assert provenance_file.exists()
+    assert json.loads(provenance_file.read_text(encoding="utf-8")) == data["live_provenance"]
+    assert data["provenance"] == str(provenance_file)
     assert calls == [{"run_id": "cp8-cli-live", "output_root": tmp_path}]
+
+
+def test_claude_code_live_matrix_cli_collects_provider_provenance_respects_out_path(capsys, tmp_path: Path, monkeypatch):
+    def fake_collect_cp8_live_provider_provenance(**kwargs):
+        return {
+            "credential_backed": True,
+            "loopback_only": False,
+            "run_id": kwargs["run_id"],
+            "providers": {
+                "claude": {"credential_scope": "formal_pool", "live_provider_verified": True},
+                "openai": {"credential_scope": "bridge_pool", "live_provider_verified": True},
+                "deepseek": {"credential_scope": "bridge_pool", "live_provider_verified": True},
+            },
+        }
+
+    monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+    out = tmp_path / "custom" / "cp8-live-provenance.json"
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-provider-provenance",
+        "--run-id",
+        "cp8-cli-live-out",
+        "--output-root",
+        str(tmp_path),
+        "--out",
+        str(out),
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["status"] == "collected"
+    assert data["provenance"] == str(out)
+    assert out.exists()
+    assert not (tmp_path / "live_provenance.json").exists()
+    assert json.loads(out.read_text(encoding="utf-8")) == data["live_provenance"]
 
 
 def test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_provenance(tmp_path: Path):
@@ -3305,6 +3345,10 @@ def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys,
     assert data["command"] == "claude-code live-matrix collect-sub2api-provenance"
     assert data["status"] == "collected"
     assert data["live_provenance"]["mode"] == "sub2api_gateway_live_matrix"
+    provenance_file = tmp_path / "live_provenance.json"
+    assert provenance_file.exists()
+    assert json.loads(provenance_file.read_text(encoding="utf-8")) == data["live_provenance"]
+    assert data["provenance"] == str(provenance_file)
     assert calls == [{
         "run_id": "cp8-sub2api-cli",
         "output_root": tmp_path,

@@ -245,6 +245,19 @@ Local CP30 evidence:
 
 Current release statement after CP30: **external live verifier is stricter and still ready for operator L8 manual/live scenario collection**. Still do not claim `external_live_passed` until every required external scenario/provider artifact is collected and verified.
 
+
+## 2026-06-21 CP31 provenance file output alignment
+
+The `claude-code live-matrix --collect-provider-provenance` and `--collect-sub2api-provenance` CLI paths now persist the collected provenance JSON as an artifact as well as returning it on stdout. By default the file is `$EVIDENCE_ROOT/live_provenance.json`; operators can override it with `--out`. This aligns the collection step with the later `--assemble-external --provenance "$EVIDENCE_ROOT/live_provenance.json"` command and avoids a manual copy/paste step that could otherwise lose run/provider/artifact bindings.
+
+Local CP31 evidence:
+
+- `test_claude_code_live_matrix_cli_collects_provider_provenance` verifies default `live_provenance.json` output.
+- `test_claude_code_live_matrix_cli_collects_provider_provenance_respects_out_path` verifies `--out` override behavior.
+- `test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance` verifies Sub2API provenance writes the default artifact file.
+
+Current release statement after CP31: **external live collection/assembly CLI flow is file-aligned and still requires real operator scenario artifacts before `external_live_passed` can be claimed**.
+
 ## External live matrix steps
 
 These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.
