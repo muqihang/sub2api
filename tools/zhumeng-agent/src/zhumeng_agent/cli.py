@@ -1754,7 +1754,14 @@ def build_claude_code_start_payload(
     state = store.read()
     if not state.get("gateway_base_url"):
         raise ValueError("managed setup is incomplete: missing gateway_base_url")
-    state = refresh_claude_code_native_managed_credentials_if_needed(state, store=store)
+    metadata_only_start = _claude_code_start_metadata_only(argv)
+    try:
+        state = refresh_claude_code_native_managed_credentials_if_needed(state, store=store)
+    except Exception as exc:  # noqa: BLE001 - sanitize refresh/network failures before CLI output.
+        if metadata_only_start and _managed_state_str(state, "claude_code_native_access_token"):
+            state = dict(state)
+        else:
+            raise ValueError("managed Claude Code native token refresh failed; retry login or ensure the local managed server is reachable") from exc
     selected_guard_port = int(guard_port or choose_local_proxy_port())
     active_runtime = resolve_active_managed_runtime(runtime_root)
     if executable is not None and str(Path(executable).expanduser()) != str(active_runtime.executable.expanduser()):
@@ -1765,7 +1772,8 @@ def build_claude_code_start_payload(
     bridge_provider_release_statuses = _bridge_provider_release_statuses_from_patches(active_runtime.patches)
     bridge_live_expanded_providers = _bridge_live_expanded_providers_from_patches(active_runtime.patches)
     bridge_live_models = tuple(_active_runtime_bridge_live_models(active_runtime.patches))
-    _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models)
+    if not metadata_only_start:
+        _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models)
     attestation_secret = require_server_native_attestation_secret(state)
     route_hint_secret = require_server_route_hint_secret(state)
     claude_code_sub2api_auth = resolve_claude_code_sub2api_auth(state, state_root=state_root)
@@ -1831,6 +1839,10 @@ def build_claude_code_start_payload(
             else {}
         ),
     }
+
+
+def _claude_code_start_metadata_only(argv: Sequence[str]) -> bool:
+    return tuple(str(item).strip() for item in argv if str(item).strip()) == ("--version",)
 
 
 def _claude_code_capability_profile_from_state(state: Mapping[str, object]) -> ClaudeCodeCapabilityProfile | None:

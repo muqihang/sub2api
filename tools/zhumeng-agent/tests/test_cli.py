@@ -928,6 +928,96 @@ def test_claude_code_start_fails_closed_when_bridge_effort_ui_patch_missing(caps
     assert launched is False
 
 
+def test_claude_code_start_version_bypasses_bridge_effort_ui_patch_gate(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "http://127.0.0.1:18080",
+                "access_token": "eyJ.agent-login-jwt",
+                "claude_code_native_access_token": "eyJ.native-token-for-version-only",
+                "claude_code_native_managed_session_id": "native-session",
+                "claude_code_native_device_id": 9,
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
+                "claude_code_sub2api_api_key_configured": True,
+                "managed_session_id": "managed-session",
+                "device_id": 9,
+                "config_profile": {"model_provider": "zhumeng-claude"},
+                "proxy_port": 18081,
+                "loopback_secret": "loopback-secret",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+        def update(self, patch):
+            return {**self.read(), **patch}
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(
+        runtime_root,
+        tmp_path / "managed-runtime" / "claude",
+        payload=b'k.enum(["sonnet","opus","haiku","fable"]).optional()',
+        upstream_version="2.1.177",
+        patches={
+            "live_bridge_models_enabled": True,
+            "live_bridge_model_allowlist": ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"],
+            "live_bridge_model_catalog": {
+                "claude-code-bridge-gpt-5.5": {
+                    "route": "openai_bridge",
+                    "client_type": "claude_code_bridge_openai",
+                    "live_enabled": True,
+                    "formal_pool_eligible": False,
+                },
+                "claude-code-bridge-deepseek-v4-pro": {
+                    "route": "deepseek_bridge",
+                    "client_type": "claude_code_bridge_deepseek",
+                    "live_enabled": True,
+                    "formal_pool_eligible": False,
+                },
+            },
+        },
+    )
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(env={"ANTHROPIC_BASE_URL": "http://127.0.0.1:43117", "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117"}, cwd=kwargs["project_cwd"]),
+            guard_plan=SimpleNamespace(command=["--native-attestation", "--route-hint-secret-env"], config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117)),
+        )
+
+    cli.default_state_store = lambda: FakeStore()
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    data = parse_output(capsys)
+    assert exit_code == 0
+    assert data["status"] == "exited"
+    assert calls[0]["argv"] == ["--version"]
+    assert calls[0]["bridge_live_models"] == ("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro")
+    dumped = json.dumps(data)
+    assert "native-token-for-version-only" not in dumped
+
+
 def test_claude_code_runtime_effort_patch_requires_explicit_approval_and_updates_runtime(capsys, tmp_path: Path):
     runtime_root = tmp_path / "runtimes"
     managed_executable, _, _ = write_fake_claude_runtime(
@@ -1750,6 +1840,173 @@ def test_claude_code_start_refreshes_expired_native_managed_credentials(capsys, 
     dumped = json.dumps(data)
     assert "eyJ.refreshed-claude-code-native-token" not in dumped
     assert "next-claude-code-refresh-token" not in dumped
+
+
+def test_claude_code_start_version_tolerates_native_refresh_endpoint_unavailable(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def __init__(self):
+            self.state = {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3017",
+                "gateway_base_url": "http://127.0.0.1:3017",
+                "access_token": "eyJ.codex-gateway-managed-token",
+                "refresh_token": "codex-refresh-token",
+                "managed_session_id": "codex-managed-session",
+                "device_id": 31,
+                "claude_code_native_access_token": "eyJ.expired-claude-code-native-token",
+                "claude_code_native_refresh_token": "claude-code-refresh-token",
+                "claude_code_native_managed_session_id": "expired-claude-code-session",
+                "claude_code_native_device_id": 32,
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+            self.patches = []
+
+        def read(self):
+            return dict(self.state)
+
+        def update(self, patch):
+            self.patches.append(dict(patch))
+            self.state.update(patch)
+            return dict(self.state)
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    store = FakeStore()
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(env={"ANTHROPIC_BASE_URL": "http://127.0.0.1:43117", "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117"}, cwd=kwargs["project_cwd"]),
+            guard_plan=SimpleNamespace(command=["--native-attestation", "--route-hint-secret-env"], config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl", listen_port=43117)),
+        )
+
+    cli.default_state_store = lambda: store
+    cli.default_http_client = lambda server: (_ for _ in ()).throw(ConnectionError("connection refused"))
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code, raising=False)
+    monkeypatch.setattr(cli, "_managed_jwt_seconds_until_expiry", lambda token: -30 if token == "eyJ.expired-claude-code-native-token" else 3600)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--version",
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["status"] == "exited"
+    assert calls[0]["native_managed_access_token"] == "eyJ.expired-claude-code-native-token"
+    assert calls[0]["managed_session_id"] == "expired-claude-code-session"
+    assert store.patches == []
+    dumped = json.dumps(data)
+    assert "claude-code-refresh-token" not in dumped
+    assert "eyJ.expired-claude-code-native-token" not in dumped
+
+
+def test_claude_code_start_bare_version_does_not_bypass_native_refresh_failure(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3017",
+                "gateway_base_url": "http://127.0.0.1:3017",
+                "claude_code_native_access_token": "eyJ.expired-claude-code-native-token",
+                "claude_code_native_refresh_token": "claude-code-refresh-token",
+                "claude_code_native_managed_session_id": "expired-claude-code-session",
+                "claude_code_native_device_id": 32,
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    cli.default_state_store = lambda: FakeStore()
+    cli.default_http_client = lambda server: (_ for _ in ()).throw(ConnectionError("connection refused"))
+    monkeypatch.setattr(cli, "_managed_jwt_seconds_until_expiry", lambda token: -30 if token == "eyJ.expired-claude-code-native-token" else 3600)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "version",
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "not_configured"
+    assert "native token refresh failed" in data["message"]
+    assert "claude-code-refresh-token" not in json.dumps(data)
+
+
+def test_claude_code_start_real_session_fails_closed_when_native_refresh_unavailable(capsys, tmp_path: Path, monkeypatch):
+    class FakeStore:
+        def read(self):
+            return {
+                "status": "configured",
+                "client": "claude_code_native",
+                "server_base_url": "http://127.0.0.1:3017",
+                "gateway_base_url": "http://127.0.0.1:3017",
+                "claude_code_native_access_token": "eyJ.expired-claude-code-native-token",
+                "claude_code_native_refresh_token": "claude-code-refresh-token",
+                "claude_code_native_managed_session_id": "expired-claude-code-session",
+                "claude_code_native_device_id": 32,
+                "claude_code_sub2api_api_key": "test-zhumeng-claude-code-cli-key",
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+                "claude_code_native_attestation_secret_source": "server",
+                "claude_code_route_hint_secret": "server-route-hint-secret",
+                "claude_code_route_hint_secret_source": "server",
+            }
+
+    runtime_root = tmp_path / "runtimes"
+    write_fake_claude_runtime(runtime_root, tmp_path / "managed-runtime" / "claude")
+    cli.default_state_store = lambda: FakeStore()
+    cli.default_http_client = lambda server: (_ for _ in ()).throw(ConnectionError("connection refused"))
+    monkeypatch.setattr(cli, "_managed_jwt_seconds_until_expiry", lambda token: -30 if token == "eyJ.expired-claude-code-native-token" else 3600)
+
+    exit_code = main([
+        "claude-code",
+        "start",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(tmp_path / "zhumeng-state"),
+        "--project-cwd",
+        str(tmp_path),
+        "--",
+        "--print",
+        "hello",
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "not_configured"
+    assert "native token refresh failed" in data["message"]
+    assert "claude-code-refresh-token" not in json.dumps(data)
 
 
 def test_claude_code_start_reads_dedicated_sub2api_key_from_state_root_env_file(capsys, tmp_path: Path, monkeypatch):
