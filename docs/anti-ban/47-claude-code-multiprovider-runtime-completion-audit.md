@@ -174,6 +174,26 @@ codegraph sync /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktre
 # pass; .codegraph/ present
 ```
 
+
+## 2026-06-21 CP26 L8 repair rollout update
+
+Latest repair checkpoint after the L8 canary problem triage:
+
+- Commit `36115a561` (`fix: harden claude code runtime effort ui and cache audit`) is applied on branch `codex/claude-code-multiprovider-runtime`.
+- Managed Claude Code Runtime `2.1.177` was patched only inside the Zhumeng-managed runtime copy. Official/global `claude` remains untouched. Runtime status reports integrity `pass`; non-interactive `claude-code start -- --version` returns `2.1.177 (Claude Code)`.
+- 3017 canary was hot-switched only on the `sub2api-canary-app-main-f3a9f235d-cc-runtime-current-3017` container. Port `3012` was not restarted or reconfigured. 3017 health currently returns `{"status":"ok"}`.
+- The active 3017 backend binary is the CP26 build at `artifacts/bin/sub2api-cc-runtime-36115a561-20260621200915-linux-arm64`, mounted read-only at `/app/sub2api`.
+- The CP26 3017 env readiness file is `artifacts/claude-code-runtime/3017-claude-code-runtime-cp26.env`. Secret-free readiness says `ready=true`; DeepSeek live models all prefer `anthropic_messages`, the OpenAI fallback gate is present and false, and the cache-audit HMAC key is present with id `claude-code-cache-audit-v1`.
+- CP26 rollout evidence was written under `artifacts/claude-code-canary/cp26-rollout-20260621T202737Z/` with split preflight/UI/cache/live-matrix status files. The evidence intentionally records only health, hashes, route/cache policy enums, effort metadata, and readiness summaries; it does not contain raw prompts, raw bodies, raw responses, API keys, cookies, or Authorization values.
+
+CP26 behavior now expected for the next L8 manual test:
+
+- `/model` exact effort policy is enforced through the managed runtime patch plus launcher metadata: GPT bridge models expose `low/medium/high/xhigh` and not `max`; DeepSeek bridge models expose `high/max` and not `medium`; AGNES and Kimi expose no effort selector; GLM remains catalog-visible with `high/max` but is not part of the default L8 live provider scope. Backend bridge validation also rejects unsupported `output_config.effort` if a client bypasses UI.
+- DeepSeek bridge remains Anthropic-compatible-first (`/v1/messages`). `chat/completions` remains an explicit fallback-only path and must not hijack Anthropic-compatible decisions. DeepSeek cache evidence is provider-truthful: `cache_control` is not treated as the cache mechanism; safe audit uses DeepSeek `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`, stable-prefix HMAC, token bucket, route/protocol/path enums, and no raw body.
+- The production log line for safe cache truth is `gateway.claude_code_bridge_cache_audit`. A real DeepSeek request is still needed to observe provider cache hit/miss counters in live logs.
+
+Current release statement after CP26: **local implementation complete for the repaired L8 scope, 3017 canary rolled out and ready for operator L8 live scenarios**. Do not claim `external_live_passed` until the external CP8 live matrix artifacts are collected and verified as described below.
+
 ## External live matrix steps
 
 These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.
