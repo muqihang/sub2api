@@ -1,0 +1,38 @@
+{
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 4096,
+  "stream": true,
+  "system": [
+    {
+      "type": "text",
+      "text": "synthetic native cache stable system block",
+      "cache_control": {"type": "ephemeral"}
+    }
+  ],
+  "thinking": {"type": "adaptive"},
+  "context_management": {"edits": [{"type": "clear_tool_uses_20250919"}]},
+  "output_config": {"effort": "high"},
+  "tools": [
+    {
+      "name": "Read",
+      "description": "Synthetic cached native tool",
+      "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}},
+      "tool_reference": {"id": "fixture_cache_tool_ref"},
+      "defer_loading": true,
+      "cache_control": {"type": "ephemeral"}
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "synthetic native cache history block",
+          "cache_control": {"type": "ephemeral"}
+        }
+      ]
+    }
+  ],
+  "eager_input_streaming": true
+}

@@ -21,6 +21,8 @@ var ClaudeCodeNativeShapeHealthcheckFields = []string{
 	"thinking_fixture",
 	"system_fixture",
 	"context_management_fixture",
+	"prompt_caching_fixture",
+	"prompt_cache_usage_fixture",
 	"output_config_fixture",
 	"adaptive_thinking_fixture",
 	"tools_fixture",
@@ -51,11 +53,12 @@ type ClaudeCodeNativeShapeFixture struct {
 }
 
 type ClaudeCodeNativeShapeHealthcheckEvidence struct {
-	LocalhostOnly             bool
-	MockUpstreamOnly          bool
-	ControlPlaneSafeSummary   []byte
-	NetwatchSafeSummary       []byte
-	RawBodiesOmittedFromAudit bool
+	LocalhostOnly               bool
+	MockUpstreamOnly            bool
+	ControlPlaneSafeSummary     []byte
+	NetwatchSafeSummary         []byte
+	PromptCacheSafeUsageSummary []byte
+	RawBodiesOmittedFromAudit   bool
 }
 
 type ClaudeCodeNativeShapeHealthcheckResult struct {
@@ -79,6 +82,7 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 	routes := map[string]struct{}{}
 	modelFamilies := map[string]struct{}{}
 	profiles := map[string]struct{}{}
+	observedPromptCacheLocations := map[string]struct{}{}
 	allProfilesAttested := len(fixtures) > 0
 
 	for _, fixture := range fixtures {
@@ -116,6 +120,10 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 		if claudeCodeNativeHasContextManagementFixture(root) {
 			checks["context_management_fixture"] = true
 		}
+		for location := range claudeCodeNativePromptCacheControlLocationsFromRoot(root) {
+			observedPromptCacheLocations[location] = struct{}{}
+			checks["prompt_caching_fixture"] = true
+		}
 		if claudeCodeNativeHasOutputConfigFixture(root) {
 			checks["output_config_fixture"] = true
 		}
@@ -132,6 +140,7 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 	checks["native_attestation_profile"] = allProfilesAttested
 	checks["control_plane_safe_intent_fixture"] = validClaudeCodeNativeControlPlaneSafeIntent(evidence.ControlPlaneSafeSummary)
 	checks["netwatch_fixture"] = validClaudeCodeNativeNetwatchSummary(evidence.NetwatchSafeSummary)
+	checks["prompt_cache_usage_fixture"] = validClaudeCodeNativePromptCacheSafeUsage(evidence.PromptCacheSafeUsageSummary, observedPromptCacheLocations)
 
 	result := ClaudeCodeNativeShapeHealthcheckResult{
 		Status:        ClaudeCodeNativeShapeHealthcheckPass,
@@ -152,7 +161,11 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 		result.Status = ClaudeCodeNativeShapeHealthcheckFail
 	}
 	if checks["control_plane_safe_intent_fixture"] && checks["netwatch_fixture"] {
-		result.SafeEvidence = []byte(`{"control_plane":"safe_summary_present","netwatch":"safe_summary_present"}`)
+		if checks["prompt_cache_usage_fixture"] {
+			result.SafeEvidence = []byte(`{"control_plane":"safe_summary_present","netwatch":"safe_summary_present","prompt_cache":"safe_usage_summary_present"}`)
+		} else {
+			result.SafeEvidence = []byte(`{"control_plane":"safe_summary_present","netwatch":"safe_summary_present"}`)
+		}
 	}
 	return result
 }
@@ -181,6 +194,156 @@ func claudeCodeNativeHasContextManagementFixture(root gjson.Result) bool {
 func claudeCodeNativeHasOutputConfigFixture(root gjson.Result) bool {
 	effort := root.Get("output_config.effort")
 	return effort.Exists() && strings.TrimSpace(effort.String()) != "" && !claudeCodeNativeUnsafeSummaryText(effort.String())
+}
+
+func claudeCodeNativeHasPromptCachingFixture(root gjson.Result) bool {
+	return len(claudeCodeNativePromptCacheControlLocationsFromRoot(root)) > 0
+}
+
+func claudeCodeNativePromptCacheControlLocationsFromRoot(root gjson.Result) map[string]struct{} {
+	var body any
+	if root.Raw == "" || json.Unmarshal([]byte(root.Raw), &body) != nil {
+		return map[string]struct{}{}
+	}
+	return claudeCodeNativePromptCacheControlLocations(body)
+}
+
+func claudeCodeNativePromptCacheControlLocations(body any) map[string]struct{} {
+	locations := map[string]struct{}{}
+	root, ok := body.(map[string]any)
+	if !ok {
+		return locations
+	}
+	if claudeCodeNativeValidCacheControl(root["cache_control"]) {
+		locations["top_level"] = struct{}{}
+	}
+	if claudeCodeNativeJSONContainsValidCacheControl(root["system"]) {
+		locations["system"] = struct{}{}
+	}
+	if claudeCodeNativeJSONContainsValidCacheControl(root["tools"]) {
+		locations["tools"] = struct{}{}
+	}
+	if claudeCodeNativeJSONContainsValidCacheControl(root["messages"]) {
+		locations["history"] = struct{}{}
+	}
+	return locations
+}
+
+func claudeCodeNativeJSONContainsValidCacheControl(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if key == "input_schema" || key == "schema" {
+				continue
+			}
+			if key == "cache_control" {
+				if claudeCodeNativeValidCacheControl(item) {
+					return true
+				}
+				continue
+			}
+			if claudeCodeNativeJSONContainsValidCacheControl(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if claudeCodeNativeJSONContainsValidCacheControl(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func claudeCodeNativeValidCacheControl(value any) bool {
+	cacheControl, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	cacheType, ok := cacheControl["type"].(string)
+	return ok && strings.EqualFold(strings.TrimSpace(cacheType), "ephemeral")
+}
+
+func validClaudeCodeNativePromptCacheSafeUsage(summary []byte, observedLocations map[string]struct{}) bool {
+	var raw map[string]any
+	if len(summary) == 0 || json.Unmarshal(summary, &raw) != nil {
+		return false
+	}
+	allowed := map[string]struct{}{
+		"provider_cache_mechanism": {}, "cache_control_present": {}, "cache_control_locations": {},
+		"prompt_caching_beta_present": {}, "context_management_beta_present": {}, "cache_usage_fields": {},
+		"cache_creation_input_tokens": {}, "cache_read_input_tokens": {}, "stores_raw": {}, "body_omitted": {}, "response_omitted": {},
+	}
+	if !claudeCodeNativeExactKeys(raw, allowed) {
+		return false
+	}
+	mechanism, ok := raw["provider_cache_mechanism"].(string)
+	if !ok || mechanism != "anthropic_cache_control" {
+		return false
+	}
+	if raw["cache_control_present"] != true || raw["prompt_caching_beta_present"] != true || raw["context_management_beta_present"] != true {
+		return false
+	}
+	if raw["stores_raw"] != false || raw["body_omitted"] != true || raw["response_omitted"] != true {
+		return false
+	}
+	if !claudeCodeNativePromptCacheLocationsValid(raw["cache_control_locations"], observedLocations) {
+		return false
+	}
+	if !claudeCodeNativePromptCacheUsageFieldsValid(raw["cache_usage_fields"]) {
+		return false
+	}
+	return claudeCodeNativeNonNegativeJSONInteger(raw["cache_creation_input_tokens"]) && claudeCodeNativeNonNegativeJSONInteger(raw["cache_read_input_tokens"])
+}
+
+func claudeCodeNativePromptCacheLocationsValid(value any, observedLocations map[string]struct{}) bool {
+	locations, ok := value.([]any)
+	if !ok || len(locations) == 0 || len(observedLocations) == 0 {
+		return false
+	}
+	allowed := map[string]struct{}{"top_level": {}, "system": {}, "tools": {}, "history": {}}
+	seen := map[string]struct{}{}
+	for _, item := range locations {
+		location, ok := item.(string)
+		if !ok {
+			return false
+		}
+		if _, ok := allowed[location]; !ok {
+			return false
+		}
+		if _, ok := observedLocations[location]; !ok {
+			return false
+		}
+		seen[location] = struct{}{}
+	}
+	return len(seen) == len(locations) && len(seen) == len(observedLocations)
+}
+
+func claudeCodeNativePromptCacheUsageFieldsValid(value any) bool {
+	fields, ok := value.([]any)
+	if !ok || len(fields) != 2 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, item := range fields {
+		field, ok := item.(string)
+		if !ok {
+			return false
+		}
+		switch field {
+		case "cache_creation_input_tokens", "cache_read_input_tokens":
+			seen[field] = struct{}{}
+		default:
+			return false
+		}
+	}
+	return len(seen) == 2
+}
+
+func claudeCodeNativeNonNegativeJSONInteger(value any) bool {
+	number, ok := value.(float64)
+	return ok && number >= 0 && number == float64(int(number))
 }
 
 func HasClaudeCodeNativeShapeHealthcheckField(field string) bool {
