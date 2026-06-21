@@ -22,7 +22,7 @@ from zhumeng_agent.adapters.claude_code.launcher import (
     run_managed_claude_code,
 )
 from zhumeng_agent.adapters.claude_code.doctor import ClaudeCodeDoctorContext
-from zhumeng_agent.adapters.claude_code.profile import CaptureMode, ClaudeCodeCapabilityProfile, ClaudeCodeProfile, ToolSearchMode
+from zhumeng_agent.adapters.claude_code.profile import CaptureMode, ClaudeCodeCapabilityProfile, ClaudeCodeProfile, FgtsMode, ToolSearchMode
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROUTE_TRUST_SPEC = importlib.util.spec_from_file_location("claude_code_route_trust", REPO_ROOT / "tools" / "claude_code_route_trust.py")
@@ -312,6 +312,66 @@ def test_managed_launch_records_toolsearch_degraded_without_doctor_context(tmp_p
     assert artifact["env_value"] == "auto"
     assert artifact["degraded"] is True
     assert artifact["reasons"] == ["doctor_context_missing"]
+
+
+
+def test_managed_launch_writes_fgts_observe_only_status_when_enable_requested(tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        return 0
+
+    capability = ClaudeCodeCapabilityProfile(
+        profile_id="native-prod",
+        claude_code_version_family="2.1.x",
+        persona_profile_id="claude-code-native-prod",
+        tool_search_mode=ToolSearchMode.AUTO,
+        fgts_mode=FgtsMode.ENABLED,
+        tool_search_healthcheck_passed=True,
+        control_plane_policy_version="cp-v1",
+        server_shape_healthcheck_version="shape-v1",
+    )
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        start_guard=lambda *args, **kwargs: FakeGuard(),
+        process_runner=fake_runner,
+        inherited_env={"PATH": "/usr/bin", "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING": "1"},
+        capability_profile=capability,
+    )
+
+    assert result.returncode == 0
+    env = captured["env"]
+    assert "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING" not in env
+    assert env["ZHUMENG_CLAUDE_FGTS_MODE"] == "observe_only"
+    artifact = json.loads(Path(env["ZHUMENG_CLAUDE_FGTS_STATUS_PATH"]).read_text(encoding="utf-8"))
+    assert artifact == {
+        "status": "fgts_observe_only",
+        "requested_mode": "enabled",
+        "env_value": "unset",
+        "degraded": True,
+        "reasons": ["awaiting_verified_local_injection"],
+        "direct_official_egress": False,
+        "stores_raw": False,
+    }
 
 
 def test_managed_launch_starts_native_guard_then_launches_claude_with_ready_base_url(tmp_path: Path):

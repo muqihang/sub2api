@@ -13,7 +13,7 @@ from typing import Callable, Mapping, Sequence
 
 from .doctor import ClaudeCodeDoctorContext, evaluate_toolsearch_profile
 from .guard import NativeGuardConfig, NativeGuardMode, NativeGuardPlan, build_native_guard_plan, start_native_guard
-from .profile import CaptureMode, ClaudeCodeCapabilityProfile, ClaudeCodeProfile, apply_capability_profile, build_isolated_config_dir, build_safe_env, safe_profile_segment
+from .profile import CaptureMode, ClaudeCodeCapabilityProfile, ClaudeCodeProfile, apply_capability_profile, build_isolated_config_dir, build_safe_env, evaluate_fgts_profile, safe_profile_segment
 
 Runner = Callable[..., object]
 _VERSION_RE = re.compile(r"(?:claude(?:-code)?[/ ]+v?|Claude Code\s+v?)(\d+(?:\.\d+){1,3})", re.IGNORECASE)
@@ -275,7 +275,26 @@ def _apply_toolsearch_capability_profile(
         json.dumps(status_payload, sort_keys=True, separators=(",", ":")),
         encoding="utf-8",
     )
-    return profile, {"ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH": str(status_path)}
+
+    fgts_decision = evaluate_fgts_profile(capability_profile)
+    fgts_status_path = config_root / "claude-code" / profile_id / "fgts-status.json"
+    fgts_payload = {
+        "status": fgts_decision.status,
+        "requested_mode": fgts_decision.requested_mode,
+        "env_value": fgts_decision.env_value,
+        "degraded": bool(fgts_decision.degraded),
+        "reasons": list(fgts_decision.reasons),
+        "direct_official_egress": False,
+        "stores_raw": False,
+    }
+    fgts_status_path.write_text(
+        json.dumps(fgts_payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return profile, {
+        "ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH": str(status_path),
+        "ZHUMENG_CLAUDE_FGTS_STATUS_PATH": str(fgts_status_path),
+    }
 
 
 def _ensure_control_plane_stub_cert(config_root: Path, *, profile_id: str) -> tuple[Path, Path]:

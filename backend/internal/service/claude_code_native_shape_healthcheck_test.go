@@ -110,6 +110,7 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 		NetwatchSafeSummary:         netwatchSafe,
 		RawBodiesOmittedFromAudit:   true,
 		PromptCacheSafeUsageSummary: []byte(`{"provider_cache_mechanism":"anthropic_cache_control","cache_control_present":true,"cache_control_locations":["history","system","tools"],"prompt_caching_beta_present":true,"context_management_beta_present":true,"cache_usage_fields":["cache_creation_input_tokens","cache_read_input_tokens"],"cache_creation_input_tokens":3,"cache_read_input_tokens":7,"stores_raw":false,"body_omitted":true,"response_omitted":true}`),
+		FgtsSafeTraceSummary:        []byte(`{"mode":"observe_only","requested_mode":"enabled","env_value":"unset","eager_input_streaming_present":true,"direct_official_egress":false,"stores_raw":false,"body_omitted":true}`),
 	})
 
 	require.Equal(t, ClaudeCodeNativeShapeHealthcheckPass, health.Status)
@@ -119,6 +120,8 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("context_management_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("prompt_caching_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("prompt_cache_usage_fixture"))
+	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("eager_input_streaming_fixture"))
+	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("fgts_trace_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("output_config_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("adaptive_thinking_fixture"))
 	require.True(t, HasClaudeCodeNativeShapeHealthcheckField("count_tokens_fixture"))
@@ -131,7 +134,7 @@ func TestClaudeCodeNativeShapeHealthcheckFixtureSuiteCoversNativeTakeoverSignals
 		ClaudeCodeNativeNetwatchHealthProfile,
 	}, health.Profiles)
 
-	require.JSONEq(t, `{"control_plane":"safe_summary_present","netwatch":"safe_summary_present","prompt_cache":"safe_usage_summary_present"}`, string(health.SafeEvidence))
+	require.JSONEq(t, `{"control_plane":"safe_summary_present","netwatch":"safe_summary_present","prompt_cache":"safe_usage_summary_present","fgts":"safe_trace_summary_present"}`, string(health.SafeEvidence))
 
 	safe, err := json.Marshal(health)
 	require.NoError(t, err)
@@ -286,6 +289,74 @@ func TestClaudeCodeNativeShapeHealthcheckRequiresRichFixtureObjectShapes(t *test
 	require.True(t, claudeCodeNativeHasSystemFixture(wellFormed))
 	require.True(t, claudeCodeNativeHasContextManagementFixture(wellFormed))
 	require.True(t, claudeCodeNativeHasOutputConfigFixture(wellFormed))
+}
+
+func TestClaudeCodeNativeShapeHealthcheckRequiresEagerInputStreamingTrace(t *testing.T) {
+	bodyWithoutEager := []byte(`{"model":"claude-sonnet-4-6","stream":true,"thinking":{"type":"adaptive"},"system":[{"type":"text","text":"safe synthetic system","cache_control":{"type":"ephemeral"}}],"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},"output_config":{"effort":"high"},"tools":[{"name":"Read","tool_reference":{"id":"ref"},"defer_loading":true,"cache_control":{"type":"ephemeral"},"input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"safe synthetic user","cache_control":{"type":"ephemeral"}}]}]}`)
+	countTokens := loadNativeFixture(t, "count_tokens_sonnet.json")
+	controlPlaneSafe := loadNativeFixture(t, "control_plane_safe_intent_summary.json")
+	netwatchSafe := loadNativeFixture(t, "netwatch_summary.json")
+
+	fixture := ClaudeCodeNativeShapeFixture{
+		Name:  "without_eager",
+		Route: ClaudeCodeNativeInboundMessages,
+		Body:  bodyWithoutEager,
+		Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
+			RequestURI:              ClaudeCodeNativeInboundMessages,
+			GuardVersion:            "guard_v1",
+			ClaudeCodeVersion:       "2.1.175",
+			LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
+			ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+		}, bodyWithoutEager),
+	}
+	countFixture := ClaudeCodeNativeShapeFixture{
+		Name:  "count_tokens_sonnet",
+		Route: ClaudeCodeNativeInboundCountTokens,
+		Body:  countTokens,
+		Audit: buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
+			RequestURI:              ClaudeCodeNativeInboundCountTokens,
+			GuardVersion:            "guard_v1",
+			ClaudeCodeVersion:       "2.1.175",
+			LocalSessionRef:         "hmac-sha256:" + strings.Repeat("b", 64),
+			ShapeHealthcheckProfile: ClaudeCodeNativeControlPlaneHealthProfile,
+		}, countTokens),
+	}
+	baseEvidence := ClaudeCodeNativeShapeHealthcheckEvidence{
+		LocalhostOnly:               true,
+		MockUpstreamOnly:            true,
+		ControlPlaneSafeSummary:     controlPlaneSafe,
+		NetwatchSafeSummary:         netwatchSafe,
+		RawBodiesOmittedFromAudit:   true,
+		PromptCacheSafeUsageSummary: []byte(`{"provider_cache_mechanism":"anthropic_cache_control","cache_control_present":true,"cache_control_locations":["history","system","tools"],"prompt_caching_beta_present":true,"context_management_beta_present":true,"cache_usage_fields":["cache_creation_input_tokens","cache_read_input_tokens"],"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"stores_raw":false,"body_omitted":true,"response_omitted":true}`),
+		FgtsSafeTraceSummary:        []byte(`{"mode":"observe_only","requested_mode":"enabled","env_value":"unset","eager_input_streaming_present":true,"direct_official_egress":false,"stores_raw":false,"body_omitted":true}`),
+	}
+
+	missingEager := EvaluateClaudeCodeNativeShapeHealthcheckSuite([]ClaudeCodeNativeShapeFixture{fixture, countFixture}, baseEvidence)
+	require.Equal(t, ClaudeCodeNativeShapeHealthcheckFail, missingEager.Status)
+	require.Contains(t, missingEager.FailedFields, "eager_input_streaming_fixture")
+
+	missingTraceEvidence := baseEvidence
+	missingTraceEvidence.FgtsSafeTraceSummary = nil
+	withEagerBody := []byte(strings.Replace(string(bodyWithoutEager), `"messages"`, `"eager_input_streaming":true,"messages"`, 1))
+	withEager := fixture
+	withEager.Name = "with_eager"
+	withEager.Body = withEagerBody
+	withEager.Audit = buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
+		RequestURI:              ClaudeCodeNativeInboundMessages,
+		GuardVersion:            "guard_v1",
+		ClaudeCodeVersion:       "2.1.175",
+		LocalSessionRef:         "hmac-sha256:" + strings.Repeat("c", 64),
+		ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+	}, withEagerBody)
+	missingTrace := EvaluateClaudeCodeNativeShapeHealthcheckSuite([]ClaudeCodeNativeShapeFixture{withEager, countFixture}, missingTraceEvidence)
+	require.Equal(t, ClaudeCodeNativeShapeHealthcheckFail, missingTrace.Status)
+	require.Contains(t, missingTrace.FailedFields, "fgts_trace_fixture")
+
+	unsafeTrace := baseEvidence
+	unsafeTrace.FgtsSafeTraceSummary = []byte(`{"mode":"enabled","requested_mode":"enabled","env_value":"1","eager_input_streaming_present":true,"direct_official_egress":true,"stores_raw":false,"body_omitted":true}`)
+	unsafe := EvaluateClaudeCodeNativeShapeHealthcheckSuite([]ClaudeCodeNativeShapeFixture{withEager, countFixture}, unsafeTrace)
+	require.Equal(t, ClaudeCodeNativeShapeHealthcheckFail, unsafe.Status)
+	require.Contains(t, unsafe.FailedFields, "fgts_trace_fixture")
 }
 
 func TestClaudeCodeNativeShapeHealthcheckRequiresPromptCachingShapeAndSafeUsageExpectation(t *testing.T) {

@@ -23,6 +23,8 @@ var ClaudeCodeNativeShapeHealthcheckFields = []string{
 	"context_management_fixture",
 	"prompt_caching_fixture",
 	"prompt_cache_usage_fixture",
+	"eager_input_streaming_fixture",
+	"fgts_trace_fixture",
 	"output_config_fixture",
 	"adaptive_thinking_fixture",
 	"tools_fixture",
@@ -58,6 +60,7 @@ type ClaudeCodeNativeShapeHealthcheckEvidence struct {
 	ControlPlaneSafeSummary     []byte
 	NetwatchSafeSummary         []byte
 	PromptCacheSafeUsageSummary []byte
+	FgtsSafeTraceSummary        []byte
 	RawBodiesOmittedFromAudit   bool
 }
 
@@ -130,6 +133,9 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 		if root.Get("stream").Bool() {
 			checks["stream_fixture"] = true
 		}
+		if root.Get("eager_input_streaming").Bool() {
+			checks["eager_input_streaming_fixture"] = true
+		}
 		if tools := root.Get("tools"); tools.IsArray() {
 			checks["tools_fixture"] = true
 			if len(tools.Array()) > 0 && fixture.Audit.ToolSearchMode == "truthful_pass_through" && claudeCodeNativeBodyHasToolSearchMarkers(fixture.Body) {
@@ -141,6 +147,7 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 	checks["control_plane_safe_intent_fixture"] = validClaudeCodeNativeControlPlaneSafeIntent(evidence.ControlPlaneSafeSummary)
 	checks["netwatch_fixture"] = validClaudeCodeNativeNetwatchSummary(evidence.NetwatchSafeSummary)
 	checks["prompt_cache_usage_fixture"] = validClaudeCodeNativePromptCacheSafeUsage(evidence.PromptCacheSafeUsageSummary, observedPromptCacheLocations)
+	checks["fgts_trace_fixture"] = validClaudeCodeNativeFgtsSafeTrace(evidence.FgtsSafeTraceSummary, checks["eager_input_streaming_fixture"])
 
 	result := ClaudeCodeNativeShapeHealthcheckResult{
 		Status:        ClaudeCodeNativeShapeHealthcheckPass,
@@ -161,7 +168,9 @@ func EvaluateClaudeCodeNativeShapeHealthcheckSuite(fixtures []ClaudeCodeNativeSh
 		result.Status = ClaudeCodeNativeShapeHealthcheckFail
 	}
 	if checks["control_plane_safe_intent_fixture"] && checks["netwatch_fixture"] {
-		if checks["prompt_cache_usage_fixture"] {
+		if checks["prompt_cache_usage_fixture"] && checks["fgts_trace_fixture"] {
+			result.SafeEvidence = []byte(`{"control_plane":"safe_summary_present","netwatch":"safe_summary_present","prompt_cache":"safe_usage_summary_present","fgts":"safe_trace_summary_present"}`)
+		} else if checks["prompt_cache_usage_fixture"] {
 			result.SafeEvidence = []byte(`{"control_plane":"safe_summary_present","netwatch":"safe_summary_present","prompt_cache":"safe_usage_summary_present"}`)
 		} else {
 			result.SafeEvidence = []byte(`{"control_plane":"safe_summary_present","netwatch":"safe_summary_present"}`)
@@ -344,6 +353,39 @@ func claudeCodeNativePromptCacheUsageFieldsValid(value any) bool {
 func claudeCodeNativeNonNegativeJSONInteger(value any) bool {
 	number, ok := value.(float64)
 	return ok && number >= 0 && number == float64(int(number))
+}
+
+func validClaudeCodeNativeFgtsSafeTrace(summary []byte, eagerInputStreamingPresent bool) bool {
+	var raw map[string]any
+	if len(summary) == 0 || json.Unmarshal(summary, &raw) != nil {
+		return false
+	}
+	allowed := map[string]struct{}{
+		"mode": {}, "requested_mode": {}, "env_value": {}, "eager_input_streaming_present": {},
+		"direct_official_egress": {}, "stores_raw": {}, "body_omitted": {},
+	}
+	if !claudeCodeNativeExactKeys(raw, allowed) {
+		return false
+	}
+	mode, ok := raw["mode"].(string)
+	if !ok || mode != "observe_only" {
+		return false
+	}
+	requested, ok := raw["requested_mode"].(string)
+	if !ok || (requested != "enabled" && requested != "observe_only") {
+		return false
+	}
+	envValue, ok := raw["env_value"].(string)
+	if !ok || envValue != "unset" {
+		return false
+	}
+	if raw["eager_input_streaming_present"] != eagerInputStreamingPresent || !eagerInputStreamingPresent {
+		return false
+	}
+	if raw["direct_official_egress"] != false || raw["stores_raw"] != false || raw["body_omitted"] != true {
+		return false
+	}
+	return true
 }
 
 func HasClaudeCodeNativeShapeHealthcheckField(field string) bool {

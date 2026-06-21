@@ -14,6 +14,8 @@ NATIVE_SHAPE_FIELDS: tuple[str, ...] = (
     "context_management_fixture",
     "prompt_caching_fixture",
     "prompt_cache_usage_fixture",
+    "eager_input_streaming_fixture",
+    "fgts_trace_fixture",
     "output_config_fixture",
     "adaptive_thinking_fixture",
     "tools_fixture",
@@ -47,6 +49,7 @@ class NativeShapeFixture:
     has_context_management: bool = False
     has_prompt_caching: bool = False
     prompt_cache_locations: tuple[str, ...] = field(default_factory=tuple)
+    has_eager_input_streaming: bool = False
     has_output_config: bool = False
     has_tools: bool = False
     stream: bool = False
@@ -60,6 +63,7 @@ class NativeShapeEvidence:
     control_plane_safe_intent: Mapping[str, Any] = field(default_factory=dict)
     netwatch_summary: Mapping[str, Any] = field(default_factory=dict)
     prompt_cache_safe_usage: Mapping[str, Any] = field(default_factory=dict)
+    fgts_safe_trace: Mapping[str, Any] = field(default_factory=dict)
     body_omitted: bool = True
 
 
@@ -92,6 +96,8 @@ class NativeShapeHealthcheckResult:
             }
             if "prompt_cache_usage_fixture" not in self.failed_fields:
                 safe_evidence["prompt_cache"] = "safe_usage_summary_present"
+            if "fgts_trace_fixture" not in self.failed_fields:
+                safe_evidence["fgts"] = "safe_trace_summary_present"
             out["safe_evidence"] = safe_evidence
         return out
 
@@ -118,6 +124,7 @@ def native_fixture_from_messages_body(body: bytes, *, name: str, route: str, pro
         has_context_management=_has_context_management_fixture(root),
         has_prompt_caching=bool(prompt_cache_locations),
         prompt_cache_locations=prompt_cache_locations,
+        has_eager_input_streaming=root.get("eager_input_streaming") is True,
         has_output_config=_has_output_config_fixture(root),
         has_tools=has_tools,
         stream=bool(root.get("stream")),
@@ -146,6 +153,11 @@ def evaluate_native_shape_healthcheck(fixtures: Sequence[NativeShapeFixture], ev
         evidence.prompt_cache_safe_usage,
         observed_prompt_cache_locations,
     )
+    observed_eager_input_streaming = any(item.has_eager_input_streaming for item in fixtures)
+    checks["fgts_trace_fixture"] = _valid_fgts_safe_trace(
+        evidence.fgts_safe_trace,
+        observed_eager_input_streaming,
+    )
     for item in fixtures:
         if item.route == "/v1/messages":
             checks["messages_fixture"] = True
@@ -163,6 +175,8 @@ def evaluate_native_shape_healthcheck(fixtures: Sequence[NativeShapeFixture], ev
             checks["context_management_fixture"] = True
         if item.has_prompt_caching:
             checks["prompt_caching_fixture"] = True
+        if item.has_eager_input_streaming:
+            checks["eager_input_streaming_fixture"] = True
         if item.has_output_config:
             checks["output_config_fixture"] = True
         if item.has_tools:
@@ -306,6 +320,33 @@ def _valid_prompt_cache_safe_usage(summary: Mapping[str, Any], observed_location
 
 def _non_negative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_fgts_safe_trace(summary: Mapping[str, Any], eager_input_streaming_present: bool) -> bool:
+    allowed = {
+        "mode",
+        "requested_mode",
+        "env_value",
+        "eager_input_streaming_present",
+        "direct_official_egress",
+        "stores_raw",
+        "body_omitted",
+    }
+    if set(summary) != allowed:
+        return False
+    if summary.get("mode") != "observe_only":
+        return False
+    if summary.get("requested_mode") not in {"enabled", "observe_only"}:
+        return False
+    if summary.get("env_value") != "unset":
+        return False
+    if summary.get("eager_input_streaming_present") is not eager_input_streaming_present or not eager_input_streaming_present:
+        return False
+    if summary.get("direct_official_egress") is not False:
+        return False
+    if summary.get("stores_raw") is not False or summary.get("body_omitted") is not True:
+        return False
+    return True
 
 
 def _valid_control_plane_intent(summary: Mapping[str, Any]) -> bool:
