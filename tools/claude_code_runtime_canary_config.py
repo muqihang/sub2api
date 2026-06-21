@@ -241,16 +241,42 @@ def _provider_for_model_id(model_id: str) -> str | None:
     return None
 
 
-def validate_live_bridge_models_supported(live_bridge_models: tuple[str, ...]) -> None:
+def validate_live_bridge_models_supported(
+    live_bridge_models: tuple[str, ...],
+    *,
+    provider_release_statuses: dict[str, str] | None = None,
+    expanded_live_providers: tuple[str, ...] = (),
+) -> None:
     runtime_providers = {str(spec["provider"]) for spec in _RUNTIME_DISPATCH_GROUPS}
+    statuses = {str(provider): str(status) for provider, status in (provider_release_statuses or {}).items()}
+    expanded = {str(provider).strip() for provider in expanded_live_providers if str(provider).strip()}
     for model_id in live_bridge_models:
         provider = _provider_for_model_id(model_id)
         if provider is None:
             raise ValueError(f"unknown live bridge model: {model_id}")
+        if provider not in {"openai", "deepseek", "agnes", "zai_glm", "kimi"}:
+            raise ValueError(f"unsupported live bridge provider: {provider}")
+        if provider == "agnes" and statuses.get("agnes") != "strict-live-pass":
+            raise ValueError("AGNES live bridge requires strict-live provider evidence before enabling")
+        if provider == "zai_glm" and provider not in expanded:
+            raise ValueError("GLM live bridge requires explicit expanded live scope and strict-live provider evidence")
+        if provider == "kimi" and provider not in expanded:
+            raise ValueError("Kimi live bridge requires explicit expanded live scope and strict-live provider evidence")
+        if provider in {"zai_glm", "kimi"} and statuses.get(provider) != "strict-live-pass":
+            label = "GLM" if provider == "zai_glm" else "Kimi"
+            raise ValueError(f"{label} live bridge requires strict-live provider evidence before enabling")
         if provider not in runtime_providers:
             raise ValueError(f"unsupported live bridge provider without runtime account: {provider}")
 
-def _route_catalog_hash(*, runtime_hash: str, overlay_hash: str, catalog_version: str, bridge_live_models: Iterable[str]) -> str:
+def _route_catalog_hash(
+    *,
+    runtime_hash: str,
+    overlay_hash: str,
+    catalog_version: str,
+    bridge_live_models: Iterable[str],
+    provider_release_statuses: dict[str, str] | None = None,
+    expanded_live_providers: tuple[str, ...] = (),
+) -> str:
     route_trust = _load_route_trust_module()
     provisional = route_trust.cp4_fixture_route_catalog(
         runtime_hash=runtime_hash,
@@ -258,11 +284,22 @@ def _route_catalog_hash(*, runtime_hash: str, overlay_hash: str, catalog_version
         catalog_hash="sha256:" + ("3" * 64),
         catalog_version=catalog_version,
         bridge_live_models=tuple(bridge_live_models),
+        bridge_live_provider_statuses=provider_release_statuses,
+        bridge_live_expanded_providers=expanded_live_providers,
     )
     return route_trust.route_catalog_content_hash(provisional)
 
 
-def _route_catalog_entries(*, runtime_hash: str, overlay_hash: str, catalog_hash: str, catalog_version: str, bridge_live_models: Iterable[str]) -> dict[str, Any]:
+def _route_catalog_entries(
+    *,
+    runtime_hash: str,
+    overlay_hash: str,
+    catalog_hash: str,
+    catalog_version: str,
+    bridge_live_models: Iterable[str],
+    provider_release_statuses: dict[str, str] | None = None,
+    expanded_live_providers: tuple[str, ...] = (),
+) -> dict[str, Any]:
     route_trust = _load_route_trust_module()
     catalog = route_trust.cp4_fixture_route_catalog(
         runtime_hash=runtime_hash,
@@ -270,6 +307,8 @@ def _route_catalog_entries(*, runtime_hash: str, overlay_hash: str, catalog_hash
         catalog_hash=catalog_hash,
         catalog_version=catalog_version,
         bridge_live_models=tuple(bridge_live_models),
+        bridge_live_provider_statuses=provider_release_statuses,
+        bridge_live_expanded_providers=expanded_live_providers,
     )
     return catalog.entries
 
@@ -338,16 +377,24 @@ def build_provider_catalog_env(
     live_bridge_models: tuple[str, ...] = (),
     bridge_api_keys: dict[str, str] | None = None,
     deepseek_anthropic_fixture_green: bool = True,
+    provider_release_statuses: dict[str, str] | None = None,
+    expanded_live_providers: tuple[str, ...] = (),
 ) -> dict[str, str]:
     target_origin = _loopback_origin(target)
     runtime_origin = _loopback_origin(runtime_target or target_origin)
     live_set = tuple(str(model).strip() for model in live_bridge_models if str(model).strip())
-    validate_live_bridge_models_supported(live_set)
+    validate_live_bridge_models_supported(
+        live_set,
+        provider_release_statuses=provider_release_statuses,
+        expanded_live_providers=expanded_live_providers,
+    )
     catalog_hash = _route_catalog_hash(
         runtime_hash=runtime_hash,
         overlay_hash=overlay_hash,
         catalog_version=catalog_version,
         bridge_live_models=live_set,
+        provider_release_statuses=provider_release_statuses,
+        expanded_live_providers=expanded_live_providers,
     )
     route_entries = _route_catalog_entries(
         runtime_hash=runtime_hash,
@@ -355,6 +402,8 @@ def build_provider_catalog_env(
         catalog_hash=catalog_hash,
         catalog_version=catalog_version,
         bridge_live_models=live_set,
+        provider_release_statuses=provider_release_statuses,
+        expanded_live_providers=expanded_live_providers,
     )
     meta_by_model = {model["model_id"]: model for models in _BRIDGE_MODELS_BY_PROVIDER.values() for model in models}
     catalog_models: list[dict[str, Any]] = []
@@ -832,6 +881,8 @@ def merge_provider_catalog_env(
     live_bridge_models: tuple[str, ...] = (),
     bridge_api_keys: dict[str, str] | None = None,
     deepseek_anthropic_fixture_green: bool = True,
+    provider_release_statuses: dict[str, str] | None = None,
+    expanded_live_providers: tuple[str, ...] = (),
 ) -> dict[str, str]:
     existing = existing_env or {}
     resolved_runtime_hash = (str(runtime_hash).strip() if runtime_hash else "") or existing.get("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", _DEFAULT_RUNTIME_HASH)
@@ -846,6 +897,8 @@ def merge_provider_catalog_env(
         live_bridge_models=live_bridge_models,
         bridge_api_keys=bridge_api_keys,
         deepseek_anthropic_fixture_green=deepseek_anthropic_fixture_green,
+        provider_release_statuses=provider_release_statuses,
+        expanded_live_providers=expanded_live_providers,
     ))
     for key in (
         "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID",
@@ -871,8 +924,14 @@ def apply_bridge_groups(
     runtime_hash: str | None = None,
     overlay_hash: str | None = None,
     deepseek_anthropic_fixture_green: bool = True,
+    provider_release_statuses: dict[str, str] | None = None,
+    expanded_live_providers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    validate_live_bridge_models_supported(live_bridge_models)
+    validate_live_bridge_models_supported(
+        live_bridge_models,
+        provider_release_statuses=provider_release_statuses,
+        expanded_live_providers=expanded_live_providers,
+    )
     existing_env = _read_env_file(env_out)
     bridge_api_keys = build_runtime_bridge_api_keys(existing_env=existing_env)
     env = merge_provider_catalog_env(
@@ -884,6 +943,8 @@ def apply_bridge_groups(
         live_bridge_models=live_bridge_models,
         bridge_api_keys=bridge_api_keys,
         deepseek_anthropic_fixture_green=deepseek_anthropic_fixture_green,
+        provider_release_statuses=provider_release_statuses,
+        expanded_live_providers=expanded_live_providers,
     )
     sql = build_apply_sql(bridge_api_keys=bridge_api_keys)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
@@ -960,6 +1021,16 @@ def _parse_models(raw: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+def _parse_provider_release_statuses(raw: str) -> dict[str, str]:
+    raw = str(raw or "").strip()
+    if not raw:
+        return {}
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("provider release statuses must be a JSON object")
+    return {str(key): str(value) for key, value in payload.items()}
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Plan/apply Claude Code bridge canary groups without printing secrets.")
     mode = parser.add_mutually_exclusive_group()
@@ -974,6 +1045,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deepseek-openai-fallback", action="store_true", help="Explicitly force DeepSeek OpenAI-compatible /chat/completions fallback when Anthropic-compatible fixture parity is not green.")
     parser.add_argument("--env-out", type=Path, default=_DEFAULT_ENV_OUT, help="Canary env file to write during approved apply.")
     parser.add_argument("--live-bridge-models", default="", help="Comma-separated bridge model ids to enable live in provider catalog.")
+    parser.add_argument("--bridge-provider-release-statuses-json", default="", help="JSON object of provider release statuses; values are metadata only, never secrets.")
+    parser.add_argument("--bridge-live-expanded-providers", default="", help="Comma-separated providers explicitly expanded beyond L8 default scope.")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
@@ -982,6 +1055,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     live_bridge_models = _parse_models(args.live_bridge_models)
+    try:
+        provider_release_statuses = _parse_provider_release_statuses(args.bridge_provider_release_statuses_json)
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"Refusing to apply: {exc}", file=sys.stderr)
+        return 2
+    expanded_live_providers = _parse_models(args.bridge_live_expanded_providers)
     if args.apply:
         if not args.user_approved_db_write or not args.postgres_container:
             print(
@@ -999,6 +1078,8 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_hash=args.runtime_hash or None,
                 overlay_hash=args.overlay_hash or None,
                 deepseek_anthropic_fixture_green=not args.deepseek_openai_fallback,
+                provider_release_statuses=provider_release_statuses,
+                expanded_live_providers=expanded_live_providers,
             )
         except Exception as exc:  # noqa: BLE001 - CLI must fail closed without leaking command details.
             print(f"Refusing to apply: {exc}", file=sys.stderr)

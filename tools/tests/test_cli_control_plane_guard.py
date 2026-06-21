@@ -139,6 +139,48 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertIn('"listen": "http://127.0.0.1:', stdout.getvalue())
         self.assertNotIn('route hint catalog hash mismatch', stderr.getvalue())
 
+    def test_main_accepts_agnes_catalog_hash_only_with_strict_live_scope_env(self):
+        runtime_hash = 'sha256:' + '1' * 64
+        overlay_hash = 'sha256:' + '2' * 64
+        bridge_live_models = ('claude-code-bridge-agnes-2.0-flash',)
+        catalog = cp4_fixture_route_catalog(
+            runtime_hash=runtime_hash,
+            overlay_hash=overlay_hash,
+            catalog_hash='sha256:' + '0' * 64,
+            catalog_version='cp4-cli-fixture-v1',
+            bridge_live_models=bridge_live_models,
+            bridge_live_provider_statuses={'agnes': 'strict-live-pass'},
+        )
+        catalog_hash = route_catalog_content_hash(catalog)
+        env = {
+            'ROUTE_HINT_SECRET': 'route-hint-secret',
+            'ZHUMENG_CLAUDE_RUNTIME_HASH': runtime_hash,
+            'ZHUMENG_CLAUDE_OVERLAY_HASH': overlay_hash,
+            'ZHUMENG_CLAUDE_CATALOG_HASH': catalog_hash,
+            'ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS': ','.join(bridge_live_models),
+            'ZHUMENG_CLAUDE_BRIDGE_PROVIDER_RELEASE_STATUSES_JSON': '{"agnes":"strict-live-pass"}',
+        }
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as td, \
+             unittest.mock.patch.dict('os.environ', env, clear=False), \
+             unittest.mock.patch('sys.stdout', stdout), \
+             unittest.mock.patch('sys.stderr', stderr), \
+             unittest.mock.patch('tools.cli_control_plane_guard.time.sleep', side_effect=KeyboardInterrupt):
+            code = guard_main([
+                '--listen-port', str(_free_port()),
+                '--upstream-base', 'http://127.0.0.1:18080',
+                '--sub2api-auth', 'managed-access-token',
+                '--native-attestation',
+                '--route-hint-secret-env', 'ROUTE_HINT_SECRET',
+                '--summary-path', str(Path(td) / 'summary.jsonl'),
+            ])
+
+        self.assertEqual(code, 0)
+        self.assertIn('"listen": "http://127.0.0.1:', stdout.getvalue())
+        self.assertNotIn('route hint catalog hash mismatch', stderr.getvalue())
+
     def test_main_rejects_bridge_live_catalog_hash_without_matching_env(self):
         runtime_hash = 'sha256:' + '1' * 64
         overlay_hash = 'sha256:' + '2' * 64
@@ -170,6 +212,42 @@ class CliControlPlaneGuardTest(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn('route hint catalog hash mismatch', stderr.getvalue())
+
+
+    def test_cp4_route_catalog_keeps_conditional_and_out_of_scope_bridge_models_live_disabled_without_evidence(self):
+        catalog = cp4_fixture_route_catalog(
+            bridge_live_models=(
+                "claude-code-bridge-agnes-2.0-flash",
+                "claude-code-bridge-glm-5.2-1m",
+                "claude-code-bridge-kimi-k2.7-code",
+            ),
+            catalog_version="cp4-cli-fixture-v1",
+        )
+
+        self.assertFalse(catalog.entries["claude-code-bridge-agnes-2.0-flash"].live_enabled)
+        self.assertFalse(catalog.entries["claude-code-bridge-glm-5.2-1m"].live_enabled)
+        self.assertFalse(catalog.entries["claude-code-bridge-kimi-k2.7-code"].live_enabled)
+
+    def test_cp4_route_catalog_allows_conditional_and_expanded_providers_only_with_strict_live_evidence(self):
+        catalog = cp4_fixture_route_catalog(
+            bridge_live_models=(
+                "claude-code-bridge-agnes-2.0-flash",
+                "claude-code-bridge-glm-5.2-1m",
+                "claude-code-bridge-kimi-k2.7-code",
+            ),
+            bridge_live_provider_statuses={
+                "agnes": "strict-live-pass",
+                "zai_glm": "strict-live-pass",
+                "kimi": "strict-live-pass",
+            },
+            bridge_live_expanded_providers=("zai_glm", "kimi"),
+            catalog_version="cp4-cli-fixture-v1",
+        )
+
+        self.assertTrue(catalog.entries["claude-code-bridge-agnes-2.0-flash"].live_enabled)
+        self.assertTrue(catalog.entries["claude-code-bridge-glm-5.2-1m"].live_enabled)
+        self.assertTrue(catalog.entries["claude-code-bridge-kimi-k2.7-code"].live_enabled)
+
 
     def test_model_discovery_returns_route_catalog_overlay_without_live_bridge_enablement(self):
         with tempfile.TemporaryDirectory() as td:

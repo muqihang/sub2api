@@ -115,6 +115,8 @@ def run_managed_claude_code(
     runtime_hash: str | None = None,
     overlay_hash: str | None = None,
     bridge_live_models: tuple[str, ...] = (),
+    bridge_provider_release_statuses: Mapping[str, str] | None = None,
+    bridge_live_expanded_providers: tuple[str, ...] = (),
     config_root: Path,
     project_cwd: Path | None = None,
     guard_listen_port: int,
@@ -156,6 +158,8 @@ def run_managed_claude_code(
         runtime_hash=runtime_hash,
         overlay_hash=overlay_hash,
         bridge_live_models=tuple(bridge_live_models),
+        bridge_provider_release_statuses=dict(bridge_provider_release_statuses or {}),
+        bridge_live_expanded_providers=tuple(bridge_live_expanded_providers),
     )
     guard_plan = build_native_guard_plan(guard_config, inherited_env=inherited_env)
     with start_guard(guard_plan, ready_timeout_seconds=ready_timeout_seconds) as guard:
@@ -612,6 +616,8 @@ def _route_hint_catalog_payload(guard_plan: NativeGuardPlan) -> dict[str, object
         catalog_hash=guard_plan.env["ZHUMENG_CLAUDE_CATALOG_HASH"],
         catalog_version=guard_plan.config.route_hint_catalog_version,
         bridge_live_models=tuple(guard_plan.config.bridge_live_models),
+        bridge_live_provider_statuses=guard_plan.config.bridge_provider_release_statuses,
+        bridge_live_expanded_providers=guard_plan.config.bridge_live_expanded_providers,
     )
     expected_catalog_hash = route_trust.route_catalog_content_hash(catalog)
     if catalog.catalog_hash != expected_catalog_hash:

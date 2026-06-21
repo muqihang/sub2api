@@ -98,11 +98,15 @@ def cp4_fixture_route_catalog(
     catalog_hash: str = _UNKNOWN_HASH,
     catalog_version: str = "cp4-fixture-v1",
     bridge_live_models: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
+    bridge_live_provider_statuses: Mapping[str, str] | None = None,
+    bridge_live_expanded_providers: frozenset[str] | set[str] | tuple[str, ...] = frozenset(),
 ) -> RouteCatalog:
     runtime_hash = _normalize_hash(runtime_hash, "runtime_hash")
     overlay_hash = _normalize_hash(overlay_hash, "overlay_hash")
     catalog_hash = _normalize_hash(catalog_hash, "catalog_hash")
     bridge_live_model_set = {str(model).strip() for model in bridge_live_models if str(model).strip()}
+    provider_statuses = {str(key): str(value) for key, value in (bridge_live_provider_statuses or {}).items()}
+    expanded_providers = {str(provider).strip() for provider in bridge_live_expanded_providers if str(provider).strip()}
     def native(model_id: str) -> RouteCatalogEntry:
         return RouteCatalogEntry(
             model_id=model_id,
@@ -118,7 +122,11 @@ def cp4_fixture_route_catalog(
         )
 
     def bridge(model_id: str, provider: str, route: str, client_type: str) -> RouteCatalogEntry:
-        live_enabled = model_id in bridge_live_model_set and provider in {"openai", "deepseek", "agnes", "zai_glm", "kimi"}
+        live_enabled = model_id in bridge_live_model_set and _bridge_provider_live_allowed(
+            provider,
+            provider_statuses=provider_statuses,
+            expanded_providers=expanded_providers,
+        )
         return RouteCatalogEntry(
             model_id=model_id,
             provider=provider,
@@ -152,6 +160,22 @@ def cp4_fixture_route_catalog(
         catalog_version=str(catalog_version),
         entries=entries,
     )
+
+
+def _bridge_provider_live_allowed(
+    provider: str,
+    *,
+    provider_statuses: Mapping[str, str],
+    expanded_providers: set[str],
+) -> bool:
+    provider = str(provider).strip()
+    if provider in {"openai", "deepseek"}:
+        return True
+    if provider == "agnes":
+        return provider_statuses.get("agnes") == "strict-live-pass"
+    if provider in {"zai_glm", "kimi"}:
+        return provider in expanded_providers and provider_statuses.get(provider) == "strict-live-pass"
+    return False
 
 
 def route_catalog_content_hash(catalog: RouteCatalog) -> str:

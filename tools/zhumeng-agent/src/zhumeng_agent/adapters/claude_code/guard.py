@@ -58,6 +58,8 @@ class NativeGuardConfig:
     runtime_hash: str | None = None
     overlay_hash: str | None = None
     bridge_live_models: tuple[str, ...] = ()
+    bridge_provider_release_statuses: Mapping[str, str] = field(default_factory=dict)
+    bridge_live_expanded_providers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in set(NativeGuardMode):
@@ -213,9 +215,24 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
     env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] = config.sub2api_auth
     env["ZHUMENG_CLAUDE_RUNTIME_HASH"] = config.runtime_hash or _sha256_file(config.repo_root / "tools" / "cli_control_plane_guard.py")
     env["ZHUMENG_CLAUDE_OVERLAY_HASH"] = config.overlay_hash or _CP0_OVERLAY_HASH
-    env["ZHUMENG_CLAUDE_CATALOG_HASH"] = _route_catalog_content_hash(config.repo_root, config.route_hint_catalog_version, config.bridge_live_models)
+    env["ZHUMENG_CLAUDE_CATALOG_HASH"] = _route_catalog_content_hash(
+        config.repo_root,
+        config.route_hint_catalog_version,
+        config.bridge_live_models,
+        bridge_provider_release_statuses=config.bridge_provider_release_statuses,
+        bridge_live_expanded_providers=config.bridge_live_expanded_providers,
+    )
     if config.bridge_live_models:
         env["ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS"] = ",".join(config.bridge_live_models)
+    if config.bridge_provider_release_statuses:
+        env["ZHUMENG_CLAUDE_BRIDGE_PROVIDER_RELEASE_STATUSES_JSON"] = json.dumps(
+            dict(sorted(config.bridge_provider_release_statuses.items())),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    if config.bridge_live_expanded_providers:
+        env["ZHUMENG_CLAUDE_BRIDGE_LIVE_EXPANDED_PROVIDERS"] = ",".join(config.bridge_live_expanded_providers)
     if config.control_plane_intent_auth is not None:
         env["SUB2API_CONTROL_PLANE_INTENT_TOKEN"] = config.control_plane_intent_auth
     if config.attestation_secret is not None:
@@ -312,7 +329,14 @@ def _sha256_file(path: Path) -> str:
     return "sha256:" + digest
 
 
-def _route_catalog_content_hash(repo_root: Path, catalog_version: str, bridge_live_models: tuple[str, ...] = ()) -> str:
+def _route_catalog_content_hash(
+    repo_root: Path,
+    catalog_version: str,
+    bridge_live_models: tuple[str, ...] = (),
+    *,
+    bridge_provider_release_statuses: Mapping[str, str] | None = None,
+    bridge_live_expanded_providers: tuple[str, ...] = (),
+) -> str:
     route_trust = _load_route_trust_module(repo_root)
     catalog = route_trust.cp4_fixture_route_catalog(
         runtime_hash=_UNKNOWN_HASH,
@@ -320,6 +344,8 @@ def _route_catalog_content_hash(repo_root: Path, catalog_version: str, bridge_li
         catalog_hash=_UNKNOWN_HASH,
         catalog_version=catalog_version,
         bridge_live_models=bridge_live_models,
+        bridge_live_provider_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
     )
     return str(route_trust.route_catalog_content_hash(catalog))
 

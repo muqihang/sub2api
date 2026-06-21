@@ -2564,6 +2564,25 @@ def _native_bridge_live_models_from_env() -> tuple[str, ...]:
     return tuple(dict.fromkeys(models))
 
 
+def _native_bridge_provider_release_statuses_from_env() -> dict[str, str]:
+    raw = os.environ.get("ZHUMENG_CLAUDE_BRIDGE_PROVIDER_RELEASE_STATUSES_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def _native_bridge_live_expanded_providers_from_env() -> tuple[str, ...]:
+    raw = os.environ.get("ZHUMENG_CLAUDE_BRIDGE_LIVE_EXPANDED_PROVIDERS", "")
+    providers = [item.strip() for item in raw.split(",") if item.strip()]
+    return tuple(dict.fromkeys(providers))
+
+
 def native_messages_summary_markers(source_headers: Mapping[str, str]) -> dict[str, Any]:
     local_session = session_key_from_headers(source_headers)
     return {
@@ -3139,12 +3158,16 @@ def main(argv: list[str] | None = None) -> int:
     if route_hint_secret:
         catalog_version = args.route_hint_catalog_version
         bridge_live_models = _native_bridge_live_models_from_env()
+        bridge_provider_statuses = _native_bridge_provider_release_statuses_from_env()
+        bridge_expanded_providers = _native_bridge_live_expanded_providers_from_env()
         route_hint_catalog = cp4_fixture_route_catalog(
             runtime_hash=_native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
             overlay_hash=_native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
             catalog_hash=NATIVE_UNKNOWN_HASH,
             catalog_version=catalog_version,
             bridge_live_models=bridge_live_models,
+            bridge_live_provider_statuses=bridge_provider_statuses,
+            bridge_live_expanded_providers=bridge_expanded_providers,
         )
         route_hint_catalog = cp4_fixture_route_catalog(
             runtime_hash=route_hint_catalog.runtime_hash,
@@ -3152,6 +3175,8 @@ def main(argv: list[str] | None = None) -> int:
             catalog_hash=route_catalog_content_hash(route_hint_catalog),
             catalog_version=catalog_version,
             bridge_live_models=bridge_live_models,
+            bridge_live_provider_statuses=bridge_provider_statuses,
+            bridge_live_expanded_providers=bridge_expanded_providers,
         )
         if _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH") != route_hint_catalog.catalog_hash:
             print("invalid guard config: route hint catalog hash mismatch", file=os.sys.stderr)

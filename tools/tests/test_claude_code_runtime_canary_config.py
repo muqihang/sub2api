@@ -159,6 +159,87 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn("api_key", json.dumps(catalog).lower())
 
 
+
+    def test_live_bridge_provider_scope_defaults_to_openai_and_deepseek_only(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_provider_catalog_env,
+            validate_live_bridge_models_supported,
+        )
+
+        # L8 default live scope is GPT/OpenAI + DeepSeek. AGNES is conditional
+        # on strict-live provider evidence; GLM/Kimi stay catalog-visible but
+        # live-disabled unless explicitly expanded later.
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            live_bridge_models=(
+                "claude-code-bridge-gpt-5.5",
+                "claude-code-bridge-deepseek-v4-pro",
+            ),
+        )
+        catalog = json.loads(env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"])
+        models = {entry["model_id"]: entry for entry in catalog["models"]}
+
+        self.assertTrue(models["claude-code-bridge-gpt-5.5"]["live_enabled"])
+        self.assertTrue(models["claude-code-bridge-deepseek-v4-pro"]["live_enabled"])
+        self.assertFalse(models["claude-code-bridge-agnes-2.0-flash"]["live_enabled"])
+        self.assertFalse(models["claude-code-bridge-glm-5.2-1m"]["live_enabled"])
+        self.assertFalse(models["claude-code-bridge-kimi-k2.7-code"]["live_enabled"])
+
+        with self.assertRaisesRegex(ValueError, "AGNES.*strict-live"):
+            validate_live_bridge_models_supported(("claude-code-bridge-agnes-2.0-flash",))
+        with self.assertRaisesRegex(ValueError, "GLM.*expanded live scope"):
+            validate_live_bridge_models_supported(("claude-code-bridge-glm-5.2-1m",))
+        with self.assertRaisesRegex(ValueError, "Kimi.*expanded live scope"):
+            validate_live_bridge_models_supported(("claude-code-bridge-kimi-k2.7-code",))
+
+    def test_conditional_and_expanded_providers_require_strict_live_evidence(self):
+        from tools.claude_code_runtime_canary_config import validate_live_bridge_models_supported
+
+        validate_live_bridge_models_supported(
+            ("claude-code-bridge-agnes-2.0-flash",),
+            provider_release_statuses={"agnes": "strict-live-pass"},
+        )
+        with self.assertRaisesRegex(ValueError, "AGNES.*strict-live"):
+            validate_live_bridge_models_supported(
+                ("claude-code-bridge-agnes-2.0-flash",),
+                provider_release_statuses={"agnes": "fixture-pass-only"},
+            )
+        with self.assertRaisesRegex(ValueError, "GLM.*expanded live scope"):
+            validate_live_bridge_models_supported(
+                ("claude-code-bridge-glm-5.2-1m",),
+                provider_release_statuses={"zai_glm": "strict-live-pass"},
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported live bridge provider without runtime account: zai_glm"):
+            validate_live_bridge_models_supported(
+                ("claude-code-bridge-glm-5.2-1m",),
+                provider_release_statuses={"zai_glm": "strict-live-pass"},
+                expanded_live_providers=("zai_glm",),
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported live bridge provider without runtime account: kimi"):
+            validate_live_bridge_models_supported(
+                ("claude-code-bridge-kimi-k2.7-code",),
+                provider_release_statuses={"kimi": "strict-live-pass"},
+                expanded_live_providers=("kimi",),
+            )
+
+
+    def test_provider_catalog_env_can_enable_agnes_only_with_strict_live_evidence(self):
+        from tools.claude_code_runtime_canary_config import build_provider_catalog_env
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            live_bridge_models=("claude-code-bridge-agnes-2.0-flash",),
+            provider_release_statuses={"agnes": "strict-live-pass"},
+        )
+        catalog = json.loads(env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"])
+        models = {entry["model_id"]: entry for entry in catalog["models"]}
+
+        self.assertTrue(models["claude-code-bridge-agnes-2.0-flash"]["live_enabled"])
+        self.assertEqual("responses", models["claude-code-bridge-agnes-2.0-flash"]["preferred_protocol"])
+        self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED"])
+        self.assertEqual("false", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"])
+
+
     def test_provider_catalog_env_docker_target_uses_container_reachable_origin(self):
         from tools.claude_code_runtime_canary_config import build_provider_catalog_env
 
@@ -271,7 +352,7 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
 
         self.assertEqual(2, rc)
         self.assertEqual("", stdout.getvalue())
-        self.assertIn("unsupported live bridge provider", stderr.getvalue())
+        self.assertIn("GLM live bridge requires explicit expanded live scope", stderr.getvalue())
 
     def test_provider_catalog_env_native_models_are_curated_not_legacy_or_fictional(self):
         from tools.claude_code_runtime_canary_config import build_provider_catalog_env
@@ -298,6 +379,58 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn("claude-fable-5", native_models)
         self.assertNotIn("claude-opus-4-5-20251101", native_models)
         self.assertNotIn("claude-sonnet-4-5-20250929", native_models)
+
+    def test_apply_cli_passes_conditional_agnes_strict_live_scope_metadata(self):
+        import tools.claude_code_runtime_canary_config as config
+
+        captured = {}
+        original_apply = config.apply_bridge_groups
+        try:
+            def fake_apply_bridge_groups(**kwargs):
+                captured.update(kwargs)
+                return {
+                    "mode": "applied",
+                    "writes_enabled": True,
+                    "target": "http://127.0.0.1:3017",
+                    "runtime_target": "http://127.0.0.1:3017",
+                    "postgres_container": kwargs["postgres_container"],
+                    "groups": [],
+                    "runtime_dispatch_groups": [],
+                    "runtime_dispatch_account_bindings": {},
+                    "env_out": str(kwargs["env_out"]),
+                    "env_keys": [],
+                    "bridge_api_key_env_names": {},
+                    "bridge_api_key_values": {},
+                    "live_bridge_models": list(kwargs["live_bridge_models"]),
+                }
+
+            config.apply_bridge_groups = fake_apply_bridge_groups
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = config.main([
+                    "--apply",
+                    "--user-approved-db-write",
+                    "--postgres-container",
+                    "pg",
+                    "--target",
+                    "http://127.0.0.1:3017",
+                    "--live-bridge-models",
+                    "claude-code-bridge-agnes-2.0-flash",
+                    "--bridge-provider-release-statuses-json",
+                    '{"agnes":"strict-live-pass"}',
+                    "--format",
+                    "json",
+                ])
+        finally:
+            config.apply_bridge_groups = original_apply
+
+        self.assertEqual(0, rc)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(("claude-code-bridge-agnes-2.0-flash",), captured["live_bridge_models"])
+        self.assertEqual({"agnes": "strict-live-pass"}, captured["provider_release_statuses"])
+        self.assertEqual((), captured["expanded_live_providers"])
+
 
     def test_apply_requires_explicit_user_approved_db_write_even_with_container(self):
         stdout = io.StringIO()
@@ -472,7 +605,7 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
 
         env = build_provider_catalog_env(
             "http://127.0.0.1:3017",
-            live_bridge_models=("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-agnes-2.0-flash"),
+            live_bridge_models=("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"),
             bridge_api_keys={
                 "openai": "sk-openai-secret",
                 "deepseek": "sk-deepseek-secret",

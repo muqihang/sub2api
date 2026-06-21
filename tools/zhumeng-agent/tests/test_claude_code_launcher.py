@@ -482,6 +482,49 @@ def test_managed_launch_can_explicitly_enable_bridge_live_models_without_formal_
     assert catalog["entries"]["claude-code-bridge-gpt-5.5"]["formal_pool_allowed"] is False
     assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["live_enabled"] is True
     assert catalog["entries"]["claude-code-bridge-deepseek-v4-pro"]["formal_pool_allowed"] is False
+    assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["live_enabled"] is False
+    assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["formal_pool_allowed"] is False
+
+
+def test_managed_launch_marks_conditional_agnes_live_only_with_strict_live_evidence(tmp_path: Path):
+    captured = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18181"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        captured["guard_plan"] = plan
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        captured["env"] = dict(env)
+        return 0
+
+    result = run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="https://gateway.zhumeng.example",
+        sub2api_auth="managed-access-token",
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        config_root=tmp_path / "zhumeng-state",
+        project_cwd=tmp_path,
+        guard_listen_port=18181,
+        bridge_live_models=("claude-code-bridge-agnes-2.0-flash",),
+        bridge_provider_release_statuses={"agnes": "strict-live-pass"},
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+        inherited_env={"PATH": "/usr/bin"},
+    )
+
+    assert result.returncode == 0
+    catalog = json.loads(Path(captured["env"]["ZHUMENG_CLAUDE_ROUTE_HINT_CATALOG_PATH"]).read_text(encoding="utf-8"))
     assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["live_enabled"] is True
     assert catalog["entries"]["claude-code-bridge-agnes-2.0-flash"]["formal_pool_allowed"] is False
 
@@ -1509,7 +1552,7 @@ def test_managed_launch_refreshes_gateway_model_cache_for_current_guard(tmp_path
         assert model["client_type"].startswith("claude_code_bridge_")
         assert model["route"].endswith("_bridge")
     assert live_by_id["claude-code-bridge-gpt-5.5"] is True
-    assert live_by_id["claude-code-bridge-agnes-2.0-flash"] is True
+    assert live_by_id["claude-code-bridge-agnes-2.0-flash"] is False
     assert live_by_id["claude-code-bridge-glm-5.2-1m"] is False
     assert live_by_id["claude-code-bridge-kimi-k2.7-code"] is False
     models_by_id = {model["id"]: model for model in cache["models"]}

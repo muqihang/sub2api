@@ -1762,6 +1762,8 @@ def build_claude_code_start_payload(
     agent_schema_patch = apply_managed_runtime_agent_model_schema_patch(runtime_root, active_runtime.executable)
     if agent_schema_patch.get("runtime_hash_after") != active_runtime.runtime_hash:
         active_runtime = resolve_active_managed_runtime(runtime_root)
+    bridge_provider_release_statuses = _bridge_provider_release_statuses_from_patches(active_runtime.patches)
+    bridge_live_expanded_providers = _bridge_live_expanded_providers_from_patches(active_runtime.patches)
     bridge_live_models = tuple(_active_runtime_bridge_live_models(active_runtime.patches))
     _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models)
     attestation_secret = require_server_native_attestation_secret(state)
@@ -1786,6 +1788,8 @@ def build_claude_code_start_payload(
         runtime_hash=active_runtime.runtime_hash,
         overlay_hash=active_runtime.overlay_hash,
         bridge_live_models=bridge_live_models,
+        bridge_provider_release_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
         config_root=state_root,
         project_cwd=project_cwd,
         guard_listen_port=selected_guard_port,
@@ -1927,6 +1931,27 @@ def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_m
     )
 
 
+def _bridge_provider_release_statuses_from_patches(patches: Mapping[str, object]) -> dict[str, str]:
+    raw = patches.get("bridge_provider_release_statuses")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in raw.items()}
+
+
+def _bridge_live_expanded_providers_from_patches(patches: Mapping[str, object]) -> tuple[str, ...]:
+    raw = patches.get("bridge_live_expanded_providers")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return ()
+    return tuple(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))
+
+
+def _bridge_runtime_account_providers_from_patches(patches: Mapping[str, object]) -> set[str]:
+    raw = patches.get("bridge_runtime_account_providers")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return set()
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
 def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[str, ...]:
     if patches.get("live_bridge_models_enabled") is not True:
         return ()
@@ -1934,6 +1959,9 @@ def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[s
     catalog = patches.get("live_bridge_model_catalog")
     if not isinstance(raw, list) or not isinstance(catalog, Mapping):
         return ()
+    provider_statuses = _bridge_provider_release_statuses_from_patches(patches)
+    expanded_providers = set(_bridge_live_expanded_providers_from_patches(patches))
+    runtime_account_providers = _bridge_runtime_account_providers_from_patches(patches)
     allowed = []
     for item in raw:
         model = str(item).strip()
@@ -1944,6 +1972,7 @@ def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[s
             continue
         route = str(metadata.get("route") or "")
         client_type = str(metadata.get("client_type") or "")
+        provider = str(metadata.get("provider") or _bridge_provider_from_route(route, client_type, model))
         route_is_bridge = route.endswith("_bridge") and not route.startswith("claude_code_bridge_")
         if (
             model.startswith("claude-code-bridge-")
@@ -1952,9 +1981,51 @@ def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[s
             and client_type != "claude_code_native"
             and metadata.get("live_enabled") is True
             and metadata.get("formal_pool_eligible") is False
+            and _bridge_provider_live_scope_allowed(
+                provider,
+                provider_statuses=provider_statuses,
+                expanded_providers=expanded_providers,
+                runtime_account_providers=runtime_account_providers,
+            )
         ):
             allowed.append(model)
     return tuple(dict.fromkeys(allowed))
+
+
+def _bridge_provider_from_route(route: str, client_type: str, model: str) -> str:
+    for value in (route, client_type, model):
+        text = str(value or "").lower()
+        if "deepseek" in text:
+            return "deepseek"
+        if "openai" in text or "gpt" in text:
+            return "openai"
+        if "agnes" in text:
+            return "agnes"
+        if "zai_glm" in text or "glm" in text:
+            return "zai_glm"
+        if "kimi" in text:
+            return "kimi"
+    return ""
+
+
+def _bridge_provider_live_scope_allowed(
+    provider: str,
+    *,
+    provider_statuses: Mapping[str, str],
+    expanded_providers: set[str],
+    runtime_account_providers: set[str],
+) -> bool:
+    if provider in {"openai", "deepseek"}:
+        return True
+    if provider == "agnes":
+        return provider_statuses.get("agnes") == "strict-live-pass"
+    if provider in {"zai_glm", "kimi"}:
+        return (
+            provider in expanded_providers
+            and provider in runtime_account_providers
+            and provider_statuses.get(provider) == "strict-live-pass"
+        )
+    return False
 
 
 def zhumeng_claude_main(argv: Sequence[str] | None = None) -> int:

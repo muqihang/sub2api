@@ -653,7 +653,7 @@ def test_active_runtime_bridge_live_models_requires_catalog_metadata_not_model_v
     }) == ()
 
 
-def test_active_runtime_bridge_live_models_allows_catalog_verified_bridge_models_from_any_provider():
+def test_active_runtime_bridge_live_models_defaults_to_openai_and_deepseek_scope():
     assert cli._active_runtime_bridge_live_models({
         "live_bridge_models_enabled": True,
         "live_bridge_model_allowlist": [
@@ -703,7 +703,64 @@ def test_active_runtime_bridge_live_models_allows_catalog_verified_bridge_models
                 "formal_pool_eligible": False,
             },
         },
-    }) == ("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-glm-5.2-1m", "claude-code-bridge-kimi-k2.7-code")
+    }) == ("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro")
+
+
+def test_active_runtime_bridge_live_models_requires_strict_live_evidence_for_conditional_agnes():
+    patches = {
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": ["claude-code-bridge-agnes-2.0-flash"],
+        "live_bridge_model_catalog": {
+            "claude-code-bridge-agnes-2.0-flash": {
+                "route": "agnes_bridge",
+                "client_type": "claude_code_bridge_agnes",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+                "provider": "agnes",
+            },
+        },
+    }
+    assert cli._active_runtime_bridge_live_models(patches) == ()
+    patches["bridge_provider_release_statuses"] = {"agnes": "strict-live-pass"}
+    assert cli._active_runtime_bridge_live_models(patches) == ("claude-code-bridge-agnes-2.0-flash",)
+
+
+def test_active_runtime_bridge_live_models_requires_expanded_scope_for_glm_and_kimi():
+    patches = {
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": [
+            "claude-code-bridge-glm-5.2-1m",
+            "claude-code-bridge-kimi-k2.7-code",
+        ],
+        "bridge_provider_release_statuses": {
+            "zai_glm": "strict-live-pass",
+            "kimi": "strict-live-pass",
+        },
+        "live_bridge_model_catalog": {
+            "claude-code-bridge-glm-5.2-1m": {
+                "route": "zai_glm_bridge",
+                "client_type": "claude_code_bridge_zai_glm",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+                "provider": "zai_glm",
+            },
+            "claude-code-bridge-kimi-k2.7-code": {
+                "route": "kimi_bridge",
+                "client_type": "claude_code_bridge_kimi",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+                "provider": "kimi",
+            },
+        },
+    }
+    assert cli._active_runtime_bridge_live_models(patches) == ()
+    patches["bridge_live_expanded_providers"] = ["zai_glm", "kimi"]
+    assert cli._active_runtime_bridge_live_models(patches) == ()
+    patches["bridge_runtime_account_providers"] = ["zai_glm", "kimi"]
+    assert cli._active_runtime_bridge_live_models(patches) == (
+        "claude-code-bridge-glm-5.2-1m",
+        "claude-code-bridge-kimi-k2.7-code",
+    )
 
 
 def test_active_runtime_bridge_live_models_rejects_legacy_client_type_as_route():

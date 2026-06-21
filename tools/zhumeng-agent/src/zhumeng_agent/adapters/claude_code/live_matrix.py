@@ -576,6 +576,9 @@ def _strict_live_provenance_verified(payload: Mapping[str, object], *, evidence_
         "openai": "bridge_pool",
         "deepseek": "bridge_pool",
     }
+    provider_keys = {str(provider).strip() for provider in providers if str(provider).strip()}
+    if provider_keys != set(required):
+        return False
     provenance_mode = str(provenance.get("mode") or "external_provider_live_matrix").strip()
     if provenance_mode not in {"external_provider_live_matrix", "sub2api_gateway_live_matrix"}:
         return False
