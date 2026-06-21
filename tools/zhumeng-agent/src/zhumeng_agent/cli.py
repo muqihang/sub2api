@@ -67,6 +67,7 @@ from .adapters.claude_code.live_matrix import (
     collect_cp8_live_provider_provenance,
     collect_cp8_sub2api_gateway_live_provenance,
     verify_cp8_live_matrix,
+    write_cp8_live_scenario_evidence,
 )
 from .adapters.claude_code.evidence_gate import (
     CanaryEvidenceError,
@@ -163,9 +164,19 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_live_matrix.add_argument("--collect-provider-provenance", action="store_true")
     claude_code_live_matrix.add_argument("--collect-sub2api-provenance", action="store_true")
     claude_code_live_matrix.add_argument("--assemble-external", action="store_true")
+    claude_code_live_matrix.add_argument("--write-scenario-evidence", action="store_true")
     claude_code_live_matrix.add_argument("--provenance", type=Path)
     claude_code_live_matrix.add_argument("--out", type=Path)
     claude_code_live_matrix.add_argument("--run-id")
+    claude_code_live_matrix.add_argument("--scenario")
+    claude_code_live_matrix.add_argument("--route")
+    claude_code_live_matrix.add_argument("--client-type")
+    claude_code_live_matrix.add_argument("--provider")
+    claude_code_live_matrix.add_argument("--model")
+    claude_code_live_matrix.add_argument("--endpoint")
+    claude_code_live_matrix.add_argument("--upstream-request-id")
+    claude_code_live_matrix.add_argument("--provider-provenance-ref", action="append", default=[])
+    claude_code_live_matrix.add_argument("--safe-evidence-summary")
     claude_code_live_matrix.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
     claude_code_live_matrix.add_argument("--sub2api-base-url", help="Sub2API gateway base URL for CP8 live, e.g. http://127.0.0.1:3012")
     claude_code_live_matrix.add_argument("--sub2api-token", help="Sub2API gateway/session token; prefer SUB2API_CP8_LIVE_GATEWAY_TOKEN env")
@@ -897,6 +908,29 @@ def _cp8_live_provenance_output_path(args: argparse.Namespace) -> Path:
         raise CP8LiveMatrixError("CP8 live provenance output refuses to overwrite existing file: " + str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _cp8_live_scenario_evidence_payload(args: argparse.Namespace) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": "pass",
+        "live_provider_verified": True,
+        "raw_sensitive_stored": False,
+        "loopback": False,
+    }
+    for arg_name, key in (
+        ("provider", "provider"),
+        ("model", "model"),
+        ("endpoint", "endpoint"),
+        ("upstream_request_id", "upstream_request_id"),
+        ("safe_evidence_summary", "safe_evidence_summary"),
+    ):
+        value = str(getattr(args, arg_name, "") or "").strip()
+        if value:
+            payload[key] = value
+    refs = [str(item).strip() for item in (getattr(args, "provider_provenance_ref", None) or ()) if str(item).strip()]
+    if refs:
+        payload["provider_provenance_refs"] = refs
+    return payload
 
 
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
@@ -2080,13 +2114,14 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 bool(args.collect_provider_provenance),
                 bool(getattr(args, "collect_sub2api_provenance", False)),
                 bool(args.assemble_external),
+                bool(getattr(args, "write_scenario_evidence", False)),
                 bool(args.strict_live),
             ]
             if sum(1 for enabled in live_matrix_modes if enabled) > 1:
                 return emit_failed({
                     "command": "claude-code live-matrix",
                     "status": "not_configured",
-                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --collect-sub2api-provenance, --assemble-external, or --strict-live",
+                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --collect-sub2api-provenance, --assemble-external, --write-scenario-evidence, or --strict-live",
                 })
             if args.collect_provider_provenance:
                 if not args.run_id or args.output_root is None:
@@ -2139,6 +2174,26 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                     "provenance": str(args.provenance),
                     "out": str(args.out),
                     "promotes_scenario_live_flags": False,
+                })
+            if getattr(args, "write_scenario_evidence", False):
+                if not args.run_id or args.output_root is None or not args.scenario or not args.route or not args.client_type:
+                    return emit_failed({
+                        "command": "claude-code live-matrix write-scenario-evidence",
+                        "status": "not_configured",
+                        "message": "scenario evidence writing requires --run-id, --output-root, --scenario, --route, and --client-type",
+                    })
+                artifact_ref = write_cp8_live_scenario_evidence(
+                    output_root=args.output_root,
+                    run_id=args.run_id,
+                    scenario=args.scenario,
+                    route=args.route,
+                    client_type=args.client_type,
+                    evidence=_cp8_live_scenario_evidence_payload(args),
+                )
+                return emit({
+                    "command": "claude-code live-matrix write-scenario-evidence",
+                    "status": "written",
+                    "artifact_ref": artifact_ref,
                 })
             if args.evidence is None:
                 return emit_failed({

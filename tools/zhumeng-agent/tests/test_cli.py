@@ -3188,6 +3188,71 @@ def test_claude_code_live_matrix_cli_reports_cp8_release_gate(capsys):
     assert strict["release_gate"] == "blocked_missing_external_live"
 
 
+def test_claude_code_live_matrix_cli_writes_scenario_evidence(capsys, tmp_path: Path):
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--write-scenario-evidence",
+        "--run-id",
+        "cp8-cli-scenario",
+        "--output-root",
+        str(tmp_path),
+        "--scenario",
+        "manual_provider_switch",
+        "--route",
+        "deepseek_bridge",
+        "--client-type",
+        "claude_code_bridge_deepseek",
+        "--provider",
+        "deepseek",
+        "--model",
+        "deepseek-v4-pro",
+        "--endpoint",
+        "https://api.deepseek.com/anthropic/v1/messages",
+        "--upstream-request-id",
+        "req_deepseek_live",
+        "--provider-provenance-ref",
+        "artifacts/deepseek_live_provenance.json",
+        "--safe-evidence-summary",
+        "safe summary only",
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix write-scenario-evidence"
+    assert data["status"] == "written"
+    assert data["artifact_ref"]["path"] == "artifacts/scenario_manual_provider_switch_deepseek.json"
+    artifact = tmp_path / data["artifact_ref"]["path"]
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "cp8-live-scenario-evidence-v1"
+    assert payload["run_id"] == "cp8-cli-scenario"
+    assert payload["scenario"] == "manual_provider_switch"
+    assert payload["provider"] == "deepseek"
+    assert payload["provider_provenance_refs"] == ["artifacts/deepseek_live_provenance.json"]
+    assert payload["safe_evidence_summary"] == "safe summary only"
+    assert "Authorization" not in artifact.read_text(encoding="utf-8")
+
+
+def test_claude_code_live_matrix_cli_write_scenario_evidence_requires_safe_required_fields(capsys, tmp_path: Path):
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--write-scenario-evidence",
+        "--run-id",
+        "cp8-cli-scenario",
+        "--output-root",
+        str(tmp_path),
+        "--scenario",
+        "manual_provider_switch",
+        "--route",
+        "deepseek_bridge",
+    ]) == 1
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix write-scenario-evidence"
+    assert data["status"] == "not_configured"
+    assert "requires --run-id, --output-root, --scenario, --route, and --client-type" in data["message"]
+
+
 def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_path: Path, monkeypatch):
     calls: list[dict[str, object]] = []
 

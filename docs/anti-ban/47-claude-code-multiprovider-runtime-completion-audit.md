@@ -259,6 +259,20 @@ Local CP31 evidence:
 
 Current release statement after CP31: **external live collection/assembly CLI flow is file-aligned and still requires real operator scenario artifacts before `external_live_passed` can be claimed**.
 
+
+## 2026-06-21 CP32 scenario evidence writer CLI
+
+The external live matrix flow no longer requires operators to hand-write every `cp8-live-scenario-evidence-v1` artifact. The `claude-code live-matrix --write-scenario-evidence` mode exposes the existing safe scenario writer through the CLI. It requires `--run-id`, `--output-root`, `--scenario`, `--route`, and `--client-type`, and accepts safe provider binding fields such as `--provider`, `--model`, `--endpoint`, `--upstream-request-id`, `--provider-provenance-ref`, and `--safe-evidence-summary`. It does not expose raw prompt/body/header/token/payload fields.
+
+When `--provider` is supplied, the writer emits `artifacts/scenario_<scenario>_<provider>.json`; this is the required pattern for multi-provider strict-live scenarios so each provider binding can be verified independently.
+
+Local CP32 evidence:
+
+- `test_claude_code_live_matrix_cli_writes_scenario_evidence` verifies safe CLI scenario artifact generation.
+- `test_claude_code_live_matrix_cli_write_scenario_evidence_requires_safe_required_fields` verifies required-field fail-closed behavior.
+
+Current release statement after CP32: **operator CP8 evidence collection has safe CLI support for provenance and scenario artifact writing, but real live scenario execution and external artifact verification are still required before `external_live_passed` can be claimed**.
+
 ## External live matrix steps
 
 These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.
@@ -310,7 +324,26 @@ PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhu
 - `cache_account_audit`
 - `netwatch_bypass`
 
-The scenario artifacts must use schema `cp8-live-scenario-evidence-v1`, must reference the same `run_id`, must contain provider/model/endpoint/upstream request id bindings, must point to provider provenance artifact refs, and must not contain raw prompt/body/header/token/payload/secret material.
+Write scenario artifacts with the safe CLI writer rather than hand-editing JSON. For each provider involved in a scenario, use the provider's route/client type, model, endpoint, upstream request id, and provenance artifact reference:
+
+```bash
+PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhumeng_agent.cli \
+  claude-code live-matrix \
+  --write-scenario-evidence \
+  --run-id "$RUN_ID" \
+  --output-root "$EVIDENCE_ROOT" \
+  --scenario manual_provider_switch \
+  --route deepseek_bridge \
+  --client-type claude_code_bridge_deepseek \
+  --provider deepseek \
+  --model deepseek-v4-pro \
+  --endpoint "${SUB2API_CP8_LIVE_BASE_URL:-http://127.0.0.1:3012}/v1/messages" \
+  --upstream-request-id "<sanitized upstream or gateway request id>" \
+  --provider-provenance-ref "artifacts/deepseek_sub2api_live_provenance.json" \
+  --safe-evidence-summary "safe summary only; no prompt/body/header/token material"
+```
+
+The scenario artifacts must use schema `cp8-live-scenario-evidence-v1`, must reference the same `run_id`, must contain provider/model/endpoint/upstream request id bindings, must point to provider provenance artifact refs, and must not contain raw prompt/body/header/token/payload/secret material. Multi-provider scenarios such as `manual_provider_switch`, `interruption`, and `cache_account_audit` need one safe scenario artifact per required provider.
 
 5. Assemble and verify strict-live evidence:
 
