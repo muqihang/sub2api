@@ -619,13 +619,13 @@ def test_cp8_strict_live_requires_every_scenario_provider_binding(tmp_path: Path
     for scenario in payload["scenarios"].values():
         scenario["live_provider_verified"] = True
     _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
-    # manual_provider_switch requires claude/openai/deepseek, but the helper
-    # currently writes only the DeepSeek scenario artifact. That must not be
-    # enough to claim strict-live coverage for the hot-switch scenario.
+    # manual_provider_switch requires claude/openai/deepseek. Keeping exactly
+    # one provider artifact must not be enough to claim strict-live coverage.
     manual = payload["scenarios"]["manual_provider_switch"]
     manual["artifact_refs"] = [
-        ref for ref in manual["artifact_refs"] if ref.get("path", "").endswith("scenario_manual_provider_switch.json")
+        ref for ref in manual["artifact_refs"] if ref.get("path", "").endswith("scenario_manual_provider_switch_deepseek.json")
     ]
+    assert len(manual["artifact_refs"]) == 1
 
     result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
 
