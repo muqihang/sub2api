@@ -3264,7 +3264,10 @@ def test_claude_code_live_matrix_cli_collects_provider_provenance_respects_out_p
 
 
 def test_claude_code_live_matrix_cli_collect_provenance_out_refuses_overwrite(capsys, tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
     def fake_collect_cp8_live_provider_provenance(**kwargs):
+        calls.append(kwargs)
         return {"credential_backed": True, "loopback_only": False, "run_id": kwargs["run_id"], "providers": {}}
 
     monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
@@ -3287,10 +3290,14 @@ def test_claude_code_live_matrix_cli_collect_provenance_out_refuses_overwrite(ca
     assert data["status"] == "not_configured"
     assert "refuses to overwrite" in data["message"]
     assert json.loads(out.read_text(encoding="utf-8")) == {"existing": True}
+    assert calls == []
 
 
 def test_claude_code_live_matrix_cli_collect_provenance_out_rejects_artifacts_dir(capsys, tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
     def fake_collect_cp8_live_provider_provenance(**kwargs):
+        calls.append(kwargs)
         return {"credential_backed": True, "loopback_only": False, "run_id": kwargs["run_id"], "providers": {}}
 
     monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
@@ -3311,6 +3318,7 @@ def test_claude_code_live_matrix_cli_collect_provenance_out_rejects_artifacts_di
     assert data["status"] == "not_configured"
     assert "must not be inside the scenario artifacts directory" in data["message"]
     assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch_deepseek.json").exists()
+    assert calls == []
 
 
 def test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_provenance(tmp_path: Path):

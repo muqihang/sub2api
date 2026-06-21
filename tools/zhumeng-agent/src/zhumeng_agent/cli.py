@@ -880,6 +880,12 @@ def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, obje
 
 
 def _write_cp8_live_provenance_file(args: argparse.Namespace, provenance: Mapping[str, object]) -> Path:
+    path = _cp8_live_provenance_output_path(args)
+    path.write_text(json.dumps(dict(provenance), ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+    return path
+
+
+def _cp8_live_provenance_output_path(args: argparse.Namespace) -> Path:
     out = getattr(args, "out", None)
     output_root = getattr(args, "output_root", None)
     root = Path(output_root).expanduser().resolve(strict=False)
@@ -890,7 +896,6 @@ def _write_cp8_live_provenance_file(args: argparse.Namespace, provenance: Mappin
     if path.exists():
         raise CP8LiveMatrixError("CP8 live provenance output refuses to overwrite existing file: " + str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(provenance), ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
     return path
 
 
@@ -2090,6 +2095,7 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                         "status": "not_configured",
                         "message": "provider provenance collection requires --run-id and --output-root",
                     })
+                _cp8_live_provenance_output_path(args)
                 provenance = collect_cp8_live_provider_provenance(run_id=args.run_id, output_root=args.output_root)
                 provenance_path = _write_cp8_live_provenance_file(args, provenance)
                 return emit({
@@ -2105,6 +2111,7 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                         "status": "not_configured",
                         "message": "Sub2API provenance collection requires --run-id and --output-root",
                     })
+                _cp8_live_provenance_output_path(args)
                 provenance = collect_cp8_sub2api_gateway_live_provenance(**cp8_sub2api_live_provenance_args(args))
                 provenance_path = _write_cp8_live_provenance_file(args, provenance)
                 return emit({
