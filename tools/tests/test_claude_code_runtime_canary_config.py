@@ -1028,5 +1028,110 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertEqual(1, readiness["deepseek"]["unknown_protocol_count"])
         self.assertIn("DeepSeek live catalog contains unknown preferred_protocol labels", readiness["issues"])
 
+    def test_canary_env_readiness_rejects_unapproved_expanded_provider_live_scope(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-agnes-2.0-flash",),
+            provider_release_statuses={"agnes": "strict-live-pass"},
+        )
+
+        readiness = build_canary_env_readiness_metadata(env)
+
+        self.assertFalse(readiness["ready"])
+        self.assertTrue(readiness["expanded_provider_scope"]["agnes_live_enabled"])
+        self.assertIn(
+            "AGNES live scope requires explicit readiness approval",
+            readiness["issues"],
+        )
+
+    def test_canary_env_readiness_allows_expanded_provider_live_scope_when_explicitly_approved(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-agnes-2.0-flash",),
+            provider_release_statuses={"agnes": "strict-live-pass"},
+        )
+
+        readiness = build_canary_env_readiness_metadata(env, approved_expanded_live_providers=("agnes",))
+
+        self.assertTrue(readiness["ready"])
+        self.assertEqual(["agnes"], readiness["expanded_provider_scope"]["approved_expanded_live_providers"])
+
+    def test_canary_env_readiness_rejects_expanded_provider_env_live_flag_without_catalog_live(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-gpt-5.5",),
+        )
+        env["SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED"] = "true"
+        env["SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED"] = "true"
+        env["SUB2API_CLAUDE_CODE_BRIDGE_ZAI_GLM_LIVE_ENABLED"] = "true"
+        env["SUB2API_CLAUDE_CODE_BRIDGE_KIMI_LIVE_ENABLED"] = "true"
+
+        readiness = build_canary_env_readiness_metadata(env)
+
+        self.assertFalse(readiness["ready"])
+        self.assertTrue(readiness["expanded_provider_scope"]["agnes_live_enabled"])
+        self.assertTrue(readiness["expanded_provider_scope"]["glm_live_enabled"])
+        self.assertTrue(readiness["expanded_provider_scope"]["kimi_live_enabled"])
+        self.assertIn("AGNES live scope requires explicit readiness approval", readiness["issues"])
+        self.assertIn("GLM live scope requires explicit readiness approval", readiness["issues"])
+        self.assertIn("Kimi live scope requires explicit readiness approval", readiness["issues"])
+
+    def test_canary_env_readiness_redacts_unknown_expanded_provider_approvals(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+            main,
+        )
+
+        env = build_provider_catalog_env("http://127.0.0.1:3017")
+        secret_approval = "sk-secret-approval-value"
+        readiness = build_canary_env_readiness_metadata(env, approved_expanded_live_providers=("agnes", secret_approval, "glm"))
+        dumped = json.dumps(readiness, sort_keys=True)
+
+        self.assertNotIn(secret_approval, dumped)
+        self.assertEqual(["agnes", "zai_glm"], readiness["expanded_provider_scope"]["approved_expanded_live_providers"])
+        self.assertEqual(1, readiness["expanded_provider_scope"]["unknown_approval_count"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "runtime.env"
+            env_path.write_text("\n".join(f"{key}={value}" for key, value in sorted(env.items())) + "\n", encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = main([
+                    "--verify-env",
+                    "--env-out",
+                    str(env_path),
+                    "--verify-env-approved-expanded-providers",
+                    f"agnes,{secret_approval},glm",
+                    "--format",
+                    "json",
+                ])
+
+        self.assertEqual(0, rc)
+        self.assertEqual("", stderr.getvalue())
+        self.assertNotIn(secret_approval, stdout.getvalue())
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(["agnes", "zai_glm"], payload["expanded_provider_scope"]["approved_expanded_live_providers"])
+        self.assertEqual(1, payload["expanded_provider_scope"]["unknown_approval_count"])
+
 if __name__ == "__main__":
     unittest.main()

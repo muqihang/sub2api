@@ -876,7 +876,7 @@ def _env_flag(env: dict[str, str], key: str) -> bool:
     return str(env.get(key, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def build_canary_env_readiness_metadata(env: dict[str, str]) -> dict[str, Any]:
+def build_canary_env_readiness_metadata(env: dict[str, str], *, approved_expanded_live_providers: tuple[str, ...] = ()) -> dict[str, Any]:
     """Return secret-free readiness evidence for the 3017 canary env/catalog."""
     issues: list[str] = []
     catalog_status = "missing"
@@ -960,9 +960,16 @@ def build_canary_env_readiness_metadata(env: dict[str, str]) -> dict[str, Any]:
     if not bridge_isolated:
         issues.append("bridge models must not be allowed into the native Claude formal pool")
 
-    agnes_live = any(str(model.get("provider", "")) == "agnes" and bool(model.get("live_enabled")) for model in bridge_models)
-    glm_live = any(str(model.get("provider", "")) == "zai_glm" and bool(model.get("live_enabled")) for model in bridge_models)
-    kimi_live = any(str(model.get("provider", "")) == "kimi" and bool(model.get("live_enabled")) for model in bridge_models)
+    agnes_live = any(str(model.get("provider", "")) == "agnes" and bool(model.get("live_enabled")) for model in bridge_models) or _env_flag(env, "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED")
+    glm_live = any(str(model.get("provider", "")) == "zai_glm" and bool(model.get("live_enabled")) for model in bridge_models) or _env_flag(env, "SUB2API_CLAUDE_CODE_BRIDGE_ZAI_GLM_LIVE_ENABLED")
+    kimi_live = any(str(model.get("provider", "")) == "kimi" and bool(model.get("live_enabled")) for model in bridge_models) or _env_flag(env, "SUB2API_CLAUDE_CODE_BRIDGE_KIMI_LIVE_ENABLED")
+    approved_expanded, unknown_approval_count = _approved_expanded_provider_set(approved_expanded_live_providers)
+    if agnes_live and "agnes" not in approved_expanded:
+        issues.append("AGNES live scope requires explicit readiness approval")
+    if glm_live and "zai_glm" not in approved_expanded:
+        issues.append("GLM live scope requires explicit readiness approval")
+    if kimi_live and "kimi" not in approved_expanded:
+        issues.append("Kimi live scope requires explicit readiness approval")
 
     bridge_api_key_present = {}
     for spec in _RUNTIME_DISPATCH_GROUPS:
@@ -1001,10 +1008,33 @@ def build_canary_env_readiness_metadata(env: dict[str, str]) -> dict[str, Any]:
             "agnes_live_enabled": agnes_live,
             "glm_live_enabled": glm_live,
             "kimi_live_enabled": kimi_live,
+            "approved_expanded_live_providers": sorted(approved_expanded),
+            "unknown_approval_count": unknown_approval_count,
         },
         "bridge_api_key_presence": bridge_api_key_present,
     }
 
+
+def _approved_expanded_provider_set(values: tuple[str, ...]) -> tuple[set[str], int]:
+    aliases = {
+        "agnes": "agnes",
+        "glm": "zai_glm",
+        "zai_glm": "zai_glm",
+        "zai-glm": "zai_glm",
+        "kimi": "kimi",
+    }
+    approved: set[str] = set()
+    unknown = 0
+    for raw in values:
+        normalized = str(raw).strip().lower().replace(" ", "_")
+        if not normalized:
+            continue
+        provider = aliases.get(normalized)
+        if provider is None:
+            unknown += 1
+            continue
+        approved.add(provider)
+    return approved, unknown
 
 def merge_provider_catalog_env(
     existing_env: dict[str, str] | None,
@@ -1184,6 +1214,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live-bridge-models", default="", help="Comma-separated bridge model ids to enable live in provider catalog.")
     parser.add_argument("--bridge-provider-release-statuses-json", default="", help="JSON object of provider release statuses; values are metadata only, never secrets.")
     parser.add_argument("--bridge-live-expanded-providers", default="", help="Comma-separated providers explicitly expanded beyond L8 default scope.")
+    parser.add_argument("--verify-env-approved-expanded-providers", default="", help="Comma-separated expanded providers explicitly approved for readiness verification only.")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
@@ -1231,7 +1262,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.verify_env:
-        result = build_canary_env_readiness_metadata(_read_env_file(args.env_out))
+        result = build_canary_env_readiness_metadata(
+            _read_env_file(args.env_out),
+            approved_expanded_live_providers=_parse_models(args.verify_env_approved_expanded_providers),
+        )
         if args.format == "json":
             print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
         else:
