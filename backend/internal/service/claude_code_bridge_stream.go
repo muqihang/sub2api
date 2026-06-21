@@ -614,27 +614,35 @@ func safeClaudeCodeBridgeAuditHMAC(value string) string {
 
 func claudeCodeBridgeCacheControlLocations(body []byte) []string {
 	locations := map[string]struct{}{}
-	if gjson.GetBytes(body, "cache_control").Exists() {
+	var payload map[string]any
+	if len(body) == 0 || json.Unmarshal(body, &payload) != nil {
+		return nil
+	}
+	if _, ok := payload["cache_control"]; ok {
 		locations["top_level"] = struct{}{}
 	}
-	if gjson.GetBytes(body, "system.#.cache_control").Exists() {
+	if claudeCodeBridgeValueHasCacheControl(payload["system"]) {
 		locations["system"] = struct{}{}
 	}
-	if gjson.GetBytes(body, "tools.#.cache_control").Exists() {
+	if claudeCodeBridgeValueHasCacheControl(payload["tools"]) {
 		locations["tools"] = struct{}{}
 	}
-	messages := gjson.GetBytes(body, "messages")
-	if messages.IsArray() {
-		items := messages.Array()
-		lastIndex := len(items) - 1
-		for i := range items {
-			if gjson.GetBytes(body, fmt.Sprintf("messages.%d.content.#.cache_control", i)).Exists() ||
-				gjson.GetBytes(body, fmt.Sprintf("messages.%d.cache_control", i)).Exists() {
-				if i == lastIndex {
-					locations["current"] = struct{}{}
-				} else {
-					locations["history"] = struct{}{}
-				}
+	if messages, ok := payload["messages"].([]any); ok {
+		lastIndex := len(messages) - 1
+		for i, rawMessage := range messages {
+			message, ok := rawMessage.(map[string]any)
+			if !ok {
+				continue
+			}
+			_, messageHasCacheControl := message["cache_control"]
+			contentHasCacheControl := claudeCodeBridgeValueHasCacheControl(message["content"])
+			if !messageHasCacheControl && !contentHasCacheControl {
+				continue
+			}
+			if i == lastIndex {
+				locations["current"] = struct{}{}
+			} else {
+				locations["history"] = struct{}{}
 			}
 		}
 	}
@@ -644,6 +652,25 @@ func claudeCodeBridgeCacheControlLocations(body []byte) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func claudeCodeBridgeValueHasCacheControl(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if _, ok := typed["cache_control"]; ok {
+			return true
+		}
+		return false
+	case []any:
+		for _, item := range typed {
+			if claudeCodeBridgeValueHasCacheControl(item) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 func claudeCodeBridgeStablePrefixAudit(decision ClaudeCodeBridgeRouteDecision, body []byte) (string, string) {
@@ -982,10 +1009,10 @@ func rewriteClaudeCodeBridgeAnthropicBodyModel(decision ClaudeCodeBridgeRouteDec
 }
 
 func claudeCodeBridgeShouldInjectAnthropicCacheControl(decision ClaudeCodeBridgeRouteDecision) bool {
-	provider := strings.TrimSpace(decision.Provider)
-	protocol := strings.TrimSpace(decision.PreferredProtocol)
-	policy := strings.TrimSpace(decision.CachePolicy)
-	return provider == "deepseek" && protocol == "anthropic_messages" && (strings.Contains(policy, "kv_cache") || strings.Contains(policy, "cache_audit"))
+	// DeepSeek's Anthropic-compatible endpoint ignores cache_control. Its
+	// official Context Caching is automatic prefix KV caching, audited via
+	// prompt_cache_hit_tokens/prompt_cache_miss_tokens and stable-prefix HMAC.
+	return false
 }
 
 func injectClaudeCodeBridgeAnthropicCacheControl(payload map[string]any) {

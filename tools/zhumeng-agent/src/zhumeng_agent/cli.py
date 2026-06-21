@@ -1828,7 +1828,8 @@ def _provider_scope_preflight(patches: Mapping[str, object]) -> dict[str, object
 def _local_preflight_decisions() -> dict[str, object]:
     return {
         "managed_runtime_patch_policy": "preload_metadata_plus_approved_managed_runtime_patch_only",
-        "deepseek_cache_control_policy": "provider_ignored_audit_only",
+        "deepseek_prefix_kv_policy": "anthropic_messages_prompt_cache_hit_miss_stable_prefix_hmac",
+        "deepseek_cache_control_policy": "legacy_provider_ignored_if_present_not_cache_mechanism",
         "toolsearch_policy": "true_only_after_doctor_and_shape_healthcheck_else_degraded_auto_or_false",
         "audit_digest_policy": "purpose_scoped_hmac_no_content_hashes",
         "live_rollout_policy": "no_3017_change_without_explicit_approval",

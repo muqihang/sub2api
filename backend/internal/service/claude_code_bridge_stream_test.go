@@ -719,7 +719,30 @@ func TestClaudeCodeBridgeSkeletonFailsClosedForParallelAgentTools(t *testing.T) 
 	require.NotContains(t, stream, `"city":"San Francisco"`)
 }
 
-func TestClaudeCodeBridgeAnthropicRewriteAddsStableCacheControlForDeepSeek(t *testing.T) {
+func TestClaudeCodeBridgeAnthropicRewriteDoesNotInjectProviderIgnoredCacheControlForDeepSeek(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable project instructions","messages":[{"role":"user","content":"stable context"},{"role":"user","content":"latest turn"}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:            "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "anthropic_messages",
+		CachePolicy:              "provider_prefix_kv_cache_automatic_full_prefix_unit_match",
+	}
+
+	rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
+
+	require.NoError(t, err)
+	require.Equal(t, "deepseek-v4-pro", gjson.GetBytes(rewritten, "model").String())
+	require.NotContains(t, string(rewritten), `"cache_control"`)
+	require.Empty(t, claudeCodeBridgeCacheControlLocations(rewritten))
+}
+
+func TestClaudeCodeBridgeAnthropicRewriteOnlyMapsDeepSeekModelAndDoesNotInventCacheControl(t *testing.T) {
 	for _, cachePolicy := range []string{
 		"provider_prefix_kv_cache_automatic_full_prefix_unit_match",
 		"provider_cache_audit_required",
@@ -742,16 +765,15 @@ func TestClaudeCodeBridgeAnthropicRewriteAddsStableCacheControlForDeepSeek(t *te
 			rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
 
 			require.NoError(t, err)
-			require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "system.0.cache_control").Raw)
-			require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "messages.0.content.0.cache_control").Raw)
-			require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "tools.0.cache_control").Raw)
-			require.False(t, gjson.GetBytes(rewritten, "messages.2.content.cache_control").Exists(), "latest turn must not become the cache anchor")
 			require.Equal(t, "deepseek-v4-pro", gjson.GetBytes(rewritten, "model").String())
+			require.NotContains(t, string(rewritten), `"cache_control"`)
+			require.Empty(t, claudeCodeBridgeCacheControlLocations(rewritten))
+			require.Equal(t, "latest turn", gjson.GetBytes(rewritten, "messages.2.content").String())
 		})
 	}
 }
 
-func TestClaudeCodeBridgeAnthropicRewriteConvertsStableStringContentForDeepSeekCache(t *testing.T) {
+func TestClaudeCodeBridgeAnthropicRewritePreservesDeepSeekStringContentShape(t *testing.T) {
 	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system prefix","messages":[{"role":"user","content":"stable user context"},{"role":"assistant","content":"stable assistant context"},{"role":"user","content":"latest turn must stay a string"}],"stream":true}`)
 	decision := ClaudeCodeBridgeRouteDecision{
 		ModelID:                  "claude-code-bridge-deepseek-v4-pro",
@@ -769,14 +791,28 @@ func TestClaudeCodeBridgeAnthropicRewriteConvertsStableStringContentForDeepSeekC
 	rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
 
 	require.NoError(t, err)
-	require.Equal(t, "stable system prefix", gjson.GetBytes(rewritten, "system.0.text").String())
-	require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "system.0.cache_control").Raw)
-	require.Equal(t, "stable user context", gjson.GetBytes(rewritten, "messages.0.content.0.text").String())
-	require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "messages.0.content.0.cache_control").Raw)
-	require.Equal(t, "stable assistant context", gjson.GetBytes(rewritten, "messages.1.content.0.text").String())
-	require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "messages.1.content.0.cache_control").Raw)
+	require.Equal(t, "deepseek-v4-pro", gjson.GetBytes(rewritten, "model").String())
+	require.Equal(t, "stable system prefix", gjson.GetBytes(rewritten, "system").String())
+	require.Equal(t, "stable user context", gjson.GetBytes(rewritten, "messages.0.content").String())
+	require.Equal(t, "stable assistant context", gjson.GetBytes(rewritten, "messages.1.content").String())
 	require.Equal(t, "latest turn must stay a string", gjson.GetBytes(rewritten, "messages.2.content").String())
-	require.False(t, gjson.GetBytes(rewritten, "messages.2.content.0.cache_control").Exists())
+	require.False(t, gjson.GetBytes(rewritten, "cache_control").Exists())
+}
+
+func TestClaudeCodeBridgeCacheControlLocationsIgnoreNestedSchemaAndToolInputFields(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","tools":[{"name":"Agent","input_schema":{"type":"object","properties":{"cache_control":{"type":"string"}}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{"cache_control":"not an Anthropic cache annotation"}}]},{"role":"user","content":[{"type":"text","text":"latest"}]}],"stream":true}`)
+
+	locations := claudeCodeBridgeCacheControlLocations(body)
+
+	require.Empty(t, locations)
+}
+
+func TestClaudeCodeBridgeCacheControlLocationsDetectOnlyDirectAnthropicAnnotations(t *testing.T) {
+	body := []byte(`{"model":"deepseek-v4-pro","cache_control":{"type":"ephemeral"},"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"Agent","cache_control":{"type":"ephemeral"},"input_schema":{"type":"object","properties":{"cache_control":{"type":"string"}}}}],"messages":[{"role":"assistant","cache_control":{"type":"ephemeral"},"content":[{"type":"text","text":"stable"}]},{"role":"user","content":[{"type":"text","text":"latest","cache_control":{"type":"ephemeral"}}]}],"stream":true}`)
+
+	locations := claudeCodeBridgeCacheControlLocations(body)
+
+	require.ElementsMatch(t, []string{"top_level", "system", "tools", "history", "current"}, locations)
 }
 
 func TestClaudeCodeBridgeStablePrefixHMACIgnoresLatestTurnButTracksStablePrefix(t *testing.T) {

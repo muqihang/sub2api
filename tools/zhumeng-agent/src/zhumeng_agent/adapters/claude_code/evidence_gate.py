@@ -108,9 +108,15 @@ def build_checkpoint0_decision_freeze(
             "default_route": "preload_metadata_backend_enforcement",
             "direct_binary_patch_requires_separate_approval": True,
         },
+        "deepseek_prefix_kv_policy": {
+            "preferred_protocol": "anthropic_messages",
+            "cache_mechanism": "deepseek_prefix_kv",
+            "usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "requires_stable_prefix_hmac": True,
+        },
         "deepseek_cache_control_policy": {
             "treat_cache_control_as_cache_mechanism": False,
-            "allowed_outcomes": ["remove", "compatibility_metadata_ignored"],
+            "allowed_outcomes": ["absent", "provider_ignored_if_present"],
             "requires_cache_control_provider_ignored_audit": True,
         },
         "model_ui_evidence_policy": {

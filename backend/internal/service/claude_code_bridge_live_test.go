@@ -52,7 +52,7 @@ func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing
 	require.Equal(t, "claude_code_bridge_deepseek", result.Audit.ClientType)
 }
 
-func TestClaudeCodeBridgeAnthropicLiveInjectsDeepSeekCacheControlInUpstreamBody(t *testing.T) {
+func TestClaudeCodeBridgeAnthropicLiveDoesNotInjectProviderIgnoredDeepSeekCacheControl(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
@@ -73,10 +73,10 @@ func TestClaudeCodeBridgeAnthropicLiveInjectsDeepSeekCacheControlInUpstreamBody(
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, result.StatusCode)
 	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
-	require.Contains(t, gotBody, `"system":[{"cache_control":{"type":"ephemeral"},"text":"stable system prefix","type":"text"}]`)
-	require.Contains(t, gotBody, `"content":[{"cache_control":{"type":"ephemeral"},"text":"stable context","type":"text"}]`)
-	require.Contains(t, gotBody, `"tools":[{"cache_control":{"type":"ephemeral"}`)
+	require.Contains(t, gotBody, `"system":"stable system prefix"`)
+	require.Contains(t, gotBody, `"content":"stable context"`)
 	require.Contains(t, gotBody, `"content":"latest turn"`)
+	require.NotContains(t, gotBody, `"cache_control"`)
 }
 
 func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekCacheTruthWithoutRawBody(t *testing.T) {
@@ -111,8 +111,8 @@ func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekCacheTruthWithoutRawBody(t *
 	require.False(t, result.Audit.FallbackUsed)
 	require.Equal(t, "/anthropic/v1/messages", result.Audit.UpstreamPathKind)
 	require.Equal(t, "deepseek_prefix_kv", result.Audit.ProviderCacheMechanism)
-	require.True(t, result.Audit.CacheControlPresent)
-	require.ElementsMatch(t, []string{"history", "system", "tools", "top_level"}, result.Audit.CacheControlLocations)
+	require.False(t, result.Audit.CacheControlPresent)
+	require.Empty(t, result.Audit.CacheControlLocations)
 	require.True(t, result.Audit.CacheControlProviderIgnored)
 	require.Regexp(t, `^hmac-sha256:cache-test-v1:[a-f0-9]{64}$`, result.Audit.StablePrefixHMAC)
 	require.Equal(t, "lt_1k", result.Audit.StablePrefixTokenBucket)

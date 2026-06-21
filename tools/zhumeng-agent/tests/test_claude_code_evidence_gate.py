@@ -42,7 +42,14 @@ def test_checkpoint0_decision_freeze_records_default_l8_scope_without_secrets(tm
     }
     assert decision["runtime_patch_policy"]["default_route"] == "preload_metadata_backend_enforcement"
     assert decision["runtime_patch_policy"]["direct_binary_patch_requires_separate_approval"] is True
+    assert decision["deepseek_prefix_kv_policy"] == {
+        "preferred_protocol": "anthropic_messages",
+        "cache_mechanism": "deepseek_prefix_kv",
+        "usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+        "requires_stable_prefix_hmac": True,
+    }
     assert decision["deepseek_cache_control_policy"]["treat_cache_control_as_cache_mechanism"] is False
+    assert decision["deepseek_cache_control_policy"]["allowed_outcomes"] == ["absent", "provider_ignored_if_present"]
     assert decision["toolsearch_policy"]["healthy_target"] == "ENABLE_TOOL_SEARCH=true"
     assert decision["provider_release_statuses"] == [item.value for item in ProviderReleaseStatus]
     assert decision["phase0_confirmed"] is True

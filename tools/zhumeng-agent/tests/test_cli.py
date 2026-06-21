@@ -2789,7 +2789,8 @@ def test_claude_code_preflight_writes_local_decision_freeze_without_live(capsys,
     assert artifact_payload["overlay_hash"] == overlay_hash
     assert artifact_payload["catalog_hash"] == data["catalog_hash"]
     assert artifact_payload["provider_scope"]["l8_live_targets"] == ["claude_native", "openai", "deepseek"]
-    assert artifact_payload["decisions"]["deepseek_cache_control_policy"] == "provider_ignored_audit_only"
+    assert artifact_payload["decisions"]["deepseek_prefix_kv_policy"] == "anthropic_messages_prompt_cache_hit_miss_stable_prefix_hmac"
+    assert artifact_payload["decisions"]["deepseek_cache_control_policy"] == "legacy_provider_ignored_if_present_not_cache_mechanism"
     dumped = json.dumps(artifact_payload, sort_keys=True)
     assert "Authorization" not in dumped
     assert "raw_body" not in dumped
