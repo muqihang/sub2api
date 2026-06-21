@@ -64,6 +64,38 @@
       "zai_latest_model": "https://docs.z.ai/devpack/latest-model"
     }
   },
+  "provider_release_classification": {
+    "agnes": {
+      "evidence": "checkpoint0_conditional_probe_required",
+      "reason": "probe_and_strict_live_required",
+      "status": "live-disabled"
+    },
+    "claude_native": {
+      "evidence": "checkpoint0_scope_frozen_strict_live_required",
+      "reason": "strict_live_evidence_pending",
+      "status": "fixture-pass-only"
+    },
+    "deepseek": {
+      "evidence": "checkpoint0_scope_frozen_strict_live_required",
+      "reason": "strict_live_evidence_pending",
+      "status": "fixture-pass-only"
+    },
+    "glm": {
+      "evidence": "checkpoint0_catalog_visible_live_disabled",
+      "reason": "outside_l8_live_scope",
+      "status": "live-disabled"
+    },
+    "kimi": {
+      "evidence": "checkpoint0_catalog_visible_live_disabled",
+      "reason": "outside_l8_live_scope",
+      "status": "live-disabled"
+    },
+    "openai": {
+      "evidence": "checkpoint0_scope_frozen_strict_live_required",
+      "reason": "strict_live_evidence_pending",
+      "status": "fixture-pass-only"
+    }
+  },
   "scenarios": {
     "cache_account_audit": {
       "artifact_refs": [

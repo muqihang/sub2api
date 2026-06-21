@@ -120,6 +120,15 @@ _STRICT_LIVE_SCENARIO_PROVIDERS: dict[str, tuple[str, ...]] = {
     "netwatch_bypass": ("claude", "openai", "deepseek"),
 }
 _WORKFLOW_BACKGROUND_TASKS = ("title", "compact", "summary", "probe", "fast", "simple", "haiku")
+_PROVIDER_RELEASE_STATUSES = frozenset({"strict-live-pass", "degraded-pass", "fixture-pass-only", "live-disabled"})
+_REQUIRED_PROVIDER_RELEASE_CLASSIFICATION = ("claude_native", "openai", "deepseek", "agnes", "glm", "kimi")
+_STRICT_LIVE_CORE_PROVIDERS = frozenset({"claude_native", "openai", "deepseek"})
+_CONDITIONAL_PROVIDER_RELEASE_PROVIDERS = frozenset({"agnes", "glm", "kimi"})
+_PROVIDER_RELEASE_CLASSIFICATION_FIELDS = frozenset({"status", "evidence", "reason"})
+_PROVIDER_RELEASE_SENSITIVE_RE = re.compile(
+    r"(authorization|bearer|api[_-]?key|cookie|raw[_-]?(?:body|prompt|request|response|payload)|(?:^|[^a-z0-9])raw(?:$|[^a-z0-9])|prompt|client[_-]?secret|password|secret|access[_-]?token|refresh[_-]?token|session[_-]?token|(?:^|[^a-z0-9])token(?:$|[^a-z0-9]))",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +210,7 @@ def verify_cp8_live_matrix(
     invalid_scenarios = tuple(name for name in REQUIRED_CP8_SCENARIOS if name in scenarios_raw and not isinstance(scenarios_raw.get(name), Mapping))
     missing = tuple(name for name in REQUIRED_CP8_SCENARIOS if name not in scenarios_raw)
     docs_issues = _official_docs_issues(payload.get("official_docs_snapshot"))
+    provider_release_issues = _provider_release_classification_issues(payload.get("provider_release_classification"), strict_live=strict_live)
     results: dict[str, CP8ScenarioResult] = {}
     native_egress: dict[str, int] = {}
     bridge_egress: dict[str, int] = {}
@@ -242,6 +252,8 @@ def verify_cp8_live_matrix(
     )
     if docs_issues:
         failed.append("official_docs")
+    if provider_release_issues:
+        failed.append("provider_release_classification")
     strict_live_ready = (
         len(results) == len(REQUIRED_CP8_SCENARIOS)
         and all(result.live_provider_verified for result in results.values())
@@ -270,6 +282,53 @@ def verify_cp8_live_matrix(
         official_docs_checked=not docs_issues,
         artifact_evidence_verified=artifact_evidence_verified,
     )
+
+
+def _provider_release_classification_issues(value: object, *, strict_live: bool) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        return ("provider release classification is required",)
+    keys = {str(key).strip() for key in value if str(key).strip()}
+    required = set(_REQUIRED_PROVIDER_RELEASE_CLASSIFICATION)
+    issues: list[str] = []
+    if keys != required:
+        issues.append("provider release classification must cover exactly claude_native/openai/deepseek/agnes/glm/kimi")
+    for provider in _REQUIRED_PROVIDER_RELEASE_CLASSIFICATION:
+        raw = value.get(provider)
+        if not isinstance(raw, Mapping):
+            issues.append(f"provider release classification for {provider} must be an object")
+            continue
+        extra_fields = {str(key).strip() for key in raw if str(key).strip()} - _PROVIDER_RELEASE_CLASSIFICATION_FIELDS
+        if extra_fields:
+            issues.append(f"provider release classification for {provider} has unsupported fields")
+        status = _provider_release_safe_string(raw.get("status"))
+        evidence = _provider_release_safe_string(raw.get("evidence"))
+        reason = _provider_release_safe_string(raw.get("reason"))
+        if status not in _PROVIDER_RELEASE_STATUSES:
+            issues.append(f"provider release classification for {provider} has invalid status")
+        if not evidence:
+            issues.append(f"provider release classification for {provider} requires safe evidence")
+        if not reason:
+            issues.append(f"provider release classification for {provider} requires safe reason")
+        if strict_live and provider in _STRICT_LIVE_CORE_PROVIDERS and status != "strict-live-pass":
+            issues.append(f"provider release classification for {provider} must be strict-live-pass")
+        if provider in _CONDITIONAL_PROVIDER_RELEASE_PROVIDERS and status != "live-disabled":
+            issues.append(f"provider release classification for {provider} must remain live-disabled without expanded CP8 scope")
+    return tuple(issues)
+
+
+def _provider_release_safe_string(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    normalized = _normalize_inline_evidence_key(value)
+    if (
+        not value
+        or _SENSITIVE_ARTIFACT_RE.search(value)
+        or _PROVIDER_RELEASE_SENSITIVE_RE.search(value)
+        or _PROVIDER_RELEASE_SENSITIVE_RE.search(normalized)
+    ):
+        return ""
+    return value
 
 
 def assemble_cp8_external_live_matrix_evidence(

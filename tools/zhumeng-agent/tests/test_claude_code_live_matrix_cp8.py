@@ -67,6 +67,24 @@ def _provider_model(provider: str) -> str:
     }[provider]
 
 
+def _default_provider_release_classification(*, strict_live: bool = False) -> dict[str, dict[str, str]]:
+    core_status = "strict-live-pass" if strict_live else "fixture-pass-only"
+    core_reason = "strict_live_evidence_verified" if strict_live else "strict_live_evidence_pending"
+    core_evidence = "cp8_live_provenance" if strict_live else "checkpoint0_scope_frozen_strict_live_required"
+    return {
+        "claude_native": {"status": core_status, "evidence": core_evidence, "reason": core_reason},
+        "openai": {"status": core_status, "evidence": core_evidence, "reason": core_reason},
+        "deepseek": {"status": core_status, "evidence": core_evidence, "reason": core_reason},
+        "agnes": {"status": "live-disabled", "evidence": "checkpoint0_conditional_probe_required", "reason": "probe_and_strict_live_required"},
+        "glm": {"status": "live-disabled", "evidence": "checkpoint0_catalog_visible_live_disabled", "reason": "outside_l8_live_scope"},
+        "kimi": {"status": "live-disabled", "evidence": "checkpoint0_catalog_visible_live_disabled", "reason": "outside_l8_live_scope"},
+    }
+
+
+def _mark_core_provider_release_strict_live(payload: dict[str, object]) -> None:
+    payload["provider_release_classification"] = _default_provider_release_classification(strict_live=True)
+
+
 def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
     candidates = [
         root / "artifacts" / f"{provider}_sub2api_live_provenance.json",
@@ -97,6 +115,7 @@ def _sub2api_endpoint(provider: str) -> str:
 
 
 def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
+    _mark_core_provider_release_strict_live(payload)
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
@@ -194,6 +213,7 @@ def _workflow_background_ref(root: Path) -> dict[str, object]:
 
 
 def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
+    _mark_core_provider_release_strict_live(payload)
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
@@ -266,6 +286,125 @@ def test_cp8_live_matrix_strict_live_requires_real_provider_evidence():
     assert result.status == "fail"
     assert result.release_gate == "blocked_missing_external_live"
     assert "claude_native" in result.failed
+
+
+def test_cp8_live_matrix_requires_exact_provider_release_classification():
+    payload = _fixture("live_matrix_pass.json")
+    payload.pop("provider_release_classification", None)
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "provider_release_classification" in result.failed
+
+    payload = _fixture("live_matrix_pass.json")
+    payload["provider_release_classification"].pop("kimi")
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+    assert result.status == "fail"
+    assert "provider_release_classification" in result.failed
+
+    payload = _fixture("live_matrix_pass.json")
+    payload["provider_release_classification"]["glm"]["status"] = "probably-live"
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+    assert result.status == "fail"
+    assert "provider_release_classification" in result.failed
+
+    payload = _fixture("live_matrix_pass.json")
+    payload["provider_release_classification"]["agnes"]["status"] = "strict-live-pass"
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+    assert result.status == "fail"
+    assert "provider_release_classification" in result.failed
+
+    payload = _fixture("live_matrix_pass.json")
+    payload["provider_release_classification"]["kimi"]["status"] = "degraded-pass"
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+    assert result.status == "fail"
+    assert "provider_release_classification" in result.failed
+
+
+def test_cp8_provider_release_classification_rejects_sensitive_or_raw_metadata():
+    for provider, field, value in (
+        ("openai", "evidence", "raw_body_capture"),
+        ("deepseek", "reason", "raw_prompt_observed"),
+        ("agnes", "evidence", "client_secret_probe"),
+        ("glm", "reason", "password-present"),
+        ("openai", "evidence", "raw_capture"),
+        ("deepseek", "reason", "raw"),
+        ("agnes", "evidence", "token_seen"),
+        ("glm", "reason", "session_token_seen"),
+        ("openai", "evidence", "rawCapture"),
+        ("deepseek", "reason", "tokenSeen"),
+        ("agnes", "evidence", "sessionTokenSeen"),
+    ):
+        payload = _fixture("live_matrix_pass.json")
+        payload["provider_release_classification"][provider][field] = value
+        result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+        assert result.status == "fail"
+        assert "provider_release_classification" in result.failed
+
+    payload = _fixture("live_matrix_pass.json")
+    payload["provider_release_classification"]["openai"]["raw_body"] = "must-not-be-allowed"
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+    assert result.status == "fail"
+    assert "provider_release_classification" in result.failed
+
+
+def test_cp8_strict_live_requires_core_provider_classification_to_match_live_proof(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-classification-strict-live"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    payload["provider_release_classification"]["deepseek"]["status"] = "fixture-pass-only"
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "provider_release_classification" in result.failed
 
 
 def test_cp8_live_matrix_fails_closed_for_missing_scenario_or_bridge_native_pollution():
@@ -1773,6 +1912,7 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
     _add_strict_live_scenario_artifacts({
         "scenarios": {k: v for k, v in payload["scenarios"].items() if k != "manual_provider_switch"}
     }, tmp_path, "cp8-scenario-writer")
+    _mark_core_provider_release_strict_live(payload)
 
     result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
     assert result.status == "pass"

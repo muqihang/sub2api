@@ -2,7 +2,7 @@
   "checkpoint": "CP6",
   "codex_gateway_no_regression": true,
   "fixture_sha256": {
-    "backend/internal/service/claude_code_bridge_openai_test.go": "sha256:2c57e4d9d816954ba17d268fd513b96f6f314f4876f336f31a04d77a50d5d73d",
+    "backend/internal/service/claude_code_bridge_openai_test.go": "sha256:5d7cdc9aee30a9264d1424fe3b652703fb8371e886289fd3b73d6a3f46a60dae",
     "backend/internal/service/codex_gateway_deepseek_integration_golden_test.go": "sha256:3cc69931e5e4f37abdae48cadb613d8691fe42b7aacf2a8e2dfb615cea1afa7a",
     "backend/internal/service/codex_gateway_deepseek_request_test.go": "sha256:84ff1b3ea7829f9c7be1fa795f32a9af379c6d218f426d45349b844204d849af",
     "backend/internal/service/codex_gateway_provider_executor.go": "sha256:cc9f0407411811952572fae4b10b3a658fc7065c8daa41f5335126c1f6eb833e",
