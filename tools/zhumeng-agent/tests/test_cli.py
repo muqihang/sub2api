@@ -13,7 +13,16 @@ from aiohttp.test_utils import TestClient, TestServer
 import zhumeng_agent.cli as cli
 from zhumeng_agent.adapters.codex.model_picker import ModelPickerPatchError
 from zhumeng_agent.adapters.claude_code.launcher import _bridge_model_capabilities_json, build_bridge_effort_ui_probe_metadata
-from zhumeng_agent.adapters.claude_code.runtime_installer import EFFORT_CAPABILITY_HOOK_NEEDLE, EFFORT_CAPABILITY_HOOK_REPLACEMENT, EXACT_EFFORT_LEVEL_UI_PATCH_POINT
+from zhumeng_agent.adapters.claude_code.runtime_installer import (
+    EFFORT_CAPABILITY_HOOK_NEEDLE,
+    EFFORT_CAPABILITY_HOOK_REPLACEMENT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT,
+    EXACT_EFFORT_LEVEL_UI_NEEDLE,
+    EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+    EXACT_EFFORT_LEVEL_UI_REPLACEMENT,
+)
 from zhumeng_agent.cli import main
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -602,6 +611,8 @@ def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: 
     overlay_hash = "sha256:" + "2" * 64
     manifest_dir = runtime_root / "claude-code" / upstream_version
     manifest_dir.mkdir(parents=True, exist_ok=True)
+    managed_executable = manifest_dir / "claude"
+    managed_executable.write_bytes(payload)
     manifest_path = manifest_dir / "manifest.json"
     manifest = {
         "runtime": "claude-code",
@@ -613,7 +624,7 @@ def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: 
         "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"],
         "cch_profile": "claude_code_" + upstream_version.replace(".", "_"),
         "status": "ready",
-        "executable_path": str(executable.resolve(strict=False)),
+        "executable_path": str(managed_executable.resolve(strict=False)),
     }
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     patch_payload = {"runtime": "claude-code", "upstream_version": upstream_version, "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"], "live_bridge_models_enabled": False}
@@ -637,7 +648,7 @@ def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: 
         json.dumps({"runtime": "claude-code", "status": "enabled", "active_version": upstream_version, "manifest_path": str(manifest_path)}, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
-    return executable.resolve(strict=False), runtime_hash, overlay_hash
+    return managed_executable.resolve(strict=False), runtime_hash, overlay_hash
 
 
 def test_active_runtime_bridge_live_models_fail_closed_on_missing_or_malformed_allowlist():
@@ -1025,7 +1036,15 @@ def test_claude_code_runtime_effort_patch_requires_explicit_approval_and_updates
     managed_executable, _, _ = write_fake_claude_runtime(
         runtime_root,
         tmp_path / "managed-runtime" / "claude",
-        payload=b"prefix " + EFFORT_CAPABILITY_HOOK_NEEDLE + b" suffix",
+        payload=(
+            b"prefix "
+            + EFFORT_CAPABILITY_HOOK_NEEDLE
+            + b" middle "
+            + EXACT_EFFORT_LEVEL_UI_NEEDLE
+            + b" tail "
+            + EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE
+            + b" suffix"
+        ),
         upstream_version="2.1.177",
     )
 
@@ -1058,9 +1077,14 @@ def test_claude_code_runtime_effort_patch_requires_explicit_approval_and_updates
     assert data["patch_point"] == "effort_capability_hook"
     assert EFFORT_CAPABILITY_HOOK_NEEDLE not in managed_executable.read_bytes()
     assert EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in managed_executable.read_bytes()
+    assert EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip() in managed_executable.read_bytes()
+    assert EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT.rstrip() in managed_executable.read_bytes()
+    assert data["exact_patch_point"] == "exact_effort_level_ui_patch"
+    assert data["effective_clamp_patch_point"] == "exact_effort_effective_clamp_patch"
+    assert data["exact_levels_env"] == "ZCCEL"
 
 
-def test_claude_code_effort_ui_patch_gate_scope():
+def test_claude_code_effort_ui_patch_gate_scope(tmp_path: Path):
     assert cli._bridge_effort_ui_models((
         "claude-code-bridge-agnes-2.0-flash",
         "claude-code-bridge-kimi-k2.7-code",
@@ -1116,9 +1140,9 @@ def test_claude_code_effort_ui_patch_gate_scope():
     forged_exact_runtime = SimpleNamespace(
         upstream_version="2.1.177",
         runtime_hash="sha256:" + "1" * 64,
-        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"]},
+        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch", "exact_effort_effective_clamp_patch"]},
         patches={
-            "patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"],
+            "patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch", "exact_effort_effective_clamp_patch"],
             "effort_capability_patch": {
                 "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
                 **build_bridge_effort_ui_probe_metadata(
@@ -1134,12 +1158,15 @@ def test_claude_code_effort_ui_patch_gate_scope():
     with pytest.raises(cli.RuntimeInstallerError, match="exact effort levels"):
         cli._require_effort_capability_patch_for_bridge_ui(forged_exact_runtime, ("claude-code-bridge-deepseek-v4-pro",))
 
-    exact_level_runtime = SimpleNamespace(
+    fake_unpatched_binary = tmp_path / "unpatched-claude"
+    fake_unpatched_binary.write_bytes(b"metadata-only-not-actually-patched")
+    exact_level_metadata_only_runtime = SimpleNamespace(
         upstream_version="2.1.177",
         runtime_hash="sha256:" + "1" * 64,
-        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"]},
+        executable=fake_unpatched_binary,
+        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch", "exact_effort_effective_clamp_patch"]},
         patches={
-            "patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"],
+            "patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch", "exact_effort_effective_clamp_patch"],
             "effort_capability_patch": {
                 "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
                 **build_bridge_effort_ui_probe_metadata(
@@ -1149,6 +1176,26 @@ def test_claude_code_effort_ui_patch_gate_scope():
                 ),
             },
         },
+    )
+    with pytest.raises(cli.RuntimeInstallerError, match="exact effort levels"):
+        cli._require_effort_capability_patch_for_bridge_ui(exact_level_metadata_only_runtime, ("claude-code-bridge-deepseek-v4-pro",))
+
+    fake_patched_binary = tmp_path / "patched-claude"
+    fake_patched_binary.write_bytes(
+        b"prefix "
+        + EFFORT_CAPABILITY_HOOK_REPLACEMENT
+        + b" middle "
+        + EXACT_EFFORT_LEVEL_UI_REPLACEMENT
+        + b" tail "
+        + EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT
+        + b" suffix"
+    )
+    exact_level_runtime = SimpleNamespace(
+        upstream_version="2.1.177",
+        runtime_hash="sha256:" + "1" * 64,
+        executable=fake_patched_binary,
+        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch", "exact_effort_effective_clamp_patch"]},
+        patches=exact_level_metadata_only_runtime.patches,
     )
     cli._require_effort_capability_patch_for_bridge_ui(exact_level_runtime, ("claude-code-bridge-deepseek-v4-pro",))
 
@@ -1179,7 +1226,17 @@ def test_claude_code_start_allows_bridge_models_after_exact_effort_ui_patch(caps
             return {**self.read(), **patch}
 
     runtime_root = tmp_path / "runtimes"
-    payload = b"exact-effort-ui-patched k.string().min(1).max(128).optional()                suffix"
+    payload = (
+        b"prefix "
+        + EFFORT_CAPABILITY_HOOK_REPLACEMENT
+        + b" middle "
+        + EXACT_EFFORT_LEVEL_UI_REPLACEMENT
+        + b" tail "
+        + EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT
+        + b" agent "
+        + b"k.string().min(1).max(128).optional()               "
+        + b" suffix"
+    )
     runtime_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
     exact_patch_points = [
         "runtime_manifest",
@@ -1188,6 +1245,7 @@ def test_claude_code_start_allows_bridge_models_after_exact_effort_ui_patch(caps
         "guard_env",
         "effort_capability_hook",
         "exact_effort_level_ui_patch",
+        "exact_effort_effective_clamp_patch",
     ]
     managed_executable, _, _ = write_fake_claude_runtime(
         runtime_root,
@@ -1683,10 +1741,10 @@ def test_claude_code_start_reads_state_root_state_json_without_env_override(caps
         runtime_hash = "sha256:" + "1" * 64
         overlay_hash = "sha256:" + "2" * 64
         manifest = {
-            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook", "exact_effort_level_ui_patch"],
+            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook", "exact_effort_level_ui_patch", "exact_effort_effective_clamp_patch"],
         }
         patches = {
-            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook", "exact_effort_level_ui_patch"],
+            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook", "exact_effort_level_ui_patch", "exact_effort_effective_clamp_patch"],
             "effort_capability_patch": {
                 "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
                 **build_bridge_effort_ui_probe_metadata(
@@ -1708,7 +1766,15 @@ def test_claude_code_start_reads_state_root_state_json_without_env_override(caps
         }
 
     FakeRuntime.executable.parent.mkdir(parents=True)
-    FakeRuntime.executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    FakeRuntime.executable.write_bytes(
+        b"prefix "
+        + EFFORT_CAPABILITY_HOOK_REPLACEMENT
+        + b" middle "
+        + EXACT_EFFORT_LEVEL_UI_REPLACEMENT
+        + b" tail "
+        + EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT
+        + b" suffix"
+    )
     FakeRuntime.manifest_path.write_text("{}", encoding="utf-8")
 
     def fake_run_managed_claude_code(**kwargs):
@@ -2643,6 +2709,7 @@ def test_claude_code_preflight_writes_local_decision_freeze_without_live(capsys,
             "agent_model_schema",
             "effort_capability_hook",
             "exact_effort_level_ui_patch",
+            "exact_effort_effective_clamp_patch",
         ],
         "live_bridge_models_enabled": True,
         "live_bridge_model_allowlist": [
@@ -2679,20 +2746,34 @@ def test_claude_code_preflight_writes_local_decision_freeze_without_live(capsys,
     _, runtime_hash, overlay_hash = write_fake_claude_runtime(
         runtime_root,
         executable,
-        payload=EFFORT_CAPABILITY_HOOK_REPLACEMENT,
+        payload=(
+            b"prefix "
+            + EFFORT_CAPABILITY_HOOK_REPLACEMENT
+            + b" middle "
+            + EXACT_EFFORT_LEVEL_UI_REPLACEMENT
+            + b" tail "
+            + EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT
+            + b" suffix"
+        ),
         patches=patches,
         upstream_version="2.1.177",
     )
     patch_path = runtime_root / "claude-code" / "2.1.177" / "patches.json"
     patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
-    patch_payload["patch_points"] = sorted(set(patch_payload.get("patch_points", [])) | {"effort_capability_hook", EXACT_EFFORT_LEVEL_UI_PATCH_POINT})
+    patch_payload["patch_points"] = sorted(
+        set(patch_payload.get("patch_points", []))
+        | {"effort_capability_hook", EXACT_EFFORT_LEVEL_UI_PATCH_POINT, EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT}
+    )
     patch_payload["effort_capability_patch"].update({
         "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
         "schema": "exact_effort_levels_v1",
         "ui_probe": "claude_code_2_1_177_model_picker_exact_effort_levels",
         "patch_point": EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+        "effective_clamp_patch_point": EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
         "hook": "exact_effort_levels_ui",
+        "exact_levels_env": "ZCCEL",
         "exact_effort_levels_supported": True,
+        "effective_effort_clamp_supported": True,
         "boolean_only_hook_rejected": False,
         "probe_status": "pass",
         "runtime_hash": runtime_hash,
@@ -2702,7 +2783,10 @@ def test_claude_code_preflight_writes_local_decision_freeze_without_live(capsys,
     patch_path.write_text(json.dumps(patch_payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     manifest_path = runtime_root / "claude-code" / "2.1.177" / "manifest.json"
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest_payload["patch_points"] = sorted(set(manifest_payload.get("patch_points", [])) | {"effort_capability_hook", EXACT_EFFORT_LEVEL_UI_PATCH_POINT})
+    manifest_payload["patch_points"] = sorted(
+        set(manifest_payload.get("patch_points", []))
+        | {"effort_capability_hook", EXACT_EFFORT_LEVEL_UI_PATCH_POINT, EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT}
+    )
     manifest_path.write_text(json.dumps(manifest_payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     lock_path = runtime_root / "claude-code" / "2.1.177" / "hash.lock"
     lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -3720,6 +3804,7 @@ def test_claude_code_runtime_install_status_rollback_and_alias_commands(capsys, 
             return SimpleNamespace(stdout="Claude Code v2.1.175\n", stderr="", returncode=0)
 
     monkeypatch.setattr(cli.subprocess, "run", VersionRunner())
+    (tmp_path / "claude").write_bytes(b"managed-claude-code-2.1.175")
 
     install_exit = main([
         "claude-code",

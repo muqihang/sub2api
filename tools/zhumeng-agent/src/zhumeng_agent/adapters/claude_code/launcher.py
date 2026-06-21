@@ -402,9 +402,14 @@ def _gateway_model_cache_entry(entry: Mapping[str, object]) -> dict[str, object]
         "route": str(entry.get("route") or ""),
         "client_type": str(entry.get("client_type") or ""),
         "supportsEffort": bool(effort_levels),
+        "effort": bool(effort_levels),
+        "max_effort": "max" in effort_levels,
+        "xhigh_effort": "xhigh" in effort_levels,
     }
     if effort_levels:
-        model["supportedEffortLevels"] = list(effort_levels)
+        levels = list(effort_levels)
+        model["supportedEffortLevels"] = levels
+        model["effort_levels"] = levels
     return model
 
 
@@ -549,9 +554,12 @@ def build_bridge_effort_ui_probe_metadata(
     return {
         "schema": "exact_effort_levels_v1",
         "patch_point": "exact_effort_level_ui_patch",
+        "effective_clamp_patch_point": "exact_effort_effective_clamp_patch",
         "hook": "exact_effort_levels_ui",
+        "exact_levels_env": "ZCCEL",
         "ui_probe": "claude_code_2_1_177_model_picker_exact_effort_levels",
         "exact_effort_levels_supported": probe.get("status") == "pass",
+        "effective_effort_clamp_supported": probe.get("status") == "pass",
         "boolean_only_hook_rejected": False,
         "probe_status": probe.get("status"),
         "probe_schema_version": probe.get("schema_version"),
@@ -747,6 +755,7 @@ def _synthetic_runtime_plan_for_overlay(executable: Path, *, runtime_hash: str, 
     return ManagedRuntimeInstallPlan(
         executable=executable,
         runtime_root=root,
+        source_executable=executable,
         upstream_version="managed",
         runtime_dir=root,
         version_dir=root,

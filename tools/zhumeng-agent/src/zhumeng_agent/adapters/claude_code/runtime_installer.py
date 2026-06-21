@@ -23,13 +23,20 @@ DEFAULT_PATCH_POINTS = (
 AGENT_MODEL_SCHEMA_PATCH_POINT = "agent_model_schema"
 EFFORT_CAPABILITY_PATCH_POINT = "effort_capability_hook"
 EXACT_EFFORT_LEVEL_UI_PATCH_POINT = "exact_effort_level_ui_patch"
+EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT = "exact_effort_effective_clamp_patch"
 EFFORT_CAPABILITY_ENV_VAR = "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
 AGENT_MODEL_SCHEMA_ENUM_NEEDLE = b'k.enum(["sonnet","opus","haiku","fable"]).optional()'
 AGENT_MODEL_SCHEMA_STRING_PATCH = b"k.string().min(1).max(128).optional()               "
 EFFORT_CAPABILITY_HOOK_NEEDLE = b'var QP5,us;var oK6=L(()=>{c7();V7();QP5=[{modelEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION",capabilitiesEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"}],us=V6((H,_)=>{if(OO())return;let q=H.toLowerCase();for(let K of QP5){let O=process.env[K.modelEnvVar],T=process.env[K.capabilitiesEnvVar];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)});'
-EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE = b'var QP5,us;var oK6=L(()=>{c7();V7();QP5=[["ANTHROPIC_DEFAULT_FABLE_MODEL","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_HAIKU_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_CUSTOM_MODEL_OPTION","ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"]],us=V6((H,_)=>{let q=H.toLowerCase(),J=process.env.ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON;if(J)try{let M=JSON.parse(J)[q];if(M&&M[_]!=null)return!!M[_]}catch{}if(OO())return;for(let K of QP5){let O=process.env[K[0]],T=process.env[K[1]];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)});'
+EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE = b'var QP5,us,ZCE;var oK6=L(()=>{c7();V7();QP5=["FABLE","OPUS","SONNET","HAIKU"].map(H=>["ANTHROPIC_DEFAULT_"+H+"_MODEL","ANTHROPIC_DEFAULT_"+H+"_MODEL_SUPPORTED_CAPABILITIES"]),QP5.push(["ANTHROPIC_CUSTOM_MODEL_OPTION","ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"]),ZCE=(H)=>{let q=String(H||"").toLowerCase();if(!q.startsWith("claude-code-bridge-"))return;try{return JSON.parse(process.env.ZCCEL||"{}")[q]}catch{}},us=V6((H,_)=>{let q=H.toLowerCase(),J=process.env.ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON,M;if(q.startsWith("claude-code-bridge-")&&J)try{M=JSON.parse(J)[q];if(M&&M[_]!=null)return!!M[_]}catch{}if(OO())return;for(let K of QP5){let O=process.env[K[0]],T=process.env[K[1]];if(O&&T!==void 0&&q===O.toLowerCase())return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}},(H,_)=>H.toLowerCase()+":"+_)});'
 EFFORT_CAPABILITY_HOOK_SLACK_BYTES = len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)
 EXACT_EFFORT_LEVEL_UI_PATCH_MIN_EXTRA_BYTES = 96
+EXACT_EFFORT_LEVEL_UI_NEEDLE = b'function eX4(H){if(Qm(H)){let O=hO_+3,T=17,z=[...IDq,{value:"ultracode",label:"ultracode",color:"violet-ripple"}],$=O+Math.floor(4),Y=[...bDq,$-hO_];return{levels:z,width:O+17,trianglePositions:[...rX4,O+Math.floor(8.5)],labelStarts:oX4(z,Y),spacers:Y,trackChars:"\\u2500".repeat(hO_+1)+"\\u2506"+"\\u2500".repeat(18),accentStart:hO_+2,sublabel:{text:"xhigh + workflows",start:O}}}return{levels:IDq,width:hO_,trianglePositions:rX4,labelStarts:oX4(IDq,bDq),spacers:bDq,trackChars:"\\u2500".repeat(hO_)}}'
+EXACT_EFFORT_LEVEL_UI_REPLACEMENT_BASE = 'function eX4(H){let q=ZCE(H),K=q?IDq.filter(O=>q.includes(O.value)):IDq,Y=q?bDq.slice(0,K.length-1):bDq,L=oX4(K,Y),T=q?L:rX4,W=hO_,R="─",S=R.repeat(hO_),A;if(!q&&Qm(H)){let O=hO_+3;K=[...IDq,{value:"ultracode",label:"ultracode",color:"violet-ripple"}],Y=[...bDq,7],T=[...rX4,O+8],L=oX4(K,Y),W=O+17,S=R.repeat(hO_+1)+"┆"+R.repeat(18),A={accentStart:hO_+2,sublabel:{text:"xhigh + workflows",start:O}}}return{levels:K,width:W,trianglePositions:T,labelStarts:L,spacers:Y,trackChars:S,...A}}'.encode("utf-8")
+EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE = b'function Qs(H,_){if(!zP(H))return;let q=tyH(H),K=e16(H),O=syH();if(O===null)return q?K:void 0;let T=O??(q?K:void 0)??_??K;if(T==="max"&&!oyH(H))return"high";if(T==="xhigh"&&!KMH(H))return"high";return T}function K2_(H,_,q,K,O){if(!O)return!1;let T=JJ();if(T===0||T===K)return!1;if(!zP(q))return!1;if(tyH(q)){if(H===void 0||H===e16(q))return!1}else if(Qs(q,H)===Qs(q,_))return!1;if(VD()&&H!==void 0&&HMH(H)===void 0)return!1;return!0}function O2_(H){let _=H!==void 0?HMH(H):void 0;if(H===void 0||_!==void 0){let q=Yq("userSettings",{effortLevel:_});if(q.error)return q.error}uI();return}function JP8(H){if(gm(H)!==void 0)uI();return Dg9({cli:{effort:H},env:process.env,settings:n8()})}function kN(H,_){let q=Qs(H,_)??"high";return vOH(q)}function oR(H,_){return zP(H)?kN(H,_):void 0}function RrH(H,_){if(_===void 0)return"";let q=Qs(H,_);if(q===void 0)return"";return` with ${XqH(vOH(q))} effort`}'
+EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT_BASE = b'function Qs(H,_){if(!zP(H))return;let q=tyH(H),K=e16(H),O=syH();if(O===null)return q?K:void 0;let T=O??(q?K:void 0)??_??K,J=ZCE?.(H);return J?.length?J.includes(T)?T:J.includes("high")?"high":J[0]:T==="max"&&!oyH(H)||T==="xhigh"&&!KMH(H)?"high":T}function K2_(H,_,q,K,O){if(!O)return!1;let T=JJ();return T!==0&&T!==K&&!!zP(q)&&!(tyH(q)?H===void 0||H===e16(q):Qs(q,H)===Qs(q,_))&&!(VD()&&H!==void 0&&HMH(H)===void 0)}function O2_(H){let _=H!==void 0?HMH(H):void 0,q;if((H===void 0||_!==void 0)&&(q=Yq("userSettings",{effortLevel:_})).error)return q.error;uI()}function JP8(H){return gm(H)!==void 0&&uI(),Dg9({cli:{effort:H},env:process.env,settings:n8()})}function kN(H,_){return vOH(Qs(H,_)??"high")}function oR(H,_){if(zP(H))return kN(H,_)}function RrH(H,_){let q;if(_!==void 0&&(q=Qs(H,_))!==void 0)return` with ${XqH(vOH(q))} effort`;return""}'
+EXACT_EFFORT_LEVEL_UI_REPLACEMENT = EXACT_EFFORT_LEVEL_UI_REPLACEMENT_BASE + (b" " * (len(EXACT_EFFORT_LEVEL_UI_NEEDLE) - len(EXACT_EFFORT_LEVEL_UI_REPLACEMENT_BASE)))
+EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT = EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT_BASE + (b" " * (len(EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE) - len(EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT_BASE)))
 EFFORT_CAPABILITY_HOOK_REPLACEMENT = EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE + (b" " * (len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)))
 GLOBAL_CLAUDE_BINARY_PATHS = frozenset({
     Path("/opt/homebrew/bin/claude"),
@@ -78,6 +85,7 @@ class ActiveManagedRuntime:
 class ManagedRuntimeInstallPlan:
     executable: Path
     runtime_root: Path
+    source_executable: Path
     upstream_version: str
     runtime_dir: Path
     version_dir: Path
@@ -152,6 +160,7 @@ def build_managed_runtime_install_plan(
     cch_profile = "claude_code_" + upstream_version.replace(".", "_")
     source = f"npm:@anthropic-ai/claude-code@{upstream_version}"
     executable_resolved = executable_path.expanduser().resolve(strict=False)
+    managed_executable = ensure_managed_runtime_write_path(version_dir / "claude", runtime_root=runtime_root)
     upstream_hash = _hash_existing_file(executable_resolved) or _stable_sha256(
         {
             "executable": str(executable_resolved),
@@ -176,7 +185,7 @@ def build_managed_runtime_install_plan(
         patch_points=DEFAULT_PATCH_POINTS,
         cch_profile=cch_profile,
         status="ready",
-        executable_path=str(executable_resolved),
+        executable_path=str(managed_executable),
     )
     patches: dict[str, object] = {
         "runtime": RUNTIME_NAME,
@@ -192,6 +201,7 @@ def build_managed_runtime_install_plan(
         "global_overwrite": False,
     }
     planned_write_paths = (
+        managed_executable,
         manifest_path,
         patches_path,
         hash_lock_path,
@@ -201,8 +211,9 @@ def build_managed_runtime_install_plan(
         ensure_managed_runtime_write_path(path, runtime_root=runtime_root)
 
     return ManagedRuntimeInstallPlan(
-        executable=executable_path,
+        executable=managed_executable,
         runtime_root=runtime_root,
+        source_executable=executable_resolved,
         upstream_version=upstream_version,
         runtime_dir=runtime_dir,
         version_dir=version_dir,
@@ -231,6 +242,7 @@ def write_managed_runtime_artifacts(plan: ManagedRuntimeInstallPlan) -> None:
         ensure_managed_runtime_write_path(path, runtime_root=plan.runtime_root)
     version_dir.mkdir(parents=True, exist_ok=True)
     cache_path.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(plan.source_executable, plan.executable)
 
     manifest_bytes = _canonical_json_bytes(plan.manifest.to_dict())
     patches_bytes = _canonical_json_bytes(dict(plan.patches))
@@ -323,6 +335,10 @@ def apply_managed_runtime_effort_capability_patch(runtime_root: Path, executable
         raise RuntimeInstallerError("managed Claude Code effort capability patch requires explicit approval")
     if len(EFFORT_CAPABILITY_HOOK_REPLACEMENT) != len(EFFORT_CAPABILITY_HOOK_NEEDLE):
         raise RuntimeInstallerError("managed Claude Code effort capability patch is not length preserving")
+    if len(EXACT_EFFORT_LEVEL_UI_REPLACEMENT) != len(EXACT_EFFORT_LEVEL_UI_NEEDLE):
+        raise RuntimeInstallerError("managed Claude Code exact effort level UI patch is not length preserving")
+    if len(EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT) != len(EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE):
+        raise RuntimeInstallerError("managed Claude Code exact effort effective clamp patch is not length preserving")
     runtime_root = runtime_root.expanduser()
     manifest_path = _active_manifest_path(runtime_root)
     executable_path = _active_manifest_executable_path(manifest_path, runtime_root=runtime_root)
@@ -333,14 +349,32 @@ def apply_managed_runtime_effort_capability_patch(runtime_root: Path, executable
     if not before_hash:
         raise RuntimeInstallerError("managed Claude Code runtime executable is missing")
     data = executable_path.read_bytes()
-    status = "already_patched"
+    changed = False
+    capability_patched = EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in data
+    exact_ui_patched = EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip() in data
+    effective_clamp_patched = EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT.rstrip() in data
     if EFFORT_CAPABILITY_HOOK_NEEDLE in data:
         data = data.replace(EFFORT_CAPABILITY_HOOK_NEEDLE, EFFORT_CAPABILITY_HOOK_REPLACEMENT, 1)
+        capability_patched = True
+        changed = True
+    elif not capability_patched:
+        raise RuntimeInstallerError("managed Claude Code effort capability patch point not found")
+    if EXACT_EFFORT_LEVEL_UI_NEEDLE in data:
+        data = data.replace(EXACT_EFFORT_LEVEL_UI_NEEDLE, EXACT_EFFORT_LEVEL_UI_REPLACEMENT, 1)
+        exact_ui_patched = True
+        changed = True
+    elif not exact_ui_patched:
+        raise RuntimeInstallerError("managed Claude Code exact effort level UI patch point not found")
+    if EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE in data:
+        data = data.replace(EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE, EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT, 1)
+        effective_clamp_patched = True
+        changed = True
+    elif not effective_clamp_patched:
+        raise RuntimeInstallerError("managed Claude Code exact effort effective clamp patch point not found")
+    status = "patched" if changed else "already_patched"
+    if changed:
         executable_path.write_bytes(data)
         _codesign_ad_hoc_if_macho(executable_path)
-        status = "patched"
-    elif EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() not in data:
-        raise RuntimeInstallerError("managed Claude Code effort capability patch point not found")
 
     after_hash = _hash_existing_file(executable_path)
     if not after_hash:
@@ -353,15 +387,31 @@ def apply_managed_runtime_effort_capability_patch(runtime_root: Path, executable
         before_hash=before_hash,
         patch_point=EFFORT_CAPABILITY_PATCH_POINT,
         patch_metadata={
+            "patch_point": EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+            "effective_clamp_patch_point": EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
             "env": EFFORT_CAPABILITY_ENV_VAR,
-            "schema": "boolean_effort_flags_v1",
-            "hook": "us_model_capabilities",
-            "ui_probe": "boolean_only_insufficient_for_exact_effort_levels",
-            "exact_effort_levels_supported": False,
-            "boolean_only_hook_rejected": True,
+            "exact_levels_env": "ZCCEL",
+            "schema": "exact_effort_levels_v1",
+            "hook": "exact_effort_levels_ui",
+            "ui_probe": "claude_code_2_1_177_model_picker_exact_effort_levels",
+            "probe_status": "pass",
+            "probe_schema_version": "claude-code-2.1.177-bridge-effort-ui-probe-v1",
+            "exact_effort_levels_supported": True,
+            "effective_effort_clamp_supported": True,
+            "boolean_only_hook_rejected": False,
             "direct_binary_patch_requires_approval": True,
             "global_binary_touched": False,
         },
+    )
+    _mark_managed_runtime_patch_point(
+        runtime_root=runtime_root,
+        manifest_path=manifest_path,
+        patch_point=EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+    )
+    _mark_managed_runtime_patch_point(
+        runtime_root=runtime_root,
+        manifest_path=manifest_path,
+        patch_point=EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
     )
     return {
         "status": status,
@@ -369,7 +419,10 @@ def apply_managed_runtime_effort_capability_patch(runtime_root: Path, executable
         "runtime_hash_before": before_hash,
         "runtime_hash_after": after_hash,
         "patch_point": EFFORT_CAPABILITY_PATCH_POINT,
+        "exact_patch_point": EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+        "effective_clamp_patch_point": EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
         "env": EFFORT_CAPABILITY_ENV_VAR,
+        "exact_levels_env": "ZCCEL",
         "official_claude_unaffected": True,
         "direct_binary_patch_requires_approval": True,
     }
@@ -404,7 +457,7 @@ def read_managed_runtime_status(runtime_root: Path) -> dict[str, object]:
     active_version = str(active.get("active_version") or "") or None
     manifest_path = active.get("manifest_path")
     status = str(active.get("status") or ("enabled" if active_version else "not_installed"))
-    integrity = _runtime_integrity(manifest_path)
+    integrity = _runtime_integrity(manifest_path, runtime_root=runtime_root)
     if status == "enabled" and integrity.get("status") != "pass":
         status = "integrity_failed"
     return {
@@ -450,6 +503,7 @@ def resolve_active_managed_runtime(runtime_root: Path) -> ActiveManagedRuntime:
     executable = raw_executable.resolve(strict=False)
     if raw_executable in GLOBAL_CLAUDE_BINARY_PATHS or executable in GLOBAL_CLAUDE_BINARY_PATHS:
         raise RuntimeInstallerError("managed Claude Code runtime refuses to use global Claude Code binary")
+    ensure_managed_runtime_write_path(executable, runtime_root=runtime_root)
     runtime_hash = _hash_existing_file(executable)
     if not runtime_hash:
         raise RuntimeInstallerError("managed Claude Code runtime executable is missing")
@@ -577,10 +631,15 @@ def _replace_managed_block(content: str, plan: ShellAliasPlan, block: str) -> st
     return prefix + block_with_newline
 
 
-def _runtime_integrity(manifest_path_value: object) -> dict[str, object]:
+def _runtime_integrity(manifest_path_value: object, *, runtime_root: Path | None = None) -> dict[str, object]:
     if not manifest_path_value:
         return {"status": "missing_manifest", "manifest_hash_matches": False, "locked_files_match": False}
     manifest_path = Path(str(manifest_path_value))
+    if runtime_root is not None:
+        try:
+            ensure_managed_runtime_write_path(manifest_path, runtime_root=runtime_root)
+        except RuntimeInstallerError:
+            return {"status": "manifest_outside_runtime_root", "manifest_hash_matches": False, "locked_files_match": False}
     hash_lock_path = manifest_path.parent / "hash.lock"
     if not manifest_path.exists() or not hash_lock_path.exists():
         return {"status": "missing_manifest", "manifest_hash_matches": False, "locked_files_match": False}
@@ -655,7 +714,64 @@ def _active_manifest_executable_path(manifest_path: Path, *, runtime_root: Path)
     executable = raw_executable.resolve(strict=False)
     if raw_executable in GLOBAL_CLAUDE_BINARY_PATHS or executable in GLOBAL_CLAUDE_BINARY_PATHS:
         raise RuntimeInstallerError("managed Claude Code runtime refuses to patch global Claude Code binary")
+    ensure_managed_runtime_write_path(executable, runtime_root=runtime_root)
     return executable
+
+
+def _mark_managed_runtime_patch_point(*, runtime_root: Path, manifest_path: Path, patch_point: str) -> None:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is unreadable") from exc
+    if not isinstance(manifest, dict):
+        raise RuntimeInstallerError("managed Claude Code runtime manifest is invalid")
+    manifest_points = [str(item) for item in manifest.get("patch_points", []) if str(item)]
+    if patch_point not in manifest_points:
+        manifest_points.append(patch_point)
+    manifest["patch_points"] = manifest_points
+
+    patches_path = ensure_managed_runtime_write_path(manifest_path.parent / "patches.json", runtime_root=runtime_root)
+    try:
+        patches = json.loads(patches_path.read_text(encoding="utf-8")) if patches_path.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeInstallerError("managed Claude Code runtime patches are unreadable") from exc
+    if not isinstance(patches, dict):
+        patches = {}
+    patch_file_points = [str(item) for item in patches.get("patch_points", []) if str(item)]
+    if patch_point not in patch_file_points:
+        patch_file_points.append(patch_point)
+    patches["patch_points"] = patch_file_points
+
+    rollback_path = ensure_managed_runtime_write_path(manifest_path.parent / "rollback.json", runtime_root=runtime_root)
+    try:
+        rollback = json.loads(rollback_path.read_text(encoding="utf-8")) if rollback_path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        rollback = {}
+    if not isinstance(rollback, dict):
+        rollback = {}
+
+    manifest_bytes = _canonical_json_bytes(manifest)
+    patches_bytes = _canonical_json_bytes(patches)
+    rollback_bytes = _canonical_json_bytes(rollback)
+    hash_lock = {
+        "runtime": RUNTIME_NAME,
+        "upstream_version": str(manifest.get("upstream_version") or ""),
+        "manifest_hash": _sha256_bytes(manifest_bytes),
+        "patches_hash": _sha256_bytes(patches_bytes),
+        "rollback_hash": _sha256_bytes(rollback_bytes),
+        "locked_files": {
+            "manifest.json": _sha256_bytes(manifest_bytes),
+            "patches.json": _sha256_bytes(patches_bytes),
+            "rollback.json": _sha256_bytes(rollback_bytes),
+        },
+        "runtime_hash": str(manifest.get("upstream_hash") or ""),
+        "upstream_hash": str(manifest.get("upstream_hash") or ""),
+        "overlay_hash": str(manifest.get("overlay_hash") or ""),
+    }
+    manifest_path.write_text(_canonical_json_text(manifest), encoding="utf-8")
+    patches_path.write_text(_canonical_json_text(patches), encoding="utf-8")
+    rollback_path.write_text(_canonical_json_text(rollback), encoding="utf-8")
+    ensure_managed_runtime_write_path(manifest_path.parent / "hash.lock", runtime_root=runtime_root).write_text(_canonical_json_text(hash_lock), encoding="utf-8")
 
 
 def _update_managed_runtime_hash_metadata(
@@ -757,10 +873,7 @@ def _resolve_runtime_executable(executable: Path) -> Path:
         resolved = shutil.which(str(expanded))
         if resolved:
             expanded = Path(resolved)
-    resolved_path = expanded.resolve(strict=False)
-    if expanded in GLOBAL_CLAUDE_BINARY_PATHS or resolved_path in GLOBAL_CLAUDE_BINARY_PATHS:
-        raise RuntimeInstallerError("refuses to use global Claude Code binary as managed runtime")
-    return resolved_path
+    return expanded.resolve(strict=False)
 
 
 def ensure_managed_runtime_write_path(path: Path, *, runtime_root: Path) -> Path:
@@ -801,3 +914,7 @@ def _hash_existing_file(path: Path) -> str | None:
 
 def _canonical_json_bytes(payload: object) -> bytes:
     return (json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _canonical_json_text(payload: object) -> str:
+    return _canonical_json_bytes(payload).decode("utf-8")

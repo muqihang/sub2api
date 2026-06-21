@@ -14,11 +14,15 @@ import (
 	"testing"
 	"time"
 
+	pkglogger "github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestGatewayHandlerNativeCountTokensAttestationValidatesAndSetsContext(t *testing.T) {
@@ -151,6 +155,66 @@ func TestGatewayHandlerBridgeLiveStoresSafeAuditSummaryOnContext(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(dumped), "stable system prefix sentinel")
 	require.NotContains(t, string(dumped), "latest turn sentinel")
+}
+
+func TestGatewayHandlerBridgeLiveEmitsSafeCacheAuditLog(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "deepseek-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "local-cache-audit-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "cache-test-v1")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_cache","type":"message","role":"assistant","content":[],"model":"deepseek-v4-flash","usage":{"input_tokens":20,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", `{"catalog_version":"cp5-route-catalog","runtime_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111","overlay_hash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","catalog_hash":"sha256:3333333333333333333333333333333333333333333333333333333333333333","models":[{"model_id":"claude-code-bridge-deepseek-v4-flash","upstream_model":"deepseek-v4-flash","provider":"deepseek","route":"deepseek_bridge","client_type":"claude_code_bridge_deepseek","provider_owner":"zhumeng_managed","credential_scope":"bridge_pool","gateway_location":"cloud","catalog_fresh":true,"preferred_protocol":"anthropic_messages","anthropic_base_url":"`+upstream.URL+`/anthropic","capabilities_verified":true,"supports_text":true,"supports_tools":true,"supports_streaming":true,"supports_usage":true,"supports_cache_audit":true,"supports_error_passthrough":true}]}`)
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-flash","system":"log stable system prefix sentinel","messages":[{"role":"user","content":"log stable context sentinel"},{"role":"user","content":"log latest turn sentinel"}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	observedCore, observedLogs := observer.New(zapcore.InfoLevel)
+	c.Request = c.Request.WithContext(pkglogger.IntoContext(c.Request.Context(), zap.New(observedCore)))
+	for key, values := range signedBridgeRouteHintHeadersForHandlerTest(t, body, "/v1/messages", time.Now()) {
+		for _, value := range values {
+			c.Request.Header.Add(key, value)
+		}
+	}
+
+	(&GatewayHandler{}).handleClaudeCodeBridgeMessagesSkeleton(c, body)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	rows := observedLogs.FilterMessage("gateway.claude_code_bridge_cache_audit").All()
+	require.Len(t, rows, 1)
+	fields := rows[0].ContextMap()
+	require.Equal(t, "deepseek", fields["provider"])
+	require.Equal(t, "deepseek_bridge", fields["route"])
+	require.Equal(t, "claude_code_bridge_deepseek", fields["client_type"])
+	require.Equal(t, "anthropic_messages", fields["selected_protocol"])
+	require.Equal(t, "/anthropic/v1/messages", fields["upstream_path_kind"])
+	require.Equal(t, "deepseek_prefix_kv", fields["provider_cache_mechanism"])
+	require.Equal(t, false, fields["fallback_used"])
+	require.Equal(t, false, fields["upstream_body_has_cache_control"])
+	require.Equal(t, true, fields["cache_control_provider_ignored"])
+	require.Equal(t, int64(7), fields["cache_read_tokens"])
+	require.Equal(t, int64(13), fields["cache_miss_tokens"])
+	require.Equal(t, int64(7), fields["prompt_cache_hit_tokens"])
+	require.Equal(t, int64(13), fields["prompt_cache_miss_tokens"])
+	require.Regexp(t, `^hmac-sha256:cache-test-v1:[a-f0-9]{64}$`, fields["stable_prefix_hmac"])
+	dumped, err := json.Marshal(fields)
+	require.NoError(t, err)
+	require.NotContains(t, string(dumped), "log stable system prefix sentinel")
+	require.NotContains(t, string(dumped), "log stable context sentinel")
+	require.NotContains(t, string(dumped), "log latest turn sentinel")
+	require.NotContains(t, string(dumped), "deepseek-unit-test-key")
 }
 
 func TestGatewayHandlerNativeCountTokensForgedMarkersFailClosed(t *testing.T) {

@@ -281,6 +281,40 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"])
         self.assertEqual("false", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"])
 
+    def test_deepseek_live_env_generates_cache_audit_hmac_key_without_leaking_value(self):
+        from tools.claude_code_runtime_canary_config import build_canary_env_readiness_metadata, build_provider_catalog_env
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+        secret = env.get("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "")
+
+        self.assertGreaterEqual(len(secret), 32)
+        self.assertEqual("claude-code-cache-audit-v1", env["SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID"])
+        readiness = build_canary_env_readiness_metadata(env)
+        self.assertTrue(readiness["ready"], readiness["issues"])
+        self.assertTrue(readiness["deepseek"]["cache_audit_hmac_key_present"])
+        self.assertEqual("claude-code-cache-audit-v1", readiness["deepseek"]["cache_audit_hmac_key_id"])
+        self.assertNotIn(secret, json.dumps(readiness, sort_keys=True))
+
+    def test_deepseek_live_readiness_requires_cache_audit_hmac_key_for_cache_evidence(self):
+        from tools.claude_code_runtime_canary_config import build_canary_env_readiness_metadata, build_provider_catalog_env
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+        env.pop("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", None)
+
+        readiness = build_canary_env_readiness_metadata(env)
+
+        self.assertFalse(readiness["ready"])
+        self.assertFalse(readiness["deepseek"]["cache_audit_hmac_key_present"])
+        self.assertIn("DeepSeek cache audit requires SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", readiness["issues"])
+
     def test_apply_sql_creates_dedicated_deepseek_anthropic_runtime_account_from_codex_key(self):
         from tools.claude_code_runtime_canary_config import build_apply_sql
 

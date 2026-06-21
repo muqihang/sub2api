@@ -497,6 +497,23 @@ func TestCP6DeepSeekAnthropicLivePreservesToolUseToolResultPairing(t *testing.T)
 	require.False(t, result.Audit.FormalPoolAllowed)
 }
 
+func TestCP6DeepSeekFallbackGateDoesNotHijackAnthropicMessagesDecision(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	decision := cp6LiveDeepSeekDecision("http://127.0.0.1:9/anthropic")
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"prefer anthropic"}],"stream":true}`)
+
+	require.True(t, ClaudeCodeBridgeAnthropicLiveEligible(decision))
+	require.False(t, ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(decision))
+	_, err := ExecuteClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(context.Background(), http.DefaultClient, decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires chat completions protocol")
+}
+
 func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")

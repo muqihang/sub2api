@@ -2139,6 +2139,53 @@ func setClaudeCodeBridgeAuditSummary(c *gin.Context, summary service.ClaudeCodeB
 	if c.Request != nil {
 		c.Request = c.Request.WithContext(service.WithClaudeCodeBridgeAuditSummary(c.Request.Context(), summary))
 	}
+	logClaudeCodeBridgeCacheAuditSummary(c, summary)
+}
+
+func logClaudeCodeBridgeCacheAuditSummary(c *gin.Context, summary service.ClaudeCodeBridgeAuditSummary) {
+	row := summary.CacheAuditRow()
+	if row.Provider == "" || row.SelectedProtocol == "" {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("schema_version", row.SchemaVersion),
+		zap.String("provider", row.Provider),
+		zap.String("route", row.Route),
+		zap.String("client_type", row.ClientType),
+		zap.String("model_id", row.ModelID),
+		zap.String("preferred_protocol", row.PreferredProtocol),
+		zap.String("selected_protocol", row.SelectedProtocol),
+		zap.String("fallback_protocol", row.FallbackProtocol),
+		zap.String("fallback_reason", row.FallbackReason),
+		zap.Bool("fallback_used", row.FallbackUsed),
+		zap.String("provider_cache_mechanism", row.ProviderCacheMechanism),
+		zap.String("upstream_path_kind", row.UpstreamPathKind),
+		zap.Bool("upstream_body_has_cache_control", row.CacheControlPresent),
+		zap.Bool("cache_control_present", row.CacheControlPresent),
+		zap.Strings("cache_control_locations", row.CacheControlLocations),
+		zap.Bool("cache_control_provider_ignored", row.CacheControlProviderIgnored),
+		zap.Bool("prompt_cache_key_present", row.PromptCacheKeyPresent),
+		zap.String("prompt_cache_key_strategy", row.PromptCacheKeyStrategy),
+		zap.Strings("cache_usage_fields", row.CacheUsageFields),
+		zap.Int("cache_read_tokens", row.CacheReadTokens),
+		zap.Int("cache_write_tokens", row.CacheWriteTokens),
+		zap.Int("cache_miss_tokens", row.CacheMissTokens),
+		zap.Int("cached_tokens", row.CachedTokens),
+		zap.Bool("raw_sensitive_stored", row.RawSensitiveStored),
+	}
+	if row.StablePrefixHMAC != "" {
+		fields = append(fields, zap.String("stable_prefix_hmac", row.StablePrefixHMAC))
+	}
+	if row.StablePrefixTokenBucket != "" {
+		fields = append(fields, zap.String("stable_prefix_token_bucket", row.StablePrefixTokenBucket))
+	}
+	if row.Provider == "deepseek" && row.ProviderCacheMechanism == "deepseek_prefix_kv" && row.SelectedProtocol == "anthropic_messages" {
+		fields = append(fields,
+			zap.Int("prompt_cache_hit_tokens", row.CacheReadTokens),
+			zap.Int("prompt_cache_miss_tokens", row.CacheMissTokens),
+		)
+	}
+	requestLogger(c, "handler.gateway.claude_code_bridge_cache_audit").Info("gateway.claude_code_bridge_cache_audit", fields...)
 }
 
 // CountTokens handles token counting endpoint

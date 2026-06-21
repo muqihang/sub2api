@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,12 @@ import pytest
 
 from zhumeng_agent.adapters.claude_code.runtime_installer import (
     EFFORT_CAPABILITY_HOOK_NEEDLE,
+    EFFORT_CAPABILITY_HOOK_REPLACEMENT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT,
+    EXACT_EFFORT_LEVEL_UI_NEEDLE,
+    EXACT_EFFORT_LEVEL_UI_REPLACEMENT,
     RuntimeInstallerError,
     apply_managed_runtime_agent_model_schema_patch,
     apply_managed_runtime_effort_capability_patch,
@@ -50,6 +57,8 @@ def write_locked_patches(plan, patches: dict[str, object]) -> None:
 def test_runtime_installer_materializes_manifest_hash_lock_and_rollback_metadata(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
     executable = tmp_path / "node_modules" / ".bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed-claude-code-2.1.175")
     runner = VersionRunner("claude-code/2.1.175 darwin-arm64\n")
 
     plan = build_managed_runtime_install_plan(
@@ -148,7 +157,7 @@ def test_runtime_installer_active_manifest_binds_executable_hash(tmp_path: Path)
 
     active = resolve_active_managed_runtime(runtime_root)
 
-    assert active.executable == executable.resolve(strict=False)
+    assert active.executable == plan.executable.resolve(strict=False)
     assert active.upstream_version == "2.1.175"
     assert active.runtime_hash == "sha256:" + hashlib.sha256(b"managed-claude-code-2.1.175").hexdigest()
     assert active.runtime_hash == plan.manifest.upstream_hash
@@ -213,7 +222,7 @@ def test_runtime_installer_active_manifest_fails_closed_on_executable_hash_drift
         runner=VersionRunner("Claude Code v2.1.175"),
     )
     write_managed_runtime_artifacts(plan)
-    executable.write_bytes(b"managed-claude-code-after")
+    plan.executable.write_bytes(b"managed-claude-code-after")
 
     with pytest.raises(RuntimeInstallerError, match="executable hash mismatch"):
         resolve_active_managed_runtime(runtime_root)
@@ -263,14 +272,14 @@ def test_runtime_installer_patches_managed_agent_schema_without_touching_global_
     write_managed_runtime_artifacts(plan)
     before_hash = plan.manifest.upstream_hash
 
-    patch_result = apply_managed_runtime_agent_model_schema_patch(runtime_root, executable)
+    patch_result = apply_managed_runtime_agent_model_schema_patch(runtime_root, plan.executable)
 
     assert patch_result["status"] == "patched"
     assert patch_result["official_claude_unaffected"] is True
-    assert patch_result["patched_executable"] == str(executable.resolve(strict=False))
+    assert patch_result["patched_executable"] == str(plan.executable.resolve(strict=False))
     assert patch_result["runtime_hash_before"] == before_hash
     assert patch_result["runtime_hash_after"] != before_hash
-    patched = executable.read_bytes()
+    patched = plan.executable.read_bytes()
     assert b'k.enum(["sonnet","opus","haiku","fable"]).optional()' not in patched
     assert b"k.string().min(1).max(128).optional()" in patched
 
@@ -294,7 +303,7 @@ def test_runtime_installer_agent_schema_patch_is_idempotent(tmp_path: Path):
     )
     write_managed_runtime_artifacts(plan)
 
-    patch_result = apply_managed_runtime_agent_model_schema_patch(runtime_root, executable)
+    patch_result = apply_managed_runtime_agent_model_schema_patch(runtime_root, plan.executable)
 
     assert patch_result["status"] == "already_patched"
     active = resolve_active_managed_runtime(runtime_root)
@@ -310,7 +319,8 @@ def test_runtime_installer_documents_boolean_hook_slack_cannot_hold_exact_level_
         len(installer.EFFORT_CAPABILITY_HOOK_NEEDLE)
         - len(installer.EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)
     )
-    assert installer.EFFORT_CAPABILITY_HOOK_SLACK_BYTES < installer.EXACT_EFFORT_LEVEL_UI_PATCH_MIN_EXTRA_BYTES
+    assert installer.EXACT_EFFORT_LEVEL_UI_PATCH_MIN_EXTRA_BYTES < len(installer.EXACT_EFFORT_LEVEL_UI_NEEDLE)
+    assert installer.EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT != installer.EFFORT_CAPABILITY_PATCH_POINT
 
 
 def test_runtime_installer_effort_capability_patch_requires_explicit_approval(tmp_path: Path):
@@ -326,16 +336,22 @@ def test_runtime_installer_effort_capability_patch_requires_explicit_approval(tm
     write_managed_runtime_artifacts(plan)
 
     with pytest.raises(RuntimeInstallerError, match="explicit approval"):
-        apply_managed_runtime_effort_capability_patch(runtime_root, executable)
+        apply_managed_runtime_effort_capability_patch(runtime_root, plan.executable)
 
-    assert EFFORT_CAPABILITY_HOOK_NEEDLE in executable.read_bytes()
+    assert EFFORT_CAPABILITY_HOOK_NEEDLE in plan.executable.read_bytes()
 
 def test_runtime_installer_effort_capability_patch_adds_bridge_model_capability_hook(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
     executable = tmp_path / "managed-bin" / "claude"
     executable.parent.mkdir(parents=True)
     original = (
-        b'prefix var QP5,us;var oK6=L(()=>{c7();V7();QP5=[{modelEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION",capabilitiesEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"}],us=V6((H,_)=>{if(OO())return;let q=H.toLowerCase();for(let K of QP5){let O=process.env[K.modelEnvVar],T=process.env[K.capabilitiesEnvVar];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)}); suffix'
+        b"prefix "
+        + EFFORT_CAPABILITY_HOOK_NEEDLE
+        + b" middle "
+        + EXACT_EFFORT_LEVEL_UI_NEEDLE
+        + b" tail "
+        + EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE
+        + b" suffix"
     )
     executable.write_bytes(original)
     plan = build_managed_runtime_install_plan(
@@ -345,33 +361,134 @@ def test_runtime_installer_effort_capability_patch_adds_bridge_model_capability_
     )
     write_managed_runtime_artifacts(plan)
 
-    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, executable, approved=True)
+    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, plan.executable, approved=True)
 
     assert patch_result["status"] == "patched"
     assert patch_result["patch_point"] == "effort_capability_hook"
+    assert patch_result["exact_patch_point"] == "exact_effort_level_ui_patch"
+    assert patch_result["effective_clamp_patch_point"] == "exact_effort_effective_clamp_patch"
     assert patch_result["official_claude_unaffected"] is True
-    patched = executable.read_bytes()
+    patched = plan.executable.read_bytes()
     assert len(patched) == len(original)
     assert b"ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON" in patched
+    assert b"ZCCEL" in patched
+    assert b"claude-code-bridge-" in patched
+    assert EFFORT_CAPABILITY_HOOK_NEEDLE not in patched
+    assert EXACT_EFFORT_LEVEL_UI_NEEDLE not in patched
+    assert EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE not in patched
+    assert EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in patched
+    assert EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip() in patched
+    assert EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT.rstrip() in patched
     assert b"if(OO())return;let q=H.toLowerCase()" not in patched
     active = resolve_active_managed_runtime(runtime_root)
     assert active.runtime_hash == patch_result["runtime_hash_after"]
     assert "effort_capability_hook" in active.manifest["patch_points"]
+    assert "exact_effort_level_ui_patch" in active.manifest["patch_points"]
+    assert "exact_effort_effective_clamp_patch" in active.manifest["patch_points"]
+    assert "effort_capability_hook" in active.patches["patch_points"]
+    assert "exact_effort_level_ui_patch" in active.patches["patch_points"]
+    assert "exact_effort_effective_clamp_patch" in active.patches["patch_points"]
     assert active.patches["effort_capability_patch"]["env"] == "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
+    assert active.patches["effort_capability_patch"]["exact_levels_env"] == "ZCCEL"
     assert active.patches["effort_capability_patch"]["direct_binary_patch_requires_approval"] is True
-    assert active.patches["effort_capability_patch"]["schema"] == "boolean_effort_flags_v1"
-    assert active.patches["effort_capability_patch"]["ui_probe"] == "boolean_only_insufficient_for_exact_effort_levels"
-    assert active.patches["effort_capability_patch"]["exact_effort_levels_supported"] is False
-    assert active.patches["effort_capability_patch"]["boolean_only_hook_rejected"] is True
+    assert active.patches["effort_capability_patch"]["schema"] == "exact_effort_levels_v1"
+    assert active.patches["effort_capability_patch"]["ui_probe"] == "claude_code_2_1_177_model_picker_exact_effort_levels"
+    assert active.patches["effort_capability_patch"]["exact_effort_levels_supported"] is True
+    assert active.patches["effort_capability_patch"]["effective_effort_clamp_supported"] is True
+    assert active.patches["effort_capability_patch"]["boolean_only_hook_rejected"] is False
 
 
-def test_runtime_installer_effort_capability_patch_is_idempotent(tmp_path: Path):
-    from zhumeng_agent.adapters.claude_code import runtime_installer as installer  # noqa: PLC0415
+def test_runtime_installer_exact_effort_ui_patch_reads_levels_without_lazy_capability_hook():
+    replacement = EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip()
+    assert b"ZCE(H)" in replacement
+    assert b"IDq.filter" in replacement
+    assert b"O+8" in replacement  # constant-folds official O+Math.floor(8.5)
+    assert b"accentStart:hO_+2" in replacement
+    assert b"xhigh + workflows" in replacement
+
+
+def test_runtime_installer_exact_effort_effective_clamp_patch_clamps_status_line():
+    assert EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT == "exact_effort_effective_clamp_patch"
+    assert len(EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT) == len(EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE)
+    replacement = EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT.rstrip()
+    assert b"function Qs(H,_)" in replacement
+    assert b"ZCE?.(H)" in replacement
+    assert b'J.includes("high")?"high":J[0]' in replacement
+
+
+def test_runtime_installer_exact_effort_patch_semantics_preserve_native_and_filter_bridge(tmp_path: Path):
+    import subprocess
+
+    script = r"""
+const process = {env:{ZCCEL: JSON.stringify({
+  'claude-code-bridge-deepseek-v4-pro': ['high','max'],
+  'claude-code-bridge-gpt-5.5': ['low','medium','high','xhigh'],
+  'claude-code-bridge-glm-5.2-1m': ['high','max']
+})}};
+const IDq = [
+  {value:'low', label:'low'},
+  {value:'medium', label:'medium'},
+  {value:'high', label:'high'},
+  {value:'xhigh', label:'xhigh'},
+  {value:'max', label:'max'},
+];
+const bDq = [2, 3, 4, 5];
+const rX4 = [0, 1, 2, 3, 4];
+const hO_ = 10;
+function oX4(levels, spacers){ return levels.map((level, idx) => level.value + ':' + String(spacers[idx] ?? '')); }
+function Qm(model){ return model === 'claude-opus-4-8'; }
+function zP(){ return true; }
+function tyH(){ return false; }
+function e16(){ return 'high'; }
+function syH(){ return undefined; }
+function oyH(model){ return model === 'claude-code-bridge-deepseek-v4-pro' || model === 'claude-code-bridge-glm-5.2-1m'; }
+function KMH(model){ return model === 'claude-code-bridge-gpt-5.5' || model === 'claude-opus-4-8'; }
+const ZCE=(H)=>{let q=String(H||'').toLowerCase();if(!q.startsWith('claude-code-bridge-'))return;try{return JSON.parse(process.env.ZCCEL||'{}')[q]}catch{}};
+function eX4(H){let q=ZCE(H),K=q?IDq.filter(O=>q.includes(O.value)):IDq,Y=q?bDq.slice(0,K.length-1):bDq,L=oX4(K,Y),T=q?L:rX4,W=hO_,R='─',S=R.repeat(hO_),A;if(!q&&Qm(H)){let O=hO_+3;K=[...IDq,{value:'ultracode',label:'ultracode',color:'violet-ripple'}],Y=[...bDq,7],T=[...rX4,O+8],L=oX4(K,Y),W=O+17,S=R.repeat(hO_+1)+'┆'+R.repeat(18),A={accentStart:hO_+2,sublabel:{text:'xhigh + workflows',start:O}}}return{levels:K,width:W,trianglePositions:T,labelStarts:L,spacers:Y,trackChars:S,...A}}
+function Qs(H,_){if(!zP(H))return;let q=tyH(H),K=e16(H),O=syH();if(O===null)return q?K:void 0;let T=O??(q?K:void 0)??_??K,J=ZCE?.(H);return J?.length?J.includes(T)?T:J.includes('high')?'high':J[0]:T==='max'&&!oyH(H)||T==='xhigh'&&!KMH(H)?'high':T}
+function values(model){ return eX4(model).levels.map((level)=>level.value); }
+const checks = [
+  [JSON.stringify(values('claude-code-bridge-deepseek-v4-pro')), JSON.stringify(['high','max']), 'deepseek visible levels'],
+  [JSON.stringify(values('claude-code-bridge-gpt-5.5')), JSON.stringify(['low','medium','high','xhigh']), 'gpt visible levels'],
+  [JSON.stringify(values('claude-code-bridge-agnes-2.0-flash')), JSON.stringify(['low','medium','high','xhigh','max']), 'agnes no exact levels falls back to stock non-Qm'],
+  [JSON.stringify(values('claude-code-bridge-kimi-k2.7-code')), JSON.stringify(['low','medium','high','xhigh','max']), 'kimi no exact levels falls back to stock non-Qm'],
+  [JSON.stringify(values('claude-opus-4-8').slice(-1)), JSON.stringify(['ultracode']), 'native Qm keeps ultracode'],
+  [eX4('claude-opus-4-8').sublabel && eX4('claude-opus-4-8').sublabel.text, 'xhigh + workflows', 'native Qm sublabel'],
+  [String(eX4('claude-opus-4-8').accentStart), '12', 'native Qm accentStart'],
+  [Qs('claude-code-bridge-deepseek-v4-pro', 'medium'), 'high', 'deepseek medium clamps to high'],
+  [Qs('claude-code-bridge-deepseek-v4-pro', 'max'), 'max', 'deepseek max preserved'],
+  [Qs('claude-code-bridge-gpt-5.5', 'max'), 'high', 'gpt max clamps to high'],
+  [Qs('claude-code-bridge-gpt-5.5', 'xhigh'), 'xhigh', 'gpt xhigh preserved'],
+  [Qs('claude-opus-4-8', 'xhigh'), 'xhigh', 'native xhigh preserved'],
+];
+for (const [got, want, label] of checks) {
+  if (got !== want) {
+    throw new Error(label + ': got ' + got + ' want ' + want);
+  }
+}
+"""
+    result = subprocess.run(["node", "-e", script], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_runtime_installer_effort_patch_metadata_satisfies_exact_effort_ui_gate(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from zhumeng_agent import cli  # noqa: PLC0415
 
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
     executable = tmp_path / "managed-bin" / "claude"
     executable.parent.mkdir(parents=True)
-    executable.write_bytes(b"prefix " + installer.EFFORT_CAPABILITY_HOOK_REPLACEMENT + b" suffix")
+    original = (
+        b"prefix "
+        + EFFORT_CAPABILITY_HOOK_NEEDLE
+        + b" middle "
+        + EXACT_EFFORT_LEVEL_UI_NEEDLE
+        + b" tail "
+        + EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE
+        + b" suffix"
+    )
+    executable.write_bytes(original)
     plan = build_managed_runtime_install_plan(
         executable=executable,
         runtime_root=runtime_root,
@@ -379,7 +496,53 @@ def test_runtime_installer_effort_capability_patch_is_idempotent(tmp_path: Path)
     )
     write_managed_runtime_artifacts(plan)
 
-    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, executable, approved=True)
+    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, plan.executable, approved=True)
+    active = resolve_active_managed_runtime(runtime_root)
+
+    cli._require_effort_capability_patch_for_bridge_ui(
+        SimpleNamespace(
+            upstream_version=active.upstream_version,
+            runtime_hash=patch_result["runtime_hash_after"],
+            executable=active.executable,
+            manifest=active.manifest,
+            patches=active.patches,
+        ),
+        ("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"),
+    )
+    assert "exact_effort_level_ui_patch" in active.manifest["patch_points"]
+    assert "exact_effort_level_ui_patch" in active.patches["patch_points"]
+    assert "exact_effort_effective_clamp_patch" in active.manifest["patch_points"]
+    assert "exact_effort_effective_clamp_patch" in active.patches["patch_points"]
+    effort_patch = active.patches["effort_capability_patch"]
+    assert effort_patch["schema"] == "exact_effort_levels_v1"
+    assert effort_patch["hook"] == "exact_effort_levels_ui"
+    assert effort_patch["exact_effort_levels_supported"] is True
+    assert effort_patch["effective_effort_clamp_supported"] is True
+    assert effort_patch["boolean_only_hook_rejected"] is False
+
+def test_runtime_installer_effort_capability_patch_is_idempotent(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code import runtime_installer as installer  # noqa: PLC0415
+
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(
+        b"prefix "
+        + installer.EFFORT_CAPABILITY_HOOK_REPLACEMENT
+        + b" middle "
+        + installer.EXACT_EFFORT_LEVEL_UI_REPLACEMENT
+        + b" tail "
+        + installer.EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT
+        + b" suffix"
+    )
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, plan.executable, approved=True)
 
     assert patch_result["status"] == "already_patched"
     assert patch_result["runtime_hash_after"] == patch_result["runtime_hash_before"]
@@ -398,7 +561,7 @@ def test_runtime_installer_effort_capability_patch_rejects_partial_marker(tmp_pa
     write_managed_runtime_artifacts(plan)
 
     with pytest.raises(RuntimeInstallerError, match="patch point not found"):
-        apply_managed_runtime_effort_capability_patch(runtime_root, executable, approved=True)
+        apply_managed_runtime_effort_capability_patch(runtime_root, plan.executable, approved=True)
 
 
 def test_runtime_installer_effort_capability_patch_requires_managed_runtime_executable(tmp_path: Path):
@@ -419,11 +582,94 @@ def test_runtime_installer_effort_capability_patch_requires_managed_runtime_exec
     with pytest.raises(RuntimeInstallerError, match="executable drift"):
         apply_managed_runtime_effort_capability_patch(runtime_root, other, approved=True)
 
+
+
+def test_runtime_installer_copies_executable_inside_runtime_root_before_patch(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    source = tmp_path / "external-node-bin" / "claude"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"prefix " + EFFORT_CAPABILITY_HOOK_NEEDLE + b" middle " + EXACT_EFFORT_LEVEL_UI_NEEDLE + b" tail " + EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE + b" suffix")
+    plan = build_managed_runtime_install_plan(
+        executable=source,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+
+    assert plan.executable == runtime_root / "claude-code" / "2.1.177" / "claude"
+    assert plan.executable != source.resolve(strict=False)
+    write_managed_runtime_artifacts(plan)
+    manifest = json.loads(plan.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["executable_path"] == str(plan.executable)
+
+    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, plan.executable, approved=True)
+
+    assert patch_result["status"] == "patched"
+    assert EFFORT_CAPABILITY_HOOK_NEEDLE in source.read_bytes()
+    assert EFFORT_CAPABILITY_HOOK_NEEDLE not in plan.executable.read_bytes()
+    assert runtime_root.resolve(strict=False) in Path(patch_result["patched_executable"]).resolve(strict=False).parents
+
+
+def test_runtime_installer_rejects_manifest_executable_outside_runtime_root_even_if_not_known_global(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    source = tmp_path / "external-node-bin" / "claude"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"managed runtime")
+    plan = build_managed_runtime_install_plan(
+        executable=source,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+    manifest = json.loads(plan.manifest_path.read_text(encoding="utf-8"))
+    manifest["executable_path"] = str(source.resolve(strict=False))
+    plan.manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    hash_lock = json.loads(plan.hash_lock_path.read_text(encoding="utf-8"))
+    manifest_hash = "sha256:" + hashlib.sha256(plan.manifest_path.read_bytes()).hexdigest()
+    hash_lock["manifest_hash"] = manifest_hash
+    hash_lock["locked_files"]["manifest.json"] = manifest_hash
+    plan.hash_lock_path.write_text(json.dumps(hash_lock, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeInstallerError, match="outside managed runtime root"):
+        resolve_active_managed_runtime(runtime_root)
+
 def test_runtime_installer_start_requires_enabled_active_runtime(tmp_path: Path):
     with pytest.raises(RuntimeInstallerError, match="not enabled"):
         resolve_active_managed_runtime(tmp_path / ".zhumeng" / "runtimes")
 
 
+
+
+def test_runtime_installer_allows_global_claude_as_readonly_source_after_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    global_source = Path("/opt/homebrew/bin/claude")
+    original_is_file = Path.is_file
+    monkeypatch.setattr(shutil, "which", lambda name: str(global_source) if name == "claude" else None)
+    monkeypatch.setattr(Path, "is_file", lambda self: True if self == global_source else original_is_file(self))
+
+    plan = build_managed_runtime_install_plan(
+        executable=Path("claude"),
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+
+    assert plan.source_executable == global_source.resolve(strict=False)
+    assert plan.executable == runtime_root / "claude-code" / "2.1.177" / "claude"
+    assert plan.manifest.executable_path == str(plan.executable)
+
+
+def test_runtime_status_fails_closed_when_active_manifest_path_escapes_runtime_root(tmp_path: Path):
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    active_pointer = runtime_root / "claude-code" / "active"
+    active_pointer.parent.mkdir(parents=True)
+    active_pointer.write_text(
+        json.dumps({"runtime": "claude-code", "status": "enabled", "active_version": "2.1.177", "manifest_path": str(tmp_path / "outside" / "manifest.json")}) + "\n",
+        encoding="utf-8",
+    )
+
+    status = read_managed_runtime_status(runtime_root)
+
+    assert status["status"] == "integrity_failed"
+    assert status["integrity"]["status"] == "manifest_outside_runtime_root"
 
 def test_runtime_installer_never_targets_global_claude_binary(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
@@ -462,8 +708,10 @@ def test_runtime_installer_uses_managed_cache_and_does_not_read_default_claude_d
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(Path, "read_text", fail_on_default_claude_read)
 
+    executable = tmp_path / "claude"
+    executable.write_bytes(b"managed-claude-code-2.1.175")
     plan = build_managed_runtime_install_plan(
-        executable=tmp_path / "claude",
+        executable=executable,
         runtime_root=runtime_root,
         runner=VersionRunner("Claude Code v2.1.175"),
     )
@@ -546,14 +794,17 @@ def test_runtime_installer_nonzero_version_probe_fails_closed_without_writing(tm
 
 def test_runtime_installer_revalidates_actual_write_fields_on_malformed_plan(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "claude"
+    executable.write_bytes(b"managed-claude-code-2.1.175")
     plan = build_managed_runtime_install_plan(
-        executable=tmp_path / "claude",
+        executable=executable,
         runtime_root=runtime_root,
         runner=VersionRunner("Claude Code v2.1.175"),
     )
     malformed = plan.__class__(
         executable=plan.executable,
         runtime_root=plan.runtime_root,
+        source_executable=plan.source_executable,
         upstream_version=plan.upstream_version,
         runtime_dir=plan.runtime_dir,
         version_dir=plan.version_dir,
@@ -591,8 +842,10 @@ def test_runtime_installer_hashes_existing_upstream_executable_contents(tmp_path
 
 def test_runtime_rollback_disables_active_pointer_without_deleting_artifacts(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "claude"
+    executable.write_bytes(b"managed-claude-code-2.1.175")
     plan = build_managed_runtime_install_plan(
-        executable=tmp_path / "claude",
+        executable=executable,
         runtime_root=runtime_root,
         runner=VersionRunner("Claude Code v2.1.175"),
     )
@@ -647,8 +900,10 @@ def test_shell_alias_plan_rejects_attempt_to_shadow_official_claude(tmp_path: Pa
 
 def test_runtime_status_fails_closed_on_manifest_hash_mismatch(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "claude"
+    executable.write_bytes(b"managed-claude-code-2.1.175")
     plan = build_managed_runtime_install_plan(
-        executable=tmp_path / "claude",
+        executable=executable,
         runtime_root=runtime_root,
         runner=VersionRunner("Claude Code v2.1.175"),
     )
@@ -665,8 +920,10 @@ def test_runtime_status_fails_closed_on_manifest_hash_mismatch(tmp_path: Path):
 
 def test_runtime_status_fails_closed_when_hash_lock_omits_patches_json(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "claude"
+    executable.write_bytes(b"managed-claude-code-2.1.175")
     plan = build_managed_runtime_install_plan(
-        executable=tmp_path / "claude",
+        executable=executable,
         runtime_root=runtime_root,
         runner=VersionRunner("Claude Code v2.1.175"),
     )

@@ -455,6 +455,9 @@ def build_provider_catalog_env(
         "SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS": ",".join(_NATIVE_MODELS),
         "SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES": _NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES,
     }
+    if live_set:
+        env["SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY"] = secrets.token_urlsafe(32)
+        env["SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID"] = "claude-code-cache-audit-v1"
     for provider, api_key in (bridge_api_keys or {}).items():
         provider_key = str(provider).strip().upper().replace("-", "_")
         if provider_key and str(api_key).strip():
@@ -924,6 +927,8 @@ def build_canary_env_readiness_metadata(env: dict[str, str], *, approved_expande
         for model in deepseek_live_models
     )
     cache_evidence_eligible = bool(deepseek_live_models) and all_live_deepseek_anthropic and not fallback_enabled
+    cache_audit_hmac_key_present = bool(str(env.get("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "")).strip())
+    cache_audit_hmac_key_id = str(env.get("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "")).strip() or "missing"
 
     if not fallback_gate_present:
         issues.append("missing SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED gate")
@@ -942,6 +947,8 @@ def build_canary_env_readiness_metadata(env: dict[str, str], *, approved_expande
             issues.append("DeepSeek Anthropic-compatible live env flag is false")
         if not all_live_deepseek_anthropic:
             issues.append("DeepSeek live catalog must prefer anthropic_messages unless explicit fallback is enabled")
+    if cache_evidence_eligible and not cache_audit_hmac_key_present:
+        issues.append("DeepSeek cache audit requires SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY")
 
     bridge_isolated = True
     for model in bridge_models:
@@ -997,6 +1004,8 @@ def build_canary_env_readiness_metadata(env: dict[str, str], *, approved_expande
             "unknown_protocol_count": unknown_protocol_count,
             "all_live_models_prefer_anthropic_messages": all_live_deepseek_anthropic,
             "cache_evidence_eligible": cache_evidence_eligible,
+            "cache_audit_hmac_key_present": cache_audit_hmac_key_present,
+            "cache_audit_hmac_key_id": cache_audit_hmac_key_id,
         },
         "formal_pool_isolation": {
             "native_model_count": len(native_models),
@@ -1192,6 +1201,8 @@ def merge_provider_catalog_env(
     for key in (
         "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID",
         "SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET",
+        "SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY",
+        "SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID",
     ):
         if existing.get(key):
             env[key] = existing[key]

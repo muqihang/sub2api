@@ -45,7 +45,11 @@ from .adapters.claude_code.launcher import (
 from .adapters.claude_code.doctor import ClaudeCodeDoctorContext, evaluate_toolsearch_profile
 from .adapters.claude_code.profile import ClaudeCodeCapabilityProfile, FgtsMode, ToolSearchMode
 from .adapters.claude_code.runtime_installer import (
+    EFFORT_CAPABILITY_HOOK_REPLACEMENT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT,
     EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+    EXACT_EFFORT_LEVEL_UI_REPLACEMENT,
     RuntimeInstallerError,
     apply_managed_runtime_agent_model_schema_patch,
     apply_managed_runtime_effort_capability_patch,
@@ -2311,6 +2315,26 @@ def _bridge_effort_ui_models(bridge_live_models: Sequence[str]) -> tuple[str, ..
     return tuple(model for model in bridge_live_models if any(model.startswith(marker) for marker in effort_model_markers))
 
 
+def _active_runtime_has_exact_effort_patch_bytes(active_runtime) -> bool:
+    executable_value = getattr(active_runtime, "executable", None)
+    if not executable_value:
+        manifest = getattr(active_runtime, "manifest", {})
+        if isinstance(manifest, Mapping):
+            executable_value = manifest.get("executable_path")
+    if not executable_value:
+        return False
+    executable = Path(str(executable_value))
+    try:
+        data = executable.read_bytes()
+    except OSError:
+        return False
+    return (
+        EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in data
+        and EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip() in data
+        and EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT.rstrip() in data
+    )
+
+
 def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models: Sequence[str]) -> None:
     effort_ui_models = _bridge_effort_ui_models(bridge_live_models)
     if not effort_ui_models:
@@ -2331,9 +2355,6 @@ def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_m
     if has_patch_point:
         exact_schema = str(effort_patch.get("schema", "")) == "exact_effort_levels_v1"
         ui_probe = str(effort_patch.get("ui_probe", "")) == "claude_code_2_1_177_model_picker_exact_effort_levels"
-        expected_capabilities = _bridge_model_capabilities_json(tuple(bridge_live_models))
-        expected_capabilities_hash = bridge_effort_capabilities_hash(expected_capabilities)
-        metadata_live_models = tuple(str(item) for item in effort_patch.get("live_bridge_models", ()) if str(item))
         manifest_patch_points = set(str(item) for item in manifest_points)
         patch_file_points = set(str(item) for item in patch_points)
         if (
@@ -2341,15 +2362,18 @@ def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_m
             and ui_probe
             and EXACT_EFFORT_LEVEL_UI_PATCH_POINT in manifest_patch_points
             and EXACT_EFFORT_LEVEL_UI_PATCH_POINT in patch_file_points
+            and EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT in manifest_patch_points
+            and EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT in patch_file_points
             and str(effort_patch.get("patch_point", "")) == EXACT_EFFORT_LEVEL_UI_PATCH_POINT
+            and str(effort_patch.get("effective_clamp_patch_point", "")) == EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT
             and str(effort_patch.get("hook", "")) == "exact_effort_levels_ui"
+            and str(effort_patch.get("exact_levels_env", "")) == "ZCCEL"
             and effort_patch.get("exact_effort_levels_supported") is True
+            and effort_patch.get("effective_effort_clamp_supported") is True
             and effort_patch.get("boolean_only_hook_rejected") is False
             and str(effort_patch.get("probe_status", "")) == "pass"
             and str(effort_patch.get("probe_schema_version", "")) == "claude-code-2.1.177-bridge-effort-ui-probe-v1"
-            and str(effort_patch.get("runtime_hash", "")) == str(getattr(active_runtime, "runtime_hash", ""))
-            and str(effort_patch.get("capabilities_hash", "")) == expected_capabilities_hash
-            and metadata_live_models == effort_ui_models
+            and _active_runtime_has_exact_effort_patch_bytes(active_runtime)
         ):
             return
         raise RuntimeInstallerError(
