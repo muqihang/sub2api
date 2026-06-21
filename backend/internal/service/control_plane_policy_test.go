@@ -52,3 +52,58 @@ func TestControlPlanePathPolicyMatrixSensitiveAccountSettingsNoStaleNoForward(t 
 	require.False(t, decision.Policy.Cacheable)
 	require.True(t, decision.Policy.Sensitive)
 }
+
+func TestControlPlanePathPolicyMatrixCoversDoc45KnownControlPlanePaths(t *testing.T) {
+	matrix := NewDefaultControlPlanePathPolicyMatrix()
+
+	stubbed := []struct {
+		method string
+		path   string
+		query  string
+	}{
+		{"GET", "/api/hello", ""},
+		{"GET", "/v1/oauth/hello", ""},
+		{"GET", "/v1/models", "limit=1000"},
+		{"GET", "/mcp-registry/v0/servers", "version=latest"},
+		{"GET", "/api/claude_code_penguin_mode", ""},
+		{"GET", "/api/claude_code_feature_flags", ""},
+		{"GET", "/api/claude_code_grove", ""},
+		{"GET", "/api/claude_code/organizations/metrics_enabled", ""},
+	}
+	for _, tc := range stubbed {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			decision := matrix.Evaluate(tc.method, tc.path, tc.query)
+			require.True(t, decision.Allowed)
+			require.NotNil(t, decision.Policy)
+			require.Equal(t, ControlPlaneActionStub, decision.Decision)
+			require.True(t, decision.Policy.Cacheable)
+			require.Equal(t, ControlPlaneStaleSafe, decision.Policy.StaleMode)
+			require.True(t, decision.Policy.RequiresUserPartition)
+			require.Contains(t, decision.Policy.PrivateFieldDenylist, "authorization")
+		})
+	}
+
+	blocked := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/api/claude_code/policy_limits"},
+		{"GET", "/api/claude_code/remote_managed_settings"},
+		{"GET", "/api/claude_code/settings_sync"},
+		{"GET", "/api/claude_code/team_memory"},
+		{"GET", "/api/claude_code/model_capabilities"},
+		{"GET", "/api/claude_code/growthbook"},
+		{"GET", "/api/oauth/organizations/{org}/referral/eligibility"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			decision := matrix.Evaluate(tc.method, tc.path, "")
+			require.False(t, decision.Allowed)
+			require.NotNil(t, decision.Policy)
+			require.Equal(t, ControlPlaneActionBlock, decision.Decision)
+			require.Equal(t, ControlPlaneStaleNoStale, decision.Policy.StaleMode)
+			require.False(t, decision.Policy.Cacheable)
+			require.True(t, decision.Policy.Sensitive)
+		})
+	}
+}

@@ -102,6 +102,7 @@ class CliControlPlanePolicyTest(unittest.TestCase):
         self.assertEqual(policy.decide("POST", "/v1/messages/count_tokens").action, "forward_messages")
         self.assertEqual(policy.decide("POST", "/v1/messages/count_tokens?beta=true").action, "forward_messages")
         self.assertEqual(policy.decide("POST", "/api/event_logging/v2/batch").action, "suppress_204")
+        self.assertEqual(policy.decide("POST", "/api/event_logging/batch").action, "suppress_204")
         self.assertEqual(policy.decide("POST", "/api/eval/redacted").action, "suppress_204")
         self.assertEqual(policy.decide("POST", "/api/eval/other").action, "suppress_204")
 
@@ -121,9 +122,16 @@ class CliControlPlanePolicyTest(unittest.TestCase):
         self.assertEqual(policy.decide("GET", "/v1/models?limit=1000").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/claude_cli/bootstrap?entrypoint=sdk-cli").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/oauth/account/settings").action, "quarantine_block")
-        self.assertEqual(policy.decide("GET", "/api/claude_code_grove").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/claude_code_grove").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/claude_code_penguin_mode").action, "stub_json")
         self.assertEqual(policy.decide("GET", "/api/claude_code/organizations/metrics_enabled").action, "stub_json")
+        self.assertEqual(policy.decide("GET", "/api/claude_code_feature_flags").action, "stub_json")
+        self.assertEqual(policy.decide("GET", "/api/claude_code/policy_limits").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/claude_code/remote_managed_settings").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/claude_code/settings_sync").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/claude_code/team_memory").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/claude_code/model_capabilities").action, "quarantine_block")
+        self.assertEqual(policy.decide("GET", "/api/claude_code/growthbook").action, "quarantine_block")
         self.assertEqual(policy.decide("GET", "/api/claude_code_unknown").action, "quarantine_block")
         self.assertEqual(
             policy.decide("GET", "/api/oauth/organizations/local-org/referral/eligibility").action,

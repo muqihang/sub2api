@@ -253,6 +253,9 @@ func (s *ControlPlaneIntentService) validateIntent(intent *ControlPlaneIntent) e
 	if decision.Policy == nil {
 		return fmt.Errorf("control-plane intent path is not allowlisted")
 	}
+	if intent.Classification != decision.Policy.Classification {
+		return fmt.Errorf("control-plane intent classification does not match configured policy")
+	}
 	if len(intent.NormalizedQuery) > 0 {
 		if !controlPlaneEqualStringMaps(decision.NormalizedQuery, intent.NormalizedQuery) {
 			return fmt.Errorf("control-plane intent normalized_query does not match configured policy")
@@ -365,7 +368,7 @@ func (s *ControlPlaneIntentService) decide(intent *ControlPlaneIntent) *ControlP
 			return decision
 		}
 	}
-	if intent.Method == "POST" && (intent.PathTemplate == "/api/event_logging/v2/batch" || strings.HasPrefix(intent.PathTemplate, "/api/eval/")) {
+	if intent.Method == "POST" && (intent.PathTemplate == "/api/event_logging/batch" || intent.PathTemplate == "/api/event_logging/v2/batch" || strings.HasPrefix(intent.PathTemplate, "/api/eval/")) {
 		return &ControlPlaneIntentDecision{
 			Decision: "suppress_204",
 			Reason:   "control_plane:telemetry_or_eval:path",
@@ -421,6 +424,9 @@ func safeControlPlaneStubBody(policy *ControlPlanePathPolicy) map[string]any {
 	}
 	if _, ok := policy.AllowedResponseKeys["features"]; ok {
 		body["features"] = []any{}
+	}
+	if _, ok := policy.AllowedResponseKeys["models"]; ok {
+		body["models"] = []any{}
 	}
 	if _, ok := policy.AllowedResponseKeys["profile"]; ok {
 		body["profile"] = map[string]any{}

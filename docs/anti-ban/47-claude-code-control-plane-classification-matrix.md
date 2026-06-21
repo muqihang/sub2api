@@ -44,6 +44,12 @@ Claude Code CLI local request
 | `backend/internal/service/control_plane_policy.go` and path matrix tests | Current Go control-plane router defaults | Code source; currently only a small safe-GET subset is explicit. |
 | `/Users/muqihang/chelingxi_workspace/cc-gateway/src/policy.ts` | CC Gateway main route policy | Current `selectSharedPoolRoute` supports `POST /v1/messages?beta=true`, defers `POST /v1/messages/count_tokens?beta=true`, suppresses event logging legacy/v2, blocks other control-plane paths. |
 
+Checkpoint 21 local binding status:
+
+- Go `NewDefaultControlPlanePathPolicyMatrix()` and Python `load_default_policy()` now explicitly classify the doc45/doc47 launch-time control-plane families listed in this matrix instead of letting known paths fall through the unknown-path bucket.
+- The binding remains conservative: bootstrap/hello, public MCP registry, model-list metadata, and reviewed Claude Code feature-flag endpoints are local stub/cache-only; policy limits, remote managed settings, settings sync, team memory, model capabilities, GrowthBook, OAuth account/org settings, and unknown drift remain quarantine/block with no stale cache and no upstream fetch.
+- This is a local guard/Sub2API safety binding, not approval for server-side CC Gateway fetches or direct official egress.
+
 Version evidence status:
 
 | Claude Code version | Evidence status | Matrix consequence |
@@ -498,12 +504,12 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 
 - family: `policy_limits`
 - method: `GET` unless capture proves otherwise.
-- path_template: `exact_path_required_from_capture`
+- path_template: `/api/claude_code/policy_limits`
 - host_bucket: `official_control_plane_host_via_guard`
 - capture_evidence_versions: `2.1.150=docs_30_45_mentions`; `2.1.175=evidence_gap_exact_path`; `2.1.177=evidence_gap`
 - capture_or_fixture_sources: docs 30/45; future exact capture.
 - sensitive_risk: `P1_native_limits_shape`
-- launch_action_local_guard: block/quarantine until explicit row.
+- launch_action_local_guard: explicit quarantine/block row; no upstream fetch.
 - launch_action_sub2api: block/quarantine.
 - server_side_cc_gateway_cooperation: current CC Gateway main does not support; future selected account/persona fetch with response schema/risk verifier.
 - future_production_action: selected account cached GET after proof.
@@ -518,8 +524,8 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 - schema_allowlist: none until exact fixture.
 - synthetic_or_shadow_eligibility: `none`
 - fail_closed_conditions: unlisted path; private fields; stale wrong persona.
-- test_fixtures: exact path required; unknown drift negative.
-- targeted_tests: unknown/quarantine tests.
+- test_fixtures: exact path quarantine; unknown drift negative.
+- targeted_tests: Go/Python default policy matrix tests.
 - live_canary_gate: exact fixture + approval.
 - formal_pool_impact: none at launch.
 - bridge_pool_impact: none.
@@ -528,13 +534,13 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 ### 4.15 Remote managed settings / settings sync
 
 - family: `remote_managed_settings_settings_sync`
-- method: `GET_or_POST_exact_capture_required`
-- path_template: `exact_path_required_from_capture`
+- method: `GET` for local launch binding; `POST` remains unknown/quarantine until exact capture/design.
+- path_template: `/api/claude_code/remote_managed_settings`; `/api/claude_code/settings_sync`
 - host_bucket: `official_control_plane_host_via_guard`
 - capture_evidence_versions: `2.1.150=docs_30_45_mentions`; `2.1.175=evidence_gap_exact_path`; `2.1.177=evidence_gap`
 - capture_or_fixture_sources: docs 30/45; future exact capture.
 - sensitive_risk: `P0_or_P1_user_team_private_state`
-- launch_action_local_guard: block/quarantine.
+- launch_action_local_guard: explicit quarantine/block rows for the known service families; no raw settings upload/download.
 - launch_action_sub2api: block/quarantine.
 - server_side_cc_gateway_cooperation: current CC Gateway main does not support; future requires separate design, selected account/user partition, response/private-field verifier, and no messages CCH reuse.
 - future_production_action: separate design due private state.
@@ -549,8 +555,8 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 - schema_allowlist: none.
 - synthetic_or_shadow_eligibility: `none`
 - fail_closed_conditions: any unlisted path; private field; upload attempt.
-- test_fixtures: unknown drift; private-state negative.
-- targeted_tests: Python/Go unknown/quarantine.
+- test_fixtures: exact path quarantine; unknown drift; private-state negative.
+- targeted_tests: Go/Python default policy matrix tests plus future POST capture tests before enabling.
 - live_canary_gate: separate design approval.
 - formal_pool_impact: none at launch.
 - bridge_pool_impact: none.
@@ -559,13 +565,13 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 ### 4.16 Team memory sync
 
 - family: `team_memory_sync`
-- method: `GET_or_POST_exact_capture_required`
-- path_template: `exact_path_required_from_capture`
+- method: `GET` for local launch binding; `POST` remains unknown/quarantine until exact capture/design.
+- path_template: `/api/claude_code/team_memory`
 - host_bucket: `official_control_plane_host_via_guard`
 - capture_evidence_versions: `2.1.150=docs_30_45_mentions`; `2.1.175=evidence_gap_exact_path`; `2.1.177=evidence_gap`
 - capture_or_fixture_sources: docs 30/45; future exact capture.
 - sensitive_risk: `P0_private_memory`
-- launch_action_local_guard: block/quarantine.
+- launch_action_local_guard: explicit quarantine/block row; no raw team memory upload/download.
 - launch_action_sub2api: block/quarantine.
 - server_side_cc_gateway_cooperation: current CC Gateway main does not support; future requires separate design and selected account/user/session isolation.
 - future_production_action: separate approval only.
@@ -580,8 +586,8 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 - schema_allowlist: none.
 - synthetic_or_shadow_eligibility: `none`
 - fail_closed_conditions: upload attempt; private field; unlisted path.
-- test_fixtures: team-memory unknown drift.
-- targeted_tests: unknown/quarantine.
+- test_fixtures: exact path quarantine; team-memory unknown drift.
+- targeted_tests: Go/Python default policy matrix tests.
 - live_canary_gate: separate approval.
 - formal_pool_impact: none.
 - bridge_pool_impact: none.
@@ -590,29 +596,29 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 ### 4.17 Model capabilities / metadata
 
 - family: `model_capabilities_metadata`
-- method: `GET_exact_capture_required`
-- path_template: `exact_path_required_from_capture`
+- method: `GET`
+- path_template: `/v1/models`; `/api/claude_code/model_capabilities`
 - host_bucket: `official_control_plane_host_via_guard_or_server_registry`
 - capture_evidence_versions: `2.1.150=docs_45_mentions`; `2.1.175=evidence_gap_exact_path`; `2.1.177=evidence_gap`
 - capture_or_fixture_sources: docs 45; persona/model registry code; future exact capture.
 - sensitive_risk: `P1_native_capability_parity`
-- launch_action_local_guard: block/stub until exact row.
-- launch_action_sub2api: block/stub or server-maintained registry.
+- launch_action_local_guard: `/v1/models` is local stub/cache-only; `/api/claude_code/model_capabilities` is explicit quarantine/block until exact schema evidence.
+- launch_action_sub2api: local stub/block only; future server-maintained registry or selected-account fetch requires separate proof.
 - server_side_cc_gateway_cooperation: current CC Gateway main does not support; future selected account/persona or server registry must verify model/beta capabilities and fail closed on unknown major drift.
 - future_production_action: selected account cached GET or server persona registry.
 - upstream_identity: `none_at_launch`; future `selected_pool_account_or_server_registry`
 - raw_request_body_policy: no body.
-- raw_response_policy: projection only.
+- raw_response_policy: projection only; local `/v1/models` stub may expose only empty `data`/`models` arrays.
 - safe_intent_fields: path template, model id if catalog-known, persona version, action.
-- cache_scope: `none_at_launch`; future `account_persona_model`
-- cache_ttl_seconds: `0_at_launch`; future `300_max_initial`
+- cache_scope: `/v1/models=session`; blocked capability path has `none_at_launch`; future `account_persona_model`
+- cache_ttl_seconds: `/v1/models=300`; blocked capability path `0_at_launch`; future `300_max_initial`
 - cache_partition_keys: future account_ref + persona_version + model_id + beta_profile + schema_version.
 - stale_policy: no stale for unknown model/persona drift.
 - schema_allowlist: none until fixture.
 - synthetic_or_shadow_eligibility: `none`
 - fail_closed_conditions: unknown model/path; stale wrong persona; schema drift.
-- test_fixtures: exact capability fixture; unknown model negative.
-- targeted_tests: persona/model registry and guard tests.
+- test_fixtures: `/v1/models` safe stub; exact capability fixture before enabling; unknown model negative.
+- targeted_tests: Go/Python default policy matrix tests; persona/model registry and guard tests before future enablement.
 - live_canary_gate: exact fixture + approval.
 - formal_pool_impact: affects native catalog only after proof.
 - bridge_pool_impact: separate bridge catalog; no native pollution.
@@ -621,13 +627,13 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 ### 4.18 GrowthBook / feature gates / analytics config
 
 - family: `growthbook_feature_gates_analytics_config`
-- method: `GET_or_POST_exact_capture_required`
-- path_template: `exact_path_or_host_required_from_capture`
+- method: `GET` for local launch binding; `POST` remains unknown/quarantine until exact capture/design.
+- path_template: `/api/claude_code/growthbook`; reviewed feature flag stubs remain `/api/claude_code_penguin_mode`, `/api/claude_code_feature_flags`, `/api/claude_code_grove`, `/api/claude_code/organizations/metrics_enabled`
 - host_bucket: `official_control_plane_or_analytics_host_via_guard`
 - capture_evidence_versions: `2.1.150=docs_45_mentions`; `2.1.175=evidence_gap_exact_path`; `2.1.177=evidence_gap`
 - capture_or_fixture_sources: docs 45; future exact capture.
 - sensitive_risk: `P1_or_P0_identity_analytics`
-- launch_action_local_guard: block/quarantine unless explicit public-safe row.
+- launch_action_local_guard: feature-flag endpoints are explicit local stub/cache-only rows; GrowthBook analytics/config endpoint is explicit quarantine/block.
 - launch_action_sub2api: block/quarantine.
 - server_side_cc_gateway_cooperation: current CC Gateway main does not support; future must use account/persona cache or local config with schema verifier and no raw analytics identity passthrough.
 - future_production_action: account/persona cached fetch or local config after proof.
@@ -642,8 +648,8 @@ This ledger is the authoritative matrix. The compact table below is only a reada
 - schema_allowlist: none until exact fixture.
 - synthetic_or_shadow_eligibility: `shadow_only_after_design`
 - fail_closed_conditions: unlisted host/path; private IDs; schema drift.
-- test_fixtures: exact path/host fixture required.
-- targeted_tests: netwatch/unknown host tests.
+- test_fixtures: feature-flag stubs; GrowthBook exact path quarantine; exact host fixture required before enabling.
+- targeted_tests: Go/Python default policy matrix tests; netwatch/unknown host tests.
 - live_canary_gate: separate approval.
 - formal_pool_impact: none at launch.
 - bridge_pool_impact: none.

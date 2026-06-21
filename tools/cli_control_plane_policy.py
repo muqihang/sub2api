@@ -81,6 +81,7 @@ _DEFAULT_POLICY_DICT = {
         },
         "telemetry": {
             "match": [
+                {"method": "POST", "path": "/api/event_logging/batch"},
                 {"method": "POST", "path": "/api/event_logging/v2/batch"},
                 {"method": "POST", "path_prefix": "/api/eval/"},
             ],
@@ -105,6 +106,8 @@ _DEFAULT_POLICY_DICT = {
                 {"method": "GET", "path": "/v1/models"},
                 {"method": "GET", "path": "/api/claude_cli/bootstrap"},
                 {"method": "GET", "path_regex": r"/api/claude_code_penguin_mode"},
+                {"method": "GET", "path_regex": r"/api/claude_code_feature_flags"},
+                {"method": "GET", "path_regex": r"/api/claude_code_grove"},
                 {"method": "GET", "path_regex": r"/api/claude_code/organizations/metrics_enabled"},
             ],
             "action": "stub_json",
@@ -117,6 +120,12 @@ _DEFAULT_POLICY_DICT = {
         "sensitive_get_candidates": {
             "match": [
                 {"method": "GET", "path": "/api/oauth/account/settings"},
+                {"method": "GET", "path": "/api/claude_code/policy_limits"},
+                {"method": "GET", "path": "/api/claude_code/remote_managed_settings"},
+                {"method": "GET", "path": "/api/claude_code/settings_sync"},
+                {"method": "GET", "path": "/api/claude_code/team_memory"},
+                {"method": "GET", "path": "/api/claude_code/model_capabilities"},
+                {"method": "GET", "path": "/api/claude_code/growthbook"},
             ],
             "action": "quarantine_block",
         },
