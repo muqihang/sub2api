@@ -803,6 +803,8 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveMapsAnthropicToolsAndPromptCacheKey(
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "local-openai-cache-audit-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "openai-cache-test-v1")
 	var responsesBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -832,6 +834,17 @@ func TestClaudeCodeBridgeOpenAIResponsesLiveMapsAnthropicToolsAndPromptCacheKey(
 	require.Contains(t, string(result.Body), "OK")
 	require.Equal(t, 1500, result.Audit.CacheReadTokens)
 	require.NotContains(t, responsesBody, "claude-code-bridge-gpt-5.5")
+	rawAudit, err := json.Marshal(result.Audit)
+	require.NoError(t, err)
+	audit := gjson.ParseBytes(rawAudit)
+	require.Equal(t, "responses", audit.Get("selected_protocol").String())
+	require.Equal(t, "/v1/responses", audit.Get("upstream_path_kind").String())
+	require.Equal(t, "openai_prompt_cache", audit.Get("provider_cache_mechanism").String())
+	require.True(t, audit.Get("prompt_cache_key_present").Bool())
+	require.Regexp(t, `^hmac-sha256:openai-cache-test-v1:[a-f0-9]{64}$`, audit.Get("stable_prefix_hmac").String())
+	require.Equal(t, "lt_1k", audit.Get("stable_prefix_token_bucket").String())
+	require.NotContains(t, string(rawAudit), "weather?")
+	require.NotContains(t, string(rawAudit), "get_weather")
 }
 
 func TestClaudeCodeBridgeAnthropicLivePostsGLMAndKimiToAnthropicMessages(t *testing.T) {

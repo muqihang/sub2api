@@ -56,6 +56,14 @@ func TestCP8AgnesBridgeResponsesUsesDedicatedRouteAndKey(t *testing.T) {
 	require.False(t, result.Audit.FormalPoolAllowed)
 	require.Equal(t, "claude_code_bridge_agnes", result.Audit.ClientType)
 	require.Equal(t, "responses", result.Audit.PreferredProtocol)
+	require.Equal(t, "responses", result.Audit.SelectedProtocol)
+	require.Equal(t, "/v1/responses", result.Audit.UpstreamPathKind)
+	require.Equal(t, "openai_responses_compatible_cache_unverified", result.Audit.ProviderCacheMechanism)
+	require.False(t, result.Audit.PromptCacheKeyPresent)
+	rawAudit, err := json.Marshal(result.Audit)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(rawAudit, "prompt_cache_key_present").Bool())
+	require.NotContains(t, string(rawAudit), "describe image")
 }
 
 func TestCP8AgnesBridgeDoesNotUseOpenAIChatCompletionsFallback(t *testing.T) {

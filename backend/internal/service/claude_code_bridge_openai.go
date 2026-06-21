@@ -140,7 +140,9 @@ func StreamClaudeCodeBridgeOpenAILive(ctx context.Context, httpClient *http.Clie
 	if err != nil {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildOpenAIEndpointURL(decision.OpenAIBaseURL, "/v1/responses"), bytes.NewReader(openAIBody))
+	upstreamURL := buildOpenAIEndpointURL(decision.OpenAIBaseURL, "/v1/responses")
+	requestAudit := buildClaudeCodeBridgeOpenAIResponsesRequestAudit(decision, openAIBody, upstreamURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(openAIBody))
 	if err != nil {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, err
 	}
@@ -170,7 +172,7 @@ func StreamClaudeCodeBridgeOpenAILive(ctx context.Context, httpClient *http.Clie
 	return ClaudeCodeBridgeOpenAILiveStreamResult{
 		StatusCode: resp.StatusCode,
 		Header:     header,
-		Audit:      buildClaudeCodeBridgeAuditSummary(decision, fixture),
+		Audit:      buildClaudeCodeBridgeAuditSummaryWithRequest(decision, fixture, requestAudit),
 	}, nil
 }
 
@@ -250,6 +252,26 @@ func applyClaudeCodeBridgeOpenAIClientHeaders(headers http.Header, clientType st
 	headers.Set("X-Stainless-Runtime", "go")
 	headers.Set("X-Stainless-Runtime-Version", "1.26")
 	headers.Set("X-Sub2API-Client-Type", clientType)
+}
+
+func buildClaudeCodeBridgeOpenAIResponsesRequestAudit(decision ClaudeCodeBridgeRouteDecision, upstreamBody []byte, upstreamURL string) claudeCodeBridgeRequestAudit {
+	audit := claudeCodeBridgeRequestAudit{
+		SelectedProtocol:        strings.TrimSpace(decision.PreferredProtocol),
+		FallbackUsed:            false,
+		UpstreamPathKind:        safeClaudeCodeBridgeUpstreamPathKind(upstreamURL),
+		CacheControlLocations:   claudeCodeBridgeCacheControlLocations(upstreamBody),
+		PromptCacheKeyPresent:   strings.TrimSpace(gjson.GetBytes(upstreamBody, "prompt_cache_key").String()) != "",
+		StablePrefixTokenBucket: "",
+	}
+	audit.CacheControlPresent = len(audit.CacheControlLocations) > 0
+	switch strings.TrimSpace(decision.Provider) {
+	case "openai":
+		audit.ProviderCacheMechanism = "openai_prompt_cache"
+	case "agnes":
+		audit.ProviderCacheMechanism = "openai_responses_compatible_cache_unverified"
+	}
+	audit.StablePrefixHMAC, audit.StablePrefixTokenBucket = claudeCodeBridgeStablePrefixAudit(decision, upstreamBody)
+	return audit
 }
 
 func shouldFallbackClaudeCodeOpenAIResponsesToChat(decision ClaudeCodeBridgeRouteDecision, statusCode int) bool {

@@ -94,6 +94,7 @@ type ClaudeCodeBridgeAuditSummary struct {
 	CacheControlPresent         bool     `json:"cache_control_present,omitempty"`
 	CacheControlLocations       []string `json:"cache_control_locations,omitempty"`
 	CacheControlProviderIgnored bool     `json:"cache_control_provider_ignored,omitempty"`
+	PromptCacheKeyPresent       bool     `json:"prompt_cache_key_present,omitempty"`
 	StablePrefixHMAC            string   `json:"stable_prefix_hmac,omitempty"`
 	StablePrefixTokenBucket     string   `json:"stable_prefix_token_bucket,omitempty"`
 	CacheReadTokens             int      `json:"cache_read_tokens,omitempty"`
@@ -127,6 +128,7 @@ type claudeCodeBridgeRequestAudit struct {
 	CacheControlPresent         bool
 	CacheControlLocations       []string
 	CacheControlProviderIgnored bool
+	PromptCacheKeyPresent       bool
 	StablePrefixHMAC            string
 	StablePrefixTokenBucket     string
 }
@@ -408,11 +410,12 @@ func buildClaudeCodeBridgeAuditSummaryWithRequest(decision ClaudeCodeBridgeRoute
 		SupportsReasoningMapping:    decision.SupportsReasoningMapping,
 		SupportsErrorPassthrough:    decision.SupportsErrorPassthrough,
 		CachePolicy:                 decision.CachePolicy,
-		ProviderCacheMechanism:      safeClaudeCodeNativeLabel(requestAudit.ProviderCacheMechanism),
+		ProviderCacheMechanism:      safeClaudeCodeBridgeCacheMechanism(requestAudit.ProviderCacheMechanism),
 		UpstreamPathKind:            safeClaudeCodeBridgeAuditPathKind(requestAudit.UpstreamPathKind),
 		CacheControlPresent:         requestAudit.CacheControlPresent,
 		CacheControlLocations:       requestAudit.CacheControlLocations,
 		CacheControlProviderIgnored: requestAudit.CacheControlProviderIgnored,
+		PromptCacheKeyPresent:       requestAudit.PromptCacheKeyPresent,
 		StablePrefixHMAC:            safeClaudeCodeBridgeAuditHMAC(requestAudit.StablePrefixHMAC),
 		StablePrefixTokenBucket:     safeClaudeCodeNativeLabel(requestAudit.StablePrefixTokenBucket),
 		CacheReadTokens:             fixture.CacheReadTokens,
@@ -464,6 +467,19 @@ func safeClaudeCodeBridgeAuditPathKind(path string) string {
 		return ""
 	}
 	return path
+}
+
+func safeClaudeCodeBridgeCacheMechanism(value string) string {
+	switch strings.TrimSpace(value) {
+	case "anthropic_cache_control",
+		"deepseek_prefix_kv",
+		"openai_prompt_cache",
+		"openai_responses_compatible_cache_unverified",
+		"none":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
 }
 
 func safeClaudeCodeBridgeAuditHMAC(value string) string {
@@ -556,6 +572,12 @@ func claudeCodeBridgeStablePrefixCanonical(decision ClaudeCodeBridgeRouteDecisio
 	}
 	if rawMessages, ok := payload["messages"].([]any); ok && len(rawMessages) > 1 {
 		stable["messages"] = rawMessages[:len(rawMessages)-1]
+	}
+	if rawInput, ok := payload["input"].([]any); ok && len(rawInput) > 1 {
+		stable["input"] = rawInput[:len(rawInput)-1]
+	}
+	if instructions, ok := payload["instructions"]; ok {
+		stable["instructions"] = instructions
 	}
 	canonical, err := json.Marshal(stable)
 	if err != nil {
