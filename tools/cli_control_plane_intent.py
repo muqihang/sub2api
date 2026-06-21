@@ -68,6 +68,9 @@ _COLLECTION_PLACEHOLDERS = {
     "organizations": "org",
     "users": "user",
 }
+_EXACT_PATH_TEMPLATES = {
+    "/api/claude_code/organizations/metrics_enabled",
+}
 _ALLOWED_PLACEHOLDERS = {"account", "org", "user"}
 _ALLOWED_BODY_LENGTH_BUCKETS = {
     "empty",
@@ -202,6 +205,8 @@ def _normalize_method(method: Any) -> str:
 def _template_path(path: str) -> str:
     if not isinstance(path, str) or not path.startswith("/"):
         raise IntentValidationError("path must be an absolute path")
+    if path in _EXACT_PATH_TEMPLATES:
+        return path
     parts = path.split("/")
     templated = [""]
     for index, segment in enumerate(parts[1:], start=1):

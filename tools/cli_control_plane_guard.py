@@ -1956,7 +1956,7 @@ class RedactingForwarder:
                 path=path,
                 headers=headers,
                 body=body,
-                classification=_decision_classification(decision),
+                classification=_decision_classification(decision, path),
                 policy_version=defaults["policy_version"],
                 strategy_version=defaults["strategy_version"],
                 response_schema_version=defaults["response_schema_version"],
@@ -2191,18 +2191,59 @@ def _policy_messages_config(policy: ControlPlanePolicy) -> dict[str, Any]:
     return messages if isinstance(messages, dict) else {}
 
 
-def _decision_classification(decision: PolicyDecision) -> str:
+def _decision_classification(decision: PolicyDecision, path: str = "") -> str:
     if decision.reason == "direct_messages_route_blocked":
         return "direct_messages_route_blocked"
+    path_template = _intent_path_template(path)
+    explicit = _EXPLICIT_CONTROL_PLANE_CLASSIFICATIONS.get((path_template, decision.action))
+    if explicit is not None:
+        return explicit
     if decision.action == "suppress_204":
         return "telemetry_or_eval_suppressed"
     if decision.action == "stub_json":
-        if decision.reason == "model_discovery_overlay":
-            return "model_capabilities_stubbed"
         if "bootstrap_settings" in decision.reason:
             return "bootstrap_settings_or_feature_flag_stubbed"
         return "mcp_or_registry_stubbed"
     return "unknown_quarantined"
+
+
+_EXPLICIT_CONTROL_PLANE_CLASSIFICATIONS = {
+    ("/v1/mcp_servers", "stub_json"): "mcp_servers_stubbed",
+    ("/mcp-registry/v0/servers", "stub_json"): "mcp_registry_public_stubbed",
+    ("/v1/models", "stub_json"): "model_capabilities_stubbed",
+    ("/api/claude_code_penguin_mode", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/claude_code_feature_flags", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/claude_code_grove", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/claude_code/organizations/metrics_enabled", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/oauth/account/settings", "quarantine_block"): "account_settings_sensitive",
+    ("/api/claude_code/policy_limits", "quarantine_block"): "policy_limits_sensitive",
+    ("/api/claude_code/remote_managed_settings", "quarantine_block"): "remote_managed_settings_sensitive",
+    ("/api/claude_code/settings_sync", "quarantine_block"): "settings_sync_sensitive",
+    ("/api/claude_code/team_memory", "quarantine_block"): "team_memory_sensitive",
+    ("/api/claude_code/model_capabilities", "quarantine_block"): "model_capabilities_sensitive",
+    ("/api/claude_code/growthbook", "quarantine_block"): "growthbook_sensitive",
+    ("/api/oauth/organizations/{org}/referral/eligibility", "quarantine_block"): "oauth_org_settings_sensitive",
+}
+_EXACT_INTENT_PATH_TEMPLATES = {
+    "/api/claude_code/organizations/metrics_enabled",
+}
+
+
+def _intent_path_template(path: str) -> str:
+    parsed = urlsplit(path)
+    if parsed.path in _EXACT_INTENT_PATH_TEMPLATES:
+        return parsed.path
+    parts = parsed.path.split("/")
+    templated = [""]
+    for index, segment in enumerate(parts[1:], start=1):
+        if not segment:
+            templated.append(segment)
+            continue
+        if parts[index - 1] == "organizations":
+            templated.append("{org}")
+            continue
+        templated.append(segment)
+    return "/".join(templated)
 
 
 def _quarantine_control_plane_intent(

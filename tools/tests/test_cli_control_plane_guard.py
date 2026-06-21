@@ -311,12 +311,33 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertNotIn('local-token-that-must-not-leak', summary_dump)
 
 
-    def test_model_discovery_overlay_uses_matrix_classification_for_safe_intent(self):
-        captured = {}
+    def test_control_plane_safe_intent_classifications_match_matrix_paths(self):
+        captured = []
 
         def fake_build_control_plane_intent(**kwargs):
-            captured.update(kwargs)
+            captured.append({"path": kwargs["path"], "classification": kwargs["classification"]})
             return {"intent": "ok"}
+
+        cases = [
+            ('/v1/models?limit=1000', 'model_capabilities_stubbed', 200),
+            ('/v1/mcp_servers?limit=1000', 'mcp_servers_stubbed', 200),
+            ('/mcp-registry/v0/servers?version=latest', 'mcp_registry_public_stubbed', 200),
+            ('/api/hello', 'bootstrap_settings_or_feature_flag_stubbed', 200),
+            ('/v1/oauth/hello', 'bootstrap_settings_or_feature_flag_stubbed', 200),
+            ('/api/claude_cli/bootstrap?entrypoint=sdk-cli', 'bootstrap_settings_or_feature_flag_stubbed', 200),
+            ('/api/claude_code_penguin_mode', 'claude_code_feature_flags_stubbed', 200),
+            ('/api/claude_code_feature_flags', 'claude_code_feature_flags_stubbed', 200),
+            ('/api/claude_code_grove', 'claude_code_feature_flags_stubbed', 200),
+            ('/api/claude_code/organizations/metrics_enabled', 'claude_code_feature_flags_stubbed', 200),
+            ('/api/oauth/account/settings', 'account_settings_sensitive', 403),
+            ('/api/claude_code/policy_limits', 'policy_limits_sensitive', 403),
+            ('/api/claude_code/remote_managed_settings', 'remote_managed_settings_sensitive', 403),
+            ('/api/claude_code/settings_sync', 'settings_sync_sensitive', 403),
+            ('/api/claude_code/team_memory', 'team_memory_sensitive', 403),
+            ('/api/claude_code/model_capabilities', 'model_capabilities_sensitive', 403),
+            ('/api/claude_code/growthbook', 'growthbook_sensitive', 403),
+            ('/api/oauth/organizations/local-org/referral/eligibility', 'oauth_org_settings_sensitive', 403),
+        ]
 
         with tempfile.TemporaryDirectory() as td:
             listen_port = _free_port()
@@ -334,16 +355,25 @@ class CliControlPlaneGuardTest(unittest.TestCase):
             forwarder.start_background()
             try:
                 with unittest.mock.patch('tools.cli_control_plane_guard.build_control_plane_intent', side_effect=fake_build_control_plane_intent):
-                    request = urllib.request.Request(
-                        f'http://127.0.0.1:{listen_port}/v1/models?limit=1000',
-                        method='GET',
-                    )
-                    with urllib.request.urlopen(request, timeout=5) as resp:
-                        self.assertEqual(resp.status, 200)
+                    for request_path, _classification, status in cases:
+                        request = urllib.request.Request(
+                            f'http://127.0.0.1:{listen_port}{request_path}',
+                            method='GET',
+                        )
+                        if status == 200:
+                            with urllib.request.urlopen(request, timeout=5) as resp:
+                                self.assertEqual(resp.status, 200)
+                        else:
+                            with self.assertRaises(urllib.error.HTTPError) as raised:
+                                urllib.request.urlopen(request, timeout=5)
+                            self.assertEqual(raised.exception.code, status)
             finally:
                 forwarder.stop()
 
-        self.assertEqual(captured['classification'], 'model_capabilities_stubbed')
+        self.assertEqual(
+            [(item['path'], item['classification']) for item in captured],
+            [(path, classification) for path, classification, _status in cases],
+        )
 
     def test_root_dir_is_current_repo_root(self):
         self.assertEqual(Path(root_dir()).resolve(), Path(__file__).resolve().parents[2])
