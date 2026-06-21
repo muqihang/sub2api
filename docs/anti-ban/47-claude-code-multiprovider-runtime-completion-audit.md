@@ -228,6 +228,23 @@ Latest local evidence:
 
 Current release statement after CP29: **local CP0-CP8 implementation and 3017 canary readiness are revalidated for operator L8 manual/live scenarios**. Still do not claim `external_live_passed` until the external CP8 live matrix artifacts are collected and verified.
 
+
+## 2026-06-21 CP30 strict-live scenario binding hardening
+
+The CP8 strict-live verifier was hardened after local review found a false-positive boundary: a multi-provider scenario such as `manual_provider_switch`, `interruption`, or `cache_account_audit` could previously be treated as externally verified when only one required provider's scenario artifact was bound to provider provenance. The verifier now requires strict-live scenario artifacts to cover every provider listed for that scenario, and it reports `external live scenario provider binding missing: ...` when any required provider binding is absent.
+
+The scenario evidence writer also became provider-aware: when a scenario evidence payload includes a safe provider label, it writes `artifacts/scenario_<scenario>_<provider>.json`, allowing one scenario to carry separate Claude/OpenAI/DeepSeek artifacts without filename collisions. Existing provider-less writer use remains compatible.
+
+Local CP30 evidence:
+
+- New regression: `test_cp8_strict_live_requires_every_scenario_provider_binding`.
+- CP8 live matrix suite: `105 passed`.
+- Repair plan Python targeted baseline: `175 passed`.
+- Go targeted baseline remains `ok` for `./internal/service`, `./internal/server/routes`, and `./internal/pkg/apicompat`.
+- 3017 env readiness remains `ready=true`, DeepSeek remains `deepseek_protocols=anthropic_messages`, and 3017 health remains `{"status":"ok"}`.
+
+Current release statement after CP30: **external live verifier is stricter and still ready for operator L8 manual/live scenario collection**. Still do not claim `external_live_passed` until every required external scenario/provider artifact is collected and verified.
+
 ## External live matrix steps
 
 These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.

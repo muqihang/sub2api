@@ -51,6 +51,23 @@ def _scenario_provider(name: str) -> str:
     }[name]
 
 
+def _scenario_providers(name: str) -> tuple[str, ...]:
+    return {
+        "claude_native": ("claude",),
+        "gpt_bridge": ("openai",),
+        "deepseek_bridge": ("deepseek",),
+        "subagent": ("openai", "deepseek"),
+        "claude_deepseek_subagent_claude": ("claude", "deepseek"),
+        "manual_provider_switch": ("claude", "openai", "deepseek"),
+        "toolsearch_mcp": ("openai", "deepseek"),
+        "workflow": ("openai", "deepseek"),
+        "long_context": ("deepseek",),
+        "interruption": ("claude", "openai", "deepseek"),
+        "cache_account_audit": ("claude", "openai", "deepseek"),
+        "netwatch_bypass": ("claude", "openai", "deepseek"),
+    }[name]
+
+
 def _provider_endpoint(provider: str) -> str:
     return {
         "claude": "https://api.anthropic.com/v1/messages",
@@ -169,46 +186,46 @@ def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
-        provider = _scenario_provider(name)
-        provider_ref, _endpoint, request_id = _provider_live_artifact(root, provider)
-        endpoint = _sub2api_endpoint(provider)
-        artifact = artifacts_dir / f"scenario_{name}.json"
-        artifact.write_text(
-            json.dumps(
-                {
-                    "schema_version": "cp8-live-scenario-evidence-v1",
-                    "checkpoint": "CP8",
-                    "run_id": run_id,
-                    "scenario": name,
-                    "status": "pass",
-                    "live_provider_verified": True,
-                    "raw_sensitive_stored": False,
-                    "loopback": False,
-                    "route": scenario.get("route", ""),
-                    "client_type": scenario.get("client_type", ""),
-                    "provider": provider,
-                    "model": _provider_model(provider),
-                    "endpoint": endpoint,
-                    "upstream_request_id": request_id,
-                    "provider_provenance_refs": [provider_ref],
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
         refs = []
         if name == "workflow":
             refs.append(_workflow_background_ref(root))
         if name == "cache_account_audit":
             refs.append(_cache_account_ref(root, scenario, strict_live=True))
-        refs.append(
-            {
-                "path": f"artifacts/{artifact.name}",
-                "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                "sensitive_scan_clean": True,
-            }
-        )
+        for provider in _scenario_providers(name):
+            provider_ref, _endpoint, request_id = _provider_live_artifact(root, provider)
+            endpoint = _sub2api_endpoint(provider)
+            artifact = artifacts_dir / f"scenario_{name}_{provider}.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "cp8-live-scenario-evidence-v1",
+                        "checkpoint": "CP8",
+                        "run_id": run_id,
+                        "scenario": name,
+                        "status": "pass",
+                        "live_provider_verified": True,
+                        "raw_sensitive_stored": False,
+                        "loopback": False,
+                        "route": scenario.get("route", ""),
+                        "client_type": scenario.get("client_type", ""),
+                        "provider": provider,
+                        "model": _provider_model(provider),
+                        "endpoint": endpoint,
+                        "upstream_request_id": request_id,
+                        "provider_provenance_refs": [provider_ref],
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            refs.append(
+                {
+                    "path": f"artifacts/{artifact.name}",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            )
         scenario["artifact_refs"] = refs
 
 def _workflow_background_ref(root: Path) -> dict[str, object]:
@@ -360,45 +377,45 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
-        provider = _scenario_provider(name)
-        provider_ref, endpoint, request_id = _provider_live_artifact(root, provider)
-        artifact = artifacts_dir / f"scenario_{name}.json"
-        artifact.write_text(
-            json.dumps(
-                {
-                    "schema_version": "cp8-live-scenario-evidence-v1",
-                    "checkpoint": "CP8",
-                    "run_id": run_id,
-                    "scenario": name,
-                    "status": "pass",
-                    "live_provider_verified": True,
-                    "raw_sensitive_stored": False,
-                    "loopback": False,
-                    "route": scenario.get("route", ""),
-                    "client_type": scenario.get("client_type", ""),
-                    "provider": provider,
-                    "model": _provider_model(provider),
-                    "endpoint": endpoint,
-                    "upstream_request_id": request_id,
-                    "provider_provenance_refs": [provider_ref],
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
         refs = []
         if name == "workflow":
             refs.append(_workflow_background_ref(root))
         if name == "cache_account_audit":
             refs.append(_cache_account_ref(root, scenario, strict_live=True))
-        refs.append(
-            {
-                "path": f"artifacts/{artifact.name}",
-                "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                "sensitive_scan_clean": True,
-            }
-        )
+        for provider in _scenario_providers(name):
+            provider_ref, endpoint, request_id = _provider_live_artifact(root, provider)
+            artifact = artifacts_dir / f"scenario_{name}_{provider}.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "cp8-live-scenario-evidence-v1",
+                        "checkpoint": "CP8",
+                        "run_id": run_id,
+                        "scenario": name,
+                        "status": "pass",
+                        "live_provider_verified": True,
+                        "raw_sensitive_stored": False,
+                        "loopback": False,
+                        "route": scenario.get("route", ""),
+                        "client_type": scenario.get("client_type", ""),
+                        "provider": provider,
+                        "model": _provider_model(provider),
+                        "endpoint": endpoint,
+                        "upstream_request_id": request_id,
+                        "provider_provenance_refs": [provider_ref],
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            refs.append(
+                {
+                    "path": f"artifacts/{artifact.name}",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            )
         scenario["artifact_refs"] = refs
 
 
@@ -550,6 +567,71 @@ def test_cp8_strict_live_requires_core_provider_classification_to_match_live_pro
 
     assert result.status == "fail"
     assert "provider_release_classification" in result.failed
+
+
+def test_cp8_strict_live_requires_every_scenario_provider_binding(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-scenario-all-provider-binding"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    # manual_provider_switch requires claude/openai/deepseek, but the helper
+    # currently writes only the DeepSeek scenario artifact. That must not be
+    # enough to claim strict-live coverage for the hot-switch scenario.
+    manual = payload["scenarios"]["manual_provider_switch"]
+    manual["artifact_refs"] = [
+        ref for ref in manual["artifact_refs"] if ref.get("path", "").endswith("scenario_manual_provider_switch.json")
+    ]
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "manual_provider_switch" in result.failed
+    assert any("provider binding" in issue for issue in result.scenario_results["manual_provider_switch"].issues)
 
 
 def test_cp8_live_matrix_fails_closed_for_missing_scenario_or_bridge_native_pollution():
@@ -1509,7 +1591,7 @@ def test_cp8_strict_live_rejects_provider_provenance_reused_as_scenario_evidence
 
     assert result.status == "fail"
     assert "claude_native" in result.failed
-    assert any("external live scenario artifact" in issue for issue in result.scenario_results["claude_native"].issues)
+    assert any("provider binding" in issue for issue in result.scenario_results["claude_native"].issues)
 
 
 def test_cp8_strict_live_rejects_extra_live_provider_without_scope_extension(tmp_path: Path):
@@ -1860,7 +1942,7 @@ def test_cp8_strict_live_rejects_provider_artifact_endpoint_path_drift(tmp_path:
     assert result.status == "fail"
     assert "live_provenance" in result.failed
     assert "gpt_bridge" in result.failed
-    assert any("external live scenario artifact" in issue for issue in result.scenario_results["gpt_bridge"].issues)
+    assert any("provider binding" in issue for issue in result.scenario_results["gpt_bridge"].issues)
 
 def test_cp8_live_matrix_fails_closed_for_non_object_scenarios():
     payload = _fixture("live_matrix_pass.json")
@@ -2603,32 +2685,38 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
 
     payload = _fixture("live_matrix_pass.json")
     scenario = payload["scenarios"]["manual_provider_switch"]
-    ref = write_cp8_live_scenario_evidence(
-        output_root=tmp_path,
-        run_id="cp8-scenario-writer",
-        scenario="manual_provider_switch",
-        route=scenario.get("route", ""),
-        client_type=scenario.get("client_type", ""),
-        evidence={
-            "status": "pass",
-            "live_provider_verified": True,
-            "raw_sensitive_stored": False,
-            "loopback": False,
-            "provider": "deepseek",
-            "model": "deepseek-v4-pro",
-            "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
-            "upstream_request_id": "req_deepseek",
-            "provider_provenance_refs": ["artifacts/provider_deepseek.json"],
-            "notes": "safe summary only",
-            "authorization": "Bearer must-not-be-written",
-        },
-    )
-
-    assert ref["path"] == "artifacts/scenario_manual_provider_switch.json"
-    assert ref["sensitive_scan_clean"] is True
-    artifact_text = (tmp_path / ref["path"]).read_text(encoding="utf-8")
-    assert "Bearer" not in artifact_text
-    assert "must-not-be-written" not in artifact_text
+    refs = []
+    for provider, endpoint in (
+        ("claude", "https://api.anthropic.com/v1/messages"),
+        ("openai", "https://api.openai.com/v1/responses"),
+        ("deepseek", "https://api.deepseek.com/anthropic/v1/messages"),
+    ):
+        ref = write_cp8_live_scenario_evidence(
+            output_root=tmp_path,
+            run_id="cp8-scenario-writer",
+            scenario="manual_provider_switch",
+            route=scenario.get("route", ""),
+            client_type=scenario.get("client_type", ""),
+            evidence={
+                "status": "pass",
+                "live_provider_verified": True,
+                "raw_sensitive_stored": False,
+                "loopback": False,
+                "provider": provider,
+                "model": _provider_model(provider),
+                "endpoint": endpoint,
+                "upstream_request_id": f"req_{provider}",
+                "provider_provenance_refs": [f"artifacts/provider_{provider}.json"],
+                "notes": "safe summary only",
+                "authorization": "Bearer must-not-be-written",
+            },
+        )
+        assert ref["path"] == f"artifacts/scenario_manual_provider_switch_{provider}.json"
+        assert ref["sensitive_scan_clean"] is True
+        artifact_text = (tmp_path / ref["path"]).read_text(encoding="utf-8")
+        assert "Bearer" not in artifact_text
+        assert "must-not-be-written" not in artifact_text
+        refs.append(ref)
 
     payload["mode"] = "external_provider_live_matrix"
     payload["live_provenance"] = {
@@ -2671,7 +2759,7 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
     for name, item in payload["scenarios"].items():
         item["live_provider_verified"] = True
         if name == "manual_provider_switch":
-            item["artifact_refs"] = [ref]
+            item["artifact_refs"] = refs
     _add_strict_live_scenario_artifacts({
         "scenarios": {k: v for k, v in payload["scenarios"].items() if k != "manual_provider_switch"}
     }, tmp_path, "cp8-scenario-writer")

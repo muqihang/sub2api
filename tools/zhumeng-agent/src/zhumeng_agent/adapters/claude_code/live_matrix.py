@@ -453,16 +453,20 @@ def _verify_scenario(
 
     route = str(raw.get("route") or "")
     client_type = str(raw.get("client_type") or "")
-    if strict_live and not _strict_live_scenario_artifact_verified(
-        raw.get("artifact_refs"),
-        evidence_root=evidence_root,
-        scenario=name,
-        run_id=run_id,
-        route=route,
-        client_type=client_type,
-        provider_proofs=_strict_live_provider_proof_index(payload, evidence_root=evidence_root),
-    ):
-        issues.append("external live scenario artifact missing or invalid")
+    if strict_live:
+        required_live_providers = _STRICT_LIVE_SCENARIO_PROVIDERS.get(name, ())
+        verified_live_providers = _strict_live_scenario_artifact_verified_providers(
+            raw.get("artifact_refs"),
+            evidence_root=evidence_root,
+            scenario=name,
+            run_id=run_id,
+            route=route,
+            client_type=client_type,
+            provider_proofs=_strict_live_provider_proof_index(payload, evidence_root=evidence_root),
+        )
+        missing_live_providers = tuple(provider for provider in required_live_providers if provider not in verified_live_providers)
+        if missing_live_providers:
+            issues.append("external live scenario provider binding missing: " + ",".join(missing_live_providers))
     native_count = _int(raw.get("native_egress_count"))
     formal = bool(raw.get("formal_pool_allowed"))
     native_attestation = bool(raw.get("native_attestation"))
@@ -924,7 +928,7 @@ def _strict_live_run_id(payload: Mapping[str, object]) -> str:
     return str(provenance.get("run_id") or "").strip()
 
 
-def _strict_live_scenario_artifact_verified(
+def _strict_live_scenario_artifact_verified_providers(
     value: object,
     *,
     evidence_root: Path | None,
@@ -933,13 +937,14 @@ def _strict_live_scenario_artifact_verified(
     route: str,
     client_type: str,
     provider_proofs: Mapping[str, tuple[Mapping[str, object], ...]],
-) -> bool:
+) -> frozenset[str]:
     if evidence_root is None or not isinstance(value, list) or not run_id:
-        return False
+        return frozenset()
     root = evidence_root.resolve(strict=False)
     required_providers = _STRICT_LIVE_SCENARIO_PROVIDERS.get(scenario, ())
     if not required_providers:
-        return False
+        return frozenset()
+    verified: set[str] = set()
     for raw in value:
         if not isinstance(raw, Mapping):
             continue
@@ -984,8 +989,9 @@ def _strict_live_scenario_artifact_verified(
             proof_model = str(proof.get("model") or "").strip()
             proof_refs = tuple(str(item).strip() for item in proof.get("artifact_paths") or () if str(item).strip())
             if proof_request_id == upstream_request_id and proof_endpoint == endpoint and proof_model == model and bool(set(provider_refs).intersection(proof_refs)):
-                return True
-    return False
+                verified.add(provider)
+                break
+    return frozenset(verified)
 
 
 def _strict_live_provider_proof_index(payload: Mapping[str, object], *, evidence_root: Path | None) -> dict[str, tuple[Mapping[str, object], ...]]:
@@ -1541,6 +1547,9 @@ def write_cp8_live_scenario_evidence(
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     raw = evidence or {}
+    provider = str(raw.get("provider") or "").strip()
+    if provider and provider not in set(_STRICT_LIVE_SCENARIO_PROVIDERS.get(scenario, ())):
+        raise CP8LiveMatrixError("CP8 live scenario evidence provider is not required for scenario")
     artifact_payload = {
         "schema_version": "cp8-live-scenario-evidence-v1",
         "checkpoint": "CP8",
@@ -1558,7 +1567,6 @@ def write_cp8_live_scenario_evidence(
         if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):
             artifact_payload[key] = value.strip()
     model = raw.get("model")
-    provider = str(artifact_payload.get("provider") or "")
     if isinstance(model, str) and _strict_live_model_allowed(provider, model):
         artifact_payload["model"] = model.strip()
     refs = raw.get("provider_provenance_refs")
@@ -1568,7 +1576,8 @@ def write_cp8_live_scenario_evidence(
         value = raw.get(key)
         if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):
             artifact_payload[key] = value[:4000]
-    artifact = artifacts_dir / f"scenario_{scenario}.json"
+    suffix = "_" + provider if provider else ""
+    artifact = artifacts_dir / f"scenario_{scenario}{suffix}.json"
     artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
     return {
         "path": f"artifacts/{artifact.name}",
