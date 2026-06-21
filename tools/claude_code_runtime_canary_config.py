@@ -879,7 +879,28 @@ def _env_flag(env: dict[str, str], key: str) -> bool:
     return str(env.get(key, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def build_canary_env_readiness_metadata(env: dict[str, str], *, approved_expanded_live_providers: tuple[str, ...] = ()) -> dict[str, Any]:
+def _safe_sha256_hash(value: object) -> str:
+    text = str(value or "").strip()
+    if len(text) == 71 and text.startswith("sha256:") and all(ch in "0123456789abcdef" for ch in text[7:]):
+        return text
+    return ""
+
+
+def _safe_hash_list(value: object) -> list[str]:
+    out: list[str] = []
+    for part in str(value or "").split(","):
+        safe = _safe_sha256_hash(part)
+        if safe and safe not in out:
+            out.append(safe)
+    return out
+
+
+def build_canary_env_readiness_metadata(
+    env: dict[str, str],
+    *,
+    approved_expanded_live_providers: tuple[str, ...] = (),
+    expected_runtime_hash: str | None = None,
+) -> dict[str, Any]:
     """Return secret-free readiness evidence for the 3017 canary env/catalog."""
     issues: list[str] = []
     catalog_status = "missing"
@@ -899,6 +920,25 @@ def build_canary_env_readiness_metadata(env: dict[str, str], *, approved_expande
             issues.append("provider catalog JSON is invalid")
     else:
         issues.append("missing provider catalog JSON")
+
+    expected_runtime_hash_safe = _safe_sha256_hash(expected_runtime_hash)
+    env_runtime_hashes = _safe_hash_list(env.get("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", ""))
+    catalog_runtime_hash = _safe_sha256_hash(catalog.get("runtime_hash")) if catalog_status == "ok" else ""
+    env_matches_catalog_runtime_hash = bool(catalog_runtime_hash and catalog_runtime_hash in env_runtime_hashes)
+    env_matches_requested_runtime_hash = (
+        bool(expected_runtime_hash_safe and expected_runtime_hash_safe in env_runtime_hashes and catalog_runtime_hash == expected_runtime_hash_safe)
+        if expected_runtime_hash_safe
+        else env_matches_catalog_runtime_hash
+    )
+    if catalog_status == "ok":
+        if not env_runtime_hashes:
+            issues.append("missing SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES")
+        if not catalog_runtime_hash:
+            issues.append("provider catalog JSON missing safe runtime_hash")
+        elif not env_matches_catalog_runtime_hash:
+            issues.append("Claude Code runtime hash drift between env and provider catalog")
+        if expected_runtime_hash_safe and not env_matches_requested_runtime_hash:
+            issues.append("Claude Code runtime hash drift from active managed runtime")
 
     raw_models = catalog.get("models", [])
     models = [model for model in raw_models if isinstance(model, dict)]
@@ -987,6 +1027,14 @@ def build_canary_env_readiness_metadata(env: dict[str, str], *, approved_expande
         "ready": not issues,
         "issues": issues,
         "catalog_parse_status": catalog_status,
+        "runtime_hash_binding": {
+            "env_native_runtime_hash": env_runtime_hashes[0] if len(env_runtime_hashes) == 1 else "",
+            "env_native_runtime_hashes": env_runtime_hashes,
+            "catalog_runtime_hash": catalog_runtime_hash,
+            "expected_runtime_hash": expected_runtime_hash_safe,
+            "env_matches_catalog_runtime_hash": env_matches_catalog_runtime_hash,
+            "env_matches_requested_runtime_hash": env_matches_requested_runtime_hash,
+        },
         "catalog_summary": {
             "model_count": len(models),
             "native_model_count": len(native_models),
@@ -1127,6 +1175,7 @@ def build_preview_env_metadata(
     existing_readiness = build_canary_env_readiness_metadata(
         existing_env,
         approved_expanded_live_providers=approved_expanded_live_providers,
+        expected_runtime_hash=runtime_hash,
     )
     bridge_api_keys = build_runtime_bridge_api_keys(existing_env=existing_env)
     candidate_env = merge_provider_catalog_env(
@@ -1144,6 +1193,7 @@ def build_preview_env_metadata(
     candidate_readiness = build_canary_env_readiness_metadata(
         candidate_env,
         approved_expanded_live_providers=approved_expanded_live_providers,
+        expected_runtime_hash=runtime_hash,
     )
     fallback_key = "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"
     candidate_changes = {
@@ -1153,6 +1203,7 @@ def build_preview_env_metadata(
             _env_or_catalog_provider_live_enabled(existing_env, "agnes")
             and not _env_or_catalog_provider_live_enabled(candidate_env, "agnes")
         ),
+        "runtime_hash_will_change": bool(runtime_hash and existing_readiness["runtime_hash_binding"]["env_native_runtime_hash"] != runtime_hash),
     }
     return {
         "schema_version": "claude-code-runtime-canary-env-preview.v1",
@@ -1401,6 +1452,7 @@ def main(argv: list[str] | None = None) -> int:
         result = build_canary_env_readiness_metadata(
             _read_env_file(args.env_out),
             approved_expanded_live_providers=approved_expanded_live_providers,
+            expected_runtime_hash=args.runtime_hash or None,
         )
         if args.format == "json":
             print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))

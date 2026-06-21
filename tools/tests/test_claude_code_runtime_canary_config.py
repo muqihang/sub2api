@@ -863,6 +863,46 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn('GATEWAY_CODEX_ENABLED="true"', text)
 
 
+    def test_canary_env_readiness_rejects_runtime_hash_drift_between_env_and_catalog(self):
+        from tools.claude_code_runtime_canary_config import build_canary_env_readiness_metadata, build_provider_catalog_env
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_hash="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+        catalog = json.loads(env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"])
+        catalog["runtime_hash"] = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"] = json.dumps(catalog, sort_keys=True)
+
+        readiness = build_canary_env_readiness_metadata(env)
+
+        self.assertFalse(readiness["ready"])
+        self.assertEqual("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", readiness["runtime_hash_binding"]["env_native_runtime_hash"])
+        self.assertEqual("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", readiness["runtime_hash_binding"]["catalog_runtime_hash"])
+        self.assertIn("Claude Code runtime hash drift between env and provider catalog", readiness["issues"])
+
+    def test_canary_env_preview_rebinds_candidate_to_current_runtime_hash(self):
+        from tools.claude_code_runtime_canary_config import build_preview_env_metadata, build_provider_catalog_env
+
+        existing = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_hash="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+
+        preview = build_preview_env_metadata(
+            existing,
+            target="http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            runtime_hash="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+
+        self.assertFalse(preview["existing_readiness"]["runtime_hash_binding"]["env_matches_requested_runtime_hash"])
+        self.assertTrue(preview["candidate_readiness"]["runtime_hash_binding"]["env_matches_requested_runtime_hash"])
+        self.assertTrue(preview["candidate_readiness"]["ready"])
+
     def test_canary_env_readiness_reports_deepseek_anthropic_path_without_secret_values(self):
         from tools.claude_code_runtime_canary_config import (
             build_canary_env_readiness_metadata,

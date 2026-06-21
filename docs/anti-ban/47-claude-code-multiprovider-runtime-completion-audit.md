@@ -194,6 +194,23 @@ CP26 behavior now expected for the next L8 manual test:
 
 Current release statement after CP26: **local implementation complete for the repaired L8 scope, 3017 canary rolled out and ready for operator L8 live scenarios**. Do not claim `external_live_passed` until the external CP8 live matrix artifacts are collected and verified as described below.
 
+
+## 2026-06-21 CP28 runtime-hash binding fix
+
+Final review of CP26 found a blocking drift: the active patched managed Claude Code Runtime hash was `sha256:aa1e920563a2d32a6b96f7f2700a2c8f69d09bb4f2b1118974dd08a1484919b4`, but the first CP26 3017 env/catalog still advertised the pre-patch runtime hash. This would make route-hint/native attestation binding fail for real L8 traffic.
+
+The fix added a readiness gate that compares the expected active runtime hash, `SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES`, and the provider catalog top-level `runtime_hash`. A stale env now fails `--verify-env --runtime-hash ...` with `Claude Code runtime hash drift from active managed runtime`; a regenerated candidate env passes only when all runtime-hash fields match.
+
+3017 was hot-switched again with only the 3017 canary touched. The active env is now `artifacts/claude-code-runtime/3017-claude-code-runtime-cp28.env`, and secret-free readiness reports:
+
+- `ready=true`
+- `runtime_hash_binding.env_matches_catalog_runtime_hash=true`
+- `runtime_hash_binding.env_matches_requested_runtime_hash=true`
+- DeepSeek live selected protocol remains `anthropic_messages`
+- DeepSeek OpenAI fallback gate remains present and false
+
+CP28 evidence was written under `artifacts/claude-code-canary/cp28-hashfix-20260621T204535Z/`. Current release statement after CP28: **3017 canary hash binding repaired and ready for operator L8 live scenarios**. Still do not claim `external_live_passed` until the external CP8 live matrix artifacts are collected and verified.
+
 ## External live matrix steps
 
 These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.
