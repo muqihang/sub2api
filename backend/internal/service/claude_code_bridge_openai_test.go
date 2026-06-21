@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestCP8AgnesBridgeResponsesUsesDedicatedRouteAndKey(t *testing.T) {
@@ -254,6 +255,79 @@ func TestCP6OpenAIBridgeRejectsDeferredToolSearchBeforeUpstreamDispatch(t *testi
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unresolved deferred tool")
 	require.False(t, upstreamCalled)
+}
+
+func TestCP6OpenAICompatibleBridgePreservesToolUseToolResultPairing(t *testing.T) {
+	tests := []struct {
+		name     string
+		envKey   string
+		envValue string
+		liveEnv  string
+		body     string
+		decision func(string) ClaudeCodeBridgeRouteDecision
+		apiKey   func() string
+	}{
+		{
+			name:     "gpt responses",
+			envKey:   "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY",
+			envValue: "sk-openai-test",
+			liveEnv:  "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED",
+			body:     `{"model":"gpt-5.5","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bridge_loop_1","name":"get_weather","input":{"city":"SF"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bridge_loop_1","content":"Sunny"}]}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"stream":true}`,
+			decision: cp6LiveOpenAIDecision,
+			apiKey:   ClaudeCodeBridgeOpenAIAPIKeyFromEnv,
+		},
+		{
+			name:     "agnes responses",
+			envKey:   "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY",
+			envValue: "sk-agnes-test",
+			liveEnv:  "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED",
+			body:     `{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bridge_loop_1","name":"get_weather","input":{"city":"SF"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bridge_loop_1","content":"Sunny"}]}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"stream":true}`,
+			decision: cp6LiveAgnesDecision,
+			apiKey: func() string {
+				return ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv("agnes")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+			t.Setenv(tt.liveEnv, "1")
+			t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+			t.Setenv(tt.envKey, tt.envValue)
+			var gotBody string
+			upstreamModel := "gpt-5.5"
+			if tt.name == "agnes responses" {
+				upstreamModel = "agnes-2.0-flash"
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				gotBody = string(body)
+				require.Equal(t, "/v1/responses", r.URL.Path)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: response.completed\n"))
+				_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_tool_loop","model":"` + upstreamModel + `","status":"completed","usage":{"input_tokens":10,"output_tokens":1}}}` + "\n\n"))
+			}))
+			defer upstream.Close()
+
+			result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), tt.decision(upstream.URL+"/v1"), []byte(tt.body), tt.apiKey())
+
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, result.StatusCode)
+			input := gjson.Parse(gotBody).Get("input").Array()
+			require.Len(t, input, 3)
+			functionCall := input[1]
+			functionOutput := input[2]
+			require.Equal(t, "function_call", functionCall.Get("type").String())
+			require.Equal(t, "toolu_bridge_loop_1", functionCall.Get("call_id").String())
+			require.Equal(t, "get_weather", functionCall.Get("name").String())
+			require.JSONEq(t, `{"city":"SF"}`, functionCall.Get("arguments").String())
+			require.Equal(t, "function_call_output", functionOutput.Get("type").String())
+			require.Equal(t, functionCall.Get("call_id").String(), functionOutput.Get("call_id").String())
+			require.Equal(t, "Sunny", functionOutput.Get("output").String())
+			require.False(t, result.Audit.NativeAttested)
+			require.False(t, result.Audit.FormalPoolAllowed)
+		})
+	}
 }
 
 func TestCP6OpenAIBridgeRequestsUseSyntheticCodexHeadersForLocalSub2API(t *testing.T) {

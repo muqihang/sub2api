@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing.T) {
@@ -451,6 +452,51 @@ func TestCP6DeepSeekAnthropicLiveRejectsDeferredToolSearchBeforeUpstreamDispatch
 	require.False(t, upstreamCalled)
 }
 
+func TestCP6DeepSeekAnthropicLivePreservesToolUseToolResultPairing(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_tool_loop","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":20}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_stop","index":0}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bridge_loop_1","name":"get_weather","input":{"city":"SF"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bridge_loop_1","content":"Sunny"}]}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	root := gjson.Parse(gotBody)
+	toolUse := root.Get("messages.1.content.0")
+	toolResult := root.Get("messages.2.content.0")
+	require.Equal(t, "tool_use", toolUse.Get("type").String())
+	require.Equal(t, "toolu_bridge_loop_1", toolUse.Get("id").String())
+	require.Equal(t, "get_weather", toolUse.Get("name").String())
+	require.Equal(t, "SF", toolUse.Get("input.city").String())
+	require.Equal(t, "tool_result", toolResult.Get("type").String())
+	require.Equal(t, toolUse.Get("id").String(), toolResult.Get("tool_use_id").String())
+	require.Equal(t, "Sunny", toolResult.Get("content").String())
+	require.Contains(t, string(result.Body), "done")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+}
+
 func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
@@ -650,6 +696,52 @@ func TestCP6DeepSeekOpenAICompatibleFallbackRejectsDeferredToolSearchBeforeUpstr
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unresolved deferred tool")
 	require.False(t, upstreamCalled)
+}
+
+func TestCP6DeepSeekOpenAICompatibleFallbackPreservesToolUseToolResultPairing(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	var chatBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		chatBody = string(body)
+		require.Equal(t, "/v1/chat/completions", r.URL.Path)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_tool_loop","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"done"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_tool_loop","object":"chat.completion.chunk","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+	decision := cp6LiveDeepSeekDecision(upstream.URL + "/anthropic")
+	decision.PreferredProtocol = "openai_chat_completions"
+	decision.AnthropicBaseURL = ""
+	decision.OpenAIBaseURL = upstream.URL
+	decision.FallbackProtocol = "openai_chat_completions"
+	decision.FallbackReason = "anthropic_cache_fixture_failed"
+	decision.SupportsCacheAudit = true
+	decision.SupportsReasoningMapping = true
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bridge_loop_1","name":"get_weather","input":{"city":"SF"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bridge_loop_1","content":"Sunny"}]}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(context.Background(), upstream.Client(), decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	chat := gjson.Parse(chatBody)
+	messages := chat.Get("messages").Array()
+	require.Len(t, messages, 3)
+	assistant := messages[1]
+	toolReply := messages[2]
+	require.Equal(t, "assistant", assistant.Get("role").String())
+	require.Equal(t, "toolu_bridge_loop_1", assistant.Get("tool_calls.0.id").String())
+	require.Equal(t, "get_weather", assistant.Get("tool_calls.0.function.name").String())
+	require.JSONEq(t, `{"city":"SF"}`, assistant.Get("tool_calls.0.function.arguments").String())
+	require.Equal(t, "tool", toolReply.Get("role").String())
+	require.Equal(t, assistant.Get("tool_calls.0.id").String(), toolReply.Get("tool_call_id").String())
+	require.Equal(t, "Sunny", toolReply.Get("content").String())
+	require.Contains(t, string(result.Body), "done")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
 }
 
 func TestClaudeCodeBridgeOpenAILiveFallsBackToChatCompletionsOnlyWhenExplicitlyEnabled(t *testing.T) {
