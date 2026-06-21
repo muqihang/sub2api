@@ -1036,6 +1036,129 @@ def _approved_expanded_provider_set(values: tuple[str, ...]) -> tuple[set[str], 
         approved.add(provider)
     return approved, unknown
 
+
+def _catalog_provider_live_enabled(env: dict[str, str], provider: str) -> bool:
+    try:
+        catalog = json.loads(env.get("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", "") or "{}")
+    except json.JSONDecodeError:
+        catalog = {}
+    if not isinstance(catalog, dict):
+        return False
+    models = catalog.get("models", [])
+    if not isinstance(models, list):
+        return False
+    return any(
+        isinstance(model, dict)
+        and str(model.get("provider", "")) == provider
+        and bool(model.get("live_enabled"))
+        for model in models
+    )
+
+
+def _env_or_catalog_provider_live_enabled(env: dict[str, str], provider: str) -> bool:
+    flag_by_provider = {
+        "agnes": "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED",
+        "deepseek": "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED",
+        "openai": "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED",
+        "zai_glm": "SUB2API_CLAUDE_CODE_BRIDGE_ZAI_GLM_LIVE_ENABLED",
+        "kimi": "SUB2API_CLAUDE_CODE_BRIDGE_KIMI_LIVE_ENABLED",
+    }
+    flag = flag_by_provider.get(provider)
+    return bool(flag and _env_flag(env, flag)) or _catalog_provider_live_enabled(env, provider)
+
+
+def _safe_env_flag_value(env: dict[str, str], key: str) -> str:
+    if key not in env:
+        return "missing"
+    return "true" if _env_flag(env, key) else "false"
+
+
+def _safe_cli_error(exc: Exception) -> str:
+    message = str(exc)
+    safe_messages = (
+        "AGNES live bridge requires strict-live provider evidence before enabling",
+        "GLM live bridge requires explicit expanded live scope and strict-live provider evidence",
+        "Kimi live bridge requires explicit expanded live scope and strict-live provider evidence",
+        "GLM live bridge requires strict-live provider evidence before enabling",
+        "Kimi live bridge requires strict-live provider evidence before enabling",
+        "provider release statuses must be a JSON object",
+        "target must be an http(s) loopback origin",
+        "target must not contain path, query, fragment, or credentials",
+        "target must be loopback",
+    )
+    if message in safe_messages:
+        return message
+    if message.startswith("unsupported live bridge provider without runtime account: "):
+        provider = message.rsplit(": ", 1)[-1]
+        if provider in {"zai_glm", "kimi", "agnes", "deepseek", "openai"}:
+            return message
+    if message.startswith("unsupported live bridge provider: "):
+        provider = message.rsplit(": ", 1)[-1]
+        if provider in {"zai_glm", "kimi", "agnes", "deepseek", "openai"}:
+            return message
+    if message.startswith("unknown live bridge model: "):
+        return "unknown live bridge model"
+    return exc.__class__.__name__ or "error"
+
+
+def build_preview_env_metadata(
+    existing_env: dict[str, str],
+    *,
+    target: str = "http://127.0.0.1:3017",
+    runtime_target: str | None = None,
+    runtime_hash: str | None = None,
+    overlay_hash: str | None = None,
+    live_bridge_models: tuple[str, ...] = (),
+    deepseek_anthropic_fixture_green: bool = True,
+    provider_release_statuses: dict[str, str] | None = None,
+    expanded_live_providers: tuple[str, ...] = (),
+    approved_expanded_live_providers: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Build a secret-free candidate env report without writing files or touching containers."""
+    existing_readiness = build_canary_env_readiness_metadata(
+        existing_env,
+        approved_expanded_live_providers=approved_expanded_live_providers,
+    )
+    bridge_api_keys = build_runtime_bridge_api_keys(existing_env=existing_env)
+    candidate_env = merge_provider_catalog_env(
+        existing_env,
+        target=target,
+        runtime_target=runtime_target,
+        runtime_hash=runtime_hash,
+        overlay_hash=overlay_hash,
+        live_bridge_models=live_bridge_models,
+        bridge_api_keys=bridge_api_keys,
+        deepseek_anthropic_fixture_green=deepseek_anthropic_fixture_green,
+        provider_release_statuses=provider_release_statuses,
+        expanded_live_providers=expanded_live_providers,
+    )
+    candidate_readiness = build_canary_env_readiness_metadata(
+        candidate_env,
+        approved_expanded_live_providers=approved_expanded_live_providers,
+    )
+    fallback_key = "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"
+    candidate_changes = {
+        "deepseek_fallback_gate_will_be_added": fallback_key not in existing_env and fallback_key in candidate_env,
+        "deepseek_fallback_gate_candidate_value": _safe_env_flag_value(candidate_env, fallback_key),
+        "agnes_live_will_be_disabled": (
+            _env_or_catalog_provider_live_enabled(existing_env, "agnes")
+            and not _env_or_catalog_provider_live_enabled(candidate_env, "agnes")
+        ),
+    }
+    return {
+        "schema_version": "claude-code-runtime-canary-env-preview.v1",
+        "mode": "env-preview",
+        "writes_enabled": False,
+        "would_touch_3017": False,
+        "would_touch_3012": False,
+        "target": redact_target(target),
+        "runtime_target": redact_target(runtime_target or target),
+        "existing_readiness": existing_readiness,
+        "candidate_readiness": candidate_readiness,
+        "candidate_changes": candidate_changes,
+        "live_bridge_models": sorted(str(model).strip() for model in live_bridge_models if str(model).strip()),
+    }
+
 def merge_provider_catalog_env(
     existing_env: dict[str, str] | None,
     *,
@@ -1203,6 +1326,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", action="store_true", help="Print the plan without writing anything (default).")
     mode.add_argument("--apply", action="store_true", help="Apply only with --user-approved-db-write.")
     mode.add_argument("--verify-env", action="store_true", help="Read --env-out and print secret-free canary readiness metadata.")
+    mode.add_argument("--preview-env", action="store_true", help="Preview the regenerated env and readiness without writing files or touching containers.")
     parser.add_argument("--user-approved-db-write", action="store_true", help="Required explicit confirmation for --apply.")
     parser.add_argument("--postgres-container", default="", help="Postgres container for approved apply; secrets are not printed.")
     parser.add_argument("--target", default="http://127.0.0.1:3017", help="Local Sub2API canary origin exposed to host tooling.")
@@ -1226,9 +1350,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         provider_release_statuses = _parse_provider_release_statuses(args.bridge_provider_release_statuses_json)
     except (ValueError, json.JSONDecodeError) as exc:
-        print(f"Refusing to apply: {exc}", file=sys.stderr)
+        print(f"Refusing to apply: {_safe_cli_error(exc)}", file=sys.stderr)
         return 2
     expanded_live_providers = _parse_models(args.bridge_live_expanded_providers)
+    approved_expanded_live_providers = _parse_models(args.verify_env_approved_expanded_providers)
     if args.apply:
         if not args.user_approved_db_write or not args.postgres_container:
             print(
@@ -1250,7 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
                 expanded_live_providers=expanded_live_providers,
             )
         except Exception as exc:  # noqa: BLE001 - CLI must fail closed without leaking command details.
-            print(f"Refusing to apply: {exc}", file=sys.stderr)
+            print(f"Refusing to apply: {_safe_cli_error(exc)}", file=sys.stderr)
             return 2
         if args.format == "json":
             print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
@@ -1264,7 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify_env:
         result = build_canary_env_readiness_metadata(
             _read_env_file(args.env_out),
-            approved_expanded_live_providers=_parse_models(args.verify_env_approved_expanded_providers),
+            approved_expanded_live_providers=approved_expanded_live_providers,
         )
         if args.format == "json":
             print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
@@ -1279,6 +1404,38 @@ def main(argv: list[str] | None = None) -> int:
                 for issue in result["issues"]:
                     print(f"- {issue}")
         return 0 if result["ready"] else 1
+
+    if args.preview_env:
+        try:
+            result = build_preview_env_metadata(
+                _read_env_file(args.env_out),
+                target=args.target,
+                runtime_target=args.runtime_target or None,
+                runtime_hash=args.runtime_hash or None,
+                overlay_hash=args.overlay_hash or None,
+                live_bridge_models=live_bridge_models,
+                deepseek_anthropic_fixture_green=not args.deepseek_openai_fallback,
+                provider_release_statuses=provider_release_statuses,
+                expanded_live_providers=expanded_live_providers,
+                approved_expanded_live_providers=approved_expanded_live_providers,
+            )
+        except Exception as exc:  # noqa: BLE001 - CLI must fail closed without leaking env contents.
+            print(f"Refusing to preview env: {_safe_cli_error(exc)}", file=sys.stderr)
+            return 2
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
+        else:
+            print("Claude Code Runtime canary env preview")
+            print("writes_enabled: false")
+            print("would_touch_3017: false")
+            print("would_touch_3012: false")
+            print(f"existing_ready: {str(result['existing_readiness']['ready']).lower()}")
+            print(f"candidate_ready: {str(result['candidate_readiness']['ready']).lower()}")
+            if result["candidate_readiness"]["issues"]:
+                print("candidate_issues:")
+                for issue in result["candidate_readiness"]["issues"]:
+                    print(f"- {issue}")
+        return 0 if result["candidate_readiness"]["ready"] else 1
 
     plan = build_bridge_placeholder_plan(args.target)
     if args.format == "json":

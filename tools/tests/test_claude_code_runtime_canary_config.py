@@ -1133,5 +1133,137 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertEqual(["agnes", "zai_glm"], payload["expanded_provider_scope"]["approved_expanded_live_providers"])
         self.assertEqual(1, payload["expanded_provider_scope"]["unknown_approval_count"])
 
+    def test_preview_env_rewrites_stale_env_to_default_l8_ready_candidate_without_writing_or_leaking(self):
+        from tools.claude_code_runtime_canary_config import build_provider_catalog_env, main
+
+        stale = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=(
+                "claude-code-bridge-gpt-5.5",
+                "claude-code-bridge-deepseek-v4-pro",
+                "claude-code-bridge-agnes-2.0-flash",
+            ),
+            provider_release_statuses={"agnes": "strict-live-pass"},
+            bridge_api_keys={"openai": "sk-openai-secret", "deepseek": "sk-deepseek-secret", "agnes": "sk-agnes-secret"},
+        )
+        del stale["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "runtime.env"
+            original_text = "\n".join(f"{key}={value}" for key, value in sorted(stale.items())) + "\n"
+            env_path.write_text(original_text, encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = main([
+                    "--preview-env",
+                    "--env-out",
+                    str(env_path),
+                    "--target",
+                    "http://127.0.0.1:3017",
+                    "--runtime-target",
+                    "http://127.0.0.1:8080",
+                    "--live-bridge-models",
+                    "claude-code-bridge-gpt-5.5,claude-code-bridge-gpt-5.4,claude-code-bridge-gpt-5.4-mini,claude-code-bridge-deepseek-v4-pro,claude-code-bridge-deepseek-v4-flash",
+                    "--format",
+                    "json",
+                ])
+            after_text = env_path.read_text(encoding="utf-8")
+
+        self.assertEqual(0, rc)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(original_text, after_text)
+        dumped = stdout.getvalue()
+        self.assertNotIn("sk-openai-secret", dumped)
+        self.assertNotIn("sk-deepseek-secret", dumped)
+        self.assertNotIn("sk-agnes-secret", dumped)
+        self.assertNotIn("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", dumped)
+        payload = json.loads(dumped)
+        self.assertEqual("env-preview", payload["mode"])
+        self.assertFalse(payload["writes_enabled"])
+        self.assertFalse(payload["would_touch_3017"])
+        self.assertFalse(payload["would_touch_3012"])
+        self.assertFalse(payload["existing_readiness"]["ready"])
+        self.assertIn("missing SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED gate", payload["existing_readiness"]["issues"])
+        self.assertIn("AGNES live scope requires explicit readiness approval", payload["existing_readiness"]["issues"])
+        self.assertTrue(payload["candidate_readiness"]["ready"])
+        self.assertEqual([], payload["candidate_readiness"]["issues"])
+        self.assertTrue(payload["candidate_changes"]["deepseek_fallback_gate_will_be_added"])
+        self.assertEqual("false", payload["candidate_changes"]["deepseek_fallback_gate_candidate_value"])
+        self.assertTrue(payload["candidate_changes"]["agnes_live_will_be_disabled"])
+        self.assertEqual(
+            ["claude-code-bridge-deepseek-v4-flash", "claude-code-bridge-deepseek-v4-pro", "claude-code-bridge-gpt-5.4", "claude-code-bridge-gpt-5.4-mini", "claude-code-bridge-gpt-5.5"],
+            payload["live_bridge_models"],
+        )
+
+    def test_preview_env_fails_closed_when_candidate_expands_unapproved_provider_scope(self):
+        from tools.claude_code_runtime_canary_config import build_provider_catalog_env, main
+
+        existing = build_provider_catalog_env("http://127.0.0.1:3017")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "runtime.env"
+            env_path.write_text(
+                "\n".join(f"{key}={value}" for key, value in sorted(existing.items())) + "\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = main([
+                    "--preview-env",
+                    "--env-out",
+                    str(env_path),
+                    "--target",
+                    "http://127.0.0.1:3017",
+                    "--live-bridge-models",
+                    "claude-code-bridge-agnes-2.0-flash",
+                    "--bridge-provider-release-statuses-json",
+                    '{"agnes":"strict-live-pass"}',
+                    "--format",
+                    "json",
+                ])
+
+        self.assertEqual(1, rc)
+        self.assertEqual("", stderr.getvalue())
+        payload = json.loads(stdout.getvalue())
+        self.assertFalse(payload["candidate_readiness"]["ready"])
+        self.assertIn("AGNES live scope requires explicit readiness approval", payload["candidate_readiness"]["issues"])
+
+    def test_preview_env_rejects_invalid_live_model_without_echoing_secret_like_value(self):
+        from tools.claude_code_runtime_canary_config import build_provider_catalog_env, main
+
+        secret_model = "sk-secret-model-id"
+        existing = build_provider_catalog_env("http://127.0.0.1:3017")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "runtime.env"
+            env_path.write_text(
+                "\n".join(f"{key}={value}" for key, value in sorted(existing.items())) + "\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = main([
+                    "--preview-env",
+                    "--env-out",
+                    str(env_path),
+                    "--target",
+                    "http://127.0.0.1:3017",
+                    "--live-bridge-models",
+                    secret_model,
+                    "--format",
+                    "json",
+                ])
+
+        self.assertEqual(2, rc)
+        self.assertEqual("", stdout.getvalue())
+        self.assertNotIn(secret_model, stderr.getvalue())
+        self.assertIn("Refusing to preview env", stderr.getvalue())
+
+
+
 if __name__ == "__main__":
     unittest.main()
