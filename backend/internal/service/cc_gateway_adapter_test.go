@@ -706,8 +706,6 @@ func TestCCGatewayPolicyVersionCompatibleAllowsOldCCHCompatibleVersionsOnly(t *t
 	require.False(t, ccGatewayPolicyVersionCompatible("3.0.0"))
 }
 
-
-
 func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughMessagesCarriesNativeAuditHeaders(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"stream":false}`)
 	account := &Account{
@@ -718,7 +716,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughMessagesCarriesNative
 			"api_key": "selected-api-key",
 		},
 		Extra: map[string]any{
-			"anthropic_passthrough":              true,
+			"anthropic_passthrough":            true,
 			"cc_gateway_enabled":               "true",
 			"cc_gateway_canary_only":           "false",
 			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
@@ -728,7 +726,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughMessagesCarriesNative
 		},
 	}
 	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
-	ctx := WithClaudeCodeNativeAuditSummary(context.Background(), ClaudeCodeNativeAuditSummary{
+	ctx := WithClaudeCodeNativeAuditSummary(context.Background(), testClaudeCodeNativeReplaySafeSummary(ClaudeCodeNativeAuditSummary{
 		ClientType:              ClaudeCodeNativeClientType,
 		NativeAttested:          true,
 		GuardVersion:            "guard-test",
@@ -741,7 +739,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughMessagesCarriesNative
 		OverlayHash:             "sha256:overlay",
 		CatalogHash:             "sha256:catalog",
 		CatalogVersion:          "2026-06-19",
-	})
+	}))
 
 	req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(ctx, ccGatewayTestContext("/v1/messages"), account, body, "selected-api-key")
 	require.NoError(t, err)
@@ -751,6 +749,11 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughMessagesCarriesNative
 	require.Equal(t, "2.1.177", getHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader))
 	require.Equal(t, ClaudeCodeNativeInboundMessages, getHeaderRaw(req.Header, ClaudeCodeNativeInboundRouteHeader))
 	require.Equal(t, ClaudeCodeNativeCCGatewayMessages, getHeaderRaw(req.Header, ClaudeCodeNativeCCGatewayRouteHeader))
+	require.Equal(t, ClaudeCodeNativeReplaySafetyBoundary, getHeaderRaw(req.Header, ClaudeCodeNativeReplaySafetyBoundaryHeader))
+	require.Equal(t, "true", getHeaderRaw(req.Header, ClaudeCodeNativeReplaySafetyAppliedHeader))
+	require.Equal(t, "false", getHeaderRaw(req.Header, ClaudeCodeNativeReplaySafetySanitizedHeader))
+	require.Equal(t, "0", getHeaderRaw(req.Header, ClaudeCodeNativeReplaySafetyForbiddenPathsHeader))
+	require.Equal(t, "sha256:"+strings.Repeat("d", 64), getHeaderRaw(req.Header, ClaudeCodeNativeReplaySafetyBodyShapeHashHeader))
 }
 
 func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensCarriesNativeAuditHeaders(t *testing.T) {
@@ -763,7 +766,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensCarriesNat
 			"api_key": "selected-api-key",
 		},
 		Extra: map[string]any{
-			"anthropic_passthrough":              true,
+			"anthropic_passthrough":            true,
 			"cc_gateway_enabled":               "true",
 			"cc_gateway_canary_only":           "false",
 			"cc_gateway_policy_version":        ccGatewayAnthropicPolicyVersion,
@@ -773,7 +776,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensCarriesNat
 		},
 	}
 	svc := &GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}
-	ctx := WithClaudeCodeNativeAuditSummary(context.Background(), ClaudeCodeNativeAuditSummary{
+	ctx := WithClaudeCodeNativeAuditSummary(context.Background(), testClaudeCodeNativeReplaySafeSummary(ClaudeCodeNativeAuditSummary{
 		ClientType:              ClaudeCodeNativeClientType,
 		NativeAttested:          true,
 		GuardVersion:            "guard-test",
@@ -786,7 +789,7 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensCarriesNat
 		OverlayHash:             "sha256:overlay",
 		CatalogHash:             "sha256:catalog",
 		CatalogVersion:          "2026-06-19",
-	})
+	}))
 
 	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(ctx, ccGatewayTestContext("/v1/messages/count_tokens"), account, body, "selected-api-key")
 	require.NoError(t, err)
@@ -796,6 +799,8 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensCarriesNat
 	require.Equal(t, "2.1.177", getHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader))
 	require.Equal(t, ClaudeCodeNativeInboundCountTokens, getHeaderRaw(req.Header, ClaudeCodeNativeInboundRouteHeader))
 	require.Equal(t, ClaudeCodeNativeCCGatewayCount, getHeaderRaw(req.Header, ClaudeCodeNativeCCGatewayRouteHeader))
+	require.Equal(t, ClaudeCodeNativeReplaySafetyBoundary, getHeaderRaw(req.Header, ClaudeCodeNativeReplaySafetyBoundaryHeader))
+	require.Equal(t, "true", getHeaderRaw(req.Header, ClaudeCodeNativeReplaySafetyAppliedHeader))
 }
 
 func TestGatewayService_CCGatewayAnthropicOAuthStaleCompatibleExtraCanonicalizesToFinalPolicyVersion(t *testing.T) {

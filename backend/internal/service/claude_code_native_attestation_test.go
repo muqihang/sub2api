@@ -841,8 +841,64 @@ func TestCP6RouteHintRejectsBridgeRequestWithNativeAttestationHeaders(t *testing
 	require.Contains(t, err.Error(), "native attestation")
 }
 
+func TestCP6RouteHintRejectsBridgeRequestWithOnlyReplaySafetySpoofHeaders(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET", "route-hint-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID", "route_hint_v1")
+	now := time.Unix(2711, 0)
+	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"replay safety spoof"}],"stream":true}`)
+	decision := ClaudeCodeProviderRouteDecision{
+		ModelID:                  "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          "bridge_pool",
+		GatewayLocation:          "cloud",
+		CatalogFresh:             true,
+		CatalogVersion:           "cp5-route-catalog",
+		RuntimeHash:              "sha256:" + stringOf('1', 64),
+		OverlayHash:              "sha256:" + stringOf('2', 64),
+		CatalogHash:              "sha256:" + stringOf('3', 64),
+		PreferredProtocol:        "anthropic_messages",
+		AnthropicBaseURL:         "https://api.deepseek.com/anthropic",
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsErrorPassthrough: true,
+	}
+	headers := signedRouteHintHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                      "cp6-replay-safety-header-spoof",
+		"model_id":                   "deepseek-v4-pro",
+		"body_model":                 "deepseek-v4-pro",
+		"route":                      "deepseek_bridge",
+		"client_type":                "claude_code_bridge_deepseek",
+		"provider":                   "deepseek",
+		"live_request_allowed":       true,
+		"catalog_version":            "cp5-route-catalog",
+		"runtime_hash":               "sha256:" + stringOf('1', 64),
+		"overlay_hash":               "sha256:" + stringOf('2', 64),
+		"catalog_hash":               "sha256:" + stringOf('3', 64),
+		"provider_owner":             "zhumeng_managed",
+		"credential_scope":           "bridge_pool",
+		"gateway_location":           "cloud",
+		"formal_pool_allowed":        false,
+		"native_attestation_allowed": false,
+	})
+	headers.Set(ClaudeCodeNativeCatalogVersionHeader, "cp5-route-catalog")
+	headers.Set(ClaudeCodeNativeReplaySafetyBoundaryHeader, ClaudeCodeNativeReplaySafetyBoundary)
+
+	_, err := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+	).VerifyBridgeRouteHintRequest(http.MethodPost, "/v1/messages", headers, body, decision)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "native attestation")
+}
+
 func TestClaudeCodeNativeAuditHeadersAreMutuallyExclusiveWithCompat(t *testing.T) {
-	native := ClaudeCodeNativeAuditSummary{
+	native := testClaudeCodeNativeReplaySafeSummary(ClaudeCodeNativeAuditSummary{
 		ClientType:                 ClaudeCodeNativeClientType,
 		NativeAttested:             true,
 		GuardVersion:               "guard_v1",
@@ -856,18 +912,73 @@ func TestClaudeCodeNativeAuditHeadersAreMutuallyExclusiveWithCompat(t *testing.T
 		ToolReferencePresent:       true,
 		DeferLoadingPresent:        true,
 		EagerInputStreamingPresent: true,
-	}
+	})
 	headers := http.Header{}
 	require.NoError(t, ApplyClaudeCodeNativeAuditHeaders(headers, native))
 	require.Equal(t, ClaudeCodeNativeClientType, getHeaderRaw(headers, ClaudeCodeNativeClientTypeHeader))
 	require.Equal(t, "true", getHeaderRaw(headers, ClaudeCodeNativeGuardAttestedHeader))
 	require.Equal(t, "false", getHeaderRaw(headers, ClaudeCodeNativeServerFilledShapeHeader))
+	require.Equal(t, ClaudeCodeNativeReplaySafetyBoundary, getHeaderRaw(headers, ClaudeCodeNativeReplaySafetyBoundaryHeader))
+	require.Equal(t, "true", getHeaderRaw(headers, ClaudeCodeNativeReplaySafetyAppliedHeader))
+	require.Equal(t, "false", getHeaderRaw(headers, ClaudeCodeNativeReplaySafetySanitizedHeader))
+	require.Equal(t, "0", getHeaderRaw(headers, ClaudeCodeNativeReplaySafetyForbiddenPathsHeader))
+	require.Equal(t, native.ReplaySafetyBodyShapeHash, getHeaderRaw(headers, ClaudeCodeNativeReplaySafetyBodyShapeHashHeader))
 	require.Empty(t, getHeaderRaw(headers, AnthropicCompatClientTypeHeader))
 
 	ctx := WithClaudeCodeNativeAuditSummary(context.Background(), native)
 	decision := AnthropicCompatIngressDecision{InboundRoute: AnthropicCompatInboundMessages, CCGatewayRoute: AnthropicCompatCCGatewayMessages, ClientType: AnthropicCompatClientType}
 	ctx = WithAnthropicCompatAuditSummary(ctx, NewAnthropicCompatAuditSummary(decision))
 	require.Error(t, ApplyClaudeCodePathAuditHeaders(http.Header{}, ctx))
+}
+
+func TestClaudeCodeNativeAuditHeadersRequireReplaySafetyContract(t *testing.T) {
+	missingReplaySafety := ClaudeCodeNativeAuditSummary{
+		ClientType:              ClaudeCodeNativeClientType,
+		NativeAttested:          true,
+		GuardVersion:            "guard_v1",
+		ClaudeCodeVersion:       "2.1.x",
+		LocalSessionRef:         "hmac-sha256:" + stringOf('b', 64),
+		InboundRoute:            "/v1/messages",
+		CCGatewayRoute:          "/v1/messages?beta=true",
+		NetwatchRequired:        true,
+		ShapeHealthcheckProfile: "real_claude_code_native_takeover_v1",
+	}
+	require.ErrorContains(t, ApplyClaudeCodeNativeAuditHeaders(http.Header{}, missingReplaySafety), "replay safety")
+
+	for name, mutate := range map[string]func(*ClaudeCodeNativeAuditSummary){
+		"whitespace hash": func(summary *ClaudeCodeNativeAuditSummary) {
+			summary.ReplaySafetyBodyShapeHash = " " + summary.ReplaySafetyBodyShapeHash + " "
+		},
+		"unknown hash": func(summary *ClaudeCodeNativeAuditSummary) {
+			summary.ReplaySafetyBodyShapeHash = "sha256:" + stringOf('0', 64)
+		},
+		"negative count": func(summary *ClaudeCodeNativeAuditSummary) {
+			summary.ReplaySafetyForbiddenPaths = -1
+		},
+		"sanitized without count": func(summary *ClaudeCodeNativeAuditSummary) {
+			summary.ReplaySafetySanitized = true
+			summary.ReplaySafetyForbiddenPaths = 0
+		},
+		"unsanitized with count": func(summary *ClaudeCodeNativeAuditSummary) {
+			summary.ReplaySafetySanitized = false
+			summary.ReplaySafetyForbiddenPaths = 1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			summary := testClaudeCodeNativeReplaySafeSummary(missingReplaySafety)
+			mutate(&summary)
+			require.ErrorContains(t, ApplyClaudeCodeNativeAuditHeaders(http.Header{}, summary), "replay safety")
+		})
+	}
+}
+
+func testClaudeCodeNativeReplaySafeSummary(summary ClaudeCodeNativeAuditSummary) ClaudeCodeNativeAuditSummary {
+	summary.ReplaySafetyBoundary = ClaudeCodeNativeReplaySafetyBoundary
+	summary.ReplaySafetyApplied = true
+	summary.ReplaySafetySanitized = false
+	summary.ReplaySafetyForbiddenPaths = 0
+	summary.ReplaySafetyBodyShapeHash = "sha256:" + stringOf('d', 64)
+	return summary
 }
 
 func TestClaudeCodeNativeDirectedHealthcheckBoundaryDoesNotPromoteFromNativeTakeover(t *testing.T) {

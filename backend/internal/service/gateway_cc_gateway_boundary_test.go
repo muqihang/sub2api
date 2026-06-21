@@ -140,7 +140,7 @@ func TestCCGatewayBoundary_ForwardNativeAuditMarkersWithoutCompatShape(t *testin
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
 	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}`)
 
-	ctx = WithClaudeCodeNativeAuditSummary(ctx, ClaudeCodeNativeAuditSummary{
+	ctx = WithClaudeCodeNativeAuditSummary(ctx, testClaudeCodeNativeReplaySafeSummary(ClaudeCodeNativeAuditSummary{
 		ClientType:              ClaudeCodeNativeClientType,
 		NativeAttested:          true,
 		GuardVersion:            "guard_v1",
@@ -153,7 +153,7 @@ func TestCCGatewayBoundary_ForwardNativeAuditMarkersWithoutCompatShape(t *testin
 		ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
 		ToolSearchMode:          "truthful_pass_through",
 		ToolReferencePresent:    true,
-	})
+	}))
 	ctx = SetClaudeCodeClient(ctx, true)
 	c.Request = c.Request.WithContext(ctx)
 
@@ -164,6 +164,11 @@ func TestCCGatewayBoundary_ForwardNativeAuditMarkersWithoutCompatShape(t *testin
 	require.Equal(t, "true", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeGuardAttestedHeader))
 	require.Equal(t, "false", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeServerFilledShapeHeader))
 	require.Equal(t, ClaudeCodeNativeTakeoverHealthProfile, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeHealthcheckProfileHeader))
+	require.Equal(t, ClaudeCodeNativeReplaySafetyBoundary, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeReplaySafetyBoundaryHeader))
+	require.Equal(t, "true", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeReplaySafetyAppliedHeader))
+	require.Equal(t, "false", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeReplaySafetySanitizedHeader))
+	require.Equal(t, "0", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeReplaySafetyForbiddenPathsHeader))
+	require.Equal(t, "sha256:"+strings.Repeat("d", 64), getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeReplaySafetyBodyShapeHashHeader))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, AnthropicCompatClientTypeHeader))
 	require.True(t, bytes.Equal(body, upstream.lastBody), "native takeover path must preserve real Claude Code body without server-filled compat shape")
 	require.Empty(t, upstream.lastProxyURL, "CC Gateway native path must not use account proxy")
@@ -216,7 +221,7 @@ func TestCCGatewayBoundary_ForwardNativeCountTokensAuditMarkersWithoutCompatShap
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages/count_tokens")
 	body := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"fake-device\",\"account_uuid\":\"fake-acct\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
-	ctx = WithClaudeCodeNativeAuditSummary(ctx, ClaudeCodeNativeAuditSummary{
+	ctx = WithClaudeCodeNativeAuditSummary(ctx, testClaudeCodeNativeReplaySafeSummary(ClaudeCodeNativeAuditSummary{
 		ClientType:              ClaudeCodeNativeClientType,
 		NativeAttested:          true,
 		GuardVersion:            "guard_v1",
@@ -228,7 +233,7 @@ func TestCCGatewayBoundary_ForwardNativeCountTokensAuditMarkersWithoutCompatShap
 		ServerFilledShape:       false,
 		ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
 		ToolSearchMode:          "not_present",
-	})
+	}))
 	c.Request = c.Request.WithContext(ctx)
 
 	err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
@@ -236,6 +241,8 @@ func TestCCGatewayBoundary_ForwardNativeCountTokensAuditMarkersWithoutCompatShap
 	require.Equal(t, "http://cc-gateway:8443/v1/messages/count_tokens?beta=true", upstream.lastReq.URL.String())
 	require.Equal(t, ClaudeCodeNativeClientType, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
 	require.Equal(t, "false", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeServerFilledShapeHeader))
+	require.Equal(t, ClaudeCodeNativeReplaySafetyBoundary, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeReplaySafetyBoundaryHeader))
+	require.Equal(t, "true", getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeReplaySafetyAppliedHeader))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, AnthropicCompatClientTypeHeader))
 	require.True(t, bytes.Equal(body, upstream.lastBody), "native count_tokens path must preserve real Claude Code body")
 }
@@ -300,11 +307,14 @@ func TestCCGatewayBoundary_ForwardNativeRichShapeWithoutDowngradingBodyFields(t 
 	body := loadNativeFixture(t, "messages_rich_native_shape.json")
 
 	ctx = WithClaudeCodeNativeAuditSummary(ctx, buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
-		RequestURI:              ClaudeCodeNativeInboundMessages,
-		GuardVersion:            "guard_v1",
-		ClaudeCodeVersion:       "2.1.175",
-		LocalSessionRef:         "hmac-sha256:" + strings.Repeat("f", 64),
-		ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+		RequestURI:                ClaudeCodeNativeInboundMessages,
+		GuardVersion:              "guard_v1",
+		ClaudeCodeVersion:         "2.1.175",
+		LocalSessionRef:           "hmac-sha256:" + strings.Repeat("f", 64),
+		ShapeHealthcheckProfile:   ClaudeCodeNativeTakeoverHealthProfile,
+		ReplaySafetyBoundary:      ClaudeCodeNativeReplaySafetyBoundary,
+		ReplaySafetyApplied:       true,
+		ReplaySafetyBodyShapeHash: claudeCodeNativeBodyShapeHash(body),
 	}, body))
 	c.Request = c.Request.WithContext(ctx)
 

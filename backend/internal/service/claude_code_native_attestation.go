@@ -30,26 +30,31 @@ const (
 	ClaudeCodeNativeInboundCountTokens = "/v1/messages/count_tokens"
 	ClaudeCodeNativeCCGatewayCount     = "/v1/messages/count_tokens?beta=true"
 
-	ClaudeCodeNativeClientTypeHeader         = "x-sub2api-client-type"
-	ClaudeCodeNativeGuardAttestedHeader      = "x-sub2api-guard-attested"
-	ClaudeCodeNativeGuardVersionHeader       = "x-sub2api-guard-version"
-	ClaudeCodeNativeClaudeCodeVersionHeader  = "x-sub2api-claude-code-version"
-	ClaudeCodeNativeLocalSessionRefHeader    = "x-sub2api-local-session-ref"
-	ClaudeCodeNativeNetwatchRequiredHeader   = "x-sub2api-netwatch-required"
-	ClaudeCodeNativeAttestationHeader        = "x-sub2api-native-attestation"
-	ClaudeCodeNativeSignatureHeader          = "x-sub2api-native-signature"
-	ClaudeCodeNativeInboundRouteHeader       = "x-sub2api-native-inbound-route"
-	ClaudeCodeNativeCCGatewayRouteHeader     = "x-sub2api-native-cc-gateway-route"
-	ClaudeCodeNativeServerFilledShapeHeader  = "x-sub2api-native-server-filled-shape"
-	ClaudeCodeNativeHealthcheckProfileHeader = "x-sub2api-native-shape-healthcheck-profile"
-	ClaudeCodeNativeToolSearchModeHeader     = "x-sub2api-native-tool-search-mode"
-	ClaudeCodeNativeToolReferenceHeader      = "x-sub2api-native-tool-reference-present"
-	ClaudeCodeNativeDeferLoadingHeader       = "x-sub2api-native-defer-loading-present"
-	ClaudeCodeNativeEagerInputHeader         = "x-sub2api-native-eager-input-streaming-present"
-	ClaudeCodeNativeRuntimeHashHeader        = "x-sub2api-native-runtime-hash"
-	ClaudeCodeNativeOverlayHashHeader        = "x-sub2api-native-overlay-hash"
-	ClaudeCodeNativeCatalogHashHeader        = "x-sub2api-native-catalog-hash"
-	ClaudeCodeNativeCatalogVersionHeader     = "x-sub2api-route-catalog-version"
+	ClaudeCodeNativeClientTypeHeader                 = "x-sub2api-client-type"
+	ClaudeCodeNativeGuardAttestedHeader              = "x-sub2api-guard-attested"
+	ClaudeCodeNativeGuardVersionHeader               = "x-sub2api-guard-version"
+	ClaudeCodeNativeClaudeCodeVersionHeader          = "x-sub2api-claude-code-version"
+	ClaudeCodeNativeLocalSessionRefHeader            = "x-sub2api-local-session-ref"
+	ClaudeCodeNativeNetwatchRequiredHeader           = "x-sub2api-netwatch-required"
+	ClaudeCodeNativeAttestationHeader                = "x-sub2api-native-attestation"
+	ClaudeCodeNativeSignatureHeader                  = "x-sub2api-native-signature"
+	ClaudeCodeNativeInboundRouteHeader               = "x-sub2api-native-inbound-route"
+	ClaudeCodeNativeCCGatewayRouteHeader             = "x-sub2api-native-cc-gateway-route"
+	ClaudeCodeNativeServerFilledShapeHeader          = "x-sub2api-native-server-filled-shape"
+	ClaudeCodeNativeHealthcheckProfileHeader         = "x-sub2api-native-shape-healthcheck-profile"
+	ClaudeCodeNativeToolSearchModeHeader             = "x-sub2api-native-tool-search-mode"
+	ClaudeCodeNativeToolReferenceHeader              = "x-sub2api-native-tool-reference-present"
+	ClaudeCodeNativeDeferLoadingHeader               = "x-sub2api-native-defer-loading-present"
+	ClaudeCodeNativeEagerInputHeader                 = "x-sub2api-native-eager-input-streaming-present"
+	ClaudeCodeNativeRuntimeHashHeader                = "x-sub2api-native-runtime-hash"
+	ClaudeCodeNativeOverlayHashHeader                = "x-sub2api-native-overlay-hash"
+	ClaudeCodeNativeCatalogHashHeader                = "x-sub2api-native-catalog-hash"
+	ClaudeCodeNativeCatalogVersionHeader             = "x-sub2api-route-catalog-version"
+	ClaudeCodeNativeReplaySafetyBoundaryHeader       = "x-sub2api-native-replay-safety-boundary"
+	ClaudeCodeNativeReplaySafetyAppliedHeader        = "x-sub2api-native-replay-safety-applied"
+	ClaudeCodeNativeReplaySafetySanitizedHeader      = "x-sub2api-native-replay-safety-sanitized"
+	ClaudeCodeNativeReplaySafetyForbiddenPathsHeader = "x-sub2api-native-replay-safety-forbidden-paths-count"
+	ClaudeCodeNativeReplaySafetyBodyShapeHashHeader  = "x-sub2api-native-replay-safety-body-shape-hash"
 
 	ClaudeCodeNativeDefaultScope              = "claude_code_native_takeover"
 	ClaudeCodeNativeTakeoverHealthProfile     = "real_claude_code_native_takeover_v1"
@@ -370,6 +375,11 @@ func IsClaudeCodeNativeMarkerPresent(headers http.Header) bool {
 		ClaudeCodeNativeNetwatchRequiredHeader,
 		ClaudeCodeNativeAttestationHeader,
 		ClaudeCodeNativeSignatureHeader,
+		ClaudeCodeNativeReplaySafetyBoundaryHeader,
+		ClaudeCodeNativeReplaySafetyAppliedHeader,
+		ClaudeCodeNativeReplaySafetySanitizedHeader,
+		ClaudeCodeNativeReplaySafetyForbiddenPathsHeader,
+		ClaudeCodeNativeReplaySafetyBodyShapeHashHeader,
 	} {
 		if strings.TrimSpace(headers.Get(key)) != "" {
 			return true
@@ -544,6 +554,11 @@ func bridgeRequestHasNativeAttestationHeaders(headers http.Header) bool {
 		ClaudeCodeNativeRuntimeHashHeader,
 		ClaudeCodeNativeOverlayHashHeader,
 		ClaudeCodeNativeCatalogHashHeader,
+		ClaudeCodeNativeReplaySafetyBoundaryHeader,
+		ClaudeCodeNativeReplaySafetyAppliedHeader,
+		ClaudeCodeNativeReplaySafetySanitizedHeader,
+		ClaudeCodeNativeReplaySafetyForbiddenPathsHeader,
+		ClaudeCodeNativeReplaySafetyBodyShapeHashHeader,
 	} {
 		if strings.TrimSpace(headers.Get(key)) != "" {
 			return true
@@ -558,6 +573,9 @@ func ApplyClaudeCodeNativeAuditHeaders(headers http.Header, audit ClaudeCodeNati
 	}
 	if audit.ClientType != ClaudeCodeNativeClientType || !audit.NativeAttested {
 		return fmt.Errorf("claude code native audit summary is not attested")
+	}
+	if err := validateClaudeCodeNativeAuditReplaySafetyContract(audit); err != nil {
+		return err
 	}
 	setHeaderRaw(headers, ClaudeCodeNativeClientTypeHeader, ClaudeCodeNativeClientType)
 	setHeaderRaw(headers, ClaudeCodeNativeGuardAttestedHeader, strconv.FormatBool(audit.NativeAttested))
@@ -577,6 +595,31 @@ func ApplyClaudeCodeNativeAuditHeaders(headers http.Header, audit ClaudeCodeNati
 	setHeaderRaw(headers, ClaudeCodeNativeOverlayHashHeader, audit.OverlayHash)
 	setHeaderRaw(headers, ClaudeCodeNativeCatalogHashHeader, audit.CatalogHash)
 	setHeaderRaw(headers, ClaudeCodeNativeCatalogVersionHeader, audit.CatalogVersion)
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyBoundaryHeader, audit.ReplaySafetyBoundary)
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyAppliedHeader, strconv.FormatBool(audit.ReplaySafetyApplied))
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetySanitizedHeader, strconv.FormatBool(audit.ReplaySafetySanitized))
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyForbiddenPathsHeader, strconv.Itoa(audit.ReplaySafetyForbiddenPaths))
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyBodyShapeHashHeader, audit.ReplaySafetyBodyShapeHash)
+	return nil
+}
+
+func validateClaudeCodeNativeAuditReplaySafetyContract(audit ClaudeCodeNativeAuditSummary) error {
+	if audit.ReplaySafetyBoundary != ClaudeCodeNativeReplaySafetyBoundary || !audit.ReplaySafetyApplied {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if audit.ReplaySafetyForbiddenPaths < 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if audit.ReplaySafetySanitized && audit.ReplaySafetyForbiddenPaths <= 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if !audit.ReplaySafetySanitized && audit.ReplaySafetyForbiddenPaths != 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	hash := audit.ReplaySafetyBodyShapeHash
+	if !claudeCodeNativeSafeHashRe.MatchString(hash) || hash == claudeCodeNativeUnknownHash {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
 	return nil
 }
 
