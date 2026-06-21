@@ -829,7 +829,204 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertNotIn('GATEWAY_CODEX_ENABLED="true"', text)
 
 
+    def test_canary_env_readiness_reports_deepseek_anthropic_path_without_secret_values(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
 
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"),
+            bridge_api_keys={
+                "openai": "sk-openai-secret",
+                "deepseek": "sk-deepseek-secret",
+                "agnes": "sk-agnes-secret",
+            },
+        )
+
+        readiness = build_canary_env_readiness_metadata(env)
+        dumped = json.dumps(readiness, sort_keys=True)
+
+        self.assertTrue(readiness["ready"])
+        self.assertEqual([], readiness["issues"])
+        self.assertEqual("ok", readiness["catalog_parse_status"])
+        self.assertTrue(readiness["deepseek"]["live_enabled"])
+        self.assertTrue(readiness["deepseek"]["anthropic_live_enabled"])
+        self.assertTrue(readiness["deepseek"]["openai_fallback_gate_present"])
+        self.assertFalse(readiness["deepseek"]["openai_fallback_enabled"])
+        self.assertTrue(readiness["deepseek"]["all_live_models_prefer_anthropic_messages"])
+        self.assertTrue(readiness["deepseek"]["cache_evidence_eligible"])
+        self.assertEqual(["anthropic_messages"], readiness["deepseek"]["live_selected_protocols"])
+        self.assertTrue(readiness["formal_pool_isolation"]["bridge_models_isolated_from_native_formal_pool"])
+        self.assertFalse(readiness["expanded_provider_scope"]["agnes_live_enabled"])
+        self.assertFalse(readiness["expanded_provider_scope"]["glm_live_enabled"])
+        self.assertFalse(readiness["expanded_provider_scope"]["kimi_live_enabled"])
+        self.assertNotIn("sk-openai-secret", dumped)
+        self.assertNotIn("sk-deepseek-secret", dumped)
+        self.assertNotIn("sk-agnes-secret", dumped)
+        self.assertNotIn("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", dumped)
+
+    def test_canary_env_readiness_flags_stale_env_missing_deepseek_fallback_gate_without_leaking(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_provider_catalog_env,
+            main,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+        env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY"] = "sk-deepseek-secret"
+        del env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "runtime.env"
+            env_path.write_text("\n".join(f"{key}={value}" for key, value in sorted(env.items())) + "\n", encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = main(["--verify-env", "--env-out", str(env_path), "--format", "json"])
+
+        self.assertEqual(1, rc)
+        self.assertEqual("", stderr.getvalue())
+        dumped = stdout.getvalue()
+        self.assertNotIn("sk-deepseek-secret", dumped)
+        self.assertNotIn("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", dumped)
+        readiness = json.loads(dumped)
+        self.assertFalse(readiness["ready"])
+        self.assertIn(
+            "missing SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED gate",
+            readiness["issues"],
+        )
+
+    def test_canary_env_readiness_allows_explicit_deepseek_fallback_only_for_live_deepseek(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+            deepseek_anthropic_fixture_green=False,
+        )
+        readiness = build_canary_env_readiness_metadata(env)
+        self.assertTrue(readiness["ready"])
+        self.assertTrue(readiness["deepseek"]["openai_fallback_enabled"])
+        self.assertEqual(["openai_chat_completions"], readiness["deepseek"]["live_selected_protocols"])
+        self.assertFalse(readiness["deepseek"]["cache_evidence_eligible"])
+
+        env_without_live_deepseek = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-gpt-5.5",),
+        )
+        env_without_live_deepseek["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"] = "true"
+        readiness_without_live_deepseek = build_canary_env_readiness_metadata(env_without_live_deepseek)
+
+        self.assertFalse(readiness_without_live_deepseek["ready"])
+        self.assertIn(
+            "DeepSeek OpenAI fallback gate is enabled without a live DeepSeek bridge model",
+            readiness_without_live_deepseek["issues"],
+        )
+
+    def test_canary_env_readiness_rejects_fallback_gate_when_deepseek_catalog_still_anthropic(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+        env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"] = "true"
+
+        readiness = build_canary_env_readiness_metadata(env)
+
+        self.assertFalse(readiness["ready"])
+        self.assertIn(
+            "DeepSeek OpenAI fallback gate requires live catalog preferred_protocol=openai_chat_completions",
+            readiness["issues"],
+        )
+
+    def test_canary_env_readiness_rejects_deepseek_live_env_flag_without_live_catalog_model(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-gpt-5.5",),
+        )
+        env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"] = "true"
+
+        readiness = build_canary_env_readiness_metadata(env)
+
+        self.assertFalse(readiness["ready"])
+        self.assertIn(
+            "DeepSeek live env flag is true but catalog has no live DeepSeek bridge model",
+            readiness["issues"],
+        )
+
+    def test_canary_env_readiness_rejects_bridge_model_in_native_formal_pool_env_list(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_canary_env_readiness_metadata,
+            build_provider_catalog_env,
+        )
+
+        env = build_provider_catalog_env("http://127.0.0.1:3017")
+        env["SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS"] += ",claude-code-bridge-deepseek-v4-pro"
+
+        readiness = build_canary_env_readiness_metadata(env)
+
+        self.assertFalse(readiness["ready"])
+        self.assertIn(
+            "native formal-pool env list contains bridge model ids",
+            readiness["issues"],
+        )
+
+    def test_canary_env_readiness_redacts_unknown_protocol_labels_from_catalog(self):
+        from tools.claude_code_runtime_canary_config import (
+            build_provider_catalog_env,
+            main,
+        )
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+        secret_protocol = "sk-protocol-secret-from-corrupt-catalog"
+        catalog = json.loads(env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"])
+        for model in catalog["models"]:
+            if model.get("model_id") == "claude-code-bridge-deepseek-v4-pro":
+                model["preferred_protocol"] = secret_protocol
+        env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"] = json.dumps(catalog, sort_keys=True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "runtime.env"
+            env_path.write_text("\n".join(f"{key}={value}" for key, value in sorted(env.items())) + "\n", encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = main(["--verify-env", "--env-out", str(env_path), "--format", "json"])
+
+        self.assertEqual(1, rc)
+        self.assertEqual("", stderr.getvalue())
+        dumped = stdout.getvalue()
+        self.assertNotIn(secret_protocol, dumped)
+        readiness = json.loads(dumped)
+        self.assertEqual(["unknown"], readiness["deepseek"]["live_selected_protocols"])
+        self.assertEqual(1, readiness["deepseek"]["unknown_protocol_count"])
+        self.assertIn("DeepSeek live catalog contains unknown preferred_protocol labels", readiness["issues"])
 
 if __name__ == "__main__":
     unittest.main()

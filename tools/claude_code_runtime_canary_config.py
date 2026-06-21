@@ -872,6 +872,140 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return env
 
 
+def _env_flag(env: dict[str, str], key: str) -> bool:
+    return str(env.get(key, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_canary_env_readiness_metadata(env: dict[str, str]) -> dict[str, Any]:
+    """Return secret-free readiness evidence for the 3017 canary env/catalog."""
+    issues: list[str] = []
+    catalog_status = "missing"
+    catalog: dict[str, Any] = {}
+    raw_catalog = env.get("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", "")
+    if raw_catalog:
+        try:
+            parsed = json.loads(raw_catalog)
+            if isinstance(parsed, dict):
+                catalog = parsed
+                catalog_status = "ok"
+            else:
+                catalog_status = "invalid_shape"
+                issues.append("provider catalog JSON must be an object")
+        except json.JSONDecodeError:
+            catalog_status = "invalid_json"
+            issues.append("provider catalog JSON is invalid")
+    else:
+        issues.append("missing provider catalog JSON")
+
+    raw_models = catalog.get("models", [])
+    models = [model for model in raw_models if isinstance(model, dict)]
+    bridge_models = [model for model in models if str(model.get("model_id", "")).startswith("claude-code-bridge-")]
+    native_models = [model for model in models if str(model.get("provider", "")) == "claude"]
+    deepseek_models = [model for model in bridge_models if str(model.get("provider", "")) == "deepseek" or "deepseek" in str(model.get("model_id", ""))]
+    deepseek_live_models = [model for model in deepseek_models if bool(model.get("live_enabled"))]
+
+    fallback_key = "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"
+    fallback_gate_present = fallback_key in env
+    fallback_enabled = _env_flag(env, fallback_key)
+    deepseek_live_enabled = _env_flag(env, "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED")
+    anthropic_live_enabled = _env_flag(env, "SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED")
+    allowed_protocols = {"anthropic_messages", "openai_chat_completions", "responses"}
+    raw_deepseek_protocols = [str(model.get("preferred_protocol", "")) for model in deepseek_live_models if model.get("preferred_protocol")]
+    unknown_protocol_count = sum(1 for protocol in raw_deepseek_protocols if protocol not in allowed_protocols)
+    deepseek_selected_protocols = sorted(
+        {protocol if protocol in allowed_protocols else "unknown" for protocol in raw_deepseek_protocols}
+    )
+    all_live_deepseek_anthropic = bool(deepseek_live_models) and all(
+        str(model.get("preferred_protocol", "")) == "anthropic_messages"
+        for model in deepseek_live_models
+    )
+    all_live_deepseek_openai_fallback = bool(deepseek_live_models) and all(
+        str(model.get("preferred_protocol", "")) == "openai_chat_completions"
+        for model in deepseek_live_models
+    )
+    cache_evidence_eligible = bool(deepseek_live_models) and all_live_deepseek_anthropic and not fallback_enabled
+
+    if not fallback_gate_present:
+        issues.append("missing SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED gate")
+    if fallback_enabled and not deepseek_live_models:
+        issues.append("DeepSeek OpenAI fallback gate is enabled without a live DeepSeek bridge model")
+    if fallback_enabled and deepseek_live_models and not all_live_deepseek_openai_fallback:
+        issues.append("DeepSeek OpenAI fallback gate requires live catalog preferred_protocol=openai_chat_completions")
+    if unknown_protocol_count:
+        issues.append("DeepSeek live catalog contains unknown preferred_protocol labels")
+    if deepseek_live_enabled and not deepseek_live_models:
+        issues.append("DeepSeek live env flag is true but catalog has no live DeepSeek bridge model")
+    if deepseek_live_models and not deepseek_live_enabled:
+        issues.append("DeepSeek catalog has live models but DeepSeek live env flag is false")
+    if deepseek_live_models and not fallback_enabled:
+        if not anthropic_live_enabled:
+            issues.append("DeepSeek Anthropic-compatible live env flag is false")
+        if not all_live_deepseek_anthropic:
+            issues.append("DeepSeek live catalog must prefer anthropic_messages unless explicit fallback is enabled")
+
+    bridge_isolated = True
+    for model in bridge_models:
+        if bool(model.get("formal_pool_allowed")) or bool(model.get("native_attestation_allowed")):
+            bridge_isolated = False
+            break
+    native_formal_pool_models = {
+        model.strip()
+        for model in str(env.get("SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS", "")).split(",")
+        if model.strip()
+    }
+    native_formal_pool_has_bridge_model = any(model.startswith("claude-code-bridge-") for model in native_formal_pool_models)
+    if native_formal_pool_has_bridge_model:
+        bridge_isolated = False
+        issues.append("native formal-pool env list contains bridge model ids")
+    if not bridge_isolated:
+        issues.append("bridge models must not be allowed into the native Claude formal pool")
+
+    agnes_live = any(str(model.get("provider", "")) == "agnes" and bool(model.get("live_enabled")) for model in bridge_models)
+    glm_live = any(str(model.get("provider", "")) == "zai_glm" and bool(model.get("live_enabled")) for model in bridge_models)
+    kimi_live = any(str(model.get("provider", "")) == "kimi" and bool(model.get("live_enabled")) for model in bridge_models)
+
+    bridge_api_key_present = {}
+    for spec in _RUNTIME_DISPATCH_GROUPS:
+        bridge_api_key_present[str(spec["provider"])] = bool(str(env.get(str(spec["api_key_env"]), "")).strip())
+
+    return {
+        "schema_version": "claude-code-runtime-canary-readiness.v1",
+        "ready": not issues,
+        "issues": issues,
+        "catalog_parse_status": catalog_status,
+        "catalog_summary": {
+            "model_count": len(models),
+            "native_model_count": len(native_models),
+            "bridge_model_count": len(bridge_models),
+            "live_bridge_model_count": sum(1 for model in bridge_models if bool(model.get("live_enabled"))),
+        },
+        "deepseek": {
+            "live_enabled": bool(deepseek_live_models),
+            "env_live_enabled": deepseek_live_enabled,
+            "anthropic_live_enabled": anthropic_live_enabled,
+            "openai_fallback_gate_present": fallback_gate_present,
+            "openai_fallback_enabled": fallback_enabled,
+            "live_model_count": len(deepseek_live_models),
+            "live_selected_protocols": deepseek_selected_protocols,
+            "unknown_protocol_count": unknown_protocol_count,
+            "all_live_models_prefer_anthropic_messages": all_live_deepseek_anthropic,
+            "cache_evidence_eligible": cache_evidence_eligible,
+        },
+        "formal_pool_isolation": {
+            "native_model_count": len(native_models),
+            "bridge_models_isolated_from_native_formal_pool": bridge_isolated,
+            "native_formal_pool_env_model_count": len(native_formal_pool_models),
+            "native_formal_pool_env_has_bridge_model": native_formal_pool_has_bridge_model,
+        },
+        "expanded_provider_scope": {
+            "agnes_live_enabled": agnes_live,
+            "glm_live_enabled": glm_live,
+            "kimi_live_enabled": kimi_live,
+        },
+        "bridge_api_key_presence": bridge_api_key_present,
+    }
+
+
 def merge_provider_catalog_env(
     existing_env: dict[str, str] | None,
     *,
@@ -1038,6 +1172,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Print the plan without writing anything (default).")
     mode.add_argument("--apply", action="store_true", help="Apply only with --user-approved-db-write.")
+    mode.add_argument("--verify-env", action="store_true", help="Read --env-out and print secret-free canary readiness metadata.")
     parser.add_argument("--user-approved-db-write", action="store_true", help="Required explicit confirmation for --apply.")
     parser.add_argument("--postgres-container", default="", help="Postgres container for approved apply; secrets are not printed.")
     parser.add_argument("--target", default="http://127.0.0.1:3017", help="Local Sub2API canary origin exposed to host tooling.")
@@ -1094,6 +1229,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"groups: {len(result['groups'])}")
             print(f"env_out: {result['env_out']}")
         return 0
+
+    if args.verify_env:
+        result = build_canary_env_readiness_metadata(_read_env_file(args.env_out))
+        if args.format == "json":
+            print(json.dumps(result, ensure_ascii=True, indent=2, sort_keys=True))
+        else:
+            print("Claude Code Runtime canary env readiness")
+            print(f"ready: {str(result['ready']).lower()}")
+            print(f"catalog_parse_status: {result['catalog_parse_status']}")
+            print(f"deepseek_protocols: {','.join(result['deepseek']['live_selected_protocols'])}")
+            print(f"deepseek_cache_evidence_eligible: {str(result['deepseek']['cache_evidence_eligible']).lower()}")
+            if result["issues"]:
+                print("issues:")
+                for issue in result["issues"]:
+                    print(f"- {issue}")
+        return 0 if result["ready"] else 1
 
     plan = build_bridge_placeholder_plan(args.target)
     if args.format == "json":
