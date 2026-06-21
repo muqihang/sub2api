@@ -457,6 +457,105 @@ func assertSSEOrder(t *testing.T, body string, markers []string) {
 	}
 }
 
+func TestClaudeCodeBridgeCacheAuditRowIsProviderTruthfulAndSafe(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "local-cache-audit-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "cache-test-v1")
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:            "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:      "deepseek-v4-pro",
+		Provider:           "deepseek",
+		Route:              "deepseek_bridge",
+		ClientType:         "claude_code_bridge_deepseek",
+		CredentialScope:    "bridge_pool",
+		PreferredProtocol:  "anthropic_messages",
+		FallbackProtocol:   "openai_chat_completions",
+		SupportsCacheAudit: true,
+		CachePolicy:        "provider_prefix_kv_cache_automatic_full_prefix_unit_match",
+	}
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable prefix must not leak","messages":[{"role":"user","content":"history must not leak"},{"role":"user","content":"latest turn must not leak"}],"tools":[{"name":"Agent","input_schema":{"type":"object"}}],"stream":true}`)
+	requestAudit := buildClaudeCodeBridgeAnthropicRequestAudit(decision, body, "https://api.deepseek.com/anthropic/v1/messages?api_key=must-not-leak")
+	summary := buildClaudeCodeBridgeAuditSummaryWithRequest(decision, ClaudeCodeBridgeProviderFixture{CacheReadTokens: 7, CacheMissTokens: 13}, requestAudit)
+
+	row := summary.CacheAuditRow()
+
+	require.Equal(t, "claude-code-bridge-cache-audit-row-v1", row.SchemaVersion)
+	require.Equal(t, "deepseek", row.Provider)
+	require.Equal(t, "deepseek_bridge", row.Route)
+	require.Equal(t, "claude_code_bridge_deepseek", row.ClientType)
+	require.Equal(t, "anthropic_messages", row.SelectedProtocol)
+	require.Equal(t, "/anthropic/v1/messages", row.UpstreamPathKind)
+	require.Equal(t, "deepseek_prefix_kv", row.ProviderCacheMechanism)
+	require.True(t, row.CacheControlProviderIgnored)
+	require.Equal(t, 7, row.CacheReadTokens)
+	require.Equal(t, 13, row.CacheMissTokens)
+	require.Regexp(t, `^hmac-sha256:cache-test-v1:[a-f0-9]{64}$`, row.StablePrefixHMAC)
+	raw, err := json.Marshal(row)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "stable prefix must not leak")
+	require.NotContains(t, string(raw), "history must not leak")
+	require.NotContains(t, string(raw), "latest turn must not leak")
+	require.NotContains(t, string(raw), "must-not-leak")
+}
+
+func TestClaudeCodeBridgeOpenAICacheAuditRowRedactsPromptCacheKey(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "local-cache-audit-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "cache-test-v1")
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:            "gpt-5.5",
+		UpstreamModel:      "gpt-5.5",
+		Provider:           "openai",
+		Route:              "openai_bridge",
+		ClientType:         "claude_code_bridge_openai",
+		CredentialScope:    "bridge_pool",
+		PreferredProtocol:  "responses",
+		SupportsCacheAudit: true,
+	}
+	upstreamBody := []byte(`{"model":"gpt-5.5","prompt_cache_key":"session-cache-key-must-not-leak","input":[{"role":"user","content":[{"type":"input_text","text":"stable prompt must not leak"}]},{"role":"user","content":[{"type":"input_text","text":"latest turn must not leak"}]}],"stream":true}`)
+	requestAudit := buildClaudeCodeBridgeOpenAIResponsesRequestAudit(decision, upstreamBody, "https://api.openai.com/v1/responses?prompt_cache_key=must-not-leak")
+	summary := buildClaudeCodeBridgeAuditSummaryWithRequest(decision, ClaudeCodeBridgeProviderFixture{CacheReadTokens: 9}, requestAudit)
+
+	row := summary.CacheAuditRow()
+
+	require.Equal(t, "openai", row.Provider)
+	require.Equal(t, "openai_bridge", row.Route)
+	require.Equal(t, "claude_code_bridge_openai", row.ClientType)
+	require.Equal(t, "responses", row.SelectedProtocol)
+	require.Equal(t, "/v1/responses", row.UpstreamPathKind)
+	require.Equal(t, "openai_prompt_cache", row.ProviderCacheMechanism)
+	require.True(t, row.PromptCacheKeyPresent)
+	require.Equal(t, "present_redacted", row.PromptCacheKeyStrategy)
+	require.Equal(t, []string{"usage.prompt_tokens_details.cached_tokens"}, row.CacheUsageFields)
+	require.Equal(t, 9, row.CachedTokens)
+	require.Regexp(t, `^hmac-sha256:cache-test-v1:[a-f0-9]{64}$`, row.StablePrefixHMAC)
+	raw, err := json.Marshal(row)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "session-cache-key-must-not-leak")
+	require.NotContains(t, string(raw), "stable prompt must not leak")
+	require.NotContains(t, string(raw), "latest turn must not leak")
+	require.NotContains(t, string(raw), "must-not-leak")
+}
+
+func TestClaudeCodeBridgeCacheAuditRowFiltersUnsafeCacheControlLocations(t *testing.T) {
+	summary := ClaudeCodeBridgeAuditSummary{
+		Provider:               "deepseek",
+		Route:                  "deepseek_bridge",
+		ClientType:             "claude_code_bridge_deepseek",
+		SelectedProtocol:       "anthropic_messages",
+		ProviderCacheMechanism: "deepseek_prefix_kv",
+		UpstreamPathKind:       "/anthropic/v1/messages",
+		CacheControlLocations:  []string{"history", "raw prompt body", "Authorization", "prompt_cache_key_location_value", "system"},
+	}
+
+	row := summary.CacheAuditRow()
+	raw, err := json.Marshal(row)
+	require.NoError(t, err)
+
+	require.ElementsMatch(t, []string{"history", "system"}, row.CacheControlLocations)
+	require.NotContains(t, string(raw), "raw prompt body")
+	require.NotContains(t, string(raw), "Authorization")
+	require.NotContains(t, string(raw), "prompt_cache_key_location_value")
+}
+
 func TestCP6BridgeStreamMapsProviderFixtureReasoningUsageCacheAndErrors(t *testing.T) {
 	request := map[string]any{
 		"model":         "deepseek-v4-pro",

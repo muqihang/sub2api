@@ -102,6 +102,38 @@ type ClaudeCodeBridgeAuditSummary struct {
 	CacheMissTokens             int      `json:"cache_miss_tokens,omitempty"`
 }
 
+// ClaudeCodeBridgeCacheAuditRow is the safe, artifact-friendly subset of the
+// bridge audit summary. It intentionally carries only routing/protocol enums,
+// provider cache counters, and scoped HMAC metadata; never raw prompts, request
+// bodies, headers, response text, API keys, or prompt_cache_key values.
+type ClaudeCodeBridgeCacheAuditRow struct {
+	SchemaVersion               string   `json:"schema_version"`
+	Provider                    string   `json:"provider"`
+	Route                       string   `json:"route"`
+	ClientType                  string   `json:"client_type"`
+	ModelID                     string   `json:"model_id,omitempty"`
+	PreferredProtocol           string   `json:"preferred_protocol,omitempty"`
+	SelectedProtocol            string   `json:"selected_protocol"`
+	FallbackProtocol            string   `json:"fallback_protocol,omitempty"`
+	FallbackReason              string   `json:"fallback_reason,omitempty"`
+	FallbackUsed                bool     `json:"fallback_used"`
+	ProviderCacheMechanism      string   `json:"provider_cache_mechanism"`
+	UpstreamPathKind            string   `json:"upstream_path_kind"`
+	StablePrefixHMAC            string   `json:"stable_prefix_hmac,omitempty"`
+	StablePrefixTokenBucket     string   `json:"stable_prefix_token_bucket,omitempty"`
+	CacheControlPresent         bool     `json:"cache_control_present"`
+	CacheControlLocations       []string `json:"cache_control_locations,omitempty"`
+	CacheControlProviderIgnored bool     `json:"cache_control_provider_ignored"`
+	PromptCacheKeyPresent       bool     `json:"prompt_cache_key_present"`
+	PromptCacheKeyStrategy      string   `json:"prompt_cache_key_strategy,omitempty"`
+	CacheUsageFields            []string `json:"cache_usage_fields"`
+	CacheReadTokens             int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens            int      `json:"cache_write_tokens,omitempty"`
+	CacheMissTokens             int      `json:"cache_miss_tokens,omitempty"`
+	CachedTokens                int      `json:"cached_tokens,omitempty"`
+	RawSensitiveStored          bool     `json:"raw_sensitive_stored"`
+}
+
 type ClaudeCodeBridgeStreamResult struct {
 	Body  []byte
 	Audit ClaudeCodeBridgeAuditSummary
@@ -422,6 +454,81 @@ func buildClaudeCodeBridgeAuditSummaryWithRequest(decision ClaudeCodeBridgeRoute
 		CacheWriteTokens:            fixture.CacheWriteTokens,
 		CacheMissTokens:             fixture.CacheMissTokens,
 	}
+}
+
+func (summary ClaudeCodeBridgeAuditSummary) CacheAuditRow() ClaudeCodeBridgeCacheAuditRow {
+	row := ClaudeCodeBridgeCacheAuditRow{
+		SchemaVersion:               "claude-code-bridge-cache-audit-row-v1",
+		Provider:                    safeClaudeCodeNativeLabel(summary.Provider),
+		Route:                       safeClaudeCodeNativeLabel(summary.Route),
+		ClientType:                  safeClaudeCodeNativeLabel(summary.ClientType),
+		ModelID:                     safeClaudeCodeNativeLabel(summary.ModelID),
+		PreferredProtocol:           safeClaudeCodeNativeLabel(summary.PreferredProtocol),
+		SelectedProtocol:            safeClaudeCodeNativeLabel(summary.SelectedProtocol),
+		FallbackProtocol:            safeClaudeCodeNativeLabel(summary.FallbackProtocol),
+		FallbackReason:              safeClaudeCodeNativeLabel(summary.FallbackReason),
+		FallbackUsed:                summary.FallbackUsed,
+		ProviderCacheMechanism:      safeClaudeCodeBridgeCacheMechanism(summary.ProviderCacheMechanism),
+		UpstreamPathKind:            safeClaudeCodeBridgeAuditPathKind(summary.UpstreamPathKind),
+		StablePrefixHMAC:            safeClaudeCodeBridgeAuditHMAC(summary.StablePrefixHMAC),
+		StablePrefixTokenBucket:     safeClaudeCodeNativeLabel(summary.StablePrefixTokenBucket),
+		CacheControlPresent:         summary.CacheControlPresent,
+		CacheControlLocations:       safeClaudeCodeBridgeCacheControlLocations(summary.CacheControlLocations),
+		CacheControlProviderIgnored: summary.CacheControlProviderIgnored,
+		PromptCacheKeyPresent:       summary.PromptCacheKeyPresent,
+		CacheReadTokens:             nonNegativeClaudeCodeBridgeAuditInt(summary.CacheReadTokens),
+		CacheWriteTokens:            nonNegativeClaudeCodeBridgeAuditInt(summary.CacheWriteTokens),
+		CacheMissTokens:             nonNegativeClaudeCodeBridgeAuditInt(summary.CacheMissTokens),
+		RawSensitiveStored:          false,
+	}
+	sort.Strings(row.CacheControlLocations)
+	switch row.Provider {
+	case "deepseek":
+		row.CacheUsageFields = []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}
+		row.CacheControlProviderIgnored = true
+	case "openai":
+		row.CacheUsageFields = []string{"usage.prompt_tokens_details.cached_tokens"}
+		row.CachedTokens = row.CacheReadTokens
+		if row.PromptCacheKeyPresent {
+			row.PromptCacheKeyStrategy = "present_redacted"
+		} else {
+			row.PromptCacheKeyStrategy = "absent"
+		}
+	case "agnes":
+		row.CacheUsageFields = []string{"openai_responses_usage_unverified"}
+	}
+	return row
+}
+
+func nonNegativeClaudeCodeBridgeAuditInt(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func safeClaudeCodeBridgeCacheControlLocations(values []string) []string {
+	allowed := map[string]struct{}{
+		"current":   {},
+		"history":   {},
+		"system":    {},
+		"tools":     {},
+		"top_level": {},
+	}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if _, ok := allowed[value]; !ok {
+			continue
+		}
+		seen[value] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func buildClaudeCodeBridgeAnthropicRequestAudit(decision ClaudeCodeBridgeRouteDecision, upstreamBody []byte, upstreamURL string) claudeCodeBridgeRequestAudit {

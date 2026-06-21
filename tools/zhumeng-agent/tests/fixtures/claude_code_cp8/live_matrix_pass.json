@@ -102,7 +102,7 @@
         {
           "path": "artifacts/cache_account_audit.json",
           "sensitive_scan_clean": true,
-          "sha256": "sha256:2ed3eb3a2f0fc9ce1a826ecef353e1e356817039276799e6aa8020b2d97aab7b"
+          "sha256": "sha256:2081d05ecba59660feef35359e54d654100f1534b263b5177e0663d24b2738b8"
         }
       ],
       "audit_summary_only": true,
@@ -267,7 +267,7 @@
         {
           "path": "artifacts/cache_account_audit.json",
           "sensitive_scan_clean": true,
-          "sha256": "sha256:2ed3eb3a2f0fc9ce1a826ecef353e1e356817039276799e6aa8020b2d97aab7b"
+          "sha256": "sha256:2081d05ecba59660feef35359e54d654100f1534b263b5177e0663d24b2738b8"
         }
       ],
       "cache_prefix_stable": true,

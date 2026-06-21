@@ -125,6 +125,44 @@ _TOOLSEARCH_PROVIDER_STRICT_MODES = frozenset({"materialized", "shim"})
 _TOOLSEARCH_PROVIDER_DEGRADED_MODES = frozenset({"disabled", "fail_closed", "degraded_disabled"})
 _TOOLSEARCH_SCENARIO_MODES = _TOOLSEARCH_PROVIDER_STRICT_MODES | frozenset({"degraded_disabled", "fail_closed"})
 _CACHE_PROVIDER_EVIDENCE = ("claude_native", "openai", "deepseek")
+_BRIDGE_CACHE_AUDIT_PROVIDERS = ("openai", "deepseek")
+_BRIDGE_CACHE_AUDIT_ROW_SCHEMA = "claude-code-bridge-cache-audit-row-v1"
+_BRIDGE_CACHE_AUDIT_ROW_FIELDS = frozenset({
+    "schema_version",
+    "provider",
+    "route",
+    "client_type",
+    "model_id",
+    "preferred_protocol",
+    "selected_protocol",
+    "fallback_protocol",
+    "fallback_reason",
+    "fallback_used",
+    "provider_cache_mechanism",
+    "upstream_path_kind",
+    "stable_prefix_hmac",
+    "stable_prefix_token_bucket",
+    "cache_control_present",
+    "cache_control_locations",
+    "cache_control_provider_ignored",
+    "prompt_cache_key_present",
+    "prompt_cache_key_strategy",
+    "cache_usage_fields",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "cache_miss_tokens",
+    "cached_tokens",
+    "raw_sensitive_stored",
+})
+_BRIDGE_CACHE_HMAC_RE = re.compile(r"^hmac-sha256:([A-Za-z0-9_.-]+):[a-f0-9]{64}$")
+_BRIDGE_CACHE_TOKEN_BUCKETS = frozenset({"lt_1k", "1k_4k", "4k_16k", "gt_16k"})
+_BRIDGE_CACHE_PROTOCOLS = frozenset({"anthropic_messages", "openai_chat_completions", "openai_compatible_chat", "responses"})
+_BRIDGE_CACHE_LOCATIONS = frozenset({"top_level", "system", "tools", "history", "current"})
+_BRIDGE_CACHE_FALLBACK_CAPABILITIES = frozenset({"tools", "sse", "reasoning", "cache", "cache_audit", "error_passthrough", "usage", "streaming", "text"})
+_BRIDGE_CACHE_SENSITIVE_VALUE_RE = re.compile(
+    r"(^|[^a-z0-9])(raw|prompt|body|request|response|header|headers|authorization|cookie|api[_-]?key|secret|token|prompt[_-]?cache[_-]?key)([^a-z0-9]|$)",
+    re.IGNORECASE,
+)
 _CACHE_PROVIDER_EXPECTED = {
     "claude_native": ("anthropic_cache_control", ("cache_creation_input_tokens", "cache_read_input_tokens")),
     "openai": ("openai_prompt_cache", ("usage.prompt_tokens_details.cached_tokens",)),
@@ -622,6 +660,7 @@ def _cache_account_audit_artifact_issues(
     if not contents:
         return ("cache/account artifact evidence missing",)
     sensitive_issues: list[str] = []
+    contract_issues: list[str] = []
     has_valid_cache_account_artifact = False
     for rel, text, payload in contents:
         text_issue = _sensitive_inline_text_issue(text, path=f"cache_account_audit_artifact.{rel}")
@@ -632,12 +671,17 @@ def _cache_account_audit_artifact_issues(
         if payload_issue:
             sensitive_issues.append(payload_issue)
             continue
-        if isinstance(payload, Mapping) and _cache_account_audit_artifact_valid(payload, scenario=scenario, strict_live=strict_live):
-            has_valid_cache_account_artifact = True
+        if isinstance(payload, Mapping):
+            if _cache_account_audit_artifact_valid(payload, scenario=scenario, strict_live=strict_live):
+                has_valid_cache_account_artifact = True
+            elif payload.get("schema_version") == "cp8-cache-account-audit-v1":
+                contract_issues.extend(_bridge_cache_audit_rows_issues(payload.get("bridge_cache_audit_rows"), strict_live=strict_live))
     if sensitive_issues:
         return ("cache/account artifact contains raw or sensitive inline evidence: " + sensitive_issues[0],)
     if has_valid_cache_account_artifact:
         return ()
+    if contract_issues:
+        return ("cache/account artifact invalid: " + contract_issues[0],)
     return ("cache/account artifact must prove provider cache evidence without raw payloads",)
 
 
@@ -661,12 +705,214 @@ def _cache_account_audit_artifact_valid(
         and _int(payload.get("ttl_fast_switch_boundary_miss_count")) == _int(scenario.get("ttl_fast_switch_boundary_miss_count"))
     ):
         return False
-    return not _cache_provider_evidence_issues(payload.get("cache_provider_evidence"), strict_live=strict_live)
+    return not _cache_provider_evidence_issues(payload.get("cache_provider_evidence"), strict_live=strict_live) and not _bridge_cache_audit_rows_issues(payload.get("bridge_cache_audit_rows"), strict_live=strict_live)
 
 
+def _bridge_cache_audit_rows_issues(value: object, *, strict_live: bool) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        return ("bridge cache audit rows are required",)
+    issues: list[str] = []
+    seen: set[str] = set()
+    for index, raw_row in enumerate(value):
+        if not isinstance(raw_row, Mapping):
+            issues.append(f"bridge cache audit row {index} must be an object")
+            continue
+        extra = {str(key) for key in raw_row} - _BRIDGE_CACHE_AUDIT_ROW_FIELDS
+        if extra:
+            issues.append(f"bridge cache audit row {index} has unsupported fields")
+        provider = str(raw_row.get("provider") or "").strip()
+        if provider not in _BRIDGE_CACHE_AUDIT_PROVIDERS:
+            issues.append(f"bridge cache audit row {index} has unsupported provider")
+            continue
+        if provider in seen:
+            issues.append(f"bridge cache audit row has duplicate provider {provider}")
+        seen.add(provider)
+        issues.extend(_bridge_cache_row_schema_issues(raw_row, provider=provider))
+        if raw_row.get("schema_version") != _BRIDGE_CACHE_AUDIT_ROW_SCHEMA:
+            issues.append(f"bridge cache audit row for {provider} has wrong schema")
+        if raw_row.get("raw_sensitive_stored") is not False:
+            issues.append(f"bridge cache audit row for {provider} must not store raw sensitive data")
+        if not _safe_bridge_cache_model_id(provider, raw_row.get("model_id")):
+            issues.append(f"bridge cache audit row for {provider} has unsafe model_id")
+        for protocol_field in ("preferred_protocol", "selected_protocol", "fallback_protocol"):
+            protocol = str(raw_row.get(protocol_field) or "").strip()
+            if protocol and protocol not in _BRIDGE_CACHE_PROTOCOLS:
+                issues.append(f"bridge cache audit row for {provider} has unsafe {protocol_field}")
+        fallback_reason = str(raw_row.get("fallback_reason") or "").strip()
+        if fallback_reason and not _safe_bridge_cache_fallback_reason(fallback_reason):
+            issues.append(f"bridge cache audit row for {provider} has unsafe fallback_reason")
+        hmac_value = str(raw_row.get("stable_prefix_hmac") or "").strip()
+        if not _safe_bridge_cache_hmac(hmac_value):
+            issues.append(f"bridge cache audit row for {provider} requires scoped stable prefix HMAC")
+        if str(raw_row.get("stable_prefix_token_bucket") or "").strip() not in _BRIDGE_CACHE_TOKEN_BUCKETS:
+            issues.append(f"bridge cache audit row for {provider} requires stable prefix token bucket")
+        path = str(raw_row.get("upstream_path_kind") or "").strip()
+        if not _safe_bridge_cache_path_kind(path):
+            issues.append(f"bridge cache audit row for {provider} has unsafe upstream path kind")
+        locations_raw = raw_row.get("cache_control_locations")
+        locations, locations_ok = _bridge_cache_str_list(locations_raw, allow_absent=True)
+        if not locations_ok:
+            issues.append(f"bridge cache audit row for {provider} requires list cache_control_locations")
+        elif set(locations) - _BRIDGE_CACHE_LOCATIONS:
+            issues.append(f"bridge cache audit row for {provider} has unsafe cache_control_locations")
+        if not isinstance(raw_row.get("fallback_used"), bool):
+            issues.append(f"bridge cache audit row for {provider} requires boolean fallback_used")
+        if not isinstance(raw_row.get("cache_control_present"), bool):
+            issues.append(f"bridge cache audit row for {provider} requires boolean cache_control_present")
+        if not isinstance(raw_row.get("prompt_cache_key_present"), bool):
+            issues.append(f"bridge cache audit row for {provider} requires boolean prompt_cache_key_present")
+        strategy = str(raw_row.get("prompt_cache_key_strategy") or "").strip()
+        if strategy and strategy not in {"present_redacted", "absent", "not_configured"}:
+            issues.append(f"bridge cache audit row for {provider} has unsafe prompt_cache_key_strategy")
+        if str(raw_row.get("prompt_cache_key") or "").strip():
+            issues.append(f"bridge cache audit row for {provider} must not include prompt_cache_key value")
+        if provider == "deepseek":
+            issues.extend(_deepseek_bridge_cache_audit_row_issues(raw_row, path=path, strict_live=strict_live))
+        elif provider == "openai":
+            issues.extend(_openai_bridge_cache_audit_row_issues(raw_row, path=path, strict_live=strict_live))
+    missing = tuple(provider for provider in _BRIDGE_CACHE_AUDIT_PROVIDERS if provider not in seen)
+    if missing:
+        issues.append("bridge cache audit rows must cover exactly openai/deepseek")
+    return tuple(issues)
 
 
+def _deepseek_bridge_cache_audit_row_issues(raw_row: Mapping[str, object], *, path: str, strict_live: bool) -> tuple[str, ...]:
+    issues: list[str] = []
+    if str(raw_row.get("route") or "").strip() != "deepseek_bridge" or str(raw_row.get("client_type") or "").strip() != "claude_code_bridge_deepseek":
+        issues.append("DeepSeek bridge cache audit row has wrong route/client_type")
+    if str(raw_row.get("preferred_protocol") or "").strip() != "anthropic_messages":
+        issues.append("DeepSeek bridge cache audit row must prove anthropic_messages preferred protocol")
+    if str(raw_row.get("selected_protocol") or "").strip() != "anthropic_messages":
+        issues.append("DeepSeek bridge cache audit row must prove anthropic_messages selected protocol")
+    if str(raw_row.get("fallback_protocol") or "").strip() not in {"", "openai_chat_completions", "openai_compatible_chat"}:
+        issues.append("DeepSeek bridge cache audit row has wrong fallback protocol")
+    if path not in {"/anthropic/v1/messages", "/v1/messages"}:
+        issues.append("DeepSeek bridge cache audit row has wrong path kind")
+    if str(raw_row.get("provider_cache_mechanism") or "").strip() != "deepseek_prefix_kv":
+        issues.append("DeepSeek bridge cache audit row has wrong cache mechanism")
+    if raw_row.get("cache_control_provider_ignored") is not True:
+        issues.append("DeepSeek bridge cache audit row must mark cache_control provider-ignored")
+    if raw_row.get("prompt_cache_key_present") is not False:
+        issues.append("DeepSeek bridge cache audit row must not claim prompt_cache_key")
+    if _int(raw_row.get("cached_tokens")) > 0:
+        issues.append("DeepSeek bridge cache audit row must use prompt_cache_hit_tokens instead of cached_tokens")
+    strategy = str(raw_row.get("prompt_cache_key_strategy") or "").strip()
+    if strategy not in {"", "absent", "not_configured"}:
+        issues.append("DeepSeek bridge cache audit row must not claim prompt cache key strategy")
+    fields, fields_ok = _bridge_cache_str_list(raw_row.get("cache_usage_fields"), allow_absent=False)
+    if not fields_ok or set(fields) != {"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}:
+        issues.append("DeepSeek bridge cache audit row has wrong usage fields")
+    if _int(raw_row.get("cache_read_tokens")) < 0 or _int(raw_row.get("cache_miss_tokens")) < 0:
+        issues.append("DeepSeek bridge cache audit row cache tokens must be non-negative")
+    if strict_live and not (_int(raw_row.get("cache_read_tokens")) > 0 or _int(raw_row.get("cache_miss_tokens")) > 0):
+        issues.append("DeepSeek strict-live bridge cache audit row requires observed hit/miss usage")
+    return tuple(issues)
 
+
+def _openai_bridge_cache_audit_row_issues(raw_row: Mapping[str, object], *, path: str, strict_live: bool) -> tuple[str, ...]:
+    issues: list[str] = []
+    if str(raw_row.get("route") or "").strip() != "openai_bridge" or str(raw_row.get("client_type") or "").strip() != "claude_code_bridge_openai":
+        issues.append("OpenAI bridge cache audit row has wrong route/client_type")
+    if str(raw_row.get("preferred_protocol") or "").strip() != "responses":
+        issues.append("OpenAI bridge cache audit row must prove responses preferred protocol")
+    if str(raw_row.get("selected_protocol") or "").strip() != "responses":
+        issues.append("OpenAI bridge cache audit row must prove responses selected protocol")
+    if str(raw_row.get("fallback_protocol") or "").strip() not in {"", "openai_chat_completions"}:
+        issues.append("OpenAI bridge cache audit row has wrong fallback protocol")
+    if path != "/v1/responses":
+        issues.append("OpenAI bridge cache audit row has wrong path kind")
+    if str(raw_row.get("provider_cache_mechanism") or "").strip() != "openai_prompt_cache":
+        issues.append("OpenAI bridge cache audit row has wrong cache mechanism")
+    fields, fields_ok = _bridge_cache_str_list(raw_row.get("cache_usage_fields"), allow_absent=False)
+    if not fields_ok or set(fields) != {"usage.prompt_tokens_details.cached_tokens"}:
+        issues.append("OpenAI bridge cache audit row has wrong usage fields")
+    strategy = str(raw_row.get("prompt_cache_key_strategy") or "").strip()
+    if strategy not in {"present_redacted", "absent", "not_configured"}:
+        issues.append("OpenAI bridge cache audit row requires prompt cache key strategy enum")
+    if _int(raw_row.get("cached_tokens")) < 0 or _int(raw_row.get("cache_read_tokens")) < 0:
+        issues.append("OpenAI bridge cache audit row cache tokens must be non-negative")
+    if strict_live and not (_int(raw_row.get("cached_tokens")) > 0 or _int(raw_row.get("cache_read_tokens")) > 0):
+        issues.append("OpenAI strict-live bridge cache audit row requires observed cached_tokens usage")
+    return tuple(issues)
+
+
+def _bridge_cache_row_schema_issues(raw_row: Mapping[str, object], *, provider: str) -> tuple[str, ...]:
+    issues: list[str] = []
+    string_fields = (
+        "schema_version",
+        "provider",
+        "route",
+        "client_type",
+        "model_id",
+        "preferred_protocol",
+        "selected_protocol",
+        "fallback_protocol",
+        "fallback_reason",
+        "provider_cache_mechanism",
+        "upstream_path_kind",
+        "stable_prefix_hmac",
+        "stable_prefix_token_bucket",
+        "prompt_cache_key_strategy",
+    )
+    int_fields = ("cache_read_tokens", "cache_write_tokens", "cache_miss_tokens", "cached_tokens")
+    for field in string_fields:
+        if field in raw_row and not isinstance(raw_row.get(field), str):
+            issues.append(f"bridge cache audit row for {provider} has unsafe {field} schema")
+    for field in int_fields:
+        value = raw_row.get(field)
+        if field in raw_row and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            issues.append(f"bridge cache audit row for {provider} requires non-negative integer {field}")
+    return tuple(issues)
+
+
+def _bridge_cache_str_list(value: object, *, allow_absent: bool) -> tuple[tuple[str, ...], bool]:
+    if value is None:
+        return (), allow_absent
+    if not isinstance(value, list):
+        return (), False
+    if not all(isinstance(item, str) for item in value):
+        return (), False
+    return tuple(value), True
+
+
+def _safe_bridge_cache_path_kind(path: str) -> bool:
+    if not path or len(path) > 128 or not path.startswith("/") or "?" in path or "#" in path:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_./-]+", path))
+
+
+def _safe_bridge_cache_label(value: str, *, allow_empty: bool = False) -> bool:
+    value = str(value or "").strip()
+    if not value:
+        return allow_empty
+    if len(value) > 96 or _BRIDGE_CACHE_SENSITIVE_VALUE_RE.search(value) or _SENSITIVE_ARTIFACT_RE.search(value):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_.:/\[\]-]+", value))
+
+
+def _safe_bridge_cache_model_id(provider: str, value: object) -> bool:
+    if value is None or value == "":
+        return True
+    if not isinstance(value, str) or not _safe_bridge_cache_label(value):
+        return False
+    if provider == "deepseek":
+        return value.startswith("deepseek-") or value.startswith("claude-code-bridge-deepseek-")
+    if provider == "openai":
+        return value.startswith("gpt-") or value.startswith("claude-code-bridge-gpt-")
+    return False
+
+
+def _safe_bridge_cache_fallback_reason(value: str) -> bool:
+    value = str(value or "").strip()
+    if not _safe_bridge_cache_label(value):
+        return False
+    match = re.fullmatch(r"anthropic_([a-z0-9_]+)_fixture_failed", value)
+    return bool(match and match.group(1) in _BRIDGE_CACHE_FALLBACK_CAPABILITIES)
+
+
+def _safe_bridge_cache_hmac(value: str) -> bool:
+    match = _BRIDGE_CACHE_HMAC_RE.fullmatch(str(value or "").strip())
+    return bool(match and _safe_bridge_cache_label(match.group(1)))
 
 
 def _strict_live_run_id(payload: Mapping[str, object]) -> str:

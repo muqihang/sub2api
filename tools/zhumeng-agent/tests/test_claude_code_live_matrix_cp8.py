@@ -281,6 +281,58 @@ def _cache_account_ref(root: Path, scenario: dict[str, object], *, strict_live: 
                 "usage_accounting_split_by_route": scenario["usage_accounting_split_by_route"],
                 "audit_summary_only": scenario["audit_summary_only"],
                 "cache_provider_evidence": _cache_provider_evidence(strict_live=strict_live),
+                "bridge_cache_audit_rows": [
+                    {
+                        "schema_version": "claude-code-bridge-cache-audit-row-v1",
+                        "provider": "deepseek",
+                        "route": "deepseek_bridge",
+                        "client_type": "claude_code_bridge_deepseek",
+                        "model_id": "deepseek-v4-pro",
+                        "preferred_protocol": "anthropic_messages",
+                        "selected_protocol": "anthropic_messages",
+                        "fallback_protocol": "openai_chat_completions",
+                        "fallback_reason": "",
+                        "fallback_used": False,
+                        "provider_cache_mechanism": "deepseek_prefix_kv",
+                        "upstream_path_kind": "/anthropic/v1/messages",
+                        "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                        "stable_prefix_token_bucket": "1k_4k",
+                        "cache_control_present": True,
+                        "cache_control_locations": ["history", "system", "tools", "top_level"],
+                        "cache_control_provider_ignored": True,
+                        "prompt_cache_key_present": False,
+                        "prompt_cache_key_strategy": "absent",
+                        "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+                        "cache_read_tokens": 7,
+                        "cache_miss_tokens": 13,
+                        "raw_sensitive_stored": False,
+                    },
+                    {
+                        "schema_version": "claude-code-bridge-cache-audit-row-v1",
+                        "provider": "openai",
+                        "route": "openai_bridge",
+                        "client_type": "claude_code_bridge_openai",
+                        "model_id": "gpt-5.5",
+                        "preferred_protocol": "responses",
+                        "selected_protocol": "responses",
+                        "fallback_protocol": "",
+                        "fallback_reason": "",
+                        "fallback_used": False,
+                        "provider_cache_mechanism": "openai_prompt_cache",
+                        "upstream_path_kind": "/v1/responses",
+                        "stable_prefix_hmac": "hmac-sha256:cp8-cache:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                        "stable_prefix_token_bucket": "1k_4k",
+                        "cache_control_present": False,
+                        "cache_control_locations": [],
+                        "cache_control_provider_ignored": False,
+                        "prompt_cache_key_present": True,
+                        "prompt_cache_key_strategy": "present_redacted",
+                        "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
+                        "cache_read_tokens": 9,
+                        "cached_tokens": 9,
+                        "raw_sensitive_stored": False,
+                    },
+                ],
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -869,7 +921,7 @@ def test_cp8_cache_account_audit_rejects_sensitive_inline_artifact_keys(tmp_path
 
     assert result.status == "fail"
     assert "cache_account_audit" in result.failed
-    assert any("raw" in issue or "sensitive" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+    assert any("raw" in issue or "sensitive" in issue or "usage" in issue for issue in result.scenario_results["cache_account_audit"].issues)
 
 
 def test_cp8_cache_account_audit_rejects_sensitive_extra_artifact_refs(tmp_path: Path):
@@ -983,6 +1035,251 @@ def test_cp8_strict_live_cache_account_audit_requires_live_usage_fields(tmp_path
     assert "cache_account_audit" in result.failed
     assert any("live usage" in issue for issue in result.scenario_results["cache_account_audit"].issues)
 
+
+
+def test_cp8_cache_account_audit_requires_bridge_cache_audit_rows(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "pass"
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    copied = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = copied["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload.pop("bridge_cache_audit_rows", None)
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in copied["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(copied, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("bridge cache audit" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_bridge_cache_audit_row_with_raw_prompt_key(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload.setdefault("bridge_cache_audit_rows", []).append(
+        {
+            "schema_version": "claude-code-bridge-cache-audit-row-v1",
+            "provider": "deepseek",
+            "route": "deepseek_bridge",
+            "client_type": "claude_code_bridge_deepseek",
+            "selected_protocol": "anthropic_messages",
+            "provider_cache_mechanism": "deepseek_prefix_kv",
+            "upstream_path_kind": "/anthropic/v1/messages",
+            "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "stable_prefix_token_bucket": "1k_4k",
+            "cache_read_tokens": 7,
+            "cache_miss_tokens": 13,
+            "cache_control_provider_ignored": True,
+            "raw_prompt": "do not store this",
+        }
+    )
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    artifact_ref["sha256"] = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("raw" in issue or "sensitive" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_prompt_cache_key_value_in_bridge_row(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["bridge_cache_audit_rows"][1]["prompt_cache_key"] = "session-cache-key-must-not-leak"
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("prompt_cache_key" in issue or "unsupported fields" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_duplicate_bridge_cache_provider_rows(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["bridge_cache_audit_rows"].append(dict(artifact_payload["bridge_cache_audit_rows"][0]))
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("duplicate" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+@pytest.mark.parametrize(
+    ("row_index", "field", "value"),
+    (
+        (0, "fallback_reason", "raw prompt body should not pass"),
+        (0, "model_id", "raw response body should not pass"),
+        (1, "fallback_reason", "Authorization header should not pass"),
+        (0, "model_id", "rawpromptbody"),
+        (0, "fallback_reason", "anthropic_rawpromptbody_fixture_failed"),
+    ),
+)
+def test_cp8_cache_account_audit_rejects_sensitive_allowed_string_values(tmp_path: Path, row_index: int, field: str, value: str):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["bridge_cache_audit_rows"][row_index][field] = value
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("unsafe" in issue or "safe" in issue or "wrong" in issue or "sensitive" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_non_enum_cache_control_location(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["bridge_cache_audit_rows"][0]["cache_control_locations"].append("raw prompt body")
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("cache_control_locations" in issue or "location" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("cache_control_locations", ["history", {"safe": "raw prompt body response header prompt_cache_key value"}]),
+        ("cache_usage_fields", ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", {"safe": "raw prompt body"}]),
+        ("cache_read_tokens", {"safe": "raw prompt body"}),
+        ("prompt_cache_key_strategy", "rawpromptbody"),
+    ),
+)
+def test_cp8_cache_account_audit_rejects_nested_sensitive_values_in_allowed_fields(tmp_path: Path, field: str, value: object):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["bridge_cache_audit_rows"][0][field] = value
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("schema" in issue or "unsafe" in issue or "list" in issue or "integer" in issue or "sensitive" in issue or "usage" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_cache_account_audit_rejects_deepseek_prompt_cache_key_or_cached_tokens_claim(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    deepseek = artifact_payload["bridge_cache_audit_rows"][0]
+    deepseek["prompt_cache_key_present"] = True
+    deepseek["cached_tokens"] = 3
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("DeepSeek" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+@pytest.mark.parametrize(
+    ("row_index", "field", "value"),
+    (
+        (0, "preferred_protocol", "responses"),
+        (0, "fallback_protocol", "responses"),
+        (1, "preferred_protocol", "anthropic_messages"),
+        (1, "fallback_protocol", "anthropic_messages"),
+    ),
+)
+def test_cp8_cache_account_audit_rejects_provider_protocol_drift(tmp_path: Path, row_index: int, field: str, value: str):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    artifact_ref = payload["scenarios"]["cache_account_audit"]["artifact_refs"][0]
+    artifact = fixture_root / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["bridge_cache_audit_rows"][row_index][field] = value
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    updated_hash = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    for scenario in payload["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == artifact_ref["path"]:
+                ref["sha256"] = updated_hash
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "cache_account_audit" in result.failed
+    assert any("protocol" in issue for issue in result.scenario_results["cache_account_audit"].issues)
 
 def test_cp8_live_matrix_rejects_unknown_schema_version():
     payload = _fixture("live_matrix_pass.json")
