@@ -37,10 +37,15 @@ from .adapters.codex.model_picker import inspect_plugin_mention_marketplace_app,
 from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup, restore_latest_plugin_mention_marketplace_backup
 from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
-from .adapters.claude_code.launcher import run_managed_claude_code
+from .adapters.claude_code.launcher import (
+    _bridge_model_capabilities_json,
+    bridge_effort_capabilities_hash,
+    run_managed_claude_code,
+)
 from .adapters.claude_code.doctor import ClaudeCodeDoctorContext
 from .adapters.claude_code.profile import ClaudeCodeCapabilityProfile, FgtsMode, ToolSearchMode
 from .adapters.claude_code.runtime_installer import (
+    EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
     RuntimeInstallerError,
     apply_managed_runtime_agent_model_schema_patch,
     apply_managed_runtime_effort_capability_patch,
@@ -1921,7 +1926,8 @@ def _bridge_effort_ui_models(bridge_live_models: Sequence[str]) -> tuple[str, ..
 
 
 def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models: Sequence[str]) -> None:
-    if not _bridge_effort_ui_models(bridge_live_models):
+    effort_ui_models = _bridge_effort_ui_models(bridge_live_models)
+    if not effort_ui_models:
         return
     if str(getattr(active_runtime, "upstream_version", "")) != "2.1.177":
         return
@@ -1930,13 +1936,40 @@ def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_m
     manifest_points = manifest.get("patch_points", ()) if isinstance(manifest, Mapping) else ()
     patch_points = patches.get("patch_points", ()) if isinstance(patches, Mapping) else ()
     effort_patch = patches.get("effort_capability_patch") if isinstance(patches, Mapping) else None
-    if (
+    has_patch_point = (
         "effort_capability_hook" in set(str(item) for item in manifest_points)
         and "effort_capability_hook" in set(str(item) for item in patch_points)
         and isinstance(effort_patch, Mapping)
         and str(effort_patch.get("env", "")) == "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
-    ):
-        return
+    )
+    if has_patch_point:
+        exact_schema = str(effort_patch.get("schema", "")) == "exact_effort_levels_v1"
+        ui_probe = str(effort_patch.get("ui_probe", "")) == "claude_code_2_1_177_model_picker_exact_effort_levels"
+        expected_capabilities = _bridge_model_capabilities_json(tuple(bridge_live_models))
+        expected_capabilities_hash = bridge_effort_capabilities_hash(expected_capabilities)
+        metadata_live_models = tuple(str(item) for item in effort_patch.get("live_bridge_models", ()) if str(item))
+        manifest_patch_points = set(str(item) for item in manifest_points)
+        patch_file_points = set(str(item) for item in patch_points)
+        if (
+            exact_schema
+            and ui_probe
+            and EXACT_EFFORT_LEVEL_UI_PATCH_POINT in manifest_patch_points
+            and EXACT_EFFORT_LEVEL_UI_PATCH_POINT in patch_file_points
+            and str(effort_patch.get("patch_point", "")) == EXACT_EFFORT_LEVEL_UI_PATCH_POINT
+            and str(effort_patch.get("hook", "")) == "exact_effort_levels_ui"
+            and effort_patch.get("exact_effort_levels_supported") is True
+            and effort_patch.get("boolean_only_hook_rejected") is False
+            and str(effort_patch.get("probe_status", "")) == "pass"
+            and str(effort_patch.get("probe_schema_version", "")) == "claude-code-2.1.177-bridge-effort-ui-probe-v1"
+            and str(effort_patch.get("runtime_hash", "")) == str(getattr(active_runtime, "runtime_hash", ""))
+            and str(effort_patch.get("capabilities_hash", "")) == expected_capabilities_hash
+            and metadata_live_models == effort_ui_models
+        ):
+            return
+        raise RuntimeInstallerError(
+            "managed Claude Code 2.1.177 bridge /model effort UI requires exact effort levels patch; "
+            "the older boolean-only effort capability hook cannot hide DeepSeek Medium or GPT Max"
+        )
     raise RuntimeInstallerError(
         "managed Claude Code 2.1.177 bridge /model effort UI requires effort capability patch; "
         "run 'zhumeng-agent claude-code runtime-patch --approve-managed-binary-patch effort-capability' before start"

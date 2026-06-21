@@ -1442,8 +1442,25 @@ def test_managed_launch_writes_provider_profile_resolver_artifact(tmp_path: Path
     env = captured["launch_env"]
     assert env["ZHUMENG_CLAUDE_PROVIDER_PROFILE_RESOLVER"] == "enabled"
     capabilities = json.loads(env["ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"])
-    assert capabilities["claude-code-bridge-gpt-5.5"] == {"effort": True, "max_effort": False, "xhigh_effort": True}
-    assert capabilities["claude-code-bridge-deepseek-v4-pro"] == {"effort": True, "max_effort": True, "xhigh_effort": False}
+    exact_effort_levels = json.loads(env["ZCCEL"])
+    assert exact_effort_levels == {
+        "claude-code-bridge-deepseek-v4-flash": ["high", "max"],
+        "claude-code-bridge-deepseek-v4-pro": ["high", "max"],
+        "claude-code-bridge-gpt-5.4-mini": ["low", "medium", "high", "xhigh"],
+        "claude-code-bridge-gpt-5.5": ["low", "medium", "high", "xhigh"],
+    }
+    assert capabilities["claude-code-bridge-gpt-5.5"] == {
+        "effort": True,
+        "max_effort": False,
+        "xhigh_effort": True,
+        "effort_levels": ["low", "medium", "high", "xhigh"],
+    }
+    assert capabilities["claude-code-bridge-deepseek-v4-pro"] == {
+        "effort": True,
+        "max_effort": True,
+        "xhigh_effort": False,
+        "effort_levels": ["high", "max"],
+    }
     assert capabilities["claude-code-bridge-agnes-2.0-flash"] == {"effort": False, "max_effort": False, "xhigh_effort": False}
     assert capabilities["claude-code-bridge-glm-5.2-1m"] == {"effort": False, "max_effort": False, "xhigh_effort": False}
     assert capabilities["claude-code-bridge-kimi-k2.7-code"] == {"effort": False, "max_effort": False, "xhigh_effort": False}
@@ -1475,6 +1492,96 @@ def test_managed_launch_writes_provider_profile_resolver_artifact(tmp_path: Path
             assert resolution["provider"] == provider
             assert resolution["native_egress_allowed"] is False
             assert resolution["resolved_model_id"] != "claude-haiku-4-5-20251001", (provider, task)
+
+
+def test_bridge_model_capabilities_json_exposes_exact_effort_levels_for_model_picker():
+    capabilities = json.loads(launcher._bridge_model_capabilities_json((
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-deepseek-v4-pro",
+        "claude-code-bridge-glm-5.2-1m",
+        "claude-code-bridge-agnes-2.0-flash",
+        "claude-code-bridge-kimi-k2.7-code",
+    )))
+
+    assert capabilities["claude-code-bridge-gpt-5.5"]["effort_levels"] == ["low", "medium", "high", "xhigh"]
+    assert "max" not in capabilities["claude-code-bridge-gpt-5.5"]["effort_levels"]
+    assert capabilities["claude-code-bridge-deepseek-v4-pro"]["effort_levels"] == ["high", "max"]
+    assert "medium" not in capabilities["claude-code-bridge-deepseek-v4-pro"]["effort_levels"]
+    assert capabilities["claude-code-bridge-glm-5.2-1m"]["effort_levels"] == ["high", "max"]
+    assert "effort_levels" not in capabilities["claude-code-bridge-agnes-2.0-flash"]
+    assert "effort_levels" not in capabilities["claude-code-bridge-kimi-k2.7-code"]
+    assert "claude-opus-4-8" not in capabilities
+
+
+def test_bridge_effort_ui_probe_rejects_boolean_only_runtime_hook_for_deepseek():
+    boolean_only = {
+        "claude-code-bridge-gpt-5.5": {"effort": True, "max_effort": False, "xhigh_effort": True},
+        "claude-code-bridge-deepseek-v4-pro": {"effort": True, "max_effort": True, "xhigh_effort": False},
+    }
+
+    probe = launcher.probe_bridge_effort_ui_policy(
+        json.dumps(boolean_only, sort_keys=True),
+        requested_efforts={
+            "claude-code-bridge-gpt-5.5": "max",
+            "claude-code-bridge-deepseek-v4-pro": "medium",
+        },
+    )
+
+    assert probe["status"] == "fail"
+    deepseek = probe["models"]["claude-code-bridge-deepseek-v4-pro"]
+    assert deepseek["schema"] == "boolean_only"
+    assert deepseek["supported_effort_levels"] == ["low", "medium", "high", "max"]
+    assert "medium" in deepseek["unsupported_visible_levels"]
+
+
+def test_bridge_effort_ui_probe_accepts_exact_per_model_effort_levels():
+    capabilities = launcher._bridge_model_capabilities_json((
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-deepseek-v4-pro",
+        "claude-code-bridge-glm-5.2-1m",
+        "claude-code-bridge-agnes-2.0-flash",
+        "claude-code-bridge-kimi-k2.7-code",
+    ))
+
+    probe = launcher.probe_bridge_effort_ui_policy(
+        capabilities,
+        requested_efforts={
+            "claude-code-bridge-gpt-5.5": "max",
+            "claude-code-bridge-deepseek-v4-pro": "medium",
+            "claude-code-bridge-glm-5.2-1m": "medium",
+            "claude-code-bridge-agnes-2.0-flash": "high",
+            "claude-code-bridge-kimi-k2.7-code": "high",
+        },
+    )
+
+    assert probe["status"] == "pass"
+    assert probe["models"]["claude-code-bridge-gpt-5.5"]["supported_effort_levels"] == ["low", "medium", "high", "xhigh"]
+    assert probe["models"]["claude-code-bridge-gpt-5.5"]["effective_effort"] == "high"
+    assert probe["models"]["claude-code-bridge-deepseek-v4-pro"]["supported_effort_levels"] == ["high", "max"]
+    assert probe["models"]["claude-code-bridge-deepseek-v4-pro"]["effective_effort"] == "high"
+    assert probe["models"]["claude-code-bridge-glm-5.2-1m"]["supported_effort_levels"] == ["high", "max"]
+    assert probe["models"]["claude-code-bridge-agnes-2.0-flash"]["supports_effort"] is False
+    assert probe["models"]["claude-code-bridge-kimi-k2.7-code"]["supports_effort"] is False
+    metadata = launcher.build_bridge_effort_ui_probe_metadata(
+        capabilities_json=capabilities,
+        bridge_live_models=(
+            "claude-code-bridge-gpt-5.5",
+            "claude-code-bridge-deepseek-v4-pro",
+            "claude-code-bridge-glm-5.2-1m",
+        ),
+        runtime_hash="sha256:" + "1" * 64,
+    )
+    assert metadata["exact_effort_levels_supported"] is True
+    assert metadata["patch_point"] == "exact_effort_level_ui_patch"
+    assert metadata["hook"] == "exact_effort_levels_ui"
+    assert metadata["probe_status"] == "pass"
+    assert metadata["runtime_hash"] == "sha256:" + "1" * 64
+    assert metadata["live_bridge_models"] == [
+        "claude-code-bridge-gpt-5.5",
+        "claude-code-bridge-deepseek-v4-pro",
+        "claude-code-bridge-glm-5.2-1m",
+    ]
+    assert metadata["capabilities_hash"] == launcher.bridge_effort_capabilities_hash(capabilities)
 
 
 def test_managed_launch_refreshes_gateway_model_cache_for_current_guard(tmp_path: Path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import re
 import subprocess
@@ -484,6 +485,60 @@ def _write_provider_profile_resolver_artifact(
         "ZHUMENG_CLAUDE_PROVIDER_PROFILE_RESOLVER": "enabled",
         "ZHUMENG_CLAUDE_PROVIDER_PROFILE_PATH": str(profile_path),
         _MODEL_CAPABILITIES_ENV_NAME: _bridge_model_capabilities_json(tuple(bridge_live_models)),
+        "ZCCEL": _bridge_exact_effort_levels_json(tuple(bridge_live_models)),
+    }
+
+
+def _bridge_exact_effort_levels_json(bridge_live_models: tuple[str, ...] = ()) -> str:
+    capabilities = json.loads(_bridge_model_capabilities_json(bridge_live_models))
+    exact_levels = {
+        model_id: value["effort_levels"]
+        for model_id, value in capabilities.items()
+        if isinstance(value, dict) and isinstance(value.get("effort_levels"), list) and value.get("effort_levels")
+    }
+    return json.dumps(exact_levels, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def bridge_effort_capabilities_hash(capabilities_json: str) -> str:
+    try:
+        payload = json.loads(capabilities_json or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    canonical = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def build_bridge_effort_ui_probe_metadata(
+    *,
+    capabilities_json: str,
+    bridge_live_models: Sequence[str],
+    runtime_hash: str,
+) -> dict[str, object]:
+    effort_models = tuple(
+        model
+        for model in bridge_live_models
+        if model.startswith((
+            "claude-code-bridge-gpt-",
+            "claude-code-bridge-deepseek-",
+            "claude-code-bridge-glm-",
+        ))
+    )
+    probe = probe_bridge_effort_ui_policy(
+        capabilities_json,
+        requested_efforts={model: "medium" for model in effort_models},
+    )
+    return {
+        "schema": "exact_effort_levels_v1",
+        "patch_point": "exact_effort_level_ui_patch",
+        "hook": "exact_effort_levels_ui",
+        "ui_probe": "claude_code_2_1_177_model_picker_exact_effort_levels",
+        "exact_effort_levels_supported": probe.get("status") == "pass",
+        "boolean_only_hook_rejected": False,
+        "probe_status": probe.get("status"),
+        "probe_schema_version": probe.get("schema_version"),
+        "runtime_hash": runtime_hash,
+        "live_bridge_models": list(effort_models),
+        "capabilities_hash": bridge_effort_capabilities_hash(capabilities_json),
     }
 
 
@@ -492,19 +547,127 @@ def _bridge_model_capabilities_json(bridge_live_models: tuple[str, ...] = ()) ->
 
     proof = build_cp2_model_overlay_proof(_synthetic_runtime_plan_for_overlay(Path("claude"), runtime_hash="sha256:" + "0" * 64, overlay_hash="sha256:" + "0" * 64))
     live_models = {model for model in bridge_live_models if model}
-    capabilities: dict[str, dict[str, bool]] = {}
+    capabilities: dict[str, dict[str, object]] = {}
     for entry in proof.models:
         if not entry.model_id.startswith("claude-code-bridge-"):
             continue
-        levels = set(_bridge_reasoning_effort_levels(entry.model_id, entry.provider))
+        levels = tuple(_bridge_reasoning_effort_levels(entry.model_id, entry.provider))
         if entry.model_id not in live_models or entry.provider in {"agnes", "kimi"}:
-            levels = set()
-        capabilities[entry.model_id] = {
+            levels = ()
+        model_capabilities: dict[str, object] = {
             "effort": bool(levels),
             "max_effort": "max" in levels,
             "xhigh_effort": "xhigh" in levels,
         }
+        if levels:
+            model_capabilities["effort_levels"] = list(levels)
+        capabilities[entry.model_id] = model_capabilities
     return json.dumps(capabilities, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def probe_bridge_effort_ui_policy(
+    capabilities_json: str,
+    *,
+    requested_efforts: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Evaluate the Claude Code 2.1.177 /model effort policy we expect.
+
+    Claude Code's stock boolean hook can only hide max/xhigh. It cannot express
+    DeepSeek's high/max-only policy because low/medium/high are implied by
+    effort=true. The managed exact-level schema must therefore be present before
+    a bridge model with effort is allowed to be treated as UI-safe.
+    """
+    try:
+        raw = json.loads(capabilities_json or "{}")
+    except json.JSONDecodeError:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    requested_efforts = requested_efforts or {}
+    expected = {
+        "claude-code-bridge-gpt-5.5": ("low", "medium", "high", "xhigh"),
+        "claude-code-bridge-gpt-5.4": ("low", "medium", "high", "xhigh"),
+        "claude-code-bridge-gpt-5.4-mini": ("low", "medium", "high", "xhigh"),
+        "claude-code-bridge-deepseek-v4-pro": ("high", "max"),
+        "claude-code-bridge-deepseek-v4-flash": ("high", "max"),
+        "claude-code-bridge-glm-5.2-1m": ("high", "max"),
+        "claude-code-bridge-agnes-2.0-flash": (),
+        "claude-code-bridge-kimi-k2.7-code": (),
+    }
+    models: dict[str, dict[str, object]] = {}
+    failures: list[str] = []
+    scoped_model_ids = tuple(requested_efforts.keys()) if requested_efforts else tuple(expected.keys())
+    for model_id in scoped_model_ids:
+        expected_levels = expected.get(model_id, ())
+        entry = raw.get(model_id)
+        if not isinstance(entry, dict):
+            if expected_levels:
+                failures.append(f"{model_id}:missing_capability_entry")
+            continue
+        exact_levels = _normalized_effort_level_list(entry.get("effort_levels"))
+        schema = "exact_levels" if exact_levels or "effort_levels" in entry else "boolean_only"
+        if schema == "exact_levels":
+            supported = exact_levels
+        elif bool(entry.get("effort")):
+            supported = ["low", "medium", "high"]
+            if bool(entry.get("xhigh_effort")):
+                supported.append("xhigh")
+            if bool(entry.get("max_effort")):
+                supported.append("max")
+        else:
+            supported = []
+        requested = str(requested_efforts.get(model_id, "") or "").strip().lower()
+        effective = _effective_probe_effort(requested, supported) if requested else None
+        unsupported_visible = [level for level in supported if level not in expected_levels]
+        missing_expected = [level for level in expected_levels if level not in supported]
+        if tuple(supported) != expected_levels:
+            failures.append(f"{model_id}:supported_levels_mismatch")
+        if expected_levels and schema != "exact_levels":
+            failures.append(f"{model_id}:exact_level_schema_missing")
+        if effective and effective not in expected_levels:
+            failures.append(f"{model_id}:effective_effort_unsupported")
+        models[model_id] = {
+            "schema": schema,
+            "supports_effort": bool(supported),
+            "supported_effort_levels": supported,
+            "expected_effort_levels": list(expected_levels),
+            "unsupported_visible_levels": unsupported_visible,
+            "missing_expected_levels": missing_expected,
+            "requested_effort": requested,
+            "effective_effort": effective,
+        }
+    return {
+        "schema_version": "claude-code-2.1.177-bridge-effort-ui-probe-v1",
+        "status": "fail" if failures else "pass",
+        "models": models,
+        "failures": failures,
+    }
+
+
+def _normalized_effort_level_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        candidates = list(value)
+    else:
+        return []
+    allowed = {"low", "medium", "high", "xhigh", "max"}
+    levels: list[str] = []
+    for item in candidates:
+        level = str(item).strip().lower()
+        if level in allowed and level not in levels:
+            levels.append(level)
+    return levels
+
+
+def _effective_probe_effort(requested: str, supported: Sequence[str]) -> str | None:
+    if not supported:
+        return None
+    if requested in supported:
+        return requested
+    if "high" in supported:
+        return "high"
+    return str(supported[0])
 
 
 def _provider_profile_live_enabled(profile, live_models: set[str]) -> bool:

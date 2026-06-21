@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import zhumeng_agent.cli as cli
 from zhumeng_agent.adapters.codex.model_picker import ModelPickerPatchError
+from zhumeng_agent.adapters.claude_code.launcher import _bridge_model_capabilities_json, build_bridge_effort_ui_probe_metadata
 from zhumeng_agent.adapters.claude_code.runtime_installer import EFFORT_CAPABILITY_HOOK_NEEDLE, EFFORT_CAPABILITY_HOOK_REPLACEMENT
 from zhumeng_agent.cli import main
 
@@ -1080,8 +1081,78 @@ def test_claude_code_effort_ui_patch_gate_scope():
     with pytest.raises(cli.RuntimeInstallerError, match="effort capability patch"):
         cli._require_effort_capability_patch_for_bridge_ui(unpatched_runtime, ("claude-code-bridge-glm-5.2-1m",))
 
+    boolean_only_runtime = SimpleNamespace(
+        upstream_version="2.1.177",
+        runtime_hash="sha256:" + "1" * 64,
+        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook"]},
+        patches={
+            "patch_points": ["runtime_manifest", "effort_capability_hook"],
+            "effort_capability_patch": {"env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"},
+        },
+    )
+    with pytest.raises(cli.RuntimeInstallerError, match="exact effort levels"):
+        cli._require_effort_capability_patch_for_bridge_ui(boolean_only_runtime, ("claude-code-bridge-deepseek-v4-pro",))
 
-def test_claude_code_start_allows_bridge_models_after_effort_ui_patch(capsys, tmp_path: Path, monkeypatch):
+    boolean_patch_with_probe_metadata = SimpleNamespace(
+        upstream_version="2.1.177",
+        runtime_hash="sha256:" + "1" * 64,
+        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook"]},
+        patches={
+            "patch_points": ["runtime_manifest", "effort_capability_hook"],
+            "effort_capability_patch": {
+                "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
+                **build_bridge_effort_ui_probe_metadata(
+                    capabilities_json=_bridge_model_capabilities_json(("claude-code-bridge-deepseek-v4-pro",)),
+                    bridge_live_models=("claude-code-bridge-deepseek-v4-pro",),
+                    runtime_hash="sha256:" + "1" * 64,
+                ),
+            },
+        },
+    )
+    with pytest.raises(cli.RuntimeInstallerError, match="exact effort levels"):
+        cli._require_effort_capability_patch_for_bridge_ui(boolean_patch_with_probe_metadata, ("claude-code-bridge-deepseek-v4-pro",))
+
+    forged_exact_runtime = SimpleNamespace(
+        upstream_version="2.1.177",
+        runtime_hash="sha256:" + "1" * 64,
+        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"]},
+        patches={
+            "patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"],
+            "effort_capability_patch": {
+                "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
+                **build_bridge_effort_ui_probe_metadata(
+                    capabilities_json=_bridge_model_capabilities_json(("claude-code-bridge-deepseek-v4-pro",)),
+                    bridge_live_models=("claude-code-bridge-deepseek-v4-pro",),
+                    runtime_hash="sha256:" + "1" * 64,
+                ),
+                "exact_effort_levels_supported": False,
+                "boolean_only_hook_rejected": "true",
+            },
+        },
+    )
+    with pytest.raises(cli.RuntimeInstallerError, match="exact effort levels"):
+        cli._require_effort_capability_patch_for_bridge_ui(forged_exact_runtime, ("claude-code-bridge-deepseek-v4-pro",))
+
+    exact_level_runtime = SimpleNamespace(
+        upstream_version="2.1.177",
+        runtime_hash="sha256:" + "1" * 64,
+        manifest={"patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"]},
+        patches={
+            "patch_points": ["runtime_manifest", "effort_capability_hook", "exact_effort_level_ui_patch"],
+            "effort_capability_patch": {
+                "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
+                **build_bridge_effort_ui_probe_metadata(
+                    capabilities_json=_bridge_model_capabilities_json(("claude-code-bridge-deepseek-v4-pro",)),
+                    bridge_live_models=("claude-code-bridge-deepseek-v4-pro",),
+                    runtime_hash="sha256:" + "1" * 64,
+                ),
+            },
+        },
+    )
+    cli._require_effort_capability_patch_for_bridge_ui(exact_level_runtime, ("claude-code-bridge-deepseek-v4-pro",))
+
+
+def test_claude_code_start_allows_bridge_models_after_exact_effort_ui_patch(capsys, tmp_path: Path, monkeypatch):
     class FakeStore:
         def read(self):
             return {
@@ -1107,13 +1178,34 @@ def test_claude_code_start_allows_bridge_models_after_effort_ui_patch(capsys, tm
             return {**self.read(), **patch}
 
     runtime_root = tmp_path / "runtimes"
-    payload = b"prefix " + EFFORT_CAPABILITY_HOOK_NEEDLE + b' k.enum(["sonnet","opus","haiku","fable"]).optional() suffix'
+    payload = b"exact-effort-ui-patched k.string().min(1).max(128).optional()                suffix"
+    runtime_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
+    exact_patch_points = [
+        "runtime_manifest",
+        "hash_lock",
+        "isolated_config",
+        "guard_env",
+        "effort_capability_hook",
+        "exact_effort_level_ui_patch",
+    ]
     managed_executable, _, _ = write_fake_claude_runtime(
         runtime_root,
         tmp_path / "managed-runtime" / "claude",
         payload=payload,
         upstream_version="2.1.177",
         patches={
+            "patch_points": exact_patch_points,
+            "effort_capability_patch": {
+                "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
+                **build_bridge_effort_ui_probe_metadata(
+                    capabilities_json=_bridge_model_capabilities_json((
+                        "claude-code-bridge-gpt-5.5",
+                        "claude-code-bridge-deepseek-v4-pro",
+                    )),
+                    bridge_live_models=("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"),
+                    runtime_hash=runtime_hash,
+                ),
+            },
             "live_bridge_models_enabled": True,
             "live_bridge_model_allowlist": ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"],
             "live_bridge_model_catalog": {
@@ -1132,15 +1224,16 @@ def test_claude_code_start_allows_bridge_models_after_effort_ui_patch(capsys, tm
             },
         },
     )
-    assert main([
-        "claude-code",
-        "runtime-patch",
-        "--runtime-root",
-        str(runtime_root),
-        "--approve-managed-binary-patch",
-        "effort-capability",
-    ]) == 0
-    parse_output(capsys)
+    manifest_path = runtime_root / "claude-code" / "2.1.177" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["patch_points"] = exact_patch_points
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    hash_lock_path = runtime_root / "claude-code" / "2.1.177" / "hash.lock"
+    hash_lock = json.loads(hash_lock_path.read_text(encoding="utf-8"))
+    manifest_hash = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    hash_lock["manifest_hash"] = manifest_hash
+    hash_lock["locked_files"]["manifest.json"] = manifest_hash
+    hash_lock_path.write_text(json.dumps(hash_lock, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
     calls = []
 
@@ -1589,11 +1682,18 @@ def test_claude_code_start_reads_state_root_state_json_without_env_override(caps
         runtime_hash = "sha256:" + "1" * 64
         overlay_hash = "sha256:" + "2" * 64
         manifest = {
-            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook"],
+            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook", "exact_effort_level_ui_patch"],
         }
         patches = {
-            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook"],
-            "effort_capability_patch": {"env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"},
+            "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env", "effort_capability_hook", "exact_effort_level_ui_patch"],
+            "effort_capability_patch": {
+                "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
+                **build_bridge_effort_ui_probe_metadata(
+                    capabilities_json=_bridge_model_capabilities_json(("claude-code-bridge-deepseek-v4-pro",)),
+                    bridge_live_models=("claude-code-bridge-deepseek-v4-pro",),
+                    runtime_hash="sha256:" + "1" * 64,
+                ),
+            },
             "live_bridge_models_enabled": True,
             "live_bridge_model_allowlist": ["claude-code-bridge-deepseek-v4-pro"],
             "live_bridge_model_catalog": {

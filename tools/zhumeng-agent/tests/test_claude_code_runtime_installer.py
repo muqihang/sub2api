@@ -303,6 +303,16 @@ def test_runtime_installer_agent_schema_patch_is_idempotent(tmp_path: Path):
 
 
 
+def test_runtime_installer_documents_boolean_hook_slack_cannot_hold_exact_level_ui_patch():
+    from zhumeng_agent.adapters.claude_code import runtime_installer as installer  # noqa: PLC0415
+
+    assert installer.EFFORT_CAPABILITY_HOOK_SLACK_BYTES == (
+        len(installer.EFFORT_CAPABILITY_HOOK_NEEDLE)
+        - len(installer.EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)
+    )
+    assert installer.EFFORT_CAPABILITY_HOOK_SLACK_BYTES < installer.EXACT_EFFORT_LEVEL_UI_PATCH_MIN_EXTRA_BYTES
+
+
 def test_runtime_installer_effort_capability_patch_requires_explicit_approval(tmp_path: Path):
     runtime_root = tmp_path / ".zhumeng" / "runtimes"
     executable = tmp_path / "managed-bin" / "claude"
@@ -349,6 +359,10 @@ def test_runtime_installer_effort_capability_patch_adds_bridge_model_capability_
     assert "effort_capability_hook" in active.manifest["patch_points"]
     assert active.patches["effort_capability_patch"]["env"] == "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
     assert active.patches["effort_capability_patch"]["direct_binary_patch_requires_approval"] is True
+    assert active.patches["effort_capability_patch"]["schema"] == "boolean_effort_flags_v1"
+    assert active.patches["effort_capability_patch"]["ui_probe"] == "boolean_only_insufficient_for_exact_effort_levels"
+    assert active.patches["effort_capability_patch"]["exact_effort_levels_supported"] is False
+    assert active.patches["effort_capability_patch"]["boolean_only_hook_rejected"] is True
 
 
 def test_runtime_installer_effort_capability_patch_is_idempotent(tmp_path: Path):

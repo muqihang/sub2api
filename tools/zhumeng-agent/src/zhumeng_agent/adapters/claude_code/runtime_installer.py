@@ -22,11 +22,14 @@ DEFAULT_PATCH_POINTS = (
 )
 AGENT_MODEL_SCHEMA_PATCH_POINT = "agent_model_schema"
 EFFORT_CAPABILITY_PATCH_POINT = "effort_capability_hook"
+EXACT_EFFORT_LEVEL_UI_PATCH_POINT = "exact_effort_level_ui_patch"
 EFFORT_CAPABILITY_ENV_VAR = "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
 AGENT_MODEL_SCHEMA_ENUM_NEEDLE = b'k.enum(["sonnet","opus","haiku","fable"]).optional()'
 AGENT_MODEL_SCHEMA_STRING_PATCH = b"k.string().min(1).max(128).optional()               "
 EFFORT_CAPABILITY_HOOK_NEEDLE = b'var QP5,us;var oK6=L(()=>{c7();V7();QP5=[{modelEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION",capabilitiesEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"}],us=V6((H,_)=>{if(OO())return;let q=H.toLowerCase();for(let K of QP5){let O=process.env[K.modelEnvVar],T=process.env[K.capabilitiesEnvVar];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)});'
 EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE = b'var QP5,us;var oK6=L(()=>{c7();V7();QP5=[["ANTHROPIC_DEFAULT_FABLE_MODEL","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_DEFAULT_HAIKU_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"],["ANTHROPIC_CUSTOM_MODEL_OPTION","ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"]],us=V6((H,_)=>{let q=H.toLowerCase(),J=process.env.ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON;if(J)try{let M=JSON.parse(J)[q];if(M&&M[_]!=null)return!!M[_]}catch{}if(OO())return;for(let K of QP5){let O=process.env[K[0]],T=process.env[K[1]];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)});'
+EFFORT_CAPABILITY_HOOK_SLACK_BYTES = len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)
+EXACT_EFFORT_LEVEL_UI_PATCH_MIN_EXTRA_BYTES = 96
 EFFORT_CAPABILITY_HOOK_REPLACEMENT = EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE + (b" " * (len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)))
 GLOBAL_CLAUDE_BINARY_PATHS = frozenset({
     Path("/opt/homebrew/bin/claude"),
@@ -351,7 +354,11 @@ def apply_managed_runtime_effort_capability_patch(runtime_root: Path, executable
         patch_point=EFFORT_CAPABILITY_PATCH_POINT,
         patch_metadata={
             "env": EFFORT_CAPABILITY_ENV_VAR,
+            "schema": "boolean_effort_flags_v1",
             "hook": "us_model_capabilities",
+            "ui_probe": "boolean_only_insufficient_for_exact_effort_levels",
+            "exact_effort_levels_supported": False,
+            "boolean_only_hook_rejected": True,
             "direct_binary_patch_requires_approval": True,
             "global_binary_touched": False,
         },
