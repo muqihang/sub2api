@@ -120,6 +120,10 @@ _STRICT_LIVE_SCENARIO_PROVIDERS: dict[str, tuple[str, ...]] = {
     "netwatch_bypass": ("claude", "openai", "deepseek"),
 }
 _WORKFLOW_BACKGROUND_TASKS = ("title", "compact", "summary", "probe", "fast", "simple", "haiku")
+_TOOLSEARCH_BRIDGE_PROVIDERS = ("openai", "deepseek")
+_TOOLSEARCH_PROVIDER_STRICT_MODES = frozenset({"materialized", "shim"})
+_TOOLSEARCH_PROVIDER_DEGRADED_MODES = frozenset({"disabled", "fail_closed", "degraded_disabled"})
+_TOOLSEARCH_SCENARIO_MODES = _TOOLSEARCH_PROVIDER_STRICT_MODES | frozenset({"degraded_disabled", "fail_closed"})
 _PROVIDER_RELEASE_STATUSES = frozenset({"strict-live-pass", "degraded-pass", "fixture-pass-only", "live-disabled"})
 _REQUIRED_PROVIDER_RELEASE_CLASSIFICATION = ("claude_native", "openai", "deepseek", "agnes", "glm", "kimi")
 _STRICT_LIVE_CORE_PROVIDERS = frozenset({"claude_native", "openai", "deepseek"})
@@ -471,6 +475,7 @@ def _verify_scenario(
         for field in ("mcp_tools_exercised", "bridge_tool_use_sse_golden_diff", "input_json_delta_verified", "stop_reason_tool_use_verified"):
             if raw.get(field) is not True:
                 issues.append(f"{field} must be true")
+        issues.extend(_toolsearch_mcp_bridge_issues(raw, strict_live=strict_live))
     elif name == "workflow":
         if raw.get("active_profile_dynamic_resolution") is not True or raw.get("workflow_alias_resolved_provider_local") is not True:
             issues.append("workflow must dynamically resolve active provider profile")
@@ -506,6 +511,55 @@ def _verify_scenario(
         route=route,
         client_type=client_type,
     )
+
+
+def _toolsearch_mcp_bridge_issues(raw: Mapping[str, object], *, strict_live: bool) -> tuple[str, ...]:
+    issues: list[str] = []
+    mode = str(raw.get("toolsearch_mode") or "").strip()
+    if mode not in _TOOLSEARCH_SCENARIO_MODES:
+        issues.append("ToolSearch MCP scenario must declare materialized, shim, fail_closed, or degraded_disabled mode")
+    if strict_live and mode not in _TOOLSEARCH_PROVIDER_STRICT_MODES:
+        issues.append("strict-live ToolSearch requires top-level shim or materialized mode")
+    providers = raw.get("bridge_provider_toolsearch")
+    if not isinstance(providers, Mapping):
+        issues.append("ToolSearch bridge provider evidence is required for OpenAI and DeepSeek")
+        return tuple(issues)
+    provider_keys = {str(key).strip() for key in providers if str(key).strip()}
+    if provider_keys != set(_TOOLSEARCH_BRIDGE_PROVIDERS):
+        issues.append("ToolSearch bridge provider evidence must cover exactly OpenAI and DeepSeek")
+    for provider in _TOOLSEARCH_BRIDGE_PROVIDERS:
+        raw_entry = providers.get(provider)
+        if not isinstance(raw_entry, Mapping):
+            issues.append(f"ToolSearch bridge provider evidence for {provider} must be an object")
+            continue
+        entry_mode = str(raw_entry.get("mode") or "").strip()
+        if raw_entry.get("unresolved_tool_reference_upstream") is not False or raw_entry.get("unresolved_defer_loading_upstream") is not False:
+            issues.append(f"ToolSearch bridge provider {provider} allowed unresolved lazy tool shapes upstream")
+        if entry_mode in _TOOLSEARCH_PROVIDER_STRICT_MODES:
+            if mode in _TOOLSEARCH_PROVIDER_DEGRADED_MODES:
+                issues.append(f"ToolSearch bridge provider mode for {provider} conflicts with degraded top-level policy")
+            if mode in _TOOLSEARCH_PROVIDER_STRICT_MODES and entry_mode != mode:
+                issues.append(f"ToolSearch bridge provider mode for {provider} must match top-level {mode} policy")
+            if raw_entry.get("toolsearch_degraded") is not False:
+                issues.append(f"ToolSearch bridge provider {provider} strict mode must not be degraded")
+            if entry_mode == "shim" and raw_entry.get("shim_resolution_verified") is not True:
+                issues.append(f"ToolSearch bridge provider {provider} shim evidence missing")
+            if entry_mode == "materialized" and raw_entry.get("ordinary_tools_materialized") is not True:
+                issues.append(f"ToolSearch bridge provider {provider} materialization evidence missing")
+            continue
+        if entry_mode in _TOOLSEARCH_PROVIDER_DEGRADED_MODES:
+            if mode in _TOOLSEARCH_PROVIDER_STRICT_MODES:
+                issues.append(f"ToolSearch bridge provider mode for {provider} cannot be degraded when top-level policy is {mode}")
+            if strict_live:
+                issues.append(f"strict-live ToolSearch requires materialized or shim evidence for {provider}")
+            if raw_entry.get("toolsearch_degraded") is not True:
+                issues.append(f"ToolSearch bridge provider {provider} degraded mode must be explicit")
+            reason = _provider_release_safe_string(raw_entry.get("degraded_reason"))
+            if not reason:
+                issues.append(f"ToolSearch bridge provider {provider} degraded mode requires safe reason")
+            continue
+        issues.append(f"ToolSearch bridge provider {provider} has invalid mode")
+    return tuple(issues)
 
 
 

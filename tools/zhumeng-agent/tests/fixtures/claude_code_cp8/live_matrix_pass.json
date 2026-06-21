@@ -303,9 +303,25 @@
         {
           "path": "artifacts/toolsearch_mcp_sse.json",
           "sensitive_scan_clean": true,
-          "sha256": "sha256:d6ff74a99b85e02d8cdb130f1496fa7d73533d1261f9ac5b0012af7266e7e94e"
+          "sha256": "sha256:ed3406c1dafb2b068d15732c22cd9709d5abfa81e35587ed321d03bd9a95dafe"
         }
       ],
+      "bridge_provider_toolsearch": {
+        "deepseek": {
+          "degraded_reason": "unresolved_lazy_shapes_fail_closed",
+          "mode": "disabled",
+          "toolsearch_degraded": true,
+          "unresolved_defer_loading_upstream": false,
+          "unresolved_tool_reference_upstream": false
+        },
+        "openai": {
+          "degraded_reason": "unresolved_lazy_shapes_fail_closed",
+          "mode": "disabled",
+          "toolsearch_degraded": true,
+          "unresolved_defer_loading_upstream": false,
+          "unresolved_tool_reference_upstream": false
+        }
+      },
       "bridge_tool_use_sse_golden_diff": true,
       "input_json_delta_verified": true,
       "live_provider_verified": false,
@@ -313,7 +329,7 @@
       "raw_sensitive_stored": false,
       "status": "pass",
       "stop_reason_tool_use_verified": true,
-      "toolsearch_mode": "shim"
+      "toolsearch_mode": "degraded_disabled"
     },
     "workflow": {
       "active_profile_dynamic_resolution": true,

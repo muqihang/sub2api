@@ -85,6 +85,21 @@ def _mark_core_provider_release_strict_live(payload: dict[str, object]) -> None:
     payload["provider_release_classification"] = _default_provider_release_classification(strict_live=True)
 
 
+def _mark_toolsearch_bridge_strict_live(payload: dict[str, object]) -> None:
+    scenario = payload["scenarios"]["toolsearch_mcp"]
+    scenario["toolsearch_mode"] = "shim"
+    scenario["bridge_provider_toolsearch"] = {
+        provider: {
+            "mode": "shim",
+            "toolsearch_degraded": False,
+            "shim_resolution_verified": True,
+            "unresolved_tool_reference_upstream": False,
+            "unresolved_defer_loading_upstream": False,
+        }
+        for provider in ("openai", "deepseek")
+    }
+
+
 def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
     candidates = [
         root / "artifacts" / f"{provider}_sub2api_live_provenance.json",
@@ -116,6 +131,7 @@ def _sub2api_endpoint(provider: str) -> str:
 
 def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
     _mark_core_provider_release_strict_live(payload)
+    _mark_toolsearch_bridge_strict_live(payload)
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
@@ -214,6 +230,7 @@ def _workflow_background_ref(root: Path) -> dict[str, object]:
 
 def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, run_id: str) -> None:
     _mark_core_provider_release_strict_live(payload)
+    _mark_toolsearch_bridge_strict_live(payload)
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     for name, scenario in payload["scenarios"].items():
@@ -434,6 +451,169 @@ def test_cp8_workflow_requires_all_dynamic_background_tasks_to_be_provider_local
     assert result.status == "fail"
     assert "workflow" in result.failed
     assert any("workflow/background tasks" in issue for issue in result.scenario_results["workflow"].issues)
+
+
+def test_cp8_toolsearch_mcp_rejects_claimed_shim_without_bridge_provider_evidence():
+    payload = _fixture("live_matrix_pass.json")
+    toolsearch = payload["scenarios"]["toolsearch_mcp"]
+    toolsearch["toolsearch_mode"] = "shim"
+    toolsearch.pop("bridge_provider_toolsearch", None)
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "toolsearch_mcp" in result.failed
+    assert any("ToolSearch" in issue for issue in result.scenario_results["toolsearch_mcp"].issues)
+
+
+def test_cp8_toolsearch_mcp_rejects_claimed_shim_with_degraded_provider_entries():
+    payload = _fixture("live_matrix_pass.json")
+    toolsearch = payload["scenarios"]["toolsearch_mcp"]
+    toolsearch["toolsearch_mode"] = "shim"
+    toolsearch["bridge_provider_toolsearch"] = {
+        provider: {
+            "mode": "disabled",
+            "toolsearch_degraded": True,
+            "degraded_reason": "unresolved_lazy_shapes_fail_closed",
+            "unresolved_tool_reference_upstream": False,
+            "unresolved_defer_loading_upstream": False,
+        }
+        for provider in ("openai", "deepseek")
+    }
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "toolsearch_mcp" in result.failed
+    assert any("provider mode" in issue for issue in result.scenario_results["toolsearch_mcp"].issues)
+
+
+def test_cp8_strict_live_rejects_degraded_bridge_toolsearch_policy(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-toolsearch-degraded"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    payload["scenarios"]["toolsearch_mcp"]["toolsearch_mode"] = "degraded_disabled"
+    payload["scenarios"]["toolsearch_mcp"]["bridge_provider_toolsearch"] = {
+        provider: {
+            "mode": "disabled",
+            "toolsearch_degraded": True,
+            "degraded_reason": "unresolved_lazy_shapes_fail_closed",
+            "unresolved_tool_reference_upstream": False,
+            "unresolved_defer_loading_upstream": False,
+        }
+        for provider in ("openai", "deepseek")
+    }
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "toolsearch_mcp" in result.failed
+    assert any("strict-live" in issue for issue in result.scenario_results["toolsearch_mcp"].issues)
+
+
+def test_cp8_strict_live_rejects_top_level_degraded_toolsearch_even_with_strict_provider_entries(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-toolsearch-top-level-degraded"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    payload["scenarios"]["toolsearch_mcp"]["toolsearch_mode"] = "degraded_disabled"
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "toolsearch_mcp" in result.failed
+    assert any("strict-live" in issue for issue in result.scenario_results["toolsearch_mcp"].issues)
 
 
 
