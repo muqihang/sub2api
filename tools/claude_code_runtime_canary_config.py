@@ -880,7 +880,7 @@ def _env_flag(env: dict[str, str], key: str) -> bool:
 
 
 def _safe_sha256_hash(value: object) -> str:
-    text = str(value or "").strip()
+    text = str(value or "").strip().lower()
     if len(text) == 71 and text.startswith("sha256:") and all(ch in "0123456789abcdef" for ch in text[7:]):
         return text
     return ""

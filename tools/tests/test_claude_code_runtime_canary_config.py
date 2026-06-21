@@ -966,6 +966,27 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertEqual([active_hash], readiness["runtime_hash_binding"]["env_native_runtime_hashes"])
         self.assertTrue(readiness["runtime_hash_binding"]["env_native_runtime_hashes_exact"])
 
+    def test_canary_env_readiness_canonicalizes_uppercase_runtime_hashes(self):
+        from tools.claude_code_runtime_canary_config import build_canary_env_readiness_metadata, build_provider_catalog_env
+
+        active_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_hash=active_hash,
+            live_bridge_models=("claude-code-bridge-deepseek-v4-pro",),
+        )
+        catalog = json.loads(env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"])
+        catalog["runtime_hash"] = active_hash.upper()
+        env["SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON"] = json.dumps(catalog, sort_keys=True)
+        env["SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES"] = active_hash.upper()
+
+        readiness = build_canary_env_readiness_metadata(env, expected_runtime_hash=active_hash.upper())
+
+        self.assertTrue(readiness["ready"])
+        self.assertEqual(active_hash, readiness["runtime_hash_binding"]["expected_runtime_hash"])
+        self.assertEqual(active_hash, readiness["runtime_hash_binding"]["catalog_runtime_hash"])
+        self.assertEqual([active_hash], readiness["runtime_hash_binding"]["env_native_runtime_hashes"])
+
     def test_canary_env_preview_rebinds_candidate_to_current_runtime_hash(self):
         from tools.claude_code_runtime_canary_config import build_preview_env_metadata, build_provider_catalog_env
 
