@@ -1115,6 +1115,11 @@ def test_cp8_sub2api_gateway_collector_sends_managed_native_headers_for_claude_p
     padded = encoded + "=" * (-len(encoded) % 4)
     payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
     assert payload["scope"] == "claude_code_native_takeover"
+    assert payload["replay_safety_boundary"] == "replay_safe_anthropic_transcript"
+    assert payload["replay_safety_applied"] is True
+    assert payload["replay_safety_sanitized"] is False
+    assert payload["replay_safety_forbidden_paths_count"] == 0
+    assert payload["replay_safety_body_shape_hash"] == payload["body_shape_hash"]
     for provider in ("openai", "deepseek"):
         assert "X-Zhumeng-Managed-Session" not in seen_headers[provider]
         assert "X-Zhumeng-Device-ID" not in seen_headers[provider]
@@ -1263,6 +1268,11 @@ def test_cp8_sub2api_gateway_live_collector_sends_gateway_auth_and_signed_runtim
     native_payload = _decode_cp8_runtime_header(by_provider["claude"][1]["x-sub2api-native-attestation"])
     assert native_payload["local_session_ref"] == claude_session_ref
     assert native_payload["session_ref"] == claude_session_ref
+    assert native_payload["replay_safety_boundary"] == "replay_safe_anthropic_transcript"
+    assert native_payload["replay_safety_applied"] is True
+    assert native_payload["replay_safety_sanitized"] is False
+    assert native_payload["replay_safety_forbidden_paths_count"] == 0
+    assert native_payload["replay_safety_body_shape_hash"] == native_payload["body_shape_hash"]
     assert "cp8-sub2api-live-headers" not in json.dumps(native_payload, sort_keys=True)
     for provider in ("openai", "deepseek"):
         route_payload = _decode_cp8_runtime_header(by_provider[provider][1]["x-zhumeng-claude-code-route-hint"])

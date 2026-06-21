@@ -211,6 +211,118 @@ func TestClaudeCodeNativeEnvFormalPoolModelsRejectNonClaudeEntries(t *testing.T)
 	require.NoError(t, err)
 }
 
+func TestClaudeCodeNativeAttestationRequiresReplaySafetyContract(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	now := time.Unix(2170, 0)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
+
+	missing := signedNativeHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                       "missing-replay-safety",
+		"omit_replay_safety_contract": true,
+	})
+	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", missing, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "replay safety")
+
+	mismatch := signedNativeHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                         "mismatch-replay-safety",
+		"replay_safety_body_shape_hash": "sha256:" + stringOf('9', 64),
+	})
+	_, err = svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", mismatch, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "replay safety")
+
+	valid := signedNativeHeadersForTest(t, body, "/v1/messages", now, map[string]any{"nonce": "valid-replay-safety"})
+	summary, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", valid, body)
+	require.NoError(t, err)
+	require.True(t, summary.ReplaySafetyApplied)
+	require.False(t, summary.ReplaySafetySanitized)
+	require.Equal(t, "replay_safe_anthropic_transcript", summary.ReplaySafetyBoundary)
+}
+
+func TestClaudeCodeNativeAttestationRejectsInconsistentSanitizedReplaySafety(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	now := time.Unix(2175, 0)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
+
+	headers := signedNativeHeadersForTest(t, body, "/v1/messages", now, map[string]any{
+		"nonce":                               "sanitized-count-missing",
+		"replay_safety_sanitized":             true,
+		"replay_safety_forbidden_paths_count": 0,
+	})
+	_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "replay safety")
+}
+
+func TestClaudeCodeNativeAttestationRejectsNullReplaySafetyTypes(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
+	now := time.Unix(2176, 0)
+	body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}`)
+	svc := NewClaudeCodeNativeAttestationService(
+		WithClaudeCodeNativeAttestationNowFunc(func() time.Time { return now }),
+		WithClaudeCodeNativeAttestationReplayCache(NewClaudeCodeNativeNonceReplayCache(time.Minute, func() time.Time { return now })),
+		withClaudeCodeNativeCatalogAdmissionResolver(testClaudeCodeNativeFormalPoolResolver("claude-sonnet-4-6")),
+	)
+
+	for _, tc := range []struct {
+		name      string
+		overrides map[string]any
+	}{
+		{
+			name: "boundary null",
+			overrides: map[string]any{
+				"nonce":                  "null-replay-safety-boundary",
+				"replay_safety_boundary": nil,
+			},
+		},
+		{
+			name: "applied null",
+			overrides: map[string]any{
+				"nonce":                 "null-replay-safety-applied",
+				"replay_safety_applied": nil,
+			},
+		},
+		{
+			name: "sanitized null",
+			overrides: map[string]any{
+				"nonce":                   "null-replay-safety-sanitized",
+				"replay_safety_sanitized": nil,
+			},
+		},
+		{
+			name: "forbidden count null",
+			overrides: map[string]any{
+				"nonce":                               "null-replay-safety-forbidden-count",
+				"replay_safety_forbidden_paths_count": nil,
+			},
+		},
+		{
+			name: "body shape hash null",
+			overrides: map[string]any{
+				"nonce":                         "null-replay-safety-body-shape-hash",
+				"replay_safety_body_shape_hash": nil,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := signedNativeHeadersForTest(t, body, "/v1/messages", now, tc.overrides)
+			_, err := svc.VerifyMessagesRequest(http.MethodPost, "/v1/messages", headers, body)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "replay safety")
+		})
+	}
+}
 func TestClaudeCodeNativeAttestationRejectsInvalidConfiguredHashAllowlist(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES", "sha256:"+stringOf('0', 64))
@@ -800,34 +912,48 @@ func signedNativeHeadersForTest(t *testing.T, body []byte, requestURI string, no
 func signedNativeHeadersForTestWithSecret(t *testing.T, body []byte, requestURI string, now time.Time, overrides map[string]any, secret string) http.Header {
 	t.Helper()
 	payload := map[string]any{
-		"key_id":                    "guard_v1",
-		"scope":                     "claude_code_native_takeover",
-		"version":                   1,
-		"issued_at":                 now.Unix(),
-		"nonce":                     "nonce-001",
-		"method":                    http.MethodPost,
-		"request_uri":               requestURI,
-		"client_type":               ClaudeCodeNativeClientType,
-		"guard_attested":            true,
-		"guard_version":             "guard_v1",
-		"claude_code_version":       "2.1.x",
-		"local_session_ref":         "hmac-sha256:" + stringOf('a', 64),
-		"netwatch_required":         true,
-		"shape_healthcheck_profile": "real_claude_code_native_takeover_v1",
-		"route":                     ClaudeCodeNativeRoute,
-		"model_id":                  gjson.GetBytes(body, "model").String(),
-		"provider_owner":            ClaudeCodeNativeProviderOwner,
-		"credential_scope":          ClaudeCodeNativeCredentialScope,
-		"gateway_location":          ClaudeCodeNativeGatewayLocation,
-		"runtime_hash":              "sha256:" + stringOf('1', 64),
-		"overlay_hash":              "sha256:" + stringOf('2', 64),
-		"catalog_hash":              "sha256:" + stringOf('3', 64),
-		"catalog_version":           "legacy-native",
-		"session_ref":               "hmac-sha256:" + stringOf('a', 64),
-		"body_shape_hash":           claudeCodeNativeBodyShapeHash(body),
+		"key_id":                              "guard_v1",
+		"scope":                               "claude_code_native_takeover",
+		"version":                             1,
+		"issued_at":                           now.Unix(),
+		"nonce":                               "nonce-001",
+		"method":                              http.MethodPost,
+		"request_uri":                         requestURI,
+		"client_type":                         ClaudeCodeNativeClientType,
+		"guard_attested":                      true,
+		"guard_version":                       "guard_v1",
+		"claude_code_version":                 "2.1.x",
+		"local_session_ref":                   "hmac-sha256:" + stringOf('a', 64),
+		"netwatch_required":                   true,
+		"shape_healthcheck_profile":           "real_claude_code_native_takeover_v1",
+		"route":                               ClaudeCodeNativeRoute,
+		"model_id":                            gjson.GetBytes(body, "model").String(),
+		"provider_owner":                      ClaudeCodeNativeProviderOwner,
+		"credential_scope":                    ClaudeCodeNativeCredentialScope,
+		"gateway_location":                    ClaudeCodeNativeGatewayLocation,
+		"runtime_hash":                        "sha256:" + stringOf('1', 64),
+		"overlay_hash":                        "sha256:" + stringOf('2', 64),
+		"catalog_hash":                        "sha256:" + stringOf('3', 64),
+		"catalog_version":                     "legacy-native",
+		"session_ref":                         "hmac-sha256:" + stringOf('a', 64),
+		"body_shape_hash":                     claudeCodeNativeBodyShapeHash(body),
+		"replay_safety_boundary":              ClaudeCodeNativeReplaySafetyBoundary,
+		"replay_safety_applied":               true,
+		"replay_safety_sanitized":             false,
+		"replay_safety_forbidden_paths_count": 0,
+		"replay_safety_body_shape_hash":       claudeCodeNativeBodyShapeHash(body),
 	}
+	omitReplaySafetyContract, _ := overrides["omit_replay_safety_contract"].(bool)
 	for key, value := range overrides {
+		if key == "omit_replay_safety_contract" {
+			continue
+		}
 		payload[key] = value
+	}
+	if omitReplaySafetyContract {
+		for _, key := range []string{"replay_safety_boundary", "replay_safety_applied", "replay_safety_sanitized", "replay_safety_forbidden_paths_count", "replay_safety_body_shape_hash"} {
+			delete(payload, key)
+		}
 	}
 	raw, err := json.Marshal(payload)
 	require.NoError(t, err)

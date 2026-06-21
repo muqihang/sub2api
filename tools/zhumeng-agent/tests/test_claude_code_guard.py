@@ -243,6 +243,7 @@ def test_native_guard_forwards_messages_with_replacement_auth_and_redacted_summa
         summary_path=summary_path,
         repo_root=REPO_ROOT,
         attestation_secret="attestation-secret",
+        native_managed_access_token="managed-access-token",
         route_hint_secret="route-hint-secret",
     )
 
@@ -302,6 +303,7 @@ def test_native_guard_forwards_attested_native_markers_without_prompt_leak(tmp_p
         summary_path=summary_path,
         repo_root=REPO_ROOT,
         attestation_secret="attestation-secret",
+        native_managed_access_token="managed-access-token",
         route_hint_secret="route-hint-secret",
     )
 
@@ -347,6 +349,11 @@ def test_native_guard_forwards_attested_native_markers_without_prompt_leak(tmp_p
     assert attestation_payload["catalog_hash"]
     assert attestation_payload["session_ref"] == attestation_payload["local_session_ref"]
     assert attestation_payload["body_shape_hash"].startswith("sha256:")
+    assert attestation_payload["replay_safety_boundary"] == "replay_safe_anthropic_transcript"
+    assert attestation_payload["replay_safety_applied"] is True
+    assert attestation_payload["replay_safety_sanitized"] is False
+    assert attestation_payload["replay_safety_forbidden_paths_count"] == 0
+    assert attestation_payload["replay_safety_body_shape_hash"] == attestation_payload["body_shape_hash"]
     assert attestation_payload["nonce"]
     assert attestation_payload["issued_at"] > 0
     summary = summary_path.read_text(encoding="utf-8")
@@ -367,6 +374,7 @@ def test_native_guard_without_native_attestation_flag_fails_closed(tmp_path: Pat
         summary_path=summary_path,
         repo_root=REPO_ROOT,
         attestation_secret="attestation-secret",
+        native_managed_access_token="managed-access-token",
         route_hint_secret="route-hint-secret",
     )
     plan = build_native_guard_plan(cfg, python_executable=Path(sys.executable))

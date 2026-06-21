@@ -40,6 +40,8 @@ func TestGatewayHandlerNativeCountTokensAttestationValidatesAndSetsContext(t *te
 	require.True(t, ok)
 	require.Equal(t, service.ClaudeCodeNativeInboundCountTokens, summary.InboundRoute)
 	require.Equal(t, service.ClaudeCodeNativeCCGatewayCount, summary.CCGatewayRoute)
+	require.Equal(t, service.ClaudeCodeNativeReplaySafetyBoundary, summary.ReplaySafetyBoundary)
+	require.True(t, summary.ReplaySafetyApplied)
 }
 
 func TestGatewayHandlerNativeCountTokensRespondsLocallyBeforeAccountSelection(t *testing.T) {
@@ -223,31 +225,36 @@ func signedNativeHeadersForHandlerTest(t *testing.T, body []byte, requestURI str
 	localSessionRef := "hmac-sha256:" + strings.Repeat("a", 64)
 	digest := sha256.Sum256(body)
 	payload := map[string]any{
-		"key_id":                    "guard_v1",
-		"scope":                     "claude_code_native_takeover",
-		"version":                   1,
-		"issued_at":                 now.Unix(),
-		"nonce":                     "handler-nonce-" + hex.EncodeToString(digest[:4]),
-		"method":                    http.MethodPost,
-		"request_uri":               requestURI,
-		"client_type":               service.ClaudeCodeNativeClientType,
-		"guard_attested":            true,
-		"guard_version":             "guard_v1",
-		"claude_code_version":       "2.1.175",
-		"local_session_ref":         localSessionRef,
-		"netwatch_required":         true,
-		"shape_healthcheck_profile": service.ClaudeCodeNativeTakeoverHealthProfile,
-		"route":                     service.ClaudeCodeNativeRoute,
-		"model_id":                  "claude-sonnet-4-6",
-		"provider_owner":            service.ClaudeCodeNativeProviderOwner,
-		"credential_scope":          service.ClaudeCodeNativeCredentialScope,
-		"gateway_location":          service.ClaudeCodeNativeGatewayLocation,
-		"runtime_hash":              "sha256:" + strings.Repeat("1", 64),
-		"overlay_hash":              "sha256:" + strings.Repeat("2", 64),
-		"catalog_hash":              "sha256:" + strings.Repeat("3", 64),
-		"catalog_version":           "legacy-native",
-		"session_ref":               localSessionRef,
-		"body_shape_hash":           handlerTestNativeBodyShapeHash(body),
+		"key_id":                              "guard_v1",
+		"scope":                               "claude_code_native_takeover",
+		"version":                             1,
+		"issued_at":                           now.Unix(),
+		"nonce":                               "handler-nonce-" + hex.EncodeToString(digest[:4]),
+		"method":                              http.MethodPost,
+		"request_uri":                         requestURI,
+		"client_type":                         service.ClaudeCodeNativeClientType,
+		"guard_attested":                      true,
+		"guard_version":                       "guard_v1",
+		"claude_code_version":                 "2.1.175",
+		"local_session_ref":                   localSessionRef,
+		"netwatch_required":                   true,
+		"shape_healthcheck_profile":           service.ClaudeCodeNativeTakeoverHealthProfile,
+		"route":                               service.ClaudeCodeNativeRoute,
+		"model_id":                            "claude-sonnet-4-6",
+		"provider_owner":                      service.ClaudeCodeNativeProviderOwner,
+		"credential_scope":                    service.ClaudeCodeNativeCredentialScope,
+		"gateway_location":                    service.ClaudeCodeNativeGatewayLocation,
+		"runtime_hash":                        "sha256:" + strings.Repeat("1", 64),
+		"overlay_hash":                        "sha256:" + strings.Repeat("2", 64),
+		"catalog_hash":                        "sha256:" + strings.Repeat("3", 64),
+		"catalog_version":                     "legacy-native",
+		"session_ref":                         localSessionRef,
+		"body_shape_hash":                     handlerTestNativeBodyShapeHash(body),
+		"replay_safety_boundary":              service.ClaudeCodeNativeReplaySafetyBoundary,
+		"replay_safety_applied":               true,
+		"replay_safety_sanitized":             false,
+		"replay_safety_forbidden_paths_count": 0,
+		"replay_safety_body_shape_hash":       handlerTestNativeBodyShapeHash(body),
 	}
 	raw, err := json.Marshal(payload)
 	require.NoError(t, err)

@@ -28,6 +28,7 @@ from tools.cli_control_plane_guard import (
     cp5_bridge_skeleton_sse_body,
     deep_body_summary,
     redact_headers,
+    native_replay_safety_decision,
     validate_cp5_bridge_body,
     main as guard_main,
 )
@@ -1126,6 +1127,112 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertIn('messages[].content[].type:tool_use:foreign_tainted_message', replay['forbidden_path_kinds'])
         self.assertIn('messages[].content[].type:tool_result:provider_private', replay['forbidden_path_kinds'])
 
+
+    def test_cp6_hot_switch_native_attestation_carries_replay_safety_contract(self):
+        seen = {'body': None, 'headers': None, 'calls': 0}
+
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen['calls'] += 1
+                seen['headers'] = {key.lower(): value for key, value in self.headers.items()}
+                seen['body'] = self.rfile.read(int(self.headers.get('content-length', '0')))
+                self.send_response(200)
+                self.send_header('content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *args):
+                pass
+
+        upstream_port = _free_port()
+        upstream = ThreadingHTTPServer(('127.0.0.1', upstream_port), Upstream)
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        with tempfile.TemporaryDirectory() as td:
+            summary_path = Path(td) / 'summary.jsonl'
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base=f'http://127.0.0.1:{upstream_port}',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                native_managed_access_token='native-managed-access-token',
+                summary_path=summary_path,
+                max_messages=0,
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                managed_session_id='managed-session',
+                device_id='9',
+                agent_version='0.1.0',
+                cost_envelope_limits={'allow_assistant_messages': True, 'allow_thinking': True, 'allow_tool_content': True, 'max_messages': 2048, 'max_content_blocks': 8192},
+            ))
+            forwarder.start_background()
+            try:
+                body_obj = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [
+                        {'role': 'user', 'content': 'continue on Claude after bridge'},
+                        {
+                            'role': 'assistant',
+                            'content': [
+                                {'type': 'thinking', 'thinking': 'DeepSeek hidden chain', 'signature': 'foreign-sig'},
+                                {'type': 'tool_use', 'id': 'toolu_bridge', 'name': 'Agent', 'input': {'model': 'claude-code-bridge-deepseek-v4-pro'}},
+                                {'type': 'text', 'text': 'visible bridge summary'},
+                            ],
+                            'raw_provider_response': {'reasoning_content': 'provider-private'},
+                        },
+                    ],
+                    'max_tokens': 16,
+                }
+                body = json.dumps(body_obj).encode('utf-8')
+                path = '/v1/messages?beta=true'
+                request = urllib.request.Request(
+                    f'http://127.0.0.1:{listen_port}{path}',
+                    data=body,
+                    method='POST',
+                    headers={
+                        'content-type': 'application/json',
+                        'User-Agent': 'claude-cli/2.1.177 (external, sdk-cli)',
+                        'x-claude-code-session-id': _DEFAULT_SESSION_REF,
+                        **_native_route_headers(body, path, nonce='hot-switch-replay-contract'),
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as resp:
+                    self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+                upstream.shutdown()
+                upstream.server_close()
+
+            records = [json.loads(line) for line in summary_path.read_text(encoding='utf-8').splitlines()]
+
+        self.assertEqual(seen['calls'], 1)
+        forwarded = json.loads(seen['body'].decode('utf-8'))
+        forwarded_dump = json.dumps(forwarded)
+        self.assertNotIn('DeepSeek hidden chain', forwarded_dump)
+        self.assertNotIn('foreign-sig', forwarded_dump)
+        self.assertNotIn('raw_provider_response', forwarded_dump)
+        self.assertNotIn('reasoning_content', forwarded_dump)
+        self.assertIn('ReplaySafeAnthropicTranscript', forwarded_dump)
+
+        attestation = seen['headers']['x-sub2api-native-attestation']
+        payload = json.loads(base64.urlsafe_b64decode(attestation + ('=' * (-len(attestation) % 4))))
+        self.assertEqual(payload['replay_safety_boundary'], 'replay_safe_anthropic_transcript')
+        self.assertTrue(payload['replay_safety_applied'])
+        self.assertTrue(payload['replay_safety_sanitized'])
+        self.assertGreater(payload['replay_safety_forbidden_paths_count'], 0)
+        self.assertEqual(payload['replay_safety_body_shape_hash'], payload['body_shape_hash'])
+
+        request_record = next(record for record in records if record.get('event') == 'request')
+        replay = request_record['replay_safety']
+        self.assertTrue(replay['sanitized'])
+        self.assertEqual(replay['sanitized_body_shape_hash'], payload['replay_safety_body_shape_hash'])
+        dumped = json.dumps(records)
+        self.assertNotIn('DeepSeek hidden chain', dumped)
+        self.assertNotIn('provider-private', dumped)
+
     def test_cli_main_does_not_enforce_session_budget_by_default(self):
         args = argparse.Namespace(
             enforce_session_budget=False,
@@ -1167,6 +1274,61 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, 'explicit'):
                 build_native_messages_attestation_headers(b'{"messages":[]}', '/v1/messages', {})
+
+
+    def test_native_messages_attestation_requires_replay_safety_audit(self):
+        body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"foreign"}]}]}'
+        with self.assertRaisesRegex(RuntimeError, 'replay safety audit'):
+            build_native_messages_attestation_headers(
+                body,
+                '/v1/messages',
+                {'x-claude-code-session-id': _DEFAULT_SESSION_REF},
+                secret='native-attestation-test-secret',
+            )
+
+    def test_native_messages_attestation_rejects_invalid_replay_safety_audit(self):
+        body = b'{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello"}]}'
+        base_audit = {
+            'boundary': 'replay_safe_anthropic_transcript',
+            'applied': True,
+            'sanitized': False,
+            'forbidden_paths_count': 0,
+            'sanitized_body_shape_hash': native_replay_safety_decision(
+                body,
+                verify_signed_route_hint_headers(
+                    source_headers=_native_route_headers(body, '/v1/messages', nonce='invalid-replay-audit-base'),
+                    body=body,
+                    request_path='/v1/messages',
+                    catalog=_ROUTE_HINT_CATALOG,
+                    session_ref=_DEFAULT_SESSION_REF,
+                    secret=_ROUTE_HINT_SECRET,
+                    replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                ),
+            ).audit['sanitized_body_shape_hash'],
+        }
+
+        invalid_audits = [
+            {},
+            {**base_audit, 'boundary': 'unsafe_boundary'},
+            {**base_audit, 'applied': False},
+            {**base_audit, 'applied': 'true'},
+            {**base_audit, 'sanitized': 'false'},
+            {**base_audit, 'sanitized': True, 'forbidden_paths_count': 0},
+            {**base_audit, 'sanitized': False, 'forbidden_paths_count': 1},
+            {**base_audit, 'sanitized_body_shape_hash': None},
+            {**base_audit, 'sanitized_body_shape_hash': ''},
+            {**base_audit, 'sanitized_body_shape_hash': 'sha256:' + '9' * 64},
+        ]
+        for audit in invalid_audits:
+            with self.subTest(audit=audit):
+                with self.assertRaisesRegex(RuntimeError, 'replay safety'):
+                    build_native_messages_attestation_headers(
+                        body,
+                        '/v1/messages',
+                        {'x-claude-code-session-id': _DEFAULT_SESSION_REF},
+                        secret='native-attestation-test-secret',
+                        replay_safety_audit=audit,
+                    )
 
     def test_cp4_messages_route_decision_requires_route_hint_catalog_even_for_claude_native(self):
         summary_path = tempfile.NamedTemporaryFile(delete=True)
@@ -1599,6 +1761,7 @@ class CliControlPlaneGuardTest(unittest.TestCase):
                 {'x-claude-code-session-id': 'session-native'},
                 secret='native-attestation-test-secret',
                 route_decision=decision,
+                replay_safety_audit=native_replay_safety_decision(body, decision).audit,
             )
         payload = json.loads(base64.urlsafe_b64decode(native_headers['x-sub2api-native-attestation'] + '=='))
         self.assertEqual(payload['runtime_hash'], 'sha256:' + '1' * 64)

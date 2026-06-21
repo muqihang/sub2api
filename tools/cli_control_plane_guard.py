@@ -1576,7 +1576,7 @@ class RedactingForwarder:
                         self.send_header("content-length", "0")
                         self.end_headers()
                         return
-                    self._forward_messages(body, request_path, route_decision)
+                    self._forward_messages(body, request_path, route_decision, replay_safety.audit)
                     return
                 record, effective_decision = parent._evaluate_control_plane(
                     event="request",
@@ -1622,7 +1622,7 @@ class RedactingForwarder:
                 self.send_header("content-length", "0")
                 self.end_headers()
 
-            def _forward_messages(self, body: bytes, request_path: str, route_decision: RouteDecision) -> None:
+            def _forward_messages(self, body: bytes, request_path: str, route_decision: RouteDecision, replay_safety_audit: Mapping[str, Any] | None = None) -> None:
                 if not route_decision.native_attestation_allowed and not route_decision.live_request_allowed:
                     if urlsplit(_request_target_path(request_path)).path == "/v1/messages/count_tokens":
                         parent._record({
@@ -1693,6 +1693,7 @@ class RedactingForwarder:
                             dict(self.headers),
                             secret=parent.config.native_attestation_secret,
                             route_decision=route_decision,
+                            replay_safety_audit=replay_safety_audit,
                         ))
                     except RuntimeError as exc:
                         parent._record({
@@ -2439,6 +2440,7 @@ def build_native_messages_attestation_headers(
     *,
     secret: str | None = None,
     route_decision: RouteDecision | None = None,
+    replay_safety_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """Attach internal native takeover markers; never include raw prompt/body."""
     now = int(time.time())
@@ -2452,6 +2454,7 @@ def build_native_messages_attestation_headers(
     local_session_value = str(local_session_ref.get("value", ""))
     model_id = _native_attestation_model_id(body)
     body_shape_hash = _native_body_shape_hash(body)
+    replay_safety_contract = _native_replay_safety_attestation_contract(body, replay_safety_audit)
     runtime_hash = route_decision.runtime_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH")
     overlay_hash = route_decision.overlay_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH")
     catalog_hash = route_decision.catalog_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH")
@@ -2482,6 +2485,7 @@ def build_native_messages_attestation_headers(
         "catalog_version": catalog_version,
         "session_ref": local_session_value,
         "body_shape_hash": body_shape_hash,
+        **replay_safety_contract,
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
     signature = _sign_native_messages_attestation(encoded, "POST", request_path, body, secret)
@@ -2496,6 +2500,43 @@ def build_native_messages_attestation_headers(
         "x-sub2api-native-signature": signature,
     }
 
+
+
+def _native_replay_safety_attestation_contract(body: bytes, audit: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Bind the backend native attestation to the replay-safety decision."""
+    body_shape_hash = _native_body_shape_hash(body)
+    if audit is None:
+        raise RuntimeError("native replay safety audit is required")
+    required = {"boundary", "applied", "sanitized", "forbidden_paths_count", "sanitized_body_shape_hash"}
+    if any(key not in audit for key in required):
+        raise RuntimeError("native replay safety contract is invalid")
+    boundary = str(audit.get("boundary"))
+    applied = audit.get("applied")
+    sanitized = audit.get("sanitized")
+    if not isinstance(applied, bool) or not isinstance(sanitized, bool):
+        raise RuntimeError("native replay safety contract is invalid")
+    forbidden_paths_count = audit.get("forbidden_paths_count", 0)
+    if not isinstance(forbidden_paths_count, int) or isinstance(forbidden_paths_count, bool) or forbidden_paths_count < 0:
+        raise RuntimeError("native replay safety contract is invalid")
+    replay_body_shape_hash_raw = audit.get("sanitized_body_shape_hash")
+    if not isinstance(replay_body_shape_hash_raw, str):
+        raise RuntimeError("native replay safety contract is invalid")
+    replay_body_shape_hash = replay_body_shape_hash_raw
+    if boundary != _REPLAY_SAFE_BOUNDARY or not applied:
+        raise RuntimeError("native replay safety contract is invalid")
+    if sanitized and forbidden_paths_count <= 0:
+        raise RuntimeError("native replay safety contract is invalid")
+    if not sanitized and forbidden_paths_count != 0:
+        raise RuntimeError("native replay safety contract is invalid")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", replay_body_shape_hash) or replay_body_shape_hash != body_shape_hash:
+        raise RuntimeError("native replay safety body binding mismatch")
+    return {
+        "replay_safety_boundary": boundary,
+        "replay_safety_applied": applied,
+        "replay_safety_sanitized": sanitized,
+        "replay_safety_forbidden_paths_count": forbidden_paths_count,
+        "replay_safety_body_shape_hash": replay_body_shape_hash,
+    }
 
 def _native_attestation_model_id(body: bytes) -> str:
     try:

@@ -1365,6 +1365,11 @@ def _cp8_native_attestation_headers(
         "catalog_version": catalog_version,
         "session_ref": session_ref,
         "body_shape_hash": _cp8_body_shape_hash(body),
+        "replay_safety_boundary": "replay_safe_anthropic_transcript",
+        "replay_safety_applied": True,
+        "replay_safety_sanitized": False,
+        "replay_safety_forbidden_paths_count": 0,
+        "replay_safety_body_shape_hash": _cp8_body_shape_hash(body),
     }
     encoded = _b64url_json(payload)
     signature = _sign_cp8_runtime_header(encoded, "POST", request_path, body, secret)

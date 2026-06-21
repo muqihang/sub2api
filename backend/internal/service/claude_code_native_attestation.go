@@ -57,10 +57,11 @@ const (
 	ClaudeCodeNativeControlPlaneHealthProfile = "real_claude_code_native_control_plane_shadow_v1"
 	ClaudeCodeNativeNetwatchHealthProfile     = "real_claude_code_native_netwatch_v1"
 
-	ClaudeCodeNativeRoute           = "claude_code_native"
-	ClaudeCodeNativeProviderOwner   = "zhumeng_managed"
-	ClaudeCodeNativeCredentialScope = "formal_pool"
-	ClaudeCodeNativeGatewayLocation = "cloud"
+	ClaudeCodeNativeRoute                = "claude_code_native"
+	ClaudeCodeNativeProviderOwner        = "zhumeng_managed"
+	ClaudeCodeNativeCredentialScope      = "formal_pool"
+	ClaudeCodeNativeGatewayLocation      = "cloud"
+	ClaudeCodeNativeReplaySafetyBoundary = "replay_safe_anthropic_transcript"
 )
 
 type ClaudeCodeNativeAuditSummary struct {
@@ -82,36 +83,46 @@ type ClaudeCodeNativeAuditSummary struct {
 	OverlayHash                string `json:"overlay_hash,omitempty"`
 	CatalogHash                string `json:"catalog_hash,omitempty"`
 	CatalogVersion             string `json:"catalog_version,omitempty"`
+	ReplaySafetyBoundary       string `json:"replay_safety_boundary,omitempty"`
+	ReplaySafetyApplied        bool   `json:"replay_safety_applied"`
+	ReplaySafetySanitized      bool   `json:"replay_safety_sanitized"`
+	ReplaySafetyForbiddenPaths int    `json:"replay_safety_forbidden_paths_count"`
+	ReplaySafetyBodyShapeHash  string `json:"replay_safety_body_shape_hash,omitempty"`
 }
 
 type claudeCodeNativeAuditSummaryContextKey struct{}
 
 type ClaudeCodeNativeAttestationPayload struct {
-	KeyID                   string `json:"key_id"`
-	Scope                   string `json:"scope"`
-	Version                 int    `json:"version"`
-	IssuedAt                int64  `json:"issued_at"`
-	Nonce                   string `json:"nonce"`
-	Method                  string `json:"method"`
-	RequestURI              string `json:"request_uri"`
-	ClientType              string `json:"client_type"`
-	GuardAttested           bool   `json:"guard_attested"`
-	GuardVersion            string `json:"guard_version"`
-	ClaudeCodeVersion       string `json:"claude_code_version"`
-	LocalSessionRef         string `json:"local_session_ref"`
-	NetwatchRequired        bool   `json:"netwatch_required"`
-	ShapeHealthcheckProfile string `json:"shape_healthcheck_profile"`
-	Route                   string `json:"route"`
-	ModelID                 string `json:"model_id"`
-	ProviderOwner           string `json:"provider_owner"`
-	CredentialScope         string `json:"credential_scope"`
-	GatewayLocation         string `json:"gateway_location"`
-	RuntimeHash             string `json:"runtime_hash"`
-	OverlayHash             string `json:"overlay_hash"`
-	CatalogHash             string `json:"catalog_hash"`
-	CatalogVersion          string `json:"catalog_version"`
-	SessionRef              string `json:"session_ref"`
-	BodyShapeHash           string `json:"body_shape_hash"`
+	KeyID                           string `json:"key_id"`
+	Scope                           string `json:"scope"`
+	Version                         int    `json:"version"`
+	IssuedAt                        int64  `json:"issued_at"`
+	Nonce                           string `json:"nonce"`
+	Method                          string `json:"method"`
+	RequestURI                      string `json:"request_uri"`
+	ClientType                      string `json:"client_type"`
+	GuardAttested                   bool   `json:"guard_attested"`
+	GuardVersion                    string `json:"guard_version"`
+	ClaudeCodeVersion               string `json:"claude_code_version"`
+	LocalSessionRef                 string `json:"local_session_ref"`
+	NetwatchRequired                bool   `json:"netwatch_required"`
+	ShapeHealthcheckProfile         string `json:"shape_healthcheck_profile"`
+	Route                           string `json:"route"`
+	ModelID                         string `json:"model_id"`
+	ProviderOwner                   string `json:"provider_owner"`
+	CredentialScope                 string `json:"credential_scope"`
+	GatewayLocation                 string `json:"gateway_location"`
+	RuntimeHash                     string `json:"runtime_hash"`
+	OverlayHash                     string `json:"overlay_hash"`
+	CatalogHash                     string `json:"catalog_hash"`
+	CatalogVersion                  string `json:"catalog_version"`
+	SessionRef                      string `json:"session_ref"`
+	BodyShapeHash                   string `json:"body_shape_hash"`
+	ReplaySafetyBoundary            string `json:"replay_safety_boundary"`
+	ReplaySafetyApplied             bool   `json:"replay_safety_applied"`
+	ReplaySafetySanitized           bool   `json:"replay_safety_sanitized"`
+	ReplaySafetyForbiddenPathsCount int    `json:"replay_safety_forbidden_paths_count"`
+	ReplaySafetyBodyShapeHash       string `json:"replay_safety_body_shape_hash"`
 }
 
 type ClaudeCodeRouteHintPayload struct {
@@ -197,31 +208,36 @@ type claudeCodeNativeCatalogAdmissionResolver interface {
 type claudeCodeNativeEnvCatalogAdmissionResolver struct{}
 
 var claudeCodeNativeAttestationPayloadAllowedFields = map[string]struct{}{
-	"key_id":                    {},
-	"scope":                     {},
-	"version":                   {},
-	"issued_at":                 {},
-	"nonce":                     {},
-	"method":                    {},
-	"request_uri":               {},
-	"client_type":               {},
-	"guard_attested":            {},
-	"guard_version":             {},
-	"claude_code_version":       {},
-	"local_session_ref":         {},
-	"netwatch_required":         {},
-	"shape_healthcheck_profile": {},
-	"route":                     {},
-	"model_id":                  {},
-	"provider_owner":            {},
-	"credential_scope":          {},
-	"gateway_location":          {},
-	"runtime_hash":              {},
-	"overlay_hash":              {},
-	"catalog_hash":              {},
-	"catalog_version":           {},
-	"session_ref":               {},
-	"body_shape_hash":           {},
+	"key_id":                              {},
+	"scope":                               {},
+	"version":                             {},
+	"issued_at":                           {},
+	"nonce":                               {},
+	"method":                              {},
+	"request_uri":                         {},
+	"client_type":                         {},
+	"guard_attested":                      {},
+	"guard_version":                       {},
+	"claude_code_version":                 {},
+	"local_session_ref":                   {},
+	"netwatch_required":                   {},
+	"shape_healthcheck_profile":           {},
+	"route":                               {},
+	"model_id":                            {},
+	"provider_owner":                      {},
+	"credential_scope":                    {},
+	"gateway_location":                    {},
+	"runtime_hash":                        {},
+	"overlay_hash":                        {},
+	"catalog_hash":                        {},
+	"catalog_version":                     {},
+	"session_ref":                         {},
+	"body_shape_hash":                     {},
+	"replay_safety_boundary":              {},
+	"replay_safety_applied":               {},
+	"replay_safety_sanitized":             {},
+	"replay_safety_forbidden_paths_count": {},
+	"replay_safety_body_shape_hash":       {},
 }
 
 var claudeCodeRouteHintPayloadAllowedFields = map[string]struct{}{
@@ -714,6 +730,14 @@ func decodeClaudeCodeNativeAttestationPayload(encoded string) (*ClaudeCodeNative
 			return nil, fmt.Errorf("claude code native attestation payload must match the strict allowlist schema")
 		}
 	}
+	for _, field := range []string{"replay_safety_boundary", "replay_safety_applied", "replay_safety_sanitized", "replay_safety_forbidden_paths_count", "replay_safety_body_shape_hash"} {
+		if _, ok := fieldSet[field]; !ok {
+			return nil, fmt.Errorf("claude code native replay safety contract is required")
+		}
+	}
+	if err := validateClaudeCodeNativeReplaySafetyFieldTypes(fieldSet); err != nil {
+		return nil, err
+	}
 	if len(fieldSet) != len(claudeCodeNativeAttestationPayloadAllowedFields) {
 		return nil, fmt.Errorf("claude code native attestation payload must match the strict allowlist schema")
 	}
@@ -722,6 +746,37 @@ func decodeClaudeCodeNativeAttestationPayload(encoded string) (*ClaudeCodeNative
 		return nil, fmt.Errorf("claude code native attestation payload is malformed")
 	}
 	return &payload, nil
+}
+
+func validateClaudeCodeNativeReplaySafetyFieldTypes(fieldSet map[string]json.RawMessage) error {
+	stringFields := []string{"replay_safety_boundary", "replay_safety_body_shape_hash"}
+	for _, field := range stringFields {
+		if strings.TrimSpace(string(fieldSet[field])) == "null" {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+		var value string
+		if err := json.Unmarshal(fieldSet[field], &value); err != nil || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+	}
+	boolFields := []string{"replay_safety_applied", "replay_safety_sanitized"}
+	for _, field := range boolFields {
+		if strings.TrimSpace(string(fieldSet[field])) == "null" {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+		var value bool
+		if err := json.Unmarshal(fieldSet[field], &value); err != nil {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+	}
+	if strings.TrimSpace(string(fieldSet["replay_safety_forbidden_paths_count"])) == "null" {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	var count int
+	if err := json.Unmarshal(fieldSet["replay_safety_forbidden_paths_count"], &count); err != nil {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	return nil
 }
 
 func decodeClaudeCodeRouteHintPayload(encoded string) (*ClaudeCodeRouteHintPayload, error) {
@@ -935,11 +990,36 @@ func validateClaudeCodeNativeAttestationPayloadShape(payload *ClaudeCodeNativeAt
 	if strings.TrimSpace(payload.ModelID) == "" || looksSensitiveText(payload.ModelID) {
 		return fmt.Errorf("claude code native attestation model binding is invalid")
 	}
-	for _, value := range []string{payload.RuntimeHash, payload.OverlayHash, payload.CatalogHash, payload.BodyShapeHash} {
+	for _, value := range []string{payload.RuntimeHash, payload.OverlayHash, payload.CatalogHash, payload.BodyShapeHash, payload.ReplaySafetyBodyShapeHash} {
 		trimmed := strings.TrimSpace(value)
 		if !claudeCodeNativeSafeHashRe.MatchString(trimmed) || trimmed == claudeCodeNativeUnknownHash {
 			return fmt.Errorf("claude code native attestation hash binding is invalid")
 		}
+	}
+	if err := validateClaudeCodeNativeReplaySafetyContract(payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateClaudeCodeNativeReplaySafetyContract(payload *ClaudeCodeNativeAttestationPayload) error {
+	if payload == nil {
+		return fmt.Errorf("claude code native replay safety contract is required")
+	}
+	if payload.ReplaySafetyBoundary != ClaudeCodeNativeReplaySafetyBoundary || !payload.ReplaySafetyApplied {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if payload.ReplaySafetyForbiddenPathsCount < 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if payload.ReplaySafetySanitized && payload.ReplaySafetyForbiddenPathsCount <= 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if !payload.ReplaySafetySanitized && payload.ReplaySafetyForbiddenPathsCount != 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if payload.ReplaySafetyBodyShapeHash != payload.BodyShapeHash {
+		return fmt.Errorf("claude code native replay safety body binding mismatch")
 	}
 	return nil
 }
@@ -1074,8 +1154,12 @@ func validateClaudeCodeNativeBodyBinding(payload *ClaudeCodeNativeAttestationPay
 	if model == "" || looksSensitiveText(model) || payload.ModelID != model {
 		return fmt.Errorf("claude code native attestation model binding mismatch")
 	}
-	if payload.BodyShapeHash != claudeCodeNativeBodyShapeHash(body) {
+	bodyShapeHash := claudeCodeNativeBodyShapeHash(body)
+	if payload.BodyShapeHash != bodyShapeHash {
 		return fmt.Errorf("claude code native attestation body shape binding mismatch")
+	}
+	if payload.ReplaySafetyBodyShapeHash != bodyShapeHash {
+		return fmt.Errorf("claude code native replay safety body binding mismatch")
 	}
 	return nil
 }
@@ -1174,6 +1258,11 @@ func buildClaudeCodeNativeAuditSummaryWithHeaders(payload *ClaudeCodeNativeAttes
 		OverlayHash:                payload.OverlayHash,
 		CatalogHash:                payload.CatalogHash,
 		CatalogVersion:             safeClaudeCodeNativeLabel(headers.Get(ClaudeCodeNativeCatalogVersionHeader)),
+		ReplaySafetyBoundary:       payload.ReplaySafetyBoundary,
+		ReplaySafetyApplied:        payload.ReplaySafetyApplied,
+		ReplaySafetySanitized:      payload.ReplaySafetySanitized,
+		ReplaySafetyForbiddenPaths: payload.ReplaySafetyForbiddenPathsCount,
+		ReplaySafetyBodyShapeHash:  payload.ReplaySafetyBodyShapeHash,
 	}
 }
 
